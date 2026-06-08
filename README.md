@@ -24,13 +24,7 @@ Hey-Koko gives you a personal AI chat experience without sending a single byte t
 2. Pull a model:
 
    ```bash
-   ollama pull qwen2.5:7b
-   ```
-
-   For image understanding, also pull a vision model:
-
-   ```bash
-   ollama pull llava:7b
+   ollama pull gemma4:12b-it-qat
    ```
 
 3. Start the server:
