@@ -5,6 +5,11 @@ A lightweight, privacy-first AI companion that runs entirely on your machine. Po
 Hey-Koko gives you a personal AI chat experience without sending a single byte to the cloud. It connects to your local Ollama instance, supports file uploads (PDF, Word, PowerPoint, images), web page summarization, YouTube transcription, image generation, and text-to-speech — all through a clean browser UI with zero build steps. Customize your companion's name, personality, and voice to make it truly yours.
 
 
+## Demo
+
+<img src="docs/demo1.jpg" width="50%"><img src="docs/demo2.jpg" width="50%"><img src="docs/demo3.jpg" width="50%">
+
+
 ## Features
 
 - **Local & Private** — All conversations stay on your device. No data leaves your machine.
@@ -18,16 +23,34 @@ Hey-Koko gives you a personal AI chat experience without sending a single byte t
 - **Multi-model** — Switch between any Ollama model on the fly.
 
 
+## License
+
+GPL-3.0
+
+
 ## Quick Start
 
-1. Install and launch [Ollama](https://ollama.com).
-2. Pull a model:
+1. Install [Homebrew](https://brew.sh) (if not already installed):
 
    ```bash
-   ollama pull gemma4:12b-it-qat
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
    ```
 
-3. Start the server:
+2. Install [Node.js](https://nodejs.org) (if not already installed):
+
+   ```bash
+   brew install node
+   ```
+
+3. Install and launch [Ollama](https://ollama.com).
+4. Pull a model:
+
+   ```bash
+   ollama pull gemma4:12b-it-qat   # chat model
+   ollama pull x/flux2-klein:9b    # image generation model
+   ```
+
+5. Start the server:
 
    ```bash
    node server.js
@@ -35,7 +58,7 @@ Hey-Koko gives you a personal AI chat experience without sending a single byte t
 
    Or double-click `start.command` on macOS.
 
-4. Open your browser at:
+6. Open your browser at:
 
    ```
    http://127.0.0.1:1314
@@ -77,7 +100,15 @@ On first run, MinerU downloads ~2GB of models. If behind a firewall:
 
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
+
 mineru -p test.pdf -o output
+```
+
+Once models are downloaded, you can enable offline mode to prevent future network requests:
+
+```bash
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 ```
 
 ### yt-dlp & ffmpeg (YouTube support)
@@ -123,7 +154,3 @@ OLLAMA_URL=http://127.0.0.1:11434 PORT=1314 node server.js
 - **AI Engine**: Ollama (local LLM inference)
 - **CDN Libraries**: KaTeX, Mermaid, highlight.js, pdf.js, mammoth.js, JSZip
 
-
-## License
-
-GPL-3.0

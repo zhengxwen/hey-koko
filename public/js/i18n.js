@@ -1,0 +1,628 @@
+// Internationalization module - multilingual support (en, zh, zh-Hant)
+import { dom } from './state.js';
+
+// --- UI String Catalog ---
+const UI = {
+  en: {
+    // Panel tabs
+    panelTab_basic: "Basic",
+    panelTab_more: "Models",
+    panelTab_extra: "More Options",
+    // Basic tab
+    label_callName: "Call me",
+    label_callNameHint: "(separate multiple with spaces or commas)",
+    input_callNamePlaceholder: "e.g.: honey, babe, sweetie",
+    label_personality: "Personality Type",
+    personality_sweet: "Sweet & Gentle",
+    personality_genki: "Energetic Girl",
+    personality_yujie: "Cool Big Sister",
+    personality_temp: "Custom Preset",
+    label_persona: "Her Personality",
+    btn_save: "Save Settings",
+    btn_clearChat: "Clear Chat",
+    btn_export: "Export Chat",
+    btn_import: "Import Chat",
+    btn_archive: "Archive",
+    btn_archiveBrowse: "Browse Archives",
+    // Model tab
+    label_llmModel: "LLM Model",
+    label_imageModel: "Image Model",
+    btn_scan: "Scan",
+    btn_scanTooltip: "Scan local network for running Ollama instances and load available models",
+    label_includeLocal: "Include local",
+    hint_ollama: "Ollama must be running",
+    label_imageSize: "Default Image Size",
+    label_timeout: "Timeout",
+    label_timeoutUnit: "s",
+    label_voice: "Voice",
+    voice_auto: "Auto-select voice",
+    label_speechRate: "Speed",
+    label_autoSpeak: "Auto speak",
+    // Extra tab
+    label_appearance: "Appearance",
+    mode_system: "System",
+    mode_light: "Light",
+    mode_dark: "Dark",
+    label_theme: "Theme Color",
+    label_uiLanguage: "UI Language",
+    label_promptLanguage: "Prompt Language",
+    label_showThinking: "Show Thinking Process",
+    // Theme color titles
+    theme_teal: "Fresh Natural",
+    theme_sakura: "Cherry Blossom",
+    theme_ocean: "Deep Ocean",
+    theme_violet: "Lavender Dream",
+    theme_amber: "Warm Amber",
+    theme_mint: "Mint Green",
+    theme_slate: "Graphite",
+    // Chat area
+    input_placeholder: "Say something to Bella...",
+    input_lockedPlaceholder: "Chat is locked",
+    tab_newChat: "Chat",
+    btn_send: "Send",
+    btn_stop: "Stop",
+    btn_file: "File",
+    btn_stopTranslate: "Stop Translation",
+    tooltip_quickPrompt: "Quick prompts (type / to trigger)",
+    tooltip_askSuggest: "AI suggests questions",
+    tooltip_file: "Upload file",
+    // Message action buttons
+    btn_speak: "Speak",
+    btn_resend: "Resend",
+    btn_translateEn: "En",
+    btn_translateZh: "Ch",
+    btn_imagine: "Img",
+    btn_fork: "Fork",
+    // Quick prompts
+    qp_understand: "Help me understand",
+    qp_understandTable: "Help me understand, make a table",
+    qp_understandTableSimple: "Help me understand, make a table, keep it simple",
+    qp_table: "Make a table",
+    qp_simple: "Keep it simple",
+    qp_summarize: "Summarize in 3 sentences",
+    qp_summarizeSimple: "Summarize in 3 sentences, keep it simple",
+    // Archive overlay
+    archive_title: "Chat Archives",
+    archive_searchPlaceholder: "Search chat content...",
+    archive_sortNewOld: "New→Old",
+    archive_sortOldNew: "Old→New",
+    archive_expand: "Expand",
+    archive_collapse: "Collapse",
+    archive_selectAll: "Select All",
+    archive_restore: "Restore Selected",
+    archive_moveTo: "Move to",
+    archive_delete: "Delete Selected",
+    archive_previewEmpty: "Select an archive on the left to preview",
+    archive_selectedCount: "${count} selected",
+    archive_locked: "Current chat is locked, cannot archive",
+    archive_empty: "Current chat is empty, cannot archive",
+    archive_dirHint: "📁 Storage: ${dir}",
+    // Dynamic messages
+    msg_noImageModel: "No image model selected. Please select an image model in「Models」, or confirm you have downloaded an image model (e.g. flux, z-image-turbo).",
+    msg_generatingPrompt: "Generating image prompt",
+    msg_generating: "Generating image",
+    msg_generatingCount: "Generating image (${done}/${total})",
+    msg_thinking: "Thinking",
+    msg_thinkingQuestion: "Thinking of a question",
+    msg_askSuggestTitle: "You might want to ask:",
+    msg_thinkingSummary: "Thinking Process",
+    msg_thinkingInProgress: "Thinking...",
+    msg_compressing: "Compressing context",
+    msg_generatingTitle: "Generating title",
+    msg_commandError: "⚠️ Command syntax error: ${error}",
+    msg_titleUpdated: "✅ Title updated to「${title}」",
+    msg_tagsAdded: "\n🏷️ Tags added: ${tags}",
+    msg_tagsCleared: "\n🏷️ Tags cleared",
+    msg_contextSummary: "📋 **Context Summary**\n\n${content}",
+    msg_compressFail: "⚠️ Compression failed: ${error}",
+    msg_translateFail: "Translation request failed",
+    msg_translateFailDetail: "(Translation failed: ${error})",
+    msg_translateFailShort: "(Translation failed)",
+    msg_noHistory: "No history",
+    msg_aiNameTitle: "Double-click to edit AI name",
+    msg_greeting: "I'm here. What would you like to chat about, ${name}?",
+    msg_greetingNoName: "I'm here. What would you like to chat about?",
+    msg_greetDefault: "",
+    msg_fork: "(fork)",
+    // Commands
+    cmd_0: "No-context chat, isolated reply",
+    cmd_1: "Use only the previous message as context",
+    cmd_clear: "Clear current chat",
+    cmd_compact: "Compress context, keep summary",
+    cmd_imagine: "Generate image",
+    cmd_note: "Record a note, no AI reply",
+    cmd_title: "Change tab title, [tags] to add tags",
+    cmd_url: "Parse webpage/YouTube, add prompt: /url [prompt] https://...",
+  },
+  zh: {
+    panelTab_basic: "基本设定",
+    panelTab_more: "模型设定",
+    panelTab_extra: "更多选项",
+    label_callName: "称呼你",
+    label_callNameHint: "(多个用空格或逗号分隔)",
+    input_callNamePlaceholder: "如：亲爱的, 宝贝, 小傻瓜",
+    label_personality: "性格类型",
+    personality_sweet: "温柔甜妹",
+    personality_genki: "元气少女",
+    personality_yujie: "御姐",
+    personality_temp: "自定义预设",
+    label_persona: "她的性格",
+    btn_save: "保存设定",
+    btn_clearChat: "清空当前聊天",
+    btn_export: "导出对话",
+    btn_import: "导入对话",
+    btn_archive: "存档",
+    btn_archiveBrowse: "档案浏览",
+    label_llmModel: "LLM模型",
+    label_imageModel: "图片模型",
+    btn_scan: "扫描",
+    btn_scanTooltip: "扫描局域网内正在运行的 Ollama 实例，加载可用模型",
+    label_includeLocal: "包括本机",
+    hint_ollama: "需要先运行 Ollama",
+    label_imageSize: "图片默认尺寸",
+    label_timeout: "超时",
+    label_timeoutUnit: "秒",
+    label_voice: "语音朗读",
+    voice_auto: "自动选择中文语音",
+    label_speechRate: "语速",
+    label_autoSpeak: "自动朗读",
+    label_appearance: "外观模式",
+    mode_system: "跟随系统",
+    mode_light: "浅色",
+    mode_dark: "深色",
+    label_theme: "主题配色",
+    label_uiLanguage: "UI语言",
+    label_promptLanguage: "提示词语言",
+    label_showThinking: "显示思维过程",
+    theme_teal: "清新自然",
+    theme_sakura: "樱花甜美",
+    theme_ocean: "深海冷静",
+    theme_violet: "薰衣草梦幻",
+    theme_amber: "琥珀温暖",
+    theme_mint: "青草绿",
+    theme_slate: "石墨",
+    input_placeholder: "和 Bella 说点什么...",
+    input_lockedPlaceholder: "对话已锁定",
+    tab_newChat: "聊天",
+    btn_send: "发送",
+    btn_stop: "暂停",
+    btn_file: "文件",
+    btn_stopTranslate: "停止翻译",
+    tooltip_quickPrompt: "快捷指令（输入 / 触发）",
+    tooltip_askSuggest: "AI 帮你提问",
+    tooltip_file: "上传文件",
+    btn_speak: "朗读",
+    btn_resend: "重发",
+    btn_translateEn: "英",
+    btn_translateZh: "中",
+    btn_imagine: "图",
+    btn_fork: "分支",
+    qp_understand: "帮我理解",
+    qp_understandTable: "帮我理解，生成表格",
+    qp_understandTableSimple: "帮我理解，生成表格，说简单点",
+    qp_table: "生成表格",
+    qp_simple: "说简单点",
+    qp_summarize: "用三句话总结",
+    qp_summarizeSimple: "用三句话总结，说简单点",
+    archive_title: "对话存档",
+    archive_searchPlaceholder: "搜索对话内容...",
+    archive_sortNewOld: "新→旧",
+    archive_sortOldNew: "旧→新",
+    archive_expand: "展开",
+    archive_collapse: "收起",
+    archive_selectAll: "全选",
+    archive_restore: "恢复选中",
+    archive_moveTo: "移动到",
+    archive_delete: "删除选中",
+    archive_previewEmpty: "选择左侧存档查看预览",
+    archive_selectedCount: "已选 ${count} 个",
+    archive_locked: "当前对话已锁定，无法存档",
+    archive_empty: "当前对话为空，无法存档",
+    archive_dirHint: "📁 存放目录: ${dir}",
+    msg_noImageModel: "未选择图片生成模型。请先在「模型设定」中选择图片模型，或确认已下载图片模型（如 flux、z-image-turbo）。",
+    msg_generatingPrompt: "正在生成图片提示词",
+    msg_generating: "正在生成图片",
+    msg_generatingCount: "正在生成图片 (${done}/${total})",
+    msg_thinking: "正在想",
+    msg_thinkingQuestion: "正在想问题",
+    msg_askSuggestTitle: "你可能想问：",
+    msg_thinkingSummary: "思维过程",
+    msg_thinkingInProgress: "正在思考…",
+    msg_compressing: "正在压缩上下文",
+    msg_generatingTitle: "正在生成标题",
+    msg_commandError: "⚠️ 命令语法错误：${error}",
+    msg_titleUpdated: "✅ 标题已更新为「${title}」",
+    msg_tagsAdded: "\n🏷️ 已添加标签：${tags}",
+    msg_tagsCleared: "\n🏷️ 标签已清空",
+    msg_contextSummary: "📋 **上下文摘要**\n\n${content}",
+    msg_compressFail: "⚠️ 压缩失败：${error}",
+    msg_translateFail: "翻译请求失败",
+    msg_translateFailDetail: "（翻译失败：${error}）",
+    msg_translateFailShort: "（翻译失败）",
+    msg_noHistory: "暂无历史记录",
+    msg_aiNameTitle: "双击编辑 AI 名字",
+    msg_greeting: "我在这里。今天想聊什么，${name}？",
+    msg_greetingNoName: "我在这里。今天想聊什么？",
+    msg_greetDefault: "",
+    msg_fork: "(分支)",
+    cmd_0: "无上下文对话，独立回复",
+    cmd_1: "仅使用上一条消息作为上下文",
+    cmd_clear: "清空当前对话",
+    cmd_compact: "压缩上下文，保留摘要",
+    cmd_imagine: "生成图片",
+    cmd_note: "记录笔记，不生成 AI 回复",
+    cmd_title: "修改标签页标题，[tags] 添加标签",
+    cmd_url: "解析网页/YouTube，可加prompt：/url [prompt] https://...",
+  },
+  "zh-Hant": {
+    panelTab_basic: "基本設定",
+    panelTab_more: "模型設定",
+    panelTab_extra: "更多選項",
+    label_callName: "稱呼你",
+    label_callNameHint: "(多個用空格或逗號分隔)",
+    input_callNamePlaceholder: "如：親愛的, 寶貝, 小傻瓜",
+    label_personality: "性格類型",
+    personality_sweet: "溫柔甜妹",
+    personality_genki: "元氣少女",
+    personality_yujie: "御姐",
+    personality_temp: "自訂預設",
+    label_persona: "她的性格",
+    btn_save: "儲存設定",
+    btn_clearChat: "清空目前聊天",
+    btn_export: "匯出對話",
+    btn_import: "匯入對話",
+    btn_archive: "存檔",
+    btn_archiveBrowse: "檔案瀏覽",
+    label_llmModel: "LLM模型",
+    label_imageModel: "圖片模型",
+    btn_scan: "掃描",
+    btn_scanTooltip: "掃描區域網路內正在運行的 Ollama 實例，載入可用模型",
+    label_includeLocal: "包括本機",
+    hint_ollama: "需要先執行 Ollama",
+    label_imageSize: "圖片預設尺寸",
+    label_timeout: "逾時",
+    label_timeoutUnit: "秒",
+    label_voice: "語音朗讀",
+    voice_auto: "自動選擇中文語音",
+    label_speechRate: "語速",
+    label_autoSpeak: "自動朗讀",
+    label_appearance: "外觀模式",
+    mode_system: "跟隨系統",
+    mode_light: "淺色",
+    mode_dark: "深色",
+    label_theme: "主題配色",
+    label_uiLanguage: "UI語言",
+    label_promptLanguage: "提示詞語言",
+    label_showThinking: "顯示思維過程",
+    theme_teal: "清新自然",
+    theme_sakura: "櫻花甜美",
+    theme_ocean: "深海冷靜",
+    theme_violet: "薰衣草夢幻",
+    theme_amber: "琥珀溫暖",
+    theme_mint: "青草綠",
+    theme_slate: "石墨",
+    input_placeholder: "和 Bella 說點什麼...",
+    input_lockedPlaceholder: "對話已鎖定",
+    tab_newChat: "聊天",
+    btn_send: "傳送",
+    btn_stop: "暫停",
+    btn_file: "檔案",
+    btn_stopTranslate: "停止翻譯",
+    tooltip_quickPrompt: "快捷指令（輸入 / 觸發）",
+    tooltip_askSuggest: "AI 幫你提問",
+    tooltip_file: "上傳檔案",
+    btn_speak: "朗讀",
+    btn_resend: "重發",
+    btn_translateEn: "英",
+    btn_translateZh: "中",
+    btn_imagine: "圖",
+    btn_fork: "分支",
+    qp_understand: "幫我理解",
+    qp_understandTable: "幫我理解，生成表格",
+    qp_understandTableSimple: "幫我理解，生成表格，說簡單點",
+    qp_table: "生成表格",
+    qp_simple: "說簡單點",
+    qp_summarize: "用三句話總結",
+    qp_summarizeSimple: "用三句話總結，說簡單點",
+    archive_title: "對話存檔",
+    archive_searchPlaceholder: "搜尋對話內容...",
+    archive_sortNewOld: "新→舊",
+    archive_sortOldNew: "舊→新",
+    archive_expand: "展開",
+    archive_collapse: "收起",
+    archive_selectAll: "全選",
+    archive_restore: "恢復選取",
+    archive_moveTo: "移動到",
+    archive_delete: "刪除選取",
+    archive_previewEmpty: "選擇左側存檔查看預覽",
+    archive_selectedCount: "已選 ${count} 個",
+    archive_locked: "目前對話已鎖定，無法存檔",
+    archive_empty: "目前對話為空，無法存檔",
+    archive_dirHint: "📁 存放目錄: ${dir}",
+    msg_noImageModel: "未選擇圖片生成模型。請先在「模型設定」中選擇圖片模型，或確認已下載圖片模型（如 flux、z-image-turbo）。",
+    msg_generatingPrompt: "正在生成圖片提示詞",
+    msg_generating: "正在生成圖片",
+    msg_generatingCount: "正在生成圖片 (${done}/${total})",
+    msg_thinking: "正在想",
+    msg_thinkingQuestion: "正在想問題",
+    msg_askSuggestTitle: "你可能想問：",
+    msg_thinkingSummary: "思維過程",
+    msg_thinkingInProgress: "正在思考…",
+    msg_compressing: "正在壓縮上下文",
+    msg_generatingTitle: "正在生成標題",
+    msg_commandError: "⚠️ 命令語法錯誤：${error}",
+    msg_titleUpdated: "✅ 標題已更新為「${title}」",
+    msg_tagsAdded: "\n🏷️ 已新增標籤：${tags}",
+    msg_tagsCleared: "\n🏷️ 標籤已清空",
+    msg_contextSummary: "📋 **上下文摘要**\n\n${content}",
+    msg_compressFail: "⚠️ 壓縮失敗：${error}",
+    msg_translateFail: "翻譯請求失敗",
+    msg_translateFailDetail: "（翻譯失敗：${error}）",
+    msg_translateFailShort: "（翻譯失敗）",
+    msg_noHistory: "暫無歷史記錄",
+    msg_aiNameTitle: "雙擊編輯 AI 名字",
+    msg_greeting: "我在這裡。今天想聊什麼，${name}？",
+    msg_greetingNoName: "我在這裡。今天想聊什麼？",
+    msg_greetDefault: "",
+    msg_fork: "(分支)",
+    cmd_0: "無上下文對話，獨立回覆",
+    cmd_1: "僅使用上一條訊息作為上下文",
+    cmd_clear: "清空目前對話",
+    cmd_compact: "壓縮上下文，保留摘要",
+    cmd_imagine: "生成圖片",
+    cmd_note: "記錄筆記，不生成 AI 回覆",
+    cmd_title: "修改標籤頁標題，[tags] 新增標籤",
+    cmd_url: "解析網頁/YouTube，可加prompt：/url [prompt] https://...",
+  },
+};
+
+// --- Prompt Template Catalog ---
+const PROMPTS = {
+  en: {
+    personaSuffix: "You are a warm and natural companion. Be clear that you are an AI.",
+    nameInstructionSingle: (name) => `The user wants you to call them "${name}".`,
+    nameInstructionMulti: (names) => `The user has provided these names for you to use: ${names.map(n => `"${n}"`).join(", ")}. Naturally choose one based on the chat context; don't always use the same one.`,
+    titleGeneration: "Based on the conversation below, generate a very brief title (no more than 8 words, no quotes or punctuation). Output only the title text.",
+    compactSummary: "You are a conversation summary assistant. Compress the following conversation into a concise summary, retaining all important information, key decisions, code snippets, and conclusions. The summary should let someone quickly understand what was discussed. Output in English.",
+    compactUserPrompt: "Please compress the above conversation into a summary. Keep key information, remove pleasantries and repetition.",
+    enhancePrompt: "You are an expert image prompt engineer. Expand the user's short description into a detailed, vivid image generation prompt. Keep it under 200 words. Only output the enhanced prompt text, nothing else. Do not include any explanations or prefixes.",
+    contentToImagine: "You are an expert at converting text content into image generation prompts. Given the user's text, generate one or more vivid image prompts that would visually illustrate the key scenes or concepts. Output ONLY the prompts, one per line, each starting with \"/imagine \". Each prompt should be a detailed visual description in English, under 100 words. Generate 1-3 prompts depending on the content richness. Do not include explanations, numbering, or any other text.",
+    translator: (targetLang) => `You are a translator. Translate the following text to ${targetLang}. Only output the translation, nothing else.`,
+    summaryContext: "[The following is a summary of previous conversations]\n",
+    askSuggestSystem: "You are a question-suggesting assistant. Based on the current conversation context, generate up to 5 questions the user might want to ask. Only output the question list, one per line, no numbering, no extra explanation. If there is no context, generate 5 fun general questions.",
+    askSuggestUser: (ctx) => `Current conversation context:\n${ctx}\n\nPlease generate up to 5 questions the user might want to ask next.`,
+    askSuggestNoContext: "Please generate 5 interesting general questions for the user to choose from.",
+    imageFallback: "Please look at this image.",
+  },
+  zh: {
+    personaSuffix: "你可以像亲密伴侣一样温柔、自然地回应，但要清楚自己是 AI。",
+    nameInstructionSingle: (name) => `用户希望你称呼他/她为"${name}"。`,
+    nameInstructionMulti: (names) => `用户提供了以下称呼供你选用：${names.map(n => `"${n}"`).join("、")}。请根据当前聊天内容和语境，自然地选择其中一个或多个来称呼用户，不需要每次都用，也不要每次都一样。`,
+    titleGeneration: "根据以下对话内容，生成一个非常简短的标题（不超过16个字，不要加引号或标点）。直接输出标题文字即可。",
+    compactSummary: "你是一个对话摘要助手。请将以下对话内容压缩为简明扼要的摘要，保留所有重要信息、关键决定、代码片段和结论。摘要应该让人能快速了解之前聊了什么。用中文输出。",
+    compactUserPrompt: "请将以上对话压缩为摘要。保留关键信息，去除寒暄和重复内容。",
+    enhancePrompt: "你是一个图片提示词专家。请将用户的简短描述扩展为详细、生动的图片生成提示词。保持在200字以内。只输出增强后的提示词，不要有其他解释或前缀。",
+    contentToImagine: "你是将文本内容转换为图片生成提示词的专家。根据用户的文本，生成一个或多个能视觉化展示关键场景或概念的图片提示词。只输出提示词，每行一个，每个以 \"/imagine \" 开头。每个提示词应为详细的英文视觉描述，不超过100字。根据内容丰富程度生成1-3个提示词。不要包含解释、编号或其他文字。",
+    translator: (targetLang) => `You are a translator. Translate the following text to ${targetLang}. Only output the translation, nothing else.`,
+    summaryContext: "[以下是之前对话的摘要]\n",
+    askSuggestSystem: "你是一个帮助用户提问的助手。根据当前对话上下文，生成最多5个用户可能想问的问题。只输出问题列表，每行一个问题，不要编号，不要多余解释。如果没有上下文，就生成5个通用的有趣问题。",
+    askSuggestUser: (ctx) => `当前对话上下文：\n${ctx}\n\n请生成最多5个用户接下来可能想问的问题。`,
+    askSuggestNoContext: "请生成5个有趣的通用问题供用户选择。",
+    imageFallback: "请看看这张图片。",
+  },
+  "zh-Hant": {
+    personaSuffix: "你可以像親密伴侶一樣溫柔、自然地回應，但要清楚自己是 AI。",
+    nameInstructionSingle: (name) => `使用者希望你稱呼他/她為「${name}」。`,
+    nameInstructionMulti: (names) => `使用者提供了以下稱呼供你選用：${names.map(n => `「${n}」`).join("、")}。請根據當前聊天內容和語境，自然地選擇其中一個或多個來稱呼使用者，不需要每次都用，也不要每次都一樣。`,
+    titleGeneration: "根據以下對話內容，生成一個非常簡短的標題（不超過16個字，不要加引號或標點）。直接輸出標題文字即可。",
+    compactSummary: "你是一個對話摘要助手。請將以下對話內容壓縮為簡明扼要的摘要，保留所有重要資訊、關鍵決定、程式碼片段和結論。摘要應該讓人能快速了解之前聊了什麼。用繁體中文輸出。",
+    compactUserPrompt: "請將以上對話壓縮為摘要。保留關鍵資訊，去除寒暄和重複內容。",
+    enhancePrompt: "你是一個圖片提示詞專家。請將使用者的簡短描述擴展為詳細、生動的圖片生成提示詞。保持在200字以內。只輸出增強後的提示詞，不要有其他解釋或前綴。",
+    contentToImagine: "你是將文本內容轉換為圖片生成提示詞的專家。根據使用者的文本，生成一個或多個能視覺化展示關鍵場景或概念的圖片提示詞。只輸出提示詞，每行一個，每個以 \"/imagine \" 開頭。每個提示詞應為詳細的英文視覺描述，不超過100字。根據內容豐富程度生成1-3個提示詞。不要包含解釋、編號或其他文字。",
+    translator: (targetLang) => `You are a translator. Translate the following text to ${targetLang}. Only output the translation, nothing else.`,
+    summaryContext: "[以下是之前對話的摘要]\n",
+    askSuggestSystem: "你是一個幫助使用者提問的助手。根據當前對話上下文，生成最多5個使用者可能想問的問題。只輸出問題列表，每行一個問題，不要編號，不要多餘解釋。如果沒有上下文，就生成5個通用的有趣問題。",
+    askSuggestUser: (ctx) => `當前對話上下文：\n${ctx}\n\n請生成最多5個使用者接下來可能想問的問題。`,
+    askSuggestNoContext: "請生成5個有趣的通用問題供使用者選擇。",
+    imageFallback: "請看看這張圖片。",
+  },
+};
+
+// --- Lookup helpers ---
+
+/** Get UI language code from selector (defaults to "en") */
+export function getUILanguage() {
+  return dom.uiLanguageSelect?.value || "en";
+}
+
+/** Get Prompt language code from selector (defaults to "en") */
+export function getPromptLanguage() {
+  return dom.promptLanguageSelect?.value || "en";
+}
+
+/**
+ * Translate a UI key with optional interpolation variables.
+ * Fallback chain: requested → zh (if zh-Hant) → en → key
+ */
+export function t(key, vars, langOverride) {
+  const lang = langOverride || getUILanguage();
+  let str = UI[lang]?.[key];
+  if (str === undefined && lang === "zh-Hant") str = UI.zh?.[key];
+  if (str === undefined) str = UI.en?.[key];
+  if (str === undefined) {
+    console.warn(`[i18n] Missing UI key: "${key}" for lang="${lang}"`);
+    return key;
+  }
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) {
+      str = str.replaceAll(`\${${k}}`, v);
+    }
+  }
+  return str;
+}
+
+/**
+ * Get a prompt template value.
+ * Fallback chain: requested → zh (if zh-Hant) → en
+ */
+export function getPrompt(key, ...args) {
+  const lang = getPromptLanguage();
+  let val = PROMPTS[lang]?.[key];
+  if (val === undefined && lang === "zh-Hant") val = PROMPTS.zh?.[key];
+  if (val === undefined) val = PROMPTS.en?.[key];
+  if (val === undefined) {
+    console.warn(`[i18n] Missing prompt key: "${key}" for lang="${lang}"`);
+    return key;
+  }
+  if (typeof val === "function") return val(...args);
+  return val;
+}
+
+// --- DOM binding for static text updates ---
+
+const BINDINGS = [
+  // Panel tabs
+  { sel: '.panelTab[data-panel-tab="basic"]', key: "panelTab_basic" },
+  { sel: '.panelTab[data-panel-tab="more"]', key: "panelTab_more" },
+  { sel: '.panelTab[data-panel-tab="extra"]', key: "panelTab_extra" },
+  // Basic tab labels & buttons
+  { sel: "#callNameLabel", key: "label_callName" },
+  { sel: "#callNameHint", key: "label_callNameHint" },
+  { sel: "#userName", key: "input_callNamePlaceholder", attr: "placeholder" },
+  { sel: "#personalityLabelText", key: "label_personality" },
+  { sel: '#personalitySelect option[value="sweet"]', key: "personality_sweet" },
+  { sel: '#personalitySelect option[value="genki"]', key: "personality_genki" },
+  { sel: '#personalitySelect option[value="yujie"]', key: "personality_yujie" },
+  { sel: '#personalitySelect option[value="temp"]', key: "personality_temp" },
+  { sel: "#personaLabelText", key: "label_persona" },
+  { sel: "#saveSettings", key: "btn_save" },
+  { sel: "#clearChat", key: "btn_clearChat" },
+  { sel: "#exportChat", key: "btn_export" },
+  { sel: ".importButton", key: "btn_import", attr: "lastText" },
+  { sel: "#archiveChat", key: "btn_archive" },
+  { sel: "#retrieveChat", key: "btn_archiveBrowse" },
+  // Model tab
+  { sel: "#modelLabelText", key: "label_llmModel" },
+  { sel: "#imageModelLabelText", key: "label_imageModel" },
+  { sel: "#scanOllama", key: "btn_scan" },
+  { sel: "#scanOllama", key: "btn_scanTooltip", attr: "title" },
+  { sel: "#includeLocalLabel", key: "label_includeLocal" },
+  { sel: ".hintRow .hint", key: "hint_ollama" },
+  { sel: "#imageSizeLabelText", key: "label_imageSize" },
+  { sel: "#timeoutLabelText", key: "label_timeout" },
+  { sel: "#timeoutUnitText", key: "label_timeoutUnit" },
+  { sel: "#voiceLabelText", key: "label_voice" },
+  { sel: '#voiceSelect option[value=""]', key: "voice_auto" },
+  { sel: "#speechRateLabelText", key: "label_speechRate" },
+  { sel: "#autoSpeakLabel", key: "label_autoSpeak" },
+  // Extra tab
+  { sel: "#appearanceLabel", key: "label_appearance" },
+  { sel: '.modeToggleBtn[data-mode="system"]', key: "mode_system" },
+  { sel: '.modeToggleBtn[data-mode="light"]', key: "mode_light" },
+  { sel: '.modeToggleBtn[data-mode="dark"]', key: "mode_dark" },
+  { sel: "#themeLabel", key: "label_theme" },
+  { sel: "#uiLanguageLabel", key: "label_uiLanguage" },
+  { sel: "#promptLanguageLabel", key: "label_promptLanguage" },
+  { sel: "#showThinkingLabel", key: "label_showThinking" },
+  // Theme dots
+  { sel: '.themeColorDot[data-theme="teal"]', key: "theme_teal", attr: "title" },
+  { sel: '.themeColorDot[data-theme="sakura"]', key: "theme_sakura", attr: "title" },
+  { sel: '.themeColorDot[data-theme="ocean"]', key: "theme_ocean", attr: "title" },
+  { sel: '.themeColorDot[data-theme="violet"]', key: "theme_violet", attr: "title" },
+  { sel: '.themeColorDot[data-theme="amber"]', key: "theme_amber", attr: "title" },
+  { sel: '.themeColorDot[data-theme="mint"]', key: "theme_mint", attr: "title" },
+  { sel: '.themeColorDot[data-theme="slate"]', key: "theme_slate", attr: "title" },
+  // Chat area
+  { sel: "#messageInput", key: "input_placeholder", attr: "placeholder" },
+  { sel: "#quickPromptBtn", key: "tooltip_quickPrompt", attr: "title" },
+  { sel: "#askSuggestBtn", key: "tooltip_askSuggest", attr: "title" },
+  { sel: ".uploadButton", key: "tooltip_file", attr: "title" },
+  { sel: "#stopTranslateBtn", key: "btn_stopTranslate" },
+  // Archive overlay
+  { sel: ".archiveTitle", key: "archive_title" },
+  { sel: "#archiveSearch", key: "archive_searchPlaceholder", attr: "placeholder" },
+  { sel: "#archiveRestoreBtn", key: "archive_restore" },
+  { sel: "#archiveMoveBtn", key: "archive_moveTo" },
+  { sel: "#archiveDeleteBtn", key: "archive_delete" },
+  { sel: "#archivePreviewEmpty", key: "archive_previewEmpty" },
+];
+
+/** Apply current UI language to all static DOM text nodes */
+export function applyUILanguage() {
+  for (const { sel, key, attr } of BINDINGS) {
+    const el = document.querySelector(sel);
+    if (!el) continue;
+    const text = t(key);
+    if (attr === "placeholder") {
+      el.placeholder = text;
+    } else if (attr === "title") {
+      el.title = text;
+    } else if (attr === "firstText") {
+      // Replace first text node only
+      const textNode = Array.from(el.childNodes).find(n => n.nodeType === Node.TEXT_NODE);
+      if (textNode) textNode.textContent = text;
+    } else if (attr === "lastText") {
+      // Replace last text node (e.g. import button label after <input>)
+      const nodes = Array.from(el.childNodes).filter(n => n.nodeType === Node.TEXT_NODE);
+      if (nodes.length) nodes[nodes.length - 1].textContent = "\n              " + text + "\n            ";
+    } else {
+      el.textContent = text;
+    }
+  }
+  // Update send button based on current state
+  if (!dom.sendButton.classList.contains("isStop")) {
+    dom.sendButton.textContent = t("btn_send");
+  } else {
+    dom.sendButton.textContent = t("btn_stop");
+  }
+  // File button
+  const fileLabel = document.querySelector(".uploadButton");
+  if (fileLabel) {
+    const textNodes = Array.from(fileLabel.childNodes).filter(n => n.nodeType === Node.TEXT_NODE);
+    if (textNodes.length) textNodes[textNodes.length - 1].textContent = "\n            " + t("btn_file") + "\n          ";
+  }
+  // Quick prompts
+  const qpItems = document.querySelectorAll(".quickPromptItem");
+  const qpKeys = ["qp_understand", "qp_understandTable", "qp_understandTableSimple", "qp_table", "qp_simple", "qp_summarize", "qp_summarizeSimple"];
+  qpItems.forEach((item, i) => {
+    if (qpKeys[i]) {
+      const text = t(qpKeys[i]);
+      item.textContent = text;
+      item.dataset.prompt = text;
+    }
+  });
+  // Archive sort button (dynamic)
+  const sortBtn = document.querySelector("#archiveSortBtn");
+  if (sortBtn) {
+    sortBtn.textContent = sortBtn.textContent.includes("→") ?
+      (sortBtn.textContent.includes("New") || sortBtn.textContent.includes("新") ? t("archive_sortNewOld") : t("archive_sortOldNew")) :
+      t("archive_sortNewOld");
+  }
+  // Archive expand button
+  const expandBtn = document.querySelector("#archiveExpandAllBtn");
+  if (expandBtn) {
+    expandBtn.textContent = t("archive_expand");
+  }
+  // Archive select all label
+  const selectAllLabel = document.querySelector(".archiveSelectAll");
+  if (selectAllLabel) {
+    const textNode = Array.from(selectAllLabel.childNodes).filter(n => n.nodeType === Node.TEXT_NODE);
+    if (textNode.length) textNode[textNode.length - 1].textContent = "\n              " + t("archive_selectAll") + "\n            ";
+  }
+  // AI name title
+  if (dom.aiName) dom.aiName.title = t("msg_aiNameTitle");
+}
+
+/** Get command list with localized descriptions */
+export function getLocalizedCommands() {
+  return [
+    { name: "/0", desc: t("cmd_0") },
+    { name: "/1", desc: t("cmd_1") },
+    { name: "/clear", desc: t("cmd_clear") },
+    { name: "/compact", desc: t("cmd_compact") },
+    { name: "/imagine", desc: t("cmd_imagine") },
+    { name: "/note", desc: t("cmd_note") },
+    { name: "/title", desc: t("cmd_title") },
+    { name: "/url", desc: t("cmd_url") },
+  ];
+}

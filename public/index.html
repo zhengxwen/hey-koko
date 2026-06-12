@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hey-Koko</title>
+    <script>
+      // Anti-FOUC: apply theme before CSS loads to prevent flash
+      (function() {
+        try {
+          var s = JSON.parse(localStorage.getItem("local-ai-companion-settings") || "{}");
+          var mode = s.themeMode || "system";
+          var theme = s.themeAccent || "teal";
+          var resolved = mode;
+          if (mode === "system") {
+            resolved = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          document.documentElement.setAttribute("data-mode", resolved);
+          document.documentElement.setAttribute("data-theme", theme);
+          // Defer hljs theme toggle until DOM ready
+          if (resolved === "dark") {
+            document.addEventListener("DOMContentLoaded", function() {
+              var l = document.getElementById("hljsThemeLight");
+              var d = document.getElementById("hljsThemeDark");
+              if (l) l.disabled = true;
+              if (d) d.disabled = false;
+            });
+          }
+        } catch(e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css" id="hljsThemeLight" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css" id="hljsThemeDark" disabled />
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/r.min.js"></script>
+    <!-- pdf.js and mammoth.js are loaded lazily when needed -->
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="panel">
+        <div class="profile">
+          <div class="avatar-container" id="avatarContainer" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" class="avatar-svg" id="avatarSvg"></svg>
+          </div>
+          <div class="profile-side">
+            <div class="profile-text">
+              <p>Hey-Koko (v0.9.0)</p>
+              <h1 id="aiName">Bella</h1>
+            </div>
+            <div class="avatar-picker" id="avatarPicker"></div>
+          </div>
+        </div>
+
+        <div class="panelTabs" role="tablist">
+          <button class="panelTab isActive" data-panel-tab="basic" role="tab" aria-selected="true">基本设定</button>
+          <button class="panelTab" data-panel-tab="more" role="tab" aria-selected="false">模型设定</button>
+          <button class="panelTab" data-panel-tab="extra" role="tab" aria-selected="false">更多选项</button>
+        </div>
+
+        <div class="panelTabContent isActive" data-panel-content="basic">
+          <label>
+            <span style="display:flex;justify-content:space-between;align-items:baseline"><span id="callNameLabel">称呼你</span><small id="callNameHint">(多个用空格或逗号分隔)</small></span>
+            <div class="userNameWrapper">
+              <input id="userName" value="" placeholder="如：亲爱的, 宝贝, 小傻瓜" autocomplete="off" />
+              <button type="button" id="userNameDropdownBtn" class="userNameDropdownBtn" title="历史记录">▾</button>
+              <div id="userNameDropdown" class="userNameDropdown" hidden></div>
+            </div>
+          </label>
+
+          <label id="personalityLabel">
+            <span id="personalityLabelText">性格类型</span>
+            <select id="personalitySelect">
+              <option value="sweet">温柔甜妹</option>
+              <option value="genki">元气少女</option>
+              <option value="yujie">御姐</option>
+              <option value="temp">自定义预设</option>
+            </select>
+          </label>
+
+          <label id="personaLabel">
+            <span id="personaLabelText">她的性格</span>
+            <textarea id="persona" rows="8">你叫 Bella，是用户的本地 AI 伴侣。你温柔、聪明、有一点俏皮，但不会假装自己是真人。你用自然的中文聊天，记得关心用户的心情，主动延续话题。你的回复简洁、有温度，不说教，不机械，加油打气。</textarea>
+          </label>
+
+          <div class="actions">
+            <button id="saveSettings" type="button">保存设定</button>
+            <button id="clearChat" type="button" class="secondary">清空当前聊天</button>
+          </div>
+          <div class="actions">
+            <button id="exportChat" type="button" class="secondary">导出对话</button>
+            <label class="importButton secondary">
+              <input id="importChat" type="file" accept=".json" multiple />
+              导入对话
+            </label>
+          </div>
+          <div class="actions">
+            <button id="archiveChat" type="button" class="secondary">存档</button>
+            <button id="retrieveChat" type="button" class="secondary">档案浏览</button>
+          </div>
+        </div>
+
+        <div class="panelTabContent" data-panel-content="more">
+          <label id="modelLabel">
+            <span id="modelLabelText">LLM模型</span>
+            <select id="modelSelect">
+              <option value="llama3.1:8b">llama3.1:8b</option>
+              <option value="qwen2.5:7b">qwen2.5:7b</option>
+              <option value="mistral:7b">mistral:7b</option>
+            </select>
+          </label>
+          <div class="urlRow"><button id="editLlmUrl" type="button" class="urlEditBtn" title="编辑地址">✎</button><span id="llmUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
+
+          <label id="imageModelLabel">
+            <span id="imageModelLabelText">图片模型</span>
+            <select id="imageModelSelect">
+              <option value="">未检测到图片模型</option>
+            </select>
+          </label>
+          <div class="urlRow"><button id="editImageUrl" type="button" class="urlEditBtn" title="编辑地址">✎</button><span id="imageUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
+
+          <div class="hintRow">
+            <button id="scanOllama" type="button" class="secondary scanBtn" title="Scan local network for Ollama instances">扫描</button>
+            <div>
+              <label class="checkboxLabel">
+                <input id="includeLocal" type="checkbox" checked />
+                <span id="includeLocalLabel">包括本机</span>
+              </label>
+              <p class="hint">需要先运行 Ollama</p>
+            </div>
+          </div>
+
+          <div class="imageGenOptions" id="imageGenOptions">
+            <label title="/imagine [Nx] [options] prompt&#10;&#10;Parameters:&#10;  Nx — batch N images (e.g. 4x), max 8&#10;  --enhance — AI enhance prompt&#10;  --size WxH — custom size (256~2048)&#10;  --square — 1024×1024&#10;  --portrait — 768×1152&#10;  --landscape — 1152×768&#10;  --wide — 1344×768&#10;  --tall — 768×1344&#10;  --steps N — steps (1~100)&#10;  --seed N — seed (0~2147483647)&#10;  --no text — negative prompt">
+              <span id="imageSizeLabelText">图片默认尺寸</span>
+              <select id="defaultImageSize">
+                <option value="512x512">512×512 (小图)</option>
+                <option value="1024x1024">1024×1024 (大图)</option>
+                <option value="768x1152">768×1152 (竖版)</option>
+                <option value="1152x768">1152×768 (横版)</option>
+                <option value="1344x768">1344×768 (宽屏)</option>
+                <option value="768x1344">768×1344 (长图)</option>
+              </select>
+            </label>
+            <label class="voiceRateLabel">
+              <span class="rateLabelText"><span id="timeoutLabelText">超时</span> <span id="imageTimeoutValue">120</span><span id="timeoutUnitText">秒</span></span>
+              <input id="imageTimeout" type="range" min="60" max="600" step="30" value="120" />
+            </label>
+          </div>
+
+          <label>
+            <span id="voiceLabelText">语音朗读</span>
+            <select id="voiceSelect">
+              <option value="">自动选择中文语音</option>
+            </select>
+          </label>
+
+          <div class="voiceRow">
+            <label class="voiceRateLabel">
+              <span class="rateLabelText"><span id="speechRateLabelText">语速</span> <span id="speechRateValue">1</span></span>
+              <input id="speechRate" type="range" min="0.75" max="1.25" step="0.05" value="1" />
+            </label>
+            <label class="checkboxLabel">
+              <input id="autoSpeak" type="checkbox" />
+              <span id="autoSpeakLabel">自动朗读</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="panelTabContent" data-panel-content="extra">
+          <div class="themeSetting">
+            <span class="themeSettingLabel" id="appearanceLabel">外观模式</span>
+            <div class="modeToggle" id="modeToggle">
+              <button type="button" class="modeToggleBtn isActive" data-mode="system">跟随系统</button>
+              <button type="button" class="modeToggleBtn" data-mode="light">浅色</button>
+              <button type="button" class="modeToggleBtn" data-mode="dark">深色</button>
+            </div>
+            <span class="themeSettingLabel" id="themeLabel">主题配色</span>
+            <div class="themeColorPicker" id="themeColorPicker">
+              <div class="themeColorDot isActive" data-theme="teal" style="background:#1f7a73" title="清新自然"></div>
+              <div class="themeColorDot" data-theme="sakura" style="background:#d94f8a" title="樱花甜美"></div>
+              <div class="themeColorDot" data-theme="ocean" style="background:#2563eb" title="深海冷静"></div>
+              <div class="themeColorDot" data-theme="violet" style="background:#7c3aed" title="薰衣草梦幻"></div>
+              <div class="themeColorDot" data-theme="amber" style="background:#d97706" title="琥珀温暖"></div>
+              <div class="themeColorDot" data-theme="mint" style="background:#16a34a" title="青草绿"></div>
+              <div class="themeColorDot" data-theme="slate" style="background:#475569" title="石墨"></div>
+            </div>
+          </div>
+
+          <div class="languageSetting">
+            <label>
+              <span id="uiLanguageLabel">UI语言</span>
+              <select id="uiLanguageSelect">
+                <option value="en">English</option>
+                <option value="zh">简体中文</option>
+                <option value="zh-Hant">繁體中文</option>
+              </select>
+            </label>
+            <label>
+              <span id="promptLanguageLabel">Prompt Language</span>
+              <select id="promptLanguageSelect">
+                <option value="en">English</option>
+                <option value="zh">简体中文</option>
+                <option value="zh-Hant">繁體中文</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="thinkingSetting">
+            <label>
+              <input type="checkbox" id="showThinking" checked>
+              <span id="showThinkingLabel">Show Thinking Process</span>
+            </label>
+          </div>
+        </div>
+      </aside>
+
+      <section class="chatArea">
+        <div class="tabBar" aria-label="聊天标签页">
+          <button id="addTab" type="button" class="addTab" aria-label="新建聊天">+</button>
+          <div id="chatTabs" class="chatTabs" role="tablist"></div>
+        </div>
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <!-- Archive Workspace Overlay -->
+        <div id="archiveOverlay" class="archiveOverlay">
+          <div class="archiveHeader">
+            <button id="archiveCloseBtn" type="button" class="archiveBackBtn" aria-label="返回">←</button>
+            <h2 class="archiveTitle">对话存档</h2>
+            <div class="archiveToolbar">
+              <input id="archiveSearch" type="text" class="archiveSearchInput" placeholder="搜索对话内容..." />
+              <button id="archiveSortBtn" type="button" class="secondary archiveSortBtn" title="按时间排序">新→旧</button>
+              <button id="archiveExpandAllBtn" type="button" class="secondary archiveSortBtn" title="展开全部目录">展开</button>
+              <span id="archiveDirHint" class="archiveDirHint"></span>
+            </div>
+          </div>
+          <div id="archiveTagBar" class="archiveTagBar"></div>
+          <div class="archiveBody">
+            <div class="archiveLeftPanel">
+              <div id="archiveList" class="archiveList"></div>
+            </div>
+            <div class="archiveDivider" id="archiveDivider"></div>
+            <div class="archiveRightPanel">
+              <div id="archivePreview" class="archivePreview">
+                <div id="archivePreviewTitle" class="archivePreviewTitle"></div>
+                <div id="archivePreviewContent" class="archivePreviewContent"></div>
+              </div>
+              <div class="archivePreviewEmpty" id="archivePreviewEmpty">选择左侧存档查看预览</div>
+            </div>
+          </div>
+          <div class="archiveFooter">
+            <button id="archiveRestoreBtn" type="button" disabled>恢复选中</button>
+            <button id="archiveMoveBtn" type="button" class="secondary" disabled>移动到</button>
+            <label class="checkboxLabel archiveSelectAll">
+              <input id="archiveSelectAll" type="checkbox" />
+              全选
+            </label>
+            <span id="archiveSelectedCount" class="archiveSelectedCount"></span>
+            <button id="archiveDeleteBtn" type="button" class="secondary" disabled>删除选中</button>
+          </div>
+        </div>
+
+        <form id="chatForm" class="composer">
+          <div class="inputStack">
+            <div id="commandPopup" class="commandPopup" hidden></div>
+            <div id="quickPromptPopup" class="quickPromptPopup" hidden>
+              <div class="quickPromptItem" data-prompt="帮我理解">帮我理解</div>
+              <div class="quickPromptItem" data-prompt="帮我理解，生成表格">帮我理解，生成表格</div>
+              <div class="quickPromptItem" data-prompt="帮我理解，生成表格，说简单点">帮我理解，生成表格，说简单点</div>
+              <div class="quickPromptItem" data-prompt="生成表格">生成表格</div>
+              <div class="quickPromptItem" data-prompt="说简单点">说简单点</div>
+              <div class="quickPromptItem" data-prompt="用三句话总结">用三句话总结</div>
+              <div class="quickPromptItem" data-prompt="用三句话总结，说简单点">用三句话总结，说简单点</div>
+            </div>
+            <div id="imagePreview" class="imagePreview" hidden>
+              <img id="previewImage" alt="待发送图片预览" />
+              <button id="removeImage" type="button" class="iconButton" aria-label="移除图片">×</button>
+            </div>
+            <div id="filePreview" class="filePreview" hidden>
+              <span id="filePreviewName" class="filePreviewName"></span>
+              <button id="removeFile" type="button" class="iconButton" aria-label="移除文件">×</button>
+            </div>
+            <textarea id="messageInput" rows="2" placeholder="Say something to Bella..." autofocus></textarea>
+          </div>
+          <button id="quickPromptBtn" type="button" class="quickPromptBtn" title="快捷指令（输入 / 触发）">«</button>
+          <button id="askSuggestBtn" type="button" class="askSuggestBtn" title="AI 帮你提问">?</button>
+          <label class="uploadButton" title="上传文件">
+            <input id="fileInput" type="file" accept="image/*,.pdf,.docx,.pptx,.eml,.txt,.md,.markdown" multiple />
+            文件
+          </label>
+          <button id="sendButton" type="submit">发送</button>
+          <button id="stopTranslateBtn" type="button" class="stopTranslateBtn" hidden>停止翻译</button>
+        </form>
+      </section>
+    </main>
+
+    <script type="module" src="/js/main.js"></script>
+  </body>
+</html>

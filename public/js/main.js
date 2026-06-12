@@ -1,0 +1,1430 @@
+// Main entry point - imports and initializes all modules
+import { dom, state } from './state.js';
+import { SETTINGS_KEY, PERSONALITY_PRESETS, getPersonalityPreset } from './constants.js';
+import { readFileAsDataUrl, convertToJpeg, makePreview } from './utils.js';
+import { initTheme } from './theme.js';
+import { initAvatar } from './avatar.js';
+import { stopSpeech, populateVoiceList } from './speech.js';
+import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown } from './settings.js';
+import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
+import { initOllama, loadModels, loadImageModels } from './ollama.js';
+import { setDeps as imageGenSetDeps } from './image-gen.js';
+import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
+import { renderChat, sendMessage, setGenerating, regenerateReply } from './chat.js';
+import { setDeps as urlFetchSetDeps } from './url-fetch.js';
+import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
+import { initLightbox } from './lightbox.js';
+import { initArchive } from './archive.js';
+import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
+
+// Wire up circular dependencies
+tabsSetRenderChat(renderChat);
+translateSetRenderChat(renderChat);
+imageGenSetDeps({ setGenerating, renderChat });
+urlFetchSetDeps({ setGenerating, renderChat, regenerateReply });
+
+// Initialize mermaid
+if (typeof mermaid !== "undefined") {
+  const mermaidTheme = document.documentElement.getAttribute("data-mode") === "dark" ? "dark" : "default";
+  mermaid.initialize({ startOnLoad: false, theme: mermaidTheme, flowchart: { nodeSpacing: 20, rankSpacing: 30 } });
+}
+
+// Initialize highlight.js
+if (typeof hljs !== "undefined") {
+  hljs.configure({ ignoreUnescapedHTML: true });
+}
+
+// Initialize theme system
+initTheme(saveCurrentSettings);
+
+// Initialize avatar
+initAvatar();
+
+// AI name: load from localStorage and enable double-click edit
+{
+  const savedAiName = localStorage.getItem("aiName");
+  if (savedAiName) dom.aiName.textContent = savedAiName;
+  dom.aiName.addEventListener("dblclick", () => {
+    const current = dom.aiName.textContent;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = current;
+    input.className = "aiNameInput";
+    dom.aiName.textContent = "";
+    dom.aiName.appendChild(input);
+    input.focus();
+    input.select();
+    const commit = () => {
+      const newName = input.value.trim() || "Bella";
+      dom.aiName.textContent = newName;
+      localStorage.setItem("aiName", newName);
+    };
+    input.addEventListener("blur", commit);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") input.blur();
+      if (e.key === "Escape") { input.value = current; input.blur(); }
+    });
+  });
+}
+
+// Load tabs from storage (async — IndexedDB)
+{
+  const loaded = await loadTabs();
+  state.tabs = loaded.tabs;
+  state.activeTabId = loaded.activeTabId || state.tabs[0].id;
+  if (!state.tabs.some((tab) => tab.id === state.activeTabId)) state.activeTabId = state.tabs[0].id;
+}
+
+// Load saved settings
+loadSavedSettings();
+
+// Restore active tab's personality
+{
+  const initialTab = getActiveTab();
+  if (initialTab && initialTab.personality) {
+    dom.personalitySelect.value = initialTab.personality;
+    dom.persona.value = initialTab.persona || PERSONALITY_PRESETS[initialTab.personality] || PERSONALITY_PRESETS.sweet;
+  }
+}
+
+// Personality select handler
+dom.personalitySelect.addEventListener("change", () => {
+  const val = dom.personalitySelect.value;
+  if (val === "temp") {
+    dom.persona.value = "";
+    dom.persona.focus();
+  } else {
+    dom.persona.value = getPersonalityPreset(val, getUILanguage()) || PERSONALITY_PRESETS.sweet;
+  }
+  const currentTab = getActiveTab();
+  if (currentTab) {
+    currentTab.personality = val;
+    currentTab.persona = dom.persona.value;
+    saveTabs();
+  }
+});
+
+// Voice list
+populateVoiceList();
+
+// Panel tabs
+document.querySelectorAll(".panelTab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".panelTab").forEach((t) => { t.classList.remove("isActive"); t.setAttribute("aria-selected", "false"); });
+    document.querySelectorAll(".panelTabContent").forEach((c) => c.classList.remove("isActive"));
+    tab.classList.add("isActive");
+    tab.setAttribute("aria-selected", "true");
+    document.querySelector(`.panelTabContent[data-panel-content="${tab.dataset.panelTab}"]`).classList.add("isActive");
+  });
+});
+
+// Language selectors
+dom.uiLanguageSelect.addEventListener("change", () => {
+  dom.promptLanguageSelect.value = dom.uiLanguageSelect.value;
+  applyUILanguage();
+  renderChat();
+  saveCurrentSettings();
+});
+dom.promptLanguageSelect.addEventListener("change", () => {
+  saveCurrentSettings();
+});
+dom.showThinkingCheckbox.addEventListener("change", () => {
+  saveCurrentSettings();
+});
+
+// Apply i18n on startup
+applyUILanguage();
+
+// Slider display handlers
+dom.imageTimeoutInput.addEventListener("input", () => {
+  dom.imageTimeoutValue.textContent = dom.imageTimeoutInput.value;
+});
+
+dom.speechRateInput.addEventListener("input", () => {
+  dom.speechRateValue.textContent = dom.speechRateInput.value;
+});
+
+// ESC to stop speech
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.activeSpeechButton) {
+    stopSpeech();
+  }
+});
+
+// Chat form submit
+dom.chatForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  if (state.currentAbortController) {
+    state.currentAbortController.abort();
+    return;
+  }
+
+  if (state.imageGenAbortController) {
+    state.imageGenAbortController.abort();
+    return;
+  }
+
+  const content = dom.messageInput.value.trim();
+  if (!content && !state.selectedImage && !state.selectedFile) return;
+
+  saveCurrentSettings();
+  const image = state.selectedImage;
+  const file = state.selectedFile;
+  dom.messageInput.value = "";
+  clearSelectedImage();
+  clearSelectedFile();
+
+  if (file && file.multi) {
+    // Multiple documents: process sequentially
+    for (const f of file.multi) {
+      const tab = getActiveTab();
+      const userContent = content || `📄 **${f.name}**`;
+      tab.messages.push({ role: "user", content: userContent, timestamp: Date.now() });
+      saveChat();
+      renderChat();
+      if (f.needsParse) {
+        await parseAndSendFile(content, f);
+      } else {
+        sendMessage(content, null, undefined, f);
+      }
+    }
+  } else if (file && file.needsParse) {
+    // Show user bubble first (with file name), then parse
+    const tab = getActiveTab();
+    const userContent = content || `📄 **${file.name}**`;
+    tab.messages.push({ role: "user", content: userContent, timestamp: Date.now() });
+    saveChat();
+    renderChat();
+    await parseAndSendFile(content, file);
+  } else {
+    sendMessage(content, image, undefined, file);
+  }
+});
+
+// Message input keyboard
+dom.messageInput.addEventListener("keydown", (event) => {
+  const qPopup = document.querySelector("#quickPromptPopup");
+  if (event.key === "Enter" && !event.shiftKey) {
+    if (!dom.commandPopup.hidden) {
+      event.preventDefault();
+      selectActiveCommand();
+      return;
+    }
+    if (!qPopup.hidden) {
+      event.preventDefault();
+      selectActiveQuickPrompt();
+      return;
+    }
+    event.preventDefault();
+    dom.chatForm.requestSubmit();
+  }
+  if (!dom.commandPopup.hidden) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveCommandSelection(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveCommandSelection(-1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      hideCommandPopup();
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      selectActiveCommand();
+    }
+  }
+  if (!qPopup.hidden) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveQuickPromptSelection(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveQuickPromptSelection(-1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      qPopup.hidden = true;
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      selectActiveQuickPrompt();
+    }
+  }
+});
+
+// Command autocomplete on input
+dom.messageInput.addEventListener("input", () => {
+  const val = dom.messageInput.value;
+  if (val.startsWith("/") && !val.includes("\n")) {
+    const cmd = val.split(/\s/)[0];
+    if (cmd === val.trimEnd()) {
+      showCommandPopup(cmd);
+    } else {
+      hideCommandPopup();
+    }
+  } else {
+    hideCommandPopup();
+  }
+});
+
+// Auto-save when model selections change
+dom.modelSelect.addEventListener("change", saveCurrentSettings);
+dom.imageModelSelect.addEventListener("change", saveCurrentSettings);
+dom.voiceSelect.addEventListener("change", saveCurrentSettings);
+
+// Save settings button
+dom.saveSettings.addEventListener("click", () => {
+  saveCurrentSettings();
+  // Show confirmation in chat
+  const msgEl = document.createElement("div");
+  msgEl.className = "message system";
+  msgEl.textContent = "设定已保存。";
+  dom.messagesEl.appendChild(msgEl);
+  dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+});
+
+// userName history dropdown
+dom.userNameDropdownBtn.addEventListener("click", () => {
+  renderUserNameDropdown();
+  dom.userNameDropdown.hidden = !dom.userNameDropdown.hidden;
+});
+dom.userName.addEventListener("change", () => {
+  const val = dom.userName.value.trim();
+  if (val) addUserNameToHistory(val);
+  saveCurrentSettings();
+});
+document.addEventListener("click", (e) => {
+  if (!dom.userNameDropdown.hidden &&
+      !dom.userNameDropdown.contains(e.target) &&
+      e.target !== dom.userNameDropdownBtn) {
+    dom.userNameDropdown.hidden = true;
+  }
+});
+
+// File input
+dom.fileInput.addEventListener("change", async () => {
+  const files = [...(dom.fileInput.files || [])];
+  dom.fileInput.value = "";
+  if (files.length === 0) return;
+  if (files.length === 1) {
+    await selectFile(files[0]);
+  } else {
+    await selectMultipleFiles(files);
+  }
+});
+
+// Add tab button
+dom.addTab.addEventListener("click", addChatTab);
+
+// Remove image button
+dom.removeImage.addEventListener("click", clearSelectedImage);
+
+// Remove file button
+dom.removeFile.addEventListener("click", clearSelectedFile);
+
+// Stop translation button
+dom.stopTranslateBtn.addEventListener("click", stopTranslation);
+
+// Quick prompt button
+{
+  const quickPromptBtn = document.querySelector("#quickPromptBtn");
+  const quickPromptPopup = document.querySelector("#quickPromptPopup");
+
+  let quickPromptActiveIndex = 0;
+
+  function showQuickPromptPopup() {
+    quickPromptPopup.hidden = false;
+    quickPromptActiveIndex = 0;
+    const items = quickPromptPopup.querySelectorAll(".quickPromptItem");
+    items.forEach((el, i) => el.classList.toggle("isActive", i === 0));
+  }
+
+  quickPromptBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (quickPromptPopup.hidden) {
+      showQuickPromptPopup();
+    } else {
+      quickPromptPopup.hidden = true;
+    }
+    dom.messageInput.focus();
+  });
+
+  quickPromptPopup.addEventListener("click", (e) => {
+    const item = e.target.closest(".quickPromptItem");
+    if (!item) return;
+    selectActiveQuickPrompt();
+  });
+
+  quickPromptPopup.addEventListener("mouseenter", (e) => {
+    const item = e.target.closest(".quickPromptItem");
+    if (!item) return;
+    const items = [...quickPromptPopup.querySelectorAll(".quickPromptItem")];
+    const idx = items.indexOf(item);
+    if (idx >= 0) {
+      quickPromptActiveIndex = idx;
+      items.forEach((el, i) => el.classList.toggle("isActive", i === idx));
+    }
+  }, true);
+
+  document.addEventListener("click", (e) => {
+    if (!quickPromptPopup.hidden && !quickPromptBtn.contains(e.target) && !quickPromptPopup.contains(e.target)) {
+      quickPromptPopup.hidden = true;
+    }
+  });
+
+  // Quick prompt on input
+  dom.messageInput.addEventListener("input", () => {
+    const val = dom.messageInput.value;
+    if (val.startsWith("?") && !val.includes("\n")) {
+      const cmd = val.split(/\s/)[0];
+      if (cmd === val.trimEnd()) {
+        showQuickPromptPopup();
+      } else {
+        quickPromptPopup.hidden = true;
+      }
+    } else {
+      quickPromptPopup.hidden = true;
+    }
+  });
+
+  window.moveQuickPromptSelection = function(dir) {
+    const items = quickPromptPopup.querySelectorAll(".quickPromptItem");
+    if (!items.length) return;
+    let next = quickPromptActiveIndex + dir;
+    if (next < 0) next = items.length - 1;
+    if (next >= items.length) next = 0;
+    quickPromptActiveIndex = next;
+    items.forEach((el, i) => el.classList.toggle("isActive", i === next));
+  };
+
+  window.selectActiveQuickPrompt = function() {
+    const items = quickPromptPopup.querySelectorAll(".quickPromptItem");
+    const active = items[quickPromptActiveIndex];
+    if (!active) { quickPromptPopup.hidden = true; return; }
+    const prompt = active.dataset.prompt;
+    const input = dom.messageInput;
+    // Replace entire input (including the "?" trigger) with the prompt
+    input.value = prompt;
+    input.selectionStart = input.selectionEnd = prompt.length;
+    input.focus();
+    quickPromptPopup.hidden = true;
+  };
+}
+
+// Ask-suggest button (AI generates questions in chat bubble)
+{
+  const askSuggestBtn = document.querySelector("#askSuggestBtn");
+  let askSuggestAbort = null;
+
+  askSuggestBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (state.currentAbortController || state.imageGenAbortController) return;
+    if (getActiveTab().locked) return;
+
+    const tab = getActiveTab();
+    const tabId = state.activeTabId;
+
+    // Show thinking bubble in chat
+    const thinkingBubble = document.createElement("div");
+    thinkingBubble.className = "message assistant thinking ask-suggest-bubble";
+    const body = document.createElement("div");
+    body.className = "markdownBody";
+    body.innerHTML = `<span class="thinking-text">${t("msg_thinkingQuestion")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+    thinkingBubble.appendChild(body);
+    dom.messagesEl.appendChild(thinkingBubble);
+    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+
+    // Show "暂停" button
+    askSuggestAbort = new AbortController();
+    setGenerating(true);
+    state.currentAbortController = askSuggestAbort;
+
+    // Build context from recent messages
+    const recentMessages = tab.messages.slice(-6);
+    const contextStr = recentMessages.map(m => `${m.role === "user" ? "User" : "AI"}: ${m.content.slice(0, 200)}`).join("\n");
+
+    const systemPrompt = getPrompt("askSuggestSystem");
+    const userPrompt = contextStr
+      ? getPrompt("askSuggestUser", contextStr)
+      : getPrompt("askSuggestNoContext");
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: askSuggestAbort.signal,
+        body: JSON.stringify({
+          model: dom.modelSelect.value,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt }
+          ],
+          options: { temperature: 0.9, top_p: 0.9 },
+          stream: false,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("请求失败");
+      }
+
+      // Read streaming ndjson response
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullContent = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const data = JSON.parse(line);
+            const chunk = data.message?.content || "";
+            fullContent += chunk;
+          } catch {}
+        }
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        try {
+          const data = JSON.parse(buffer);
+          const chunk = data.message?.content || "";
+          fullContent += chunk;
+        } catch {}
+      }
+
+      // Remove thinking bubble
+      thinkingBubble.remove();
+
+      // Parse questions from response
+      const questions = fullContent
+        .split("\n")
+        .map(l => l.replace(/^\d+[\.\)、]\s*/, "").trim())
+        .filter(l => l.length > 0 && l.length < 200)
+        .slice(0, 5);
+
+      if (questions.length === 0) return;
+
+      // Show questions in a new AI chat bubble
+      const questionBubble = document.createElement("div");
+      questionBubble.className = "message assistant ask-suggest-bubble";
+      const qBody = document.createElement("div");
+      qBody.className = "markdownBody";
+      const title = document.createElement("p");
+      title.textContent = t("msg_askSuggestTitle");
+      title.style.marginBottom = "6px";
+      title.style.fontWeight = "600";
+      qBody.appendChild(title);
+      for (const q of questions) {
+        const item = document.createElement("div");
+        item.className = "askSuggestItem";
+        item.textContent = q;
+        item.addEventListener("click", () => {
+          // Remove the question bubble
+          questionBubble.remove();
+          // Send as user message
+          sendMessage(q);
+        });
+        qBody.appendChild(item);
+      }
+      questionBubble.appendChild(qBody);
+      dom.messagesEl.appendChild(questionBubble);
+      dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    } catch (error) {
+      // Remove thinking bubble on error/abort
+      thinkingBubble.remove();
+      if (error.name !== "AbortError") {
+        const errBubble = document.createElement("div");
+        errBubble.className = "message system";
+        errBubble.textContent = "生成问题失败";
+        dom.messagesEl.appendChild(errBubble);
+      }
+    } finally {
+      askSuggestAbort = null;
+      setGenerating(false);
+    }
+  });
+}
+
+// Chat area drag/drop for files
+dom.chatArea.addEventListener("dragover", (event) => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  if (getActiveTab().locked) return;
+  event.preventDefault();
+  dom.chatArea.classList.add("isDraggingImage");
+});
+
+dom.chatArea.addEventListener("dragleave", (event) => {
+  if (!dom.chatArea.contains(event.relatedTarget)) {
+    dom.chatArea.classList.remove("isDraggingImage");
+  }
+});
+
+dom.chatArea.addEventListener("drop", async (event) => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+  dom.chatArea.classList.remove("isDraggingImage");
+  if (getActiveTab().locked) return;
+  const files = [...event.dataTransfer.files];
+  if (files.length === 0) return;
+  if (files.length === 1) {
+    await selectFile(files[0]);
+  } else {
+    await selectMultipleFiles(files);
+  }
+});
+
+// Clear chat button
+dom.clearChat.addEventListener("click", () => {
+  getActiveTab().messages = [];
+  saveChat();
+  renderChat();
+});
+
+// Export chat
+document.querySelector("#exportChat").addEventListener("click", () => {
+  const tab = getActiveTab();
+  const exportMessages = tab.messages.map((msg) => {
+    const m = { ...msg };
+    if (m.timestamp) {
+      const d = new Date(m.timestamp);
+      const pad = (n) => String(n).padStart(2, "0");
+      m.timestamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+    return m;
+  });
+  const data = JSON.stringify({ title: tab.title, userName: dom.userName.value, personality: tab.personality, persona: tab.persona, messages: exportMessages }, null, 2);
+  const blob = new Blob([data], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${tab.title || "对话"}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// Import chat
+document.querySelector("#importChat").addEventListener("change", async (event) => {
+  const files = event.target.files;
+  if (!files || files.length === 0) return;
+  for (const file of files) {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!Array.isArray(data.messages)) throw new Error("无效的对话文件");
+      const messages = data.messages.map((msg) => {
+        const m = { ...msg };
+        if (typeof m.timestamp === "string") {
+          m.timestamp = new Date(m.timestamp.replace(" ", "T")).getTime();
+        }
+        return m;
+      });
+      const tab = createTab(data.title || "导入的对话", messages, data.personality || null);
+      if (data.persona) tab.persona = data.persona;
+      state.tabs.unshift(tab);
+    } catch (e) {
+      const msgEl = document.createElement("div");
+      msgEl.className = "message system";
+      msgEl.textContent = `导入失败（${file.name}）：${e.message}`;
+      dom.messagesEl.appendChild(msgEl);
+    }
+  }
+  switchTab(state.tabs[0].id);
+  event.target.value = "";
+});
+
+// Supported document extensions
+const DOC_EXTENSIONS = [".pdf", ".docx", ".pptx", ".eml", ".txt", ".md", ".markdown"];
+
+// Server-side parsing capabilities (detected at startup)
+let serverCapabilities = { pandoc: false, mineru: false };
+async function fetchCapabilities() {
+  try {
+    const r = await fetch("/api/parse-file/capabilities");
+    const caps = await r.json();
+    serverCapabilities = caps;
+    if (!caps.ready) {
+      // Server still detecting tools, retry after a few seconds
+      setTimeout(fetchCapabilities, 5000);
+    }
+  } catch {}
+}
+fetchCapabilities();
+
+function getFileExtension(name) {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot).toLowerCase() : "";
+}
+
+// File selection helper (images + documents)
+async function selectFile(file) {
+  if (!file) return;
+
+  const ext = getFileExtension(file.name);
+  const isImage = file.type.startsWith("image/");
+  const isDocument = DOC_EXTENSIONS.includes(ext);
+
+  if (!isImage && !isDocument) {
+    const msgEl = document.createElement("div");
+    msgEl.className = "message system";
+    msgEl.textContent = "不支持的文件类型。请选择图片、PDF、DOCX、PPTX、EML、TXT 或 MD 文件。";
+    dom.messagesEl.appendChild(msgEl);
+    return;
+  }
+
+  // Image handling (existing logic)
+  if (isImage) {
+    if (file.size > 8 * 1024 * 1024) {
+      const msgEl = document.createElement("div");
+      msgEl.className = "message system";
+      msgEl.textContent = "图片太大了，请选择 8MB 以内的图片。";
+      dom.messagesEl.appendChild(msgEl);
+      clearSelectedImage();
+      return;
+    }
+
+    const dataUrl = await readFileAsDataUrl(file);
+    const needsConvert = !/^image\/(jpeg|png|gif|webp)$/i.test(file.type);
+    const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : dataUrl;
+    const preview = await makePreview(dataUrl);
+    state.selectedImage = {
+      base64: sendDataUrl.split(",")[1],
+      preview,
+    };
+
+    dom.previewImage.src = preview;
+    dom.imagePreview.hidden = false;
+    clearSelectedFile();
+    dom.messageInput.focus();
+    return;
+  }
+
+  // Document handling
+  if (file.size > 20 * 1024 * 1024) {
+    const msgEl = document.createElement("div");
+    msgEl.className = "message system";
+    msgEl.textContent = "文件太大了，请选择 20MB 以内的文件。";
+    dom.messagesEl.appendChild(msgEl);
+    return;
+  }
+
+  try {
+    let text = "";
+    let images = [];
+
+    let tool = "";
+
+    if (ext === ".txt" || ext === ".md" || ext === ".markdown") {
+      text = await readFileAsText(file);
+      tool = "text";
+    } else if (ext === ".pdf" || ext === ".docx" || ext === ".pptx" || ext === ".eml") {
+      // Store raw file for deferred parsing (after user bubble is shown)
+      const newFile = { name: file.name, rawFile: file, ext, needsParse: true };
+      // Accumulate if already has selected file(s)
+      if (state.selectedFile && state.selectedFile.needsParse) {
+        const existing = state.selectedFile.multi ? state.selectedFile.multi : [state.selectedFile];
+        existing.push(newFile);
+        state.selectedFile = { multi: existing };
+      } else if (state.selectedFile && state.selectedFile.multi) {
+        state.selectedFile.multi.push(newFile);
+      } else {
+        state.selectedFile = newFile;
+      }
+      clearSelectedImage();
+      // Show all file names
+      const allFiles = state.selectedFile.multi || [state.selectedFile];
+      dom.filePreviewName.innerHTML = "";
+      for (const f of allFiles) {
+        const chip = document.createElement("span");
+        chip.className = "fileChip";
+        chip.textContent = `📄 ${f.name}`;
+        dom.filePreviewName.appendChild(chip);
+      }
+      dom.filePreview.hidden = false;
+      dom.messageInput.focus();
+      return;
+    }
+
+    if (!text.trim() && images.length === 0) {
+      const msgEl = document.createElement("div");
+      msgEl.className = "message system";
+      msgEl.textContent = "无法从该文件中提取内容。";
+      dom.messagesEl.appendChild(msgEl);
+      return;
+    }
+
+    const newFile = { name: file.name, text, images, tool };
+    // Accumulate if already has selected file(s)
+    if (state.selectedFile) {
+      const existing = state.selectedFile.multi ? state.selectedFile.multi : [state.selectedFile];
+      existing.push(newFile);
+      state.selectedFile = { multi: existing };
+    } else {
+      state.selectedFile = newFile;
+    }
+    clearSelectedImage();
+    const allFiles = state.selectedFile.multi || [state.selectedFile];
+    dom.filePreviewName.innerHTML = "";
+    for (const f of allFiles) {
+      const chip = document.createElement("span");
+      chip.className = "fileChip";
+      chip.textContent = `📄 ${f.name}`;
+      dom.filePreviewName.appendChild(chip);
+    }
+    dom.filePreview.hidden = false;
+    dom.messageInput.focus();
+  } catch (e) {
+    const msgEl = document.createElement("div");
+    msgEl.className = "message system";
+    msgEl.textContent = `文件解析失败：${e.message}`;
+    dom.messagesEl.appendChild(msgEl);
+  }
+}
+
+// Handle multiple file selection
+async function selectMultipleFiles(files) {
+  const hasImage = files.some(f => f.type.startsWith("image/"));
+  const hasNonImage = files.some(f => !f.type.startsWith("image/"));
+
+  // If images are mixed with non-images, reject
+  if (hasImage && hasNonImage) {
+    const msgEl = document.createElement("div");
+    msgEl.className = "message system";
+    msgEl.textContent = "多文件上传时，如果包含图片，则所有文件都必须是图片。";
+    dom.messagesEl.appendChild(msgEl);
+    return;
+  }
+
+  if (hasImage) {
+    // All images: collect into a single multi-image selection
+    const images = [];
+    for (const file of files) {
+      if (file.size > 8 * 1024 * 1024) {
+        const msgEl = document.createElement("div");
+        msgEl.className = "message system";
+        msgEl.textContent = `图片 ${file.name} 太大了（超过 8MB），已跳过。`;
+        dom.messagesEl.appendChild(msgEl);
+        continue;
+      }
+      const dataUrl = await readFileAsDataUrl(file);
+      const needsConvert = !/^image\/(jpeg|png|gif|webp)$/i.test(file.type);
+      const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : dataUrl;
+      const preview = await makePreview(dataUrl);
+      images.push({ base64: sendDataUrl.split(",")[1], preview });
+    }
+    if (images.length === 0) return;
+    // Store as multi-image
+    state.selectedImage = images.length === 1 ? images[0] : { multi: images, preview: images[0].preview };
+    // Show all image previews
+    dom.imagePreview.querySelectorAll(".multiPreviewImg").forEach(el => el.remove());
+    if (images.length === 1) {
+      dom.previewImage.src = images[0].preview;
+      dom.previewImage.hidden = false;
+    } else {
+      dom.previewImage.hidden = true;
+      for (const img of images) {
+        const el = document.createElement("img");
+        el.className = "multiPreviewImg";
+        el.src = img.preview;
+        el.alt = "预览";
+        dom.imagePreview.insertBefore(el, dom.imagePreview.querySelector(".iconButton"));
+      }
+    }
+    dom.imagePreview.hidden = false;
+    clearSelectedFile();
+    dom.messageInput.focus();
+  } else {
+    // All documents: store in state, show in preview, process on send
+    const validFiles = [];
+    for (const file of files) {
+      const ext = getFileExtension(file.name);
+      const isDocument = DOC_EXTENSIONS.includes(ext);
+      if (!isDocument) {
+        const msgEl = document.createElement("div");
+        msgEl.className = "message system";
+        msgEl.textContent = `不支持的文件类型：${file.name}`;
+        dom.messagesEl.appendChild(msgEl);
+        continue;
+      }
+      if (file.size > 20 * 1024 * 1024) {
+        const msgEl = document.createElement("div");
+        msgEl.className = "message system";
+        msgEl.textContent = `文件 ${file.name} 太大了（超过 20MB），已跳过。`;
+        dom.messagesEl.appendChild(msgEl);
+        continue;
+      }
+      validFiles.push({ name: file.name, rawFile: file, ext, needsParse: true });
+    }
+    if (validFiles.length === 0) return;
+    state.selectedFile = validFiles.length === 1 ? validFiles[0] : { multi: validFiles };
+    clearSelectedImage();
+    // Show all file names in preview
+    dom.filePreviewName.innerHTML = "";
+    for (const f of validFiles) {
+      const chip = document.createElement("span");
+      chip.className = "fileChip";
+      chip.textContent = `📄 ${f.name}`;
+      dom.filePreviewName.appendChild(chip);
+    }
+    dom.filePreview.hidden = false;
+    dom.messageInput.focus();
+  }
+}
+
+async function tryServerParse(file) {
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch("/api/parse-file", { method: "POST", body: formData });
+
+    const contentType = response.headers.get("content-type") || "";
+
+    // Handle streaming ndjson (MinerU with progress)
+    if (contentType.includes("ndjson")) {
+      // Show progress element
+      let progressEl = document.createElement("div");
+      progressEl.className = "message system fileParseProgress";
+      progressEl.textContent = "⏳ 正在解析文件...";
+      dom.messagesEl.appendChild(progressEl);
+      dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let result = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const data = JSON.parse(line);
+            if (data.progress) {
+              progressEl.textContent = `⏳ ${data.progress}`;
+              dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+            } else if (data.error) {
+              progressEl.textContent = `❌ ${data.error}`;
+              return null;
+            } else if (data.text !== undefined) {
+              result = data;
+            }
+          } catch {}
+        }
+      }
+
+      progressEl.remove();
+      return result;
+    }
+
+    // Handle regular JSON response (Pandoc)
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      if (data.fallback) return null;
+      return null;
+    }
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+async function parseAndSendFile(content, fileInfo) {
+  const { name, rawFile, ext } = fileInfo;
+
+  // Show parsing status bubble
+  const pending = document.createElement("div");
+  pending.className = "message assistant thinking";
+  const body = document.createElement("div");
+  body.className = "markdownBody";
+  body.innerHTML = '<span class="thinking-text">正在解析文件<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
+  pending.appendChild(body);
+  dom.messagesEl.appendChild(pending);
+  dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+
+  try {
+    let text = "";
+    let images = [];
+    let tool = "";
+
+    if (ext === ".eml") {
+      // EML: parse locally, optionally convert HTML body via Pandoc
+      const raw = await readFileAsText(rawFile);
+      const result = parseEml(raw);
+      images = result.images;
+      tool = "eml";
+
+      if (result.rawHtml && serverCapabilities.pandoc) {
+        // Convert HTML body to Markdown via Pandoc
+        try {
+          const response = await fetch("/api/parse-html", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ html: result.rawHtml }),
+          });
+          if (response.ok) {
+            const data = await response.json();
+            text = result.headers + "\n---\n\n" + data.markdown;
+            tool = "eml+pandoc";
+          } else {
+            text = result.text;
+          }
+        } catch {
+          text = result.text;
+        }
+      } else {
+        text = result.text;
+      }
+    } else {
+      const canServer = (ext === ".pdf" && serverCapabilities.mineru) ||
+                        (ext === ".docx" && serverCapabilities.pandoc) ||
+                        (ext === ".pptx" && serverCapabilities.pandoc);
+      let serverResult = null;
+
+      if (canServer) {
+        serverResult = await tryServerParse(rawFile);
+      }
+
+      if (serverResult) {
+        text = serverResult.text;
+        images = serverResult.images || [];
+        tool = serverResult.tool || (ext === ".pdf" ? "MinerU" : "Pandoc");
+      } else {
+        if (ext === ".pdf") {
+          text = await extractPdfText(rawFile);
+          tool = "pdf.js";
+        } else if (ext === ".pptx") {
+          const result = await extractPptxContent(rawFile);
+          text = result.text;
+          images = result.images;
+          tool = "jszip";
+        } else {
+          const result = await extractDocxContent(rawFile);
+          text = result.text;
+          images = result.images;
+          tool = "mammoth";
+        }
+      }
+    }
+
+    if (!text.trim() && images.length === 0) {
+      pending.remove();
+      const msgEl = document.createElement("div");
+      msgEl.className = "message system";
+      msgEl.textContent = "无法从该文件中提取内容。";
+      dom.messagesEl.appendChild(msgEl);
+      return;
+    }
+
+    pending.remove();
+    const parsedFile = { name, text, images, tool };
+    sendMessage(content, null, undefined, parsedFile);
+  } catch (e) {
+    pending.remove();
+    const msgEl = document.createElement("div");
+    msgEl.className = "message system";
+    msgEl.textContent = `文件解析失败：${e.message}`;
+    dom.messagesEl.appendChild(msgEl);
+  }
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(reader.result));
+    reader.addEventListener("error", () => reject(reader.error));
+    reader.readAsText(file);
+  });
+}
+
+function parseEml(raw) {
+  // Split headers and body
+  const splitIdx = raw.indexOf("\r\n\r\n") !== -1 ? raw.indexOf("\r\n\r\n") : raw.indexOf("\n\n");
+  const headerSection = raw.slice(0, splitIdx);
+  const bodySection = raw.slice(splitIdx + (raw[splitIdx] === "\r" ? 4 : 2));
+
+  // Parse headers (handle folded lines)
+  const unfoldedHeaders = headerSection.replace(/\r?\n[ \t]+/g, " ");
+  const headerLines = unfoldedHeaders.split(/\r?\n/);
+  const headers = {};
+  for (const line of headerLines) {
+    const colonIdx = line.indexOf(":");
+    if (colonIdx > 0) {
+      const key = line.slice(0, colonIdx).trim().toLowerCase();
+      const value = line.slice(colonIdx + 1).trim();
+      headers[key] = value;
+    }
+  }
+
+  // Decode base64 string to Uint8Array
+  function base64ToBytes(b64) {
+    const binStr = atob(b64);
+    const bytes = new Uint8Array(binStr.length);
+    for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+    return bytes;
+  }
+
+  // Decode bytes with charset
+  function decodeBytes(bytes, charset) {
+    try {
+      return new TextDecoder(charset || "utf-8").decode(bytes);
+    } catch {
+      return new TextDecoder("utf-8").decode(bytes);
+    }
+  }
+
+  // Decode MIME encoded words (=?charset?encoding?text?=)
+  function decodeMimeWord(str) {
+    return str.replace(/=\?([^?]+)\?([BQ])\?([^?]*)\?=/gi, (_, charset, encoding, text) => {
+      if (encoding.toUpperCase() === "B") {
+        return decodeBytes(base64ToBytes(text), charset);
+      } else {
+        // Quoted-printable
+        const decoded = text.replace(/_/g, " ").replace(/=([0-9A-Fa-f]{2})/g, (__, hex) =>
+          String.fromCharCode(parseInt(hex, 16))
+        );
+        const bytes = new Uint8Array(decoded.length);
+        for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
+        return decodeBytes(bytes, charset);
+      }
+    });
+  }
+
+  const from = decodeMimeWord(headers["from"] || "");
+  const to = decodeMimeWord(headers["to"] || "");
+  const cc = decodeMimeWord(headers["cc"] || "");
+  const subject = decodeMimeWord(headers["subject"] || "");
+  const date = headers["date"] || "";
+  const contentType = headers["content-type"] || "text/plain";
+
+  // Extract boundary for multipart
+  const boundaryMatch = contentType.match(/boundary="?([^";\r\n]+)"?/i);
+  const images = [];
+  const seenHashes = new Map();
+  let imageCounter = 0;
+  let bodyText = "";
+
+  // Recursively process multipart parts
+  function processParts(body, outerBoundary) {
+    const parts = body.split(new RegExp(`--${outerBoundary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:--)?`));
+    let plainBody = "";
+    let htmlBody = "";
+
+    for (const part of parts) {
+      if (!part.trim()) continue;
+      const partSplit = part.indexOf("\r\n\r\n") !== -1 ? part.indexOf("\r\n\r\n") : part.indexOf("\n\n");
+      if (partSplit === -1) continue;
+
+      const partHeaderStr = part.slice(0, partSplit);
+      const partHeaders = partHeaderStr.toLowerCase();
+      const partBody = part.slice(partSplit + (part[partSplit] === "\r" ? 4 : 2)).trim();
+
+      // Check if this part is itself multipart (nested) — use original case for boundary
+      const nestedBoundary = partHeaderStr.match(/boundary="?([^";\r\n]+)"?/i);
+      if (nestedBoundary) {
+        const nested = processParts(partBody, nestedBoundary[1]);
+        if (!plainBody && nested.plain) plainBody = nested.plain;
+        if (!htmlBody && nested.html) htmlBody = nested.html;
+        continue;
+      }
+
+      if (partHeaders.includes("text/plain") && !plainBody) {
+        plainBody = decodePartBody(partBody, partHeaders);
+      } else if (partHeaders.includes("text/html") && !htmlBody) {
+        htmlBody = decodePartBody(partBody, partHeaders);
+      } else if (partHeaders.includes("image/")) {
+        // Extract inline image
+        const mimeMatch = partHeaders.match(/content-type:\s*(image\/[a-z]+)/i);
+        const mime = mimeMatch ? mimeMatch[1] : "image/png";
+        const ext = mime.split("/")[1] === "png" ? ".png" : mime.split("/")[1] === "gif" ? ".gif" : ".jpg";
+        const base64Data = partBody.replace(/\s+/g, "");
+
+        const hashKey = base64Data.length + ":" + base64Data.slice(0, 64);
+        if (!seenHashes.has(hashKey)) {
+          imageCounter++;
+          const name = `image_${String(imageCounter).padStart(2, "0")}${ext}`;
+          seenHashes.set(hashKey, name);
+          images.push({ name, base64: base64Data, mime });
+        }
+      }
+    }
+    return { plain: plainBody, html: htmlBody };
+  }
+
+  let rawHtml = "";
+
+  if (boundaryMatch) {
+    const result = processParts(bodySection, boundaryMatch[1]);
+    rawHtml = result.html || "";
+
+    if (result.plain) {
+      bodyText = result.plain;
+    } else if (result.html) {
+      bodyText = stripHtml(result.html);
+    }
+  } else {
+    // Simple message
+    bodyText = decodePartBody(bodySection, contentType);
+    if (contentType.includes("text/html")) {
+      rawHtml = bodyText;
+      bodyText = stripHtml(bodyText);
+    }
+  }
+
+  function decodePartBody(body, headers) {
+    // Extract charset from headers
+    const charsetMatch = headers.match(/charset="?([^";\s\r\n]+)"?/i);
+    const charset = charsetMatch ? charsetMatch[1] : "utf-8";
+
+    if (/quoted-printable/i.test(headers)) {
+      const decoded = body
+        .replace(/=\r?\n/g, "")
+        .replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+      const bytes = new Uint8Array(decoded.length);
+      for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
+      return decodeBytes(bytes, charset);
+    }
+    if (/base64/i.test(headers)) {
+      try { return decodeBytes(base64ToBytes(body.replace(/\s+/g, "")), charset); } catch { return body; }
+    }
+    return body;
+  }
+
+  function stripHtml(html) {
+    return html
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+      .replace(/<a\s[^>]*href=3D"([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)")
+      .replace(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>/gi, "\n\n")
+      .replace(/<\/div>/gi, "\n")
+      .replace(/<\/tr>/gi, "\n")
+      .replace(/<\/li>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&amp;/g, "&")
+      .replace(/&quot;/g, "\"")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  // Format date to local timezone like "Thu, 2026-06-04 08:42:16 (GMT-5)"
+  function formatEmailDate(dateStr) {
+    if (!dateStr) return "";
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d)) return dateStr;
+      const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const pad = (n) => String(n).padStart(2, "0");
+      const day = days[d.getDay()];
+      const y = d.getFullYear();
+      const m = pad(d.getMonth() + 1);
+      const dd = pad(d.getDate());
+      const hh = pad(d.getHours());
+      const mm = pad(d.getMinutes());
+      const ss = pad(d.getSeconds());
+      const offset = -d.getTimezoneOffset();
+      const sign = offset >= 0 ? "+" : "-";
+      const absH = Math.floor(Math.abs(offset) / 60);
+      const absM = Math.abs(offset) % 60;
+      const tz = absM ? `GMT${sign}${absH}:${pad(absM)}` : `GMT${sign}${absH}`;
+      return `${day}, ${y}-${m}-${dd} ${hh}:${mm}:${ss} (${tz})`;
+    } catch { return dateStr; }
+  }
+
+  // Build formatted output
+  let headerText = "";
+  if (from) headerText += `**From:** ${from}\n`;
+  if (to) headerText += `**To:** ${to}\n`;
+  if (cc) headerText += `**CC:** ${cc}\n`;
+  if (subject) headerText += `**Subject:** ${subject}\n`;
+  if (date) headerText += `**Date:** ${formatEmailDate(date)}\n`;
+
+  let text = headerText;
+  if (text) text += "\n---\n\n";
+  text += bodyText.trim();
+
+  if (images.length > 0) {
+    text += "\n\n---\n\n";
+    for (const img of images) {
+      text += `![](${img.name})\n`;
+    }
+  }
+
+  return { text, images, rawHtml, headers: headerText.trim() };
+}
+
+async function loadPdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  const pdfjsLib = await import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs";
+  window.pdfjsLib = pdfjsLib;
+  return pdfjsLib;
+}
+
+async function loadMammoth() {
+  if (window.mammoth) return window.mammoth;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js";
+    script.onload = () => resolve(window.mammoth);
+    script.onerror = () => reject(new Error("Failed to load mammoth.js"));
+    document.head.appendChild(script);
+  });
+}
+
+async function extractPdfText(file) {
+  const pdfjsLib = await loadPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const strings = content.items.map((item) => item.str);
+    pages.push(strings.join(""));
+  }
+  return pages.join("\n\n");
+}
+
+async function extractDocxContent(file) {
+  const mammoth = await loadMammoth();
+  const arrayBuffer = await file.arrayBuffer();
+  const images = [];
+  const seenHashes = new Map();
+  let imageCounter = 0;
+
+  const result = await mammoth.convertToMarkdown(
+    { arrayBuffer },
+    {
+      convertImage: mammoth.images.imgElement(async (imageElement) => {
+        const buffer = await imageElement.read();
+        // Simple hash for deduplication: use first 64 bytes + length
+        const hashKey = buffer.byteLength + ":" + Array.from(new Uint8Array(buffer.slice(0, 64))).join(",");
+        if (seenHashes.has(hashKey)) {
+          return { src: seenHashes.get(hashKey) };
+        }
+        imageCounter++;
+        const mime = imageElement.contentType || "image/png";
+        const ext = mime.split("/")[1] === "png" ? ".png" : mime.split("/")[1] === "gif" ? ".gif" : ".jpg";
+        const name = `image_${String(imageCounter).padStart(2, "0")}${ext}`;
+        seenHashes.set(hashKey, name);
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+        images.push({ name, base64, mime });
+        return { src: name };
+      }),
+    }
+  );
+
+  // Replace <img src="image_XX.ext"> tags with ![](image_XX.ext) markdown
+  let text = result.value.replace(/<img[^>]*src="([^"]+)"[^>]*\/?>?/g, "![]($1)");
+
+  return { text, images };
+}
+
+async function loadJSZip() {
+  if (window.JSZip) return window.JSZip;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+    script.onload = () => resolve(window.JSZip);
+    script.onerror = () => reject(new Error("Failed to load JSZip"));
+    document.head.appendChild(script);
+  });
+}
+
+async function extractPptxContent(file) {
+  const JSZip = await loadJSZip();
+  const arrayBuffer = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(arrayBuffer);
+
+  // Collect slide files sorted by slide number
+  const slideFiles = [];
+  zip.forEach((relativePath) => {
+    const match = relativePath.match(/^ppt\/slides\/slide(\d+)\.xml$/);
+    if (match) slideFiles.push({ path: relativePath, num: parseInt(match[1]) });
+  });
+  slideFiles.sort((a, b) => a.num - b.num);
+
+  // Extract text from slides
+  const parser = new DOMParser();
+  const pages = [];
+  for (const { path: slidePath, num } of slideFiles) {
+    const xml = await zip.file(slidePath).async("string");
+    const doc = parser.parseFromString(xml, "application/xml");
+    // Get all text nodes from <a:t> elements (PowerPoint text runs)
+    const textNodes = doc.getElementsByTagNameNS("http://schemas.openxmlformats.org/drawingml/2006/main", "t");
+    const texts = [];
+    for (let i = 0; i < textNodes.length; i++) {
+      const t = textNodes[i].textContent.trim();
+      if (t) texts.push(t);
+    }
+    if (texts.length > 0) {
+      pages.push(`## Slide ${num}\n\n${texts.join("\n")}`);
+    }
+  }
+
+  // Extract images from ppt/media/
+  const images = [];
+  const seenHashes = new Map();
+  let imageCounter = 0;
+  const IMAGE_EXTS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"];
+
+  for (const [relativePath, zipEntry] of Object.entries(zip.files)) {
+    if (!relativePath.startsWith("ppt/media/")) continue;
+    const ext = relativePath.slice(relativePath.lastIndexOf(".")).toLowerCase();
+    if (!IMAGE_EXTS.includes(ext)) continue;
+
+    const data = await zipEntry.async("uint8array");
+    const hashKey = data.byteLength + ":" + Array.from(data.slice(0, 64)).join(",");
+    if (seenHashes.has(hashKey)) continue;
+
+    imageCounter++;
+    const imgExt = ext === ".jpeg" ? ".jpg" : ext;
+    const name = `image_${String(imageCounter).padStart(2, "0")}${imgExt}`;
+    seenHashes.set(hashKey, name);
+    const mime = ext === ".png" ? "image/png" : ext === ".gif" ? "image/gif" : "image/jpeg";
+    const base64 = btoa(String.fromCharCode(...data));
+    images.push({ name, base64, mime });
+  }
+
+  // Add image references at the end if any
+  let text = pages.join("\n\n");
+  if (images.length > 0) {
+    text += "\n\n## Images\n\n";
+    for (const img of images) {
+      text += `![](${img.name})\n`;
+    }
+  }
+
+  return { text, images };
+}
+
+// Initialize Ollama URL management and scan
+initOllama();
+
+// Initialize lightbox
+const lightboxApi = initLightbox();
+state.openLightbox = lightboxApi.openLightbox;
+
+// Initialize archive
+initArchive();
+
+// Initial render
+saveTabs();
+renderTabs();
+updateLockedState();
+renderChat();
+loadModels().catch(() => {});
+loadImageModels().catch(() => {});
