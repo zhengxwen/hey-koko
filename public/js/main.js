@@ -17,6 +17,7 @@ import { initLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
 import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
+import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
 
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
@@ -75,6 +76,9 @@ initAvatar();
   state.activeTabId = loaded.activeTabId || state.tabs[0].id;
   if (!state.tabs.some((tab) => tab.id === state.activeTabId)) state.activeTabId = state.tabs[0].id;
 }
+
+// Load long-term memories (async — IndexedDB)
+await loadMemories();
 
 // Load saved settings
 loadSavedSettings();
@@ -278,6 +282,182 @@ if (dom.numCtxSelect) {
   dom.numCtxSelect.addEventListener("change", () => {
     saveCurrentSettings();
     renderContextMeter();
+  });
+}
+
+// --- Long-term memory manager ---
+function renderMemoryList() {
+  const list = dom.memoryList;
+  if (!list) return;
+  const mems = getMemories();
+  list.innerHTML = "";
+  if (!mems.length) {
+    const empty = document.createElement("div");
+    empty.className = "memoryEmpty";
+    empty.textContent = t("memory_empty");
+    list.appendChild(empty);
+    return;
+  }
+  for (const m of mems) {
+    const row = document.createElement("div");
+    row.className = "memoryItem";
+
+    const span = document.createElement("span");
+    span.className = "memoryItemText";
+    span.textContent = m.text;
+    span.title = t("memory_editHint");
+    span.addEventListener("click", () => {
+      const next = prompt(t("memory_editPrompt"), m.text);
+      if (next !== null) updateMemory(m.id, next);
+    });
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "memoryItemDelete";
+    del.title = t("memory_deleteTitle");
+    del.textContent = "×";
+    del.addEventListener("click", () => removeMemory(m.id));
+
+    row.appendChild(span);
+    row.appendChild(del);
+    list.appendChild(row);
+  }
+}
+
+// Re-render the list whenever memories change (add/edit/delete, incl. /remember)
+setMemoryChangeHandler(renderMemoryList);
+renderMemoryList();
+
+if (dom.memoryAddBtn && dom.memoryInput) {
+  const addFromInput = () => {
+    const text = dom.memoryInput.value.trim();
+    if (!text) return;
+    addMemory(text);
+    dom.memoryInput.value = "";
+    dom.memoryInput.focus();
+  };
+  dom.memoryAddBtn.addEventListener("click", addFromInput);
+  dom.memoryInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addFromInput();
+    }
+  });
+}
+
+// Fuzzy similarity for catching near-duplicate memories (not just exact matches)
+function memoryNormalize(s) {
+  return s.replace(/[\s，。、,.;:!?！？「」“”"'()（）]/g, "").toLowerCase();
+}
+function memoryBigrams(s) {
+  const g = new Set();
+  if (s.length === 1) { g.add(s); return g; }
+  for (let i = 0; i < s.length - 1; i++) g.add(s.slice(i, i + 2));
+  return g;
+}
+function memoryIsSimilar(a, b) {
+  const na = memoryNormalize(a), nb = memoryNormalize(b);
+  if (!na || !nb) return false;
+  if (na === nb || na.includes(nb) || nb.includes(na)) return true;
+  const ga = memoryBigrams(na), gb = memoryBigrams(nb);
+  let inter = 0;
+  for (const x of ga) if (gb.has(x)) inter++;
+  return inter / (ga.size + gb.size - inter) >= 0.5;
+}
+
+// Extract durable facts from the current tab's conversation into memory
+if (dom.memoryExtractBtn) {
+  let extracting = false;
+  dom.memoryExtractBtn.addEventListener("click", async () => {
+    if (extracting) return;
+    const tab = getActiveTab();
+
+    // Build a plain transcript of the real conversation (skip commands/previews/summaries)
+    const transcript = (tab?.messages || [])
+      .filter((m) => (m.role === "user" || m.role === "assistant")
+        && !m.isFilePreview && !m.isCompactSummary
+        && m.content && !/^\/(remember|compact|title|clear|note|url|imagine|[01])(\s|$)/.test(m.content))
+      .slice(-40)
+      .map((m) => `${m.role === "user" ? "User" : "AI"}: ${m.content.slice(0, 600)}`)
+      .join("\n");
+
+    const flash = (key) => {
+      dom.memoryExtractBtn.textContent = t(key);
+      setTimeout(() => { dom.memoryExtractBtn.textContent = t("memory_extract"); }, 2500);
+    };
+
+    if (!transcript.trim()) {
+      flash("memory_extractEmpty");
+      return;
+    }
+
+    extracting = true;
+    dom.memoryExtractBtn.disabled = true;
+    dom.memoryExtractBtn.textContent = t("memory_extracting");
+
+    const existing = getMemories().map((m) => `- ${m.text}`).join("\n");
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: dom.modelSelect.value,
+          messages: [
+            { role: "system", content: getPrompt("memoryExtract") },
+            { role: "user", content: getPrompt("memoryExtractUser", existing, transcript) },
+          ],
+          options: { temperature: 0.3 },
+          timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+        }),
+      });
+      if (!response.ok) throw new Error("request failed");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let full = "";
+      const consume = (line) => {
+        if (!line.trim()) return;
+        try { full += JSON.parse(line).message?.content || ""; } catch {}
+      };
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) consume(line);
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) consume(buffer);
+
+      // Strip any <think> reasoning, then parse one fact per line
+      const cleaned = full.replace(/<think>[\s\S]*?<\/think>/gi, "");
+      const facts = cleaned
+        .split("\n")
+        .map((l) => l.replace(/^[-*•\d.)\s]+/, "").trim())
+        .filter((l) => l.length > 1 && l.length < 300);
+
+      let added = 0;
+      for (const f of facts) {
+        const current = getMemories();
+        if (current.some((m) => m.text === f)) continue; // exact dup — skip silently
+        const similar = current.find((m) => memoryIsSimilar(m.text, f));
+        if (similar && !confirm(t("memory_dupConfirm", { existing: similar.text, fact: f }))) continue;
+        if (addMemory(f)) added++;
+      }
+      if (added > 0) {
+        dom.memoryExtractBtn.textContent = t("memory_extractDone", { count: added });
+        setTimeout(() => { dom.memoryExtractBtn.textContent = t("memory_extract"); }, 2500);
+      } else {
+        flash("memory_extractNone");
+      }
+    } catch {
+      flash("memory_extractNone");
+    } finally {
+      extracting = false;
+      dom.memoryExtractBtn.disabled = false;
+    }
   });
 }
 

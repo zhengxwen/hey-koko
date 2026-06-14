@@ -74,6 +74,29 @@ export async function dbLoadActiveTabId() {
   });
 }
 
+// Save long-term memories (stored as a single array in the meta store)
+export async function dbSaveMemories(memories) {
+  const db = await openDB();
+  const tx = db.transaction("meta", "readwrite");
+  tx.objectStore("meta").put(memories, "memories");
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = (e) => reject(e.target.error);
+  });
+}
+
+// Load long-term memories
+export async function dbLoadMemories() {
+  const db = await openDB();
+  const tx = db.transaction("meta", "readonly");
+  const store = tx.objectStore("meta");
+  return new Promise((resolve, reject) => {
+    const request = store.get("memories");
+    request.onsuccess = () => resolve(Array.isArray(request.result) ? request.result : []);
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
 // Migrate existing localStorage data into IndexedDB (one-time)
 export async function migrateFromLocalStorage() {
   const raw = localStorage.getItem(TABS_KEY);

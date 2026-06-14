@@ -12,6 +12,7 @@ import { translateMessage } from './translate.js';
 import { parseUrlCommand, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
 import { t, getPrompt, getPromptLanguage } from './i18n.js';
 import { getNumCtx, recordContextUsage, renderContextMeter } from './context-meter.js';
+import { addMemory, getMemoryPromptBlock } from './memory.js';
 
 export function setGenerating(active) {
   if (active) {
@@ -79,6 +80,15 @@ function resendChatMessage(index) {
   renderChat();
 
   if (parseNoteCommand(message.content)) return;
+  const rememberResend = message.content.match(/^\/remember\s+([\s\S]+)/);
+  if (rememberResend) {
+    const fact = rememberResend[1].trim();
+    addMemory(fact);
+    tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_remembered", { fact }), timestamp: Date.now() });
+    saveChat();
+    renderChat();
+    return;
+  }
   if (/^\/compact\s*$/.test(message.content)) {
     handleCompactCommand(tab, state.activeTabId);
     return;
@@ -515,9 +525,10 @@ function buildMessages(tabId = state.activeTabId) {
       ? getPrompt("nameInstructionMulti", names)
       : getPrompt("nameInstructionSingle", names[0]);
   }
+  const memoryBlock = getMemoryPromptBlock(getPrompt("memoryHeader"));
   const system = `${dom.persona.value}
 
-${nameInstruction}${getPrompt("personaSuffix")}`;
+${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
 
   // Find the last compact boundary - only include messages after it
   let startIndex = 0;
@@ -540,6 +551,8 @@ ${nameInstruction}${getPrompt("personaSuffix")}`;
     if (msg.role === "user" && /^\/compact\s*$/.test(msg.content)) continue;
     // Skip /title command and its response
     if (msg.role === "user" && /^\/title(\s|$)/.test(msg.content)) continue;
+    // Skip /remember command (the fact is already injected via long-term memory)
+    if (msg.role === "user" && /^\/remember(\s|$)/.test(msg.content)) continue;
     if (msg.role === "assistant" && /^✅ 标题已更新为/.test(msg.content)) continue;
     // File preview bubbles: send to LLM as user-role (contains the parsed file content)
     if (msg.isFilePreview) {
@@ -1002,6 +1015,18 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     delete tab.ctxTokensPerSec;
     saveChat();
     renderChat();
+    return;
+  }
+
+  // Handle /remember command — store a durable fact about the user
+  const rememberMatch = content && content.match(/^\/remember\s+([\s\S]+)/);
+  if (rememberMatch) {
+    const fact = rememberMatch[1].trim();
+    addMemory(fact);
+    tab.messages.push({ role: "user", content, timestamp: Date.now() });
+    tab.messages.push({ role: "assistant", content: t("msg_remembered", { fact }), timestamp: Date.now() });
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
     return;
   }
 
