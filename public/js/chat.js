@@ -13,6 +13,7 @@ import { parseUrlCommand, handleUrlCommand, handleMultiUrlCommand } from './url-
 import { t, getPrompt, getPromptLanguage } from './i18n.js';
 import { getNumCtx, recordContextUsage, renderContextMeter } from './context-meter.js';
 import { addMemory, getMemoryPromptBlock } from './memory.js';
+import { parseRemind, addReminder, describeReminder, markActivity } from './proactive.js';
 
 export function setGenerating(active) {
   if (active) {
@@ -80,7 +81,7 @@ function resendChatMessage(index) {
   renderChat();
 
   if (parseNoteCommand(message.content)) return;
-  const rememberResend = message.content.match(/^\/remember\s+([\s\S]+)/);
+  const rememberResend = message.content.match(/^\/memory\s+([\s\S]+)/);
   if (rememberResend) {
     const fact = rememberResend[1].trim();
     addMemory(fact);
@@ -551,8 +552,10 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
     if (msg.role === "user" && /^\/compact\s*$/.test(msg.content)) continue;
     // Skip /title command and its response
     if (msg.role === "user" && /^\/title(\s|$)/.test(msg.content)) continue;
-    // Skip /remember command (the fact is already injected via long-term memory)
-    if (msg.role === "user" && /^\/remember(\s|$)/.test(msg.content)) continue;
+    // Skip /memory command (the fact is already injected via long-term memory)
+    if (msg.role === "user" && /^\/memory(\s|$)/.test(msg.content)) continue;
+    // Skip /remind command line
+    if (msg.role === "user" && /^\/remind(\s|$)/.test(msg.content)) continue;
     if (msg.role === "assistant" && /^✅ 标题已更新为/.test(msg.content)) continue;
     // File preview bubbles: send to LLM as user-role (contains the parsed file content)
     if (msg.isFilePreview) {
@@ -1002,10 +1005,144 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
   }
 }
 
+// Deliver a proactive message (reminder / greeting / nudge) into the active tab.
+// The model phrases it in character using `instruction`; nothing is added as a
+// user message. Returns when done (used by the scheduler to serialize firings).
+export async function generateProactiveReply(instruction, tabId = state.activeTabId) {
+  const tab = getTab(tabId);
+  if (!tab || tab.locked) return;
+  if (state.currentAbortController || state.imageGenAbortController) return;
+
+  const abortController = new AbortController();
+  state.currentAbortController = abortController;
+  setGenerating(true);
+  setAvatarState("thinking");
+  state.streamingInfo = { tabId, content: '', phase: 'thinking', insertIndex: -1 };
+
+  if (state.activeTabId === tabId) {
+    const pending = document.createElement("div");
+    pending.className = "message assistant thinking streaming-bubble";
+    const body = document.createElement("div");
+    body.className = "markdownBody";
+    body.innerHTML = `<span class="thinking-text">${t("msg_thinking")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+    pending.appendChild(body);
+    dom.messagesEl.appendChild(pending);
+    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+  }
+
+  let content = "";
+  try {
+    const messages = [...buildMessages(tabId), { role: "user", content: instruction }];
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abortController.signal,
+      body: JSON.stringify({
+        model: dom.modelSelect.value,
+        messages,
+        options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
+        timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+      }),
+    });
+    if (!response.ok) {
+      const d = await response.json();
+      throw new Error(d.error || "请求失败");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let firstChunk = false;
+    function appendLine(line) {
+      if (!line.trim()) return;
+      const data = JSON.parse(line);
+      const chunk = data.message?.content || "";
+      if (!chunk) return;
+      if (!firstChunk) {
+        firstChunk = true;
+        if (state.streamingInfo) state.streamingInfo.phase = 'streaming';
+        setAvatarState("talking");
+        if (state.activeTabId === tabId) {
+          const bubble = dom.messagesEl.querySelector('.streaming-bubble');
+          if (bubble) {
+            bubble.innerHTML = "";
+            bubble.classList.remove("thinking");
+            const md = document.createElement("div");
+            md.className = "markdownBody";
+            bubble.appendChild(md);
+          }
+        }
+      }
+      content += chunk;
+      if (state.streamingInfo) state.streamingInfo.content = content;
+      if (state.activeTabId === tabId) {
+        const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
+        if (md) {
+          md.innerHTML = markdownToHtml(content);
+          dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+        }
+      }
+    }
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) appendLine(line);
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) appendLine(buffer);
+
+    content = content.trim();
+    state.streamingInfo = null;
+    const bubble = dom.messagesEl.querySelector('.streaming-bubble');
+    if (bubble) bubble.remove();
+    if (!content) return;
+
+    tab.messages.push({ role: "assistant", content, timestamp: Date.now() });
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+    showExpression(detectExpression(content));
+    if (dom.autoSpeakCheckbox.checked && state.activeTabId === tabId) {
+      const lastSpeakBtn = dom.messagesEl.querySelector(".message.assistant:last-child .speakMessage");
+      if (lastSpeakBtn) speakMessage(content, lastSpeakBtn);
+    }
+  } catch (error) {
+    // Proactive failures are silent — just clean up the pending bubble.
+    state.streamingInfo = null;
+    const bubble = dom.messagesEl.querySelector('.streaming-bubble');
+    if (bubble) bubble.remove();
+  } finally {
+    state.streamingInfo = null;
+    setGenerating(false);
+    state.currentAbortController = null;
+    setAvatarState("idle");
+  }
+}
+
 export async function sendMessage(content, image, tabId = state.activeTabId, file = null) {
   const tab = getTab(tabId);
   if (!tab) return;
   if (tab.locked) return;
+
+  markActivity();
+
+  // Handle /remind command — schedule a proactive reminder
+  if (content && /^\/remind(\s|$)/.test(content)) {
+    const parsed = parseRemind(content);
+    tab.messages.push({ role: "user", content, timestamp: Date.now() });
+    if (parsed.error) {
+      tab.messages.push({ role: "assistant", content: t(parsed.error), timestamp: Date.now() });
+    } else {
+      addReminder(parsed.reminder);
+      tab.messages.push({ role: "assistant", content: t("msg_reminderSet", { when: describeReminder(parsed.reminder), text: parsed.reminder.text }), timestamp: Date.now() });
+    }
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+    return;
+  }
 
   // Handle /clear command
   if (content && /^\/clear\s*$/.test(content)) {
@@ -1018,8 +1155,8 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     return;
   }
 
-  // Handle /remember command — store a durable fact about the user
-  const rememberMatch = content && content.match(/^\/remember\s+([\s\S]+)/);
+  // Handle /memory command — store a durable fact about the user
+  const rememberMatch = content && content.match(/^\/memory\s+([\s\S]+)/);
   if (rememberMatch) {
     const fact = rememberMatch[1].trim();
     addMemory(fact);
@@ -1226,7 +1363,9 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
   }
 
   const canSpeak = role === "assistant" && content && content !== "thinking-placeholder";
-  const canResend = role === "user" && Number.isInteger(index);
+  // /memory and /remind already took effect when first sent; resending them is meaningless.
+  const isNonResendableCmd = role === "user" && /^\/(memory|remind)(\s|$)/.test(content || "");
+  const canResend = role === "user" && Number.isInteger(index) && !isNonResendableCmd;
   const canTranslate = Number.isInteger(index) && content && content !== "thinking-placeholder";
 
   if (canSpeak || canResend || canTranslate || Number.isInteger(index)) {
@@ -1353,6 +1492,11 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
                 renderChat();
                 const insertIdx = index + 1;
                 isolatedReply(isoMatch[2], isoMatch[1], getActiveTab(), state.activeTabId, insertIdx);
+              } else if (/^\/(memory|remind)(\s|$)/.test(newContent)) {
+                // Already took effect when first sent; editing only updates the
+                // displayed text — don't re-execute and don't trigger a reply.
+                saveChat();
+                renderChat();
               } else {
               if (tab.messages[index + 1]?.role === "assistant") {
                 tab.messages.splice(index + 1, 1);

@@ -97,6 +97,29 @@ export async function dbLoadMemories() {
   });
 }
 
+// Save reminders (single array in the meta store)
+export async function dbSaveReminders(reminders) {
+  const db = await openDB();
+  const tx = db.transaction("meta", "readwrite");
+  tx.objectStore("meta").put(reminders, "reminders");
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = (e) => reject(e.target.error);
+  });
+}
+
+// Load reminders
+export async function dbLoadReminders() {
+  const db = await openDB();
+  const tx = db.transaction("meta", "readonly");
+  const store = tx.objectStore("meta");
+  return new Promise((resolve, reject) => {
+    const request = store.get("reminders");
+    request.onsuccess = () => resolve(Array.isArray(request.result) ? request.result : []);
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
 // Migrate existing localStorage data into IndexedDB (one-time)
 export async function migrateFromLocalStorage() {
   const raw = localStorage.getItem(TABS_KEY);

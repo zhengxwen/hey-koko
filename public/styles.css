@@ -1789,6 +1789,77 @@ mark.speak-highlight {
   font-size: 13px;
 }
 
+/* Proactive messages */
+.proactiveSetting {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.proactiveSetting > span {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.proactiveRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.proactiveRow input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.proactiveRow input[type="time"],
+.proactiveRow input[type="number"] {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.proactiveRow input[type="number"] {
+  width: 64px;
+}
+
+.proactiveRow > span:not([id$="UnitText"]) {
+  flex: 1;
+}
+
+.reminderList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reminderItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: var(--accent-subtle);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.reminderWhen {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--accent-strong);
+}
+
+.reminderText {
+  flex: 1;
+  word-break: break-word;
+}
+
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto auto auto;

@@ -239,6 +239,24 @@
               <button id="memoryAddBtn" type="button" class="secondary">添加</button>
             </div>
           </div>
+
+          <hr class="settingDivider" />
+
+          <div id="proactiveLabel" class="proactiveSetting">
+            <span id="proactiveLabelText">主动消息</span>
+            <label class="proactiveRow">
+              <input type="checkbox" id="dailyGreetingToggle" />
+              <span id="dailyGreetingLabelText">每日问候</span>
+              <input type="time" id="dailyGreetingTime" value="09:00" />
+            </label>
+            <label class="proactiveRow">
+              <input type="checkbox" id="idleNudgeToggle" />
+              <span id="idleNudgeLabelText">闲置轻推</span>
+              <input type="number" id="idleNudgeMinutes" min="5" max="240" step="5" value="30" />
+              <span id="idleNudgeUnitText">分钟后</span>
+            </label>
+            <div id="reminderList" class="reminderList"></div>
+          </div>
         </div>
       </aside>
 

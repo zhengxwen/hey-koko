@@ -10,7 +10,7 @@ import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelecte
 import { initOllama, loadModels, loadImageModels } from './ollama.js';
 import { setDeps as imageGenSetDeps } from './image-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
-import { renderChat, sendMessage, setGenerating, regenerateReply } from './chat.js';
+import { renderChat, sendMessage, setGenerating, regenerateReply, generateProactiveReply } from './chat.js';
 import { setDeps as urlFetchSetDeps } from './url-fetch.js';
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
 import { initLightbox } from './lightbox.js';
@@ -18,6 +18,7 @@ import { initArchive } from './archive.js';
 import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
 import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
+import { loadReminders, getReminders, removeReminder, describeReminder, setReminderChangeHandler, setDeliverHandler, startScheduler } from './proactive.js';
 
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
@@ -77,8 +78,9 @@ initAvatar();
   if (!state.tabs.some((tab) => tab.id === state.activeTabId)) state.activeTabId = state.tabs[0].id;
 }
 
-// Load long-term memories (async — IndexedDB)
+// Load long-term memories + reminders (async — IndexedDB)
 await loadMemories();
+await loadReminders();
 
 // Load saved settings
 loadSavedSettings();
@@ -324,7 +326,7 @@ function renderMemoryList() {
   }
 }
 
-// Re-render the list whenever memories change (add/edit/delete, incl. /remember)
+// Re-render the list whenever memories change (add/edit/delete, incl. /memory)
 setMemoryChangeHandler(renderMemoryList);
 renderMemoryList();
 
@@ -376,7 +378,7 @@ if (dom.memoryExtractBtn) {
     const transcript = (tab?.messages || [])
       .filter((m) => (m.role === "user" || m.role === "assistant")
         && !m.isFilePreview && !m.isCompactSummary
-        && m.content && !/^\/(remember|compact|title|clear|note|url|imagine|[01])(\s|$)/.test(m.content))
+        && m.content && !/^\/(memory|compact|title|clear|note|url|imagine|[01])(\s|$)/.test(m.content))
       .slice(-40)
       .map((m) => `${m.role === "user" ? "User" : "AI"}: ${m.content.slice(0, 600)}`)
       .join("\n");
@@ -460,6 +462,55 @@ if (dom.memoryExtractBtn) {
     }
   });
 }
+
+// --- Proactive messages: reminder list + settings wiring + scheduler ---
+function renderReminderList() {
+  const list = dom.reminderList;
+  if (!list) return;
+  const items = getReminders();
+  list.innerHTML = "";
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "memoryEmpty";
+    empty.textContent = t("reminder_listEmpty");
+    list.appendChild(empty);
+    return;
+  }
+  for (const r of items) {
+    const row = document.createElement("div");
+    row.className = "reminderItem";
+
+    const when = document.createElement("span");
+    when.className = "reminderWhen";
+    when.textContent = describeReminder(r);
+
+    const text = document.createElement("span");
+    text.className = "reminderText";
+    text.textContent = r.text;
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "memoryItemDelete";
+    del.title = t("reminder_deleteTitle");
+    del.textContent = "×";
+    del.addEventListener("click", () => removeReminder(r.id));
+
+    row.appendChild(when);
+    row.appendChild(text);
+    row.appendChild(del);
+    list.appendChild(row);
+  }
+}
+
+setDeliverHandler(generateProactiveReply);
+setReminderChangeHandler(renderReminderList);
+renderReminderList();
+
+for (const el of [dom.dailyGreetingToggle, dom.dailyGreetingTime, dom.idleNudgeToggle, dom.idleNudgeMinutes]) {
+  if (el) el.addEventListener("change", saveCurrentSettings);
+}
+
+startScheduler();
 
 // Save settings button
 dom.saveSettings.addEventListener("click", () => {

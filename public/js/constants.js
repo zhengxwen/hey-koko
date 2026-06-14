@@ -51,7 +51,8 @@ export const COMMANDS = [
   { name: "/compact", desc: "压缩上下文，保留摘要" },
   { name: "/imagine", desc: "生成图片" },
   { name: "/note", desc: "记录笔记，不生成 AI 回复" },
-  { name: "/remember", desc: "长期记住关于你的一件事" },
+  { name: "/memory", desc: "长期记住关于你的一件事" },
+  { name: "/remind", desc: "设置提醒，如 /remind 30m 喝水" },
   { name: "/title", desc: "修改标签页标题，[tags] 添加标签" },
   { name: "/url", desc: "解析网页/YouTube，可加prompt：/url [prompt] https://..." },
 ];
