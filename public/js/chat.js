@@ -81,6 +81,17 @@ function resendChatMessage(index) {
   renderChat();
 
   if (parseNoteCommand(message.content)) return;
+  const searchResend = message.content.match(/^\/search\s+([\s\S]+)/);
+  if (searchResend) {
+    // The results bubble (index+1) was already removed above; drop the answer too,
+    // then the command bubble, and re-run the search fresh.
+    if (tab.messages[index + 1]?.role === "assistant") tab.messages.splice(index + 1, 1);
+    tab.messages.splice(index, 1);
+    saveChat();
+    renderChat();
+    handleSearchCommand(searchResend[1].trim(), tab, state.activeTabId, message.content);
+    return;
+  }
   const rememberResend = message.content.match(/^\/memory\s+([\s\S]+)/);
   if (rememberResend) {
     const fact = rememberResend[1].trim();
@@ -556,6 +567,8 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
     if (msg.role === "user" && /^\/memory(\s|$)/.test(msg.content)) continue;
     // Skip /remind command line
     if (msg.role === "user" && /^\/remind(\s|$)/.test(msg.content)) continue;
+    // Skip /search command line (results are injected as the assistant bubble that follows)
+    if (msg.role === "user" && /^\/search(\s|$)/.test(msg.content)) continue;
     if (msg.role === "assistant" && /^✅ 标题已更新为/.test(msg.content)) continue;
     // File preview bubbles: send to LLM as user-role (contains the parsed file content)
     if (msg.isFilePreview) {
@@ -1122,6 +1135,81 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
   }
 }
 
+// Web search via DuckDuckGo: fetch results, show them as a sources bubble, then
+// let the model answer the query using those results as context.
+async function handleSearchCommand(query, tab, tabId, fullContent) {
+  tab.messages.push({ role: "user", content: fullContent, timestamp: Date.now() });
+  saveChat();
+  if (state.activeTabId === tabId) renderChat();
+
+  setAvatarState("thinking");
+  setGenerating(true);
+  const abortController = new AbortController();
+  state.currentAbortController = abortController;
+
+  let pending = null;
+  if (state.activeTabId === tabId) {
+    pending = document.createElement("div");
+    pending.className = "message assistant thinking";
+    const body = document.createElement("div");
+    body.className = "markdownBody";
+    body.innerHTML = `<span class="thinking-text">${t("search_searching")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+    pending.appendChild(body);
+    dom.messagesEl.appendChild(pending);
+    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+  }
+
+  const finish = (assistantContent) => {
+    if (pending) pending.remove();
+    if (assistantContent) tab.messages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+    setAvatarState("idle");
+    setGenerating(false);
+    state.currentAbortController = null;
+  };
+
+  try {
+    const res = await fetch("/api/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abortController.signal,
+      body: JSON.stringify({ query, language: getPromptLanguage() }),
+    });
+    const data = await res.json();
+
+    if (data.error === "captcha") { finish(`⚠️ ${t("search_captcha")}`); return; }
+    if (!res.ok || !data.results || data.results.length === 0) { finish(`⚠️ ${t("search_noResults")}`); return; }
+
+    if (pending) pending.remove();
+    const lines = [`🔎 **${t("search_resultsFor", { query })}**`, ""];
+    data.results.forEach((r, i) => {
+      lines.push(`${i + 1}. [${r.title}](${r.url})`);
+      if (r.snippet) lines.push(`   ${r.snippet}`);
+    });
+    tab.messages.push({ role: "assistant", content: lines.join("\n"), timestamp: Date.now() });
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+
+    // Hand off to the model: answer the query grounded in the results above.
+    setGenerating(false);
+    setAvatarState("idle");
+    state.currentAbortController = null;
+    await generateProactiveReply(getPrompt("searchAnswer", query), tabId);
+  } catch (error) {
+    if (error.name === "AbortError") {
+      if (pending) pending.remove();
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+      setAvatarState("idle");
+      setGenerating(false);
+      state.currentAbortController = null;
+    } else {
+      finish(`⚠️ ${t("search_failed", { error: error.message })}`);
+    }
+  }
+}
+
 export async function sendMessage(content, image, tabId = state.activeTabId, file = null) {
   const tab = getTab(tabId);
   if (!tab) return;
@@ -1141,6 +1229,20 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     }
     saveChat();
     if (state.activeTabId === tabId) renderChat();
+    return;
+  }
+
+  // Handle /search command — web search via DuckDuckGo
+  if (content && /^\/search(\s|$)/.test(content)) {
+    const q = content.replace(/^\/search\s*/, "").trim();
+    if (!q) {
+      tab.messages.push({ role: "user", content, timestamp: Date.now() });
+      tab.messages.push({ role: "assistant", content: t("search_usage"), timestamp: Date.now() });
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+    } else {
+      await handleSearchCommand(q, tab, tabId, content);
+    }
     return;
   }
 
@@ -1363,7 +1465,8 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
   }
 
   const canSpeak = role === "assistant" && content && content !== "thinking-placeholder";
-  // /memory and /remind already took effect when first sent; resending them is meaningless.
+  // /memory and /remind already acted when first sent; resending them is meaningless.
+  // (/search IS resendable — it re-runs the web search.)
   const isNonResendableCmd = role === "user" && /^\/(memory|remind)(\s|$)/.test(content || "");
   const canResend = role === "user" && Number.isInteger(index) && !isNonResendableCmd;
   const canTranslate = Number.isInteger(index) && content && content !== "thinking-placeholder";
@@ -1497,6 +1600,21 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
                 // displayed text — don't re-execute and don't trigger a reply.
                 saveChat();
                 renderChat();
+              } else if (/^\/search(\s|$)/.test(newContent)) {
+                // Re-run the web search with the edited query.
+                const q = newContent.replace(/^\/search\s*/, "").trim();
+                if (q) {
+                  // Remove the old results bubble + answer, and the command bubble itself.
+                  if (tab.messages[index + 1]?.role === "assistant") tab.messages.splice(index + 1, 1);
+                  if (tab.messages[index + 1]?.role === "assistant") tab.messages.splice(index + 1, 1);
+                  tab.messages.splice(index, 1);
+                  saveChat();
+                  renderChat();
+                  handleSearchCommand(q, getActiveTab(), state.activeTabId, newContent);
+                } else {
+                  saveChat();
+                  renderChat();
+                }
               } else {
               if (tab.messages[index + 1]?.role === "assistant") {
                 tab.messages.splice(index + 1, 1);

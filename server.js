@@ -5,6 +5,7 @@ const { proxyOllamaChat, proxyOllamaTags, proxyOllamaShow } = require("./server/
 const { scanOllama } = require("./server/network");
 const { proxyOllamaImageModels, generateImage, enhancePrompt, contentToImagePrompts } = require("./server/image");
 const { fetchUrlContent, transcribeYouTubeAudio } = require("./server/url-fetch");
+const { searchWeb } = require("./server/search");
 const { listSystemVoices, speakWithSay, stopSay } = require("./server/speech");
 const { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives } = require("./server/archive");
 const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file");
@@ -47,6 +48,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/fetch-url") {
     fetchUrlContent(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/search") {
+    searchWeb(req, res);
     return;
   }
 
