@@ -527,8 +527,10 @@ async function handleTitleCommand(tab, tabId, content) {
   if (state.activeTabId === tabId) renderChat();
 }
 
-function buildMessages(tabId = state.activeTabId) {
+function buildMessages(tabId = state.activeTabId, contextEndIndex = -1) {
   const tab = getTab(tabId) || getActiveTab();
+  // Optionally only consider messages up to (and including) contextEndIndex.
+  const sourceMessages = contextEndIndex >= 0 ? tab.messages.slice(0, contextEndIndex + 1) : tab.messages;
   const rawNames = (dom.userName.value || "").trim();
   let nameInstruction = "";
   if (rawNames) {
@@ -544,13 +546,13 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
 
   // Find the last compact boundary - only include messages after it
   let startIndex = 0;
-  for (let i = tab.messages.length - 1; i >= 0; i--) {
-    if (tab.messages[i].isCompactSummary) {
+  for (let i = sourceMessages.length - 1; i >= 0; i--) {
+    if (sourceMessages[i].isCompactSummary) {
       startIndex = i;
       break;
     }
   }
-  const relevantMessages = tab.messages.slice(startIndex).slice(-24);
+  const relevantMessages = sourceMessages.slice(startIndex).slice(-24);
 
   const mapped = [];
   for (const msg of relevantMessages) {
@@ -621,6 +623,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
   let content = "";
   let thinkingContent = "";
   let usageStats = null;
+  let aborted = false;
   const showThinking = dom.showThinkingCheckbox?.checked || false;
   try {
     const fetchBody = {
@@ -765,6 +768,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
   } catch (error) {
     state.streamingInfo = null;
     if (error.name === "AbortError") {
+      aborted = true;
       if (content.trim()) {
         const reply = { role: "assistant", content: content.trim(), timestamp: Date.now() };
         if (thinkingContent) reply.thinking = thinkingContent;
@@ -795,9 +799,10 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
       if (state.activeTabId === tabId) renderContextMeter();
     }
   }
+  return aborted;
 }
 
-export async function regenerateReply(tabId = state.activeTabId, insertIndex = -1) {
+export async function regenerateReply(tabId = state.activeTabId, insertIndex = -1, contextEndIndex = -1) {
   const tab = getTab(tabId);
   if (!tab) return;
 
@@ -826,12 +831,13 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
   let content = "";
   let thinkingContent = "";
   let usageStats = null;
+  let aborted = false;
   const showThinking = dom.showThinkingCheckbox?.checked || false;
 
   try {
     const fetchBody = {
       model: dom.modelSelect.value,
-      messages: buildMessages(tabId),
+      messages: buildMessages(tabId, contextEndIndex),
       options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
       timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
     };
@@ -982,6 +988,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
   } catch (error) {
     state.streamingInfo = null;
     if (error.name === "AbortError") {
+      aborted = true;
       if (content.trim()) {
         if (state.activeTabId === tabId) {
           const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
@@ -1016,6 +1023,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       if (state.activeTabId === tabId) renderContextMeter();
     }
   }
+  return aborted;
 }
 
 // Deliver a proactive message (reminder / greeting / nudge) into the active tab.
@@ -1246,6 +1254,23 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   if (tab.locked) return;
 
   markActivity();
+
+  // Handle /retry [Nx] — re-answer my last message N times, each a fresh reply
+  // appended after the previous (no duplicate user bubble; old replies kept).
+  const retryMatch = content && content.match(/^\/retry(?:\s+(\d+)x)?\s*$/i);
+  if (retryMatch) {
+    let lastUserIdx = -1;
+    for (let i = tab.messages.length - 1; i >= 0; i--) {
+      if (tab.messages[i].role === "user") { lastUserIdx = i; break; }
+    }
+    if (lastUserIdx === -1) return; // nothing to retry
+    const times = Math.min(8, Math.max(1, parseInt(retryMatch[1], 10) || 1));
+    for (let k = 0; k < times; k++) {
+      const wasAborted = await regenerateReply(tabId, -1, lastUserIdx);
+      if (wasAborted) break; // user hit stop — abandon the rest of the batch
+    }
+    return;
+  }
 
   // Handle /remind command — schedule a proactive reminder
   if (content && /^\/remind(\s|$)/.test(content)) {

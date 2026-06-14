@@ -151,6 +151,7 @@ const UI = {
     cmd_compact: "Compress context, keep summary",
     cmd_imagine: "Generate image",
     cmd_note: "Record a note, no AI reply",
+    cmd_retry: "Re-answer your last message; add Nx to repeat N times",
     cmd_title: "Change tab title, [tags] to add tags",
     cmd_url: "Parse webpage/YouTube, add prompt: /url [prompt] https://...",
     cmd_remember: "Remember a fact about you long-term",
@@ -325,6 +326,7 @@ const UI = {
     cmd_compact: "压缩上下文，保留摘要",
     cmd_imagine: "生成图片",
     cmd_note: "记录笔记，不生成 AI 回复",
+    cmd_retry: "重答上一条消息；加 Nx 可重复 N 次（如 /retry 3x）",
     cmd_title: "修改标签页标题，[tags] 添加标签",
     cmd_url: "解析网页/YouTube，可加prompt：/url [prompt] https://...",
     cmd_remember: "长期记住关于你的一件事",
@@ -499,6 +501,7 @@ const UI = {
     cmd_compact: "壓縮上下文，保留摘要",
     cmd_imagine: "生成圖片",
     cmd_note: "記錄筆記，不生成 AI 回覆",
+    cmd_retry: "重答上一條訊息；加 Nx 可重複 N 次（如 /retry 3x）",
     cmd_title: "修改標籤頁標題，[tags] 新增標籤",
     cmd_url: "解析網頁/YouTube，可加prompt：/url [prompt] https://...",
     cmd_remember: "長期記住關於你的一件事",
@@ -825,11 +828,12 @@ export function getLocalizedCommands() {
     { name: "/clear", desc: t("cmd_clear") },
     { name: "/compact", desc: t("cmd_compact") },
     { name: "/imagine", desc: t("cmd_imagine") },
-    { name: "/note", desc: t("cmd_note") },
     { name: "/memory", desc: t("cmd_remember") },
+    { name: "/note", desc: t("cmd_note") },
     { name: "/remind", desc: t("cmd_remind") },
+    { name: "/retry", desc: t("cmd_retry") },
     { name: "/search", desc: t("cmd_search") },
     { name: "/title", desc: t("cmd_title") },
     { name: "/url", desc: t("cmd_url") },
-  ];
+  ].sort((a, b) => a.name.localeCompare(b.name));
 }
