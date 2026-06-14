@@ -486,17 +486,21 @@ export function renderTabs() {
     const actionsCol = document.createElement("div");
     actionsCol.className = "tabActions";
 
-    if (state.tabs.length > 1 && !tab.locked) {
+    {
       const closeButton = document.createElement("button");
       closeButton.className = "closeTab";
       closeButton.type = "button";
       closeButton.title = "关闭这个聊天";
       closeButton.setAttribute("aria-label", "关闭这个聊天");
       closeButton.textContent = "×";
-      closeButton.addEventListener("click", (event) => {
-        event.stopPropagation();
-        closeTab(tab.id);
-      });
+      if (tab.locked || state.tabs.length <= 1) {
+        closeButton.disabled = true;
+      } else {
+        closeButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          closeTab(tab.id);
+        });
+      }
       actionsCol.appendChild(closeButton);
     }
 
@@ -506,10 +510,14 @@ export function renderTabs() {
     tagButton.title = "管理标签";
     tagButton.setAttribute("aria-label", "管理标签");
     tagButton.textContent = "🏷";
-    tagButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      showTagContextMenu(event, tab);
-    });
+    if (tab.locked) {
+      tagButton.disabled = true;
+    } else {
+      tagButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        showTagContextMenu(event, tab);
+      });
+    }
     actionsCol.appendChild(tagButton);
 
     tabButton.appendChild(actionsCol);

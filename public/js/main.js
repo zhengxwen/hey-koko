@@ -402,12 +402,33 @@ dom.stopTranslateBtn.addEventListener("click", stopTranslation);
     if (!active) { quickPromptPopup.hidden = true; return; }
     const prompt = active.dataset.prompt;
     const input = dom.messageInput;
-    // Replace entire input (including the "?" trigger) with the prompt
-    input.value = prompt;
-    input.selectionStart = input.selectionEnd = prompt.length;
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    const val = input.value;
+    // If triggered by "?" prefix, replace the "?" and insert prompt; otherwise insert at cursor
+    if (val.startsWith("?") && !val.includes("\n") && val.split(/\s/)[0] === val.trimEnd()) {
+      input.value = prompt;
+      input.selectionStart = input.selectionEnd = prompt.length;
+    } else {
+      input.value = val.slice(0, start) + prompt + val.slice(end);
+      input.selectionStart = input.selectionEnd = start + prompt.length;
+    }
     input.focus();
     quickPromptPopup.hidden = true;
   };
+
+  // Ctrl+/ shortcut to toggle quick prompt popup
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "/" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (quickPromptPopup.hidden) {
+        showQuickPromptPopup();
+        dom.messageInput.focus();
+      } else {
+        quickPromptPopup.hidden = true;
+      }
+    }
+  });
 }
 
 // Ask-suggest button (AI generates questions in chat bubble)

@@ -1,5 +1,6 @@
 // Text-to-Speech functionality
 import { dom, state } from './state.js';
+import { t } from './i18n.js';
 
 function mathToSpeech(expr) {
   return expr
@@ -90,7 +91,7 @@ export function stopSpeech() {
     delete bodyEl.dataset.originalHtml;
   }
   if (state.activeSpeechButton) {
-    state.activeSpeechButton.textContent = "朗读";
+    state.activeSpeechButton.textContent = t("btn_speak");
     state.activeSpeechButton.classList.remove("isSpeaking");
     state.activeSpeechButton = null;
   }
@@ -205,7 +206,7 @@ export async function speakMessage(content, button) {
 
   stopSpeech();
   const messageEl = button.closest(".message");
-  const bodyEl = messageEl?.querySelector(".markdownBody");
+  const bodyEl = messageEl?.querySelector(":scope > .markdownBody");
 
   // Use DOM innerText as the single source of truth for both TTS and highlighting
   // innerText respects layout: \n\n between <p>, \n between <br>/<tr>, \t between <td>
@@ -225,7 +226,7 @@ export async function speakMessage(content, button) {
   const rate = parseFloat(dom.speechRateInput.value) || 1;
 
   state.activeSpeechButton = button;
-  state.activeSpeechButton.textContent = "停止";
+  state.activeSpeechButton.textContent = t("btn_stop");
   state.activeSpeechButton.classList.add("isSpeaking");
 
   state.speechAbortController = new AbortController();

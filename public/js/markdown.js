@@ -253,14 +253,20 @@ export function markdownToHtml(markdown) {
       continue;
     }
 
-    const listItem = line.match(/^\s*[-*]\s+(.+)$/);
+    const listItem = line.match(/^\s*[-*+]\s+(.+)$/);
     if (listItem) {
       if (listType !== "ul") {
         closeList();
         html.push("<ul>");
         listType = "ul";
       }
-      html.push(`<li>${renderInlineMarkdown(listItem[1])}</li>`);
+      const checkboxMatch = listItem[1].match(/^\[([ xX])\]\s*(.*)/);
+      if (checkboxMatch) {
+        const checked = checkboxMatch[1] !== " " ? " checked disabled" : " disabled";
+        html.push(`<li class="task-list-item"><input type="checkbox"${checked}> ${renderInlineMarkdown(checkboxMatch[2])}</li>`);
+      } else {
+        html.push(`<li>${renderInlineMarkdown(listItem[1])}</li>`);
+      }
       continue;
     }
 
@@ -288,7 +294,16 @@ export function markdownToHtml(markdown) {
     }
 
     closeList();
-    html.push(`<p>${renderInlineMarkdown(line)}</p>`);
+    // Handle hard line breaks: trailing \ or two+ spaces
+    const hasHardBreak = /\\$/.test(line) || / {2,}$/.test(line);
+    const trimmedLine = line.replace(/\\$/, '').replace(/ {2,}$/, '');
+    const rendered = renderInlineMarkdown(trimmedLine);
+    // Merge with previous <p> if it ended with <br>
+    if (html.length && html[html.length - 1].endsWith("<br></p>")) {
+      html[html.length - 1] = html[html.length - 1].slice(0, -4) + rendered + (hasHardBreak ? "<br>" : "") + "</p>";
+    } else {
+      html.push(`<p>${rendered}${hasHardBreak ? "<br>" : ""}</p>`);
+    }
   }
 
   if (inCodeBlock) closeCodeBlock();

@@ -300,7 +300,7 @@ async function handleCompactCommand(tab, tabId) {
       content += chunk;
       if (state.streamingInfo) state.streamingInfo.content = content;
       if (state.activeTabId === tabId) {
-        const t = dom.messagesEl.querySelector('.streaming-bubble .markdownBody');
+        const t = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
         if (t) {
           t.innerHTML = markdownToHtml(content);
           dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
@@ -639,7 +639,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
               const details = document.createElement("details");
               details.className = "thinking-details";
               details.open = true;
-              details.innerHTML = `<summary>${t("msg_thinkingInProgress")}</summary><pre class="thinking-content"></pre>`;
+              details.innerHTML = `<summary>${t("msg_thinkingInProgress")}</summary><div class="thinking-content markdownBody"></div>`;
               bubble.appendChild(details);
               const md = document.createElement("div");
               md.className = "markdownBody";
@@ -648,9 +648,9 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
           }
         }
         if (state.activeTabId === tabId) {
-          const pre = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
-          if (pre) {
-            pre.textContent = thinkingContent;
+          const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
+          if (thinkEl) {
+            thinkEl.innerHTML = markdownToHtml(thinkingContent);
             dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
           }
         }
@@ -689,7 +689,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
         content += chunk;
         if (state.streamingInfo) state.streamingInfo.content = content;
         if (state.activeTabId === tabId) {
-          const md = dom.messagesEl.querySelector('.streaming-bubble .markdownBody');
+          const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
           if (md) {
             md.innerHTML = markdownToHtml(content);
             dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
@@ -831,7 +831,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
               const details = document.createElement("details");
               details.className = "thinking-details";
               details.open = true;
-              details.innerHTML = `<summary>${t("msg_thinkingInProgress")}</summary><pre class="thinking-content"></pre>`;
+              details.innerHTML = `<summary>${t("msg_thinkingInProgress")}</summary><div class="thinking-content markdownBody"></div>`;
               bubble.appendChild(details);
               const md = document.createElement("div");
               md.className = "markdownBody";
@@ -840,9 +840,9 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
           }
         }
         if (state.activeTabId === tabId) {
-          const pre = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
-          if (pre) {
-            pre.textContent = thinkingContent;
+          const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
+          if (thinkEl) {
+            thinkEl.innerHTML = markdownToHtml(thinkingContent);
             dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
           }
         }
@@ -882,7 +882,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
         content += chunk;
         if (state.streamingInfo) state.streamingInfo.content = content;
         if (state.activeTabId === tabId) {
-          const md = dom.messagesEl.querySelector('.streaming-bubble .markdownBody');
+          const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
           if (md) {
             md.innerHTML = markdownToHtml(content);
             dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
@@ -906,7 +906,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     content = content.trim() || "我刚才有点走神了，你再说一次好吗？";
     state.streamingInfo = null;
     if (state.activeTabId === tabId) {
-      const md = dom.messagesEl.querySelector('.streaming-bubble .markdownBody');
+      const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
       if (md) md.innerHTML = markdownToHtml(content);
     }
     const reply = { role: "assistant", content, timestamp: Date.now() };
@@ -928,7 +928,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     if (error.name === "AbortError") {
       if (content.trim()) {
         if (state.activeTabId === tabId) {
-          const md = dom.messagesEl.querySelector('.streaming-bubble .markdownBody');
+          const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
           if (md) md.innerHTML = markdownToHtml(content);
         }
         const reply = { role: "assistant", content: content.trim(), timestamp: Date.now() };
@@ -1476,7 +1476,7 @@ export function renderChat() {
       if (markdownBody) {
         const details = document.createElement("details");
         details.className = "thinking-details";
-        details.innerHTML = `<summary>${t("msg_thinkingSummary")}</summary><pre class="thinking-content">${message.thinking.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>`;
+        details.innerHTML = `<summary>${t("msg_thinkingSummary")}</summary><div class="thinking-content markdownBody">${markdownToHtml(message.thinking)}</div>`;
         el.insertBefore(details, markdownBody);
       }
     }
@@ -1504,7 +1504,7 @@ export function renderChat() {
       transEl.className = `message ${message.role} message-row-right translation-bubble`;
       const transBody = document.createElement("div");
       transBody.className = message.role === "assistant" ? "markdownBody" : "plainBody";
-      transBody.innerHTML = '<span class="thinking-text">翻译中<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
+      transBody.innerHTML = `<span class="thinking-text">${t("msg_translating")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
       transEl.appendChild(transBody);
       row.appendChild(transEl);
       dom.messagesEl.appendChild(row);
@@ -1522,7 +1522,7 @@ export function renderChat() {
       // Timestamp
       const transTs = document.createElement("div");
       transTs.className = "messageTimestamp";
-      transTs.textContent = "翻译";
+      transTs.textContent = t("label_translation");
       transEl.appendChild(transTs);
 
       // Action buttons
@@ -1553,7 +1553,7 @@ export function renderChat() {
       const closeBtn = document.createElement("button");
       closeBtn.className = "messageAction deleteMessage";
       closeBtn.type = "button";
-      closeBtn.title = "关闭翻译";
+      closeBtn.title = t("tooltip_closeTranslation");
       closeBtn.textContent = "×";
       closeBtn.addEventListener("click", () => {
         delete message.translation;

@@ -63,7 +63,7 @@ const UI = {
     btn_stop: "Stop",
     btn_file: "File",
     btn_stopTranslate: "Stop Translation",
-    tooltip_quickPrompt: "Quick prompts (type / to trigger)",
+    tooltip_quickPrompt: "Quick commands or prompts (type / or ? to trigger)",
     tooltip_askSuggest: "AI suggests questions",
     tooltip_file: "Upload file",
     // Message action buttons
@@ -81,6 +81,7 @@ const UI = {
     qp_simple: "Keep it simple",
     qp_summarize: "Summarize in 3 sentences",
     qp_summarizeSimple: "Summarize in 3 sentences, keep it simple",
+    qp_hint: "💡 Type / to use commands: /clear /compact /imagine /note /url /0 /1",
     // Archive overlay
     archive_title: "Chat Archives",
     archive_searchPlaceholder: "Search chat content...",
@@ -116,6 +117,9 @@ const UI = {
     msg_contextSummary: "📋 **Context Summary**\n\n${content}",
     msg_compressFail: "⚠️ Compression failed: ${error}",
     msg_translateFail: "Translation request failed",
+    msg_translating: "Translating",
+    label_translation: "Translation",
+    tooltip_closeTranslation: "Close translation",
     msg_translateFailDetail: "(Translation failed: ${error})",
     msg_translateFailShort: "(Translation failed)",
     msg_noHistory: "No history",
@@ -188,7 +192,7 @@ const UI = {
     btn_stop: "暂停",
     btn_file: "文件",
     btn_stopTranslate: "停止翻译",
-    tooltip_quickPrompt: "快捷指令（输入 / 触发）",
+    tooltip_quickPrompt: "快捷指令（输入 / 或 ? 触发）",
     tooltip_askSuggest: "AI 帮你提问",
     tooltip_file: "上传文件",
     btn_speak: "朗读",
@@ -204,6 +208,7 @@ const UI = {
     qp_simple: "说简单点",
     qp_summarize: "用三句话总结",
     qp_summarizeSimple: "用三句话总结，说简单点",
+    qp_hint: "💡 输入 / 使用命令：/clear /compact /imagine /note /url /0 /1",
     archive_title: "对话存档",
     archive_searchPlaceholder: "搜索对话内容...",
     archive_sortNewOld: "新→旧",
@@ -237,6 +242,9 @@ const UI = {
     msg_contextSummary: "📋 **上下文摘要**\n\n${content}",
     msg_compressFail: "⚠️ 压缩失败：${error}",
     msg_translateFail: "翻译请求失败",
+    msg_translating: "翻译中",
+    label_translation: "翻译",
+    tooltip_closeTranslation: "关闭翻译",
     msg_translateFailDetail: "（翻译失败：${error}）",
     msg_translateFailShort: "（翻译失败）",
     msg_noHistory: "暂无历史记录",
@@ -308,7 +316,7 @@ const UI = {
     btn_stop: "暫停",
     btn_file: "檔案",
     btn_stopTranslate: "停止翻譯",
-    tooltip_quickPrompt: "快捷指令（輸入 / 觸發）",
+    tooltip_quickPrompt: "快捷指令（輸入 / 或 ? 觸發）",
     tooltip_askSuggest: "AI 幫你提問",
     tooltip_file: "上傳檔案",
     btn_speak: "朗讀",
@@ -324,6 +332,7 @@ const UI = {
     qp_simple: "說簡單點",
     qp_summarize: "用三句話總結",
     qp_summarizeSimple: "用三句話總結，說簡單點",
+    qp_hint: "💡 輸入 / 使用命令：/clear /compact /imagine /note /url /0 /1",
     archive_title: "對話存檔",
     archive_searchPlaceholder: "搜尋對話內容...",
     archive_sortNewOld: "新→舊",
@@ -357,6 +366,9 @@ const UI = {
     msg_contextSummary: "📋 **上下文摘要**\n\n${content}",
     msg_compressFail: "⚠️ 壓縮失敗：${error}",
     msg_translateFail: "翻譯請求失敗",
+    msg_translating: "翻譯中",
+    label_translation: "翻譯",
+    tooltip_closeTranslation: "關閉翻譯",
     msg_translateFailDetail: "（翻譯失敗：${error}）",
     msg_translateFailShort: "（翻譯失敗）",
     msg_noHistory: "暫無歷史記錄",
@@ -582,6 +594,9 @@ export function applyUILanguage() {
     if (textNodes.length) textNodes[textNodes.length - 1].textContent = "\n            " + t("btn_file") + "\n          ";
   }
   // Quick prompts
+  // Quick prompt hint
+  const qpHint = document.querySelector(".quickPromptHint");
+  if (qpHint) qpHint.innerHTML = t("qp_hint").replace(/(\/\w+)/g, '<kbd>$1</kbd>');
   const qpItems = document.querySelectorAll(".quickPromptItem");
   const qpKeys = ["qp_understand", "qp_understandTable", "qp_understandTableSimple", "qp_table", "qp_simple", "qp_summarize", "qp_summarizeSimple"];
   qpItems.forEach((item, i) => {

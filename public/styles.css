@@ -812,9 +812,14 @@ button.secondary:disabled {
   transition: opacity 0.15s, background 0.15s;
 }
 
-.tabTagBtn:hover {
+.tabTagBtn:hover:not(:disabled) {
   opacity: 1;
   background: var(--accent-hover);
+}
+
+.tabTagBtn:disabled {
+  opacity: 0.2;
+  cursor: default;
 }
 
 .closeTab {
@@ -830,9 +835,14 @@ button.secondary:disabled {
   flex: 0 0 auto;
 }
 
-.closeTab:hover {
+.closeTab:hover:not(:disabled) {
   background: rgba(32, 33, 36, 0.1);
   color: #202124;
+}
+
+.closeTab:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 .addTab {
@@ -1243,9 +1253,8 @@ button.secondary:disabled {
   margin: 0;
   padding: 8px 10px;
   font-size: 0.78rem;
-  line-height: 1.15;
+  line-height: 1.4;
   color: var(--muted);
-  white-space: pre-wrap;
   word-break: break-word;
   max-height: 300px;
   overflow-y: auto;
@@ -1301,6 +1310,22 @@ button.secondary:disabled {
 .markdownBody li + li,
 .plainBody li + li {
   margin-top: 2px;
+}
+
+.markdownBody li.task-list-item,
+.plainBody li.task-list-item {
+  list-style: none;
+  margin-left: -20px;
+}
+
+.markdownBody li.task-list-item input[type="checkbox"],
+.plainBody li.task-list-item input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  border: none;
+  margin-right: 6px;
+  vertical-align: middle;
+  display: inline;
 }
 
 .markdownBody blockquote,
@@ -1700,6 +1725,24 @@ mark.speak-highlight {
 
 .quickPromptPopup[hidden] {
   display: none;
+}
+
+.quickPromptHint {
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
+.quickPromptHint kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 0.75rem;
+  font-family: inherit;
+  background: var(--bubble);
+  border: 1px solid var(--line);
+  border-radius: 4px;
 }
 
 .quickPromptItem {

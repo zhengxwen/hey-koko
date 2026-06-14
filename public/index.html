@@ -267,6 +267,7 @@
           <div class="inputStack">
             <div id="commandPopup" class="commandPopup" hidden></div>
             <div id="quickPromptPopup" class="quickPromptPopup" hidden>
+              <div class="quickPromptHint">💡 输入 <kbd>/</kbd> 使用命令：<kbd>/clear</kbd> <kbd>/compact</kbd> <kbd>/imagine</kbd> <kbd>/note</kbd> <kbd>/url</kbd> <kbd>/0</kbd> <kbd>/1</kbd></div>
               <div class="quickPromptItem" data-prompt="帮我理解">帮我理解</div>
               <div class="quickPromptItem" data-prompt="帮我理解，生成表格">帮我理解，生成表格</div>
               <div class="quickPromptItem" data-prompt="帮我理解，生成表格，说简单点">帮我理解，生成表格，说简单点</div>
@@ -285,7 +286,7 @@
             </div>
             <textarea id="messageInput" rows="2" placeholder="Say something to Bella..." autofocus></textarea>
           </div>
-          <button id="quickPromptBtn" type="button" class="quickPromptBtn" title="快捷指令（输入 / 触发）">«</button>
+          <button id="quickPromptBtn" type="button" class="quickPromptBtn" title="快捷指令（输入 / 或 ? 触发）">«</button>
           <button id="askSuggestBtn" type="button" class="askSuggestBtn" title="AI 帮你提问">?</button>
           <label class="uploadButton" title="上传文件">
             <input id="fileInput" type="file" accept="image/*,.pdf,.docx,.pptx,.eml,.txt,.md,.markdown" multiple />
