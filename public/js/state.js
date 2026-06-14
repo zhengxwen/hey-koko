@@ -47,6 +47,11 @@ export const dom = {
   uiLanguageSelect: document.querySelector("#uiLanguageSelect"),
   promptLanguageSelect: document.querySelector("#promptLanguageSelect"),
   showThinkingCheckbox: document.querySelector("#showThinking"),
+  numCtxSelect: document.querySelector("#numCtxSelect"),
+  numCtxDisplay: document.querySelector("#numCtxDisplay"),
+  contextMeter: document.querySelector("#contextMeter"),
+  contextMeterFill: document.querySelector("#contextMeterFill"),
+  contextMeterText: document.querySelector("#contextMeterText"),
 };
 
 export const state = {

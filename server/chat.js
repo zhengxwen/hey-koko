@@ -57,6 +57,38 @@ async function proxyOllamaChat(req, res) {
   }
 }
 
+async function proxyOllamaShow(req, res) {
+  try {
+    const body = await readBody(req);
+    if (!body.model) {
+      sendJson(res, 400, { error: "model required" });
+      return;
+    }
+    const response = await fetch(`${config.ollamaUrl}/api/show`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: body.model }),
+    });
+    if (!response.ok) {
+      sendJson(res, response.status, { error: response.statusText });
+      return;
+    }
+    const data = await response.json();
+    // Extract the architectural context length from model_info (key ends with .context_length)
+    let contextLength = null;
+    const info = data.model_info || {};
+    for (const key of Object.keys(info)) {
+      if (key.endsWith(".context_length")) {
+        contextLength = info[key];
+        break;
+      }
+    }
+    sendJson(res, 200, { contextLength });
+  } catch (error) {
+    sendJson(res, 200, { contextLength: null });
+  }
+}
+
 async function proxyOllamaTags(res) {
   try {
     const response = await fetch(`${config.ollamaUrl}/api/tags`);
@@ -71,4 +103,4 @@ async function proxyOllamaTags(res) {
   }
 }
 
-module.exports = { proxyOllamaChat, proxyOllamaTags };
+module.exports = { proxyOllamaChat, proxyOllamaTags, proxyOllamaShow };

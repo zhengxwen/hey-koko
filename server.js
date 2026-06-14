@@ -1,7 +1,7 @@
 const http = require("http");
 const config = require("./server/config");
 const { sendJson, serveStatic, readBody } = require("./server/utils");
-const { proxyOllamaChat, proxyOllamaTags } = require("./server/chat");
+const { proxyOllamaChat, proxyOllamaTags, proxyOllamaShow } = require("./server/chat");
 const { scanOllama } = require("./server/network");
 const { proxyOllamaImageModels, generateImage, enhancePrompt, contentToImagePrompts } = require("./server/image");
 const { fetchUrlContent, transcribeYouTubeAudio } = require("./server/url-fetch");
@@ -17,6 +17,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && req.url === "/api/models") {
     proxyOllamaTags(res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/model-info") {
+    proxyOllamaShow(req, res);
     return;
   }
 

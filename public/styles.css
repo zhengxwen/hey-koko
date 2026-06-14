@@ -1635,6 +1635,54 @@ mark.speak-highlight {
   outline: none;
 }
 
+.contextMeter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px 0;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: default;
+  user-select: none;
+}
+
+.contextMeterBar {
+  flex: 0 0 80px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.contextMeterFill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.3s ease, background 0.3s ease;
+}
+
+.contextMeter.isWarn .contextMeterFill { background: #d97706; }
+.contextMeter.isFull .contextMeterFill { background: #dc2626; }
+.contextMeter.isFull .contextMeterText { color: #dc2626; }
+
+.contextMeterText {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.numCtxDisplay {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-strong);
+  white-space: nowrap;
+}
+
+.numCtxDisplay::after {
+  content: " ⇅";
+  opacity: 0.6;
+}
+
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto auto auto;

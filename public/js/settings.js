@@ -30,6 +30,7 @@ export function saveCurrentSettings() {
       uiLanguage: dom.uiLanguageSelect?.value || "en",
       promptLanguage: dom.promptLanguageSelect?.value || "en",
       showThinking: dom.showThinkingCheckbox?.checked || false,
+      numCtx: dom.numCtxSelect?.value || "32768",
     })
   );
 }
@@ -108,6 +109,8 @@ export function loadSavedSettings() {
   if (savedSettings.promptLanguage && dom.promptLanguageSelect) dom.promptLanguageSelect.value = savedSettings.promptLanguage;
   // Thinking
   if (savedSettings.showThinking && dom.showThinkingCheckbox) dom.showThinkingCheckbox.checked = true;
+  // Context window
+  if (savedSettings.numCtx && dom.numCtxSelect) dom.numCtxSelect.value = savedSettings.numCtx;
 }
 
 // --- userName history ---

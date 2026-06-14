@@ -114,6 +114,16 @@
           </label>
           <div class="urlRow"><button id="editLlmUrl" type="button" class="urlEditBtn" title="编辑地址">✎</button><span id="llmUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
 
+          <label class="numCtxLabel">
+            <span id="numCtxLabelText">上下文长度</span>
+            <select id="numCtxSelect">
+              <option value="4096">4096</option>
+              <option value="8192">8192</option>
+              <option value="16384">16384</option>
+              <option value="32768" selected>32768</option>
+            </select>
+          </label>
+
           <label id="imageModelLabel">
             <span id="imageModelLabelText">图片模型</span>
             <select id="imageModelSelect">
@@ -261,6 +271,12 @@
             <span id="archiveSelectedCount" class="archiveSelectedCount"></span>
             <button id="archiveDeleteBtn" type="button" class="secondary" disabled>删除选中</button>
           </div>
+        </div>
+
+        <div id="contextMeter" class="contextMeter" title="">
+          <div class="contextMeterBar"><div id="contextMeterFill" class="contextMeterFill"></div></div>
+          <span id="contextMeterText" class="contextMeterText"></span>
+          <span id="numCtxDisplay" class="numCtxDisplay" title="上下文窗口大小（num_ctx），在设置里调整"></span>
         </div>
 
         <form id="chatForm" class="composer">

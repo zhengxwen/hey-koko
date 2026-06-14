@@ -16,6 +16,7 @@ import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveC
 import { initLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
 import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
+import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
 
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
@@ -267,9 +268,18 @@ dom.messageInput.addEventListener("input", () => {
 });
 
 // Auto-save when model selections change
-dom.modelSelect.addEventListener("change", saveCurrentSettings);
+dom.modelSelect.addEventListener("change", () => {
+  saveCurrentSettings();
+  refreshModelMaxContext(dom.modelSelect.value);
+});
 dom.imageModelSelect.addEventListener("change", saveCurrentSettings);
 dom.voiceSelect.addEventListener("change", saveCurrentSettings);
+if (dom.numCtxSelect) {
+  dom.numCtxSelect.addEventListener("change", () => {
+    saveCurrentSettings();
+    renderContextMeter();
+  });
+}
 
 // Save settings button
 dom.saveSettings.addEventListener("click", () => {
@@ -1447,5 +1457,5 @@ saveTabs();
 renderTabs();
 updateLockedState();
 renderChat();
-loadModels().catch(() => {});
+loadModels().then(() => refreshModelMaxContext(dom.modelSelect.value)).catch(() => {});
 loadImageModels().catch(() => {});

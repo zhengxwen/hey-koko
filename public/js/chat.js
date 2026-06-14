@@ -11,6 +11,7 @@ import { parseNoteCommand, parseImagineCommands, generateImage } from './image-g
 import { translateMessage } from './translate.js';
 import { parseUrlCommand, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
 import { t, getPrompt, getPromptLanguage } from './i18n.js';
+import { getNumCtx, recordContextUsage, renderContextMeter } from './context-meter.js';
 
 export function setGenerating(active) {
   if (active) {
@@ -259,7 +260,7 @@ async function handleCompactCommand(tab, tabId) {
       body: JSON.stringify({
         model: dom.modelSelect.value,
         messages: compactPrompt,
-        options: { temperature: 0.3 },
+        options: { temperature: 0.3, num_ctx: getNumCtx() },
         timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
       }),
     });
@@ -590,12 +591,13 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
 
   let content = "";
   let thinkingContent = "";
+  let usageStats = null;
   const showThinking = dom.showThinkingCheckbox?.checked || false;
   try {
     const fetchBody = {
       model: dom.modelSelect.value,
       messages,
-      options: { temperature: 0.85, top_p: 0.9 },
+      options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
       timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
     };
     if (showThinking) fetchBody.think = true;
@@ -621,6 +623,16 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     function appendStreamLine(line) {
       if (!line.trim()) return;
       const data = JSON.parse(line);
+      if (data.prompt_eval_count || data.eval_count) {
+        const tps = data.eval_count && data.eval_duration
+          ? (data.eval_count / (data.eval_duration / 1e9))
+          : null;
+        usageStats = {
+          prompt: data.prompt_eval_count || (usageStats?.prompt || 0),
+          eval: data.eval_count || (usageStats?.eval || 0),
+          tps,
+        };
+      }
       const thinkChunk = data.message?.thinking || "";
       const chunk = data.message?.content || "";
       if (!thinkChunk && !chunk) return;
@@ -749,6 +761,10 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
   } finally {
     state.streamingInfo = null;
     setGenerating(false);
+    if (usageStats) {
+      recordContextUsage(tab, usageStats.prompt, usageStats.eval, usageStats.tps);
+      if (state.activeTabId === tabId) renderContextMeter();
+    }
   }
 }
 
@@ -780,13 +796,14 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
 
   let content = "";
   let thinkingContent = "";
+  let usageStats = null;
   const showThinking = dom.showThinkingCheckbox?.checked || false;
 
   try {
     const fetchBody = {
       model: dom.modelSelect.value,
       messages: buildMessages(tabId),
-      options: { temperature: 0.85, top_p: 0.9 },
+      options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
       timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
     };
     if (showThinking) fetchBody.think = true;
@@ -812,6 +829,16 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     function appendStreamLine(line) {
       if (!line.trim()) return;
       const data = JSON.parse(line);
+      if (data.prompt_eval_count || data.eval_count) {
+        const tps = data.eval_count && data.eval_duration
+          ? (data.eval_count / (data.eval_duration / 1e9))
+          : null;
+        usageStats = {
+          prompt: data.prompt_eval_count || (usageStats?.prompt || 0),
+          eval: data.eval_count || (usageStats?.eval || 0),
+          tps,
+        };
+      }
       const thinkChunk = data.message?.thinking || "";
       const chunk = data.message?.content || "";
       if (!thinkChunk && !chunk) return;
@@ -955,6 +982,10 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
   } finally {
     state.streamingInfo = null;
     setGenerating(false);
+    if (usageStats) {
+      recordContextUsage(tab, usageStats.prompt, usageStats.eval, usageStats.tps);
+      if (state.activeTabId === tabId) renderContextMeter();
+    }
   }
 }
 
@@ -966,6 +997,9 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   // Handle /clear command
   if (content && /^\/clear\s*$/.test(content)) {
     tab.messages = [];
+    delete tab.ctxPromptTokens;
+    delete tab.ctxEvalTokens;
+    delete tab.ctxTokensPerSec;
     saveChat();
     renderChat();
     return;
@@ -1605,4 +1639,5 @@ export function renderChat() {
 
   highlightCodeBlocks();
   renderMermaidDiagrams();
+  renderContextMeter();
 }
