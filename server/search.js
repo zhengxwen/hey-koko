@@ -63,9 +63,9 @@ function extractLoadArray(txt) {
   try { return JSON.parse(txt.slice(open, end)); } catch { return null; }
 }
 
-async function searchViaDjs(query, vqd, limit) {
+async function searchViaDjs(query, vqd, limit, df) {
   const params = new URLSearchParams({
-    q: query, kl: "wt-wt", l: "wt-wt", p: "", s: "0", df: "", vqd, ex: "-2", sp: "0",
+    q: query, kl: "wt-wt", l: "wt-wt", p: "", s: "0", df: df || "", vqd, ex: "-2", sp: "0",
   });
   const res = await fetch(`https://links.duckduckgo.com/d.js?${params.toString()}`, {
     headers: { ...BROWSER_HEADERS, Referer: "https://duckduckgo.com/" },
@@ -112,11 +112,11 @@ function parseHtmlResults(html, limit) {
   return results;
 }
 
-async function searchViaHtml(query, limit) {
+async function searchViaHtml(query, limit, df) {
   const res = await fetch("https://html.duckduckgo.com/html/", {
     method: "POST",
     headers: { ...BROWSER_HEADERS, "Content-Type": "application/x-www-form-urlencoded" },
-    body: `q=${encodeURIComponent(query)}&kl=wt-wt`,
+    body: `q=${encodeURIComponent(query)}&kl=wt-wt${df ? `&df=${df}` : ""}`,
     signal: AbortSignal.timeout(12000),
     redirect: "follow",
   });
@@ -125,12 +125,51 @@ async function searchViaHtml(query, limit) {
   return { results, captcha: results.length === 0 && isCaptcha(html) };
 }
 
+// --- Deep read: fetch a result page and extract its main text ---
+
+function extractText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<(nav|footer|header)[\s\S]*?<\/\1>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|h[1-6]|li|tr|blockquote|section|article)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/[^\S\n]+/g, " ").replace(/\n[^\S\n]*/g, "\n").replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function fetchPageText(url, maxChars) {
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": BROWSER_HEADERS["User-Agent"] },
+      signal: AbortSignal.timeout(8000),
+      redirect: "follow",
+    });
+    if (!res.ok) return "";
+    const ct = res.headers.get("content-type") || "";
+    if (!ct.includes("text/html") && !ct.includes("text/plain")) return "";
+    const html = await res.text();
+    return extractText(html).slice(0, maxChars);
+  } catch { return ""; }
+}
+
+async function deepRead(results, count) {
+  const targets = results.slice(0, Math.min(count, 3));
+  await Promise.allSettled(targets.map(async (r) => {
+    r.content = await fetchPageText(r.url, 3500);
+  }));
+}
+
 async function searchWeb(req, res) {
   let body;
   try { body = await readBody(req); } catch { sendJson(res, 400, { error: "invalid body" }); return; }
   const query = (body.query || "").trim();
   if (!query) { sendJson(res, 400, { error: "query is required" }); return; }
-  const LIMIT = 6;
+  const LIMIT = Math.min(10, Math.max(1, parseInt(body.count, 10) || 6));
+  const df = ["d", "w", "m", "y"].includes(body.timelimit) ? body.timelimit : "";
 
   try {
     // Method 1: vqd + d.js JSON (retry once — DDG occasionally throttles a request)
@@ -140,7 +179,7 @@ async function searchWeb(req, res) {
         if (attempt > 0) await new Promise((r) => setTimeout(r, 600));
         const vqd = await getVqd(query);
         if (vqd) {
-          const r = await searchViaDjs(query, vqd, LIMIT);
+          const r = await searchViaDjs(query, vqd, LIMIT, df);
           if (r && r.length) results = r;
         }
       } catch { /* fall through to html */ }
@@ -148,9 +187,14 @@ async function searchWeb(req, res) {
 
     // Method 2: html scrape fallback
     if (!results.length) {
-      const html = await searchViaHtml(query, LIMIT);
+      const html = await searchViaHtml(query, LIMIT, df);
       if (html.results.length) results = html.results;
       else if (html.captcha) { sendJson(res, 200, { results: [], error: "captcha" }); return; }
+    }
+
+    // Deep read: fetch the top pages' text so the model can answer from real content
+    if (body.deep && results.length) {
+      await deepRead(results, parseInt(body.deepCount, 10) || 3);
     }
 
     sendJson(res, 200, { query, results });

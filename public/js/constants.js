@@ -53,7 +53,7 @@ export const COMMANDS = [
   { name: "/note", desc: "记录笔记，不生成 AI 回复" },
   { name: "/memory", desc: "长期记住关于你的一件事" },
   { name: "/remind", desc: "设置提醒，如 /remind 30m 喝水" },
-  { name: "/search", desc: "用DuckDuckGo联网搜索" },
+  { name: "/search", desc: "DuckDuckGo联网搜索 · --deep[=N]/--read 读网页 · --n N 数量 · --day/--week/--month/--year 时间" },
   { name: "/title", desc: "修改标签页标题，[tags] 添加标签" },
   { name: "/url", desc: "解析网页/YouTube，可加prompt：/url [prompt] https://..." },
 ];

@@ -1135,10 +1135,30 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
   }
 }
 
+// Parse /search flags: --deep[=N] / --read, --n N, --day/week/month/year.
+function parseSearchOptions(raw) {
+  let deep = false, deepCount = 3, count = 6, timelimit = "";
+  let q = raw;
+  q = q.replace(/(?:^|\s)--deep(?:=(\d+))?(?=\s|$)/i, (_, n) => { deep = true; if (n) deepCount = Math.min(3, Math.max(1, +n)); return " "; });
+  q = q.replace(/(?:^|\s)--read(?=\s|$)/i, () => { deep = true; return " "; });
+  q = q.replace(/(?:^|\s)--(?:n|num)\s+(\d+)(?=\s|$)/i, (_, n) => { count = Math.min(10, Math.max(1, +n)); return " "; });
+  q = q.replace(/(?:^|\s)--(day|week|month|year)(?=\s|$)/i, (_, t) => { timelimit = { day: "d", week: "w", month: "m", year: "y" }[t.toLowerCase()]; return " "; });
+  return { query: q.replace(/\s+/g, " ").trim(), deep, deepCount, count, timelimit };
+}
+
 // Web search via DuckDuckGo: fetch results, show them as a sources bubble, then
-// let the model answer the query using those results as context.
-async function handleSearchCommand(query, tab, tabId, fullContent) {
+// let the model answer the query using those results (and, with --deep, the
+// fetched page contents) as context.
+async function handleSearchCommand(raw, tab, tabId, fullContent) {
+  const { query, deep, deepCount, count, timelimit } = parseSearchOptions(raw);
+
   tab.messages.push({ role: "user", content: fullContent, timestamp: Date.now() });
+  if (!query) {
+    tab.messages.push({ role: "assistant", content: t("search_usage"), timestamp: Date.now() });
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+    return;
+  }
   saveChat();
   if (state.activeTabId === tabId) renderChat();
 
@@ -1153,7 +1173,8 @@ async function handleSearchCommand(query, tab, tabId, fullContent) {
     pending.className = "message assistant thinking";
     const body = document.createElement("div");
     body.className = "markdownBody";
-    body.innerHTML = `<span class="thinking-text">${t("search_searching")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+    const label = deep ? t("search_searchingDeep") : t("search_searching");
+    body.innerHTML = `<span class="thinking-text">${label}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
     pending.appendChild(body);
     dom.messagesEl.appendChild(pending);
     dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
@@ -1174,7 +1195,7 @@ async function handleSearchCommand(query, tab, tabId, fullContent) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: abortController.signal,
-      body: JSON.stringify({ query, language: getPromptLanguage() }),
+      body: JSON.stringify({ query, deep, deepCount, count, timelimit, language: getPromptLanguage() }),
     });
     const data = await res.json();
 
@@ -1191,11 +1212,20 @@ async function handleSearchCommand(query, tab, tabId, fullContent) {
     saveChat();
     if (state.activeTabId === tabId) renderChat();
 
-    // Hand off to the model: answer the query grounded in the results above.
+    // Hand off to the model: answer the query grounded in the results above
+    // (or the fetched page excerpts when --deep was used).
     setGenerating(false);
     setAvatarState("idle");
     state.currentAbortController = null;
-    await generateProactiveReply(getPrompt("searchAnswer", query), tabId);
+    let instruction = getPrompt("searchAnswer", query);
+    if (deep) {
+      const excerpts = data.results
+        .filter((r) => r.content && r.content.length > 50)
+        .map((r, i) => `【${i + 1}. ${r.title} — ${r.url}】\n${r.content}`)
+        .join("\n\n");
+      if (excerpts) instruction = getPrompt("searchAnswerDeep", query, excerpts);
+    }
+    await generateProactiveReply(instruction, tabId);
   } catch (error) {
     if (error.name === "AbortError") {
       if (pending) pending.remove();
@@ -1234,15 +1264,8 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
 
   // Handle /search command — web search via DuckDuckGo
   if (content && /^\/search(\s|$)/.test(content)) {
-    const q = content.replace(/^\/search\s*/, "").trim();
-    if (!q) {
-      tab.messages.push({ role: "user", content, timestamp: Date.now() });
-      tab.messages.push({ role: "assistant", content: t("search_usage"), timestamp: Date.now() });
-      saveChat();
-      if (state.activeTabId === tabId) renderChat();
-    } else {
-      await handleSearchCommand(q, tab, tabId, content);
-    }
+    const raw = content.replace(/^\/search\s*/, "").trim();
+    await handleSearchCommand(raw, tab, tabId, content);
     return;
   }
 
