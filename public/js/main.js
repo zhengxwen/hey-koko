@@ -1,7 +1,8 @@
 // Main entry point - imports and initializes all modules
 import { dom, state } from './state.js';
 import { SETTINGS_KEY, PERSONALITY_PRESETS, getPersonalityPreset } from './constants.js';
-import { readFileAsDataUrl, convertToJpeg, makePreview } from './utils.js';
+import { readFileAsDataUrl, convertToJpeg, makePreview, escapeHtml } from './utils.js';
+import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
 import { initAvatar } from './avatar.js';
 import { stopSpeech, populateVoiceList } from './speech.js';
@@ -848,26 +849,124 @@ dom.clearChat.addEventListener("click", () => {
 });
 
 // Export chat
-document.querySelector("#exportChat").addEventListener("click", () => {
-  const tab = getActiveTab();
-  const exportMessages = tab.messages.map((msg) => {
-    const m = { ...msg };
-    if (m.timestamp) {
-      const d = new Date(m.timestamp);
-      const pad = (n) => String(n).padStart(2, "0");
-      m.timestamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-    }
-    return m;
-  });
-  const data = JSON.stringify({ title: tab.title, userName: dom.userName.value, personality: tab.personality, persona: tab.persona, messages: exportMessages }, null, 2);
-  const blob = new Blob([data], { type: "application/json" });
+// --- Conversation export (Markdown / PDF / JSON) ---
+function exportTimeStr(ts, withSeconds = false) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const p = (n) => String(n).padStart(2, "0");
+  const base = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return withSeconds ? `${base}:${p(d.getSeconds())}` : base;
+}
+
+function exportImgSrc(img) {
+  if (!img) return null;
+  if (img.startsWith("data:") || img.startsWith("http")) return img;
+  const mime = img.startsWith("/9j/") ? "image/jpeg" : "image/png";
+  return `data:${mime};base64,${img}`;
+}
+
+function exportImages(m) {
+  const out = [];
+  if (m.previewImage) out.push(m.previewImage);
+  if (m.generatedImages?.length) out.push(...m.generatedImages);
+  else if (m.isFilePreview && m.images?.length) out.push(...m.images);
+  return out.map(exportImgSrc).filter(Boolean);
+}
+
+function exportNames() {
+  const you = (dom.userName.value || "").split(/[,，、\s]+/).filter(Boolean)[0] || "You";
+  const ai = dom.aiName?.textContent?.trim() || "Bella";
+  return { you, ai };
+}
+
+function downloadBlob(filename, content, mime) {
+  const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${tab.title || "对话"}.json`;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
-});
+}
+
+function exportJson(tab) {
+  const messages = tab.messages.map((msg) => {
+    const m = { ...msg };
+    if (m.timestamp) m.timestamp = exportTimeStr(m.timestamp, true);
+    return m;
+  });
+  const data = JSON.stringify({ title: tab.title, userName: dom.userName.value, personality: tab.personality, persona: tab.persona, messages }, null, 2);
+  downloadBlob(`${tab.title || "对话"}.json`, data, "application/json");
+}
+
+function exportMarkdown(tab) {
+  const { you, ai } = exportNames();
+  const lines = [`# ${tab.title || "对话"}`, "", `*${exportTimeStr(Date.now())} · ${you} & ${ai}*`, ""];
+  for (const m of tab.messages) {
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    const who = m.role === "user" ? you : ai;
+    const ts = m.timestamp ? ` · ${exportTimeStr(m.timestamp)}` : "";
+    lines.push(`### ${who}${ts}`, "");
+    if (m.content) lines.push(m.content);
+    const imgs = exportImages(m);
+    if (imgs.length) lines.push(`${m.content ? "\n" : ""}_[图片 ×${imgs.length}]_`);
+    lines.push("");
+  }
+  downloadBlob(`${tab.title || "对话"}.md`, lines.join("\n"), "text/markdown");
+}
+
+function exportPdf(tab) {
+  const { you, ai } = exportNames();
+  const win = window.open("", "_blank");
+  if (!win) { alert("Popup blocked — allow popups to export PDF."); return; }
+  const rows = tab.messages.filter((m) => m.role === "user" || m.role === "assistant").map((m) => {
+    const who = m.role === "user" ? you : ai;
+    const ts = m.timestamp ? exportTimeStr(m.timestamp) : "";
+    const body = m.role === "assistant"
+      ? `<div class="body">${markdownToHtml(m.content || "")}</div>`
+      : `<div class="body plain">${escapeHtml(m.content || "")}</div>`;
+    const imgs = exportImages(m).map((s) => `<img src="${s}" />`).join("");
+    return `<div class="msg ${m.role}"><div class="who">${escapeHtml(who)}<span class="ts">${ts}</span></div>${body}${imgs ? `<div class="imgs">${imgs}</div>` : ""}</div>`;
+  }).join("");
+  const css = `
+    body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:760px;margin:32px auto;padding:0 20px;color:#1a1a1a;line-height:1.6}
+    h1{font-size:22px;border-bottom:2px solid #eee;padding-bottom:8px}
+    .meta{color:#888;font-size:13px;margin-bottom:24px}
+    .msg{margin:14px 0;padding:10px 14px;border-radius:10px;page-break-inside:avoid}
+    .msg.user{background:#eef5f4}.msg.assistant{background:#faf7f9}
+    .who{font-weight:700;font-size:13px;margin-bottom:4px}
+    .ts{font-weight:400;color:#aaa;margin-left:8px;font-size:12px}
+    .body{font-size:14px}.plain{white-space:pre-wrap}
+    .imgs img{max-width:100%;border-radius:8px;margin-top:8px}
+    pre{background:#f4f4f4;padding:10px;border-radius:8px;overflow-x:auto;font-size:12.5px}
+    code{font-family:ui-monospace,Menlo,monospace}
+    table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px 8px}
+    @media print{.msg{background:#fff !important;border:1px solid #eee}}`;
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(tab.title || "对话")}</title><style>${css}</style></head><body><h1>${escapeHtml(tab.title || "对话")}</h1><div class="meta">${exportTimeStr(Date.now())} · ${escapeHtml(you)} &amp; ${escapeHtml(ai)}</div>${rows}<script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script></body></html>`);
+  win.document.close();
+}
+
+// Export menu (Markdown / PDF / JSON)
+{
+  const exportBtn = document.querySelector("#exportChat");
+  const exportMenu = document.querySelector("#exportMenu");
+  exportBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    exportMenu.hidden = !exportMenu.hidden;
+  });
+  exportMenu.addEventListener("click", (e) => {
+    const fmt = e.target.closest("button")?.dataset.fmt;
+    if (!fmt) return;
+    exportMenu.hidden = true;
+    const tab = getActiveTab();
+    if (fmt === "md") exportMarkdown(tab);
+    else if (fmt === "pdf") exportPdf(tab);
+    else if (fmt === "json") exportJson(tab);
+  });
+  document.addEventListener("click", (e) => {
+    if (!exportMenu.hidden && !e.target.closest(".exportWrapper")) exportMenu.hidden = true;
+  });
+}
 
 // Import chat
 document.querySelector("#importChat").addEventListener("change", async (event) => {

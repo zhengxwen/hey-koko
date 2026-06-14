@@ -91,7 +91,14 @@
             <button id="clearChat" type="button" class="secondary">清空当前聊天</button>
           </div>
           <div class="actions">
-            <button id="exportChat" type="button" class="secondary">导出对话</button>
+            <div class="exportWrapper">
+              <button id="exportChat" type="button" class="secondary">导出对话</button>
+              <div id="exportMenu" class="exportMenu" hidden>
+                <button id="exportMd" type="button" data-fmt="md">Markdown</button>
+                <button id="exportPdf" type="button" data-fmt="pdf">PDF</button>
+                <button id="exportJson" type="button" data-fmt="json">JSON</button>
+              </div>
+            </div>
             <label class="importButton secondary">
               <input id="importChat" type="file" accept=".json" multiple />
               导入对话

@@ -593,6 +593,48 @@ input[type="file"] {
   gap: 10px;
 }
 
+.exportWrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.exportMenu[hidden] {
+  display: none;
+}
+
+.exportMenu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  z-index: 20;
+}
+
+.exportMenu button {
+  min-height: 0;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  background: transparent;
+  color: var(--ink);
+  border-radius: 6px;
+}
+
+.exportMenu button:hover {
+  background: var(--accent-hover);
+}
+
 button {
   border: 0;
   border-radius: 8px;
