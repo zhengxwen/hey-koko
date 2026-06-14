@@ -22,6 +22,10 @@ export function initArchive() {
   const archiveSelectedCount = document.querySelector("#archiveSelectedCount");
   const archivePreviewEmpty = document.querySelector("#archivePreviewEmpty");
   const archiveDirHint = document.querySelector("#archiveDirHint");
+  const archiveSemanticBtn = document.querySelector("#archiveSemanticBtn");
+  const archiveIndexBtn = document.querySelector("#archiveIndexBtn");
+
+  const embedModel = () => (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:0.6b";
 
   fetch("/api/archives/dir").then(r => r.json()).then(d => {
     if (d.dir) archiveDirHint.textContent = t("archive_dirHint", { dir: d.dir });
@@ -42,6 +46,8 @@ export function initArchive() {
   let activeTagFilter = null;
   let selectedArchives = new Set();
   let activePreviewFilename = null;
+  let semanticMode = false;
+  let semanticScores = null; // Map<filename, score> when a semantic search is active
 
   const archiveChatBtn = document.querySelector("#archiveChat");
 
@@ -126,6 +132,11 @@ export function initArchive() {
     activeTagFilter = null;
     activePreviewFilename = null;
     archiveSearch.value = "";
+    semanticMode = false;
+    semanticScores = null;
+    archiveSemanticBtn.classList.remove("isActive");
+    archiveSearch.placeholder = t("archive_searchPlaceholder");
+    archiveIndexBtn.style.display = "none";
     archiveSelectAllCheckbox.checked = false;
     archiveChatBtn.disabled = true;
     updateSelectionUI();
@@ -170,7 +181,102 @@ export function initArchive() {
     archiveExpandAllBtn.textContent = allExpanded ? "收起" : "展开";
   });
 
-  archiveSearch.addEventListener("input", () => { renderArchiveList(); });
+  archiveSearch.addEventListener("input", () => {
+    if (semanticMode) {
+      // Wait for Enter to run the (model-backed) semantic search; clearing resets.
+      if (!archiveSearch.value.trim()) { semanticScores = null; renderArchiveList(); }
+      return;
+    }
+    renderArchiveList();
+  });
+  archiveSearch.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && semanticMode) { e.preventDefault(); runSemanticSearch(); }
+  });
+
+  archiveSemanticBtn.addEventListener("click", () => {
+    semanticMode = !semanticMode;
+    semanticScores = null;
+    archiveSemanticBtn.classList.toggle("isActive", semanticMode);
+    archiveSearch.placeholder = semanticMode ? t("archive_semanticHint") : t("archive_searchPlaceholder");
+    archiveIndexBtn.style.display = semanticMode ? "" : "none";
+    if (semanticMode) archiveSearch.focus();
+    renderArchiveList();
+  });
+
+  archiveIndexBtn.addEventListener("click", () => buildIndex());
+
+  // Build / refresh the embedding index, showing progress on the button.
+  async function buildIndex() {
+    const orig = t("archive_index");
+    archiveIndexBtn.disabled = true;
+    try {
+      const res = await fetch("/api/archives/index", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: embedModel() }),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let result = { ok: true };
+      const handle = (line) => {
+        if (!line.trim()) return;
+        let m; try { m = JSON.parse(line); } catch { return; }
+        if (m.status === "start" || m.status === "progress") {
+          archiveIndexBtn.textContent = t("archive_indexing", { done: m.done || 0, total: m.todo });
+        } else if (m.status === "done") {
+          result = { ok: true, indexed: m.indexed };
+        } else if (m.status === "error") {
+          result = { ok: false, message: m.message };
+        }
+      };
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n"); buffer = lines.pop() || "";
+        for (const l of lines) handle(l);
+      }
+      if (buffer.trim()) handle(buffer);
+      archiveIndexBtn.textContent = orig;
+      archiveIndexBtn.disabled = false;
+      return result;
+    } catch (e) {
+      archiveIndexBtn.textContent = orig;
+      archiveIndexBtn.disabled = false;
+      return { ok: false, message: e.message };
+    }
+  }
+
+  async function postSearch(query) {
+    const res = await fetch("/api/archives/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, model: embedModel() }),
+    });
+    return res.json();
+  }
+
+  async function runSemanticSearch() {
+    const query = archiveSearch.value.trim();
+    if (!query) { semanticScores = null; renderArchiveList(); return; }
+    archiveList.innerHTML = `<div class="archiveEmpty">${t("archive_searching")}</div>`;
+    try {
+      let data = await postSearch(query);
+      if (data.needsIndex) {
+        archiveList.innerHTML = `<div class="archiveEmpty">${t("archive_indexFirst")}</div>`;
+        const r = await buildIndex();
+        if (!r.ok) { archiveList.innerHTML = `<div class="archiveEmpty">${t("archive_searchErr", { error: r.message || "" })}</div>`; return; }
+        data = await postSearch(query);
+      }
+      if (data.error) { archiveList.innerHTML = `<div class="archiveEmpty">${t("archive_searchErr", { error: data.error })}</div>`; return; }
+      semanticScores = new Map((data.results || []).map(r => [r.file, r.score]));
+      renderArchiveList();
+    } catch (e) {
+      archiveList.innerHTML = `<div class="archiveEmpty">${t("archive_searchErr", { error: e.message })}</div>`;
+    }
+  }
 
   archiveSelectAllCheckbox.addEventListener("change", () => {
     const filtered = getFilteredArchives();
@@ -187,6 +293,12 @@ export function initArchive() {
     let list = [...archivesData];
     if (activeTagFilter) {
       list = list.filter(a => (a.tags || []).some(t => t.name === activeTagFilter));
+    }
+    // Semantic results: keep only scored archives, ordered by relevance.
+    if (semanticMode && semanticScores) {
+      list = list.filter(a => semanticScores.has(a.filename));
+      list.sort((a, b) => (semanticScores.get(b.filename) || 0) - (semanticScores.get(a.filename) || 0));
+      return list;
     }
     const query = archiveSearch.value.trim().toLowerCase();
     if (query) {
@@ -231,12 +343,69 @@ export function initArchive() {
     });
   }
 
+  // Build one archive card element (shared by tree + flat semantic views).
+  function createArchiveCard(archive, depth) {
+    const card = document.createElement("div");
+    const isActive = activePreviewFilename === archive.filename;
+    card.className = "archiveCard" + (selectedArchives.has(archive.filename) ? " isSelected" : "") + (isActive ? " isActive" : "");
+    card.dataset.filename = archive.filename;
+    card.style.paddingLeft = (depth * 16 + 8) + "px";
+
+    const tagsHtml = (archive.tags || []).map(t =>
+      `<span class="archiveCardTag" style="background:${t.color || "#e0e0e0"}">${escapeHtml(t.name)}</span>`
+    ).join("");
+
+    const baseName = archive.filename.split("/").pop();
+    const firstUserMsg = (archive.preview || []).find(p => p.role === "user");
+    const previewText = firstUserMsg ? firstUserMsg.content.slice(0, 60) : "";
+    const score = semanticScores && semanticScores.has(archive.filename)
+      ? `<span class="archiveCardScore">${Math.round(semanticScores.get(archive.filename) * 100)}%</span>` : "";
+
+    card.innerHTML = `
+      <input type="checkbox" class="archiveCardCheckbox" ${selectedArchives.has(archive.filename) ? "checked" : ""} />
+      <div class="archiveCardInfo">
+        <div class="archiveCardTitle">${score}${escapeHtml(archive.title)}</div>
+        <div class="archiveCardMeta">
+          <span>${escapeHtml(baseName)}</span>
+          <span>(${archive.messageCount}条消息)</span>
+          ${tagsHtml}
+        </div>
+        ${previewText ? `<div class="archiveCardPreview">${escapeHtml(previewText)}</div>` : ""}
+      </div>
+    `;
+
+    const checkbox = card.querySelector(".archiveCardCheckbox");
+    checkbox.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (checkbox.checked) selectedArchives.add(archive.filename);
+      else selectedArchives.delete(archive.filename);
+      card.classList.toggle("isSelected", checkbox.checked);
+      updateSelectionUI();
+    });
+
+    card.addEventListener("click", (e) => {
+      if (e.target === checkbox) return;
+      activePreviewFilename = archive.filename;
+      archiveList.querySelectorAll(".archiveCard").forEach(c => c.classList.remove("isActive"));
+      card.classList.add("isActive");
+      openArchivePreview(archive.filename);
+    });
+
+    return card;
+  }
+
   function renderArchiveList() {
     const filtered = getFilteredArchives();
     archiveList.innerHTML = "";
 
     if (filtered.length === 0) {
       archiveList.innerHTML = `<div class="archiveEmpty">${archivesData.length === 0 ? "暂无存档对话" : "没有匹配的结果"}</div>`;
+      return;
+    }
+
+    // Semantic results: flat list in relevance order (skip the directory tree).
+    if (semanticMode && semanticScores) {
+      filtered.forEach(archive => archiveList.appendChild(createArchiveCard(archive, 0)));
       return;
     }
 
@@ -285,54 +454,7 @@ export function initArchive() {
 
       // Render files
       node.files.forEach(archive => {
-        const card = document.createElement("div");
-        const isActive = activePreviewFilename === archive.filename;
-        card.className = "archiveCard" + (selectedArchives.has(archive.filename) ? " isSelected" : "") + (isActive ? " isActive" : "");
-        card.dataset.filename = archive.filename;
-        card.style.paddingLeft = (depth * 16 + 8) + "px";
-
-        const tagsHtml = (archive.tags || []).map(t =>
-          `<span class="archiveCardTag" style="background:${t.color || "#e0e0e0"}">${escapeHtml(t.name)}</span>`
-        ).join("");
-
-        const baseName = archive.filename.split("/").pop();
-        const firstUserMsg = (archive.preview || []).find(p => p.role === "user");
-        const previewText = firstUserMsg ? firstUserMsg.content.slice(0, 60) : "";
-
-        card.innerHTML = `
-          <input type="checkbox" class="archiveCardCheckbox" ${selectedArchives.has(archive.filename) ? "checked" : ""} />
-          <div class="archiveCardInfo">
-            <div class="archiveCardTitle">${escapeHtml(archive.title)}</div>
-            <div class="archiveCardMeta">
-              <span>${escapeHtml(baseName)}</span>
-              <span>(${archive.messageCount}条消息)</span>
-              ${tagsHtml}
-            </div>
-            ${previewText ? `<div class="archiveCardPreview">${escapeHtml(previewText)}</div>` : ""}
-          </div>
-        `;
-
-        const checkbox = card.querySelector(".archiveCardCheckbox");
-        checkbox.addEventListener("click", (e) => {
-          e.stopPropagation();
-          if (checkbox.checked) {
-            selectedArchives.add(archive.filename);
-          } else {
-            selectedArchives.delete(archive.filename);
-          }
-          card.classList.toggle("isSelected", checkbox.checked);
-          updateSelectionUI();
-        });
-
-        card.addEventListener("click", (e) => {
-          if (e.target === checkbox) return;
-          activePreviewFilename = archive.filename;
-          archiveList.querySelectorAll(".archiveCard").forEach(c => c.classList.remove("isActive"));
-          card.classList.add("isActive");
-          openArchivePreview(archive.filename);
-        });
-
-        container.appendChild(card);
+        container.appendChild(createArchiveCard(archive, depth));
       });
     }
 

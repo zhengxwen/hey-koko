@@ -71,25 +71,28 @@ function readArchiveFile(filePath) {
   return raw.toString("utf-8");
 }
 
+// Recursively list archive filenames (skips dotfiles like the embeddings index).
+function scanArchiveFilenames() {
+  ensureArchivesDir();
+  function scanDir(dir, prefix) {
+    const results = [];
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      if (entry.isDirectory()) {
+        results.push(...scanDir(path.join(dir, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name));
+      } else if (entry.name.endsWith(".json") || entry.name.endsWith(".json.gz") || entry.name.endsWith(".json.zst")) {
+        results.push(prefix ? `${prefix}/${entry.name}` : entry.name);
+      }
+    }
+    return results;
+  }
+  return scanDir(config.ARCHIVES_DIR, "").sort();
+}
+
 function listArchives(res) {
   try {
-    ensureArchivesDir();
-
-    // Recursively scan all subdirectories
-    function scanDir(dir, prefix) {
-      const results = [];
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          results.push(...scanDir(path.join(dir, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name));
-        } else if (entry.name.endsWith(".json") || entry.name.endsWith(".json.gz") || entry.name.endsWith(".json.zst")) {
-          results.push(prefix ? `${prefix}/${entry.name}` : entry.name);
-        }
-      }
-      return results;
-    }
-
-    const files = scanDir(config.ARCHIVES_DIR, "").sort();
+    const files = scanArchiveFilenames();
 
     const archives = files.map(filename => {
       try {
@@ -280,4 +283,4 @@ async function moveArchives(req, res) {
   }
 }
 
-module.exports = { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives };
+module.exports = { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives, readArchiveFile, scanArchiveFilenames };

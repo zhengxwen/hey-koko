@@ -139,6 +139,13 @@
           </label>
           <div class="urlRow"><button id="editImageUrl" type="button" class="urlEditBtn" title="编辑地址">✎</button><span id="imageUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
 
+          <label id="embedModelLabel">
+            <span id="embedModelLabelText">Embedding 模型（归档语义搜索）</span>
+            <select id="embedModelSelect">
+              <option value="">未检测到 embedding 模型</option>
+            </select>
+          </label>
+
           <div class="hintRow">
             <button id="scanOllama" type="button" class="secondary scanBtn" title="Scan local network for Ollama instances">扫描</button>
             <div>
@@ -281,6 +288,8 @@
             <h2 class="archiveTitle">对话存档</h2>
             <div class="archiveToolbar">
               <input id="archiveSearch" type="text" class="archiveSearchInput" placeholder="搜索对话内容..." />
+              <button id="archiveSemanticBtn" type="button" class="secondary archiveSortBtn" title="语义搜索（按意思找）">语义</button>
+              <button id="archiveIndexBtn" type="button" class="secondary archiveSortBtn" title="建立/更新语义索引" style="display:none">建立索引</button>
               <button id="archiveSortBtn" type="button" class="secondary archiveSortBtn" title="按时间排序">新→旧</button>
               <button id="archiveExpandAllBtn" type="button" class="secondary archiveSortBtn" title="展开全部目录">展开</button>
               <span id="archiveDirHint" class="archiveDirHint"></span>

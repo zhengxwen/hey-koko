@@ -49,6 +49,7 @@ export const dom = {
   showThinkingCheckbox: document.querySelector("#showThinking"),
   numCtxSelect: document.querySelector("#numCtxSelect"),
   numCtxDisplay: document.querySelector("#numCtxDisplay"),
+  embedModelSelect: document.querySelector("#embedModelSelect"),
   memoryList: document.querySelector("#memoryList"),
   memoryInput: document.querySelector("#memoryInput"),
   memoryAddBtn: document.querySelector("#memoryAddBtn"),

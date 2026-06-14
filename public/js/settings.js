@@ -31,6 +31,7 @@ export function saveCurrentSettings() {
       promptLanguage: dom.promptLanguageSelect?.value || "en",
       showThinking: dom.showThinkingCheckbox?.checked || false,
       numCtx: dom.numCtxSelect?.value || "32768",
+      embedModel: dom.embedModelSelect?.value || "qwen3-embedding:0.6b",
       dailyGreeting: dom.dailyGreetingToggle?.checked || false,
       dailyGreetingTime: dom.dailyGreetingTime?.value || "09:00",
       idleNudge: dom.idleNudgeToggle?.checked || false,
@@ -115,6 +116,7 @@ export function loadSavedSettings() {
   if (savedSettings.showThinking && dom.showThinkingCheckbox) dom.showThinkingCheckbox.checked = true;
   // Context window
   if (savedSettings.numCtx && dom.numCtxSelect) dom.numCtxSelect.value = savedSettings.numCtx;
+  // Embedding model selection is applied by loadEmbedModels (after options load).
   // Proactive messages
   if (savedSettings.dailyGreeting && dom.dailyGreetingToggle) dom.dailyGreetingToggle.checked = true;
   if (savedSettings.dailyGreetingTime && dom.dailyGreetingTime) dom.dailyGreetingTime.value = savedSettings.dailyGreetingTime;

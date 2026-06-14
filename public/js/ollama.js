@@ -87,6 +87,41 @@ export async function loadImageModels() {
   }
 }
 
+export async function loadEmbedModels() {
+  if (!dom.embedModelSelect) return;
+  try {
+    const response = await fetch("/api/models");
+    const data = await response.json();
+    // Only models with "embed" in the name are valid embedding models.
+    const models = (data.models || []).map((m) => m.name).filter((n) => n && /embed/i.test(n));
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    const current = saved.embedModel || dom.embedModelSelect.value;
+    dom.embedModelSelect.innerHTML = "";
+
+    if (models.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "未检测到 embedding 模型";
+      dom.embedModelSelect.appendChild(opt);
+      return;
+    }
+    for (const name of models) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      dom.embedModelSelect.appendChild(opt);
+    }
+    if (current && models.includes(current)) {
+      dom.embedModelSelect.value = current;
+    } else {
+      const preferred = models.find((m) => /qwen3-embedding/i.test(m));
+      dom.embedModelSelect.value = preferred || models[0];
+    }
+  } catch {
+    /* leave placeholder */
+  }
+}
+
 export function initOllama() {
   fetch("/api/ollama-url").then(r => r.json()).then(d => updateUrlDisplay(d.url, d.imageUrl)).catch(() => {});
 

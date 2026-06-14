@@ -8,7 +8,7 @@ import { initAvatar } from './avatar.js';
 import { stopSpeech, populateVoiceList } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
-import { initOllama, loadModels, loadImageModels } from './ollama.js';
+import { initOllama, loadModels, loadImageModels, loadEmbedModels } from './ollama.js';
 import { setDeps as imageGenSetDeps } from './image-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
 import { renderChat, sendMessage, setGenerating, regenerateReply, generateProactiveReply } from './chat.js';
@@ -285,6 +285,20 @@ if (dom.numCtxSelect) {
   dom.numCtxSelect.addEventListener("change", () => {
     saveCurrentSettings();
     renderContextMeter();
+  });
+}
+if (dom.embedModelSelect) {
+  // Capture the value before the user opens the dropdown (options load async).
+  let prevEmbedModel = dom.embedModelSelect.value;
+  dom.embedModelSelect.addEventListener("focus", () => { prevEmbedModel = dom.embedModelSelect.value; });
+  dom.embedModelSelect.addEventListener("change", () => {
+    if (dom.embedModelSelect.value === prevEmbedModel) return;
+    if (!confirm(t("embed_changeConfirm"))) {
+      dom.embedModelSelect.value = prevEmbedModel; // revert
+      return;
+    }
+    prevEmbedModel = dom.embedModelSelect.value;
+    saveCurrentSettings();
   });
 }
 
@@ -1789,3 +1803,4 @@ updateLockedState();
 renderChat();
 loadModels().then(() => refreshModelMaxContext(dom.modelSelect.value)).catch(() => {});
 loadImageModels().catch(() => {});
+loadEmbedModels().catch(() => {});
