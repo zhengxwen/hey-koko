@@ -10,6 +10,16 @@ function renderMath(math, displayMode) {
   }
 }
 
+// Wrap rendered math so the TTS layer can speak a description of it: the raw
+// LaTeX is stashed in data-tts-tex (speech.js turns it into spoken text and
+// highlights the whole formula as one unit). block=true → display math on its
+// own line (its own sentence); false → inline (stays within the sentence).
+function mathHtml(rawTex, displayMode, block) {
+  const tag = block ? "div" : "span";
+  const cls = block ? "katex-block tts-math" : "tts-math";
+  return `<${tag} class="${cls}" data-tts-tex="${escapeHtml(rawTex)}">${renderMath(rawTex, displayMode)}</${tag}>`;
+}
+
 export function renderInlineMarkdown(value) {
   const placeholders = [];
   let idx = 0;
@@ -24,14 +34,14 @@ export function renderInlineMarkdown(value) {
   // Protect display math $$...$$ (inline occurrence)
   value = value.replace(/\$\$([^$]+?)\$\$/g, (_, math) => {
     const key = `\x00PH${idx++}\x00`;
-    placeholders.push(renderMath(math, true));
+    placeholders.push(mathHtml(math, true, false));
     return key;
   });
 
   // Protect inline math $...$ (not $$)
   value = value.replace(/(?<!\$)\$(?!\$)([^$\n]+?)(?<!\$)\$(?!\$)/g, (_, math) => {
     const key = `\x00PH${idx++}\x00`;
-    placeholders.push(renderMath(math, false));
+    placeholders.push(mathHtml(math, false, false));
     return key;
   });
 
@@ -95,7 +105,7 @@ export function markdownToHtml(markdown) {
 
   function closeMathBlock() {
     const math = mathLines.join("\n");
-    html.push(`<div class="katex-block">${renderMath(math, true)}</div>`);
+    html.push(mathHtml(math, true, true));
     mathLines = [];
     inMathBlock = false;
   }
@@ -212,7 +222,7 @@ export function markdownToHtml(markdown) {
     const singleLineMath = line.trim().match(/^\$\$(.+)\$\$$/);
     if (singleLineMath && !inMathBlock) {
       closeList();
-      html.push(`<div class="katex-block">${renderMath(singleLineMath[1], true)}</div>`);
+      html.push(mathHtml(singleLineMath[1], true, true));
       continue;
     }
 

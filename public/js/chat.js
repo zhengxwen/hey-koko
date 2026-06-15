@@ -144,7 +144,7 @@ function resendChatMessage(index) {
       generateImage(validCmds, state.activeTabId, index + 1);
     }
   } else {
-    regenerateReply(state.activeTabId, index + 1);
+    dispatchReply(state.activeTabId, index + 1);
   }
 }
 
@@ -1281,6 +1281,8 @@ export async function agenticReply(tabId = state.activeTabId) {
   const messages = buildMessages(tabId);
   const toolSteps = [];
   const seen = new Map(); // tool-call signature -> cached result (kills repeat loops)
+  const showThinking = dom.showThinkingCheckbox?.checked || false;
+  let thinkingContent = "";
   let finalContent = "";
   let forceText = false;
   try {
@@ -1294,6 +1296,7 @@ export async function agenticReply(tabId = state.activeTabId) {
           model: dom.modelSelect.value,
           messages,
           ...(useTools ? { tools: TOOL_SCHEMAS } : {}),
+          ...(showThinking ? { think: true } : {}),
           stream: false,
           options: { temperature: 0.7, num_ctx: getNumCtx() },
           timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
@@ -1301,6 +1304,7 @@ export async function agenticReply(tabId = state.activeTabId) {
       });
       if (!res.ok) { const d = await res.json(); throw new Error(d.error || "请求失败"); }
       const msg = (await res.json()).message || {};
+      if (msg.thinking) thinkingContent += (thinkingContent ? "\n\n" : "") + msg.thinking;
       const toolCalls = msg.tool_calls || [];
 
       if (toolCalls.length && useTools) {
@@ -1347,6 +1351,7 @@ export async function agenticReply(tabId = state.activeTabId) {
   if (finalContent) {
     const reply = { role: "assistant", content: finalContent, timestamp: Date.now() };
     if (toolSteps.length) reply.toolSteps = toolSteps;
+    if (thinkingContent) reply.thinking = thinkingContent;
     tab.messages.push(reply);
     saveChat();
     if (state.activeTabId === tabId) renderChat();
@@ -1359,6 +1364,13 @@ export async function agenticReply(tabId = state.activeTabId) {
   setAvatarState("idle");
   setGenerating(false);
   state.currentAbortController = null;
+}
+
+// Route a regenerated reply through the agent loop when tools are enabled,
+// otherwise the normal streaming path. (insertIndex only applies to the latter.)
+function dispatchReply(tabId, insertIndex = -1) {
+  if (dom.toolsToggle?.checked) agenticReply(tabId);
+  else regenerateReply(tabId, insertIndex);
 }
 
 export async function sendMessage(content, image, tabId = state.activeTabId, file = null) {
@@ -1811,7 +1823,7 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
                     generateImage(validCmds, state.activeTabId, index + 1);
                   }
                 } else {
-                  regenerateReply(state.activeTabId, index + 1);
+                  dispatchReply(state.activeTabId, index + 1);
                 }
               }
               }

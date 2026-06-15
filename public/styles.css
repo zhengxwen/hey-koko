@@ -1546,12 +1546,13 @@ button.secondary:disabled {
   background: #000000;
 }
 
-/* 朗读高亮当前句子 */
-mark.speak-highlight {
+/* 朗读时高亮当前句子（句子级锚点，朗读时切换 .tts-active） */
+.tts-seg.tts-active {
   background-color: rgba(255, 236, 153, 0.6);
   color: inherit;
   border-radius: 3px;
   padding: 1px 2px;
+  transition: background-color 0.15s ease;
 }
 
 .message.isDragging {
