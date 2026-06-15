@@ -2940,17 +2940,29 @@ mark.speak-highlight {
 }
 
 .thinkingSetting {
-  padding-top: 12px;
+  padding-top: 0;
+}
+
+/* Cancel the parent's 16px column gap between the two adjacent checkbox rows */
+.thinkingSetting + .thinkingSetting {
+  margin-top: -14px;
 }
 
 .thinkingSetting label {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
   font-size: 13px;
   color: var(--ink);
   cursor: pointer;
   white-space: nowrap;
+}
+
+.thinkingSetting input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 .themeSettingLabel {

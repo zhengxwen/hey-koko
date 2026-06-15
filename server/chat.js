@@ -10,6 +10,8 @@ async function proxyOllamaChat(req, res) {
 
     const reqTimeout = body.timeout;
     const { timeout: _discard, ...chatBody } = body;
+    // Tool-calling turns are sent with stream:false (more reliable); honor it.
+    const wantStream = chatBody.stream !== false;
     const controller = new AbortController();
     let timeoutHandle = null;
     if (reqTimeout && reqTimeout > 0) {
@@ -20,7 +22,7 @@ async function proxyOllamaChat(req, res) {
     const response = await fetch(`${config.ollamaUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...chatBody, stream: true }),
+      body: JSON.stringify({ ...chatBody, stream: wantStream }),
       signal: controller.signal,
     });
 

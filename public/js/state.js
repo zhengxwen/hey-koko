@@ -47,6 +47,7 @@ export const dom = {
   uiLanguageSelect: document.querySelector("#uiLanguageSelect"),
   promptLanguageSelect: document.querySelector("#promptLanguageSelect"),
   showThinkingCheckbox: document.querySelector("#showThinking"),
+  toolsToggle: document.querySelector("#toolsToggle"),
   numCtxSelect: document.querySelector("#numCtxSelect"),
   numCtxDisplay: document.querySelector("#numCtxDisplay"),
   embedModelSelect: document.querySelector("#embedModelSelect"),

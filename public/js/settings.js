@@ -30,6 +30,7 @@ export function saveCurrentSettings() {
       uiLanguage: dom.uiLanguageSelect?.value || "en",
       promptLanguage: dom.promptLanguageSelect?.value || "en",
       showThinking: dom.showThinkingCheckbox?.checked || false,
+      tools: dom.toolsToggle?.checked || false,
       numCtx: dom.numCtxSelect?.value || "32768",
       embedModel: dom.embedModelSelect?.value || "qwen3-embedding:0.6b",
       dailyGreeting: dom.dailyGreetingToggle?.checked || false,
@@ -57,6 +58,7 @@ function saveChatMessage(message) {
   if (message.isFilePreview) stored.isFilePreview = true;
   if (message.translation) stored.translation = message.translation;
   if (message.thinking) stored.thinking = message.thinking;
+  if (message.toolSteps && message.toolSteps.length) stored.toolSteps = message.toolSteps;
   return stored;
 }
 
@@ -114,6 +116,7 @@ export function loadSavedSettings() {
   if (savedSettings.promptLanguage && dom.promptLanguageSelect) dom.promptLanguageSelect.value = savedSettings.promptLanguage;
   // Thinking
   if (savedSettings.showThinking && dom.showThinkingCheckbox) dom.showThinkingCheckbox.checked = true;
+  if (savedSettings.tools && dom.toolsToggle) dom.toolsToggle.checked = true;
   // Context window
   if (savedSettings.numCtx && dom.numCtxSelect) dom.numCtxSelect.value = savedSettings.numCtx;
   // Embedding model selection is applied by loadEmbedModels (after options load).

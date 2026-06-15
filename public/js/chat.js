@@ -14,6 +14,7 @@ import { t, getPrompt, getPromptLanguage } from './i18n.js';
 import { getNumCtx, recordContextUsage, renderContextMeter } from './context-meter.js';
 import { addMemory, getMemoryPromptBlock } from './memory.js';
 import { parseRemind, addReminder, describeReminder, markActivity } from './proactive.js';
+import { TOOL_SCHEMAS, executeTool, getToolLabel } from './tools.js';
 
 export function setGenerating(active) {
   if (active) {
@@ -1248,6 +1249,118 @@ async function handleSearchCommand(raw, tab, tabId, fullContent) {
   }
 }
 
+// Agentic reply: model can call tools (datetime/calculate/web_search/recall_memory)
+// in a loop. Uses stream:false (local models call tools more reliably non-streamed),
+// so the final answer renders at once after a "using tools" indicator.
+export async function agenticReply(tabId = state.activeTabId) {
+  const tab = getTab(tabId);
+  if (!tab || tab.locked) return;
+
+  const abortController = new AbortController();
+  state.currentAbortController = abortController;
+  setGenerating(true);
+  setAvatarState("thinking");
+
+  let pending = null;
+  const setPending = (text) => {
+    if (state.activeTabId !== tabId) return;
+    if (!pending) {
+      pending = document.createElement("div");
+      pending.className = "message assistant thinking";
+      const body = document.createElement("div");
+      body.className = "markdownBody";
+      pending.appendChild(body);
+      dom.messagesEl.appendChild(pending);
+    }
+    pending.querySelector(".markdownBody").innerHTML =
+      `<span class="thinking-text">${text}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+  };
+  setPending(t("msg_thinking"));
+
+  const messages = buildMessages(tabId);
+  const toolSteps = [];
+  const seen = new Map(); // tool-call signature -> cached result (kills repeat loops)
+  let finalContent = "";
+  let forceText = false;
+  try {
+    for (let iter = 0; iter < 6; iter++) {
+      const useTools = iter < 5 && !forceText; // last turn / repeat detected: force a text answer
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: abortController.signal,
+        body: JSON.stringify({
+          model: dom.modelSelect.value,
+          messages,
+          ...(useTools ? { tools: TOOL_SCHEMAS } : {}),
+          stream: false,
+          options: { temperature: 0.7, num_ctx: getNumCtx() },
+          timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+        }),
+      });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || "请求失败"); }
+      const msg = (await res.json()).message || {};
+      const toolCalls = msg.tool_calls || [];
+
+      if (toolCalls.length && useTools) {
+        messages.push({ role: "assistant", content: msg.content || "", tool_calls: toolCalls });
+        let anyNew = false;
+        for (const call of toolCalls) {
+          const fn = call.function || {};
+          const sig = fn.name + ":" + JSON.stringify(fn.arguments || {});
+          let result;
+          if (seen.has(sig)) {
+            result = seen.get(sig); // already computed — reuse, don't re-run
+          } else {
+            anyNew = true;
+            setPending(`🔧 ${t("tools_using", { tool: getToolLabel(fn.name, fn.arguments) })}`);
+            setAvatarState("thinking");
+            result = await executeTool(fn.name, fn.arguments);
+            seen.set(sig, result);
+            toolSteps.push({ name: fn.name, args: fn.arguments, result: String(result) });
+          }
+          messages.push({ role: "tool", tool_name: fn.name, content: String(result).slice(0, 4000) });
+        }
+        // Model only re-asked tools it already ran → it's looping; force a text answer next.
+        if (!anyNew) forceText = true;
+        setPending(t("msg_thinking"));
+        continue;
+      }
+      finalContent = (msg.content || "").trim();
+      break;
+    }
+  } catch (error) {
+    if (pending) pending.remove();
+    if (error.name !== "AbortError") {
+      tab.messages.push({ role: "assistant", content: `⚠️ ${error.message}`, timestamp: Date.now() });
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+    }
+    setAvatarState("idle");
+    setGenerating(false);
+    state.currentAbortController = null;
+    return;
+  }
+
+  if (pending) pending.remove();
+  if (finalContent) {
+    const reply = { role: "assistant", content: finalContent, timestamp: Date.now() };
+    if (toolSteps.length) reply.toolSteps = toolSteps;
+    tab.messages.push(reply);
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+    showExpression(detectExpression(finalContent));
+    if (dom.autoSpeakCheckbox.checked && state.activeTabId === tabId) {
+      const btn = dom.messagesEl.querySelector(".message.assistant:last-child .speakMessage");
+      if (btn) speakMessage(finalContent, btn);
+    }
+  }
+  setAvatarState("idle");
+  setGenerating(false);
+  state.currentAbortController = null;
+}
+
 export async function sendMessage(content, image, tabId = state.activeTabId, file = null) {
   const tab = getTab(tabId);
   if (!tab) return;
@@ -1456,7 +1569,12 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   saveChat();
   if (state.activeTabId === tabId) renderChat();
 
-  regenerateReply(tabId);
+  // Tools enabled (and no image — vision + tools is unreliable on local models) → agent loop.
+  if (dom.toolsToggle?.checked && !image) {
+    agenticReply(tabId);
+  } else {
+    regenerateReply(tabId);
+  }
 }
 
 function renderMessage(role, content, previewImage, index, timestamp, generatedImages, generatedThumbnails) {
@@ -1846,6 +1964,19 @@ export function renderChat() {
         const details = document.createElement("details");
         details.className = "thinking-details";
         details.innerHTML = `<summary>${t("msg_thinkingSummary")}</summary><div class="thinking-content markdownBody">${markdownToHtml(message.thinking)}</div>`;
+        el.insertBefore(details, markdownBody);
+      }
+    }
+    // Insert tool-call details block (which tools the AI used, args + results)
+    if (el && message.toolSteps && message.toolSteps.length) {
+      const markdownBody = el.querySelector(".markdownBody");
+      if (markdownBody) {
+        const body = message.toolSteps
+          .map((s) => `**🔧 ${getToolLabel(s.name, s.args)}**\n\n\`\`\`\n${(s.result || "").slice(0, 1500)}\n\`\`\``)
+          .join("\n\n");
+        const details = document.createElement("details");
+        details.className = "thinking-details tool-details";
+        details.innerHTML = `<summary>🔧 ${t("tools_used", { count: message.toolSteps.length })}</summary><div class="thinking-content markdownBody">${markdownToHtml(body)}</div>`;
         el.insertBefore(details, markdownBody);
       }
     }

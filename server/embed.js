@@ -18,17 +18,19 @@ function saveIndex(idx) {
   try { fs.writeFileSync(indexPath(), JSON.stringify(idx)); } catch {}
 }
 
-// Representative text for one archive: title + message contents, truncated.
-function archiveText(filename) {
+// Representative text + metadata for one archive.
+function archiveMeta(filename) {
   try {
     const data = JSON.parse(readArchiveFile(path.join(config.ARCHIVES_DIR, filename)));
-    const parts = [data.title || ""];
+    const title = data.title || "";
+    const parts = [title];
     for (const m of (data.messages || [])) {
       if ((m.role !== "user" && m.role !== "assistant") || m.isFilePreview) continue;
       if (m.content) parts.push(m.content);
     }
-    return parts.join("\n").replace(/\s+/g, " ").trim().slice(0, MAX_TEXT);
-  } catch { return ""; }
+    const text = parts.join("\n").replace(/\s+/g, " ").trim().slice(0, MAX_TEXT);
+    return { text, title, snippet: text.slice(0, 200) };
+  } catch { return { text: "", title: filename, snippet: "" }; }
 }
 
 function hashText(s) {
@@ -71,12 +73,15 @@ async function buildArchiveIndex(req, res) {
   const files = scanArchiveFilenames();
   for (const f of Object.keys(idx.items)) { if (!files.includes(f)) delete idx.items[f]; } // prune deleted
 
-  const texts = {};
+  const metas = {};
   const todo = [];
   for (const f of files) {
-    const txt = archiveText(f);
-    texts[f] = txt;
-    if (!idx.items[f] || idx.items[f].hash !== hashText(txt)) todo.push(f);
+    const meta = archiveMeta(f);
+    metas[f] = meta;
+    const h = hashText(meta.text);
+    // Re-embed if new/changed; also backfill title/snippet onto older index entries.
+    if (!idx.items[f] || idx.items[f].hash !== h) todo.push(f);
+    else if (idx.items[f].title === undefined) { idx.items[f].title = meta.title; idx.items[f].snippet = meta.snippet; }
   }
 
   send({ status: "start", total: files.length, todo: todo.length });
@@ -84,10 +89,11 @@ async function buildArchiveIndex(req, res) {
 
   let done = 0, failed = 0;
   // Embed one item; store its vector. Returns true on success.
+  const store = (f, vec) => { idx.items[f] = { hash: hashText(metas[f].text), vector: vec, title: metas[f].title, snippet: metas[f].snippet }; };
   async function embedOne(f) {
     try {
-      const [vec] = await embedBatch([texts[f] || " "], model);
-      if (vec) { idx.items[f] = { hash: hashText(texts[f]), vector: vec }; return true; }
+      const [vec] = await embedBatch([metas[f].text || " "], model);
+      if (vec) { store(f, vec); return true; }
     } catch { /* counted as failed below */ }
     return false;
   }
@@ -95,9 +101,9 @@ async function buildArchiveIndex(req, res) {
   for (let i = 0; i < todo.length; i += BATCH) {
     const batch = todo.slice(i, i + BATCH);
     try {
-      const vectors = await embedBatch(batch.map((f) => texts[f] || " "), model);
+      const vectors = await embedBatch(batch.map((f) => metas[f].text || " "), model);
       batch.forEach((f, j) => {
-        if (vectors[j]) idx.items[f] = { hash: hashText(texts[f]), vector: vectors[j] };
+        if (vectors[j]) store(f, vectors[j]);
         else failed++;
       });
     } catch {
@@ -135,7 +141,7 @@ async function semanticSearchArchives(req, res) {
     const [qvec] = await embedBatch([qtext], model);
     if (!qvec) { sendJson(res, 500, { error: "embed failed" }); return; }
     const scored = entries
-      .map(([file, v]) => ({ file, score: cosine(qvec, v.vector) }))
+      .map(([file, v]) => ({ file, score: cosine(qvec, v.vector), title: v.title || file, snippet: v.snippet || "" }))
       .sort((a, b) => b.score - a.score)
       .slice(0, 50);
     sendJson(res, 200, { results: scored });

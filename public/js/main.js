@@ -139,6 +139,9 @@ dom.promptLanguageSelect.addEventListener("change", () => {
 dom.showThinkingCheckbox.addEventListener("change", () => {
   saveCurrentSettings();
 });
+if (dom.toolsToggle) {
+  dom.toolsToggle.addEventListener("change", saveCurrentSettings);
+}
 
 // Apply i18n on startup
 applyUILanguage();
