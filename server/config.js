@@ -3,6 +3,7 @@ const os = require("os");
 
 const config = {
   PORT: Number(process.env.PORT || 1314),
+  URL_CONTENT_MAX_CHARS: Number(process.env.URL_CONTENT_MAX_CHARS || 40000),
   ollamaUrl: process.env.OLLAMA_URL || "http://127.0.0.1:11434",
   imageOllamaUrl: process.env.IMAGE_OLLAMA_URL || (process.env.OLLAMA_URL || "http://127.0.0.1:11434"),
   PUBLIC_DIR: path.join(__dirname, "..", "public"),

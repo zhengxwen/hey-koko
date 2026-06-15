@@ -56,10 +56,26 @@ async function fetchUrlContent(req, res) {
     }
 
     const html = await response.text();
-    const text = extractTextFromHtml(html);
     const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim() || "";
-    const truncated = text.slice(0, 8000);
-    sendJson(res, 200, { type: "webpage", title, url, content: truncated });
+    const articleHtml = extractMainContentHtml(html);
+    const markdown = await htmlToMarkdown(rewriteArticleImages(articleHtml, url));
+    const cleaned = cleanupMarkdown(markdown);
+
+    // Download article images separately; keep only a lightweight placeholder in the text.
+    const imgUrls = [...cleaned.matchAll(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g)].map((m) => m[1]);
+    const images = await downloadImages(imgUrls, url, 8);
+    let text = cleaned.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, alt) => {
+      const a = (alt || "").trim();
+      if (UI_ICON_ALT_RE.test(a)) return ""; // drop UI-icon images entirely
+      return a && a.length <= 60 ? `［图片：${a}］` : "［图片］";
+    });
+    text = removeRelatedCardBlocks(removeRelatedWidgets(cutTrailingSections(text)))
+      // collapse runs of adjacent image placeholders (e.g. photo galleries) into one
+      .replace(/(［图片[^］]*］)(\s*\n\s*［图片[^］]*］)+/g, "$1")
+      .replace(/\n{3,}/g, "\n\n");
+
+    const truncated = truncateContent(text, config.URL_CONTENT_MAX_CHARS);
+    sendJson(res, 200, { type: "webpage", title, url, content: truncated, images });
   } catch (error) {
     if (error.name === "AbortError") {
       sendJson(res, 200, { type: "error", content: "请求超时" });
@@ -69,26 +85,363 @@ async function fetchUrlContent(req, res) {
   }
 }
 
-function extractTextFromHtml(html) {
-  return html
+// Cap content length, cutting at a clean boundary (paragraph > line > word)
+// rather than mid-character. 0 / negative max means no limit.
+function truncateContent(text, max) {
+  if (!max || max <= 0 || text.length <= max) return text;
+  let cut = text.slice(0, max);
+  const para = cut.lastIndexOf("\n\n");
+  if (para > max * 0.6) {
+    cut = cut.slice(0, para);
+  } else {
+    const nl = cut.lastIndexOf("\n");
+    if (nl > max * 0.8) cut = cut.slice(0, nl);
+    else { const sp = cut.lastIndexOf(" "); if (sp > 0) cut = cut.slice(0, sp); }
+  }
+  return cut.trimEnd() + "\n\n…（内容较长，已截断）";
+}
+
+// ---- Main-content extraction (readability-style heuristic, zero-dependency) ----
+
+// class/id tokens that signal junk (nav, ads, comments, related, ...) vs. real article body
+const JUNK_RE = /(^|[-_ ])(nav|navbar|menu|sidebar|side-bar|footer|header|masthead|comment|share|social|related|recommend|promo|sponsor|ad|ads|advert|banner|cookie|consent|popup|modal|subscribe|newsletter|breadcrumb|pagination|paginate|widget|byline|author-box|tags?)([-_ s]|\d|$)/i;
+const GOOD_RE = /(^|[-_ ])(article|articlebody|post|postbody|entry|content|story|storybody|main|body|text|prose|markdown|rich-text)([-_ ]|\d|$)/i;
+
+// Extract a balanced element starting at the '<' of its opening tag.
+// Returns { inner, outer, openTag } or null if unbalanced / self-closing.
+function extractBalanced(html, tagName, openStart) {
+  const openEnd = html.indexOf(">", openStart);
+  if (openEnd === -1) return null;
+  if (html[openEnd - 1] === "/") return null; // self-closing, no content
+  const re = new RegExp(`<(/?)${tagName}\\b[^>]*?(/?)>`, "gi");
+  re.lastIndex = openEnd + 1;
+  let depth = 1, m;
+  while ((m = re.exec(html)) !== null) {
+    if (m[1] === "/") {
+      if (--depth === 0) {
+        return {
+          openTag: html.slice(openStart, openEnd + 1),
+          inner: html.slice(openEnd + 1, m.index),
+          outer: html.slice(openStart, re.lastIndex),
+        };
+      }
+    } else if (m[2] !== "/") {
+      depth++;
+    }
+  }
+  return null;
+}
+
+// Find balanced elements of a tag. openTagFilter (optional) skips expensive
+// balanced extraction unless the opening tag passes a cheap test.
+function findElements(html, tagName, openTagFilter) {
+  const re = new RegExp(`<${tagName}\\b[^>]*>`, "gi");
+  const out = [];
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    if (openTagFilter && !openTagFilter(m[0])) continue;
+    const el = extractBalanced(html, tagName, m.index);
+    if (el) out.push(el);
+  }
+  return out;
+}
+
+function getAttr(openTag, name) {
+  const m = openTag.match(new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`, "i"));
+  return m ? m[1] : "";
+}
+
+// Text vs. link-text metrics for a chunk of HTML.
+function textMetrics(html) {
+  const linkText = (html.match(/<a\b[^>]*>[\s\S]*?<\/a>/gi) || [])
+    .join(" ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  const allText = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  const textLen = allText.length;
+  return { textLen, linkDensity: textLen ? linkText.length / textLen : 1 };
+}
+
+// Pick the HTML subtree most likely to be the article body.
+function extractMainContentHtml(html) {
+  // 1. Strip structurally-junk elements outright.
+  const cleaned = html
+    .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, "")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, "")
     .replace(/<nav[\s\S]*?<\/nav>/gi, "")
-    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
     .replace(/<header[\s\S]*?<\/header>/gi, "")
+    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
+    .replace(/<aside[\s\S]*?<\/aside>/gi, "")
+    .replace(/<form[\s\S]*?<\/form>/gi, "");
+
+  // 2. Gather candidate containers and score them.
+  const candidates = [];
+  const addCandidate = (innerHtml, weight) => {
+    const m = textMetrics(innerHtml);
+    if (m.textLen >= 200 && m.linkDensity < 0.5) {
+      candidates.push({ html: innerHtml, score: m.textLen * weight });
+    }
+  };
+  for (const el of findElements(cleaned, "article")) addCandidate(el.inner, 1.5);
+  for (const el of findElements(cleaned, "main")) addCandidate(el.inner, 1.3);
+  const goodContainer = (openTag) => {
+    const cls = getAttr(openTag, "class") + " " + getAttr(openTag, "id");
+    return GOOD_RE.test(cls) && !JUNK_RE.test(cls);
+  };
+  for (const el of findElements(cleaned, "div", goodContainer)) addCandidate(el.inner, 1.2);
+  for (const el of findElements(cleaned, "section", goodContainer)) addCandidate(el.inner, 1.2);
+
+  candidates.sort((a, b) => b.score - a.score);
+  if (candidates.length) return candidates[0].html;
+
+  // 3. Fallback: gather all low-link-density paragraphs (readability's safety net).
+  const paras = (cleaned.match(/<p\b[^>]*>[\s\S]*?<\/p>/gi) || [])
+    .filter((p) => textMetrics(p).linkDensity < 0.5);
+  if (paras.join("").replace(/<[^>]+>/g, "").trim().length >= 200) return paras.join("\n");
+
+  // 4. Last resort: whole cleaned <body>.
+  const body = cleaned.match(/<body\b[^>]*>([\s\S]*)<\/body>/i);
+  return body ? body[1] : cleaned;
+}
+
+// Convert article HTML to clean Markdown. Uses pandoc when available
+// (matches the project's existing optional-CLI pattern: yt-dlp/whisper/ffmpeg),
+// otherwise falls back to a built-in lightweight converter.
+async function htmlToMarkdown(html) {
+  const pandoc = await findCommand("pandoc");
+  if (pandoc) {
+    const md = await new Promise((resolve) => {
+      const proc = execFile(pandoc,
+        ["-f", "html", "-t", "gfm-raw_html", "--wrap=none"],
+        { maxBuffer: 20 * 1024 * 1024, timeout: 15000 },
+        (err, stdout) => resolve(err || !stdout ? null : stdout.trim()));
+      try { proc.stdin.write(html); proc.stdin.end(); } catch { resolve(null); }
+    });
+    if (md) return md.replace(/\n{3,}/g, "\n\n");
+  }
+  return htmlToMarkdownBuiltin(html);
+}
+
+function decodeEntities(s) {
+  return s
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+}
+
+function stripTags(html) {
+  return decodeEntities(html.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+}
+
+// Lightweight HTML→Markdown fallback (used when pandoc isn't installed).
+function htmlToMarkdownBuiltin(html) {
+  const md = html
+    .replace(/<(script|style|noscript)[\s\S]*?<\/\1>/gi, "")
+    .replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_, n, t) => `\n\n${"#".repeat(+n)} ${stripTags(t)}\n\n`)
+    .replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, (_, t) => `- ${stripTags(t)}\n`)
+    .replace(/<(strong|b)\b[^>]*>([\s\S]*?)<\/\1>/gi, (_, _g, t) => `**${stripTags(t)}**`)
+    .replace(/<(em|i)\b[^>]*>([\s\S]*?)<\/\1>/gi, (_, _g, t) => `*${stripTags(t)}*`)
+    .replace(/<a\b[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, href, t) => {
+      const text = stripTags(t);
+      return text ? `[${text}](${href})` : "";
+    })
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|h[1-6]|li|tr|blockquote|section|article)>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
+    .replace(/<\/(p|div|h[1-6]|tr|blockquote|section|article)>/gi, "\n\n")
+    .replace(/<[^>]+>/g, " ");
+  return decodeEntities(md)
     .replace(/[^\S\n]+/g, " ")
     .replace(/\n[^\S\n]*/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+// ---- In-article noise cleanup + image handling ----
+
+// Standalone UI/chrome lines that publishers inject inside the article body.
+const SHARE_LINE_RE = /^(share|save|tweet|facebook|threads?|whatsapp|linkedin|reddit|pinterest|telegram|bluesky|mastodon|flipboard|email|messenger|copy( link)?|copied|link copied!?|link|x|twitter|mailto|follow(\s+us)?|advertisement|advertising|sponsored|sign in|sign up|log ?in|subscribe|newsletter|listen(\s*\(\d+\s*mins?\))?|click here to share( on social media)?|add\s+.{1,30}\s+on\s+google|print|comments?|read more|related|most read|popular|trending|watch live|menu|skip to (content|main content)|view image in fullscreen|enable javascript|loading…?|loading\.\.\.)[\s·!:]*$/i;
+// Photo-credit fragments (short, agency name, not a real sentence).
+const CREDIT_LINE_RE = /(getty images|gettyimages|\bgetty\b|reuters|\bafp\b|ap photo|associated press|bloomberg|\bepa(-efe)?\b|shutterstock|\bntb\b|\bzuma\b|anadolu( agency)?|\bpa media\b|\beyevine\b)/i;
+// Lazy-load placeholders / tracking pixels we never want to download.
+const PLACEHOLDER_IMG_RE = /(grey|gray)-placeholder|blank\.(gif|png|jpe?g)|spacer|1x1|\/transparent|placeholder\.|loading\.(gif|png|svg)|data:image\/(gif|svg)/i;
+
+// Strip the residual in-article chrome (share buttons, ad labels, photo credits).
+function cleanupMarkdown(md) {
+  // Drop empty (icon-only) links first, keeping empty-alt images. Doing this
+  // before the line filter exposes orphaned labels like "twitter [](…)" → "twitter".
+  md = md.replace(/(?<!!)\[\]\([^)]*\)/g, "");
+  const out = [];
+  for (const raw of md.split("\n")) {
+    const line = raw.trim();
+    // normalize list bullets, emphasis, and single-link wrappers before matching
+    // (so "- **Flipboard**" and "[Tweet](url)" are recognized as chrome too)
+    let bare = line.replace(/^[-*>]\s+/, "").replace(/^\*+\s*|\s*\*+$/g, "").replace(/^_+|_+$/g, "").trim();
+    const linkOnly = bare.match(/^\[([^\]]*)\]\([^)]*\)$/);
+    if (linkOnly) bare = linkOnly[1].trim();
+    if (SHARE_LINE_RE.test(bare)) continue;
+    // screen-reader list scaffolding around related-link widgets
+    if (/^list of \d+ items?$/i.test(line) || /^end of list$/i.test(line)) continue;
+    // reading-time metadata ("9 MIN READ")
+    if (/^\d+\s*min read$/i.test(line)) continue;
+    // image-gallery counters: "1 of 9", "3 of 9 |"
+    if (/^\d+\s+of\s+\d+\s*\\?\|?$/i.test(line)) continue;
+    // empty list bullets / icon-only share links: "-", "- [](#)", "[](url)"
+    if (/^[-*]\s*$/.test(line)) continue;
+    if (/^([-*]\s+)?\[\]\([^)]*\)$/.test(line)) continue;
+    if (line && line.length < 60 && CREDIT_LINE_RE.test(line) && !/[.。!?！？]\s+\S/.test(line)) continue;
+    out.push(raw);
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// Trailing "recommended / related / more from" sections that publishers append
+// after the article body. Cut everything from such a header onward (only in the
+// latter part of the text, so an early in-body mention isn't mistaken for it).
+const SECTION_CUT_RE = /^#{0,6}\s*(related stories|related articles|related|recommended( for you| stories)?|more from|more stories|read more|most popular|most read|trending now|trending|you might (also )?like|in case you missed it|sign up for|subscribe to)\s*:?\s*$/i;
+function cutTrailingSections(text) {
+  const lines = text.split("\n");
+  const start = Math.floor(lines.length * 0.4);
+  const isProse = (l) => {
+    const t = l.trim();
+    return t.length > 120 && !/^[-*>#]/.test(t) && !/^\[[^\]]*\]\([^)]*\)$/.test(t);
+  };
+  for (let i = start; i < lines.length; i++) {
+    if (SECTION_CUT_RE.test(lines[i].trim())) {
+      // only cut if little real prose follows (else it's a mid-article widget, not a trailing section)
+      if (lines.slice(i + 1).filter(isProse).length <= 1) return lines.slice(0, i).join("\n").trim();
+    }
+  }
+  return text;
+}
+
+// Remove related/recommended widgets: runs of link-only list items (and any
+// rec/related heading right above them). Works anywhere in the body, so a
+// mid-article widget is removed without dropping the text that follows it.
+function removeRelatedWidgets(text) {
+  const lines = text.split("\n");
+  const drop = new Array(lines.length).fill(false);
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^[-*]\s+/.test(lines[i].trim())) continue;
+    let j = i;
+    const items = [];
+    while (j < lines.length) {
+      const t = lines[j].trim();
+      if (/^[-*]\s+/.test(t)) { items.push(t); j++; }
+      else if (t === "") { j++; }
+      else break;
+    }
+    const allLinks = items.length >= 2 && items.every((it) => {
+      const item = it.replace(/^[-*]\s+/, "").replace(/^list \d+ of \d+/i, "").trim();
+      return /^\[[^\]]*\]\([^)]*\)$/.test(item);
+    });
+    if (allLinks) {
+      for (let k = i; k < j; k++) drop[k] = true;
+      for (let p = i - 1; p >= 0; p--) { // also drop a preceding rec/related heading
+        const pt = lines[p].trim();
+        if (pt === "") { drop[p] = true; continue; }
+        if (SECTION_CUT_RE.test(pt)) drop[p] = true;
+        break;
+      }
+      i = j - 1;
+    }
+  }
+  return lines.filter((_, i) => !drop[i]).join("\n");
+}
+
+// Remove related/recommended "card" blocks: a rec heading followed by a run of
+// image / standalone-link lines (the cards), stopping at the first real prose
+// line — so a mid-article rec box is removed without eating the continuation.
+function removeRelatedCardBlocks(text) {
+  const lines = text.split("\n");
+  const drop = new Array(lines.length).fill(false);
+  const isCardLine = (t) =>
+    t === "" ||
+    /^［图片[^］]*］$/.test(t) ||
+    /^[-*]?\s*\[[^\]]*\]\([^)]*\)$/.test(t); // standalone or bulleted link
+  for (let i = 0; i < lines.length; i++) {
+    if (!SECTION_CUT_RE.test(lines[i].trim())) continue;
+    let j = i + 1, sawCard = false;
+    while (j < lines.length && isCardLine(lines[j].trim())) {
+      if (lines[j].trim() !== "") sawCard = true;
+      j++;
+    }
+    if (sawCard) for (let k = i; k < j; k++) drop[k] = true;
+  }
+  return lines.filter((_, i) => !drop[i]).join("\n");
+}
+
+// Image alt text that marks a UI icon rather than real content.
+const UI_ICON_ALT_RE = /^(comments?|share|save|menu|search|logo|advertisement|play|video|image|icon|avatar|close|next|previous|prev)$/i;
+
+function imgAttr(tag, name) {
+  const m = tag.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, "i"));
+  return m ? m[1].trim() : "";
+}
+
+// Pick the highest-resolution candidate from a srcset ("url 320w, url 640w" / "url 1x, url 2x").
+function pickFromSrcset(srcset) {
+  let best = null, bestScore = -1;
+  for (const part of srcset.split(",")) {
+    const seg = part.trim().split(/\s+/);
+    if (!seg[0]) continue;
+    const score = parseFloat(seg[1]) || 1;
+    if (score >= bestScore) { bestScore = score; best = seg[0]; }
+  }
+  return best;
+}
+
+// Resolve the real image URL from an <img> tag, preferring lazy-load attributes.
+function resolveImgUrl(tag, baseUrl) {
+  let src = imgAttr(tag, "data-src") || imgAttr(tag, "data-original") ||
+            imgAttr(tag, "data-lazy-src") || imgAttr(tag, "data-hi-res-src") || "";
+  if (!src) {
+    const ss = imgAttr(tag, "data-srcset") || imgAttr(tag, "srcset");
+    if (ss) src = pickFromSrcset(ss);
+  }
+  if (!src) src = imgAttr(tag, "src");
+  if (!src) return null;
+  try { src = new URL(src, baseUrl).href; } catch { return null; }
+  if (src.startsWith("data:") || PLACEHOLDER_IMG_RE.test(src)) return null;
+  return src;
+}
+
+// Rewrite <img> tags to their real URLs (and drop placeholders) before pandoc runs.
+function rewriteArticleImages(html, baseUrl) {
+  return html.replace(/<img\b[^>]*>/gi, (tag) => {
+    const url = resolveImgUrl(tag, baseUrl);
+    if (!url) return "";
+    const alt = imgAttr(tag, "alt").replace(/"/g, "").slice(0, 120);
+    return `<img src="${url}" alt="${alt}">`;
+  });
+}
+
+// Download article images server-side and return them as data URIs (display-only;
+// kept out of the text so they never enter the LLM context).
+async function downloadImages(urls, referer, max) {
+  const out = [];
+  const seen = new Set();
+  for (const u of urls) {
+    if (out.length >= max) break;
+    if (seen.has(u)) continue;
+    seen.add(u);
+    try {
+      const res = await fetch(u, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; LocalAIChat/1.0)",
+          "Referer": referer,
+          "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+        },
+        signal: AbortSignal.timeout(8000),
+        redirect: "follow",
+      });
+      if (!res.ok) continue;
+      const ct = (res.headers.get("content-type") || "").split(";")[0].trim();
+      if (!ct.startsWith("image/") || ct === "image/svg+xml") continue;
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 3000 || buf.length > 5 * 1024 * 1024) continue; // skip trackers / oversized
+      out.push(`data:${ct};base64,${buf.toString("base64")}`);
+    } catch { /* skip unreachable images */ }
+  }
+  return out;
 }
 
 async function fetchYouTubeThumbnail(videoId) {

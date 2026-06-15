@@ -141,6 +141,8 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt) {
     if (data.type === "youtube" && data.thumbnail) {
       msgObj.generatedThumbnails = [await makePreview(data.thumbnail)];
       msgObj.ytVideoId = data.videoId;
+    } else if (data.type === "webpage" && Array.isArray(data.images) && data.images.length) {
+      msgObj.generatedThumbnails = await Promise.all(data.images.map((img) => makePreview(img)));
     }
     tab.messages.push(msgObj);
     saveChat();
