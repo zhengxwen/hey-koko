@@ -684,7 +684,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
               const details = document.createElement("details");
               details.className = "thinking-details";
               details.open = true;
-              details.innerHTML = `<summary>${t("msg_thinkingInProgress")}</summary><div class="thinking-content markdownBody"></div>`;
+              details.innerHTML = `<summary><span class="thinking-text">${t("msg_thinkingInProgress")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span></summary><div class="thinking-content markdownBody"></div>`;
               bubble.appendChild(details);
               const md = document.createElement("div");
               md.className = "markdownBody";
@@ -894,7 +894,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
               const details = document.createElement("details");
               details.className = "thinking-details";
               details.open = true;
-              details.innerHTML = `<summary>${t("msg_thinkingInProgress")}</summary><div class="thinking-content markdownBody"></div>`;
+              details.innerHTML = `<summary><span class="thinking-text">${t("msg_thinkingInProgress")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span></summary><div class="thinking-content markdownBody"></div>`;
               bubble.appendChild(details);
               const md = document.createElement("div");
               md.className = "markdownBody";

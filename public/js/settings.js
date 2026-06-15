@@ -116,7 +116,8 @@ export function loadSavedSettings() {
   if (savedSettings.promptLanguage && dom.promptLanguageSelect) dom.promptLanguageSelect.value = savedSettings.promptLanguage;
   // Thinking
   if (savedSettings.showThinking && dom.showThinkingCheckbox) dom.showThinkingCheckbox.checked = true;
-  if (savedSettings.tools && dom.toolsToggle) dom.toolsToggle.checked = true;
+  // Tool calling defaults to ON; respect an explicit saved off-choice.
+  if (dom.toolsToggle) dom.toolsToggle.checked = savedSettings.tools !== undefined ? !!savedSettings.tools : true;
   // Context window
   if (savedSettings.numCtx && dom.numCtxSelect) dom.numCtxSelect.value = savedSettings.numCtx;
   // Embedding model selection is applied by loadEmbedModels (after options load).

@@ -1,4 +1,5 @@
 const { sendJson, readBody } = require("./utils");
+const { extractCleanContent } = require("./url-fetch");
 
 const BROWSER_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -125,21 +126,9 @@ async function searchViaHtml(query, limit, df) {
   return { results, captcha: results.length === 0 && isCaptcha(html) };
 }
 
-// --- Deep read: fetch a result page and extract its main text ---
-
-function extractText(html) {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<(nav|footer|header)[\s\S]*?<\/\1>/gi, "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|h[1-6]|li|tr|blockquote|section|article)>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-    .replace(/&#39;/g, "'").replace(/&quot;/g, '"')
-    .replace(/[^\S\n]+/g, " ").replace(/\n[^\S\n]*/g, "\n").replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
+// --- Deep read: fetch a result page and extract its condensed main text ---
+// Reuses the same readability-style pipeline as the /url command (main-content
+// extraction + Markdown + in-article noise cleanup), text only (no image download).
 
 async function fetchPageText(url, maxChars) {
   try {
@@ -152,7 +141,8 @@ async function fetchPageText(url, maxChars) {
     const ct = res.headers.get("content-type") || "";
     if (!ct.includes("text/html") && !ct.includes("text/plain")) return "";
     const html = await res.text();
-    return extractText(html).slice(0, maxChars);
+    const { text } = await extractCleanContent(html, url);
+    return text.slice(0, maxChars);
   } catch { return ""; }
 }
 

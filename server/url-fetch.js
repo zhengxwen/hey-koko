@@ -57,23 +57,8 @@ async function fetchUrlContent(req, res) {
 
     const html = await response.text();
     const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim() || "";
-    const articleHtml = extractMainContentHtml(html);
-    const markdown = await htmlToMarkdown(rewriteArticleImages(articleHtml, url));
-    const cleaned = cleanupMarkdown(markdown);
-
-    // Download article images separately; keep only a lightweight placeholder in the text.
-    const imgUrls = [...cleaned.matchAll(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g)].map((m) => m[1]);
-    const images = await downloadImages(imgUrls, url, 8);
-    let text = cleaned.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, alt) => {
-      const a = (alt || "").trim();
-      if (UI_ICON_ALT_RE.test(a)) return ""; // drop UI-icon images entirely
-      return a && a.length <= 60 ? `［图片：${a}］` : "［图片］";
-    });
-    text = removeRelatedCardBlocks(removeRelatedWidgets(cutTrailingSections(text)))
-      // collapse runs of adjacent image placeholders (e.g. photo galleries) into one
-      .replace(/(［图片[^］]*］)(\s*\n\s*［图片[^］]*］)+/g, "$1")
-      .replace(/\n{3,}/g, "\n\n");
-
+    const { text, imageUrls } = await extractCleanContent(html, url);
+    const images = await downloadImages(imageUrls, url, 8);
     const truncated = truncateContent(text, config.URL_CONTENT_MAX_CHARS);
     sendJson(res, 200, { type: "webpage", title, url, content: truncated, images });
   } catch (error) {
@@ -255,6 +240,26 @@ function htmlToMarkdownBuiltin(html) {
     .trim();
 }
 
+// Full pipeline: raw HTML → clean Markdown article text (with lightweight image
+// placeholders) + the list of real image URLs found. Shared by the /url endpoint
+// (which downloads the images) and /search --deep (text only). See helpers below.
+async function extractCleanContent(html, baseUrl) {
+  const articleHtml = extractMainContentHtml(html);
+  const markdown = await htmlToMarkdown(rewriteArticleImages(articleHtml, baseUrl));
+  const cleaned = cleanupMarkdown(markdown);
+  const imageUrls = [...cleaned.matchAll(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g)].map((m) => m[1]);
+  let text = cleaned.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, alt) => {
+    const a = (alt || "").trim();
+    if (UI_ICON_ALT_RE.test(a)) return ""; // drop UI-icon images entirely
+    return a && a.length <= 60 ? `［图片：${a}］` : "［图片］";
+  });
+  text = removeRelatedCardBlocks(removeRelatedWidgets(cutTrailingSections(text)))
+    // collapse runs of adjacent image placeholders (e.g. photo galleries) into one
+    .replace(/(［图片[^］]*］)(\s*\n\s*［图片[^］]*］)+/g, "$1")
+    .replace(/\n{3,}/g, "\n\n");
+  return { text, imageUrls };
+}
+
 // ---- In-article noise cleanup + image handling ----
 
 // Standalone UI/chrome lines that publishers inject inside the article body.
@@ -268,7 +273,10 @@ const PLACEHOLDER_IMG_RE = /(grey|gray)-placeholder|blank\.(gif|png|jpe?g)|space
 function cleanupMarkdown(md) {
   // Drop empty (icon-only) links first, keeping empty-alt images. Doing this
   // before the line filter exposes orphaned labels like "twitter [](…)" → "twitter".
-  md = md.replace(/(?<!!)\[\]\([^)]*\)/g, "");
+  md = md.replace(/(?<!!)\[\]\([^)]*\)/g, "")
+    // strip pandoc artifacts: attribute annotations ({.class}/{#id}) and the
+    // literal [TABLE] placeholder pandoc emits for GFM-unrepresentable tables
+    .replace(/[ \t]*\{[.#][^}\n]{0,80}\}/g, "");
   const out = [];
   for (const raw of md.split("\n")) {
     const line = raw.trim();
@@ -282,6 +290,8 @@ function cleanupMarkdown(md) {
     if (/^list of \d+ items?$/i.test(line) || /^end of list$/i.test(line)) continue;
     // reading-time metadata ("9 MIN READ")
     if (/^\d+\s*min read$/i.test(line)) continue;
+    // pandoc's placeholder for tables it can't render as GFM
+    if (/^\[TABLE\]$/.test(line)) continue;
     // image-gallery counters: "1 of 9", "3 of 9 |"
     if (/^\d+\s+of\s+\d+\s*\\?\|?$/i.test(line)) continue;
     // empty list bullets / icon-only share links: "-", "- [](#)", "[](url)"
@@ -904,4 +914,4 @@ function findCommand(cmd) {
   });
 }
 
-module.exports = { fetchUrlContent, transcribeYouTubeAudio };
+module.exports = { fetchUrlContent, transcribeYouTubeAudio, extractCleanContent };
