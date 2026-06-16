@@ -334,6 +334,52 @@ function findFile(dir, ext) {
   return null;
 }
 
+// Pre-clean email HTML before Pandoc: drop hidden/tracking junk, unwrap
+// SafeLinks, and flatten layout tables (email uses tables for layout, not data —
+// left as-is Pandoc renders them as giant ASCII grid tables).
+function preCleanEmailHtml(html) {
+  let h = html
+    // hidden preheader / hidden elements — remove BEFORE styles are stripped
+    .replace(/<(div|span|p|td|table)\b[^>]*style="[^"]*(display\s*:\s*none|max-height\s*:\s*0|mso-hide\s*:\s*all|visibility\s*:\s*hidden)[^"]*"[^>]*>[\s\S]*?<\/\1>/gi, "")
+    .replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, "")  // Outlook conditional comments
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, "")
+    .replace(/<xml[^>]*>[\s\S]*?<\/xml>/gi, "")
+    .replace(/<o:[^>]*>[\s\S]*?<\/o:[^>]+>/gi, "")
+    .replace(/<o:[^>]*\/>/gi, "");
+
+  // Unwrap Microsoft SafeLinks → real URL (originalsrc attribute, or ?url= param)
+  h = h.replace(/<a\b([^>]*?)\soriginalsrc="([^"]+)"([^>]*)>/gi,
+    (_, pre, real, post) => `<a ${(pre + post).replace(/\shref="[^"]*"/i, "")} href="${real}">`);
+  h = h.replace(/href="https?:\/\/[^"]*safelinks\.protection\.outlook\.com\/[^"]*[?&]url=([^&"]+)[^"]*"/gi,
+    (m, enc) => { try { return `href="${decodeURIComponent(enc)}"`; } catch { return m; } });
+
+  // Drop tracking pixels / spacer images (width or height <= 2px)
+  h = h.replace(/<img\b[^>]*>/gi, (tag) => {
+    const w = (tag.match(/\bwidth\s*=\s*["']?(\d+)/i) || [])[1];
+    const ht = (tag.match(/\bheight\s*=\s*["']?(\d+)/i) || [])[1];
+    if ((w !== undefined && +w <= 2) || (ht !== undefined && +ht <= 2)) return "";
+    return tag;
+  });
+
+  // Flatten layout tables so Pandoc doesn't produce ASCII grid tables
+  h = h
+    .replace(/<\/(td|th)>/gi, " ")
+    .replace(/<\/tr>/gi, "<br>")   // keep each row on its own line after Markdown conversion
+    .replace(/<\/(table|tbody|thead)>/gi, "\n\n")
+    .replace(/<(table|tbody|thead|tr|td|th)\b[^>]*>/gi, "");
+
+  // Strip presentational attributes (keep href/src/alt); drop wrapper tags
+  h = h
+    .replace(/\s+(class|style|lang|width|height|align|valign|bgcolor|color|border|cellpadding|cellspacing|dir|role|target|title|mso-[^=]*|xmlns[^=]*|data-[^=]*)="[^"]*"/gi, "")
+    .replace(/<\/?span[^>]*>/gi, "")
+    .replace(/<\/?div[^>]*>/gi, "\n")
+    .replace(/<\/?font[^>]*>/gi, "");
+
+  return h;
+}
+
 function parseHtml(req, res) {
   if (!hasPandoc) {
     sendJson(res, 501, { error: "pandoc_unavailable" });
@@ -350,31 +396,23 @@ function parseHtml(req, res) {
         return;
       }
 
-      // Pre-clean Outlook/Word HTML noise before Pandoc
-      const cleaned = html
-        .replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, "")  // Conditional comments
-        .replace(/<!--[\s\S]*?-->/g, "")                    // Regular comments
-        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")    // Style blocks
-        .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, "")      // Head section
-        .replace(/<xml[^>]*>[\s\S]*?<\/xml>/gi, "")        // XML blocks
-        .replace(/<o:[^>]*>[\s\S]*?<\/o:[^>]+>/gi, "")     // Office namespace tags
-        .replace(/<o:[^>]*\/>/gi, "")                       // Self-closing office tags
-        .replace(/\s+(class|style|lang|mso-[^=]*|xmlns[^=]*)="[^"]*"/gi, "")  // Noisy attributes
-        .replace(/<\/?span[^>]*>/gi, "")                    // Spans (no semantic value)
-        .replace(/<\/?div[^>]*>/gi, "")                     // Divs (Pandoc handles p/table/a)
-        .replace(/<\/?font[^>]*>/gi, "");                   // Font tags
+      const cleaned = preCleanEmailHtml(html);
 
-      execFile("pandoc", ["-f", "html", "-t", "markdown-raw_html-native_divs-native_spans", "--wrap=none"], {
+      execFile("pandoc", ["-f", "html", "-t", "gfm-raw_html", "--wrap=none"], {
         maxBuffer: 10 * 1024 * 1024,
       }, (error, stdout, stderr) => {
         if (error) {
           sendJson(res, 500, { error: `pandoc error: ${stderr || error.message}` });
           return;
         }
-        // Clean up excessive blank lines from removed elements
-        let markdown = stdout.replace(/\n{3,}/g, "\n\n").trim();
-        // Replace SafeLinks: [text](tracking-url){originalsrc="real-url" ...} → [text](real-url)
-        markdown = markdown.replace(/\[([^\]]*)\]\([^)]*\)\{originalsrc="([^"]+)"[^}]*\}/g, "[$1]($2)");
+        const markdown = stdout
+          .replace(/[ \t]*\{[.#][^}\n]{0,80}\}/g, "")  // stray Pandoc attribute blocks
+          .replace(/^\[TABLE\]$/gm, "")                  // placeholder for unrenderable tables
+          .replace(/^[ \t]*\\[ \t]*$/gm, "")             // lone hard-break backslash lines
+          .replace(/\\(\n\n)/g, "$1")                    // dangling hard break before a paragraph
+          .replace(/\n{3,}/g, "\n\n")
+          .replace(/\\\s*$/, "")                          // trailing hard break
+          .trim();
         sendJson(res, 200, { markdown });
       }).stdin.end(cleaned);
     } catch (e) {
