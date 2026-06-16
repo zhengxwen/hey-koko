@@ -2925,6 +2925,13 @@ button.secondary:disabled {
 .imageWrapper {
   position: relative;
   display: inline-block;
+  /* Shrink-wrap each wrapper to its image's displayed width so the flex row
+     packs tightly. Without this the flex item sizes to the image's intrinsic
+     width (e.g. 440px) instead of its capped 240px display width, leaving up
+     to ~190px of phantom space and large horizontal gaps between images. */
+  flex: 0 0 auto;
+  width: fit-content;
+  max-width: min(240px, 100%);
 }
 
 .imageDeleteBtn {
