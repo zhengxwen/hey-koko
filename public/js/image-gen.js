@@ -2,7 +2,7 @@
 import { dom, state } from './state.js';
 import { ASPECT_ALIASES } from './constants.js';
 import { t, getPromptLanguage } from './i18n.js';
-import { makePreview, normalizeGridHeight } from './utils.js';
+import { makePreview } from './utils.js';
 import { setAvatarState } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab, getActiveTab } from './tabs.js';
@@ -285,8 +285,6 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     }
 
     await Promise.all(promises);
-
-    if (pendingGrid) normalizeGridHeight(pendingGrid);
 
     let content = "";
     const enhancedPrompts = parsedList

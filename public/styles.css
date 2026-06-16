@@ -1232,6 +1232,7 @@ button.secondary:disabled {
 .message.isFolded > .plainBody,
 .message.isFolded > .imageGrid,
 .message.isFolded > .messageImage,
+.message.isFolded > .messageImages,
 .message.isFolded > .messageTimestamp,
 .message.isFolded > .messageActions {
   display: none;
@@ -1478,6 +1479,24 @@ button.secondary:disabled {
   object-position: center;
   border-radius: 8px;
   margin-bottom: 7px;
+}
+
+/* Multiple images packed tightly in an equal-height row */
+.messageImages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-bottom: 7px;
+  max-width: 100%;
+}
+
+.messageImages .messageImage {
+  width: auto;
+  height: 240px;
+  max-width: 100%;
+  object-fit: cover;
+  border-radius: 6px;
+  margin-bottom: 0;
 }
 
 .messageActions {
@@ -2110,6 +2129,42 @@ button.secondary:disabled {
 
 .imagePreview img[hidden] {
   display: none;
+}
+
+.previewThumb {
+  position: relative;
+  display: block;
+}
+
+.previewThumbRemove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(32, 33, 36, 0.55);
+  color: white;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.previewThumb:hover .previewThumbRemove,
+.previewThumbRemove:focus-visible {
+  opacity: 1;
+}
+
+.previewThumbRemove:hover {
+  background: rgba(0, 0, 0, 0.8);
 }
 
 .filePreview {
@@ -2859,8 +2914,12 @@ button.secondary:disabled {
 .imageGrid {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  justify-content: flex-start;
+  align-content: flex-start;
+  gap: 4px;
   margin-top: 8px;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .imageWrapper {
@@ -2905,9 +2964,11 @@ button.secondary:disabled {
 
 .generatedImage {
   display: block;
-  width: min(240px, 100%);
+  max-width: min(240px, 100%);
   max-height: 260px;
-  object-fit: scale-down;
+  width: auto;
+  height: auto;
+  object-fit: contain;
   object-position: center;
   border-radius: 8px;
   cursor: pointer;

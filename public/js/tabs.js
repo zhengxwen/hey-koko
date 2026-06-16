@@ -107,8 +107,8 @@ export function clearSelectedImage() {
   state.selectedImage = null;
   dom.fileInput.value = "";
   dom.previewImage.removeAttribute("src");
-  dom.previewImage.hidden = false;
-  dom.imagePreview.querySelectorAll(".multiPreviewImg").forEach(el => el.remove());
+  dom.previewImage.hidden = true;
+  dom.imagePreview.querySelectorAll(".previewThumb, .multiPreviewImg").forEach(el => el.remove());
   dom.imagePreview.hidden = true;
 }
 

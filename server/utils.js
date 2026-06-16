@@ -25,7 +25,12 @@ function serveStatic(req, res) {
     }
 
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, { "Content-Type": config.MIME_TYPES[ext] || "application/octet-stream" });
+    // No caching: this is a local dev tool, so always serve the latest
+    // HTML/CSS/JS instead of a stale browser-cached copy.
+    res.writeHead(200, {
+      "Content-Type": config.MIME_TYPES[ext] || "application/octet-stream",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+    });
     res.end(data);
   });
 }

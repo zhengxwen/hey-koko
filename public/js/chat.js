@@ -1,7 +1,7 @@
 // Chat rendering, message handling, and sending
 import { dom, state } from './state.js';
 import { PERSONALITY_PRESETS, TAG_COLORS } from './constants.js';
-import { escapeHtml, formatTimestamp, makePreview, normalizeGridHeight } from './utils.js';
+import { escapeHtml, formatTimestamp, makePreview } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
 import { setAvatarState, showExpression, detectExpression } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
@@ -1570,11 +1570,12 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   if (image) {
     if (image.multi) {
       userMessage.images = image.multi.map(img => img.base64);
-      userMessage.previewImage = image.multi[0].preview;
+      userMessage.previewImages = image.multi.map(img => img.preview);
     } else {
       userMessage.images = [image.base64];
-      userMessage.previewImage = image.preview;
+      userMessage.previewImages = [image.preview];
     }
+    userMessage.previewImage = userMessage.previewImages[0]; // backward compat
   }
 
   tab.messages.push(userMessage);
@@ -1733,12 +1734,23 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
   }
 
   if (previewImage) {
-    const image = document.createElement("img");
-    image.className = "messageImage";
-    image.src = previewImage;
-    image.alt = "用户上传的图片";
-    if (Number.isInteger(index)) image.dataset.msgIndex = index;
-    item.appendChild(image);
+    const previews = Array.isArray(previewImage) ? previewImage : [previewImage];
+    // Multiple images render in a compact grid; a single image stays inline.
+    const container = previews.length > 1
+      ? Object.assign(document.createElement("div"), { className: "messageImages" })
+      : item;
+    previews.forEach((src, imgIdx) => {
+      const image = document.createElement("img");
+      image.className = "messageImage";
+      image.src = src;
+      image.alt = "用户上传的图片";
+      if (Number.isInteger(index)) {
+        image.dataset.msgIndex = index;
+        image.dataset.imgIndex = imgIdx;
+      }
+      container.appendChild(image);
+    });
+    if (container !== item) item.appendChild(container);
   }
 
   if (content) {
@@ -1903,7 +1915,6 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
         grid.appendChild(wrapper);
       }
       item.appendChild(grid);
-      normalizeGridHeight(grid);
     }
   }
 
@@ -1968,7 +1979,8 @@ export function renderChat() {
     const genImages = message.generatedImages || (message.isFilePreview && message.images?.length
       ? message.images.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
       : undefined);
-    const el = renderMessage(message.role, message.content, message.previewImage, index, message.timestamp, genImages, message.generatedThumbnails);
+    const previews = message.previewImages || (message.previewImage ? [message.previewImage] : undefined);
+    const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails);
     // Insert thinking details block if present and setting enabled
     if (el && message.thinking) {
       const markdownBody = el.querySelector(".markdownBody");

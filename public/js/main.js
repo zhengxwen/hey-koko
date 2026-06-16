@@ -884,7 +884,8 @@ function exportImgSrc(img) {
 
 function exportImages(m) {
   const out = [];
-  if (m.previewImage) out.push(m.previewImage);
+  if (m.previewImages?.length) out.push(...m.previewImages);
+  else if (m.previewImage) out.push(m.previewImage);
   if (m.generatedImages?.length) out.push(...m.generatedImages);
   else if (m.isFilePreview && m.images?.length) out.push(...m.images);
   return out.map(exportImgSrc).filter(Boolean);
@@ -1038,6 +1039,73 @@ function getFileExtension(name) {
   return dot >= 0 ? name.slice(dot).toLowerCase() : "";
 }
 
+// Normalize the staged image state into a flat array of {base64, preview}.
+function getStagedImages() {
+  if (!state.selectedImage) return [];
+  if (state.selectedImage.multi) return state.selectedImage.multi;
+  return [state.selectedImage];
+}
+
+// Render the compose-area preview for the currently staged image(s).
+// Each image gets its own thumbnail with a floating remove (×) button.
+function renderStagedImagePreview() {
+  const images = getStagedImages();
+  dom.imagePreview.querySelectorAll(".previewThumb").forEach(el => el.remove());
+  // The static single-image <img> and global × button are unused — all
+  // thumbnails are rendered dynamically so each has its own remove button.
+  dom.previewImage.hidden = true;
+  // .iconButton sets `display: grid`, which overrides the [hidden] attribute,
+  // so hide the now-unused global remove button via inline style.
+  if (dom.removeImage) dom.removeImage.style.display = "none";
+
+  if (images.length === 0) {
+    dom.imagePreview.hidden = true;
+    return;
+  }
+
+  images.forEach((img, idx) => {
+    const thumb = document.createElement("div");
+    thumb.className = "previewThumb";
+
+    const el = document.createElement("img");
+    el.className = "multiPreviewImg";
+    el.src = img.preview;
+    el.alt = "预览";
+    thumb.appendChild(el);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "previewThumbRemove";
+    btn.setAttribute("aria-label", "移除图片");
+    btn.textContent = "×";
+    btn.addEventListener("click", () => removeStagedImage(idx));
+    thumb.appendChild(btn);
+
+    dom.imagePreview.appendChild(thumb);
+  });
+  dom.imagePreview.hidden = false;
+}
+
+// Append newly staged images to the existing selection (instead of replacing).
+function addStagedImages(newImages) {
+  if (!newImages || newImages.length === 0) return;
+  const all = [...getStagedImages(), ...newImages];
+  state.selectedImage = all.length === 1 ? all[0] : { multi: all, preview: all[0].preview };
+  renderStagedImagePreview();
+}
+
+// Remove a single staged image by index, leaving the rest in place.
+function removeStagedImage(index) {
+  const images = getStagedImages();
+  images.splice(index, 1);
+  if (images.length === 0) {
+    clearSelectedImage();
+  } else {
+    state.selectedImage = images.length === 1 ? images[0] : { multi: images, preview: images[0].preview };
+    renderStagedImagePreview();
+  }
+}
+
 // File selection helper (images + documents)
 async function selectFile(file) {
   if (!file) return;
@@ -1069,13 +1137,7 @@ async function selectFile(file) {
     const needsConvert = !/^image\/(jpeg|png|gif|webp)$/i.test(file.type);
     const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : dataUrl;
     const preview = await makePreview(dataUrl);
-    state.selectedImage = {
-      base64: sendDataUrl.split(",")[1],
-      preview,
-    };
-
-    dom.previewImage.src = preview;
-    dom.imagePreview.hidden = false;
+    addStagedImages([{ base64: sendDataUrl.split(",")[1], preview }]);
     clearSelectedFile();
     dom.messageInput.focus();
     return;
@@ -1195,24 +1257,8 @@ async function selectMultipleFiles(files) {
       images.push({ base64: sendDataUrl.split(",")[1], preview });
     }
     if (images.length === 0) return;
-    // Store as multi-image
-    state.selectedImage = images.length === 1 ? images[0] : { multi: images, preview: images[0].preview };
-    // Show all image previews
-    dom.imagePreview.querySelectorAll(".multiPreviewImg").forEach(el => el.remove());
-    if (images.length === 1) {
-      dom.previewImage.src = images[0].preview;
-      dom.previewImage.hidden = false;
-    } else {
-      dom.previewImage.hidden = true;
-      for (const img of images) {
-        const el = document.createElement("img");
-        el.className = "multiPreviewImg";
-        el.src = img.preview;
-        el.alt = "预览";
-        dom.imagePreview.insertBefore(el, dom.imagePreview.querySelector(".iconButton"));
-      }
-    }
-    dom.imagePreview.hidden = false;
+    // Append to any already-staged images (don't replace)
+    addStagedImages(images);
     clearSelectedFile();
     dom.messageInput.focus();
   } else {

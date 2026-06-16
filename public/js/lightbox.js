@@ -49,8 +49,10 @@ export function initLightbox() {
         const msgIndex = img.dataset.msgIndex;
         if (msgIndex !== undefined) {
           const msg = getActiveTab().messages[Number(msgIndex)];
-          if (msg && msg.images && msg.images[0]) {
-            srcs.push(msg.images[0].startsWith("data:") ? msg.images[0] : `data:image/jpeg;base64,${msg.images[0]}`);
+          const imgIndex = Number(img.dataset.imgIndex) || 0;
+          if (msg && msg.images && msg.images[imgIndex]) {
+            const full = msg.images[imgIndex];
+            srcs.push(full.startsWith("data:") ? full : `data:image/jpeg;base64,${full}`);
           } else {
             srcs.push(img.src);
           }
@@ -216,8 +218,10 @@ export function initLightbox() {
     const msgIndex = img.dataset.msgIndex;
     if (msgIndex !== undefined) {
       const msg = getActiveTab().messages[Number(msgIndex)];
-      if (msg && msg.images && msg.images[0]) {
-        src = msg.images[0].startsWith("data:") ? msg.images[0] : `data:image/jpeg;base64,${msg.images[0]}`;
+      const imgIndex = Number(img.dataset.imgIndex) || 0;
+      if (msg && msg.images && msg.images[imgIndex]) {
+        const full = msg.images[imgIndex];
+        src = full.startsWith("data:") ? full : `data:image/jpeg;base64,${full}`;
       }
     }
     openLightbox(src);

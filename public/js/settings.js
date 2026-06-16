@@ -47,6 +47,7 @@ function saveChatMessage(message) {
   stored.content = message.content;
   if (message.folded) stored.folded = true;
   if (message.previewImage) stored.previewImage = message.previewImage;
+  if (message.previewImages) stored.previewImages = message.previewImages;
   if (message.images) stored.images = message.images;
   if (message.generatedThumbnails && message.generatedThumbnails.length > 0) {
     stored.generatedThumbnails = message.generatedThumbnails;

@@ -1,6 +1,6 @@
 // Archive and retrieve functionality
 import { dom, state } from './state.js';
-import { escapeHtml, normalizeGridHeight } from './utils.js';
+import { escapeHtml } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, createTab, closeTab, switchTab, renderTabs } from './tabs.js';
@@ -73,6 +73,7 @@ export function initArchive() {
       m.content = msg.content;
       if (msg.folded) m.folded = true;
       if (msg.previewImage) m.previewImage = msg.previewImage;
+      if (msg.previewImages) m.previewImages = msg.previewImages;
       if (msg.images) m.images = msg.images;
       if (msg.generatedImages) m.generatedImages = msg.generatedImages;
       if (msg.generatedThumbnails) m.generatedThumbnails = msg.generatedThumbnails;
@@ -500,14 +501,18 @@ export function initArchive() {
         div.className = `archivePreviewMsg ${msg.role}${msg.folded ? " folded" : ""}`;
 
         let imageHtml = "";
-        if (msg.previewImage) {
-          const src = msg.previewImage.startsWith("data:") ? msg.previewImage : `data:image/jpeg;base64,${msg.previewImage}`;
-          imageHtml = `<img class="messageImage" src="${src}" alt="图片" />`;
-        } else if (msg.images && msg.images.length > 0) {
-          imageHtml = msg.images.map(img => {
-            const src = img.startsWith("data:") ? img : `data:image/jpeg;base64,${img}`;
+        const previews = (msg.previewImages && msg.previewImages.length > 0)
+          ? msg.previewImages
+          : msg.previewImage
+            ? [msg.previewImage]
+            : (msg.images && msg.images.length > 0 ? msg.images : null);
+        if (previews) {
+          const imgs = previews.map(p => {
+            const src = p.startsWith("data:") ? p : `data:image/jpeg;base64,${p}`;
             return `<img class="messageImage" src="${src}" alt="图片" />`;
           }).join("");
+          // Multiple images share the equal-height flex row (same as live chat).
+          imageHtml = previews.length > 1 ? `<div class="messageImages">${imgs}</div>` : imgs;
         }
 
         const genImgs = msg.generatedImages && msg.generatedImages.length > 0
@@ -575,10 +580,6 @@ export function initArchive() {
         try {
           mermaid.render(id, code).then(({ svg }) => { el.innerHTML = svg; });
         } catch {}
-      });
-
-      archivePreviewContent.querySelectorAll(".imageGrid").forEach(grid => {
-        normalizeGridHeight(grid);
       });
 
       archivePreviewEmpty.style.display = "none";
