@@ -498,7 +498,9 @@ export function renderTabs() {
       } else {
         closeButton.addEventListener("click", (event) => {
           event.stopPropagation();
-          closeTab(tab.id);
+          if (confirm(t("confirm_closeTab", { title: tab.title }))) {
+            closeTab(tab.id);
+          }
         });
       }
       actionsCol.appendChild(closeButton);

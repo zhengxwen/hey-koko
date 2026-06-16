@@ -264,6 +264,11 @@ dom.messageInput.addEventListener("keydown", (event) => {
 
 // Command autocomplete on input
 dom.messageInput.addEventListener("input", () => {
+  // Don't show command popup if quick prompt is visible
+  if (!quickPromptPopup.hidden) {
+    hideCommandPopup();
+    return;
+  }
   const val = dom.messageInput.value;
   if (val.startsWith("/") && !val.includes("\n")) {
     const cmd = val.split(/\s/)[0];
@@ -681,10 +686,12 @@ dom.stopTranslateBtn.addEventListener("click", stopTranslation);
     if (e.key === "/" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       if (quickPromptPopup.hidden) {
+        hideCommandPopup();
         showQuickPromptPopup();
         dom.messageInput.focus();
       } else {
         quickPromptPopup.hidden = true;
+        hideCommandPopup();
       }
     }
   });

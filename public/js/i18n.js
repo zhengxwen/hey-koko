@@ -148,6 +148,7 @@ const UI = {
     msg_greetingNoName: "I'm here. What would you like to chat about?",
     msg_greetDefault: "",
     msg_fork: "(fork)",
+    confirm_closeTab: "Close chat \"${title}\"?",
     // Commands
     cmd_0: "No-context chat, isolated reply",
     cmd_1: "Use only the previous message as context",
@@ -328,6 +329,7 @@ const UI = {
     msg_greetingNoName: "我在这里。今天想聊什么？",
     msg_greetDefault: "",
     msg_fork: "(分支)",
+    confirm_closeTab: "确认关闭对话「${title}」吗？",
     cmd_0: "无上下文对话，独立回复",
     cmd_1: "仅使用上一条消息作为上下文",
     cmd_clear: "清空当前对话",
@@ -507,6 +509,7 @@ const UI = {
     msg_greetingNoName: "我在這裡。今天想聊什麼？",
     msg_greetDefault: "",
     msg_fork: "(分支)",
+    confirm_closeTab: "確認關閉對話「${title}」嗎？",
     cmd_0: "無上下文對話，獨立回覆",
     cmd_1: "僅使用上一條訊息作為上下文",
     cmd_clear: "清空目前對話",
