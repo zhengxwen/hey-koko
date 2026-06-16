@@ -8,28 +8,57 @@ const { sendJson } = require("./utils");
 let hasPandoc = false;
 let hasMinerU = false;
 let detectDone = false;
+let pandocPath = "pandoc";
+let mineruPath = "mineru";
+
+// Find executable in PATH or common locations
+function findExecutable(name) {
+  const commonPaths = [
+    `/opt/homebrew/bin/${name}`,
+    `/usr/local/bin/${name}`,
+    `/usr/bin/${name}`,
+    `/bin/${name}`,
+  ];
+
+  for (const fullPath of commonPaths) {
+    try {
+      fs.accessSync(fullPath, fs.constants.X_OK);
+      return fullPath;
+    } catch {}
+  }
+
+  // Try with 'which' command
+  try {
+    const result = execSync(`which ${name}`, { encoding: "utf-8", stdio: "ignore" });
+    return result.trim();
+  } catch {}
+
+  return name; // fallback to just the name
+}
 
 (async function detectTools() {
   try {
-    execSync("pandoc --version", { stdio: "ignore", timeout: 5000 });
+    pandocPath = findExecutable("pandoc");
+    execSync(`${pandocPath} --version`, { stdio: "ignore", timeout: 5000 });
     hasPandoc = true;
-    console.log("[parse-file] pandoc detected");
-  } catch {
-    console.log("[parse-file] pandoc not found, DOCX will use client-side fallback");
+    console.log(`[parse-file] pandoc detected at ${pandocPath}`);
+  } catch (err) {
+    console.log(`[parse-file] pandoc not found (${err.message}), DOCX will use client-side fallback`);
   }
 
   // Check mineru asynchronously to avoid blocking server startup
   try {
+    mineruPath = findExecutable("mineru");
     await new Promise((resolve, reject) => {
-      const proc = spawn("mineru", ["--version"], { stdio: "ignore" });
+      const proc = spawn(mineruPath, ["--version"], { stdio: "ignore" });
       const timer = setTimeout(() => { proc.kill(); reject(new Error("timeout")); }, 15000);
       proc.on("close", (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(); });
       proc.on("error", () => { clearTimeout(timer); reject(); });
     });
     hasMinerU = true;
-    console.log("[parse-file] MinerU detected");
-  } catch {
-    console.log("[parse-file] MinerU not found, PDF will use client-side fallback");
+    console.log(`[parse-file] MinerU detected at ${mineruPath}`);
+  } catch (err) {
+    console.log(`[parse-file] MinerU not found (${err.message}), PDF will use client-side fallback`);
   }
   detectDone = true;
 })();
@@ -115,7 +144,7 @@ function parseDocx(inputPath, tmpDir, res) {
     }
 
     const mediaDir = path.join(tmpDir, "media");
-    execFile("pandoc", [inputPath, "-t", "markdown", "--wrap=none", `--extract-media=${tmpDir}`], {
+    execFile(pandocPath, [inputPath, "-t", "markdown", "--wrap=none", `--extract-media=${tmpDir}`], {
       maxBuffer: 50 * 1024 * 1024,
     }, (error, stdout, stderr) => {
       if (error) {
@@ -183,7 +212,7 @@ function parsePdf(inputPath, tmpDir, res) {
       "Cache-Control": "no-store",
     });
 
-    const proc = spawn("mineru", ["-p", inputPath, "-o", outputDir], {
+    const proc = spawn(mineruPath, ["-p", inputPath, "-o", outputDir], {
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
     });
 
@@ -398,7 +427,7 @@ function parseHtml(req, res) {
 
       const cleaned = preCleanEmailHtml(html);
 
-      execFile("pandoc", ["-f", "html", "-t", "gfm-raw_html", "--wrap=none"], {
+      execFile(pandocPath, ["-f", "html", "-t", "gfm-raw_html", "--wrap=none"], {
         maxBuffer: 10 * 1024 * 1024,
       }, (error, stdout, stderr) => {
         if (error) {

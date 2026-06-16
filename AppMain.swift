@@ -41,7 +41,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             process.arguments = ["server.js"]
         }
         process.currentDirectoryURL = URL(fileURLWithPath: appPath)
-        process.environment = ProcessInfo.processInfo.environment
+
+        // Ensure full PATH is available to Node.js (includes Homebrew tools like pandoc, mineru)
+        var env = ProcessInfo.processInfo.environment
+        let commonPaths = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/sbin"
+        ]
+        if let existingPath = env["PATH"] {
+            let pathSet = Set(existingPath.split(separator: ":").map(String.init))
+            let combined = commonPaths.filter { !pathSet.contains($0) } + existingPath.split(separator: ":").map(String.init)
+            env["PATH"] = combined.joined(separator: ":")
+        } else {
+            env["PATH"] = commonPaths.joined(separator: ":")
+        }
+        process.environment = env
 
         do {
             try process.run()
