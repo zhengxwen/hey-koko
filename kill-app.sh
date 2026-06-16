@@ -2,28 +2,34 @@
 
 # Kill hey-koko web app processes
 
-echo "Killing hey-koko processes..."
+echo "Cleaning up hey-koko processes..."
 
-# Kill Node.js process running on port 1314
+# Kill all hey-koko app instances (force kill)
+if pgrep hey-koko >/dev/null 2>&1; then
+  pkill -9 hey-koko 2>/dev/null
+  echo "✓ Killed hey-koko app instances"
+fi
+
+# Kill all node server.js processes (force kill to ensure cleanup)
+if pgrep -f "node server" >/dev/null 2>&1; then
+  pkill -9 -f "node server" 2>/dev/null
+  echo "✓ Killed Node.js server processes"
+fi
+
+# Wait a bit for ports to be released
+sleep 1
+
+# Verify port is free
 if lsof -Pi :1314 -sTCP:LISTEN -t >/dev/null 2>&1; then
-  PID=$(lsof -Pi :1314 -sTCP:LISTEN -t)
-  kill $PID
-  echo "✓ Killed Node.js process (PID: $PID) on port 1314"
+  echo "⚠ Warning: Port 1314 still in use, forcing cleanup..."
+  lsof -Pi :1314 -sTCP:LISTEN -t | xargs kill -9 2>/dev/null || true
+  sleep 1
+fi
+
+if lsof -Pi :1314 -sTCP:LISTEN -t >/dev/null 2>&1; then
+  echo "⚠ Port 1314 still in use - you may need to restart your Mac"
 else
-  echo "No process found on port 1314"
+  echo "✓ Port 1314 is now free"
 fi
 
-# Kill any remaining node server.js processes
-PIDS=$(pgrep -f "node server.js" | grep -v grep)
-if [ -n "$PIDS" ]; then
-  echo "$PIDS" | xargs kill -9
-  echo "✓ Killed remaining Node.js processes: $PIDS"
-fi
-
-# Kill the macOS app if running
-if pgrep -f "hey-koko.app" >/dev/null 2>&1; then
-  killall "hey-koko" 2>/dev/null
-  echo "✓ Killed hey-koko.app"
-fi
-
-echo "Done"
+echo "Done - you can now launch hey-koko.app"
