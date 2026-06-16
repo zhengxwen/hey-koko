@@ -19,7 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "/usr/local/bin/node",
             "/usr/bin/node"
         ]
-        
+
         var nodeBin: String?
         for p in nodePaths {
             if FileManager.default.isExecutableFile(atPath: p) {
@@ -33,6 +33,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let process = Process()
+
         if nodeBin == "/usr/bin/env" {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             process.arguments = ["node", "server.js"]
@@ -61,13 +62,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         process.environment = env
 
+        // Log the command being executed
+        NSLog("[hey-koko] Starting server with: \(nodeBin ?? "node") \(process.arguments?.joined(separator: " ") ?? "")")
+        NSLog("[hey-koko] Working directory: \(appPath)")
+
         do {
             try process.run()
             serverProcess = process
+            NSLog("[hey-koko] Server process started with PID: \(process.processIdentifier)")
         } catch {
             let alert = NSAlert()
             alert.messageText = "Unable to start server"
-            alert.informativeText = "Please ensure Node.js is installed\nhttps://nodejs.org"
+            alert.informativeText = "Please ensure Node.js is installed\nhttps://nodejs.org\n\nError: \(error.localizedDescription)"
             alert.alertStyle = .critical
             alert.runModal()
             NSApp.terminate(nil)
@@ -102,24 +108,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func waitAndLoad() {
         DispatchQueue.global().async { [weak self] in
-            let url = URL(string: "http://127.0.0.1:1314")!
+            let healthUrl = URL(string: "http://127.0.0.1:1314/health")!
+            let indexUrl = URL(string: "http://127.0.0.1:1314")!
             var ready = false
-            for _ in 0..<100 { // up to 10 seconds
-                if let _ = try? Data(contentsOf: url) {
-                    ready = true
-                    break
+            let maxAttempts = 300  // 30 seconds (more time for Node startup)
+
+            NSLog("[hey-koko] Waiting for server at http://127.0.0.1:1314...")
+
+            for attempt in 0..<maxAttempts {
+                do {
+                    let data = try Data(contentsOf: healthUrl, options: .alwaysMapped)
+                    if !data.isEmpty {
+                        ready = true
+                        NSLog("[hey-koko] Server ready after \(attempt * 100)ms")
+                        break
+                    }
+                } catch {
+                    if attempt % 50 == 0 {  // Log every 5 seconds
+                        NSLog("[hey-koko] Still waiting... attempt \(attempt)/\(maxAttempts)")
+                    }
                 }
                 Thread.sleep(forTimeInterval: 0.1)
             }
+
             DispatchQueue.main.async {
                 if ready {
-                    self?.webView.load(URLRequest(url: url))
+                    NSLog("[hey-koko] Loading UI...")
+                    self?.webView.load(URLRequest(url: indexUrl))
                     self?.window.makeKeyAndOrderFront(nil)
                     NSApp.activate(ignoringOtherApps: true)
                 } else {
+                    NSLog("[hey-koko] Server startup timeout - unable to reach health endpoint")
                     let alert = NSAlert()
                     alert.messageText = "Server startup timeout"
-                    alert.informativeText = "Unable to connect to http://127.0.0.1:1314"
+                    alert.informativeText = "Unable to connect to http://127.0.0.1:1314 after 30 seconds.\n\n1. Check Console.app for error logs\n2. Verify Node.js is installed: node --version\n3. Try running: cd ~/Documents/Codes/Repository/hey-koko && node server.js"
                     alert.alertStyle = .warning
                     alert.runModal()
                     NSApp.terminate(nil)

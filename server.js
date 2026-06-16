@@ -11,7 +11,15 @@ const { listSystemVoices, speakWithSay, stopSay } = require("./server/speech");
 const { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives } = require("./server/archive");
 const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file");
 
+console.log("[hey-koko] All modules loaded, starting server...");
+
 const server = http.createServer((req, res) => {
+  // Health check endpoint
+  if (req.method === "GET" && req.url === "/health") {
+    sendJson(res, 200, { status: "ok" });
+    return;
+  }
+
   if (req.method === "POST" && req.url === "/api/chat") {
     proxyOllamaChat(req, res);
     return;
