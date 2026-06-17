@@ -24,6 +24,7 @@ export function saveCurrentSettings() {
         steps: dom.comfyParamSteps?.value || "",
         cfg: dom.comfyParamCfg?.value || "",
         guidance: dom.comfyParamGuidance?.value || "",
+        imageCfg: dom.comfyParamImageCfg?.value || "",
         denoise: dom.comfyParamDenoise?.value || "",
       },
       defaultImageSize: dom.defaultImageSize.value,
@@ -107,6 +108,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamSteps) dom.comfyParamSteps.value = cp.steps || "";
     if (dom.comfyParamCfg) dom.comfyParamCfg.value = cp.cfg || "";
     if (dom.comfyParamGuidance) dom.comfyParamGuidance.value = cp.guidance || "";
+    if (dom.comfyParamImageCfg) dom.comfyParamImageCfg.value = cp.imageCfg || "";
     if (dom.comfyParamDenoise) dom.comfyParamDenoise.value = cp.denoise || "";
   }
   if (savedSettings.defaultImageSize) dom.defaultImageSize.value = savedSettings.defaultImageSize;

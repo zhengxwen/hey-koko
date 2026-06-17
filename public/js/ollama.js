@@ -118,28 +118,33 @@ export async function loadComfyModels() {
   try {
     const response = await fetch("/api/comfy-models");
     const data = await response.json();
-    const models = data.models || [];
+    const models = data.models || [];                 // checkpoints (txt2img / img2img)
+    const editModels = data.editModels || [];         // instruction-edit models (need a ref image)
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
     const current = saved.comfyModel || dom.comfyModelSelect.value;
+    const allNames = [...models, ...editModels.map((m) => m.name)];
     dom.comfyModelSelect.innerHTML = "";
 
-    if (models.length === 0) {
+    if (allNames.length === 0) {
       const option = document.createElement("option");
       option.value = "";
       option.textContent = t("comfy_model_none");
       dom.comfyModelSelect.appendChild(option);
     } else {
-      for (const name of models) {
+      const addOption = (parent, name) => {
         const option = document.createElement("option");
         option.value = name;
         option.textContent = name;
-        dom.comfyModelSelect.appendChild(option);
+        parent.appendChild(option);
+      };
+      for (const name of models) addOption(dom.comfyModelSelect, name);
+      if (editModels.length) {
+        const group = document.createElement("optgroup");
+        group.label = t("comfy_edit_group");
+        for (const m of editModels) addOption(group, m.name);
+        dom.comfyModelSelect.appendChild(group);
       }
-      if (current && models.includes(current)) {
-        dom.comfyModelSelect.value = current;
-      } else {
-        dom.comfyModelSelect.value = models[0];
-      }
+      dom.comfyModelSelect.value = allNames.includes(current) ? current : allNames[0];
     }
   } catch {
     /* leave placeholder */
@@ -278,6 +283,7 @@ function initComfyParamsModal() {
     dom.comfyParamSteps,
     dom.comfyParamCfg,
     dom.comfyParamGuidance,
+    dom.comfyParamImageCfg,
     dom.comfyParamDenoise,
   ];
 

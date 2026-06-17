@@ -30,6 +30,8 @@ function comfyOverrides() {
   if (cfg !== undefined) ov.cfg = cfg;
   const guidance = num(dom.comfyParamGuidance?.value);
   if (guidance !== undefined) ov.guidance = guidance;
+  const imageCfg = num(dom.comfyParamImageCfg?.value);
+  if (imageCfg !== undefined) ov.imageCfg = imageCfg;
   const denoise = num(dom.comfyParamDenoise?.value);
   if (denoise !== undefined) ov.denoise = denoise;
   return ov;
