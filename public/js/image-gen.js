@@ -91,6 +91,7 @@ function parseImagineCommand(input) {
       }
       result.options.width = w;
       result.options.height = h;
+      result.sizeExplicit = true;
       rest = rest.replace(/^--size\s+\S+\s*/, "").trim();
     } else if (/^--(square|portrait|landscape|wide|tall)\b/.test(rest)) {
       const aliasMatch = rest.match(/^(--(?:square|portrait|landscape|wide|tall))\b/);
@@ -99,6 +100,7 @@ function parseImagineCommand(input) {
       const [w, h] = size.split("x").map(Number);
       result.options.width = w;
       result.options.height = h;
+      result.sizeExplicit = true;
       rest = rest.replace(new RegExp("^" + alias + "\\s*"), "").trim();
     } else if (/^--steps\s/.test(rest)) {
       const stepsFlag = rest.match(/^--steps\s+(\S+)/);
@@ -151,10 +153,13 @@ function parseImagineCommand(input) {
   return result;
 }
 
-export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1) {
+export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null) {
   const parsedList = Array.isArray(parsedInput) ? parsedInput : [parsedInput];
   const tab = getTab(tabId);
   if (!tab) return;
+
+  // Image-to-image: raw base64 reference image(s) condition the generation.
+  const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
 
   const imageModel = dom.imageModelSelect.value;
   if (!imageModel) {
@@ -179,7 +184,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         const enhanceRes = await fetch("/api/enhance-prompt", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: dom.modelSelect.value, prompt, language: getPromptLanguage() }),
+          body: JSON.stringify({ model: dom.modelSelect.value, prompt, language: getPromptLanguage(), edit: !!refImages }),
         });
         const enhanceData = await enhanceRes.json();
         if (enhanceRes.ok && enhanceData.enhanced) {
@@ -233,6 +238,17 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         if (reqOptions.seed === undefined && parsed.count > 1) {
           reqOptions.seed = Math.floor(Math.random() * 2147483647);
         }
+        // For img2img, preserve the input image's dimensions unless the user
+        // explicitly asked for a size — drop the auto-filled default size.
+        if (refImages && !parsed.sizeExplicit) {
+          delete reqOptions.width;
+          delete reqOptions.height;
+        }
+
+        // Image editing (img2img) is markedly slower than text2img — give it
+        // generous headroom over the user's configured txt2img timeout.
+        const baseTimeout = parseInt(dom.imageTimeoutInput.value, 10) || 120;
+        const reqTimeout = refImages ? Math.max(baseTimeout, 300) : baseTimeout;
 
         promises.push(
           fetch("/api/generate-image", {
@@ -244,7 +260,8 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
               prompt,
               negative_prompt: parsed.negativePrompt || undefined,
               options: reqOptions,
-              timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+              images: refImages || undefined,
+              timeout: reqTimeout,
             }),
           })
             .then(async (r) => {
@@ -287,6 +304,10 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     await Promise.all(promises);
 
     let content = "";
+    // Image editing only works reliably on flux2 models; warn otherwise.
+    if (refImages && !/flux2/i.test(imageModel)) {
+      content += t("msg_imgEditModelWarn", { model: imageModel }) + "\n\n";
+    }
     const enhancedPrompts = parsedList
       .map((p, i) => (p.enhance && prompts[i] !== p.prompt) ? prompts[i] : null)
       .filter(Boolean);

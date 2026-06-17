@@ -1067,8 +1067,12 @@ function renderStagedImagePreview() {
 
   if (images.length === 0) {
     dom.imagePreview.hidden = true;
+    dom.messageInput.placeholder = t("input_placeholder");
     return;
   }
+
+  // A staged image enables /imagine image-editing — hint it in the input.
+  dom.messageInput.placeholder = t("input_imageEditHint");
 
   images.forEach((img, idx) => {
     const thumb = document.createElement("div");

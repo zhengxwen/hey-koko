@@ -52,13 +52,13 @@ function findExecutable(name) {
     await new Promise((resolve, reject) => {
       const proc = spawn(mineruPath, ["--version"], { stdio: "ignore" });
       const timer = setTimeout(() => { proc.kill(); reject(new Error("timeout")); }, 15000);
-      proc.on("close", (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(); });
-      proc.on("error", () => { clearTimeout(timer); reject(); });
+      proc.on("close", (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`exit code ${code}`)); });
+      proc.on("error", (err) => { clearTimeout(timer); reject(err || new Error("spawn failed")); });
     });
     hasMinerU = true;
     console.log(`[parse-file] MinerU detected at ${mineruPath}`);
   } catch (err) {
-    console.log(`[parse-file] MinerU not found (${err.message}), PDF will use client-side fallback`);
+    console.log(`[parse-file] MinerU not found (${err && err.message ? err.message : err}), PDF will use client-side fallback`);
   }
   detectDone = true;
 })();

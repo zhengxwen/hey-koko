@@ -141,7 +141,7 @@ function resendChatMessage(index) {
       renderChat();
     } else {
       const validCmds = imagineCmds.filter((cmd) => cmd && cmd.prompt);
-      generateImage(validCmds, state.activeTabId, index + 1);
+      generateImage(validCmds, state.activeTabId, index + 1, message.images || null);
     }
   } else {
     dispatchReply(state.activeTabId, index + 1);
@@ -1494,6 +1494,17 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   const imagineCmds = content ? parseImagineCommands(content) : null;
   if (imagineCmds) {
     const userMessage = { role: "user", content, timestamp: Date.now() };
+    // An attached image turns /imagine into image-to-image (instruction editing).
+    if (image) {
+      if (image.multi) {
+        userMessage.images = image.multi.map(img => img.base64);
+        userMessage.previewImages = image.multi.map(img => img.preview);
+      } else {
+        userMessage.images = [image.base64];
+        userMessage.previewImages = [image.preview];
+      }
+      userMessage.previewImage = userMessage.previewImages[0];
+    }
     tab.messages.push(userMessage);
     const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
     if (firstError) {
@@ -1504,7 +1515,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       saveChat();
       if (state.activeTabId === tabId) renderChat();
       const validCmds = imagineCmds.filter((cmd) => cmd && cmd.prompt);
-      generateImage(validCmds, tabId);
+      generateImage(validCmds, tabId, -1, userMessage.images || null);
     }
     return;
   }
@@ -1832,7 +1843,7 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
                     renderChat();
                   } else {
                     const validCmds = imagineCmds.filter((cmd) => cmd && cmd.prompt);
-                    generateImage(validCmds, state.activeTabId, index + 1);
+                    generateImage(validCmds, state.activeTabId, index + 1, tab.messages[index]?.images || null);
                   }
                 } else {
                   dispatchReply(state.activeTabId, index + 1);

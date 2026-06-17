@@ -43,9 +43,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         process.currentDirectoryURL = URL(fileURLWithPath: appPath)
 
-        // Ensure full PATH is available to Node.js (includes Homebrew tools like pandoc, mineru)
+        // Ensure full PATH is available to Node.js (includes Homebrew tools like pandoc, mineru).
+        // A Finder-launched app gets only a minimal PATH, so prepend the common tool dirs plus
+        // the user's ~/local/bin and ~/.local/bin (where tools like mineru live).
         var env = ProcessInfo.processInfo.environment
+        let home = NSHomeDirectory()
         let commonPaths = [
+            home + "/local/bin",
+            home + "/.local/bin",
             "/opt/homebrew/bin",
             "/usr/local/bin",
             "/usr/bin",

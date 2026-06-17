@@ -1,3 +1,14 @@
+// Safety net: a non-fatal async error (e.g. an optional-tool probe rejecting on
+// a minimal Finder-launch PATH) must never take down the server after it has
+// bound the port — otherwise the native app just times out with "Unable to
+// connect". Log loudly and keep serving.
+process.on("unhandledRejection", (err) => {
+  console.error("[hey-koko] Unhandled promise rejection (continuing):", err);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[hey-koko] Uncaught exception (continuing):", err);
+});
+
 const http = require("http");
 const config = require("./server/config");
 const { sendJson, serveStatic, readBody } = require("./server/utils");

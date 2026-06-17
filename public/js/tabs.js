@@ -110,6 +110,9 @@ export function clearSelectedImage() {
   dom.previewImage.hidden = true;
   dom.imagePreview.querySelectorAll(".previewThumb, .multiPreviewImg").forEach(el => el.remove());
   dom.imagePreview.hidden = true;
+  // Drop the image-editing hint placeholder once no image is staged.
+  const tab = getActiveTab();
+  dom.messageInput.placeholder = tab && tab.locked ? t("input_lockedPlaceholder") : t("input_placeholder");
 }
 
 export function clearSelectedFile() {
