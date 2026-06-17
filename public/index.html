@@ -111,14 +111,22 @@
         </div>
 
         <div class="panelTabContent" data-panel-content="more">
-          <label id="modelLabel">
-            <span id="modelLabelText">LLM模型</span>
-            <select id="modelSelect">
-              <option value="llama3.1:8b">llama3.1:8b</option>
-              <option value="qwen2.5:7b">qwen2.5:7b</option>
-              <option value="mistral:7b">mistral:7b</option>
-            </select>
-          </label>
+          <div class="modelGroup">
+            <label id="embedModelLabel">
+              <span id="embedModelLabelText">Embedding 模型（归档语义搜索）</span>
+              <select id="embedModelSelect">
+                <option value="">未检测到 embedding 模型</option>
+              </select>
+            </label>
+            <label id="modelLabel">
+              <span id="modelLabelText">LLM模型</span>
+              <select id="modelSelect">
+                <option value="llama3.1:8b">llama3.1:8b</option>
+                <option value="qwen2.5:7b">qwen2.5:7b</option>
+                <option value="mistral:7b">mistral:7b</option>
+              </select>
+            </label>
+          </div>
           <div class="urlRow"><button id="editLlmUrl" type="button" class="urlEditBtn" title="编辑地址">✎</button><span id="llmUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
 
           <label class="numCtxLabel">
@@ -139,21 +147,25 @@
           </label>
           <div class="urlRow"><button id="editImageUrl" type="button" class="urlEditBtn" title="编辑地址">✎</button><span id="imageUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
 
-          <label id="embedModelLabel">
-            <span id="embedModelLabelText">Embedding 模型（归档语义搜索）</span>
-            <select id="embedModelSelect">
-              <option value="">未检测到 embedding 模型</option>
-            </select>
-          </label>
-
           <div class="hintRow">
             <button id="scanOllama" type="button" class="secondary scanBtn" title="Scan local network for Ollama instances">扫描</button>
-            <div>
-              <label class="checkboxLabel">
-                <input id="includeLocal" type="checkbox" checked />
-                <span id="includeLocalLabel">包括本机</span>
+            <p class="hint">需要先运行 Ollama</p>
+          </div>
+
+          <div class="comfySection">
+            <div class="comfyModelRow">
+              <label id="comfyModelLabel">
+                <span id="comfyModelLabelText">ComfyUI 模型</span>
+                <select id="comfyModelSelect">
+                  <option value="">未检测到 ComfyUI 模型</option>
+                </select>
               </label>
-              <p class="hint">需要先运行 Ollama</p>
+              <button id="comfyParamsBtn" type="button" class="secondary comfyParamsBtn" title="高级生成参数">⚙</button>
+            </div>
+            <div class="urlRow"><button id="editComfyUrl" type="button" class="urlEditBtn" title="编辑地址">✎</button><span id="comfyUrlDisplay" class="urlDisplay">127.0.0.1:8188</span></div>
+            <div class="hintRow">
+              <button id="scanComfy" type="button" class="secondary scanBtn" title="Scan local network for ComfyUI instances">扫描</button>
+              <p class="hint" id="comfyHint">需要先运行 ComfyUI（图片模型留空时使用）</p>
             </div>
           </div>
 
@@ -369,6 +381,79 @@
         </form>
       </section>
     </main>
+
+    <!-- Ollama Scan Modal -->
+    <div id="scanModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal" role="dialog" aria-modal="true" aria-labelledby="scanModalTitle">
+        <div class="scanModalHeader">
+          <h3 id="scanModalTitle" class="scanModalTitle">扫描 Ollama</h3>
+          <span id="scanModalStatus" class="scanModalStatus"></span>
+          <button id="scanModalClose" type="button" class="scanModalClose" aria-label="关闭">✕</button>
+        </div>
+        <div id="scanModalList" class="scanModalList"></div>
+        <div id="scanModalEmpty" class="scanModalEmpty" hidden>未找到</div>
+      </div>
+    </div>
+
+    <!-- ComfyUI advanced generation parameters -->
+    <div id="comfyParamsModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal comfyParamsModal" role="dialog" aria-modal="true" aria-labelledby="comfyParamsTitle">
+        <div class="scanModalHeader">
+          <h3 id="comfyParamsTitle" class="scanModalTitle">ComfyUI 生成参数</h3>
+          <button id="comfyParamsClose" type="button" class="scanModalClose" aria-label="关闭">✕</button>
+        </div>
+        <div class="comfyParamsBody">
+          <p class="hint" id="comfyParamsHint">留空 = 按所选模型自动选择最优参数</p>
+          <label>
+            <span id="comfyParamSamplerLabel">采样器 (Sampler)</span>
+            <select id="comfyParamSampler">
+              <option value="">自动</option>
+              <option value="euler">euler</option>
+              <option value="euler_ancestral">euler_ancestral</option>
+              <option value="dpmpp_2m">dpmpp_2m</option>
+              <option value="dpmpp_2m_sde">dpmpp_2m_sde</option>
+              <option value="dpmpp_3m_sde">dpmpp_3m_sde</option>
+              <option value="dpmpp_sde">dpmpp_sde</option>
+              <option value="dpm_2">dpm_2</option>
+              <option value="heun">heun</option>
+              <option value="lms">lms</option>
+              <option value="ddim">ddim</option>
+              <option value="uni_pc">uni_pc</option>
+            </select>
+          </label>
+          <label>
+            <span id="comfyParamSchedulerLabel">调度器 (Scheduler)</span>
+            <select id="comfyParamScheduler">
+              <option value="">自动</option>
+              <option value="normal">normal</option>
+              <option value="karras">karras</option>
+              <option value="exponential">exponential</option>
+              <option value="sgm_uniform">sgm_uniform</option>
+              <option value="simple">simple</option>
+              <option value="beta">beta</option>
+              <option value="ddim_uniform">ddim_uniform</option>
+            </select>
+          </label>
+          <label>
+            <span id="comfyParamStepsLabel">步数 (Steps)</span>
+            <input id="comfyParamSteps" type="number" min="1" max="100" step="1" placeholder="自动" />
+          </label>
+          <label>
+            <span id="comfyParamCfgLabel">CFG</span>
+            <input id="comfyParamCfg" type="number" min="0" max="30" step="0.1" placeholder="自动" />
+          </label>
+          <label>
+            <span id="comfyParamGuidanceLabel">Guidance (仅 Flux)</span>
+            <input id="comfyParamGuidance" type="number" min="0" max="20" step="0.1" placeholder="自动 (3.5)" />
+          </label>
+          <label>
+            <span id="comfyParamDenoiseLabel">重绘强度 Denoise (图生图)</span>
+            <input id="comfyParamDenoise" type="number" min="0.1" max="1" step="0.05" placeholder="自动 (0.75)" />
+          </label>
+          <button id="comfyParamsReset" type="button" class="secondary comfyParamsReset">重置为自动</button>
+        </div>
+      </div>
+    </div>
 
     <script type="module" src="/js/main.js"></script>
   </body>

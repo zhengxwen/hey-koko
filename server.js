@@ -13,8 +13,9 @@ const http = require("http");
 const config = require("./server/config");
 const { sendJson, serveStatic, readBody } = require("./server/utils");
 const { proxyOllamaChat, proxyOllamaTags, proxyOllamaShow } = require("./server/chat");
-const { scanOllama } = require("./server/network");
+const { scanOllamaStream, scanComfyStream } = require("./server/network");
 const { proxyOllamaImageModels, generateImage, enhancePrompt, contentToImagePrompts } = require("./server/image");
+const { proxyComfyModels, generateComfyImage } = require("./server/comfy");
 const { fetchUrlContent, transcribeYouTubeAudio } = require("./server/url-fetch");
 const { searchWeb } = require("./server/search");
 const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
@@ -56,6 +57,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === "GET" && req.url === "/api/comfy-models") {
+    proxyComfyModels(res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/generate-comfy") {
+    generateComfyImage(req, res);
+    return;
+  }
+
   if (req.method === "POST" && req.url === "/api/enhance-prompt") {
     enhancePrompt(req, res);
     return;
@@ -81,19 +92,26 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === "POST" && req.url === "/api/scan-ollama") {
-    readBody(req).then(body => scanOllama(res, body)).catch(() => scanOllama(res, {}));
+  if (req.method === "GET" && req.url === "/api/scan-ollama-stream") {
+    scanOllamaStream(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/scan-comfy-stream") {
+    scanComfyStream(req, res);
     return;
   }
 
   if (req.method === "GET" && req.url === "/api/ollama-url") {
-    sendJson(res, 200, { url: config.ollamaUrl, imageUrl: config.imageOllamaUrl });
+    sendJson(res, 200, { url: config.ollamaUrl, imageUrl: config.imageOllamaUrl, comfyUrl: config.comfyUrl });
     return;
   }
 
   if (req.method === "POST" && req.url === "/api/set-ollama-url") {
     readBody(req).then(body => {
-      const defaultUrl = "http://127.0.0.1:11434";
+      const isComfy = body.type === "comfy";
+      const defaultPort = isComfy ? "8188" : "11434";
+      const defaultUrl = `http://127.0.0.1:${defaultPort}`;
       let url = body.url && body.url.trim() ? body.url.trim() : "";
       if (!url) {
         url = defaultUrl;
@@ -101,13 +119,16 @@ const server = http.createServer((req, res) => {
         if (!/^https?:\/\//i.test(url)) url = "http://" + url;
         try {
           const parsed = new URL(url);
-          if (!parsed.port && parsed.protocol === "http:") parsed.port = "11434";
+          if (!parsed.port && parsed.protocol === "http:") parsed.port = defaultPort;
           url = parsed.href.replace(/\/+$/, "");
         } catch {
           // fallback: use as-is
         }
       }
-      if (body.type === "image") {
+      if (body.type === "comfy") {
+        config.comfyUrl = url;
+        sendJson(res, 200, { url: config.comfyUrl });
+      } else if (body.type === "image") {
         config.imageOllamaUrl = url;
         sendJson(res, 200, { url: config.imageOllamaUrl });
       } else {

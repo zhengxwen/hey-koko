@@ -6,6 +6,7 @@ const config = {
   URL_CONTENT_MAX_CHARS: Number(process.env.URL_CONTENT_MAX_CHARS || 40000),
   ollamaUrl: process.env.OLLAMA_URL || "http://127.0.0.1:11434",
   imageOllamaUrl: process.env.IMAGE_OLLAMA_URL || (process.env.OLLAMA_URL || "http://127.0.0.1:11434"),
+  comfyUrl: process.env.COMFY_URL || "http://127.0.0.1:8188",
   PUBLIC_DIR: path.join(__dirname, "..", "public"),
   ARCHIVES_DIR: path.join(os.homedir(), "ai_archives"),
   whisperModel: process.env.WHISPER_MODEL || "",

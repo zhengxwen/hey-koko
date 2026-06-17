@@ -481,12 +481,179 @@ p {
   flex: 1;
 }
 
+/* ComfyUI section: grouped under the Ollama settings, used when no Ollama image
+   model is selected (image model left empty). */
+.comfySection {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border, rgba(128, 128, 128, 0.25));
+}
+
+/* ComfyUI model select + square ⚙ params button on one row. */
+.comfyModelRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.comfyModelRow #comfyModelLabel {
+  flex: 1;
+  min-width: 0;
+}
+
+.comfyParamsBtn {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* ComfyUI advanced-params modal: scrollable form inside the shared modal shell. */
+.comfyParamsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.comfyParamsBody label {
+  gap: 5px;
+}
+
+.comfyParamsBody .hint {
+  margin: 0 0 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.comfyParamsReset {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
 .scanBtn {
   min-height: 30px;
   min-width: 64px;
   padding: 0 14px;
   font-size: 13px;
   white-space: nowrap;
+}
+
+/* Ollama scan modal */
+.scanModalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.scanModalBackdrop[hidden] {
+  display: none;
+}
+
+.scanModal {
+  width: min(360px, 90vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+.scanModalHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.scanModalTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.scanModalStatus {
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.scanModalClose {
+  all: unset;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--muted);
+  padding: 2px 6px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.scanModalClose:hover {
+  color: var(--ink);
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.scanModalList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 16px;
+  overflow-y: auto;
+}
+
+.scanResult {
+  all: unset;
+  cursor: pointer;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--accent-subtle);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.scanResult:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent);
+}
+
+.scanModalEmpty {
+  padding: 4px 16px 16px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.scanModalEmpty[hidden] {
+  display: none;
+}
+
+/* Embedding + LLM share one IP — group them flush, no gap between. */
+.modelGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .urlRow {

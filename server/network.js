@@ -1,74 +1,103 @@
 const os = require("os");
-const config = require("./config");
-const { sendJson } = require("./utils");
 
-function getLocalSubnet() {
+// All of this host's non-internal IPv4 addresses. A machine often has several
+// (Wi-Fi, Ethernet, VPN, Docker bridge…), so we can't assume the LAN one is
+// first — we scan every /24 the host sits on.
+function getLocalIPv4s() {
+  const out = [];
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
       if (iface.family === "IPv4" && !iface.internal) {
-        const parts = iface.address.split(".");
-        return parts.slice(0, 3).join(".");
+        out.push(iface.address);
       }
     }
   }
-  return null;
+  return out;
 }
 
-function getLocalIp() {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === "IPv4" && !iface.internal) {
-        return iface.address;
-      }
-    }
-  }
-  return null;
-}
-
-async function checkOllama(host) {
-  const url = `http://${host}:11434`;
+// Probe a single host:port. `path` lets each service hit a cheap endpoint that
+// confirms it's the service we want (Ollama answers on "/", ComfyUI on
+// "/system_stats"). Returns the base URL on success, null otherwise.
+async function checkHost(host, port, path, signal) {
+  const url = `http://${host}:${port}`;
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1500);
-    const resp = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (resp.ok) return url;
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    if (signal) signal.addEventListener("abort", () => controller.abort());
+    try {
+      const resp = await fetch(url + path, { signal: controller.signal });
+      if (resp.ok) return url;
+    } finally {
+      clearTimeout(timeout);
+    }
   } catch {}
   return null;
 }
 
-async function scanOllama(res, body = {}) {
-  const includeLocal = body.includeLocal !== false;
-  const results = [];
+// Stream discovered service instances over Server-Sent Events so the client can
+// show each one the moment it's found and cancel the rest by closing the
+// connection. Localhost is probed first so the local machine surfaces first.
+// `probe(host, signal)` resolves to a URL string or null.
+function streamScan(req, res, probe) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
 
-  // Check localhost first
-  if (includeLocal) {
-    const localhost = await checkOllama("127.0.0.1");
-    if (localhost) results.push(localhost);
-  }
+  let closed = false;
+  const abort = new AbortController();
+  const send = (obj) => {
+    if (closed) return;
+    try {
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    } catch {}
+  };
 
-  // Scan LAN subnet
-  const subnet = getLocalSubnet();
-  const localIp = subnet ? getLocalIp() : null;
-  if (subnet) {
-    const promises = [];
-    for (let i = 1; i <= 254; i++) {
-      const ip = `${subnet}.${i}`;
-      if (ip === "127.0.0.1") continue;
-      if (!includeLocal && ip === localIp) continue;
-      promises.push(checkOllama(ip).then(r => r ? results.push(r) : null));
+  // Client disconnected (selection made or ESC pressed) → stop scanning.
+  req.on("close", () => {
+    closed = true;
+    try {
+      abort.abort();
+    } catch {}
+  });
+
+  (async () => {
+    // Local machine first.
+    const localhost = await probe("127.0.0.1", abort.signal);
+    if (localhost) send({ type: "found", url: localhost });
+
+    // Then every /24 the host sits on (skip our own IPs — localhost covers us).
+    const selfIps = new Set(getLocalIPv4s());
+    const subnets = [...new Set([...selfIps].map((ip) => ip.split(".").slice(0, 3).join(".")))];
+    if (subnets.length && !closed) {
+      const promises = [];
+      for (const subnet of subnets) {
+        for (let i = 1; i <= 254; i++) {
+          const ip = `${subnet}.${i}`;
+          if (ip === "127.0.0.1" || selfIps.has(ip)) continue;
+          promises.push(probe(ip, abort.signal).then((r) => r && send({ type: "found", url: r })));
+        }
+      }
+      await Promise.all(promises);
     }
-    await Promise.all(promises);
-  }
 
-  // Auto-select: localhost first, then first found
-  if (results.length > 0) {
-    config.ollamaUrl = results[0]; // localhost is already first if found
-  }
-
-  sendJson(res, 200, { selected: config.ollamaUrl, found: results });
+    send({ type: "done" });
+    if (!closed) {
+      try {
+        res.end();
+      } catch {}
+    }
+  })();
 }
 
-module.exports = { scanOllama };
+function scanOllamaStream(req, res) {
+  streamScan(req, res, (host, signal) => checkHost(host, 11434, "/", signal));
+}
+
+function scanComfyStream(req, res) {
+  streamScan(req, res, (host, signal) => checkHost(host, 8188, "/system_stats", signal));
+}
+
+module.exports = { scanOllamaStream, scanComfyStream };

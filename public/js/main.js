@@ -8,7 +8,7 @@ import { initAvatar } from './avatar.js';
 import { stopSpeech, populateVoiceList } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
-import { initOllama, loadModels, loadImageModels, loadEmbedModels } from './ollama.js';
+import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedModels, updateImageGenOptions } from './ollama.js';
 import { setDeps as imageGenSetDeps } from './image-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
 import { renderChat, sendMessage, setGenerating, regenerateReply, generateProactiveReply } from './chat.js';
@@ -287,7 +287,8 @@ dom.modelSelect.addEventListener("change", () => {
   saveCurrentSettings();
   refreshModelMaxContext(dom.modelSelect.value);
 });
-dom.imageModelSelect.addEventListener("change", saveCurrentSettings);
+dom.imageModelSelect.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); });
+dom.comfyModelSelect?.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); });
 dom.voiceSelect.addEventListener("change", saveCurrentSettings);
 if (dom.numCtxSelect) {
   dom.numCtxSelect.addEventListener("change", () => {
@@ -1863,4 +1864,5 @@ updateLockedState();
 renderChat();
 loadModels().then(() => refreshModelMaxContext(dom.modelSelect.value)).catch(() => {});
 loadImageModels().catch(() => {});
+loadComfyModels().catch(() => {});
 loadEmbedModels().catch(() => {});

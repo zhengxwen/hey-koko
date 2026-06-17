@@ -16,6 +16,25 @@ export function setDeps({ setGenerating, renderChat }) {
   _renderChat = renderChat;
 }
 
+// Read the ComfyUI advanced-params modal into an options overlay. Only fields
+// the user explicitly set are included — empty fields fall back to the server's
+// per-model defaults.
+function comfyOverrides() {
+  const ov = {};
+  const num = (v) => (v !== "" && v != null && !isNaN(Number(v)) ? Number(v) : undefined);
+  if (dom.comfyParamSampler?.value) ov.sampler = dom.comfyParamSampler.value;
+  if (dom.comfyParamScheduler?.value) ov.scheduler = dom.comfyParamScheduler.value;
+  const steps = num(dom.comfyParamSteps?.value);
+  if (steps !== undefined) ov.steps = steps;
+  const cfg = num(dom.comfyParamCfg?.value);
+  if (cfg !== undefined) ov.cfg = cfg;
+  const guidance = num(dom.comfyParamGuidance?.value);
+  if (guidance !== undefined) ov.guidance = guidance;
+  const denoise = num(dom.comfyParamDenoise?.value);
+  if (denoise !== undefined) ov.denoise = denoise;
+  return ov;
+}
+
 export function parseNoteCommand(input) {
   const match = input.match(/^\/note\s+(.+)$/s);
   if (!match) return null;
@@ -161,8 +180,13 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // Image-to-image: raw base64 reference image(s) condition the generation.
   const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
 
+  // An empty Ollama image model means "generate via ComfyUI". Fall back to the
+  // selected ComfyUI checkpoint in that case.
   const imageModel = dom.imageModelSelect.value;
-  if (!imageModel) {
+  const comfyModel = dom.comfyModelSelect ? dom.comfyModelSelect.value : "";
+  const useComfy = !imageModel && !!comfyModel;
+  const activeModel = imageModel || comfyModel;
+  if (!activeModel) {
     const errMsg = { role: "assistant", content: t("msg_noImageModel"), timestamp: Date.now() };
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
       tab.messages.splice(insertIndex, 0, errMsg);
@@ -174,40 +198,21 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     return;
   }
 
-  // Enhance prompts if requested
-  const prompts = [];
-  for (const parsed of parsedList) {
-    let prompt = parsed.prompt;
-    if (parsed.enhance) {
-      setAvatarState("thinking");
-      try {
-        const enhanceRes = await fetch("/api/enhance-prompt", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: dom.modelSelect.value, prompt, language: getPromptLanguage(), edit: !!refImages }),
-        });
-        const enhanceData = await enhanceRes.json();
-        if (enhanceRes.ok && enhanceData.enhanced) {
-          prompt = enhanceData.enhanced;
-        }
-      } catch {}
-    }
-    prompts.push(prompt);
-  }
-
   const totalCount = parsedList.reduce((sum, p) => sum + p.count, 0);
-  const abortController = new AbortController();
-  state.imageGenAbortController = abortController;
-  if (_setGenerating) _setGenerating(true);
-  setAvatarState("thinking");
+  const anyEnhance = parsedList.some((p) => p.enhance);
 
+  // Status bubble. When --enhance is used we show it up-front (with an
+  // "enhancing prompt" status) so the user sees activity during the slow
+  // enhancement step, then flip it to the "generating" status below.
+  const thinkingDots = `<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>`;
   let pending = null;
-  if (state.activeTabId === tabId) {
+  function createPending(text) {
+    if (state.activeTabId !== tabId) return;
     pending = document.createElement("div");
     pending.className = "message assistant thinking imageGen";
     const body = document.createElement("div");
     body.className = "markdownBody";
-    body.innerHTML = `<span class="thinking-text">${totalCount > 1 ? t("msg_generatingCount", { done: "0", total: totalCount }) : t("msg_generating")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+    body.innerHTML = `<span class="thinking-text">${text}${thinkingDots}</span>`;
     pending.appendChild(body);
     const refNode = insertIndex >= 0 ? dom.messagesEl.children[insertIndex] : null;
     if (refNode) {
@@ -216,6 +221,64 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       dom.messagesEl.appendChild(pending);
     }
     dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+  }
+  function setPendingText(text) {
+    const body = pending && pending.querySelector(".markdownBody");
+    if (body) body.innerHTML = `<span class="thinking-text">${text}${thinkingDots}</span>`;
+  }
+
+  // Set up cancellation before enhancement so the stop button can interrupt the
+  // (potentially slow) prompt-enhancement step, not just image generation.
+  const abortController = new AbortController();
+  state.imageGenAbortController = abortController;
+  if (_setGenerating) _setGenerating(true);
+
+  if (anyEnhance) {
+    setAvatarState("thinking");
+    createPending(t("msg_enhancing"));
+  }
+
+  // Enhance prompts if requested
+  const prompts = [];
+  try {
+    for (const parsed of parsedList) {
+      let prompt = parsed.prompt;
+      if (parsed.enhance) {
+        setAvatarState("thinking");
+        try {
+          const enhanceRes = await fetch("/api/enhance-prompt", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: abortController.signal,
+            body: JSON.stringify({ model: dom.modelSelect.value, prompt, language: getPromptLanguage(), edit: !!refImages }),
+          });
+          const enhanceData = await enhanceRes.json();
+          if (enhanceRes.ok && enhanceData.enhanced) {
+            prompt = enhanceData.enhanced;
+          }
+        } catch (e) {
+          if (e.name === "AbortError") throw e; // user stopped → cancel the whole run
+          // other enhancement failures are non-fatal: fall back to the original prompt
+        }
+      }
+      prompts.push(prompt);
+    }
+  } catch (e) {
+    // Enhancement cancelled by the user — clean up the status bubble and bail.
+    if (pending) pending.remove();
+    setAvatarState("idle");
+    if (_setGenerating) _setGenerating(false);
+    state.imageGenAbortController = null;
+    return;
+  }
+
+  setAvatarState("thinking");
+
+  const generatingText = totalCount > 1 ? t("msg_generatingCount", { done: "0", total: totalCount }) : t("msg_generating");
+  if (pending) {
+    setPendingText(generatingText);
+  } else {
+    createPending(generatingText);
   }
 
   try {
@@ -244,6 +307,14 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
           delete reqOptions.width;
           delete reqOptions.height;
         }
+        // ComfyUI advanced params (sampler/scheduler/cfg/guidance/steps/denoise).
+        // Inline /imagine flags (e.g. --steps) win; the modal fills the rest.
+        if (useComfy) {
+          const ov = comfyOverrides();
+          for (const k of Object.keys(ov)) {
+            if (reqOptions[k] === undefined) reqOptions[k] = ov[k];
+          }
+        }
 
         // Image editing (img2img) is markedly slower than text2img — give it
         // generous headroom over the user's configured txt2img timeout.
@@ -251,12 +322,12 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         const reqTimeout = refImages ? Math.max(baseTimeout, 300) : baseTimeout;
 
         promises.push(
-          fetch("/api/generate-image", {
+          fetch(useComfy ? "/api/generate-comfy" : "/api/generate-image", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             signal: abortController.signal,
             body: JSON.stringify({
-              model: imageModel,
+              model: activeModel,
               prompt,
               negative_prompt: parsed.negativePrompt || undefined,
               options: reqOptions,
@@ -304,8 +375,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     await Promise.all(promises);
 
     let content = "";
-    // Image editing only works reliably on flux2 models; warn otherwise.
-    if (refImages && !/flux2/i.test(imageModel)) {
+    // Ollama image editing only works reliably on flux2 models; warn otherwise.
+    // ComfyUI uses VAE-encode img2img, which works with any checkpoint.
+    if (refImages && !useComfy && !/flux2/i.test(imageModel)) {
       content += t("msg_imgEditModelWarn", { model: imageModel }) + "\n\n";
     }
     const enhancedPrompts = parsedList

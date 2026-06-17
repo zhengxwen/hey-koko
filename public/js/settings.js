@@ -17,6 +17,15 @@ export function saveCurrentSettings() {
     JSON.stringify({
       model: dom.modelSelect.value,
       imageModel: dom.imageModelSelect.value,
+      comfyModel: dom.comfyModelSelect?.value || "",
+      comfyParams: {
+        sampler: dom.comfyParamSampler?.value || "",
+        scheduler: dom.comfyParamScheduler?.value || "",
+        steps: dom.comfyParamSteps?.value || "",
+        cfg: dom.comfyParamCfg?.value || "",
+        guidance: dom.comfyParamGuidance?.value || "",
+        denoise: dom.comfyParamDenoise?.value || "",
+      },
       defaultImageSize: dom.defaultImageSize.value,
       imageTimeout: dom.imageTimeoutInput.value,
       userName: dom.userName.value,
@@ -90,6 +99,16 @@ export function loadSavedSettings() {
   const savedSettings = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
   if (savedSettings.model) dom.modelSelect.value = savedSettings.model;
   if (savedSettings.imageModel) dom.imageModelSelect.value = savedSettings.imageModel;
+  if (savedSettings.comfyModel && dom.comfyModelSelect) dom.comfyModelSelect.value = savedSettings.comfyModel;
+  if (savedSettings.comfyParams) {
+    const cp = savedSettings.comfyParams;
+    if (dom.comfyParamSampler) dom.comfyParamSampler.value = cp.sampler || "";
+    if (dom.comfyParamScheduler) dom.comfyParamScheduler.value = cp.scheduler || "";
+    if (dom.comfyParamSteps) dom.comfyParamSteps.value = cp.steps || "";
+    if (dom.comfyParamCfg) dom.comfyParamCfg.value = cp.cfg || "";
+    if (dom.comfyParamGuidance) dom.comfyParamGuidance.value = cp.guidance || "";
+    if (dom.comfyParamDenoise) dom.comfyParamDenoise.value = cp.denoise || "";
+  }
   if (savedSettings.defaultImageSize) dom.defaultImageSize.value = savedSettings.defaultImageSize;
   if (savedSettings.imageTimeout) {
     dom.imageTimeoutInput.value = savedSettings.imageTimeout;
