@@ -34,6 +34,10 @@ function comfyOverrides() {
   if (imageCfg !== undefined) ov.imageCfg = imageCfg;
   const denoise = num(dom.comfyParamDenoise?.value);
   if (denoise !== undefined) ov.denoise = denoise;
+  const length = num(dom.comfyParamLength?.value);
+  if (length !== undefined) ov.length = length;
+  const fps = num(dom.comfyParamFps?.value);
+  if (fps !== undefined) ov.fps = fps;
   return ov;
 }
 
@@ -174,6 +178,100 @@ function parseImagineCommand(input) {
   return result;
 }
 
+// ComfyUI video generation (WAN ti2v): text→video, or image→video when a
+// reference image is attached. Single output, rendered as a <video>.
+export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null) {
+  const tab = getTab(tabId);
+  if (!tab) return;
+  const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
+
+  // /imagine flags (steps/seed, and size only if explicit) win; the ⚙ modal
+  // fills the rest (length/fps/cfg/sampler/scheduler). Drop the auto-filled
+  // 1024² default so the video model uses its own resolution preset.
+  const reqOptions = { ...parsed.options };
+  if (!parsed.sizeExplicit) {
+    delete reqOptions.width;
+    delete reqOptions.height;
+  }
+  const ov = comfyOverrides();
+  for (const k of Object.keys(ov)) {
+    if (reqOptions[k] === undefined) reqOptions[k] = ov[k];
+  }
+
+  const abortController = new AbortController();
+  state.imageGenAbortController = abortController;
+  if (_setGenerating) _setGenerating(true);
+  setAvatarState("thinking");
+
+  let pending = null;
+  if (state.activeTabId === tabId) {
+    pending = document.createElement("div");
+    pending.className = "message assistant thinking imageGen";
+    const body = document.createElement("div");
+    body.className = "markdownBody";
+    const vidModel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
+    const vidImgs = refImages && refImages.length > 1 ? ` · ${t("msg_inputImages", { n: refImages.length })}` : "";
+    body.innerHTML = `<span class="thinking-text">${t("msg_generatingVideo")}${vidModel ? ` · ${vidModel}` : ""}${vidImgs}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+    pending.appendChild(body);
+    const refNode = insertIndex >= 0 ? dom.messagesEl.children[insertIndex] : null;
+    if (refNode) dom.messagesEl.insertBefore(pending, refNode);
+    else dom.messagesEl.appendChild(pending);
+    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+  }
+
+  try {
+    const resp = await fetch("/api/generate-comfy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abortController.signal,
+      body: JSON.stringify({
+        model,
+        prompt: parsed.prompt,
+        options: reqOptions,
+        images: refImages || undefined,
+        timeout: 600, // video is slow
+      }),
+    });
+    const data = await resp.json();
+    if (pending) pending.remove();
+    if (!resp.ok || !data.videos || !data.videos.length) {
+      const errMsg = { role: "assistant", content: `视频生成失败：${data.error || "未返回视频"}`, timestamp: Date.now() };
+      if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errMsg);
+      else tab.messages.push(errMsg);
+      saveChat();
+      if (state.activeTabId === tabId && _renderChat) _renderChat();
+      setAvatarState("idle");
+      return;
+    }
+    const replyMsg = {
+      role: "assistant",
+      content: `🎬 视频已生成`,
+      generatedVideos: data.videos,
+      videoMime: data.videoMime || "video/mp4",
+      imagePrompt: parsed.prompt,
+      timestamp: Date.now(),
+    };
+    if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, replyMsg);
+    else tab.messages.push(replyMsg);
+    saveChat();
+    if (state.activeTabId === tabId && _renderChat) _renderChat();
+    setAvatarState("happy");
+    setTimeout(() => setAvatarState("idle"), 2000);
+  } catch (error) {
+    if (pending) pending.remove();
+    if (error.name !== "AbortError") {
+      const errMsg = { role: "assistant", content: `视频生成出错：${error.message}`, timestamp: Date.now() };
+      tab.messages.push(errMsg);
+      saveChat();
+      if (state.activeTabId === tabId && _renderChat) _renderChat();
+    }
+    setAvatarState("idle");
+  } finally {
+    if (_setGenerating) _setGenerating(false);
+    state.imageGenAbortController = null;
+  }
+}
+
 export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null) {
   const parsedList = Array.isArray(parsedInput) ? parsedInput : [parsedInput];
   const tab = getTab(tabId);
@@ -186,6 +284,12 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // selected ComfyUI checkpoint in that case.
   const imageModel = dom.imageModelSelect.value;
   const comfyModel = dom.comfyModelSelect ? dom.comfyModelSelect.value : "";
+
+  // A selected ComfyUI VIDEO model routes to the dedicated video path.
+  if (!imageModel && comfyModel && state.comfyVideoModels && state.comfyVideoModels.has(comfyModel)) {
+    return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages);
+  }
+
   const useComfy = !imageModel && !!comfyModel;
   const activeModel = imageModel || comfyModel;
   if (!activeModel) {
@@ -276,11 +380,17 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
 
   setAvatarState("thinking");
 
-  const generatingText = totalCount > 1 ? t("msg_generatingCount", { done: "0", total: totalCount }) : t("msg_generating");
+  // Status suffix: which model is generating, and (for multi-image edits) how
+  // many reference images are actually being sent.
+  const refCount = refImages ? refImages.length : 0;
+  const shortModel = (activeModel || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
+  const statusSuffix = (shortModel ? ` · ${shortModel}` : "") + (refCount > 1 ? ` · ${t("msg_inputImages", { n: refCount })}` : "");
+  const genText = (done) => (totalCount > 1 ? t("msg_generatingCount", { done, total: totalCount }) : t("msg_generating")) + statusSuffix;
+
   if (pending) {
-    setPendingText(generatingText);
+    setPendingText(genText("0"));
   } else {
-    createPending(generatingText);
+    createPending(genText("0"));
   }
 
   try {
@@ -363,7 +473,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
               }
               if (pending && totalCount > 1) {
                 const body = pending.querySelector(".markdownBody");
-                if (body) body.innerHTML = `<span class="thinking-text">${t("msg_generatingCount", { done: generatedImages.length + errorCount, total: totalCount })}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+                if (body) body.innerHTML = `<span class="thinking-text">${genText(generatedImages.length + errorCount)}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
               }
             })
             .catch((err) => {

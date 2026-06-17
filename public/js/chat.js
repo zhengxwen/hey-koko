@@ -1601,7 +1601,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   }
 }
 
-function renderMessage(role, content, previewImage, index, timestamp, generatedImages, generatedThumbnails) {
+function renderMessage(role, content, previewImage, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMime) {
   const item = document.createElement("div");
   item.className = `message ${role}`;
 
@@ -1929,6 +1929,26 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
     }
   }
 
+  // AI-generated videos (ComfyUI WAN etc.) — base64 mp4/webm as <video>.
+  if (generatedVideos && generatedVideos.length > 0) {
+    const vmime = videoMime || "video/mp4";
+    const vgrid = document.createElement("div");
+    vgrid.className = "videoGrid";
+    for (const vData of generatedVideos) {
+      if (!vData || vData.length < 100) continue;
+      const video = document.createElement("video");
+      video.className = "generatedVideo";
+      video.controls = true;
+      video.loop = true;
+      video.muted = true;
+      video.playsInline = true;
+      video.autoplay = true;
+      video.src = vData.startsWith("data:") ? vData : `data:${vmime};base64,${vData}`;
+      vgrid.appendChild(video);
+    }
+    if (vgrid.children.length) item.appendChild(vgrid);
+  }
+
   dom.messagesEl.appendChild(item);
   dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
 
@@ -1991,7 +2011,7 @@ export function renderChat() {
       ? message.images.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
       : undefined);
     const previews = message.previewImages || (message.previewImage ? [message.previewImage] : undefined);
-    const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails);
+    const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails, message.generatedVideos, message.videoMime);
     // Insert thinking details block if present and setting enabled
     if (el && message.thinking) {
       const markdownBody = el.querySelector(".markdownBody");

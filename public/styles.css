@@ -3154,6 +3154,27 @@ button.secondary:disabled {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
+/* AI-generated videos (ComfyUI WAN etc.) */
+.videoGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  max-width: 100%;
+}
+
+.generatedVideo {
+  display: block;
+  max-width: min(360px, 100%);
+  max-height: 360px;
+  border-radius: 8px;
+  background: #000;
+}
+
+.message.isFolded > .videoGrid {
+  display: none;
+}
+
 .message.imageGen .markdownBody {
   color: var(--muted);
 }

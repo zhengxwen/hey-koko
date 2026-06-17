@@ -1,5 +1,5 @@
 // Ollama URL management and model loading
-import { dom } from './state.js';
+import { dom, state } from './state.js';
 import { SETTINGS_KEY } from './constants.js';
 import { t } from './i18n.js';
 import { saveCurrentSettings } from './settings.js';
@@ -120,9 +120,11 @@ export async function loadComfyModels() {
     const data = await response.json();
     const models = data.models || [];                 // checkpoints (txt2img / img2img)
     const editModels = data.editModels || [];         // instruction-edit models (need a ref image)
+    const videoModels = data.videoModels || [];       // text→video / image→video
+    state.comfyVideoModels = new Set(videoModels.map((m) => m.name));
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
     const current = saved.comfyModel || dom.comfyModelSelect.value;
-    const allNames = [...models, ...editModels.map((m) => m.name)];
+    const allNames = [...models, ...editModels.map((m) => m.name), ...videoModels.map((m) => m.name)];
     dom.comfyModelSelect.innerHTML = "";
 
     if (allNames.length === 0) {
@@ -142,6 +144,12 @@ export async function loadComfyModels() {
         const group = document.createElement("optgroup");
         group.label = t("comfy_edit_group");
         for (const m of editModels) addOption(group, m.name);
+        dom.comfyModelSelect.appendChild(group);
+      }
+      if (videoModels.length) {
+        const group = document.createElement("optgroup");
+        group.label = t("comfy_video_group");
+        for (const m of videoModels) addOption(group, m.name);
         dom.comfyModelSelect.appendChild(group);
       }
       dom.comfyModelSelect.value = allNames.includes(current) ? current : allNames[0];
@@ -285,6 +293,8 @@ function initComfyParamsModal() {
     dom.comfyParamGuidance,
     dom.comfyParamImageCfg,
     dom.comfyParamDenoise,
+    dom.comfyParamLength,
+    dom.comfyParamFps,
   ];
 
   function open() {

@@ -47,6 +47,8 @@ export const dom = {
   comfyParamGuidance: document.querySelector("#comfyParamGuidance"),
   comfyParamImageCfg: document.querySelector("#comfyParamImageCfg"),
   comfyParamDenoise: document.querySelector("#comfyParamDenoise"),
+  comfyParamLength: document.querySelector("#comfyParamLength"),
+  comfyParamFps: document.querySelector("#comfyParamFps"),
   llmUrlDisplay: document.querySelector("#llmUrlDisplay"),
   imageUrlDisplay: document.querySelector("#imageUrlDisplay"),
   modeToggle: document.querySelector("#modeToggle"),
@@ -96,4 +98,5 @@ export const state = {
   currentThemeAccent: "teal",
   commandActiveIndex: 0,
   streamingInfo: null,
+  comfyVideoModels: new Set(),   // ComfyUI model names that generate video
 };

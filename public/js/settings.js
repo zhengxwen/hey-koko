@@ -26,6 +26,8 @@ export function saveCurrentSettings() {
         guidance: dom.comfyParamGuidance?.value || "",
         imageCfg: dom.comfyParamImageCfg?.value || "",
         denoise: dom.comfyParamDenoise?.value || "",
+        length: dom.comfyParamLength?.value || "",
+        fps: dom.comfyParamFps?.value || "",
       },
       defaultImageSize: dom.defaultImageSize.value,
       imageTimeout: dom.imageTimeoutInput.value,
@@ -64,6 +66,10 @@ function saveChatMessage(message) {
   }
   if (message.generatedImages && message.generatedImages.length > 0) {
     stored.generatedImages = message.generatedImages;
+  }
+  if (message.generatedVideos && message.generatedVideos.length > 0) {
+    stored.generatedVideos = message.generatedVideos;
+    stored.videoMime = message.videoMime || "video/mp4";
   }
   if (message.isCompactSummary) stored.isCompactSummary = true;
   if (message.isFilePreview) stored.isFilePreview = true;
@@ -110,6 +116,8 @@ export function loadSavedSettings() {
     if (dom.comfyParamGuidance) dom.comfyParamGuidance.value = cp.guidance || "";
     if (dom.comfyParamImageCfg) dom.comfyParamImageCfg.value = cp.imageCfg || "";
     if (dom.comfyParamDenoise) dom.comfyParamDenoise.value = cp.denoise || "";
+    if (dom.comfyParamLength) dom.comfyParamLength.value = cp.length || "";
+    if (dom.comfyParamFps) dom.comfyParamFps.value = cp.fps || "";
   }
   if (savedSettings.defaultImageSize) dom.defaultImageSize.value = savedSettings.defaultImageSize;
   if (savedSettings.imageTimeout) {
