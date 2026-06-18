@@ -1947,9 +1947,10 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       video.className = "generatedVideo";
       video.controls = true;
       video.loop = true;
-      video.muted = true;
       video.playsInline = true;
-      video.autoplay = true;
+      // No autoplay — the user presses play. Don't force-mute so audio (LTX) plays
+      // when they do. preload metadata so the first frame shows as a poster.
+      video.preload = "metadata";
       video.src = vData.startsWith("data:") ? vData : `data:${vmime};base64,${vData}`;
       wrapper.appendChild(video);
       // Download button — an <a download> pointing at the (data) URL.
@@ -2052,12 +2053,15 @@ export function renderChat() {
         el.insertBefore(details, markdownBody);
       }
     }
-    // Show how long this assistant reply took to generate
+    // Show how long this assistant reply took to generate, next to the timestamp
     if (el && message.role === "assistant" && message.genMs) {
-      const genEl = document.createElement("div");
-      genEl.className = "messageGenTime";
-      genEl.textContent = `⏱ ${t("msg_genTime", { time: formatDuration(message.genMs) })}`;
-      el.appendChild(genEl);
+      const tsEl = el.querySelector(".messageTimestamp");
+      if (tsEl) {
+        const genEl = document.createElement("span");
+        genEl.className = "messageGenTime";
+        genEl.textContent = `⏱ ${t("msg_genTime", { time: formatDuration(message.genMs) })}`;
+        tsEl.appendChild(genEl);
+      }
     }
     if (message.isCompactSummary && el) {
       el.classList.add("compactSummary");

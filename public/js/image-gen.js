@@ -252,6 +252,7 @@ async function readOllamaImageStream(r, onProgress) {
 export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null) {
   const tab = getTab(tabId);
   if (!tab) return;
+  const genStart = Date.now();
   const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
 
   // /imagine flags (steps/seed, and size only if explicit) win; the ⚙ modal
@@ -390,6 +391,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       videoMime: data.videoMime || "video/mp4",
       imagePrompt: videoPrompt,
       timestamp: Date.now(),
+      genMs: Date.now() - genStart,
     };
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, replyMsg);
     else tab.messages.push(replyMsg);
@@ -418,6 +420,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   const parsedList = Array.isArray(parsedInput) ? parsedInput : [parsedInput];
   const tab = getTab(tabId);
   if (!tab) return;
+  const genStart = Date.now();
 
   // Image-to-image: raw base64 reference image(s) condition the generation.
   const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
@@ -721,6 +724,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       imagePrompt: parsedList.map((p) => p.prompt).join("; "),
       imageOptions: parsedList[0].options,
       timestamp: Date.now(),
+      genMs: Date.now() - genStart,
     };
 
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
@@ -760,6 +764,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         imagePrompt: parsedList.map((p) => p.prompt).join("; "),
         imageOptions: parsedList[0].options,
         timestamp: Date.now(),
+        genMs: Date.now() - genStart,
       };
       if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
         tab.messages.splice(insertIndex, 0, replyMsg);

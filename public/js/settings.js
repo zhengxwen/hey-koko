@@ -56,6 +56,7 @@ export function saveCurrentSettings() {
 function saveChatMessage(message) {
   const stored = { role: message.role };
   if (message.timestamp) stored.timestamp = message.timestamp;
+  if (message.genMs) stored.genMs = message.genMs;
   stored.content = message.content;
   if (message.folded) stored.folded = true;
   if (message.previewImage) stored.previewImage = message.previewImage;
