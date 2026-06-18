@@ -1558,6 +1558,16 @@ button.secondary:disabled {
   color: #3c454c;
 }
 
+/* 引用块内（递归渲染的段落/列表）首尾不留多余边距 */
+.markdownBody blockquote > :first-child,
+.plainBody blockquote > :first-child {
+  margin-top: 0;
+}
+.markdownBody blockquote > :last-child,
+.plainBody blockquote > :last-child {
+  margin-bottom: 0;
+}
+
 .markdownBody pre,
 .plainBody pre {
   max-width: 100%;

@@ -84,11 +84,22 @@ export function markdownToHtml(markdown) {
   let tableRows = [];
   let inHtmlTable = false;
   let htmlTableLines = [];
+  let inQuote = false;
+  let quoteLines = [];
 
   function closeList() {
     if (!listType) return;
     html.push(`</${listType}>`);
     listType = null;
+  }
+
+  function closeQuote() {
+    if (!inQuote) return;
+    // Render the quote's inner markdown recursively so multi-paragraph quotes,
+    // bold, lists, etc. (and blank `>` separator lines) all work.
+    html.push(`<blockquote>${markdownToHtml(quoteLines.join("\n"))}</blockquote>`);
+    quoteLines = [];
+    inQuote = false;
   }
 
   function closeCodeBlock() {
@@ -177,6 +188,9 @@ export function markdownToHtml(markdown) {
   }
 
   for (const line of lines) {
+    // A blockquote ends as soon as a non-quote line appears.
+    if (inQuote && !/^\s*>/.test(line)) closeQuote();
+
     if (line.trim().startsWith("```")) {
       if (inCodeBlock) {
         closeCodeBlock();
@@ -228,6 +242,16 @@ export function markdownToHtml(markdown) {
 
     if (inMathBlock) {
       mathLines.push(line);
+      continue;
+    }
+
+    // Blockquote: accumulate consecutive `>` lines (including empty `>`); claimed
+    // before tables/lists so `>` is unambiguous. Rendered when the quote closes.
+    if (/^\s*>/.test(line)) {
+      closeList();
+      if (inTable) closeTable();
+      if (!inQuote) { inQuote = true; quoteLines = []; }
+      quoteLines.push(line.replace(/^\s*>\s?/, ""));
       continue;
     }
 
@@ -291,13 +315,6 @@ export function markdownToHtml(markdown) {
       continue;
     }
 
-    const quote = line.match(/^>\s?(.+)$/);
-    if (quote) {
-      closeList();
-      html.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`);
-      continue;
-    }
-
     if (!line.trim()) {
       closeList();
       continue;
@@ -320,6 +337,7 @@ export function markdownToHtml(markdown) {
   if (inMathBlock) closeMathBlock();
   if (inHtmlTable) closeHtmlTable();
   if (inTable) closeTable();
+  if (inQuote) closeQuote();
   closeList();
   return html.join("");
 }
