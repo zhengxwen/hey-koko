@@ -2,7 +2,7 @@
 import { dom, state } from './state.js';
 import { ASPECT_ALIASES } from './constants.js';
 import { t, getPromptLanguage } from './i18n.js';
-import { makePreview } from './utils.js';
+import { makePreview, escapeHtml } from './utils.js';
 import { setAvatarState } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab, getActiveTab } from './tabs.js';
@@ -178,6 +178,75 @@ function parseImagineCommand(input) {
   return result;
 }
 
+// Subscribe to ComfyUI's WebSocket (keyed by clientId) for live sampling
+// progress and preview frames. comfyHost is "host:port" (no protocol). Returns
+// an unsubscribe function. Best-effort — any failure just yields no updates.
+//   - text "progress" messages → onProgress(value, max) (KSampler step counter)
+//   - binary messages → a preview frame: 8-byte header (uint32 event=1, uint32
+//     format 1=JPEG/2=PNG) then the image bytes → onPreview(objectUrl)
+function subscribeComfyProgress(comfyHost, clientId, { onProgress, onPreview }) {
+  if (!comfyHost) return () => {};
+  let ws;
+  try {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${proto}//${comfyHost}/ws?clientId=${encodeURIComponent(clientId)}`);
+    ws.binaryType = "arraybuffer";
+  } catch {
+    return () => {};
+  }
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === "progress" && msg.data) onProgress?.(msg.data.value, msg.data.max);
+      } catch { /* ignore non-JSON */ }
+      return;
+    }
+    try {
+      const view = new DataView(ev.data);
+      if (view.getUint32(0) === 1) { // PREVIEW_IMAGE event
+        const mime = view.getUint32(4) === 2 ? "image/png" : "image/jpeg";
+        onPreview?.(URL.createObjectURL(new Blob([ev.data.slice(8)], { type: mime })));
+      }
+    } catch { /* malformed binary frame */ }
+  };
+  ws.onerror = () => {};
+  return () => { try { ws.close(); } catch { /* already closed */ } };
+}
+
+// Read the streamed NDJSON response from /api/generate-image (Ollama path).
+// Lines are {type:"progress",completed,total} during sampling, then a single
+// {type:"done",images,model} (or {type:"error",error}). Drives onProgress and
+// returns {images, model}.
+async function readOllamaImageStream(r, onProgress) {
+  const result = { images: [], model: undefined };
+  if (!r.body) return result;
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const handleLine = (line) => {
+    line = line.trim();
+    if (!line) return;
+    let c;
+    try { c = JSON.parse(line); } catch { return; }
+    if (c.type === "progress") onProgress?.(c.completed, c.total);
+    else if (c.type === "done") { result.images = c.images || []; result.model = c.model; }
+    else if (c.type === "error") throw new Error(c.error || "image generation failed");
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      handleLine(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+    }
+  }
+  if (buf.trim()) handleLine(buf); // final line may lack a trailing newline
+  return result;
+}
+
 // ComfyUI video generation (WAN ti2v): text→video, or image→video when a
 // reference image is attached. Single output, rendered as a <video>.
 export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null) {
@@ -203,21 +272,88 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   if (_setGenerating) _setGenerating(true);
   setAvatarState("thinking");
 
+  const vidModel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
+  const vidImgs = refImages && refImages.length > 1 ? ` · ${t("msg_inputImages", { n: refImages.length })}` : "";
+  const dots = `<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>`;
   let pending = null;
   if (state.activeTabId === tabId) {
     pending = document.createElement("div");
     pending.className = "message assistant thinking imageGen";
     const body = document.createElement("div");
     body.className = "markdownBody";
-    const vidModel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
-    const vidImgs = refImages && refImages.length > 1 ? ` · ${t("msg_inputImages", { n: refImages.length })}` : "";
-    body.innerHTML = `<span class="thinking-text">${t("msg_generatingVideo")}${vidModel ? ` · ${vidModel}` : ""}${vidImgs}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+    // When --enhance is set, show the enhancement step first, then flip to the
+    // generating status once the (slow) prompt rewrite returns.
+    const firstStatus = parsed.enhance ? t("msg_enhancing") : t("msg_generatingVideo");
+    body.innerHTML = `<span class="thinking-text">${firstStatus}${vidModel ? ` · ${vidModel}` : ""}${vidImgs}${dots}</span>`;
     pending.appendChild(body);
     const refNode = insertIndex >= 0 ? dom.messagesEl.children[insertIndex] : null;
     if (refNode) dom.messagesEl.insertBefore(pending, refNode);
     else dom.messagesEl.appendChild(pending);
     dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
   }
+
+  // Enhance the prompt for the video model (motion / camera oriented) when asked.
+  let videoPrompt = parsed.prompt;
+  let promptWasEnhanced = false;
+  if (parsed.enhance) {
+    try {
+      const enhanceRes = await fetch("/api/enhance-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: abortController.signal,
+        body: JSON.stringify({ model: dom.modelSelect.value, prompt: parsed.prompt, language: getPromptLanguage(), video: true }),
+      });
+      const enhanceData = await enhanceRes.json();
+      if (enhanceRes.ok && enhanceData.enhanced) {
+        videoPrompt = enhanceData.enhanced;
+        promptWasEnhanced = videoPrompt !== parsed.prompt;
+      }
+    } catch (e) {
+      if (e.name === "AbortError") {
+        if (pending) pending.remove();
+        setAvatarState("idle");
+        if (_setGenerating) _setGenerating(false);
+        state.imageGenAbortController = null;
+        return;
+      }
+      // non-fatal: fall back to the original prompt
+    }
+    // Flip the status bubble to the generating state and surface the improved
+    // prompt above it, so the user sees it BEFORE the (slow) video render.
+    const body = pending && pending.querySelector(".markdownBody");
+    if (body) {
+      const preview = promptWasEnhanced
+        ? `<div class="enhancedPromptPreview"><div class="enhancedLabel">${t("msg_enhancedPrompt")}</div><blockquote>${escapeHtml(videoPrompt)}</blockquote></div>`
+        : "";
+      body.innerHTML = `${preview}<span class="thinking-text">${t("msg_generatingVideo")}${vidModel ? ` · ${vidModel}` : ""}${vidImgs}${dots}</span>`;
+    }
+  }
+
+  // Live progress bar + preview frames via ComfyUI's WebSocket. The browser owns
+  // the clientId and hands it to the server so both subscribe to the same stream.
+  const clientId = crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`;
+  const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
+  let progressFill = null, previewImg = null, lastPreviewUrl = null;
+  if (pending) {
+    const prog = document.createElement("div");
+    prog.className = "comfyProgress";
+    prog.innerHTML = `<div class="comfyProgressBar"><div class="comfyProgressFill"></div></div><img class="comfyPreview" hidden alt="预览">`;
+    pending.appendChild(prog);
+    progressFill = prog.querySelector(".comfyProgressFill");
+    previewImg = prog.querySelector(".comfyPreview");
+  }
+  const unsubscribe = subscribeComfyProgress(comfyHost, clientId, {
+    onProgress: (value, max) => {
+      if (progressFill && max) progressFill.style.width = `${Math.min(100, Math.round((value / max) * 100))}%`;
+    },
+    onPreview: (url) => {
+      if (!previewImg) { URL.revokeObjectURL(url); return; }
+      if (lastPreviewUrl) URL.revokeObjectURL(lastPreviewUrl);
+      lastPreviewUrl = url;
+      previewImg.src = url;
+      previewImg.hidden = false;
+    },
+  });
 
   try {
     const resp = await fetch("/api/generate-comfy", {
@@ -226,10 +362,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       signal: abortController.signal,
       body: JSON.stringify({
         model,
-        prompt: parsed.prompt,
+        prompt: videoPrompt,
         options: reqOptions,
         images: refImages || undefined,
         timeout: 600, // video is slow
+        clientId,
       }),
     });
     const data = await resp.json();
@@ -243,12 +380,15 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       setAvatarState("idle");
       return;
     }
+    const videoContent = promptWasEnhanced
+      ? `**${t("msg_enhancedPrompt")}**\n> ${videoPrompt}\n\n🎬 视频已生成`
+      : `🎬 视频已生成`;
     const replyMsg = {
       role: "assistant",
-      content: `🎬 视频已生成`,
+      content: videoContent,
       generatedVideos: data.videos,
       videoMime: data.videoMime || "video/mp4",
-      imagePrompt: parsed.prompt,
+      imagePrompt: videoPrompt,
       timestamp: Date.now(),
     };
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, replyMsg);
@@ -267,6 +407,8 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     }
     setAvatarState("idle");
   } finally {
+    unsubscribe();
+    if (lastPreviewUrl) URL.revokeObjectURL(lastPreviewUrl);
     if (_setGenerating) _setGenerating(false);
     state.imageGenAbortController = null;
   }
@@ -329,8 +471,22 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
   }
   function setPendingText(text) {
+    const span = pending && pending.querySelector(".thinking-text");
+    if (span) span.innerHTML = `${text}${thinkingDots}`;
+  }
+  // Show the improved prompt(s) inside the pending bubble, above the status
+  // line, so the user sees them BEFORE generation finishes.
+  function showEnhancedPreview(promptTexts) {
     const body = pending && pending.querySelector(".markdownBody");
-    if (body) body.innerHTML = `<span class="thinking-text">${text}${thinkingDots}</span>`;
+    if (!body || !promptTexts.length) return;
+    let pre = body.querySelector(".enhancedPromptPreview");
+    if (!pre) {
+      pre = document.createElement("div");
+      pre.className = "enhancedPromptPreview";
+      body.insertBefore(pre, body.firstChild);
+    }
+    pre.innerHTML = `<div class="enhancedLabel">${t("msg_enhancedPrompt")}</div>` +
+      promptTexts.map((p) => `<blockquote>${escapeHtml(p)}</blockquote>`).join("");
   }
 
   // Set up cancellation before enhancement so the stop button can interrupt the
@@ -378,6 +534,12 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     return;
   }
 
+  // Surface the improved prompt(s) in the pending bubble before generation runs.
+  const enhancedShown = parsedList
+    .map((p, i) => (p.enhance && prompts[i] !== p.prompt) ? prompts[i] : null)
+    .filter(Boolean);
+  if (enhancedShown.length) showEnhancedPreview(enhancedShown);
+
   setAvatarState("thinking");
 
   // Status suffix: which model is generating, and (for multi-image edits) how
@@ -391,6 +553,35 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     setPendingText(genText("0"));
   } else {
     createPending(genText("0"));
+  }
+
+  // Live progress bar (+ preview frame for ComfyUI). ComfyUI streams over its
+  // WebSocket (keyed by clientId); Ollama streams NDJSON progress on the same HTTP
+  // response (read below). One bar is shared across a batch.
+  let comfyClientId = null, imgUnsub = () => {}, imgLastPreviewUrl = null, progressFill = null;
+  const setProgress = (value, max) => {
+    if (progressFill && max) progressFill.style.width = `${Math.min(100, Math.round((value / max) * 100))}%`;
+  };
+  if (pending) {
+    const prog = document.createElement("div");
+    prog.className = "comfyProgress";
+    prog.innerHTML = `<div class="comfyProgressBar"><div class="comfyProgressFill"></div></div><img class="comfyPreview" hidden alt="预览">`;
+    pending.appendChild(prog);
+    progressFill = prog.querySelector(".comfyProgressFill");
+    const previewImg = prog.querySelector(".comfyPreview");
+    if (useComfy) {
+      comfyClientId = crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`;
+      const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
+      imgUnsub = subscribeComfyProgress(comfyHost, comfyClientId, {
+        onProgress: setProgress,
+        onPreview: (url) => {
+          if (imgLastPreviewUrl) URL.revokeObjectURL(imgLastPreviewUrl);
+          imgLastPreviewUrl = url;
+          previewImg.src = url;
+          previewImg.hidden = false;
+        },
+      });
+    }
   }
 
   try {
@@ -445,10 +636,19 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
               options: reqOptions,
               images: refImages || undefined,
               timeout: reqTimeout,
+              clientId: comfyClientId || undefined,
             }),
           })
             .then(async (r) => {
-              const data = await r.json();
+              let data;
+              if (!r.ok) {
+                try { data = await r.json(); } catch { data = {}; }
+              } else if (useComfy) {
+                data = await r.json();
+              } else {
+                // Ollama streams NDJSON; drive the shared bar and collect the image.
+                data = await readOllamaImageStream(r, setProgress);
+              }
               if (r.ok) {
                 const imgs = (data.images || []).filter((s) => s && s.length > 100);
                 generatedImages.push(...imgs);
@@ -496,7 +696,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       .map((p, i) => (p.enhance && prompts[i] !== p.prompt) ? prompts[i] : null)
       .filter(Boolean);
     if (enhancedPrompts.length > 0) {
-      content += `**增强后的提示词：**\n${enhancedPrompts.map((p) => `> ${p}`).join("\n")}\n\n`;
+      content += `**${t("msg_enhancedPrompt")}**\n${enhancedPrompts.map((p) => `> ${p}`).join("\n")}\n\n`;
     }
     if (errorCount > 0 && generatedImages.length > 0) {
       content += `⚠️ ${errorCount} 张图片生成失败\n\n`;
@@ -543,7 +743,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         .map((p, i) => (p.enhance && prompts[i] !== p.prompt) ? prompts[i] : null)
         .filter(Boolean);
       if (enhancedPrompts.length > 0) {
-        content = `**增强后的提示词：**\n${enhancedPrompts.map((p) => `> ${p}`).join("\n")}\n\n` + content;
+        content = `**${t("msg_enhancedPrompt")}**\n${enhancedPrompts.map((p) => `> ${p}`).join("\n")}\n\n` + content;
       }
       const generatedThumbnails = await Promise.all(
         generatedImages.map((img) => {
@@ -576,6 +776,8 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     }
     setAvatarState("idle");
   } finally {
+    imgUnsub();
+    if (imgLastPreviewUrl) URL.revokeObjectURL(imgLastPreviewUrl);
     if (_setGenerating) _setGenerating(false);
     state.imageGenAbortController = null;
   }

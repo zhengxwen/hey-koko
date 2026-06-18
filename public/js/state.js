@@ -37,6 +37,7 @@ export const dom = {
   comfyModelLabel: document.querySelector("#comfyModelLabel"),
   comfyUrlDisplay: document.querySelector("#comfyUrlDisplay"),
   comfyParamsBtn: document.querySelector("#comfyParamsBtn"),
+  comfyMultiHint: document.querySelector("#comfyMultiHint"),
   comfyParamsModal: document.querySelector("#comfyParamsModal"),
   comfyParamsClose: document.querySelector("#comfyParamsClose"),
   comfyParamsReset: document.querySelector("#comfyParamsReset"),
@@ -98,5 +99,6 @@ export const state = {
   currentThemeAccent: "teal",
   commandActiveIndex: 0,
   streamingInfo: null,
-  comfyVideoModels: new Set(),   // ComfyUI model names that generate video
+  comfyVideoModels: new Set(),       // ComfyUI model names that generate video
+  comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
 };

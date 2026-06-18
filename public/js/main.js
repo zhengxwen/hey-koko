@@ -8,7 +8,7 @@ import { initAvatar } from './avatar.js';
 import { stopSpeech, populateVoiceList } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
-import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedModels, updateImageGenOptions } from './ollama.js';
+import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
 import { setDeps as imageGenSetDeps } from './image-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
 import { renderChat, sendMessage, setGenerating, regenerateReply, generateProactiveReply } from './chat.js';
@@ -288,7 +288,7 @@ dom.modelSelect.addEventListener("change", () => {
   refreshModelMaxContext(dom.modelSelect.value);
 });
 dom.imageModelSelect.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); });
-dom.comfyModelSelect?.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); });
+dom.comfyModelSelect?.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); updateComfyMultiHint(); applyInputPlaceholder(); });
 dom.voiceSelect.addEventListener("change", saveCurrentSettings);
 if (dom.numCtxSelect) {
   dom.numCtxSelect.addEventListener("change", () => {
@@ -1054,6 +1054,21 @@ function getStagedImages() {
   return [state.selectedImage];
 }
 
+// Choose the compose-input placeholder based on context. A selected
+// multi-image model takes priority (it works even with no images staged),
+// then any staged image (single-edit hint), else the default placeholder.
+export function applyInputPlaceholder() {
+  const v = dom.comfyModelSelect?.value;
+  const isMulti = !!(v && state.comfyMultiImageModels && state.comfyMultiImageModels.has(v));
+  if (isMulti) {
+    dom.messageInput.placeholder = t("input_multiImageHint");
+  } else if (getStagedImages().length > 0) {
+    dom.messageInput.placeholder = t("input_imageEditHint");
+  } else {
+    dom.messageInput.placeholder = t("input_placeholder");
+  }
+}
+
 // Render the compose-area preview for the currently staged image(s).
 // Each image gets its own thumbnail with a floating remove (×) button.
 function renderStagedImagePreview() {
@@ -1068,12 +1083,12 @@ function renderStagedImagePreview() {
 
   if (images.length === 0) {
     dom.imagePreview.hidden = true;
-    dom.messageInput.placeholder = t("input_placeholder");
+    applyInputPlaceholder();
     return;
   }
 
-  // A staged image enables /imagine image-editing — hint it in the input.
-  dom.messageInput.placeholder = t("input_imageEditHint");
+  // A staged image (or selected multi-image model) re-hints the input.
+  applyInputPlaceholder();
 
   images.forEach((img, idx) => {
     const thumb = document.createElement("div");
@@ -1864,5 +1879,5 @@ updateLockedState();
 renderChat();
 loadModels().then(() => refreshModelMaxContext(dom.modelSelect.value)).catch(() => {});
 loadImageModels().catch(() => {});
-loadComfyModels().catch(() => {});
+loadComfyModels().then(() => applyInputPlaceholder()).catch(() => {});
 loadEmbedModels().catch(() => {});

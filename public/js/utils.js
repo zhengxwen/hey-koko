@@ -11,6 +11,16 @@ export function formatTimestamp(ts) {
   return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+export function formatDuration(ms) {
+  if (!ms || ms < 0) return "";
+  if (ms < 1000) return `${ms}ms`;
+  const secs = ms / 1000;
+  if (secs < 60) return `${secs.toFixed(1)}s`;
+  const m = Math.floor(secs / 60);
+  const s = Math.round(secs % 60);
+  return `${m}m ${s}s`;
+}
+
 export function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

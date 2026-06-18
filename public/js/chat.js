@@ -1,7 +1,7 @@
 // Chat rendering, message handling, and sending
 import { dom, state } from './state.js';
 import { PERSONALITY_PRESETS, TAG_COLORS } from './constants.js';
-import { escapeHtml, formatTimestamp, makePreview } from './utils.js';
+import { escapeHtml, formatTimestamp, formatDuration, makePreview } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
 import { setAvatarState, showExpression, detectExpression } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
@@ -625,6 +625,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
   let thinkingContent = "";
   let usageStats = null;
   let aborted = false;
+  const genStart = Date.now();
   const showThinking = dom.showThinkingCheckbox?.checked || false;
   try {
     const fetchBody = {
@@ -756,7 +757,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
 
     content = content.trim() || "我刚才有点走神了，你再说一次好吗？";
     state.streamingInfo = null;
-    const reply = { role: "assistant", content, timestamp: Date.now() };
+    const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart };
     if (thinkingContent) reply.thinking = thinkingContent;
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
       tab.messages.splice(insertIndex, 0, reply);
@@ -771,7 +772,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     if (error.name === "AbortError") {
       aborted = true;
       if (content.trim()) {
-        const reply = { role: "assistant", content: content.trim(), timestamp: Date.now() };
+        const reply = { role: "assistant", content: content.trim(), timestamp: Date.now(), genMs: Date.now() - genStart };
         if (thinkingContent) reply.thinking = thinkingContent;
         if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
           tab.messages.splice(insertIndex, 0, reply);
@@ -833,6 +834,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
   let thinkingContent = "";
   let usageStats = null;
   let aborted = false;
+  const genStart = Date.now();
   const showThinking = dom.showThinkingCheckbox?.checked || false;
 
   try {
@@ -972,7 +974,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
       if (md) md.innerHTML = markdownToHtml(content);
     }
-    const reply = { role: "assistant", content, timestamp: Date.now() };
+    const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart };
     if (thinkingContent) reply.thinking = thinkingContent;
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
       tab.messages.splice(insertIndex, 0, reply);
@@ -995,7 +997,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
           const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
           if (md) md.innerHTML = markdownToHtml(content);
         }
-        const reply = { role: "assistant", content: content.trim(), timestamp: Date.now() };
+        const reply = { role: "assistant", content: content.trim(), timestamp: Date.now(), genMs: Date.now() - genStart };
         if (thinkingContent) reply.thinking = thinkingContent;
         if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
           tab.messages.splice(insertIndex, 0, reply);
@@ -1278,6 +1280,7 @@ export async function agenticReply(tabId = state.activeTabId) {
   };
   setPending(t("msg_thinking"));
 
+  const genStart = Date.now();
   const messages = buildMessages(tabId);
   const toolSteps = [];
   const seen = new Map(); // tool-call signature -> cached result (kills repeat loops)
@@ -1349,7 +1352,7 @@ export async function agenticReply(tabId = state.activeTabId) {
 
   if (pending) pending.remove();
   if (finalContent) {
-    const reply = { role: "assistant", content: finalContent, timestamp: Date.now() };
+    const reply = { role: "assistant", content: finalContent, timestamp: Date.now(), genMs: Date.now() - genStart };
     if (toolSteps.length) reply.toolSteps = toolSteps;
     if (thinkingContent) reply.thinking = thinkingContent;
     tab.messages.push(reply);
@@ -1934,8 +1937,12 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
     const vmime = videoMime || "video/mp4";
     const vgrid = document.createElement("div");
     vgrid.className = "videoGrid";
-    for (const vData of generatedVideos) {
+    const vext = vmime.includes("webm") ? "webm" : vmime.includes("quicktime") ? "mov" : "mp4";
+    for (let vi = 0; vi < generatedVideos.length; vi++) {
+      const vData = generatedVideos[vi];
       if (!vData || vData.length < 100) continue;
+      const wrapper = document.createElement("div");
+      wrapper.className = "videoWrapper";
       const video = document.createElement("video");
       video.className = "generatedVideo";
       video.controls = true;
@@ -1944,7 +1951,17 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       video.playsInline = true;
       video.autoplay = true;
       video.src = vData.startsWith("data:") ? vData : `data:${vmime};base64,${vData}`;
-      vgrid.appendChild(video);
+      wrapper.appendChild(video);
+      // Download button — an <a download> pointing at the (data) URL.
+      const dl = document.createElement("a");
+      dl.className = "videoDownloadBtn";
+      dl.href = video.src;
+      dl.download = `heykoko_video_${vi + 1}.${vext}`;
+      dl.title = t("btn_downloadVideo");
+      dl.setAttribute("aria-label", t("btn_downloadVideo"));
+      dl.textContent = "⬇";
+      wrapper.appendChild(dl);
+      vgrid.appendChild(wrapper);
     }
     if (vgrid.children.length) item.appendChild(vgrid);
   }
@@ -2034,6 +2051,13 @@ export function renderChat() {
         details.innerHTML = `<summary>🔧 ${t("tools_used", { count: message.toolSteps.length })}</summary><div class="thinking-content markdownBody">${markdownToHtml(body)}</div>`;
         el.insertBefore(details, markdownBody);
       }
+    }
+    // Show how long this assistant reply took to generate
+    if (el && message.role === "assistant" && message.genMs) {
+      const genEl = document.createElement("div");
+      genEl.className = "messageGenTime";
+      genEl.textContent = `⏱ ${t("msg_genTime", { time: formatDuration(message.genMs) })}`;
+      el.appendChild(genEl);
     }
     if (message.isCompactSummary && el) {
       el.classList.add("compactSummary");

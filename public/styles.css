@@ -517,6 +517,17 @@ p {
   line-height: 1;
 }
 
+/* "supports multi-image" hint — shown only when a multi-ref model is selected. */
+.comfyMultiHint {
+  margin-top: -8px;
+  color: var(--accent-strong);
+  font-weight: 600;
+  font-size: 0.72rem;
+}
+.comfyMultiHint[hidden] {
+  display: none;
+}
+
 /* ComfyUI advanced-params modal: scrollable form inside the shared modal shell. */
 .comfyParamsBody {
   display: flex;
@@ -1850,6 +1861,14 @@ button.secondary:disabled {
   margin-bottom: 4px;
 }
 
+.messageGenTime {
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.6;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
 .editMessageInput {
   width: 100%;
   border: 1px solid var(--accent);
@@ -3171,12 +3190,85 @@ button.secondary:disabled {
   background: #000;
 }
 
+.videoWrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.videoDownloadBtn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 15px;
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.videoWrapper:hover .videoDownloadBtn {
+  opacity: 1;
+}
+
+.videoDownloadBtn:hover {
+  background: var(--accent);
+}
+
 .message.isFolded > .videoGrid {
   display: none;
 }
 
 .message.imageGen .markdownBody {
   color: var(--muted);
+}
+
+/* Improved-prompt preview shown in the pending bubble while --enhance generates. */
+.enhancedPromptPreview {
+  margin-bottom: 8px;
+}
+.enhancedPromptPreview .enhancedLabel {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent-strong);
+  margin-bottom: 4px;
+}
+.enhancedPromptPreview blockquote {
+  font-size: 0.85rem;
+}
+
+/* Live ComfyUI generation progress: a thin bar + an optional preview frame. */
+.comfyProgress {
+  margin-top: 8px;
+}
+.comfyProgressBar {
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(127, 127, 127, 0.25);
+  overflow: hidden;
+}
+.comfyProgressFill {
+  height: 100%;
+  width: 0%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.comfyPreview {
+  display: block;
+  margin-top: 8px;
+  max-width: 240px;
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+}
+.comfyPreview[hidden] {
+  display: none;
 }
 
 /* ===== Theme Picker ===== */

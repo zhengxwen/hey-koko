@@ -122,6 +122,8 @@ export async function loadComfyModels() {
     const editModels = data.editModels || [];         // instruction-edit models (need a ref image)
     const videoModels = data.videoModels || [];       // text→video / image→video
     state.comfyVideoModels = new Set(videoModels.map((m) => m.name));
+    // Qwen-Image-Edit accepts 2-3 reference images (multi-image composition).
+    state.comfyMultiImageModels = new Set(editModels.filter((m) => m.type === "qwen").map((m) => m.name));
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
     const current = saved.comfyModel || dom.comfyModelSelect.value;
     const allNames = [...models, ...editModels.map((m) => m.name), ...videoModels.map((m) => m.name)];
@@ -133,10 +135,10 @@ export async function loadComfyModels() {
       option.textContent = t("comfy_model_none");
       dom.comfyModelSelect.appendChild(option);
     } else {
-      const addOption = (parent, name) => {
+      const addOption = (parent, name, label) => {
         const option = document.createElement("option");
         option.value = name;
-        option.textContent = name;
+        option.textContent = label || name;
         parent.appendChild(option);
       };
       for (const name of models) addOption(dom.comfyModelSelect, name);
@@ -149,7 +151,7 @@ export async function loadComfyModels() {
       if (videoModels.length) {
         const group = document.createElement("optgroup");
         group.label = t("comfy_video_group");
-        for (const m of videoModels) addOption(group, m.name);
+        for (const m of videoModels) addOption(group, m.name, m.label);
         dom.comfyModelSelect.appendChild(group);
       }
       dom.comfyModelSelect.value = allNames.includes(current) ? current : allNames[0];
@@ -158,7 +160,17 @@ export async function loadComfyModels() {
     /* leave placeholder */
   } finally {
     updateImageGenOptions();
+    updateComfyMultiHint();
   }
+}
+
+// Show the "supports multi-image" hint when a multi-reference edit model
+// (Qwen-Image-Edit) is selected.
+export function updateComfyMultiHint() {
+  if (!dom.comfyMultiHint) return;
+  const v = dom.comfyModelSelect?.value;
+  const isMulti = !!(v && state.comfyMultiImageModels && state.comfyMultiImageModels.has(v));
+  dom.comfyMultiHint.hidden = !isMulti;
 }
 
 export async function loadEmbedModels() {

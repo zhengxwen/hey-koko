@@ -61,7 +61,10 @@ async function generateImage(req, res) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-    // Image generation streams NDJSON with progress, then final chunk has "image" field
+    // Image generation streams NDJSON: progress chunks ({completed,total}), then a
+    // final chunk with the "image" field. We forward progress to the client as it
+    // arrives (so the UI can show a bar) and end with a "done" line carrying the
+    // image — instead of buffering the whole response and dropping the progress.
     const response = await fetch(`${config.imageOllamaUrl}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -69,44 +72,65 @@ async function generateImage(req, res) {
       signal: controller.signal,
     });
 
-    clearTimeout(timeout);
-
     if (!response.ok) {
+      clearTimeout(timeout);
       const text = await response.text();
       sendJson(res, response.status, { error: text || response.statusText });
       return;
     }
 
-    // Read the full streamed response (NDJSON lines)
-    const rawText = await response.text();
+    res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" });
+
     let image = "";
     let outImages = [];
-
-    // Parse all NDJSON lines, look for "image" in the final done response
-    const lines = rawText.split("\n").filter((l) => l.trim());
-    for (const line of lines) {
-      try {
-        const chunk = JSON.parse(line);
-        // The final response contains the image as base64
-        if (chunk.image) {
-          image = chunk.image;
+    let progressLines = 0;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    const handleLine = (line) => {
+      line = line.trim();
+      if (!line) return;
+      let chunk;
+      try { chunk = JSON.parse(line); } catch { return; }
+      if (chunk.image) image = chunk.image;
+      if (chunk.images && chunk.images.length) outImages.push(...chunk.images);
+      // Forward step progress (not the final done chunk).
+      if (!chunk.done && chunk.total) {
+        progressLines++;
+        res.write(JSON.stringify({ type: "progress", completed: chunk.completed || 0, total: chunk.total }) + "\n");
+      }
+    };
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          handleLine(buf.slice(0, nl));
+          buf = buf.slice(nl + 1);
         }
-        // Also check for "images" array (fallback)
-        if (chunk.images && chunk.images.length) {
-          outImages.push(...chunk.images);
-        }
-      } catch {}
+      }
+      if (buf.trim()) handleLine(buf); // final line may lack a trailing newline
+    } finally {
+      clearTimeout(timeout);
     }
 
-    // Prefer singular "image" field, fall back to "images" array
     const resultImages = image ? [image] : outImages;
+    res.write(JSON.stringify({ type: "done", images: resultImages, model }) + "\n");
+    res.end();
 
     const now = new Date();
     const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
-    console.log(`${ts} [image-gen] model=${model}, mode=${ollamaBody.images ? "img2img(" + ollamaBody.images.length + ")" : "txt2img"}, image=${image.length > 0 ? image.length + " chars" : "none"}, images=${outImages.length}, lines=${lines.length}`);
-
-    sendJson(res, 200, { images: resultImages, model });
+    console.log(`${ts} [image-gen] model=${model}, mode=${ollamaBody.images ? "img2img(" + ollamaBody.images.length + ")" : "txt2img"}, image=${image.length > 0 ? image.length + " chars" : "none"}, images=${outImages.length}, progress=${progressLines}`);
   } catch (error) {
+    // If we already began streaming (headers sent), we can't send a JSON error —
+    // close the stream with an error line the client can parse instead.
+    if (res.headersSent) {
+      try { res.write(JSON.stringify({ type: "error", error: error.message }) + "\n"); } catch {}
+      try { res.end(); } catch {}
+      return;
+    }
     if (error.name === "AbortError") {
       sendJson(res, 504, { error: "图片生成超时（120秒），请重试或使用更简单的提示词。" });
     } else {
@@ -132,6 +156,15 @@ const EDIT_ENHANCE_PROMPTS = {
   "zh-Hant": "你是為「指令式圖片編輯模型」（如 FLUX.2）撰寫編輯指令的專家。使用者會給出一句簡短描述，說明想如何修改一張【已有圖片】。請把它改寫成一條英文編輯指令，要求：(1) 開頭先保留原圖——\"Keep the exact same art style, composition, framing, background, lighting and subject\"；(2) 只陳述使用者要求的那一處改動，作為小幅增量（如 \"only change ...\"）；(3) 結尾加上 \"Do not change the art style or anything else.\"。不要描述一個全新的場景，不要添加使用者沒要求的內容。只輸出該編輯指令，不要有其他文字。",
 };
 
+// Video-mode enhancement: a video model needs MOTION described, not just a still
+// scene. Expand into a cinematic shot — subject action, camera movement, and how
+// things change over the clip — which is what WAN / Hunyuan / LTX are tuned for.
+const VIDEO_ENHANCE_PROMPTS = {
+  en: "You are an expert prompt engineer for text-to-VIDEO models (e.g. WAN, Hunyuan, LTX). Expand the user's short description into a single vivid English video prompt that describes MOTION over time: what the subject is doing, how it moves, camera movement (pan / dolly / zoom / static), and the overall mood and lighting. Describe a continuous shot, not a still image. Keep it under 150 words. Output ONLY the enhanced prompt text, nothing else — no explanations or prefixes.",
+  zh: "你是「文生视频模型」（如 WAN、Hunyuan、LTX）的提示词专家。请把用户的简短描述扩展成一段生动的英文视频提示词，重点描述随时间发生的【运动】：主体在做什么、如何移动、镜头运动（平移/推拉/变焦/固定）、整体氛围与光线。要描述一个连续的镜头，而不是静止画面。控制在150字以内。只输出增强后的提示词，不要有其他解释或前缀。",
+  "zh-Hant": "你是「文生視訊模型」（如 WAN、Hunyuan、LTX）的提示詞專家。請把使用者的簡短描述擴展成一段生動的英文視訊提示詞，重點描述隨時間發生的【運動】：主體在做什麼、如何移動、鏡頭運動（平移/推拉/變焦/固定）、整體氛圍與光線。要描述一個連續的鏡頭，而不是靜止畫面。控制在150字以內。只輸出增強後的提示詞，不要有其他解釋或前綴。",
+};
+
 const CONTENT_TO_IMAGINE_PROMPTS = {
   en: `You are an expert at converting text content into image generation prompts. Given the user's text, generate one or more vivid image prompts that would visually illustrate the key scenes or concepts. Output ONLY the prompts, one per line, each starting with "/imagine ". Each prompt should be a detailed visual description in English, under 100 words. Generate 1-3 prompts depending on the content richness. Do not include explanations, numbering, or any other text.`,
   zh: `你是将文本内容转换为图片生成提示词的专家。根据用户的文本，生成一个或多个能视觉化展示关键场景或概念的图片提示词。只输出提示词，每行一个，每个以 "/imagine " 开头。每个提示词应为详细的英文视觉描述，不超过100字。根据内容丰富程度生成1-3个提示词。不要包含解释、编号或其他文字。`,
@@ -145,16 +178,19 @@ function getPromptByLang(templates, lang) {
 async function enhancePrompt(req, res) {
   try {
     const body = await readBody(req);
-    const { model, prompt, language, edit } = body;
+    const { model, prompt, language, edit, video } = body;
 
     if (!model || !prompt) {
       sendJson(res, 400, { error: "model and prompt are required" });
       return;
     }
 
-    // Edit mode (img2img) uses a preservation-locked template instead of the
-    // generative-expansion one, so the result modifies rather than replaces.
-    const systemPrompt = getPromptByLang(edit ? EDIT_ENHANCE_PROMPTS : ENHANCE_PROMPTS, language || "en");
+    // Pick the template by target: video models want motion described, edit
+    // (img2img) wants a preservation-locked delta, everything else gets the
+    // generative still-image expansion. Video wins over edit (i2v still needs
+    // motion described).
+    const template = video ? VIDEO_ENHANCE_PROMPTS : edit ? EDIT_ENHANCE_PROMPTS : ENHANCE_PROMPTS;
+    const systemPrompt = getPromptByLang(template, language || "en");
 
     const response = await fetch(`${config.ollamaUrl}/api/chat`, {
       method: "POST",

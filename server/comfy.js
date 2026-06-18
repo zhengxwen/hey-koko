@@ -55,13 +55,26 @@ async function proxyComfyModels(res) {
     // checkpoints (instruct-pix2pix, ltx). Plain checkpoints stay in `models`.
     const all = [...ckpts, ...unets];
     const editModels = all.filter((n) => editTypeOf(n)).map((n) => ({ name: n, type: editTypeOf(n) }));
-    const videoModels = all.filter((n) => videoTypeOf(n)).map((n) => ({ name: n, type: videoTypeOf(n) }));
+    // WAN 2.2 14B ships as a high+low expert PAIR used together in one render —
+    // show only the high_noise twin (what we send; the server derives the low one)
+    // and label it without the "_high_noise" noise. Everything else is 1:1.
+    const videoModels = all
+      .filter((n) => videoTypeOf(n) && !(/14b/i.test(n) && /low_noise/i.test(n)))
+      .map((n) => {
+        const m = { name: n, type: videoTypeOf(n) };
+        if (/14b/i.test(n) && /high_noise/i.test(n)) {
+          m.label = n.replace(/_?high_noise/i, "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
+        }
+        return m;
+      });
     // txt2img list: plain checkpoints (excluding edit/video/HiDream) + HiDream-I1
     // (a diffusion model loaded specially with QuadrupleCLIPLoader). HiDream E1/O1
     // are not wired yet, so they're left out to avoid broken options.
     const plainCkpts = ckpts.filter((n) => !editTypeOf(n) && !videoTypeOf(n) && !/hidream/i.test(n));
     const hidreamImage = all.filter((n) => /hidream.?i1/i.test(n));
-    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage], editModels, videoModels });
+    // Z-Image-Turbo lives in diffusion_models/ (UNETLoader) — add it to txt2img.
+    const zimage = all.filter((n) => /z.?image/i.test(n));
+    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...zimage], editModels, videoModels });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [] });
   }
@@ -140,6 +153,11 @@ function familyPreset(model) {
   }
   if (/hidream/i.test(model)) {
     return { sampler: "euler", scheduler: "normal", cfg: 5, guidance: null, steps: 30, sd3Latent: true };
+  }
+  if (/z.?image/i.test(model)) {
+    // Z-Image-Turbo: distilled few-step model — cfg=1 with the negative zeroed,
+    // ~8 steps, res_multistep/simple (per the official ComfyUI template).
+    return { sampler: "res_multistep", scheduler: "simple", cfg: 1, guidance: null, steps: 8, sd3Latent: true };
   }
   if (/flux/i.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: 3.5, steps: 20, sd3Latent: true };
@@ -238,6 +256,42 @@ function buildHiDreamImage({ model, prompt, negative, width, height, seed, cfg, 
     "5": enc(negative || ""),
     "6": { class_type: "EmptySD3LatentImage", inputs: { width, height, batch_size: 1 } },
     "7": { class_type: "ModelSamplingSD3", inputs: { model: ["1", 0], shift: 3.0 } },
+    "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } },
+    "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+  };
+}
+
+// Z-Image-Turbo companions: the Qwen3-4B text encoder (loaded via CLIPLoader
+// with type "lumina2") + the flux "ae" VAE.
+async function zimageCompanions() {
+  const [clips, vaes] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+  ]);
+  const find = (list, re) => list.find((x) => re.test(x));
+  const clip = find(clips, /qwen_?3/i);
+  const vae = find(vaes, /^ae\b|ae\.safetensors/i) || find(vaes, /flux/i);
+  const missing = [];
+  if (!clip) missing.push("qwen_3_4b.safetensors → text_encoders/");
+  if (!vae) missing.push("ae.safetensors → vae/");
+  if (missing.length) throw new Error("缺少 Z-Image 所需文件：\n- " + missing.join("\n- "));
+  return { clip, vae };
+}
+
+// Z-Image-Turbo (txt2img). Distilled few-step model: UNETLoader + CLIPLoader
+// (qwen_3_4b, type "lumina2") + flux ae VAE. The negative is a ConditioningZeroOut
+// of the positive (cfg=1, so no real negative), the latent is 16-channel SD3, and
+// ModelSamplingAuraFlow applies shift 3 — matching the official ComfyUI template.
+function buildZImage({ model, prompt, width, height, seed, cfg, comp }) {
+  return {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "lumina2", device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "4": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: prompt } },
+    "5": { class_type: "ConditioningZeroOut", inputs: { conditioning: ["4", 0] } },
+    "6": { class_type: "EmptySD3LatentImage", inputs: { width, height, batch_size: 1 } },
+    "7": { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 3.0 } },
     "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
@@ -418,7 +472,7 @@ function buildEditWorkflow(editType, args) {
 
 // ── Video workflows ─────────────────────────────────────────────────────────
 
-async function videoCompanions(videoType) {
+async function videoCompanions(videoType, model) {
   const [clips, vaes] = await Promise.all([
     comfyEnum("CLIPLoader", "clip_name"),
     comfyEnum("VAELoader", "vae_name"),
@@ -426,12 +480,27 @@ async function videoCompanions(videoType) {
   const find = (list, re) => list.find((x) => re.test(x));
   if (videoType === "wan") {
     const clip = find(clips, /umt5/i);
-    const vae = find(vaes, /wan.*vae|wan2/i);
+    // The 14B experts use the WAN 2.1 VAE; the 5B ti2v uses its own WAN 2.2 VAE.
+    // They are NOT interchangeable (wrong VAE → wrong colors / garbage).
+    const is14B = /14b/i.test(model || "");
+    const vae = is14B
+      ? (find(vaes, /wan.?2[._]1.*vae/i) || find(vaes, /wan.*vae/i))
+      : (find(vaes, /wan2[._]2.*vae/i) || find(vaes, /wan.*vae/i));
     const missing = [];
     if (!clip) missing.push("umt5_xxl_fp8_e4m3fn_scaled.safetensors → text_encoders/");
-    if (!vae) missing.push("wan2.2_vae.safetensors → vae/");
+    if (!vae) missing.push((is14B ? "wan_2.1_vae.safetensors" : "wan2.2_vae.safetensors") + " → vae/");
     if (missing.length) throw new Error("缺少 WAN 视频所需文件：\n- " + missing.join("\n- "));
-    return { clip, vae };
+    // Optional LightX2V 4-step speed LoRAs (one per expert, matched to t2v/i2v).
+    // Present → buildWan14B mounts them and we switch to the 4-step/cfg-1 preset.
+    let loraHigh, loraLow;
+    if (is14B) {
+      const kind = /i2v/i.test(model) ? "i2v" : "t2v";
+      const loras = await comfyEnum("LoraLoaderModelOnly", "lora_name");
+      loraHigh = find(loras, new RegExp(`wan.?2[._]2_${kind}_lightx2v.*high_noise`, "i"));
+      loraLow = find(loras, new RegExp(`wan.?2[._]2_${kind}_lightx2v.*low_noise`, "i"));
+      if (!loraHigh || !loraLow) { loraHigh = undefined; loraLow = undefined; } // need the pair
+    }
+    return { clip, vae, loraHigh, loraLow };
   }
   if (videoType === "hunyuan") {
     const clipL = find(clips, /clip_l/i);
@@ -447,7 +516,10 @@ async function videoCompanions(videoType) {
   if (videoType === "ltx") {
     // LTX-2 uses a Gemma text encoder (loaded via LTXAVTextEncoderLoader with the
     // model's own ckpt); VAE comes from the checkpoint, so no separate VAE needed.
-    const encoder = find(clips, /gemma/i) || find(clips, /t5xxl/i);
+    // Must be the 12B Gemma-3 — the smaller gemma4_e4b (Gemma 3n) is a different
+    // model and produces broken output, and it sorts first so a bare /gemma/ grabs
+    // the wrong one.
+    const encoder = find(clips, /gemma.*12b/i) || find(clips, /gemma_?3/i) || find(clips, /gemma/i) || find(clips, /t5xxl/i);
     if (!encoder) throw new Error("缺少 LTX-2 文本编码器：\n- gemma_3_12B_it…safetensors（或 t5xxl）→ text_encoders/");
     return { encoder };
   }
@@ -457,8 +529,17 @@ async function videoCompanions(videoType) {
 // Per-model video defaults (resolution / length / fps / sampling), overridable.
 // dimMult = resolution must be a multiple of this; lenMult = frame count must be
 // lenMult·n + 1.
-function videoPreset(videoType) {
+function videoPreset(videoType, model, turbo) {
   if (videoType === "wan") {
+    if (/14b/i.test(model || "")) {
+      // WAN 2.2 14B MoE (high+low experts). WITH the LightX2V 4-step speed LoRAs
+      // (turbo) it runs cfg 1 / 4 steps (~6-10× faster); without them, the full
+      // schedule cfg 3.5 / 20 steps. euler/simple, shift 5, native 16fps either way.
+      const fast = turbo
+        ? { cfg: 1, steps: 4 }
+        : { cfg: 3.5, steps: 20 };
+      return { sampler: "euler", scheduler: "simple", ...fast, shift: 5.0, width: 832, height: 480, length: 81, fps: 16, dimMult: 16, lenMult: 4 };
+    }
     return { sampler: "uni_pc", scheduler: "simple", cfg: 5, steps: 20, shift: 8.0, width: 704, height: 480, length: 49, fps: 24, dimMult: 16, lenMult: 4 };
   }
   if (videoType === "hunyuan") {
@@ -466,25 +547,37 @@ function videoPreset(videoType) {
   }
   if (videoType === "ltx") {
     // LTX uses its own LTXVScheduler (scheduler/shift here are unused); dims must
-    // be /32, frames 8n+1. cfg is low (~3).
-    return { sampler: "euler", scheduler: "simple", cfg: 3, steps: 20, shift: 0, width: 768, height: 512, length: 97, fps: 24, dimMult: 32, lenMult: 8 };
+    // be /32, frames 8n+1. cfg is low (~3). The 22b model is undersampled at 20
+    // steps (motion ghosting / trailing edges) — 30 is the quality sweet spot.
+    return { sampler: "euler", scheduler: "simple", cfg: 3, steps: 30, shift: 0, width: 768, height: 512, length: 97, fps: 24, dimMult: 32, lenMult: 8 };
   }
   return null;
 }
 
-function resolveVideoConfig(videoType, opts) {
-  const p = videoPreset(videoType);
+function resolveVideoConfig(videoType, opts, model, turbo) {
+  const p = videoPreset(videoType, model, turbo);
   if (!p) return null;
   const snap = (v, m) => Math.max(m, Math.round(v / m) * m);
   const L = opts.length || p.length;
+  // i2v: when the caller gives the input image's aspect ratio (and no explicit
+  // size), render at that aspect — keeping the preset's pixel budget — so the
+  // conditioning frame isn't stretched. Stretching a mismatched still is the
+  // main cause of ghosted / doubled edges in image-to-video.
+  let baseW = opts.width || p.width;
+  let baseH = opts.height || p.height;
+  if (!opts.width && !opts.height && opts.aspect > 0) {
+    const area = p.width * p.height;
+    baseW = Math.sqrt(area * opts.aspect);
+    baseH = Math.sqrt(area / opts.aspect);
+  }
   return {
     sampler: opts.sampler || p.sampler,
     scheduler: opts.scheduler || p.scheduler,
     cfg: opts.cfg != null ? opts.cfg : p.cfg,
     steps: opts.steps || p.steps,
     shift: opts.shift != null ? opts.shift : p.shift,
-    width: snap(opts.width || p.width, p.dimMult),
-    height: snap(opts.height || p.height, p.dimMult),
+    width: snap(baseW, p.dimMult),
+    height: snap(baseH, p.dimMult),
     // Frame count must be lenMult·n + 1 — snap to the nearest valid value.
     length: Math.max(p.lenMult + 1, Math.round((L - 1) / p.lenMult) * p.lenMult + 1),
     fps: opts.fps || p.fps,
@@ -497,10 +590,62 @@ function resolveVideoConfig(videoType, opts) {
 const WAN_DEFAULT_NEGATIVE =
   "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走";
 
+// WAN 2.2 14B is a two-expert MoE: the high-noise expert denoises the early
+// (high-noise) half of the schedule, then the low-noise expert finishes — chained
+// via two KSamplerAdvanced nodes (the first returns leftover noise, the second
+// adds none and picks up where it left off). The two checkpoints are a pair; we
+// derive the low-noise twin from the selected high-noise name. t2v uses an empty
+// latent; i2v uses WanImageToVideo (which also rewrites the conditioning).
+function buildWan14B({ model, prompt, negative, comp, imageName, seed, v }) {
+  const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
+  const highModel = model.replace(/low_noise/i, "high_noise");
+  const lowModel = model.replace(/high_noise/i, "low_noise");
+  const i2v = !!imageName;
+  const boundary = Math.max(1, Math.floor(v.steps / 2)); // expert switch at ~50%
+  // LightX2V 4-step speed LoRAs (when installed): one per expert, between the
+  // UNETLoader and ModelSamplingSD3. Each expert's sampler then feeds from its
+  // LoRA output. The preset already dropped to 4 steps / cfg 1 to match.
+  const turbo = !!(comp.loraHigh && comp.loraLow);
+  const highSrc = turbo ? "16" : "1";
+  const lowSrc = turbo ? "17" : "11";
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: highModel, weight_dtype: "default" } },
+    "2": { class_type: "ModelSamplingSD3", inputs: { model: [highSrc, 0], shift: v.shift } },
+    "11": { class_type: "UNETLoader", inputs: { unet_name: lowModel, weight_dtype: "default" } },
+    "12": { class_type: "ModelSamplingSD3", inputs: { model: [lowSrc, 0], shift: v.shift } },
+    "3": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan" } },
+    "4": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "5": { class_type: "CLIPTextEncode", inputs: { clip: ["3", 0], text: prompt } },
+    "6": { class_type: "CLIPTextEncode", inputs: { clip: ["3", 0], text: neg } },
+  };
+  if (turbo) {
+    wf["16"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.loraHigh, strength_model: 1.0 } };
+    wf["17"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["11", 0], lora_name: comp.loraLow, strength_model: 1.0 } };
+  }
+  let posRef, negRef, latentRef;
+  if (i2v) {
+    wf["13"] = { class_type: "LoadImage", inputs: { image: imageName } };
+    wf["7"] = { class_type: "WanImageToVideo", inputs: { positive: ["5", 0], negative: ["6", 0], vae: ["4", 0], width: v.width, height: v.height, length: v.length, batch_size: 1, start_image: ["13", 0] } };
+    posRef = ["7", 0]; negRef = ["7", 1]; latentRef = ["7", 2];
+  } else {
+    wf["7"] = { class_type: "EmptyHunyuanLatentVideo", inputs: { width: v.width, height: v.height, length: v.length, batch_size: 1 } };
+    posRef = ["5", 0]; negRef = ["6", 0]; latentRef = ["7", 0];
+  }
+  wf["8"] = { class_type: "KSamplerAdvanced", inputs: { model: ["2", 0], add_noise: "enable", noise_seed: seed, steps: v.steps, cfg: v.cfg, sampler_name: v.sampler, scheduler: v.scheduler, positive: posRef, negative: negRef, latent_image: latentRef, start_at_step: 0, end_at_step: boundary, return_with_leftover_noise: "enable" } };
+  wf["9"] = { class_type: "KSamplerAdvanced", inputs: { model: ["12", 0], add_noise: "disable", noise_seed: seed, steps: v.steps, cfg: v.cfg, sampler_name: v.sampler, scheduler: v.scheduler, positive: posRef, negative: negRef, latent_image: ["8", 0], start_at_step: boundary, end_at_step: v.steps, return_with_leftover_noise: "disable" } };
+  wf["10"] = { class_type: "VAEDecode", inputs: { samples: ["9", 0], vae: ["4", 0] } };
+  wf["14"] = { class_type: "CreateVideo", inputs: { images: ["10", 0], fps: v.fps } };
+  wf["15"] = { class_type: "SaveVideo", inputs: { video: ["14", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  return wf;
+}
+
 // WAN 2.2 ti2v 5B: one model does text→video AND image→video (pass start_image
 // for i2v). Wan22ImageToVideoLatent builds the latent; ModelSamplingSD3 applies
-// WAN's shift; frames are muxed to mp4 via CreateVideo→SaveVideo.
-function buildWanVideo({ model, prompt, negative, comp, imageName, seed, v }) {
+// WAN's shift; frames are muxed to mp4 via CreateVideo→SaveVideo. The 14B variant
+// is a different (two-expert) pipeline, dispatched separately.
+function buildWanVideo(args) {
+  if (/14b/i.test(args.model || "")) return buildWan14B(args);
+  const { model, prompt, negative, comp, imageName, seed, v } = args;
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   const latentInputs = { vae: ["4", 0], width: v.width, height: v.height, length: v.length, batch_size: 1 };
   if (imageName) latentInputs.start_image = ["12", 0];
@@ -587,6 +732,33 @@ function buildVideoWorkflow(videoType, args) {
   return null;
 }
 
+// Parse intrinsic pixel dimensions from a base64 PNG/JPEG without an image lib.
+// Used to match a video's aspect ratio to the i2v conditioning image.
+function imageDims(b64) {
+  try {
+    const clean = typeof b64 === "string" && b64.startsWith("data:") ? b64.split(",")[1] : b64;
+    const buf = Buffer.from(clean, "base64");
+    // PNG: 8-byte signature, then IHDR with width@16, height@20 (big-endian).
+    if (buf.length > 24 && buf[0] === 0x89 && buf[1] === 0x50) {
+      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    }
+    // JPEG: scan segment markers for a Start-Of-Frame (SOFn) that carries dims.
+    if (buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+      let o = 2;
+      while (o + 9 < buf.length) {
+        if (buf[o] !== 0xff) { o++; continue; }
+        const m = buf[o + 1];
+        // SOF0–SOF15 hold the frame size; skip DHT(C4)/DAC(C8)/DNL(CC) & non-SOF.
+        if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+          return { height: buf.readUInt16BE(o + 5), width: buf.readUInt16BE(o + 7) };
+        }
+        o += 2 + buf.readUInt16BE(o + 2); // jump past this segment
+      }
+    }
+  } catch { /* unparseable → caller falls back to the preset size */ }
+  return null;
+}
+
 // Upload a base64 image to ComfyUI's input folder so a LoadImage node can use
 // it. Returns the name (prefixed with subfolder when ComfyUI nests it).
 async function uploadImage(b64, signal) {
@@ -623,7 +795,7 @@ async function waitForOutputs(promptId, signal, deadline) {
 async function generateComfyImage(req, res) {
   try {
     const body = await readBody(req);
-    const { model, prompt, negative_prompt, options, images, timeout: reqTimeout } = body;
+    const { model, prompt, negative_prompt, options, images, timeout: reqTimeout, clientId: bodyClientId } = body;
 
     if (!model || !prompt) {
       sendJson(res, 400, { error: "model and prompt are required" });
@@ -649,7 +821,9 @@ async function generateComfyImage(req, res) {
       return;
     }
 
-    const clientId = crypto.randomUUID();
+    // The browser can supply its own clientId so it can subscribe to ComfyUI's
+    // WebSocket for live progress / preview frames using the same id.
+    const clientId = (typeof bodyClientId === "string" && bodyClientId) || crypto.randomUUID();
     const timeoutMs = Math.min(600, Math.max(60, reqTimeout || 120)) * 1000;
     const deadline = Date.now() + timeoutMs;
     const controller = new AbortController();
@@ -658,10 +832,26 @@ async function generateComfyImage(req, res) {
     try {
       let workflow;
       if (videoType) {
-        // Video. WAN ti2v does text→video or image→video; Hunyuan is t2v only.
-        const comp = await videoCompanions(videoType);
-        const v = resolveVideoConfig(videoType, opts);
-        const imageName = isImg2Img ? await uploadImage(images[0], controller.signal) : null;
+        // Video. WAN 5B ti2v + 14B i2v do image→video; WAN 14B t2v / Hunyuan are
+        // text→video only. The dedicated WAN 2.2 14B i2v model needs a ref image.
+        if (videoType === "wan" && /14b/i.test(model) && /i2v/i.test(model) && !isImg2Img) {
+          sendJson(res, 400, { error: "该模型用于图生视频，请先附带一张参考图片再用 /imagine <描述>。" });
+          return;
+        }
+        const comp = await videoCompanions(videoType, model);
+        // WAN 14B with the LightX2V LoRAs installed → 4-step/cfg-1 turbo preset.
+        const turbo = !!(comp.loraHigh && comp.loraLow);
+        // For i2v, match the output aspect ratio to the input image so the
+        // conditioning frame isn't stretched (avoids ghosted/doubled edges).
+        const vOpts = { ...opts };
+        if (isImg2Img && !opts.width && !opts.height) {
+          const dims = imageDims(images[0]);
+          if (dims && dims.width && dims.height) vOpts.aspect = dims.width / dims.height;
+        }
+        const v = resolveVideoConfig(videoType, vOpts, model, turbo);
+        // A WAN 14B t2v checkpoint can't consume a start image — ignore any attach.
+        const wantImage = isImg2Img && !(videoType === "wan" && /14b/i.test(model) && /t2v/i.test(model));
+        const imageName = wantImage ? await uploadImage(images[0], controller.signal) : null;
         workflow = buildVideoWorkflow(videoType, { model, prompt, negative: negative_prompt || "", comp, imageName, seed, v });
       } else if (editType) {
         // Instruction-edit. Checkpoint-based models (ip2p) bundle CLIP+VAE;
@@ -690,6 +880,10 @@ async function generateComfyImage(req, res) {
         // HiDream-I1 txt2img (UNET + QuadrupleCLIPLoader); ignores any attached image.
         const comp = await hidreamCompanions();
         workflow = buildHiDreamImage({ model, prompt, negative: negative_prompt || "", width, height, seed, cfg, comp });
+      } else if (/z.?image/i.test(model)) {
+        // Z-Image-Turbo txt2img (UNET + CLIPLoader lumina2 + ae VAE).
+        const comp = await zimageCompanions();
+        workflow = buildZImage({ model, prompt, width, height, seed, cfg, comp });
       } else if (isImg2Img) {
         const imageName = await uploadImage(images[0], controller.signal);
         workflow = buildImg2Img({
