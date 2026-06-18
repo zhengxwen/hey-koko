@@ -141,7 +141,12 @@ export async function loadComfyModels() {
         option.textContent = label || name;
         parent.appendChild(option);
       };
-      for (const name of models) addOption(dom.comfyModelSelect, name);
+      if (models.length) {
+        const group = document.createElement("optgroup");
+        group.label = t("comfy_image_group");
+        for (const name of models) addOption(group, name);
+        dom.comfyModelSelect.appendChild(group);
+      }
       if (editModels.length) {
         const group = document.createElement("optgroup");
         group.label = t("comfy_edit_group");

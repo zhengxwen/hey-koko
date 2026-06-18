@@ -897,6 +897,7 @@ async function generateComfyImage(req, res) {
 
     try {
       let workflow;
+      let videoDims = null; // actual resolved output size (for the client's caption)
       if (videoType) {
         // Video. WAN 5B ti2v + 14B i2v do image→video; WAN 14B t2v / Hunyuan are
         // text→video only. The dedicated WAN 2.2 14B i2v model needs a ref image.
@@ -926,6 +927,7 @@ async function generateComfyImage(req, res) {
           }
         }
         const v = resolveVideoConfig(videoType, vOpts, model, turbo);
+        videoDims = { width: v.width, height: v.height };
         // A WAN 14B t2v checkpoint can't consume a start image — ignore any attach.
         const wantImage = isImg2Img && !(videoType === "wan" && /14b/i.test(model) && /t2v/i.test(model));
         const imageName = wantImage ? await uploadImage(images[0], controller.signal) : null;
@@ -1041,9 +1043,8 @@ async function generateComfyImage(req, res) {
       const now = new Date();
       const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
       if (videoType) {
-        const v = resolveVideoConfig(videoType, opts);
-        console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${v.width}x${v.height}, ${v.length}f@${v.fps}fps, steps=${v.steps}, videos=${outVideos.length}`);
-        sendJson(res, 200, { videos: outVideos, videoMime, model });
+        console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
+        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height });
       } else {
         const mode = editType ? `edit:${editType}` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);

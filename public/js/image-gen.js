@@ -178,6 +178,17 @@ function parseImagineCommand(input) {
   return result;
 }
 
+// Decode a base64/data-URL image's natural pixel size in the browser. Resolves
+// null on failure. Used to caption a generated image with its real dimensions.
+function imageNaturalSize(src) {
+  return new Promise((resolve) => {
+    const im = new Image();
+    im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight });
+    im.onerror = () => resolve(null);
+    im.src = src;
+  });
+}
+
 // Tell ComfyUI to actually STOP — aborting our fetch only stops us waiting; the
 // queued workflow keeps running on the GPU. /interrupt kills the running prompt
 // and clearing the queue drops anything still pending (e.g. a batch). comfyHost
@@ -400,9 +411,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       setAvatarState("idle");
       return;
     }
+    // "Video generated (W×H)" in the prompt language, with the real output size.
+    const doneLine = t("msg_videoDone", { w: data.width || "?", h: data.height || "?" }, getPromptLanguage());
     const videoContent = promptWasEnhanced
-      ? `**${t("msg_enhancedPrompt")}**\n> ${videoPrompt}\n\n🎬 视频已生成`
-      : `🎬 视频已生成`;
+      ? `**${t("msg_enhancedPrompt")}**\n> ${videoPrompt}\n\n${doneLine}`
+      : doneLine;
     const replyMsg = {
       role: "assistant",
       content: videoContent,
@@ -730,18 +743,24 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       content = "图片生成失败，请检查模型是否正确安装并支持图像生成。";
     }
 
-    const generatedThumbnails = await Promise.all(
-      generatedImages.map((img) => {
-        if (img.startsWith("data:")) return makePreview(img);
-        const mime = img.startsWith("/9j/") ? "image/jpeg" : "image/png";
-        const src = `data:${mime};base64,${img}`;
-        return makePreview(src);
-      })
-    );
+    const toSrc = (img) => (img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`);
+    const generatedThumbnails = await Promise.all(generatedImages.map((img) => makePreview(toSrc(img))));
+
+    // "Image generated (W×H)" in the prompt language, with the real output size
+    // (decoded from the first image — covers txt2img, img2img and Ollama alike).
+    let doneLine = "";
+    if (generatedImages.length > 0) {
+      const size = await imageNaturalSize(toSrc(generatedImages[0]));
+      const dims = { w: size?.w || "?", h: size?.h || "?" };
+      const plang = getPromptLanguage();
+      doneLine = totalCount > 1
+        ? t("msg_imageDoneBatch", { done: generatedImages.length, total: totalCount, ...dims }, plang)
+        : t("msg_imageDone", dims, plang);
+    }
 
     const replyMsg = {
       role: "assistant",
-      content: content || `🎨 图片已生成${totalCount > 1 ? ` (${generatedImages.length}/${totalCount})` : ""}`,
+      content: generatedImages.length > 0 ? content + doneLine : content,
       generatedImages: generatedImages,
       generatedThumbnails: generatedThumbnails,
       imagePrompt: parsedList.map((p) => p.prompt).join("; "),
