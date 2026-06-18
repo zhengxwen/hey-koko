@@ -412,10 +412,20 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       return;
     }
     // "Video generated (W×H)" in the prompt language, with the real output size.
-    const doneLine = t("msg_videoDone", { w: data.width || "?", h: data.height || "?" }, getPromptLanguage());
-    const videoContent = promptWasEnhanced
-      ? `**${t("msg_enhancedPrompt")}**\n> ${videoPrompt}\n\n${doneLine}`
-      : doneLine;
+    const plang = getPromptLanguage();
+    const doneLine = t("msg_videoDone", { w: data.width || "?", h: data.height || "?" }, plang);
+    // If more images were attached than the model can use, tell the user how many
+    // were actually consumed (2 = first-last-frame, 1 = plain image-to-video).
+    const nInput = refImages ? refImages.length : 0;
+    const nUsed = data.imagesUsed != null ? data.imagesUsed : nInput;
+    let capNote = "";
+    if (nInput > nUsed && nUsed > 0) {
+      const flf = nUsed === 2 ? t("msg_videoFlfSuffix", null, plang) : "";
+      capNote = t("msg_videoImagesCapped", { used: nUsed, total: nInput, flf }, plang) + "\n\n";
+    }
+    const videoContent = (promptWasEnhanced
+      ? `**${t("msg_enhancedPrompt")}**\n> ${videoPrompt}\n\n${capNote}${doneLine}`
+      : `${capNote}${doneLine}`);
     const replyMsg = {
       role: "assistant",
       content: videoContent,

@@ -43,6 +43,21 @@ function videoTypeOf(model) {
   return null;
 }
 
+// Sentinel for the merged WAN 2.2 14B dropdown entry — resolved at generation
+// time to the real t2v or i2v high_noise checkpoint depending on whether the
+// user attached a reference image.
+const WAN14B_AUTO = "wan2.2_14B";
+
+async function resolveWan14bAuto(isImg2Img) {
+  const [ckpts, unets] = await Promise.all([
+    comfyEnum("CheckpointLoaderSimple", "ckpt_name"),
+    comfyEnum("UNETLoader", "unet_name"),
+  ]);
+  const all = [...ckpts, ...unets];
+  const kind = isImg2Img ? "i2v" : "t2v";
+  return all.find((n) => /14b/i.test(n) && new RegExp(kind, "i").test(n) && /high_noise/i.test(n)) || null;
+}
+
 // List both classic checkpoints (txt2img / classic img2img) and the
 // instruction-edit models found in diffusion_models/.
 async function proxyComfyModels(res) {
@@ -55,18 +70,30 @@ async function proxyComfyModels(res) {
     // checkpoints (instruct-pix2pix, ltx). Plain checkpoints stay in `models`.
     const all = [...ckpts, ...unets];
     const editModels = all.filter((n) => editTypeOf(n)).map((n) => ({ name: n, type: editTypeOf(n) }));
-    // WAN 2.2 14B ships as a high+low expert PAIR used together in one render —
-    // show only the high_noise twin (what we send; the server derives the low one)
-    // and label it without the "_high_noise" noise. Everything else is 1:1.
-    const videoModels = all
-      .filter((n) => videoTypeOf(n) && !(/14b/i.test(n) && /low_noise/i.test(n)))
-      .map((n) => {
-        const m = { name: n, type: videoTypeOf(n) };
-        if (/14b/i.test(n) && /high_noise/i.test(n)) {
-          m.label = n.replace(/_?high_noise/i, "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
-        }
-        return m;
-      });
+    // WAN 2.2 14B ships as a high+low expert PAIR per task (t2v / i2v). We hide the
+    // low twin (derived server-side), and — when BOTH the t2v and i2v 14B families
+    // are present — merge them into ONE "auto" entry: /imagine picks t2v (no image)
+    // or i2v/FLF (image attached) at generation time. Everything else is 1:1.
+    const has14bT2v = all.some((n) => /14b/i.test(n) && /t2v/i.test(n) && /high_noise/i.test(n));
+    const has14bI2v = all.some((n) => /14b/i.test(n) && /i2v/i.test(n) && /high_noise/i.test(n));
+    const merge14b = has14bT2v && has14bI2v;
+    const videoModels = [];
+    let added14bAuto = false;
+    for (const n of all) {
+      const vt = videoTypeOf(n);
+      if (!vt) continue;
+      const is14b = /14b/i.test(n);
+      if (is14b && /low_noise/i.test(n)) continue; // hidden — derived from the high twin
+      if (merge14b && is14b && (/t2v/i.test(n) || /i2v/i.test(n))) {
+        if (!added14bAuto) { videoModels.push({ name: WAN14B_AUTO, type: "wan", label: "wan2.2_14B" }); added14bAuto = true; }
+        continue;
+      }
+      if (is14b && /high_noise/i.test(n)) {
+        videoModels.push({ name: n, type: vt, label: n.replace(/_?high_noise/i, "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "") });
+      } else {
+        videoModels.push({ name: n, type: vt });
+      }
+    }
     // txt2img list: plain checkpoints (excluding edit/video/HiDream) + HiDream-I1
     // (a diffusion model loaded specially with QuadrupleCLIPLoader). HiDream E1/O1
     // are not wired yet, so they're left out to avoid broken options.
@@ -615,12 +642,14 @@ const WAN_DEFAULT_NEGATIVE =
 // via two KSamplerAdvanced nodes (the first returns leftover noise, the second
 // adds none and picks up where it left off). The two checkpoints are a pair; we
 // derive the low-noise twin from the selected high-noise name. t2v uses an empty
-// latent; i2v uses WanImageToVideo (which also rewrites the conditioning).
-function buildWan14B({ model, prompt, negative, comp, imageName, seed, v }) {
+// latent; i2v uses WanImageToVideo; first-last-frame (start + end image, FLF2V)
+// uses WanFirstLastFrameToVideo — all three just swap node 7 and its conditioning.
+function buildWan14B({ model, prompt, negative, comp, imageName, endImageName, seed, v }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   const highModel = model.replace(/low_noise/i, "high_noise");
   const lowModel = model.replace(/high_noise/i, "low_noise");
-  const i2v = !!imageName;
+  const flf = !!endImageName;     // first-last-frame (start + end)
+  const i2v = !!imageName && !flf; // plain image-to-video (start only)
   const boundary = Math.max(1, Math.floor(v.steps / 2)); // expert switch at ~50%
   // LightX2V 4-step speed LoRAs (when installed): one per expert, between the
   // UNETLoader and ModelSamplingSD3. Each expert's sampler then feeds from its
@@ -643,7 +672,12 @@ function buildWan14B({ model, prompt, negative, comp, imageName, seed, v }) {
     wf["17"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["11", 0], lora_name: comp.loraLow, strength_model: 1.0 } };
   }
   let posRef, negRef, latentRef;
-  if (i2v) {
+  if (flf) {
+    wf["13"] = { class_type: "LoadImage", inputs: { image: imageName } };
+    wf["18"] = { class_type: "LoadImage", inputs: { image: endImageName } };
+    wf["7"] = { class_type: "WanFirstLastFrameToVideo", inputs: { positive: ["5", 0], negative: ["6", 0], vae: ["4", 0], width: v.width, height: v.height, length: v.length, batch_size: 1, start_image: ["13", 0], end_image: ["18", 0] } };
+    posRef = ["7", 0]; negRef = ["7", 1]; latentRef = ["7", 2];
+  } else if (i2v) {
     wf["13"] = { class_type: "LoadImage", inputs: { image: imageName } };
     wf["7"] = { class_type: "WanImageToVideo", inputs: { positive: ["5", 0], negative: ["6", 0], vae: ["4", 0], width: v.width, height: v.height, length: v.length, batch_size: 1, start_image: ["13", 0] } };
     posRef = ["7", 0]; negRef = ["7", 1]; latentRef = ["7", 2];
@@ -712,10 +746,15 @@ function buildHunyuanVideo({ model, prompt, negative, comp, seed, v }) {
 // samples it, splits it back (LTXVSeparateAVLatent), decodes video + audio
 // separately, then CreateVideo muxes the audio into the mp4. t2v uses
 // EmptyLTXVLatentVideo; i2v uses LTXVImgToVideo (also yields conditioning).
-function buildLtxVideo({ model, prompt, negative, comp, imageName, seed, v }) {
+// Three input modes: t2v (no image); i2v (one image → LTXVImgToVideo); and
+// keyframes (2+ images → each pinned at an evenly-spaced frame via a chain of
+// LTXVAddGuide, then LTXVCropGuides trims the guide frames after sampling). Only
+// the video-latent source + conditioning + decode-latent differ between modes;
+// the audio path and sampler are shared.
+function buildLtxVideo({ model, prompt, negative, comp, imageName, imageNames, seed, v }) {
   const neg = negative && negative.trim() ? negative : "worst quality, inconsistent motion, blurry, jittery, distorted";
-  const i2v = !!imageName;
-  const vidIdx = i2v ? 2 : 0; // video latent output index of node 7
+  const kf = Array.isArray(imageNames) && imageNames.length >= 2 ? imageNames : null;
+  const i2v = !kf && !!imageName;
   const wf = {
     "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: model } },
     "2": { class_type: "LTXAVTextEncoderLoader", inputs: { text_encoder: comp.encoder, ckpt_name: model, device: "default" } },
@@ -723,25 +762,43 @@ function buildLtxVideo({ model, prompt, negative, comp, imageName, seed, v }) {
     "4": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: neg } },
     "20": { class_type: "LTXVAudioVAELoader", inputs: { ckpt_name: model } },
     "21": { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: v.length, frame_rate: v.fps, batch_size: 1, audio_vae: ["20", 0] } },
-    "22": { class_type: "LTXVConcatAVLatent", inputs: { video_latent: ["7", vidIdx], audio_latent: ["21", 0] } },
-    "6": { class_type: "ModelSamplingLTXV", inputs: { model: ["1", 0], max_shift: 2.05, base_shift: 0.95, latent: ["22", 0] } },
-    "8": { class_type: "LTXVScheduler", inputs: { steps: v.steps, max_shift: 2.05, base_shift: 0.95, stretch: true, terminal: 0.1, latent: ["22", 0] } },
     "9": { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
-    "10": { class_type: "SamplerCustom", inputs: { model: ["6", 0], add_noise: true, noise_seed: seed, cfg: v.cfg, positive: ["5", 0], negative: ["5", 1], sampler: ["9", 0], sigmas: ["8", 0], latent_image: ["22", 0] } },
-    "23": { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["10", 0] } },
-    "11": { class_type: "VAEDecode", inputs: { samples: ["23", 0], vae: ["1", 2] } },
-    "24": { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["23", 1], audio_vae: ["20", 0] } },
-    "12": { class_type: "CreateVideo", inputs: { images: ["11", 0], fps: v.fps, audio: ["24", 0] } },
-    "13": { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } },
   };
-  if (i2v) {
+  let videoLatentRef, posRef, negRef, decodeLatentRef;
+  if (kf) {
+    wf["7"] = { class_type: "EmptyLTXVLatentVideo", inputs: { width: v.width, height: v.height, length: v.length, batch_size: 1 } };
+    wf["5"] = { class_type: "LTXVConditioning", inputs: { positive: ["3", 0], negative: ["4", 0], frame_rate: v.fps } };
+    let p = ["5", 0], n = ["5", 1], l = ["7", 0];
+    const N = kf.length;
+    kf.forEach((nm, idx) => {
+      const load = String(30 + idx), prep = String(50 + idx), guide = String(70 + idx);
+      const frameIdx = N === 1 ? 0 : Math.round((idx * (v.length - 1)) / (N - 1)); // 0 … length-1, evenly spaced
+      wf[load] = { class_type: "LoadImage", inputs: { image: nm } };
+      wf[prep] = { class_type: "LTXVPreprocess", inputs: { image: [load, 0], img_compression: 35 } };
+      wf[guide] = { class_type: "LTXVAddGuide", inputs: { positive: p, negative: n, vae: ["1", 2], latent: l, image: [prep, 0], frame_idx: frameIdx, strength: 1.0 } };
+      p = [guide, 0]; n = [guide, 1]; l = [guide, 2];
+    });
+    wf["25"] = { class_type: "LTXVCropGuides", inputs: { positive: p, negative: n, latent: ["23", 0] } };
+    videoLatentRef = l; posRef = p; negRef = n; decodeLatentRef = ["25", 2];
+  } else if (i2v) {
     wf["14"] = { class_type: "LoadImage", inputs: { image: imageName } };
     wf["7"] = { class_type: "LTXVImgToVideo", inputs: { positive: ["3", 0], negative: ["4", 0], vae: ["1", 2], image: ["14", 0], width: v.width, height: v.height, length: v.length, batch_size: 1, strength: 1.0 } };
     wf["5"] = { class_type: "LTXVConditioning", inputs: { positive: ["7", 0], negative: ["7", 1], frame_rate: v.fps } };
+    videoLatentRef = ["7", 2]; posRef = ["5", 0]; negRef = ["5", 1]; decodeLatentRef = ["23", 0];
   } else {
     wf["7"] = { class_type: "EmptyLTXVLatentVideo", inputs: { width: v.width, height: v.height, length: v.length, batch_size: 1 } };
     wf["5"] = { class_type: "LTXVConditioning", inputs: { positive: ["3", 0], negative: ["4", 0], frame_rate: v.fps } };
+    videoLatentRef = ["7", 0]; posRef = ["5", 0]; negRef = ["5", 1]; decodeLatentRef = ["23", 0];
   }
+  wf["22"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: videoLatentRef, audio_latent: ["21", 0] } };
+  wf["6"] = { class_type: "ModelSamplingLTXV", inputs: { model: ["1", 0], max_shift: 2.05, base_shift: 0.95, latent: ["22", 0] } };
+  wf["8"] = { class_type: "LTXVScheduler", inputs: { steps: v.steps, max_shift: 2.05, base_shift: 0.95, stretch: true, terminal: 0.1, latent: ["22", 0] } };
+  wf["10"] = { class_type: "SamplerCustom", inputs: { model: ["6", 0], add_noise: true, noise_seed: seed, cfg: v.cfg, positive: posRef, negative: negRef, sampler: ["9", 0], sigmas: ["8", 0], latent_image: ["22", 0] } };
+  wf["23"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["10", 0] } };
+  wf["11"] = { class_type: "VAEDecode", inputs: { samples: decodeLatentRef, vae: ["1", 2] } };
+  wf["24"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["23", 1], audio_vae: ["20", 0] } };
+  wf["12"] = { class_type: "CreateVideo", inputs: { images: ["11", 0], fps: v.fps, audio: ["24", 0] } };
+  wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
   return wf;
 }
 
@@ -851,7 +908,8 @@ async function generateComfyImage(req, res) {
   let clientGone = false; // set if the client disconnects before we respond
   try {
     const body = await readBody(req);
-    const { model, prompt, negative_prompt, options, images, timeout: reqTimeout, clientId: bodyClientId } = body;
+    const { prompt, negative_prompt, options, images, timeout: reqTimeout, clientId: bodyClientId } = body;
+    let model = body.model;
 
     if (!model || !prompt) {
       sendJson(res, 400, { error: "model and prompt are required" });
@@ -863,6 +921,14 @@ async function generateComfyImage(req, res) {
     const height = opts.height || 1024;
     const seed = opts.seed !== undefined ? opts.seed : Math.floor(Math.random() * 2147483647);
     const isImg2Img = Array.isArray(images) && images.length > 0;
+    // Merged WAN 2.2 14B entry → pick the real t2v (no image) or i2v (image) model.
+    if (model === WAN14B_AUTO) {
+      model = await resolveWan14bAuto(isImg2Img);
+      if (!model) {
+        sendJson(res, 400, { error: "未找到 WAN 2.2 14B 模型文件（需 wan2.2_{t2v,i2v}_high_noise_14B…）。" });
+        return;
+      }
+    }
     const isMultiImage = Array.isArray(images) && images.length >= 2;
     // Output size for img2img edits, keeping the input's aspect ratio. Only
     // OVERRIDE the builder's natural sizing when we must: a size is specified
@@ -911,6 +977,7 @@ async function generateComfyImage(req, res) {
     try {
       let workflow;
       let videoDims = null; // actual resolved output size (for the client's caption)
+      let imagesUsed = 0;   // how many input images the video path actually consumed
       if (videoType) {
         // Video. WAN 5B ti2v + 14B i2v do image→video; WAN 14B t2v / Hunyuan are
         // text→video only. The dedicated WAN 2.2 14B i2v model needs a ref image.
@@ -943,8 +1010,23 @@ async function generateComfyImage(req, res) {
         videoDims = { width: v.width, height: v.height };
         // A WAN 14B t2v checkpoint can't consume a start image — ignore any attach.
         const wantImage = isImg2Img && !(videoType === "wan" && /14b/i.test(model) && /t2v/i.test(model));
-        const imageName = wantImage ? await uploadImage(images[0], controller.signal) : null;
-        workflow = buildVideoWorkflow(videoType, { model, prompt, negative: negative_prompt || "", comp, imageName, seed, v });
+        // Multi-image video. WAN 2.2 14B i2v + 2 imgs → first-last-frame (FLF2V).
+        // LTX + 2+ imgs → arbitrary keyframes (each image pinned at an evenly-spaced
+        // frame via LTXVAddGuide). Everything else uses only the first image.
+        const isFLF = wantImage && videoType === "wan" && /14b/i.test(model) && /i2v/i.test(model) && images.length >= 2;
+        const isLtxKeyframes = wantImage && videoType === "ltx" && images.length >= 2;
+        const LTX_MAX_KEYFRAMES = 8;
+        let imageName = null, endImageName = null, imageNames = null;
+        if (wantImage && isLtxKeyframes) {
+          imageNames = [];
+          for (const im of images.slice(0, LTX_MAX_KEYFRAMES)) imageNames.push(await uploadImage(im, controller.signal));
+          imagesUsed = imageNames.length;
+        } else if (wantImage) {
+          imageName = await uploadImage(images[0], controller.signal);
+          imagesUsed = 1;
+          if (isFLF) { endImageName = await uploadImage(images[1], controller.signal); imagesUsed = 2; }
+        }
+        workflow = buildVideoWorkflow(videoType, { model, prompt, negative: negative_prompt || "", comp, imageName, endImageName, imageNames, seed, v });
       } else if (editType) {
         // Instruction-edit. Checkpoint-based models (ip2p) bundle CLIP+VAE;
         // HiDream-E1 needs the 4 HiDream encoders; the rest (Kontext/Qwen) pick
@@ -1057,7 +1139,7 @@ async function generateComfyImage(req, res) {
       const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
       if (videoType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
-        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);

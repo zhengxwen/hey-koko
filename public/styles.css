@@ -3260,7 +3260,10 @@ button.secondary:disabled {
   display: block;
   margin-top: 8px;
   max-width: 240px;
+  max-height: 240px;
   width: 100%;
+  height: auto;
+  object-fit: contain;
   border-radius: 8px;
   border: 1px solid rgba(127, 127, 127, 0.3);
 }
