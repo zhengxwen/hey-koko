@@ -197,6 +197,9 @@ dom.chatForm.addEventListener("submit", async (event) => {
   const image = state.selectedImage;
   const file = state.selectedFile;
   dom.messageInput.value = "";
+  // Sent — drop the saved draft so it doesn't reappear on tab switch.
+  const _activeTab = getActiveTab();
+  if (_activeTab) _activeTab.draft = "";
   clearSelectedImage();
   clearSelectedFile();
 
@@ -1895,6 +1898,11 @@ saveTabs();
 renderTabs();
 updateLockedState();
 renderChat();
+// Restore the active tab's saved input draft.
+{
+  const _initTab = getActiveTab();
+  if (_initTab && _initTab.draft) dom.messageInput.value = _initTab.draft;
+}
 loadModels().then(() => refreshModelMaxContext(dom.modelSelect.value)).catch(() => {});
 loadImageModels().catch(() => {});
 loadComfyModels().then(() => applyInputPlaceholder()).catch(() => {});

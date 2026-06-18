@@ -72,6 +72,8 @@ export function switchTab(tabId) {
     currentTab.personality = dom.personalitySelect.value;
     currentTab.persona = dom.persona.value;
     currentTab._scrollY = dom.messagesEl.scrollTop;
+    // Stash the in-progress input draft so it follows this tab.
+    currentTab.draft = dom.messageInput.value;
   }
   state.activeTabId = tabId;
   clearSelectedImage();
@@ -81,6 +83,8 @@ export function switchTab(tabId) {
     dom.personalitySelect.value = newTab.personality;
     dom.persona.value = newTab.persona || PERSONALITY_PRESETS[newTab.personality] || PERSONALITY_PRESETS.sweet;
   }
+  // Restore the new tab's saved draft (empty if it has none).
+  dom.messageInput.value = (newTab && newTab.draft) || "";
   saveTabs();
   renderTabs();
   updateLockedState();
