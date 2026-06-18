@@ -104,6 +104,17 @@ cat > "${CONTENTS}/Info.plist" << PLIST
 PLIST
 echo "  ✓ Info.plist created"
 
+# ─── Ad-hoc code sign ─────────────────────────────────────────────
+# Apple Silicon requires every bundle to be signed (at minimum ad-hoc), or
+# macOS rejects it with "damaged or incomplete". Copying files in after the
+# compile also invalidates the linker's implicit signature, so sign the whole
+# bundle LAST. "-" = ad-hoc (no Developer ID needed).
+codesign --force --deep --sign - "${APP_DIR}" >/dev/null 2>&1 \
+  && echo "  ✓ Ad-hoc signed" \
+  || echo "  ⚠ codesign failed — the app may not open until signed"
+# Strip the quarantine flag in case the bundle picked one up.
+xattr -dr com.apple.quarantine "${APP_DIR}" 2>/dev/null || true
+
 echo ""
 echo "✅ ${APP_NAME}.app built successfully!"
 echo "   Location: ${APP_DIR}"
