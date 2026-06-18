@@ -15,6 +15,12 @@ const VOICE_LABELS = {
   "kokoro:zm_yunjian":  { en: "Yunjian · Male",    zh: "云健 · 男声", "zh-Hant": "雲健 · 男聲" },
   "kokoro:zm_yunyang":  { en: "Yunyang · Male",    zh: "云扬 · 男声", "zh-Hant": "雲揚 · 男聲" },
   "kokoro:zm_yunxia":   { en: "Yunxia · Male",     zh: "云夏 · 男声", "zh-Hant": "雲夏 · 男聲" },
+  "kokoro:af_heart":    { en: "Heart · US Female",   zh: "Heart · 美式女声", "zh-Hant": "Heart · 美式女聲" },
+  "kokoro:af_bella":    { en: "Bella · US Female",   zh: "Bella · 美式女声", "zh-Hant": "Bella · 美式女聲" },
+  "kokoro:am_michael":  { en: "Michael · US Male",   zh: "Michael · 美式男声", "zh-Hant": "Michael · 美式男聲" },
+  "kokoro:am_fenrir":   { en: "Fenrir · US Male",    zh: "Fenrir · 美式男声", "zh-Hant": "Fenrir · 美式男聲" },
+  "kokoro:bf_emma":     { en: "Emma · UK Female",    zh: "Emma · 英式女声", "zh-Hant": "Emma · 英式女聲" },
+  "kokoro:bm_george":   { en: "George · UK Male",    zh: "George · 英式男声", "zh-Hant": "George · 英式男聲" },
   "cosyvoice:中文女":    { en: "Chinese · Female",   zh: "中文女",     "zh-Hant": "中文女" },
   "cosyvoice:中文男":    { en: "Chinese · Male",     zh: "中文男",     "zh-Hant": "中文男" },
   "cosyvoice:粤语女":    { en: "Cantonese · Female", zh: "粤语女",     "zh-Hant": "粵語女" },
@@ -174,6 +180,25 @@ export function stopSpeech() {
     state.activeSpeechButton.classList.remove("isSpeaking");
     state.activeSpeechButton = null;
   }
+}
+
+// While reading, ←/→ jump to the previous/next speakable message. Finds the
+// nearest sibling .message that has a Speak button and clicks it (its handler
+// reads that message); moves focus along so further arrow presses keep working.
+// Returns true if it navigated. No-op (returns false) at the ends.
+export function speakAdjacent(dir) {
+  if (!state.activeSpeechButton) return false;
+  const cur = state.activeSpeechButton.closest(".message");
+  if (!cur) return false;
+  let sib = dir < 0 ? cur.previousElementSibling : cur.nextElementSibling;
+  while (sib) {
+    if (sib.classList.contains("message")) {
+      const btn = sib.querySelector(".speakMessage");
+      if (btn) { btn.focus(); btn.click(); return true; }
+    }
+    sib = dir < 0 ? sib.previousElementSibling : sib.nextElementSibling;
+  }
+  return false;
 }
 
 // ── Natural sentence segmentation (zh + en) ───────────────────────────────

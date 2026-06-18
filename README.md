@@ -228,7 +228,7 @@ voices (male/female) selectable in the **Settings voice dropdown** or inline wit
 
 | Engine | Strength | Preset voices |
 |--------|----------|---------------|
-| **Kokoro** | light & fast | `kokoro:zf_xiaoxiao` (女) … `kokoro:zm_yunxi` (男) … |
+| **Kokoro** | light & fast | Chinese `kokoro:zf_xiaoxiao` (女) / `kokoro:zm_yunxi` (男); English `kokoro:af_heart` (US ♀) / `kokoro:bm_george` (UK ♂) … |
 | **CosyVoice** | higher Chinese quality | `cosyvoice:中文女`, `cosyvoice:中文男`, `cosyvoice:粤语女` |
 
 These need PyTorch/MLX wheels that don't yet exist for the newest Python, so
@@ -240,6 +240,12 @@ the right Python for you:
 # Kokoro (light & fast) — recommended
 uv venv --python 3.11 ~/venv/tts
 uv pip install --python ~/venv/tts/bin/python kokoro "misaki[zh]" numpy soundfile
+
+# English voices (af_*/am_* US, bf_*/bm_* UK) also need the spaCy English model
+# + espeak-ng (otherwise misaki tries to auto-download the model and fails):
+uv pip install --python ~/venv/tts/bin/python \
+  "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+brew install espeak-ng
 ```
 
 The server **auto-detects `~/venv/tts/bin/python`**, so you can just run

@@ -60,19 +60,23 @@ def write_wav(path, audio, sample_rate):
 
 
 # ── Kokoro ─────────────────────────────────────────────────────────────────
-_kokoro_pipeline = None
+# Kokoro picks language from the pipeline's lang_code, which matches the voice
+# id's first letter: 'z' = Mandarin (needs misaki[zh]), 'a' = American English,
+# 'b' = British English, etc. One pipeline is kept warm per language.
+_kokoro_pipelines = {}
 
 
 def kokoro_synth(text, voice, speed):
-    global _kokoro_pipeline
     import numpy as np
-    if _kokoro_pipeline is None:
+    lang = (voice or "z")[0]  # first char of the voice id = Kokoro lang code
+    pipe = _kokoro_pipelines.get(lang)
+    if pipe is None:
         from kokoro import KPipeline
-        # lang_code 'z' = Mandarin Chinese (needs misaki[zh] for g2p).
-        _kokoro_pipeline = KPipeline(lang_code="z")
-        log("kokoro pipeline loaded")
+        pipe = KPipeline(lang_code=lang)
+        _kokoro_pipelines[lang] = pipe
+        log(f"kokoro pipeline loaded (lang={lang})")
     chunks = []
-    for _, _, audio in _kokoro_pipeline(text, voice=voice, speed=float(speed)):
+    for _, _, audio in pipe(text, voice=voice, speed=float(speed)):
         arr = audio.detach().cpu().numpy() if hasattr(audio, "detach") else np.asarray(audio)
         chunks.append(arr.reshape(-1))
     if not chunks:

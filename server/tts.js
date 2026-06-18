@@ -65,7 +65,7 @@ async function synthToWav({ engine, voice, text, speed }) {
 // prefix tells the daemon which synthesizer to use. Labels are shown in the
 // settings dropdown and the /voice autocomplete is engine-agnostic.
 const VOICE_CATALOG = [
-  // Kokoro (light & fast) — Mandarin presets
+  // Kokoro (light & fast) — Mandarin presets (lang code 'z')
   { value: "kokoro:zf_xiaoxiao", engine: "kokoro", label: "小晓 · 女声 (Kokoro)", gender: "female" },
   { value: "kokoro:zf_xiaoyi", engine: "kokoro", label: "小艺 · 女声 (Kokoro)", gender: "female" },
   { value: "kokoro:zf_xiaobei", engine: "kokoro", label: "小贝 · 女声 (Kokoro)", gender: "female" },
@@ -74,6 +74,13 @@ const VOICE_CATALOG = [
   { value: "kokoro:zm_yunjian", engine: "kokoro", label: "云健 · 男声 (Kokoro)", gender: "male" },
   { value: "kokoro:zm_yunyang", engine: "kokoro", label: "云扬 · 男声 (Kokoro)", gender: "male" },
   { value: "kokoro:zm_yunxia", engine: "kokoro", label: "云夏 · 男声 (Kokoro)", gender: "male" },
+  // Kokoro English presets — American (lang 'a') + British (lang 'b')
+  { value: "kokoro:af_heart", engine: "kokoro", label: "Heart · US Female (Kokoro)", gender: "female" },
+  { value: "kokoro:af_bella", engine: "kokoro", label: "Bella · US Female (Kokoro)", gender: "female" },
+  { value: "kokoro:am_michael", engine: "kokoro", label: "Michael · US Male (Kokoro)", gender: "male" },
+  { value: "kokoro:am_fenrir", engine: "kokoro", label: "Fenrir · US Male (Kokoro)", gender: "male" },
+  { value: "kokoro:bf_emma", engine: "kokoro", label: "Emma · UK Female (Kokoro)", gender: "female" },
+  { value: "kokoro:bm_george", engine: "kokoro", label: "George · UK Male (Kokoro)", gender: "male" },
   // CosyVoice (higher Chinese quality) — built-in SFT speakers
   { value: "cosyvoice:中文女", engine: "cosyvoice", label: "中文女 (CosyVoice)", gender: "female" },
   { value: "cosyvoice:中文男", engine: "cosyvoice", label: "中文男 (CosyVoice)", gender: "male" },

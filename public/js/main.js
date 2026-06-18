@@ -5,7 +5,7 @@ import { readFileAsDataUrl, convertToJpeg, makePreview, escapeHtml } from './uti
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
 import { initAvatar } from './avatar.js';
-import { stopSpeech, populateVoiceList } from './speech.js';
+import { stopSpeech, populateVoiceList, speakAdjacent } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
@@ -160,8 +160,19 @@ dom.speechRateInput.addEventListener("input", () => {
 
 // ESC to stop speech
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && state.activeSpeechButton) {
+  if (!state.activeSpeechButton) return;
+  if (e.key === "Escape") {
     stopSpeech();
+    return;
+  }
+  // While reading, ←/→ read the previous/next message — only when focus is
+  // inside the bubble being read (so arrow keys elsewhere, e.g. the composer,
+  // are untouched).
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    const curMsg = state.activeSpeechButton.closest(".message");
+    if (!curMsg || !curMsg.contains(document.activeElement)) return;
+    e.preventDefault();
+    speakAdjacent(e.key === "ArrowLeft" ? -1 : 1);
   }
 });
 

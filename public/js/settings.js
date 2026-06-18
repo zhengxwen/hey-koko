@@ -73,6 +73,10 @@ function saveChatMessage(message) {
     stored.generatedVideos = message.generatedVideos;
     stored.videoMime = message.videoMime || "video/mp4";
   }
+  if (message.generatedAudio) {
+    stored.generatedAudio = message.generatedAudio;
+    stored.audioMime = message.audioMime || "audio/aac";
+  }
   if (message.isCompactSummary) stored.isCompactSummary = true;
   if (message.isFilePreview) stored.isFilePreview = true;
   if (message.translation) stored.translation = message.translation;
