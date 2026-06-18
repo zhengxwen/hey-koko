@@ -59,6 +59,7 @@ function saveChatMessage(message) {
   if (message.genMs) stored.genMs = message.genMs;
   stored.content = message.content;
   if (message.folded) stored.folded = true;
+  if (message.locked) stored.locked = true;
   if (message.previewImage) stored.previewImage = message.previewImage;
   if (message.previewImages) stored.previewImages = message.previewImages;
   if (message.images) stored.images = message.images;

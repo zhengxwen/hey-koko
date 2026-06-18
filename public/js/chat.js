@@ -41,9 +41,11 @@ function forkConversation(index) {
 }
 
 function deleteChatMessage(index) {
-  if (getActiveTab().locked) return;
+  const tab = getActiveTab();
+  if (tab.locked) return;
+  if (tab.messages[index]?.locked) return; // pinned bubble — can't delete
   stopSpeech();
-  getActiveTab().messages.splice(index, 1);
+  tab.messages.splice(index, 1);
   saveChat();
   renderChat();
 }
@@ -75,7 +77,8 @@ function resendChatMessage(index) {
   const message = tab.messages[index];
   if (!message || message.role !== "user") return;
 
-  if (tab.messages[index + 1]?.role === "assistant") {
+  // A locked reply is kept; the new reply is inserted before it (at index+1).
+  if (tab.messages[index + 1]?.role === "assistant" && !tab.messages[index + 1].locked) {
     tab.messages.splice(index + 1, 1);
   }
   saveChat();
@@ -85,8 +88,8 @@ function resendChatMessage(index) {
   const searchResend = message.content.match(/^\/search\s+([\s\S]+)/);
   if (searchResend) {
     // The results bubble (index+1) was already removed above; drop the answer too,
-    // then the command bubble, and re-run the search fresh.
-    if (tab.messages[index + 1]?.role === "assistant") tab.messages.splice(index + 1, 1);
+    // then the command bubble, and re-run the search fresh. Locked replies stay.
+    if (tab.messages[index + 1]?.role === "assistant" && !tab.messages[index + 1].locked) tab.messages.splice(index + 1, 1);
     tab.messages.splice(index, 1);
     saveChat();
     renderChat();
@@ -1820,7 +1823,8 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
                   renderChat();
                 }
               } else {
-              if (tab.messages[index + 1]?.role === "assistant") {
+              // A locked reply is kept; the new reply is inserted before it.
+              if (tab.messages[index + 1]?.role === "assistant" && !tab.messages[index + 1].locked) {
                 tab.messages.splice(index + 1, 1);
               }
               saveChat();
@@ -2001,6 +2005,32 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       }
     });
     item.appendChild(foldToggle);
+  }
+
+  // Per-message lock: a floating 🔒 at the bottom-right pins the bubble so it
+  // can't be deleted (its × is disabled) or replaced on resend.
+  if (Number.isInteger(index)) {
+    const lockBtn = document.createElement("button");
+    lockBtn.className = "messageLockToggle";
+    lockBtn.type = "button";
+    const applyLockUI = (locked) => {
+      lockBtn.textContent = locked ? "🔒" : "🔓";
+      lockBtn.title = locked ? t("btn_unlockBubble") : t("btn_lockBubble");
+      lockBtn.setAttribute("aria-label", lockBtn.title);
+      lockBtn.classList.toggle("isLocked", locked);
+      item.classList.toggle("bubbleLocked", locked);
+      const del = item.querySelector(".deleteMessage");
+      if (del) del.disabled = locked;
+    };
+    applyLockUI(!!(getActiveTab().messages[index]?.locked));
+    lockBtn.addEventListener("click", () => {
+      const m = getActiveTab().messages[index];
+      if (!m) return;
+      m.locked = !m.locked;
+      applyLockUI(m.locked);
+      saveChat();
+    });
+    item.appendChild(lockBtn);
   }
 
   return item;
