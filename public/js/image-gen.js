@@ -189,6 +189,47 @@ function imageNaturalSize(src) {
   });
 }
 
+// Capture a still frame from a video (data URL) as a JPEG data URL. Used as the
+// poster for generated videos and as the lightweight stand-in for the video in
+// exports/archives (the video itself is megabytes; the thumbnail is a few KB).
+// Resolves to null on any failure so callers can fall back gracefully.
+export function videoThumbnail(src, quality = 0.72) {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.preload = "auto";
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      video.removeAttribute("src");
+      try { video.load(); } catch {}
+      resolve(val);
+    };
+    const grab = () => {
+      const w = video.videoWidth, h = video.videoHeight;
+      if (!w || !h) return finish(null);
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(video, 0, 0, w, h);
+        finish(canvas.toDataURL("image/jpeg", quality));
+      } catch { finish(null); }
+    };
+    video.addEventListener("seeked", grab, { once: true });
+    video.addEventListener("loadeddata", () => {
+      // Seek slightly past the start so we don't grab a black lead-in frame.
+      try { video.currentTime = Math.min(0.1, (video.duration || 1) / 4 || 0.1); }
+      catch { grab(); }
+    }, { once: true });
+    video.addEventListener("error", () => finish(null), { once: true });
+    const timer = setTimeout(grab, 4000); // fallback if seeked never fires
+    video.src = src;
+  });
+}
+
 // Tell ComfyUI to actually STOP — aborting our fetch only stops us waiting; the
 // queued workflow keeps running on the GPU. /interrupt kills the running prompt
 // and clearing the queue drops anything still pending (e.g. a batch). comfyHost
@@ -426,11 +467,17 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     const videoContent = (promptWasEnhanced
       ? `**${t("msg_enhancedPrompt")}**\n> ${videoPrompt}\n\n${capNote}${doneLine}`
       : `${capNote}${doneLine}`);
+    const vmime = data.videoMime || "video/mp4";
+    // Grab a poster frame per video — shown before playback and used in place of
+    // the (heavy) video when the conversation is exported or archived.
+    const videoThumbs = await Promise.all(data.videos.map((v) =>
+      videoThumbnail(v.startsWith("data:") ? v : `data:${vmime};base64,${v}`)));
     const replyMsg = {
       role: "assistant",
       content: videoContent,
       generatedVideos: data.videos,
-      videoMime: data.videoMime || "video/mp4",
+      videoMime: vmime,
+      generatedVideoThumbnails: videoThumbs,
       imagePrompt: videoPrompt,
       timestamp: Date.now(),
       genMs: Date.now() - genStart,

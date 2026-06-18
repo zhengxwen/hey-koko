@@ -77,6 +77,8 @@ export function initArchive() {
       if (msg.images) m.images = msg.images;
       if (msg.generatedImages) m.generatedImages = msg.generatedImages;
       if (msg.generatedThumbnails) m.generatedThumbnails = msg.generatedThumbnails;
+      // Archive the video poster thumbnails, not the (heavy) videos themselves.
+      if (msg.generatedVideoThumbnails) m.generatedVideoThumbnails = msg.generatedVideoThumbnails.filter(Boolean);
       if (msg.isCompactSummary) m.isCompactSummary = true;
       if (msg.isFilePreview) m.isFilePreview = true;
       if (msg.translation) m.translation = msg.translation;
@@ -519,9 +521,11 @@ export function initArchive() {
           ? msg.generatedImages
           : msg.generatedThumbnails && msg.generatedThumbnails.length > 0
             ? msg.generatedThumbnails
-            : (msg.isFilePreview && msg.images?.length)
-              ? msg.images.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
-              : null;
+            : msg.generatedVideoThumbnails && msg.generatedVideoThumbnails.length > 0
+              ? msg.generatedVideoThumbnails.filter(Boolean)
+              : (msg.isFilePreview && msg.images?.length)
+                ? msg.images.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
+                : null;
         let genImageHtml = "";
         if (genImgs && genImgs.length > 0) {
           const items = genImgs.map(img => {

@@ -7,7 +7,7 @@ import { setAvatarState, showExpression, detectExpression } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.js';
-import { parseNoteCommand, parseImagineCommands, generateImage } from './image-gen.js';
+import { parseNoteCommand, parseImagineCommands, generateImage, videoThumbnail } from './image-gen.js';
 import { parseVoiceCommand, generateSpeech } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
@@ -1636,7 +1636,21 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   }
 }
 
-function renderMessage(role, content, previewImage, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMime, generatedAudio, audioMime) {
+// Generate poster thumbnails for a message's videos that predate the thumbnail
+// feature, then persist them. Runs once per message (guarded by a transient flag).
+async function backfillVideoThumbnails(message) {
+  if (message._thumbBackfilling) return;
+  message._thumbBackfilling = true;
+  const vmime = message.videoMime || "video/mp4";
+  const thumbs = await Promise.all(message.generatedVideos.map((v) =>
+    videoThumbnail(v.startsWith("data:") ? v : `data:${vmime};base64,${v}`)));
+  if (thumbs.some(Boolean)) {
+    message.generatedVideoThumbnails = thumbs;
+    saveChat();
+  }
+}
+
+function renderMessage(role, content, previewImage, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMime, generatedAudio, audioMime, generatedVideoThumbnails) {
   const item = document.createElement("div");
   item.className = `message ${role}`;
 
@@ -1991,8 +2005,11 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       video.loop = true;
       video.playsInline = true;
       // No autoplay — the user presses play. Don't force-mute so audio (LTX) plays
-      // when they do. preload metadata so the first frame shows as a poster.
+      // when they do. preload metadata so the first frame shows even without a poster.
       video.preload = "metadata";
+      // Use the captured thumbnail as the poster so a still shows before playback.
+      const vthumb = generatedVideoThumbnails && generatedVideoThumbnails[vi];
+      if (vthumb) video.poster = vthumb.startsWith("data:") ? vthumb : `data:image/jpeg;base64,${vthumb}`;
       video.src = vData.startsWith("data:") ? vData : `data:${vmime};base64,${vData}`;
       wrapper.appendChild(video);
       // Download button — an <a download> pointing at the (data) URL.
@@ -2121,7 +2138,12 @@ export function renderChat() {
       ? message.images.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
       : undefined);
     const previews = message.previewImages || (message.previewImage ? [message.previewImage] : undefined);
-    const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails, message.generatedVideos, message.videoMime, message.generatedAudio, message.audioMime);
+    const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails, message.generatedVideos, message.videoMime, message.generatedAudio, message.audioMime, message.generatedVideoThumbnails);
+    // Backfill posters for videos generated before thumbnails existed, so they
+    // also get a still for export/archive and a poster on next render.
+    if (message.generatedVideos?.length && !message.generatedVideoThumbnails?.length) {
+      backfillVideoThumbnails(message);
+    }
     // Insert thinking details block if present and setting enabled
     if (el && message.thinking) {
       const markdownBody = el.querySelector(".markdownBody");

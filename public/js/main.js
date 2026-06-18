@@ -910,6 +910,8 @@ function exportImages(m) {
   else if (m.previewImage) out.push(m.previewImage);
   if (m.generatedImages?.length) out.push(...m.generatedImages);
   else if (m.isFilePreview && m.images?.length) out.push(...m.images);
+  // Generated videos are represented by their poster thumbnails in exports.
+  if (m.generatedVideoThumbnails?.length) out.push(...m.generatedVideoThumbnails.filter(Boolean));
   return out.map(exportImgSrc).filter(Boolean);
 }
 
@@ -933,6 +935,8 @@ function exportJson(tab) {
   const messages = tab.messages.map((msg) => {
     const m = { ...msg };
     if (m.timestamp) m.timestamp = exportTimeStr(m.timestamp, true);
+    // Don't export the heavy video data — keep only the poster thumbnail.
+    if (m.generatedVideos) { delete m.generatedVideos; delete m.videoMime; }
     return m;
   });
   const data = JSON.stringify({ title: tab.title, userName: dom.userName.value, personality: tab.personality, persona: tab.persona, messages }, null, 2);

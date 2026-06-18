@@ -73,6 +73,9 @@ function saveChatMessage(message) {
     stored.generatedVideos = message.generatedVideos;
     stored.videoMime = message.videoMime || "video/mp4";
   }
+  if (message.generatedVideoThumbnails && message.generatedVideoThumbnails.length > 0) {
+    stored.generatedVideoThumbnails = message.generatedVideoThumbnails;
+  }
   if (message.generatedAudio) {
     stored.generatedAudio = message.generatedAudio;
     stored.audioMime = message.audioMime || "audio/aac";
