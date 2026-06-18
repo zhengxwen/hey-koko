@@ -15,7 +15,7 @@ Hey-Koko gives you a personal AI chat experience without sending a single byte t
 - **Local & Private** — All conversations stay on your device. No data leaves your machine.
 - **Customizable Personality** — Adjust the system prompt to make your companion warm, witty, calm, or analytical.
 - **File Understanding** — Upload PDFs, DOCX, PPTX, EML, images, and plain text directly into the chat.
-- **Image Generation** — Generate images using local Ollama image models.
+- **Image Generation** — Generate images with local Ollama image models, or connect a local [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server for advanced text-to-image, instruction-based editing, multi-image composition, and **video generation** (see [ComfyUI Backend](#comfyui-backend-advanced-image--video)).
 - **Web & YouTube** — Fetch and summarize web pages or YouTube videos with `/url`.
 - **Speech** — Text-to-speech output using macOS system voices.
 - **Rich Markdown** — LaTeX math (KaTeX), Mermaid diagrams, and syntax-highlighted code blocks.
@@ -63,6 +63,60 @@ GPL-3.0
    ```
    http://127.0.0.1:1314
    ```
+
+
+## ComfyUI Backend (Advanced Image & Video)
+
+In addition to Ollama image models, Hey-Koko can drive a local [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server for high-end text-to-image, instruction-based image editing, multi-image composition, and video generation — all from the same `/imagine` command. ComfyUI builds the workflow graphs automatically; you only pick a model.
+
+### Setup
+
+1. Install and launch ComfyUI, then download the model files you want into its `models/` folders (`checkpoints/`, `diffusion_models/`, `text_encoders/`, `vae/`, `loras/`).
+2. In Hey-Koko's **Settings → Model** tab, leave the **Ollama image model** dropdown empty (`Leave empty (use ComfyUI)`).
+3. Set the ComfyUI address: click the ✎ next to the ComfyUI URL to enter `host:port` manually, or use the **scan** button to auto-discover ComfyUI on your local network (probes `:8188`). Default is `127.0.0.1:8188`.
+4. Pick a model from the ComfyUI dropdown — it is grouped into **text-to-image**, **instruction edit** (needs a reference image), and **video**.
+
+Hey-Koko reads the model list live from ComfyUI's `/object_info` and auto-selects the required companion files (text encoders, VAEs), so it tells you exactly which file is missing if one isn't installed.
+
+### Capabilities
+
+| Mode | How to use | Models (auto-detected by filename) |
+|------|-----------|-----------------------------------|
+| **Text-to-image** | `/imagine <prompt>` | Flux, SDXL / Pony / Illustrious, SD3, HiDream-I1, Z-Image-Turbo |
+| **Image-to-image** | Attach an image + `/imagine <prompt>` | Any checkpoint (VAE-encode + partial denoise) |
+| **Instruction edit** | Attach an image + `/imagine <edit instruction>` | FLUX.1 Kontext, Qwen-Image-Edit, InstructPix2Pix, OmniGen2, HiDream-E1.1 |
+| **Multi-image composition** | Attach 2–3 images + `/imagine <how to combine>` | Qwen-Image-Edit-2509 Plus |
+| **Text-to-video** | `/imagine <prompt>` | WAN 2.2 (5B / 14B), Hunyuan Video, LTX-2.3 |
+| **Image-to-video** | Attach an image + `/imagine <prompt>` | WAN 2.2 (5B ti2v / 14B i2v), LTX-2.3 |
+
+Each model family is configured with sane sampling defaults out of the box (Flux guidance distillation, InstructPix2Pix dual-CFG, WAN's standard negative prompt, the LTX audio+video pipeline, etc.).
+
+- **WAN 2.2 14B** is a two-expert (high-noise + low-noise) model — Hey-Koko chains both experts automatically and collapses the pair into a single dropdown entry. If the **LightX2V 4-step LoRAs** are installed it auto-switches to the fast 4-step / cfg-1 path (~6–10× faster).
+- **LTX-2.3** generates synchronized **audio**, muxed into the output MP4.
+
+### `/imagine` Flags
+
+| Flag | Effect |
+|------|--------|
+| `--size WxH` | Explicit output size (e.g. `--size 832x480`); otherwise the model's preset is used. For image-to-video the aspect ratio is matched to the input image. |
+| `--square` / `--portrait` / `--landscape` / `--wide` / `--tall` | Aspect-ratio presets |
+| `--steps N` | Sampling steps |
+| `--seed N` | Fixed seed (reproducible) |
+| `--enhance` | Rewrite the prompt with an LLM first — image-oriented for images, motion/camera-oriented for video. The improved prompt is shown before generation. |
+| `--no <text>` | Negative prompt |
+| `4x <prompt>` | Batch (generate N images) |
+
+Sampler, scheduler, CFG, guidance, image-CFG, denoise, video length, and FPS can be overridden in the **⚙ Advanced generation params** popup (next to the ComfyUI model dropdown). `/imagine` flags take precedence over the popup, which takes precedence over the per-model defaults.
+
+### Live Progress & Preview
+
+While ComfyUI generates, Hey-Koko shows a **progress bar** and, when ComfyUI is launched with a preview method (`--preview-method auto`), **live preview frames** decoded during sampling. Progress streams over ComfyUI's WebSocket; Ollama image generation also shows a progress bar (step count) via its NDJSON stream.
+
+Generated videos are not auto-played (click to play, with audio) and each has a **download** button.
+
+### Configuration
+
+Set a non-default ComfyUI address with the `COMFY_URL` environment variable (see [Environment Variables](#environment-variables)).
 
 
 ## Supported File Types
@@ -143,6 +197,7 @@ OLLAMA_URL=http://127.0.0.1:11434 PORT=1314 node server.js
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
+| `COMFY_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
 | `PORT` | `1314` | Server port |
 | `WHISPER_MODEL` | auto-detect | Path to whisper.cpp model file |
 
@@ -151,6 +206,6 @@ OLLAMA_URL=http://127.0.0.1:11434 PORT=1314 node server.js
 
 - **Backend**: Node.js (zero dependencies, pure `http` module)
 - **Frontend**: Vanilla HTML/CSS/JS (no build step)
-- **AI Engine**: Ollama (local LLM inference)
+- **AI Engine**: Ollama (local LLM inference); optional ComfyUI (local image/video generation)
 - **CDN Libraries**: KaTeX, Mermaid, highlight.js, pdf.js, mammoth.js, JSZip
 
