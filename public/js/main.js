@@ -10,6 +10,7 @@ import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserName
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
 import { setDeps as imageGenSetDeps } from './image-gen.js';
+import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
 import { renderChat, sendMessage, setGenerating, regenerateReply, generateProactiveReply } from './chat.js';
 import { setDeps as urlFetchSetDeps } from './url-fetch.js';
@@ -25,6 +26,7 @@ import { loadReminders, getReminders, removeReminder, describeReminder, setRemin
 tabsSetRenderChat(renderChat);
 translateSetRenderChat(renderChat);
 imageGenSetDeps({ setGenerating, renderChat });
+voiceGenSetDeps({ setGenerating, renderChat });
 urlFetchSetDeps({ setGenerating, renderChat, regenerateReply });
 
 // Initialize mermaid
@@ -91,7 +93,7 @@ loadSavedSettings();
   const initialTab = getActiveTab();
   if (initialTab && initialTab.personality) {
     dom.personalitySelect.value = initialTab.personality;
-    dom.persona.value = initialTab.persona || PERSONALITY_PRESETS[initialTab.personality] || PERSONALITY_PRESETS.sweet;
+    dom.persona.value = initialTab.persona || getPersonalityPreset(initialTab.personality, getUILanguage()) || PERSONALITY_PRESETS.sweet;
   }
 }
 
@@ -112,7 +114,7 @@ dom.personalitySelect.addEventListener("change", () => {
   }
 });
 
-// Voice list
+// Voice list (unified: say + neural engines)
 populateVoiceList();
 
 // Panel tabs
@@ -130,6 +132,7 @@ document.querySelectorAll(".panelTab").forEach((tab) => {
 dom.uiLanguageSelect.addEventListener("change", () => {
   dom.promptLanguageSelect.value = dom.uiLanguageSelect.value;
   applyUILanguage();
+  populateVoiceList(); // re-localize voice optgroup + option labels
   renderChat();
   saveCurrentSettings();
 });

@@ -47,3 +47,4 @@ temp/
 
 # macOS Electron app build
 hey-koko.app/
+__pycache__/

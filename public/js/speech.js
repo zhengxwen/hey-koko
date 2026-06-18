@@ -1,6 +1,31 @@
 // Text-to-Speech functionality
 import { dom, state } from './state.js';
-import { t } from './i18n.js';
+import { t, getUILanguage } from './i18n.js';
+
+// Localized display labels for the neural-engine preset voices (the dropdown's
+// optgroup labels come from i18n keys; these are the per-voice option labels).
+// Keyed by the engine-prefixed value sent by the server (see tts.js VOICE_CATALOG)
+// — keep in sync when voices are added. Falls back to the server label if absent.
+const VOICE_LABELS = {
+  "kokoro:zf_xiaoxiao": { en: "Xiaoxiao · Female", zh: "小晓 · 女声", "zh-Hant": "小曉 · 女聲" },
+  "kokoro:zf_xiaoyi":   { en: "Xiaoyi · Female",   zh: "小艺 · 女声", "zh-Hant": "小藝 · 女聲" },
+  "kokoro:zf_xiaobei":  { en: "Xiaobei · Female",  zh: "小贝 · 女声", "zh-Hant": "小貝 · 女聲" },
+  "kokoro:zf_xiaoni":   { en: "Xiaoni · Female",   zh: "小妮 · 女声", "zh-Hant": "小妮 · 女聲" },
+  "kokoro:zm_yunxi":    { en: "Yunxi · Male",      zh: "云希 · 男声", "zh-Hant": "雲希 · 男聲" },
+  "kokoro:zm_yunjian":  { en: "Yunjian · Male",    zh: "云健 · 男声", "zh-Hant": "雲健 · 男聲" },
+  "kokoro:zm_yunyang":  { en: "Yunyang · Male",    zh: "云扬 · 男声", "zh-Hant": "雲揚 · 男聲" },
+  "kokoro:zm_yunxia":   { en: "Yunxia · Male",     zh: "云夏 · 男声", "zh-Hant": "雲夏 · 男聲" },
+  "cosyvoice:中文女":    { en: "Chinese · Female",   zh: "中文女",     "zh-Hant": "中文女" },
+  "cosyvoice:中文男":    { en: "Chinese · Male",     zh: "中文男",     "zh-Hant": "中文男" },
+  "cosyvoice:粤语女":    { en: "Cantonese · Female", zh: "粤语女",     "zh-Hant": "粵語女" },
+};
+
+function voiceOptionLabel(v) {
+  const m = VOICE_LABELS[v.value];
+  if (!m) return v.label || v.value; // server fallback for unknown voices
+  const lang = getUILanguage();
+  return m[lang] || m.en || v.label || v.value;
+}
 
 // LaTeX command (\name) → spoken Chinese. Matched as whole words, so prefixes
 // never collide (e.g. \left is not read as \le). Unlisted commands fall through
@@ -461,21 +486,55 @@ export async function speakMessage(content, button) {
   }
 }
 
+// One unified voice selector drives BOTH reading (朗读 button) and /voice
+// generation. Values are engine-prefixed: "say:<name>" (macOS, plays on the
+// server + reads aloud) or "kokoro:"/"cosyvoice:" (local neural, also
+// downloadable). The chosen engine determines how each feature synthesizes.
 export function populateVoiceList() {
-  fetch("/api/voices")
-    .then(r => r.json())
-    .then(data => {
-      const voices = data.voices || [];
-      dom.voiceSelect.length = 1;
-      const zhVoices = voices.filter(v => /^zh/i.test(v.lang));
-      zhVoices.forEach((voice) => {
+  Promise.all([
+    fetch("/api/voices").then(r => r.json()).catch(() => ({ voices: [] })),
+    fetch("/api/tts-voices").then(r => r.json()).catch(() => ({ voices: [] })),
+  ]).then(([sysData, ttsData]) => {
+    const prevValue = dom.voiceSelect.value; // preserve current pick on re-populate
+    dom.voiceSelect.length = 1; // keep the "auto" option
+
+    const sysVoices = (sysData.voices || []).filter(v => /^zh/i.test(v.lang));
+    if (sysVoices.length) {
+      const grp = document.createElement("optgroup");
+      grp.label = t("voice_group_system");
+      for (const v of sysVoices) {
         const opt = document.createElement("option");
-        opt.value = voice.name;
-        opt.textContent = `${voice.name} (${voice.lang})`;
-        dom.voiceSelect.appendChild(opt);
-      });
-      const saved = JSON.parse(localStorage.getItem("local-ai-companion-settings") || "{}");
-      if (saved.voiceName) dom.voiceSelect.value = saved.voiceName;
-    })
-    .catch(() => {});
+        opt.value = `say:${v.name}`;
+        opt.textContent = `${v.name} (${v.lang})`;
+        grp.appendChild(opt);
+      }
+      dom.voiceSelect.appendChild(grp);
+    }
+
+    // Neural voices, grouped by engine (kokoro / cosyvoice), with localized labels.
+    const ttsVoices = ttsData.voices || [];
+    const byEngine = {};
+    for (const v of ttsVoices) (byEngine[v.engine] = byEngine[v.engine] || []).push(v);
+    for (const engine of Object.keys(byEngine)) {
+      const grp = document.createElement("optgroup");
+      grp.label = engine === "kokoro" ? t("voice_group_kokoro")
+        : engine === "cosyvoice" ? t("voice_group_cosyvoice") : engine;
+      for (const v of byEngine[engine]) {
+        const opt = document.createElement("option");
+        opt.value = v.value;
+        opt.textContent = voiceOptionLabel(v);
+        grp.appendChild(opt);
+      }
+      dom.voiceSelect.appendChild(grp);
+    }
+
+    // Restore the current pick (re-populate) or the saved one; migrate old bare
+    // say names → "say:" prefix.
+    const saved = JSON.parse(localStorage.getItem("local-ai-companion-settings") || "{}");
+    let want = prevValue || saved.voiceName || "";
+    if (want && !want.includes(":")) want = `say:${want}`;
+    if (want && dom.voiceSelect.querySelector(`option[value="${CSS.escape(want)}"]`)) {
+      dom.voiceSelect.value = want;
+    }
+  }).catch(() => {});
 }

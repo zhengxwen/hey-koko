@@ -3278,6 +3278,41 @@ button.secondary:disabled {
   display: none;
 }
 
+/* /voice — generated speech player + download */
+.audioWrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.generatedAudio {
+  max-width: min(360px, 100%);
+  height: 36px;
+}
+
+.audioDownloadBtn {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 15px;
+  text-decoration: none;
+  transition: background 0.15s ease;
+}
+
+.audioDownloadBtn:hover {
+  background: var(--accent);
+}
+
+.message.isFolded > .audioWrapper {
+  display: none;
+}
+
 .message.imageGen .markdownBody {
   color: var(--muted);
 }

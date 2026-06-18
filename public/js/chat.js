@@ -8,6 +8,7 @@ import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.js';
 import { parseNoteCommand, parseImagineCommands, generateImage } from './image-gen.js';
+import { parseVoiceCommand, generateSpeech } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
 import { t, getPrompt, getPromptLanguage } from './i18n.js';
@@ -1526,6 +1527,22 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     return;
   }
 
+  const voiceCmd = content ? parseVoiceCommand(content) : null;
+  if (voiceCmd) {
+    const userMessage = { role: "user", content, timestamp: Date.now() };
+    tab.messages.push(userMessage);
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+    if (voiceCmd.error) {
+      tab.messages.push({ role: "assistant", content: t("msg_commandError", { error: voiceCmd.error }), timestamp: Date.now() });
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+    } else {
+      generateSpeech(voiceCmd, tabId, -1);
+    }
+    return;
+  }
+
   // Handle document file upload
   if (file) {
     // User bubble was already shown before parsing; skip creating another one
@@ -1607,7 +1624,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   }
 }
 
-function renderMessage(role, content, previewImage, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMime) {
+function renderMessage(role, content, previewImage, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMime, generatedAudio, audioMime) {
   const item = document.createElement("div");
   item.className = `message ${role}`;
 
@@ -1971,6 +1988,30 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
     if (vgrid.children.length) item.appendChild(vgrid);
   }
 
+  // AI-generated speech (/voice command) — base64 wav as <audio> + download.
+  if (generatedAudio && generatedAudio.length > 100) {
+    const amime = audioMime || "audio/wav";
+    const aext = amime.includes("aac") ? "aac" : amime.includes("mpeg") ? "mp3" : amime.includes("ogg") ? "ogg" : "wav";
+    const src = generatedAudio.startsWith("data:") ? generatedAudio : `data:${amime};base64,${generatedAudio}`;
+    const wrapper = document.createElement("div");
+    wrapper.className = "audioWrapper";
+    const audio = document.createElement("audio");
+    audio.className = "generatedAudio";
+    audio.controls = true;
+    audio.preload = "metadata";
+    audio.src = src;
+    wrapper.appendChild(audio);
+    const dl = document.createElement("a");
+    dl.className = "audioDownloadBtn";
+    dl.href = src;
+    dl.download = `heykoko_voice.${aext}`;
+    dl.title = t("btn_downloadAudio");
+    dl.setAttribute("aria-label", t("btn_downloadAudio"));
+    dl.textContent = "⬇";
+    wrapper.appendChild(dl);
+    item.appendChild(wrapper);
+  }
+
   dom.messagesEl.appendChild(item);
   dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
 
@@ -2059,7 +2100,7 @@ export function renderChat() {
       ? message.images.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
       : undefined);
     const previews = message.previewImages || (message.previewImage ? [message.previewImage] : undefined);
-    const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails, message.generatedVideos, message.videoMime);
+    const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails, message.generatedVideos, message.videoMime, message.generatedAudio, message.audioMime);
     // Insert thinking details block if present and setting enabled
     if (el && message.thinking) {
       const markdownBody = el.querySelector(".markdownBody");

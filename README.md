@@ -219,6 +219,50 @@ curl -L -o ~/.local/share/whisper-cpp/ggml-medium.bin \
 ```
 
 
+### Local text-to-speech (`/voice` command)
+
+The `/voice <text>` command synthesizes a **downloadable audio file** with a
+local open-source engine. Two engines are supported, each exposing fixed preset
+voices (male/female) selectable in the **Settings voice dropdown** or inline with
+`--use`/`-u`:
+
+| Engine | Strength | Preset voices |
+|--------|----------|---------------|
+| **Kokoro** | light & fast | `kokoro:zf_xiaoxiao` (女) … `kokoro:zm_yunxi` (男) … |
+| **CosyVoice** | higher Chinese quality | `cosyvoice:中文女`, `cosyvoice:中文男`, `cosyvoice:粤语女` |
+
+These need PyTorch/MLX wheels that don't yet exist for the newest Python, so
+install them in a **dedicated venv (Python 3.10–3.11)** and point `TTS_PYTHON`
+at it:
+
+```bash
+python3.11 -m venv ~/.hey-koko-tts
+source ~/.hey-koko-tts/bin/activate
+
+# Kokoro (light): also pulls misaki[zh] for Mandarin g2p
+pip install kokoro "misaki[zh]" numpy soundfile
+
+# CosyVoice (optional, higher quality) — clone + download the SFT model
+pip install modelscope
+python -c "from modelscope import snapshot_download; \
+  snapshot_download('iic/CosyVoice-300M-SFT', local_dir='pretrained_models/CosyVoice-300M-SFT')"
+# plus the CosyVoice package itself, see https://github.com/FunAudioLLM/CosyVoice
+```
+
+Then launch the server with `TTS_PYTHON` set:
+
+```bash
+TTS_PYTHON=~/.hey-koko-tts/bin/python node server.js
+```
+
+Engines that fail to import are simply hidden from the dropdown — if neither is
+installed, the setting shows *"No local TTS detected"* and `/voice` reports it.
+Usage: `/voice 你好世界`, `/voice --use cosyvoice:中文男 --speed 1.1 早上好` (`-u`/`-s` short forms).
+
+Examples:
+- `/voice 今天天气不错` → uses the default voice from settings
+- `/voice -u kokoro:zm_yunxi 大家好` → specific Kokoro male voice
+
 ## Environment Variables
 
 ```bash
@@ -231,6 +275,8 @@ OLLAMA_URL=http://127.0.0.1:11434 PORT=1314 node server.js
 | `COMFY_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
 | `PORT` | `1314` | Server port |
 | `WHISPER_MODEL` | auto-detect | Path to whisper.cpp model file |
+| `TTS_PYTHON` | `python3` | Python (venv) with kokoro/cosyvoice for `/voice` |
+| `COSYVOICE_MODEL_DIR` | `pretrained_models/CosyVoice-300M-SFT` | CosyVoice SFT model path |
 
 
 ## Tech Stack

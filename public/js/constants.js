@@ -58,6 +58,7 @@ export const COMMANDS = [
   { name: "/search", desc: "DuckDuckGo联网搜索 · --deep[=N]/--read 读网页 · --n N 数量 · --day/--week/--month/--year 时间" },
   { name: "/title", desc: "修改标签页标题，[tags] 添加标签" },
   { name: "/url", desc: "解析网页/YouTube，可加prompt：/url [prompt] https://..." },
+  { name: "/voice", desc: "文字转语音，生成可下载的音频 · --use/-u 引擎:音色 · --speed/-s 0.5~2 语速" },
 ];
 
 // Avatar SVG styles

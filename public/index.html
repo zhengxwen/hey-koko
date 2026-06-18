@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -56,43 +56,43 @@
         </div>
 
         <div class="panelTabs" role="tablist">
-          <button class="panelTab isActive" data-panel-tab="basic" role="tab" aria-selected="true">基本设定</button>
-          <button class="panelTab" data-panel-tab="more" role="tab" aria-selected="false">模型设定</button>
-          <button class="panelTab" data-panel-tab="extra" role="tab" aria-selected="false">更多选项</button>
+          <button class="panelTab isActive" data-panel-tab="basic" role="tab" aria-selected="true">Basic</button>
+          <button class="panelTab" data-panel-tab="more" role="tab" aria-selected="false">Model</button>
+          <button class="panelTab" data-panel-tab="extra" role="tab" aria-selected="false">More</button>
         </div>
 
         <div class="panelTabContent isActive" data-panel-content="basic">
           <label>
-            <span style="display:flex;justify-content:space-between;align-items:baseline"><span id="callNameLabel">称呼你</span><small id="callNameHint">(多个用空格或逗号分隔)</small></span>
+            <span style="display:flex;justify-content:space-between;align-items:baseline"><span id="callNameLabel">Call you</span><small id="callNameHint">(separate multiple with spaces or commas)</small></span>
             <div class="userNameWrapper">
-              <input id="userName" value="" placeholder="如：亲爱的, 宝贝, 小傻瓜" autocomplete="off" />
-              <button type="button" id="userNameDropdownBtn" class="userNameDropdownBtn" title="历史记录">▾</button>
+              <input id="userName" value="" placeholder="e.g. dear, honey, sweetie" autocomplete="off" />
+              <button type="button" id="userNameDropdownBtn" class="userNameDropdownBtn" title="History">▾</button>
               <div id="userNameDropdown" class="userNameDropdown" hidden></div>
             </div>
           </label>
 
           <label id="personalityLabel">
-            <span id="personalityLabelText">性格类型</span>
+            <span id="personalityLabelText">Personality</span>
             <select id="personalitySelect">
-              <option value="sweet">温柔甜妹</option>
-              <option value="genki">元气少女</option>
-              <option value="yujie">御姐</option>
-              <option value="temp">自定义预设</option>
+              <option value="sweet">Sweet</option>
+              <option value="genki">Energetic</option>
+              <option value="yujie">Mature</option>
+              <option value="temp">Custom preset</option>
             </select>
           </label>
 
           <label id="personaLabel">
-            <span id="personaLabelText">她的性格</span>
-            <textarea id="persona" rows="8">你叫 Bella，是用户的本地 AI 伴侣。你温柔、聪明、有一点俏皮，但不会假装自己是真人。你用自然的中文聊天，记得关心用户的心情，主动延续话题。你的回复简洁、有温度，不说教，不机械，加油打气。</textarea>
+            <span id="personaLabelText">Her personality</span>
+            <textarea id="persona" rows="8">Your name is Bella, the user's local AI companion. You are gentle, smart, and a little playful, but you never pretend to be human. You chat naturally in English, care about the user's mood, and actively continue conversations. Your replies are concise, warm, encouraging — never preachy or robotic.</textarea>
           </label>
 
           <div class="actions">
-            <button id="saveSettings" type="button">保存设定</button>
-            <button id="clearChat" type="button" class="secondary">清空当前聊天</button>
+            <button id="saveSettings" type="button">Save</button>
+            <button id="clearChat" type="button" class="secondary">Clear current chat</button>
           </div>
           <div class="actions">
             <div class="exportWrapper">
-              <button id="exportChat" type="button" class="secondary">导出对话</button>
+              <button id="exportChat" type="button" class="secondary">Export</button>
               <div id="exportMenu" class="exportMenu" hidden>
                 <button id="exportMd" type="button" data-fmt="md">Markdown</button>
                 <button id="exportPdf" type="button" data-fmt="pdf">PDF</button>
@@ -101,25 +101,25 @@
             </div>
             <label class="importButton secondary">
               <input id="importChat" type="file" accept=".json" multiple />
-              导入对话
+              Import
             </label>
           </div>
           <div class="actions">
-            <button id="archiveChat" type="button" class="secondary">存档</button>
-            <button id="retrieveChat" type="button" class="secondary">档案浏览</button>
+            <button id="archiveChat" type="button" class="secondary">Archive</button>
+            <button id="retrieveChat" type="button" class="secondary">Browse archives</button>
           </div>
         </div>
 
         <div class="panelTabContent" data-panel-content="more">
           <div class="modelGroup">
             <label id="embedModelLabel">
-              <span id="embedModelLabelText">Embedding 模型（归档语义搜索）</span>
+              <span id="embedModelLabelText">Embedding model (archive semantic search)</span>
               <select id="embedModelSelect">
-                <option value="">未检测到 embedding 模型</option>
+                <option value="">No embedding model detected</option>
               </select>
             </label>
             <label id="modelLabel">
-              <span id="modelLabelText">LLM模型</span>
+              <span id="modelLabelText">LLM model</span>
               <select id="modelSelect">
                 <option value="llama3.1:8b">llama3.1:8b</option>
                 <option value="qwen2.5:7b">qwen2.5:7b</option>
@@ -127,10 +127,10 @@
               </select>
             </label>
           </div>
-          <div class="urlRow"><button id="editLlmUrl" type="button" class="urlEditBtn" title="编辑地址">✎</button><span id="llmUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
+          <div class="urlRow"><button id="editLlmUrl" type="button" class="urlEditBtn" title="Edit address">✎</button><span id="llmUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
 
           <label class="numCtxLabel">
-            <span id="numCtxLabelText">上下文长度</span>
+            <span id="numCtxLabelText">Context window</span>
             <select id="numCtxSelect">
               <option value="4096">4096</option>
               <option value="8192">8192</option>
@@ -140,103 +140,103 @@
           </label>
 
           <label id="imageModelLabel">
-            <span id="imageModelLabelText">图片模型</span>
+            <span id="imageModelLabelText">Image model</span>
             <select id="imageModelSelect">
-              <option value="">未检测到图片模型</option>
+              <option value="">No image model detected</option>
             </select>
           </label>
-          <div class="urlRow"><button id="editImageUrl" type="button" class="urlEditBtn" title="编辑地址">✎</button><span id="imageUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
+          <div class="urlRow"><button id="editImageUrl" type="button" class="urlEditBtn" title="Edit address">✎</button><span id="imageUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
 
           <div class="hintRow">
-            <button id="scanOllama" type="button" class="secondary scanBtn" title="Scan local network for Ollama instances">扫描</button>
-            <p class="hint">需要先运行 Ollama</p>
+            <button id="scanOllama" type="button" class="secondary scanBtn" title="Scan local network for Ollama instances">Scan</button>
+            <p class="hint">Run Ollama first</p>
           </div>
 
           <div class="comfySection">
             <div class="comfyModelRow">
               <label id="comfyModelLabel">
-                <span id="comfyModelLabelText">ComfyUI 模型</span>
+                <span id="comfyModelLabelText">ComfyUI model</span>
                 <select id="comfyModelSelect">
-                  <option value="">未检测到 ComfyUI 模型</option>
+                  <option value="">No ComfyUI model detected</option>
                 </select>
               </label>
-              <button id="comfyParamsBtn" type="button" class="secondary comfyParamsBtn" title="高级生成参数">⚙</button>
+              <button id="comfyParamsBtn" type="button" class="secondary comfyParamsBtn" title="Advanced generation parameters">⚙</button>
             </div>
-            <div class="urlRow"><button id="editComfyUrl" type="button" class="urlEditBtn" title="编辑地址">✎</button><span id="comfyUrlDisplay" class="urlDisplay">127.0.0.1:8188</span></div>
+            <div class="urlRow"><button id="editComfyUrl" type="button" class="urlEditBtn" title="Edit address">✎</button><span id="comfyUrlDisplay" class="urlDisplay">127.0.0.1:8188</span></div>
             <div class="hintRow">
-              <button id="scanComfy" type="button" class="secondary scanBtn" title="Scan local network for ComfyUI instances">扫描</button>
-              <p class="hint" id="comfyHint">需要先运行 ComfyUI（图片模型留空时使用）</p>
+              <button id="scanComfy" type="button" class="secondary scanBtn" title="Scan local network for ComfyUI instances">Scan</button>
+              <p class="hint" id="comfyHint">Run ComfyUI first (used when the image model is empty)</p>
             </div>
-            <p class="hint comfyMultiHint" id="comfyMultiHint" hidden>✨ 该模型支持多图合成 — 可附 2-3 张参考图</p>
+            <p class="hint comfyMultiHint" id="comfyMultiHint" hidden>✨ This model supports multi-image composition — attach 2-3 reference images</p>
           </div>
 
           <div class="imageGenOptions" id="imageGenOptions">
             <label title="/imagine [Nx] [options] prompt&#10;&#10;Parameters:&#10;  Nx — batch N images (e.g. 4x), max 8&#10;  --enhance / -e — AI enhance prompt&#10;  --size WxH or preset — custom size&#10;     presets: 480p, 480p-portrait, 720p, 720p-portrait, 1080p, 1080p-portrait&#10;  --steps N — steps (1~100)&#10;  --seed N — seed (0~2147483647)&#10;  --no text — negative prompt">
-              <span id="imageSizeLabelText">图片默认尺寸</span>
+              <span id="imageSizeLabelText">Default Image Size</span>
               <select id="defaultImageSize">
-                <option value="auto">Auto (自动)</option>
-                <option value="512x512">512×512 (小图)</option>
-                <option value="1024x1024">1024×1024 (大图)</option>
-                <option value="768x1152">768×1152 (竖版)</option>
-                <option value="1152x768">1152×768 (横版)</option>
-                <option value="1344x768">1344×768 (宽屏)</option>
-                <option value="768x1344">768×1344 (长图)</option>
-                <option value="854x480">854×480 (480p 横版)</option>
-                <option value="480x854">480×854 (480p 竖版)</option>
-                <option value="1280x720">1280×720 (720p 横版)</option>
-                <option value="720x1280">720×1280 (720p 竖版)</option>
-                <option value="1920x1080">1920×1080 (1080p 横版)</option>
-                <option value="1080x1920">1080×1920 (1080p 竖版)</option>
+                <option value="auto">Auto</option>
+                <option value="512x512">512×512 (Small)</option>
+                <option value="1024x1024">1024×1024 (Large)</option>
+                <option value="768x1152">768×1152 (Portrait)</option>
+                <option value="1152x768">1152×768 (Landscape)</option>
+                <option value="1344x768">1344×768 (Wide)</option>
+                <option value="768x1344">768×1344 (Tall)</option>
+                <option value="854x480">854×480 (480p Landscape)</option>
+                <option value="480x854">480×854 (480p Portrait)</option>
+                <option value="1280x720">1280×720 (720p Landscape)</option>
+                <option value="720x1280">720×1280 (720p Portrait)</option>
+                <option value="1920x1080">1920×1080 (1080p Landscape)</option>
+                <option value="1080x1920">1080×1920 (1080p Portrait)</option>
               </select>
             </label>
             <label class="voiceRateLabel">
-              <span class="rateLabelText"><span id="timeoutLabelText">超时</span> <span id="imageTimeoutValue">120</span><span id="timeoutUnitText">秒</span></span>
+              <span class="rateLabelText"><span id="timeoutLabelText">Timeout</span> <span id="imageTimeoutValue">120</span><span id="timeoutUnitText">s</span></span>
               <input id="imageTimeout" type="range" min="60" max="600" step="30" value="120" />
             </label>
           </div>
 
           <label>
-            <span id="voiceLabelText">语音朗读</span>
+            <span id="voiceLabelText">Voice / read aloud</span>
             <select id="voiceSelect">
-              <option value="">自动选择中文语音</option>
+              <option value="">Auto-select voice</option>
             </select>
           </label>
 
           <div class="voiceRow">
             <label class="voiceRateLabel">
-              <span class="rateLabelText"><span id="speechRateLabelText">语速</span> <span id="speechRateValue">1</span></span>
+              <span class="rateLabelText"><span id="speechRateLabelText">Speed</span> <span id="speechRateValue">1</span></span>
               <input id="speechRate" type="range" min="0.75" max="1.25" step="0.05" value="1" />
             </label>
             <label class="checkboxLabel">
               <input id="autoSpeak" type="checkbox" />
-              <span id="autoSpeakLabel">自动朗读</span>
+              <span id="autoSpeakLabel">Auto speak</span>
             </label>
           </div>
         </div>
 
         <div class="panelTabContent" data-panel-content="extra">
           <div class="themeSetting">
-            <span class="themeSettingLabel" id="appearanceLabel">外观模式</span>
+            <span class="themeSettingLabel" id="appearanceLabel">Appearance</span>
             <div class="modeToggle" id="modeToggle">
-              <button type="button" class="modeToggleBtn isActive" data-mode="system">跟随系统</button>
-              <button type="button" class="modeToggleBtn" data-mode="light">浅色</button>
-              <button type="button" class="modeToggleBtn" data-mode="dark">深色</button>
+              <button type="button" class="modeToggleBtn isActive" data-mode="system">System</button>
+              <button type="button" class="modeToggleBtn" data-mode="light">Light</button>
+              <button type="button" class="modeToggleBtn" data-mode="dark">Dark</button>
             </div>
-            <span class="themeSettingLabel" id="themeLabel">主题配色</span>
+            <span class="themeSettingLabel" id="themeLabel">Theme Color</span>
             <div class="themeColorPicker" id="themeColorPicker">
-              <div class="themeColorDot isActive" data-theme="teal" style="background:#1f7a73" title="清新自然"></div>
-              <div class="themeColorDot" data-theme="sakura" style="background:#d94f8a" title="樱花甜美"></div>
-              <div class="themeColorDot" data-theme="ocean" style="background:#2563eb" title="深海冷静"></div>
-              <div class="themeColorDot" data-theme="violet" style="background:#7c3aed" title="薰衣草梦幻"></div>
-              <div class="themeColorDot" data-theme="amber" style="background:#d97706" title="琥珀温暖"></div>
-              <div class="themeColorDot" data-theme="mint" style="background:#16a34a" title="青草绿"></div>
-              <div class="themeColorDot" data-theme="slate" style="background:#475569" title="石墨"></div>
+              <div class="themeColorDot isActive" data-theme="teal" style="background:#1f7a73" title="Fresh Natural"></div>
+              <div class="themeColorDot" data-theme="sakura" style="background:#d94f8a" title="Cherry Blossom"></div>
+              <div class="themeColorDot" data-theme="ocean" style="background:#2563eb" title="Deep Ocean"></div>
+              <div class="themeColorDot" data-theme="violet" style="background:#7c3aed" title="Lavender Dream"></div>
+              <div class="themeColorDot" data-theme="amber" style="background:#d97706" title="Warm Amber"></div>
+              <div class="themeColorDot" data-theme="mint" style="background:#16a34a" title="Mint Green"></div>
+              <div class="themeColorDot" data-theme="slate" style="background:#475569" title="Graphite"></div>
             </div>
           </div>
 
           <div class="languageSetting">
             <label>
-              <span id="uiLanguageLabel">UI语言</span>
+              <span id="uiLanguageLabel">UI Language</span>
               <select id="uiLanguageSelect">
                 <option value="en">English</option>
                 <option value="zh">简体中文</option>
@@ -263,39 +263,39 @@
           <div class="thinkingSetting">
             <label>
               <input type="checkbox" id="toolsToggle" checked>
-              <span id="toolsLabel">工具调用（联网搜索/记忆/时间/计算）</span>
+              <span id="toolsLabel">Tool use (search / memory / reminders / time / calc)</span>
             </label>
-            <p class="hint" id="toolsHint">让 AI 自己决定何时联网、翻记忆等。回复非流式，建议用工具能力强的模型。</p>
+            <p class="hint" id="toolsHint">Let the AI decide when to search the web, recall memory, etc. Replies are non-streamed; use a tool-capable model.</p>
           </div>
 
           <hr class="settingDivider" />
 
           <div id="memoryLabel" class="memorySetting">
             <div class="memoryHeader">
-              <span id="memoryLabelText">长期记忆</span>
-              <button id="memoryExtractBtn" type="button" class="secondary memoryExtractBtn" title="让模型从当前对话抽取要点存入记忆">从当前对话抽取</button>
+              <span id="memoryLabelText">Long-term memory</span>
+              <button id="memoryExtractBtn" type="button" class="secondary memoryExtractBtn" title="Let the model extract key facts from the current chat into memory">Extract from chat</button>
             </div>
             <div id="memoryList" class="memoryList"></div>
             <div class="memoryAddRow">
-              <input id="memoryInput" type="text" placeholder="添加一条要记住的事…" autocomplete="off" />
-              <button id="memoryAddBtn" type="button" class="secondary">添加</button>
+              <input id="memoryInput" type="text" placeholder="Add something to remember…" autocomplete="off" />
+              <button id="memoryAddBtn" type="button" class="secondary">Add</button>
             </div>
           </div>
 
           <hr class="settingDivider" />
 
           <div id="proactiveLabel" class="proactiveSetting">
-            <span id="proactiveLabelText">主动消息</span>
+            <span id="proactiveLabelText">Proactive messages</span>
             <label class="proactiveRow">
               <input type="checkbox" id="dailyGreetingToggle" />
-              <span id="dailyGreetingLabelText">每日问候</span>
+              <span id="dailyGreetingLabelText">Daily greeting</span>
               <input type="time" id="dailyGreetingTime" value="09:00" />
             </label>
             <label class="proactiveRow">
               <input type="checkbox" id="idleNudgeToggle" />
-              <span id="idleNudgeLabelText">闲置轻推</span>
+              <span id="idleNudgeLabelText">Idle nudge</span>
               <input type="number" id="idleNudgeMinutes" min="5" max="240" step="5" value="30" />
-              <span id="idleNudgeUnitText">分钟后</span>
+              <span id="idleNudgeUnitText">min later</span>
             </label>
             <div id="reminderList" class="reminderList"></div>
           </div>
@@ -303,8 +303,8 @@
       </aside>
 
       <section class="chatArea">
-        <div class="tabBar" aria-label="聊天标签页">
-          <button id="addTab" type="button" class="addTab" aria-label="新建聊天">+</button>
+        <div class="tabBar" aria-label="Chat tabs">
+          <button id="addTab" type="button" class="addTab" aria-label="New chat">+</button>
           <div id="chatTabs" class="chatTabs" role="tablist"></div>
         </div>
         <div id="messages" class="messages" aria-live="polite"></div>
@@ -312,14 +312,14 @@
         <!-- Archive Workspace Overlay -->
         <div id="archiveOverlay" class="archiveOverlay">
           <div class="archiveHeader">
-            <button id="archiveCloseBtn" type="button" class="archiveBackBtn" aria-label="返回">←</button>
-            <h2 class="archiveTitle">对话存档</h2>
+            <button id="archiveCloseBtn" type="button" class="archiveBackBtn" aria-label="Back">←</button>
+            <h2 class="archiveTitle">Chat Archives</h2>
             <div class="archiveToolbar">
-              <input id="archiveSearch" type="text" class="archiveSearchInput" placeholder="搜索对话内容..." />
-              <button id="archiveSemanticBtn" type="button" class="secondary archiveSortBtn" title="语义搜索（按意思找）">语义</button>
-              <button id="archiveIndexBtn" type="button" class="secondary archiveSortBtn" title="建立/更新语义索引" style="display:none">建立索引</button>
-              <button id="archiveSortBtn" type="button" class="secondary archiveSortBtn" title="按时间排序">新→旧</button>
-              <button id="archiveExpandAllBtn" type="button" class="secondary archiveSortBtn" title="展开全部目录">展开</button>
+              <input id="archiveSearch" type="text" class="archiveSearchInput" placeholder="Search chat content..." />
+              <button id="archiveSemanticBtn" type="button" class="secondary archiveSortBtn" title="Semantic search (by meaning)">Semantic</button>
+              <button id="archiveIndexBtn" type="button" class="secondary archiveSortBtn" title="Build/update the semantic index" style="display:none">Build index</button>
+              <button id="archiveSortBtn" type="button" class="secondary archiveSortBtn" title="Sort by time">New→Old</button>
+              <button id="archiveExpandAllBtn" type="button" class="secondary archiveSortBtn" title="Expand all folders">Expand</button>
               <span id="archiveDirHint" class="archiveDirHint"></span>
             </div>
           </div>
@@ -334,58 +334,58 @@
                 <div id="archivePreviewTitle" class="archivePreviewTitle"></div>
                 <div id="archivePreviewContent" class="archivePreviewContent"></div>
               </div>
-              <div class="archivePreviewEmpty" id="archivePreviewEmpty">选择左侧存档查看预览</div>
+              <div class="archivePreviewEmpty" id="archivePreviewEmpty">Select an archive on the left to preview</div>
             </div>
           </div>
           <div class="archiveFooter">
-            <button id="archiveRestoreBtn" type="button" disabled>恢复选中</button>
-            <button id="archiveMoveBtn" type="button" class="secondary" disabled>移动到</button>
+            <button id="archiveRestoreBtn" type="button" disabled>Restore Selected</button>
+            <button id="archiveMoveBtn" type="button" class="secondary" disabled>Move to</button>
             <label class="checkboxLabel archiveSelectAll">
               <input id="archiveSelectAll" type="checkbox" />
-              全选
+              Select All
             </label>
             <span id="archiveSelectedCount" class="archiveSelectedCount"></span>
-            <button id="archiveDeleteBtn" type="button" class="secondary" disabled>删除选中</button>
+            <button id="archiveDeleteBtn" type="button" class="secondary" disabled>Delete Selected</button>
           </div>
         </div>
 
         <div id="contextMeter" class="contextMeter" title="">
           <div class="contextMeterBar"><div id="contextMeterFill" class="contextMeterFill"></div></div>
           <span id="contextMeterText" class="contextMeterText"></span>
-          <span id="numCtxDisplay" class="numCtxDisplay" title="上下文窗口大小（num_ctx），在设置里调整"></span>
+          <span id="numCtxDisplay" class="numCtxDisplay" title="Context window size (num_ctx), adjust in settings"></span>
         </div>
 
         <form id="chatForm" class="composer">
           <div class="inputStack">
             <div id="commandPopup" class="commandPopup" hidden></div>
             <div id="quickPromptPopup" class="quickPromptPopup" hidden>
-              <div class="quickPromptHint">💡 输入 <kbd>/</kbd> 使用命令：<kbd>/clear</kbd> <kbd>/compact</kbd> <kbd>/imagine</kbd> <kbd>/note</kbd> <kbd>/url</kbd> <kbd>/0</kbd> <kbd>/1</kbd></div>
-              <div class="quickPromptItem" data-prompt="帮我理解">帮我理解</div>
-              <div class="quickPromptItem" data-prompt="帮我理解，生成表格">帮我理解，生成表格</div>
-              <div class="quickPromptItem" data-prompt="帮我理解，生成表格，说简单点">帮我理解，生成表格，说简单点</div>
-              <div class="quickPromptItem" data-prompt="生成表格">生成表格</div>
-              <div class="quickPromptItem" data-prompt="说简单点">说简单点</div>
-              <div class="quickPromptItem" data-prompt="用三句话总结">用三句话总结</div>
-              <div class="quickPromptItem" data-prompt="用三句话总结，说简单点">用三句话总结，说简单点</div>
+              <div class="quickPromptHint">💡 Type <kbd>/</kbd> to use commands: <kbd>/clear</kbd> <kbd>/compact</kbd> <kbd>/imagine</kbd> <kbd>/note</kbd> <kbd>/url</kbd> <kbd>/0</kbd> <kbd>/1</kbd></div>
+              <div class="quickPromptItem" data-prompt="Help me understand">Help me understand</div>
+              <div class="quickPromptItem" data-prompt="Help me understand, make a table">Help me understand, make a table</div>
+              <div class="quickPromptItem" data-prompt="Help me understand, make a table, keep it simple">Help me understand, make a table, keep it simple</div>
+              <div class="quickPromptItem" data-prompt="Make a table">Make a table</div>
+              <div class="quickPromptItem" data-prompt="Keep it simple">Keep it simple</div>
+              <div class="quickPromptItem" data-prompt="Summarize in 3 sentences">Summarize in 3 sentences</div>
+              <div class="quickPromptItem" data-prompt="Summarize in 3 sentences, keep it simple">Summarize in 3 sentences, keep it simple</div>
             </div>
             <div id="imagePreview" class="imagePreview" hidden>
-              <img id="previewImage" alt="待发送图片预览" />
-              <button id="removeImage" type="button" class="iconButton" aria-label="移除图片">×</button>
+              <img id="previewImage" alt="Image preview" />
+              <button id="removeImage" type="button" class="iconButton" aria-label="Remove image">×</button>
             </div>
             <div id="filePreview" class="filePreview" hidden>
               <span id="filePreviewName" class="filePreviewName"></span>
-              <button id="removeFile" type="button" class="iconButton" aria-label="移除文件">×</button>
+              <button id="removeFile" type="button" class="iconButton" aria-label="Remove file">×</button>
             </div>
             <textarea id="messageInput" rows="2" placeholder="Say something to Bella..." autofocus></textarea>
           </div>
-          <button id="quickPromptBtn" type="button" class="quickPromptBtn" title="快捷指令（输入 / 或 ? 触发）">«</button>
-          <button id="askSuggestBtn" type="button" class="askSuggestBtn" title="AI 帮你提问">?</button>
-          <label class="uploadButton" title="上传文件">
+          <button id="quickPromptBtn" type="button" class="quickPromptBtn" title="Quick prompts (type / or ? to trigger)">«</button>
+          <button id="askSuggestBtn" type="button" class="askSuggestBtn" title="Let AI suggest a question">?</button>
+          <label class="uploadButton" title="Upload file">
             <input id="fileInput" type="file" accept="image/*,.pdf,.docx,.pptx,.eml,.txt,.md,.markdown" multiple />
-            文件
+            File
           </label>
-          <button id="sendButton" type="submit">发送</button>
-          <button id="stopTranslateBtn" type="button" class="stopTranslateBtn" hidden>停止翻译</button>
+          <button id="sendButton" type="submit">Send</button>
+          <button id="stopTranslateBtn" type="button" class="stopTranslateBtn" hidden>Stop Translation</button>
         </form>
       </section>
     </main>
@@ -394,12 +394,12 @@
     <div id="scanModal" class="scanModalBackdrop" hidden>
       <div class="scanModal" role="dialog" aria-modal="true" aria-labelledby="scanModalTitle">
         <div class="scanModalHeader">
-          <h3 id="scanModalTitle" class="scanModalTitle">扫描 Ollama</h3>
+          <h3 id="scanModalTitle" class="scanModalTitle">Scan Ollama</h3>
           <span id="scanModalStatus" class="scanModalStatus"></span>
-          <button id="scanModalClose" type="button" class="scanModalClose" aria-label="关闭">✕</button>
+          <button id="scanModalClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
         </div>
         <div id="scanModalList" class="scanModalList"></div>
-        <div id="scanModalEmpty" class="scanModalEmpty" hidden>未找到</div>
+        <div id="scanModalEmpty" class="scanModalEmpty" hidden>None found</div>
       </div>
     </div>
 
@@ -407,15 +407,15 @@
     <div id="comfyParamsModal" class="scanModalBackdrop" hidden>
       <div class="scanModal comfyParamsModal" role="dialog" aria-modal="true" aria-labelledby="comfyParamsTitle">
         <div class="scanModalHeader">
-          <h3 id="comfyParamsTitle" class="scanModalTitle">ComfyUI 生成参数</h3>
-          <button id="comfyParamsClose" type="button" class="scanModalClose" aria-label="关闭">✕</button>
+          <h3 id="comfyParamsTitle" class="scanModalTitle">ComfyUI generation parameters</h3>
+          <button id="comfyParamsClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
         </div>
         <div class="comfyParamsBody">
-          <p class="hint" id="comfyParamsHint">留空 = 按所选模型自动选择最优参数</p>
+          <p class="hint" id="comfyParamsHint">Leave empty = auto-pick the optimal params for the selected model</p>
           <label>
-            <span id="comfyParamSamplerLabel">采样器 (Sampler)</span>
+            <span id="comfyParamSamplerLabel">Sampler</span>
             <select id="comfyParamSampler">
-              <option value="">自动</option>
+              <option value="">Auto</option>
               <option value="euler">euler</option>
               <option value="euler_ancestral">euler_ancestral</option>
               <option value="dpmpp_2m">dpmpp_2m</option>
@@ -430,9 +430,9 @@
             </select>
           </label>
           <label>
-            <span id="comfyParamSchedulerLabel">调度器 (Scheduler)</span>
+            <span id="comfyParamSchedulerLabel">Scheduler</span>
             <select id="comfyParamScheduler">
-              <option value="">自动</option>
+              <option value="">Auto</option>
               <option value="normal">normal</option>
               <option value="karras">karras</option>
               <option value="exponential">exponential</option>
@@ -443,34 +443,34 @@
             </select>
           </label>
           <label>
-            <span id="comfyParamStepsLabel">步数 (Steps)</span>
-            <input id="comfyParamSteps" type="number" min="1" max="100" step="1" placeholder="自动" />
+            <span id="comfyParamStepsLabel">Steps</span>
+            <input id="comfyParamSteps" type="number" min="1" max="100" step="1" placeholder="Auto" />
           </label>
           <label>
             <span id="comfyParamCfgLabel">CFG</span>
-            <input id="comfyParamCfg" type="number" min="0" max="30" step="0.1" placeholder="自动" />
+            <input id="comfyParamCfg" type="number" min="0" max="30" step="0.1" placeholder="Auto" />
           </label>
           <label>
-            <span id="comfyParamGuidanceLabel">Guidance (仅 Flux)</span>
-            <input id="comfyParamGuidance" type="number" min="0" max="20" step="0.1" placeholder="自动 (3.5)" />
+            <span id="comfyParamGuidanceLabel">Guidance (Flux only)</span>
+            <input id="comfyParamGuidance" type="number" min="0" max="20" step="0.1" placeholder="Auto (3.5)" />
           </label>
           <label>
-            <span id="comfyParamImageCfgLabel">Image CFG (仅 InstructPix2Pix · 越高越保留原图)</span>
-            <input id="comfyParamImageCfg" type="number" min="1" max="5" step="0.1" placeholder="自动 (1.5)" />
+            <span id="comfyParamImageCfgLabel">Image CFG (InstructPix2Pix only · higher preserves source)</span>
+            <input id="comfyParamImageCfg" type="number" min="1" max="5" step="0.1" placeholder="Auto (1.5)" />
           </label>
           <label>
-            <span id="comfyParamDenoiseLabel">重绘强度 Denoise (图生图)</span>
-            <input id="comfyParamDenoise" type="number" min="0.1" max="1" step="0.05" placeholder="自动 (0.75)" />
+            <span id="comfyParamDenoiseLabel">Denoise (img2img)</span>
+            <input id="comfyParamDenoise" type="number" min="0.1" max="1" step="0.05" placeholder="Auto (0.75)" />
           </label>
           <label>
-            <span id="comfyParamLengthLabel">视频帧数 Length (视频)</span>
-            <input id="comfyParamLength" type="number" min="5" max="241" step="4" placeholder="自动 (49)" />
+            <span id="comfyParamLengthLabel">Video length (frames)</span>
+            <input id="comfyParamLength" type="number" min="5" max="241" step="4" placeholder="Auto (49)" />
           </label>
           <label>
-            <span id="comfyParamFpsLabel">视频帧率 FPS (视频)</span>
-            <input id="comfyParamFps" type="number" min="8" max="60" step="1" placeholder="自动 (24)" />
+            <span id="comfyParamFpsLabel">Video FPS</span>
+            <input id="comfyParamFps" type="number" min="8" max="60" step="1" placeholder="Auto (24)" />
           </label>
-          <button id="comfyParamsReset" type="button" class="secondary comfyParamsReset">重置为自动</button>
+          <button id="comfyParamsReset" type="button" class="secondary comfyParamsReset">Reset to auto</button>
         </div>
       </div>
     </div>

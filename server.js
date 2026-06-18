@@ -19,7 +19,8 @@ const { proxyComfyModels, generateComfyImage } = require("./server/comfy");
 const { fetchUrlContent, transcribeYouTubeAudio } = require("./server/url-fetch");
 const { searchWeb } = require("./server/search");
 const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
-const { listSystemVoices, speakWithSay, stopSay } = require("./server/speech");
+const { listSystemVoices, speak, stopSay } = require("./server/speech");
+const { listTtsVoices, synthesize } = require("./server/tts");
 const { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives } = require("./server/archive");
 const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file");
 
@@ -145,12 +146,22 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "POST" && req.url === "/api/speak") {
-    speakWithSay(req, res);
+    speak(req, res);
     return;
   }
 
   if (req.method === "POST" && req.url === "/api/stop-speak") {
     stopSay(res);
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/tts-voices") {
+    listTtsVoices(res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/tts") {
+    synthesize(req, res);
     return;
   }
 

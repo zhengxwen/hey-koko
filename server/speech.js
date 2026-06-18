@@ -1,7 +1,10 @@
 const { execFile, spawn } = require("child_process");
-const { sendJson, readBody } = require("./utils");
+const fs = require("fs");
+const { sendJson, readBody, cleanSpeechText } = require("./utils");
+const { synthToWav } = require("./tts");
 
-let sayProcess = null;
+let sayProcess = null;   // active macOS `say` child
+let playProcess = null;  // active afplay child (for neural-engine playback)
 let sayStopped = false;
 
 function listSystemVoices(res) {
@@ -19,7 +22,26 @@ function listSystemVoices(res) {
   });
 }
 
-async function speakWithSay(req, res) {
+function killProcs() {
+  if (sayProcess) { try { sayProcess.kill(); } catch { /* gone */ } sayProcess = null; }
+  if (playProcess) { try { playProcess.kill(); } catch { /* gone */ } playProcess = null; }
+}
+
+// Play an audio file on the server's speakers (macOS afplay). Used for neural
+// engines, mirroring how `say` plays directly — keeps the reader server-side.
+function playFile(p) {
+  return new Promise((resolve) => {
+    playProcess = spawn("afplay", [p]);
+    playProcess.on("close", () => { playProcess = null; resolve(); });
+    playProcess.on("error", () => { playProcess = null; resolve(); });
+  });
+}
+
+// POST /api/speak — read a message aloud on the server, sentence by sentence,
+// streaming NDJSON {index,speaking|done} so the client can highlight along.
+// Routes by the selected voice's engine prefix: "say:"/none → macOS say (plays
+// directly); "kokoro:"/"cosyvoice:" → synthesize each sentence then afplay it.
+async function speak(req, res) {
   try {
     const body = await readBody(req);
     const { sentences, voice, rate } = body;
@@ -27,14 +49,11 @@ async function speakWithSay(req, res) {
       sendJson(res, 400, { error: "sentences is required" });
       return;
     }
-    // Stop any ongoing speech
-    if (sayProcess) {
-      sayProcess.kill();
-      sayProcess = null;
-    }
+    killProcs();
 
-    // 去除 Emoji
-    const emojiRegex = /[\u{1F600}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}\u{1F1E0}-\u{1F1FF}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F7E0}-\u{1F7FF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{23F8}-\u{23FA}\u{25AA}-\u{25AB}\u{25B6}\u{25C0}\u{25FB}-\u{25FE}\u{2934}-\u{2935}\u{2B05}-\u{2B07}\u{2B1B}-\u{2B1C}\u{2B50}\u{2B55}\u{3030}\u{303D}\u{3297}\u{3299}]/gu;
+    const sep = (voice || "").indexOf(":");
+    const engine = sep > 0 ? voice.slice(0, sep) : "say";
+    const voiceId = sep > 0 ? voice.slice(sep + 1) : (voice || "");
 
     res.writeHead(200, {
       "Content-Type": "application/x-ndjson; charset=utf-8",
@@ -42,31 +61,39 @@ async function speakWithSay(req, res) {
     });
 
     sayStopped = false;
-    req.on("close", () => { sayStopped = true; });
+    req.on("close", () => { sayStopped = true; killProcs(); });
 
     for (let i = 0; i < sentences.length; i++) {
       if (sayStopped) break;
-      const cleanSentence = sentences[i]
-        .replace(emojiRegex, "")
-        .replace(/([。？！；：.!?;:])\1+/g, "$1")
-        .trim();
-      if (!cleanSentence) {
+      const clean = cleanSpeechText(sentences[i]);
+      if (!clean) {
         res.write(JSON.stringify({ index: i, done: true }) + "\n");
         continue;
       }
 
       res.write(JSON.stringify({ index: i, speaking: true }) + "\n");
 
-      await new Promise((resolve) => {
-        const args = [];
-        if (voice) args.push("-v", voice);
-        if (rate) args.push("-r", String(Math.round(Number(rate) * 175)));
-        sayProcess = spawn("say", args);
-        sayProcess.stdin.write(cleanSentence);
-        sayProcess.stdin.end();
-        sayProcess.on("close", () => { sayProcess = null; resolve(); });
-        sayProcess.on("error", () => { sayProcess = null; resolve(); });
-      });
+      if (engine === "say") {
+        await new Promise((resolve) => {
+          const args = [];
+          if (voiceId) args.push("-v", voiceId);
+          if (rate) args.push("-r", String(Math.round(Number(rate) * 175)));
+          sayProcess = spawn("say", args);
+          sayProcess.stdin.write(clean);
+          sayProcess.stdin.end();
+          sayProcess.on("close", () => { sayProcess = null; resolve(); });
+          sayProcess.on("error", () => { sayProcess = null; resolve(); });
+        });
+      } else {
+        // Neural engine: synthesize this sentence to a wav, then play it.
+        try {
+          const wav = await synthToWav({ engine, voice: voiceId, text: clean, speed: Number(rate) || 1 });
+          if (!sayStopped) await playFile(wav);
+          fs.unlink(wav, () => {});
+        } catch {
+          // Engine unavailable / failed — skip this sentence (keeps highlighting going).
+        }
+      }
 
       if (sayStopped) break;
       res.write(JSON.stringify({ index: i, done: true }) + "\n");
@@ -82,11 +109,8 @@ async function speakWithSay(req, res) {
 
 function stopSay(res) {
   sayStopped = true;
-  if (sayProcess) {
-    sayProcess.kill();
-    sayProcess = null;
-  }
+  killProcs();
   sendJson(res, 200, { ok: true });
 }
 
-module.exports = { listSystemVoices, speakWithSay, stopSay };
+module.exports = { listSystemVoices, speak, stopSay };
