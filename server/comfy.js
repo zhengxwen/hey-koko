@@ -805,6 +805,15 @@ function scaleNode(srcRef, width, height) {
   return { class_type: "ImageScale", inputs: { image: srcRef, upscale_method: "lanczos", width, height, crop: "disabled" } };
 }
 
+// Tell ComfyUI to stop the running prompt. Used when WE give up (timeout or the
+// client disconnected) — otherwise the workflow keeps occupying the GPU after we
+// stop waiting. Best-effort, with its own short timeout so it can't hang.
+async function interruptComfyServer() {
+  try {
+    await fetch(`${config.comfyUrl}/interrupt`, { method: "POST", signal: AbortSignal.timeout(5000) });
+  } catch { /* best-effort */ }
+}
+
 // Upload a base64 image to ComfyUI's input folder so a LoadImage node can use
 // it. Returns the name (prefixed with subfolder when ComfyUI nests it).
 async function uploadImage(b64, signal) {
@@ -839,6 +848,7 @@ async function waitForOutputs(promptId, signal, deadline) {
 }
 
 async function generateComfyImage(req, res) {
+  let clientGone = false; // set if the client disconnects before we respond
   try {
     const body = await readBody(req);
     const { model, prompt, negative_prompt, options, images, timeout: reqTimeout, clientId: bodyClientId } = body;
@@ -890,10 +900,13 @@ async function generateComfyImage(req, res) {
     const timeoutMs = Math.min(600, Math.max(60, reqTimeout || 120)) * 1000;
     const deadline = Date.now() + timeoutMs;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    // If the client disconnects (user hit Stop), abort our poll/fetches. The
-    // browser separately POSTs /interrupt to stop ComfyUI's GPU work.
-    res.on("close", () => { if (!res.writableFinished) controller.abort(); });
+    // On timeout, stop waiting AND interrupt ComfyUI so the stuck render doesn't
+    // keep running on the GPU after we've returned a timeout error.
+    const timeout = setTimeout(() => { controller.abort(); interruptComfyServer(); }, timeoutMs);
+    // If the client disconnects (user hit Stop, tab closed, network drop) before
+    // we respond, abort our poll/fetches and interrupt ComfyUI too — the browser
+    // also POSTs /interrupt on the Stop button, but this covers the cases it can't.
+    res.on("close", () => { if (!res.writableFinished) { clientGone = true; controller.abort(); interruptComfyServer(); } });
 
     try {
       let workflow;
@@ -1054,6 +1067,7 @@ async function generateComfyImage(req, res) {
       clearTimeout(timeout);
     }
   } catch (error) {
+    if (clientGone || res.writableEnded) return; // client already disconnected — nothing to send
     if (error.name === "AbortError") {
       sendJson(res, 504, { error: "ComfyUI 图片生成超时，请重试或减少步数。" });
     } else if (typeof error.message === "string" && (error.message.startsWith("缺少") || error.message.includes("暂未接入"))) {

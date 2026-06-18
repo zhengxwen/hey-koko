@@ -65,6 +65,37 @@ GPL-3.0
    ```
 
 
+## macOS App Bundle
+
+On macOS you can package Hey-Koko into a native `.app` (a Swift/WebKit wrapper that launches the Node server and opens the UI in its own window) instead of running it from the terminal.
+
+### Build the app
+
+```bash
+./build-app.sh
+```
+
+This produces `hey-koko.app` in the project root. The script:
+
+- Renders `app-icon.svg` into an `.icns` icon (uses `rsvg-convert` if installed, otherwise falls back to `qlmanage`; install with `brew install librsvg` for the best result).
+- Copies `server.js`, `server/`, and `public/` into the bundle.
+- Compiles `AppMain.swift` (requires the Xcode command-line tools: `xcode-select --install`).
+- Writes `Info.plist`.
+
+Once built you can:
+
+- Double-click `hey-koko.app` to launch.
+- Drag it to `/Applications` to install, or to the Dock for quick access.
+
+### Stop the app
+
+```bash
+./kill-app.sh
+```
+
+Force-kills any running `hey-koko` app instances and `node server.js` processes, then verifies port `1314` is free. Use it when a previous instance is stuck or the port is still in use before launching again.
+
+
 ## ComfyUI Backend (Advanced Image & Video)
 
 In addition to Ollama image models, Hey-Koko can drive a local [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server for high-end text-to-image, instruction-based image editing, multi-image composition, and video generation — all from the same `/imagine` command. ComfyUI builds the workflow graphs automatically; you only pick a model.
