@@ -60,6 +60,9 @@ async function generateImage(req, res) {
     const timeoutMs = Math.min(600, Math.max(60, reqTimeout || 120)) * 1000;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    // If the client disconnects (user hit Stop), abort the fetch to Ollama so it
+    // stops generating instead of running to completion in the background.
+    res.on("close", () => { if (!res.writableFinished) controller.abort(); });
 
     // Image generation streams NDJSON: progress chunks ({completed,total}), then a
     // final chunk with the "image" field. We forward progress to the client as it

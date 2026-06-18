@@ -302,15 +302,17 @@ function buildZImage({ model, prompt, width, height, seed, cfg, comp }) {
 // VAE-encoded as the latent and partially denoised (~0.85) so the subject is
 // preserved while the instruction is applied. E1 expects the prompt phrased as
 // "Editing Instruction: …" — we prepend that if the user didn't.
-function buildHiDreamEdit({ model, prompt, negative, imageName, seed, cfg, comp, denoise }) {
+function buildHiDreamEdit({ model, prompt, negative, imageName, seed, cfg, comp, denoise, width, height }) {
   const instr = /^\s*editing instruction:/i.test(prompt) ? prompt : `Editing Instruction: ${prompt}`;
   const enc = (text) => ({ class_type: "CLIPTextEncodeHiDream", inputs: { clip: ["2", 0], clip_l: text, clip_g: text, t5xxl: text, llama: text } });
-  return {
+  // A target size resizes the source before VAEEncode so the output matches it.
+  const px = (width && height) ? ["16", 0] : ["14", 0];
+  const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "QuadrupleCLIPLoader", inputs: { clip_name1: comp.clipL, clip_name2: comp.clipG, clip_name3: comp.t5, clip_name4: comp.llama } },
     "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
     "14": { class_type: "LoadImage", inputs: { image: imageName } },
-    "15": { class_type: "VAEEncode", inputs: { pixels: ["14", 0], vae: ["3", 0] } },
+    "15": { class_type: "VAEEncode", inputs: { pixels: px, vae: ["3", 0] } },
     "4": enc(instr),
     "5": enc(negative || ""),
     "7": { class_type: "ModelSamplingSD3", inputs: { model: ["1", 0], shift: 3.0 } },
@@ -318,6 +320,8 @@ function buildHiDreamEdit({ model, prompt, negative, imageName, seed, cfg, comp,
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
+  if (width && height) wf["16"] = scaleNode(["14", 0], width, height);
+  return wf;
 }
 
 // txt2img: an empty latent of the requested size feeds the sampler.
@@ -335,13 +339,16 @@ function buildTxt2Img({ model, prompt, negative, width, height, seed, cfg }) {
 // img2img: the uploaded image is VAE-encoded into a latent, then partially
 // denoised (denoise < 1) so the prompt edits it instead of replacing it. The
 // output size is inherited from the input image.
-function buildImg2Img({ model, prompt, negative, seed, denoise, imageName, cfg }) {
-  return {
+function buildImg2Img({ model, prompt, negative, seed, denoise, imageName, cfg, width, height }) {
+  const px = (width && height) ? ["12", 0] : ["11", 0];
+  const wf = {
     ...commonNodes({ model, prompt, negative, guidance: cfg.guidance }),
     "3": ksampler({ seed, steps: cfg.steps, cfg: cfg.cfg, sampler: cfg.sampler, scheduler: cfg.scheduler, denoise, latentRef: ["10", 0], guidance: cfg.guidance }),
-    "10": { class_type: "VAEEncode", inputs: { pixels: ["11", 0], vae: ["4", 2] } },
+    "10": { class_type: "VAEEncode", inputs: { pixels: px, vae: ["4", 2] } },
     "11": { class_type: "LoadImage", inputs: { image: imageName } },
   };
+  if (width && height) wf["12"] = scaleNode(["11", 0], width, height);
+  return wf;
 }
 
 // ── Instruction-edit workflows ──────────────────────────────────────────────
@@ -351,13 +358,15 @@ function buildImg2Img({ model, prompt, negative, seed, denoise, imageName, cfg }
 // FLUX.1 Kontext — official ComfyUI graph: the input image is scaled to a
 // Kontext-friendly size, VAE-encoded, and injected into the positive
 // conditioning via ReferenceLatent. cfg=1 + FluxGuidance, like base Flux.
-function buildKontext({ model, prompt, imageName, seed, cfg, comp }) {
+function buildKontext({ model, prompt, imageName, seed, cfg, comp, width, height }) {
   return {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "DualCLIPLoader", inputs: { clip_name1: comp.t5, clip_name2: comp.clipL, type: "flux" } },
     "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
     "4": { class_type: "LoadImage", inputs: { image: imageName } },
-    "5": { class_type: "FluxKontextImageScale", inputs: { image: ["4", 0] } },
+    // A target size overrides Kontext's auto-resolution scaler so the output
+    // matches the requested size; otherwise use the Kontext-friendly scaler.
+    "5": (width && height) ? scaleNode(["4", 0], width, height) : { class_type: "FluxKontextImageScale", inputs: { image: ["4", 0] } },
     "6": { class_type: "VAEEncode", inputs: { pixels: ["5", 0], vae: ["3", 0] } },
     "7": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: prompt } },
     "8": { class_type: "FluxGuidance", inputs: { conditioning: ["7", 0], guidance: cfg.guidance != null ? cfg.guidance : 2.5 } },
@@ -372,19 +381,24 @@ function buildKontext({ model, prompt, imageName, seed, cfg, comp }) {
 // Qwen-Image-Edit — TextEncodeQwenImageEdit folds the reference image + prompt
 // into the conditioning (multimodal Qwen2.5-VL encoder). Negative is the same
 // node with an empty prompt.
-function buildQwenEdit({ model, prompt, imageName, seed, cfg, comp }) {
-  return {
+function buildQwenEdit({ model, prompt, imageName, seed, cfg, comp, width, height }) {
+  // A target size resizes the canvas (VAEEncode) only; conditioning still sees
+  // the original image so the edit semantics are unchanged.
+  const px = (width && height) ? ["11", 0] : ["4", 0];
+  const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "qwen_image" } },
     "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
     "4": { class_type: "LoadImage", inputs: { image: imageName } },
     "5": { class_type: "TextEncodeQwenImageEdit", inputs: { clip: ["2", 0], prompt, vae: ["3", 0], image: ["4", 0] } },
     "6": { class_type: "TextEncodeQwenImageEdit", inputs: { clip: ["2", 0], prompt: "", vae: ["3", 0], image: ["4", 0] } },
-    "7": { class_type: "VAEEncode", inputs: { pixels: ["4", 0], vae: ["3", 0] } },
+    "7": { class_type: "VAEEncode", inputs: { pixels: px, vae: ["3", 0] } },
     "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["1", 0], positive: ["5", 0], negative: ["6", 0], latent_image: ["7", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
+  if (width && height) wf["11"] = scaleNode(["4", 0], width, height);
+  return wf;
 }
 
 // Qwen-Image-Edit-2509 "Plus" — MULTI-image composition (up to 3 reference
@@ -422,19 +436,22 @@ function buildQwenEditPlus({ model, prompt, imageNames, seed, cfg, comp, width, 
 // num_tokens itself. Used as an instruction editor here: VAEEncode(source) →
 // latent at denoise ~0.8 + the instruction (preserves the subject, applies the
 // edit). (It can also do txt2img, but we surface it in the edit group.)
-function buildOmniGen2Edit({ model, prompt, negative, imageName, seed, cfg, comp, denoise }) {
-  return {
+function buildOmniGen2Edit({ model, prompt, negative, imageName, seed, cfg, comp, denoise, width, height }) {
+  const px = (width && height) ? ["16", 0] : ["14", 0];
+  const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "omnigen2" } },
     "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
     "14": { class_type: "LoadImage", inputs: { image: imageName } },
-    "15": { class_type: "VAEEncode", inputs: { pixels: ["14", 0], vae: ["3", 0] } },
+    "15": { class_type: "VAEEncode", inputs: { pixels: px, vae: ["3", 0] } },
     "4": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: prompt } },
     "5": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: negative || "" } },
     "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: denoise != null ? denoise : 0.8, model: ["1", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["15", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
+  if (width && height) wf["16"] = scaleNode(["14", 0], width, height);
+  return wf;
 }
 
 // InstructPix2Pix — a full SD1.5 checkpoint that needs ip2p's THREE-way
@@ -443,14 +460,15 @@ function buildOmniGen2Edit({ model, prompt, negative, imageName, seed, cfg, comp
 //   no image). cfg_conds is text guidance; cfg_cond2_negative is image guidance
 //   (raise it to preserve the input more). A plain single-cfg KSampler over-
 //   edits and ignores the source image — this is the correct ip2p sampler.
-function buildInstructPix2Pix({ model, prompt, negative, imageName, seed, cfg }) {
+function buildInstructPix2Pix({ model, prompt, negative, imageName, seed, cfg, width, height }) {
   const imageCfg = cfg.imageCfg != null ? cfg.imageCfg : 1.5;
-  return {
+  const px = (width && height) ? ["13", 0] : ["4", 0];
+  const wf = {
     "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: model } },
     "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: prompt } },
     "3": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: negative } },
     "4": { class_type: "LoadImage", inputs: { image: imageName } },
-    "5": { class_type: "InstructPixToPixConditioning", inputs: { positive: ["2", 0], negative: ["3", 0], vae: ["1", 2], pixels: ["4", 0] } },
+    "5": { class_type: "InstructPixToPixConditioning", inputs: { positive: ["2", 0], negative: ["3", 0], vae: ["1", 2], pixels: px } },
     "6": { class_type: "DualCFGGuider", inputs: { model: ["1", 0], cond1: ["5", 0], cond2: ["5", 1], negative: ["3", 0], cfg_conds: cfg.cfg, cfg_cond2_negative: imageCfg, style: "regular" } },
     "7": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
     "8": { class_type: "KSamplerSelect", inputs: { sampler_name: cfg.sampler } },
@@ -459,6 +477,8 @@ function buildInstructPix2Pix({ model, prompt, negative, imageName, seed, cfg })
     "11": { class_type: "VAEDecode", inputs: { samples: ["10", 0], vae: ["1", 2] } },
     "12": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["11", 0] } },
   };
+  if (width && height) wf["13"] = scaleNode(["4", 0], width, height);
+  return wf;
 }
 
 function buildEditWorkflow(editType, args) {
@@ -759,6 +779,32 @@ function imageDims(b64) {
   return null;
 }
 
+// Target output size for image-to-image / image-to-video, keeping the INPUT
+// image's aspect ratio. With an explicit size in opts the output is scaled to
+// that size's PIXEL BUDGET (not its exact dims) so the ratio is preserved;
+// without one ("auto") it follows the input's own size. The longer side is
+// always capped at maxSide. Returns null when the input dims can't be read.
+function editTargetSize(images, opts, maxSide = 2048) {
+  const d = imageDims(Array.isArray(images) ? images[0] : images);
+  if (!d || !d.width || !d.height) return null;
+  const aspect = d.width / d.height;
+  const area = (opts && opts.width && opts.height) ? opts.width * opts.height : d.width * d.height;
+  let w = Math.sqrt(area * aspect);
+  let h = Math.sqrt(area / aspect);
+  const longer = Math.max(w, h);
+  if (longer > maxSide) { const s = maxSide / longer; w *= s; h *= s; }
+  return { width: w, height: h };
+}
+
+// Snap a dimension to a multiple of m (default 8 — the SD VAE stride).
+function snapDim(v, m = 8) { return Math.max(m, Math.round(v / m) * m); }
+
+// An ImageScale node resizing srcRef ([nodeId, outIdx]) to width×height.
+// crop "disabled" + a ratio-preserving target means no distortion.
+function scaleNode(srcRef, width, height) {
+  return { class_type: "ImageScale", inputs: { image: srcRef, upscale_method: "lanczos", width, height, crop: "disabled" } };
+}
+
 // Upload a base64 image to ComfyUI's input folder so a LoadImage node can use
 // it. Returns the name (prefixed with subfolder when ComfyUI nests it).
 async function uploadImage(b64, signal) {
@@ -808,6 +854,23 @@ async function generateComfyImage(req, res) {
     const seed = opts.seed !== undefined ? opts.seed : Math.floor(Math.random() * 2147483647);
     const isImg2Img = Array.isArray(images) && images.length > 0;
     const isMultiImage = Array.isArray(images) && images.length >= 2;
+    // Output size for img2img edits, keeping the input's aspect ratio. Only
+    // OVERRIDE the builder's natural sizing when we must: a size is specified
+    // (default size or --size), or the input exceeds the 2048 cap. In plain
+    // "auto" with a within-cap input we leave width/height undefined so edit
+    // models keep their native input-inherited sizing (e.g. Kontext's own
+    // resolution scaler). When set: specified → the chosen size's pixel budget,
+    // over-cap → the input downscaled to fit 2048. Both preserve aspect ratio.
+    let ew, eh;
+    if (isImg2Img) {
+      const hasSpecified = !!(opts.width && opts.height);
+      const d = imageDims(images[0]);
+      const overCap = d && Math.max(d.width, d.height) > 2048;
+      if (hasSpecified || overCap) {
+        const ts = editTargetSize(images, opts);
+        if (ts) { ew = snapDim(ts.width); eh = snapDim(ts.height); }
+      }
+    }
     // denoise controls how much the input image is changed (1 = ignore it).
     const denoise = opts.denoise !== undefined ? opts.denoise : 0.75;
     // Per-model defaults merged with any user overrides from the params modal.
@@ -828,6 +891,9 @@ async function generateComfyImage(req, res) {
     const deadline = Date.now() + timeoutMs;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    // If the client disconnects (user hit Stop), abort our poll/fetches. The
+    // browser separately POSTs /interrupt to stop ComfyUI's GPU work.
+    res.on("close", () => { if (!res.writableFinished) controller.abort(); });
 
     try {
       let workflow;
@@ -841,12 +907,23 @@ async function generateComfyImage(req, res) {
         const comp = await videoCompanions(videoType, model);
         // WAN 14B with the LightX2V LoRAs installed → 4-step/cfg-1 turbo preset.
         const turbo = !!(comp.loraHigh && comp.loraLow);
-        // For i2v, match the output aspect ratio to the input image so the
+        // For i2v, match the output to the input's aspect ratio so the
         // conditioning frame isn't stretched (avoids ghosted/doubled edges).
+        // A specified size sets the pixel BUDGET (kept at the input ratio);
+        // "auto" keeps the input ratio at the model's own preset budget so video
+        // stays within the model's practical resolution. resolveVideoConfig snaps
+        // to the model's dimMult. t2v keeps the preset (no size unless --size).
         const vOpts = { ...opts };
-        if (isImg2Img && !opts.width && !opts.height) {
+        if (isImg2Img) {
           const dims = imageDims(images[0]);
-          if (dims && dims.width && dims.height) vOpts.aspect = dims.width / dims.height;
+          if (dims && dims.width && dims.height) {
+            if (opts.width && opts.height) {
+              const ts = editTargetSize(images, opts);
+              if (ts) { vOpts.width = ts.width; vOpts.height = ts.height; }
+            } else {
+              vOpts.aspect = dims.width / dims.height;
+            }
+          }
         }
         const v = resolveVideoConfig(videoType, vOpts, model, turbo);
         // A WAN 14B t2v checkpoint can't consume a start image — ignore any attach.
@@ -871,10 +948,10 @@ async function generateComfyImage(req, res) {
           // Qwen-Image-Edit-2509 Plus: compose from 2–3 reference images.
           const imageNames = [];
           for (const im of images.slice(0, 3)) imageNames.push(await uploadImage(im, controller.signal));
-          workflow = buildQwenEditPlus({ model, prompt, imageNames, seed, cfg, comp, width: opts.width, height: opts.height });
+          workflow = buildQwenEditPlus({ model, prompt, imageNames, seed, cfg, comp, width: ew, height: eh });
         } else {
           const imageName = await uploadImage(images[0], controller.signal);
-          workflow = buildEditWorkflow(editType, { model, prompt, negative: negative_prompt || "", imageName, seed, cfg, comp, denoise: editDenoise });
+          workflow = buildEditWorkflow(editType, { model, prompt, negative: negative_prompt || "", imageName, seed, cfg, comp, denoise: editDenoise, width: ew, height: eh });
         }
       } else if (/hidream.?i1/i.test(model)) {
         // HiDream-I1 txt2img (UNET + QuadrupleCLIPLoader); ignores any attached image.
@@ -894,6 +971,8 @@ async function generateComfyImage(req, res) {
           denoise,
           imageName,
           cfg,
+          width: ew,
+          height: eh,
         });
       } else {
         workflow = buildTxt2Img({

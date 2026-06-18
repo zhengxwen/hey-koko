@@ -1,6 +1,6 @@
 // Image generation and /imagine command parsing
 import { dom, state } from './state.js';
-import { ASPECT_ALIASES } from './constants.js';
+import { SIZE_PRESETS } from './constants.js';
 import { t, getPromptLanguage } from './i18n.js';
 import { makePreview, escapeHtml } from './utils.js';
 import { setAvatarState } from './avatar.js';
@@ -97,36 +97,33 @@ function parseImagineCommand(input) {
     rest = rest.slice(0, noMatch.index).trim();
   }
 
-  while (rest.startsWith("--")) {
-    if (/^--enhance\b/.test(rest)) {
+  while (rest.startsWith("--") || /^-e\b/.test(rest)) {
+    if (/^(--enhance|-e)\b/.test(rest)) {
       result.enhance = true;
-      rest = rest.replace(/^--enhance\s*/, "").trim();
+      rest = rest.replace(/^(--enhance|-e)\s*/, "").trim();
     } else if (/^--size\s/.test(rest)) {
       const sizeFlag = rest.match(/^--size\s+(\S+)/);
-      if (!sizeFlag) return { error: "--size 需要参数。格式：--size 1024x1024" };
+      if (!sizeFlag) return { error: "--size 需要参数。格式：--size 1024x1024 或预设值（如 1080p）" };
       const sizeVal = sizeFlag[1];
-      const sizeParsed = sizeVal.match(/^(\d+)x(\d+)$/);
-      if (!sizeParsed) {
-        return { error: `--size 格式错误："${sizeVal}"。正确格式：--size 1024x1024` };
-      }
-      const w = parseInt(sizeParsed[1], 10);
-      const h = parseInt(sizeParsed[2], 10);
-      if (w < 256 || w > 2048 || h < 256 || h > 2048) {
-        return { error: `--size 尺寸超出范围：${w}x${h}。宽高需在 256~2048 之间` };
+      let w, h;
+      const preset = SIZE_PRESETS[sizeVal.toLowerCase()];
+      if (preset) {
+        [w, h] = preset.split("x").map(Number);
+      } else {
+        const sizeParsed = sizeVal.match(/^(\d+)x(\d+)$/i);
+        if (!sizeParsed) {
+          return { error: `--size 格式错误："${sizeVal}"。可用 1024x1024 这种宽x高，或预设值：${Object.keys(SIZE_PRESETS).join(", ")}` };
+        }
+        w = parseInt(sizeParsed[1], 10);
+        h = parseInt(sizeParsed[2], 10);
+        if (w < 256 || w > 2048 || h < 256 || h > 2048) {
+          return { error: `--size 尺寸超出范围：${w}x${h}。宽高需在 256~2048 之间` };
+        }
       }
       result.options.width = w;
       result.options.height = h;
       result.sizeExplicit = true;
       rest = rest.replace(/^--size\s+\S+\s*/, "").trim();
-    } else if (/^--(square|portrait|landscape|wide|tall)\b/.test(rest)) {
-      const aliasMatch = rest.match(/^(--(?:square|portrait|landscape|wide|tall))\b/);
-      const alias = aliasMatch[1];
-      const size = ASPECT_ALIASES[alias];
-      const [w, h] = size.split("x").map(Number);
-      result.options.width = w;
-      result.options.height = h;
-      result.sizeExplicit = true;
-      rest = rest.replace(new RegExp("^" + alias + "\\s*"), "").trim();
     } else if (/^--steps\s/.test(rest)) {
       const stepsFlag = rest.match(/^--steps\s+(\S+)/);
       if (!stepsFlag) return { error: "--steps 需要参数。格式：--steps 30" };
@@ -158,15 +155,18 @@ function parseImagineCommand(input) {
       rest = rest.replace(/^--quality\s+\S+\s*/, "").trim();
     } else {
       const unknownMatch = rest.match(/^--([\w-]+)/);
-      return { error: `未知参数 "--${unknownMatch[1]}"。支持的参数：--size, --square, --portrait, --landscape, --wide, --tall, --steps, --seed, --quality, --enhance, --no` };
+      return { error: `未知参数 "--${unknownMatch[1]}"。支持的参数：--size（含预设：${Object.keys(SIZE_PRESETS).join("/")}）, --steps, --seed, --quality, --enhance, --no` };
     }
   }
 
   if (!result.options.width) {
     const defaultSize = dom.defaultImageSize.value || "1024x1024";
-    const [w, h] = defaultSize.split("x").map(Number);
-    result.options.width = w;
-    result.options.height = h;
+    // "auto" leaves width/height unset so the model/server picks its own size.
+    if (defaultSize !== "auto") {
+      const [w, h] = defaultSize.split("x").map(Number);
+      result.options.width = w;
+      result.options.height = h;
+    }
   }
 
   result.prompt = rest.trim();
@@ -176,6 +176,21 @@ function parseImagineCommand(input) {
   }
 
   return result;
+}
+
+// Tell ComfyUI to actually STOP — aborting our fetch only stops us waiting; the
+// queued workflow keeps running on the GPU. /interrupt kills the running prompt
+// and clearing the queue drops anything still pending (e.g. a batch). comfyHost
+// is "host:port" (no protocol). Best-effort.
+function interruptComfy(comfyHost) {
+  if (!comfyHost) return;
+  const proto = location.protocol === "https:" ? "https:" : "http:";
+  fetch(`${proto}//${comfyHost}/interrupt`, { method: "POST" }).catch(() => {});
+  fetch(`${proto}//${comfyHost}/queue`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clear: true }),
+  }).catch(() => {});
 }
 
 // Subscribe to ComfyUI's WebSocket (keyed by clientId) for live sampling
@@ -255,11 +270,13 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   const genStart = Date.now();
   const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
 
-  // /imagine flags (steps/seed, and size only if explicit) win; the ⚙ modal
-  // fills the rest (length/fps/cfg/sampler/scheduler). Drop the auto-filled
-  // 1024² default so the video model uses its own resolution preset.
+  // /imagine flags (steps/seed) win; the ⚙ modal fills the rest
+  // (length/fps/cfg/sampler/scheduler). For text→video, drop any default image
+  // size so the model uses its own resolution preset (unless --size was explicit).
+  // For image→video the size IS sent: the server keeps the input's aspect ratio
+  // and sizes to it (auto) or to the chosen size's pixel budget.
   const reqOptions = { ...parsed.options };
-  if (!parsed.sizeExplicit) {
+  if (!refImages && !parsed.sizeExplicit) {
     delete reqOptions.width;
     delete reqOptions.height;
   }
@@ -334,6 +351,8 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // the clientId and hands it to the server so both subscribe to the same stream.
   const clientId = crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`;
   const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
+  // Stop button → abort: also tell ComfyUI to interrupt the running render.
+  abortController.signal.addEventListener("abort", () => interruptComfy(comfyHost), { once: true });
   let progressFill = null, previewImg = null, lastPreviewUrl = null;
   if (pending) {
     const prog = document.createElement("div");
@@ -586,6 +605,13 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       });
     }
   }
+  // Stop button → abort: also tell ComfyUI to interrupt the running render
+  // (aborting the fetch alone leaves the GPU working). Ollama is cancelled
+  // server-side when the connection drops.
+  if (useComfy) {
+    const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
+    abortController.signal.addEventListener("abort", () => interruptComfy(comfyHost), { once: true });
+  }
 
   try {
     const generatedImages = [];
@@ -607,12 +633,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         if (reqOptions.seed === undefined && parsed.count > 1) {
           reqOptions.seed = Math.floor(Math.random() * 2147483647);
         }
-        // For img2img, preserve the input image's dimensions unless the user
-        // explicitly asked for a size — drop the auto-filled default size.
-        if (refImages && !parsed.sizeExplicit) {
-          delete reqOptions.width;
-          delete reqOptions.height;
-        }
+        // For img2img the size is passed through: a specified size (default or
+        // --size) makes the server render at that size's pixel budget keeping the
+        // input's aspect ratio; "auto" (no width/height) follows the input image.
         // ComfyUI advanced params (sampler/scheduler/cfg/guidance/steps/denoise).
         // Inline /imagine flags (e.g. --steps) win; the modal fills the rest.
         if (useComfy) {

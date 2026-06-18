@@ -171,15 +171,20 @@
           </div>
 
           <div class="imageGenOptions" id="imageGenOptions">
-            <label title="/imagine [Nx] [options] prompt&#10;&#10;Parameters:&#10;  Nx — batch N images (e.g. 4x), max 8&#10;  --enhance — AI enhance prompt&#10;  --size WxH — custom size (256~2048)&#10;  --square — 1024×1024&#10;  --portrait — 768×1152&#10;  --landscape — 1152×768&#10;  --wide — 1344×768&#10;  --tall — 768×1344&#10;  --steps N — steps (1~100)&#10;  --seed N — seed (0~2147483647)&#10;  --no text — negative prompt">
+            <label title="/imagine [Nx] [options] prompt&#10;&#10;Parameters:&#10;  Nx — batch N images (e.g. 4x), max 8&#10;  --enhance / -e — AI enhance prompt&#10;  --size WxH or preset — custom size&#10;     presets: 480p, 480p-portrait, 720p, 720p-portrait, 1080p, 1080p-portrait&#10;  --steps N — steps (1~100)&#10;  --seed N — seed (0~2147483647)&#10;  --no text — negative prompt">
               <span id="imageSizeLabelText">图片默认尺寸</span>
               <select id="defaultImageSize">
+                <option value="auto">Auto (自动)</option>
                 <option value="512x512">512×512 (小图)</option>
                 <option value="1024x1024">1024×1024 (大图)</option>
                 <option value="768x1152">768×1152 (竖版)</option>
                 <option value="1152x768">1152×768 (横版)</option>
                 <option value="1344x768">1344×768 (宽屏)</option>
                 <option value="768x1344">768×1344 (长图)</option>
+                <option value="1280x720">1280×720 (720p 横版)</option>
+                <option value="720x1280">720×1280 (720p 竖版)</option>
+                <option value="1920x1080">1920×1080 (1080p 横版)</option>
+                <option value="1080x1920">1080×1920 (1080p 竖版)</option>
               </select>
             </label>
             <label class="voiceRateLabel">

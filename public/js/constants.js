@@ -34,13 +34,14 @@ export function getPersonalityPreset(key, lang = "en") {
 // Tag colors
 export const TAG_COLORS = ["#7ecfcf", "#f7a8c4", "#a8d8a8", "#f5d78e", "#c4b5fd", "#fca5a5", "#93c5fd", "#fdba74"];
 
-// Image aspect ratio aliases
-export const ASPECT_ALIASES = {
-  "--square": "1024x1024",
-  "--portrait": "768x1152",
-  "--landscape": "1152x768",
-  "--wide": "1344x768",
-  "--tall": "768x1344",
+// Named size presets accepted by `--size` (case-insensitive), e.g. `--size 1080p`.
+export const SIZE_PRESETS = {
+  "480p": "854x480",
+  "480p-portrait": "480x854",
+  "720p": "1280x720",
+  "720p-portrait": "720x1280",
+  "1080p": "1920x1080",
+  "1080p-portrait": "1080x1920",
 };
 
 // Command list for autocomplete
