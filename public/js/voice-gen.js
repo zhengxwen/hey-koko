@@ -110,9 +110,16 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
       return;
     }
 
+    // Decoded byte size of the base64 clip → human-readable (KB/MB).
+    const pad = data.audio.endsWith("==") ? 2 : data.audio.endsWith("=") ? 1 : 0;
+    const bytes = Math.max(0, Math.floor(data.audio.length * 3 / 4) - pad);
+    const sizeStr = bytes >= 1024 * 1024
+      ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+      : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
     const replyMsg = {
       role: "assistant",
-      content: t("msg_audioDone"),
+      content: t("msg_audioDone", { size: sizeStr }),
       generatedAudio: data.audio,
       audioMime: data.mime || "audio/wav",
       imagePrompt: parsed.text,

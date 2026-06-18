@@ -136,6 +136,18 @@ function resendChatMessage(index) {
     return;
   }
 
+  const voiceCmd = parseVoiceCommand(message.content);
+  if (voiceCmd) {
+    if (voiceCmd.error) {
+      tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_commandError", { error: voiceCmd.error }), timestamp: Date.now() });
+      saveChat();
+      renderChat();
+    } else {
+      generateSpeech(voiceCmd, state.activeTabId, index + 1);
+    }
+    return;
+  }
+
   const imagineCmds = parseImagineCommands(message.content);
   if (imagineCmds) {
     const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
@@ -1858,8 +1870,17 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
                   handleMultiUrlCommand(urlParsed.entries, tab, state.activeTabId, newContent);
                 }
               } else {
-                const imagineCmds = parseImagineCommands(newContent);
-                if (imagineCmds) {
+                const voiceCmd = parseVoiceCommand(newContent);
+                const imagineCmds = voiceCmd ? null : parseImagineCommands(newContent);
+                if (voiceCmd) {
+                  if (voiceCmd.error) {
+                    tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_commandError", { error: voiceCmd.error }), timestamp: Date.now() });
+                    saveChat();
+                    renderChat();
+                  } else {
+                    generateSpeech(voiceCmd, state.activeTabId, index + 1);
+                  }
+                } else if (imagineCmds) {
                   const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
                   if (firstError) {
                     tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_commandError", { error: firstError.error }), timestamp: Date.now() });

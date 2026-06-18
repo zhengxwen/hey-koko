@@ -496,7 +496,7 @@ export function populateVoiceList() {
     fetch("/api/tts-voices").then(r => r.json()).catch(() => ({ voices: [] })),
   ]).then(([sysData, ttsData]) => {
     const prevValue = dom.voiceSelect.value; // preserve current pick on re-populate
-    dom.voiceSelect.length = 1; // keep the "auto" option
+    dom.voiceSelect.length = 0; // rebuild all options (no "auto" entry)
 
     const sysVoices = (sysData.voices || []).filter(v => /^zh/i.test(v.lang));
     if (sysVoices.length) {

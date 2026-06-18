@@ -232,32 +232,50 @@ voices (male/female) selectable in the **Settings voice dropdown** or inline wit
 | **CosyVoice** | higher Chinese quality | `cosyvoice:中文女`, `cosyvoice:中文男`, `cosyvoice:粤语女` |
 
 These need PyTorch/MLX wheels that don't yet exist for the newest Python, so
-install them in a **dedicated venv (Python 3.10–3.11)** and point `TTS_PYTHON`
-at it:
+install them in a **dedicated venv (Python 3.10–3.11)**. The easiest way is
+[uv](https://github.com/astral-sh/uv) (`brew install uv`), which also downloads
+the right Python for you:
 
 ```bash
-python3.11 -m venv ~/.hey-koko-tts
-source ~/.hey-koko-tts/bin/activate
-
-# Kokoro (light): also pulls misaki[zh] for Mandarin g2p
-pip install kokoro "misaki[zh]" numpy soundfile
-
-# CosyVoice (optional, higher quality) — clone + download the SFT model
-pip install modelscope
-python -c "from modelscope import snapshot_download; \
-  snapshot_download('iic/CosyVoice-300M-SFT', local_dir='pretrained_models/CosyVoice-300M-SFT')"
-# plus the CosyVoice package itself, see https://github.com/FunAudioLLM/CosyVoice
+# Kokoro (light & fast) — recommended
+uv venv --python 3.11 ~/venv/tts
+uv pip install --python ~/venv/tts/bin/python kokoro "misaki[zh]" numpy soundfile
 ```
 
-Then launch the server with `TTS_PYTHON` set:
+The server **auto-detects `~/venv/tts/bin/python`**, so you can just run
+`node server.js` — no extra env var needed. (To use a different venv, point
+`TTS_PYTHON` at its `bin/python`.) AAC encoding uses `ffmpeg` (`brew install
+ffmpeg`); without it the audio falls back to wav.
+
+<details>
+<summary>CosyVoice (optional, higher Chinese quality — harder on macOS)</summary>
+
+CosyVoice is not a pip package; clone the repo, install deps, and download the
+SFT model. Its `pynini`/WeTextProcessing dependency has no macOS wheel — install
+that one via conda-forge (`conda install -c conda-forge pynini`). Then add to the
+**same venv** so both engines show up:
 
 ```bash
-TTS_PYTHON=~/.hey-koko-tts/bin/python node server.js
+git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git ~/CosyVoice
+uv pip install --python ~/venv/tts/bin/python torch torchaudio modelscope \
+  librosa onnxruntime hyperpyyaml conformer diffusers gdown inflect lightning
+~/venv/tts/bin/python -c "from modelscope import snapshot_download; \
+  snapshot_download('iic/CosyVoice-300M-SFT', \
+  local_dir='$HOME/CosyVoice/pretrained_models/CosyVoice-300M-SFT')"
 ```
 
-Engines that fail to import are simply hidden from the dropdown — if neither is
-installed, the setting shows *"No local TTS detected"* and `/voice` reports it.
-Usage: `/voice 你好世界`, `/voice --use cosyvoice:中文男 --speed 1.1 早上好` (`-u`/`-s` short forms).
+Launch with the repo + model on the path:
+
+```bash
+PYTHONPATH=$HOME/CosyVoice:$HOME/CosyVoice/third_party/Matcha-TTS \
+COSYVOICE_MODEL_DIR=$HOME/CosyVoice/pretrained_models/CosyVoice-300M-SFT \
+TTS_PYTHON=~/venv/tts/bin/python node server.js
+```
+</details>
+
+Engines that fail to import are simply hidden from the voice dropdown (the macOS
+`say` voices are always available). Usage: `/voice 你好世界`,
+`/voice --use cosyvoice:中文男 --speed 1.1 早上好` (`-u`/`-s` short forms).
 
 Examples:
 - `/voice 今天天气不错` → uses the default voice from settings
