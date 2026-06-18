@@ -99,6 +99,7 @@ export const state = {
   currentThemeAccent: "teal",
   commandActiveIndex: 0,
   streamingInfo: null,
+  pendingGen: null,                  // in-progress image/video/audio gen: { tabId, label, insertIndex }
   comfyVideoModels: new Set(),       // ComfyUI model names that generate video
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
 };

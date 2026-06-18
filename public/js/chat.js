@@ -2300,6 +2300,23 @@ export function renderChat() {
     dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
   }
 
+  // Restore an in-progress media-generation (image/video/audio) bubble so it
+  // survives a tab switch — same approach as the streaming bubble above.
+  if (state.pendingGen && state.pendingGen.tabId === state.activeTabId) {
+    const bubble = document.createElement("div");
+    bubble.className = "message assistant thinking imageGen";
+    const body = document.createElement("div");
+    body.className = "markdownBody";
+    const dots = `<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>`;
+    body.innerHTML = `<span class="thinking-text">${state.pendingGen.label || ""}${dots}</span>`;
+    bubble.appendChild(body);
+    const idx = state.pendingGen.insertIndex;
+    const refNode = (idx != null && idx >= 0) ? dom.messagesEl.children[idx] : null;
+    if (refNode) dom.messagesEl.insertBefore(bubble, refNode);
+    else dom.messagesEl.appendChild(bubble);
+    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+  }
+
   highlightCodeBlocks();
   renderMermaidDiagrams();
   renderContextMeter();

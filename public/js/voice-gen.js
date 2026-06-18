@@ -76,6 +76,8 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
   setAvatarState("thinking");
 
   const dots = `<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>`;
+  // Track in state so the bubble can be restored after a tab switch.
+  state.pendingGen = { tabId, label: t("msg_generatingAudio"), insertIndex };
   let pending = null;
   if (state.activeTabId === tabId) {
     pending = document.createElement("div");
@@ -98,6 +100,7 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
       body: JSON.stringify({ text: speakText, voice, rate, timeout: 180 }),
     });
     const data = await resp.json();
+    state.pendingGen = null;
     if (pending) pending.remove();
 
     if (!resp.ok || !data.audio) {
@@ -133,15 +136,19 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
     setAvatarState("happy");
     setTimeout(() => setAvatarState("idle"), 2000);
   } catch (error) {
+    state.pendingGen = null;
     if (pending) pending.remove();
     if (error.name !== "AbortError") {
       const errMsg = { role: "assistant", content: `语音生成出错：${error.message}`, timestamp: Date.now() };
       tab.messages.push(errMsg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
+    } else if (state.activeTabId === tabId && _renderChat) {
+      _renderChat();
     }
     setAvatarState("idle");
   } finally {
+    state.pendingGen = null;
     if (_setGenerating) _setGenerating(false);
     state.imageGenAbortController = null;
   }
