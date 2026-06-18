@@ -7,6 +7,10 @@ import { setAvatarState } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab, getActiveTab } from './tabs.js';
 import { markdownToHtml } from './markdown.js';
+import {
+  pendingGenStart, pendingGenSetLabel, pendingGenSetEnhanced,
+  pendingGenAddImage, pendingGenSetProgress, pendingGenSetPreview, pendingGenClear,
+} from './pending-gen.js';
 
 // setGenerating and renderChat will be injected from main
 let _setGenerating = null;
@@ -344,26 +348,12 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
 
   const vidModel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
   const vidImgs = refImages && refImages.length > 1 ? ` · ${t("msg_inputImages", { n: refImages.length })}` : "";
-  const dots = `<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>`;
+  const vidSuffix = `${vidModel ? ` · ${vidModel}` : ""}${vidImgs}`;
   // When --enhance is set, show the enhancement step first, then flip to the
-  // generating status once the (slow) prompt rewrite returns.
+  // generating status once the (slow) prompt rewrite returns. The bubble lives in
+  // state.pendingGen so it survives a tab switch (see pending-gen.js).
   const firstStatus = parsed.enhance ? t("msg_enhancing") : t("msg_generatingVideo");
-  const vidLabel = `${firstStatus}${vidModel ? ` · ${vidModel}` : ""}${vidImgs}`;
-  // Track in state so the bubble can be restored after a tab switch.
-  state.pendingGen = { tabId, label: vidLabel, insertIndex };
-  let pending = null;
-  if (state.activeTabId === tabId) {
-    pending = document.createElement("div");
-    pending.className = "message assistant thinking imageGen";
-    const body = document.createElement("div");
-    body.className = "markdownBody";
-    body.innerHTML = `<span class="thinking-text">${vidLabel}${dots}</span>`;
-    pending.appendChild(body);
-    const refNode = insertIndex >= 0 ? dom.messagesEl.children[insertIndex] : null;
-    if (refNode) dom.messagesEl.insertBefore(pending, refNode);
-    else dom.messagesEl.appendChild(pending);
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
-  }
+  pendingGenStart({ tabId, kind: "video", label: `${firstStatus}${vidSuffix}`, insertIndex });
 
   // Enhance the prompt for the video model (motion / camera oriented) when asked.
   let videoPrompt = parsed.prompt;
@@ -383,9 +373,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       }
     } catch (e) {
       if (e.name === "AbortError") {
-        state.pendingGen = null;
-        if (pending) pending.remove();
-        if (state.activeTabId === tabId && _renderChat) _renderChat();
+        pendingGenClear(tabId);
         setAvatarState("idle");
         if (_setGenerating) _setGenerating(false);
         state.imageGenAbortController = null;
@@ -395,44 +383,22 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     }
     // Flip the status bubble to the generating state and surface the improved
     // prompt above it, so the user sees it BEFORE the (slow) video render.
-    if (state.pendingGen && state.pendingGen.tabId === tabId) {
-      state.pendingGen.label = `${t("msg_generatingVideo")}${vidModel ? ` · ${vidModel}` : ""}${vidImgs}`;
+    if (promptWasEnhanced) {
+      pendingGenSetEnhanced(tabId, `<div class="enhancedLabel">${t("msg_enhancedPrompt")}</div><blockquote>${escapeHtml(videoPrompt)}</blockquote>`);
     }
-    const body = pending && pending.querySelector(".markdownBody");
-    if (body) {
-      const preview = promptWasEnhanced
-        ? `<div class="enhancedPromptPreview"><div class="enhancedLabel">${t("msg_enhancedPrompt")}</div><blockquote>${escapeHtml(videoPrompt)}</blockquote></div>`
-        : "";
-      body.innerHTML = `${preview}<span class="thinking-text">${t("msg_generatingVideo")}${vidModel ? ` · ${vidModel}` : ""}${vidImgs}${dots}</span>`;
-    }
+    pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix}`);
   }
 
   // Live progress bar + preview frames via ComfyUI's WebSocket. The browser owns
   // the clientId and hands it to the server so both subscribe to the same stream.
+  // Both feed the pending bubble through state so they survive a tab switch.
   const clientId = crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`;
   const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
   // Stop button → abort: also tell ComfyUI to interrupt the running render.
   abortController.signal.addEventListener("abort", () => interruptComfy(comfyHost), { once: true });
-  let progressFill = null, previewImg = null, lastPreviewUrl = null;
-  if (pending) {
-    const prog = document.createElement("div");
-    prog.className = "comfyProgress";
-    prog.innerHTML = `<div class="comfyProgressBar"><div class="comfyProgressFill"></div></div><img class="comfyPreview" hidden alt="预览">`;
-    pending.appendChild(prog);
-    progressFill = prog.querySelector(".comfyProgressFill");
-    previewImg = prog.querySelector(".comfyPreview");
-  }
   const unsubscribe = subscribeComfyProgress(comfyHost, clientId, {
-    onProgress: (value, max) => {
-      if (progressFill && max) progressFill.style.width = `${Math.min(100, Math.round((value / max) * 100))}%`;
-    },
-    onPreview: (url) => {
-      if (!previewImg) { URL.revokeObjectURL(url); return; }
-      if (lastPreviewUrl) URL.revokeObjectURL(lastPreviewUrl);
-      lastPreviewUrl = url;
-      previewImg.src = url;
-      previewImg.hidden = false;
-    },
+    onProgress: (value, max) => pendingGenSetProgress(tabId, value, max),
+    onPreview: (url) => pendingGenSetPreview(tabId, url),
   });
 
   try {
@@ -450,8 +416,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       }),
     });
     const data = await resp.json();
-    state.pendingGen = null;
-    if (pending) pending.remove();
+    pendingGenClear(tabId);
     if (!resp.ok || !data.videos || !data.videos.length) {
       const errMsg = { role: "assistant", content: `视频生成失败：${data.error || "未返回视频"}`, timestamp: Date.now() };
       if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errMsg);
@@ -498,21 +463,17 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     setAvatarState("happy");
     setTimeout(() => setAvatarState("idle"), 2000);
   } catch (error) {
-    state.pendingGen = null;
-    if (pending) pending.remove();
+    pendingGenClear(tabId);
     if (error.name !== "AbortError") {
       const errMsg = { role: "assistant", content: `视频生成出错：${error.message}`, timestamp: Date.now() };
       tab.messages.push(errMsg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
-    } else if (state.activeTabId === tabId && _renderChat) {
-      _renderChat();
     }
     setAvatarState("idle");
   } finally {
-    state.pendingGen = null;
+    pendingGenClear(tabId);
     unsubscribe();
-    if (lastPreviewUrl) URL.revokeObjectURL(lastPreviewUrl);
     if (_setGenerating) _setGenerating(false);
     state.imageGenAbortController = null;
   }
@@ -556,47 +517,12 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
 
   // Status bubble. When --enhance is used we show it up-front (with an
   // "enhancing prompt" status) so the user sees activity during the slow
-  // enhancement step, then flip it to the "generating" status below.
-  const thinkingDots = `<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>`;
-  let pending = null;
-  function createPending(text) {
-    // Track the in-progress bubble in state so it can be restored after a tab
-    // switch (set regardless of whether this tab is currently visible).
-    state.pendingGen = { tabId, label: text, insertIndex };
-    if (state.activeTabId !== tabId) return;
-    pending = document.createElement("div");
-    pending.className = "message assistant thinking imageGen";
-    const body = document.createElement("div");
-    body.className = "markdownBody";
-    body.innerHTML = `<span class="thinking-text">${text}${thinkingDots}</span>`;
-    pending.appendChild(body);
-    const refNode = insertIndex >= 0 ? dom.messagesEl.children[insertIndex] : null;
-    if (refNode) {
-      dom.messagesEl.insertBefore(pending, refNode);
-    } else {
-      dom.messagesEl.appendChild(pending);
-    }
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
-  }
-  function setPendingText(text) {
-    if (state.pendingGen && state.pendingGen.tabId === tabId) state.pendingGen.label = text;
-    const span = pending && pending.querySelector(".thinking-text");
-    if (span) span.innerHTML = `${text}${thinkingDots}`;
-  }
-  // Show the improved prompt(s) inside the pending bubble, above the status
-  // line, so the user sees them BEFORE generation finishes.
-  function showEnhancedPreview(promptTexts) {
-    const body = pending && pending.querySelector(".markdownBody");
-    if (!body || !promptTexts.length) return;
-    let pre = body.querySelector(".enhancedPromptPreview");
-    if (!pre) {
-      pre = document.createElement("div");
-      pre.className = "enhancedPromptPreview";
-      body.insertBefore(pre, body.firstChild);
-    }
-    pre.innerHTML = `<div class="enhancedLabel">${t("msg_enhancedPrompt")}</div>` +
-      promptTexts.map((p) => `<blockquote>${escapeHtml(p)}</blockquote>`).join("");
-  }
+  // enhancement step, then flip it to the "generating" status below. The bubble
+  // lives in state.pendingGen so it survives a tab switch (see pending-gen.js).
+  // Build the enhanced-prompt preview block's inner HTML from a list of prompts.
+  const enhancedHtml = (promptTexts) =>
+    `<div class="enhancedLabel">${t("msg_enhancedPrompt")}</div>` +
+    promptTexts.map((p) => `<blockquote>${escapeHtml(p)}</blockquote>`).join("");
 
   // Set up cancellation before enhancement so the stop button can interrupt the
   // (potentially slow) prompt-enhancement step, not just image generation.
@@ -606,7 +532,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
 
   if (anyEnhance) {
     setAvatarState("thinking");
-    createPending(t("msg_enhancing"));
+    pendingGenStart({ tabId, kind: "image", label: t("msg_enhancing"), insertIndex });
   }
 
   // Enhance prompts if requested
@@ -636,9 +562,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     }
   } catch (e) {
     // Enhancement cancelled by the user — clean up the status bubble and bail.
-    state.pendingGen = null;
-    if (pending) pending.remove();
-    if (state.activeTabId === tabId && _renderChat) _renderChat();
+    pendingGenClear(tabId);
     setAvatarState("idle");
     if (_setGenerating) _setGenerating(false);
     state.imageGenAbortController = null;
@@ -649,7 +573,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   const enhancedShown = parsedList
     .map((p, i) => (p.enhance && prompts[i] !== p.prompt) ? prompts[i] : null)
     .filter(Boolean);
-  if (enhancedShown.length) showEnhancedPreview(enhancedShown);
+  if (enhancedShown.length) pendingGenSetEnhanced(tabId, enhancedHtml(enhancedShown));
 
   setAvatarState("thinking");
 
@@ -660,39 +584,26 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   const statusSuffix = (shortModel ? ` · ${shortModel}` : "") + (refCount > 1 ? ` · ${t("msg_inputImages", { n: refCount })}` : "");
   const genText = (done) => (totalCount > 1 ? t("msg_generatingCount", { done, total: totalCount }) : t("msg_generating")) + statusSuffix;
 
-  if (pending) {
-    setPendingText(genText("0"));
+  // Start tracking now (or just relabel if the enhance step already started it).
+  if (state.pendingGen && state.pendingGen.tabId === tabId) {
+    pendingGenSetLabel(tabId, genText("0"));
   } else {
-    createPending(genText("0"));
+    pendingGenStart({ tabId, kind: "image", label: genText("0"), insertIndex });
   }
 
   // Live progress bar (+ preview frame for ComfyUI). ComfyUI streams over its
   // WebSocket (keyed by clientId); Ollama streams NDJSON progress on the same HTTP
-  // response (read below). One bar is shared across a batch.
-  let comfyClientId = null, imgUnsub = () => {}, imgLastPreviewUrl = null, progressFill = null;
-  const setProgress = (value, max) => {
-    if (progressFill && max) progressFill.style.width = `${Math.min(100, Math.round((value / max) * 100))}%`;
-  };
-  if (pending) {
-    const prog = document.createElement("div");
-    prog.className = "comfyProgress";
-    prog.innerHTML = `<div class="comfyProgressBar"><div class="comfyProgressFill"></div></div><img class="comfyPreview" hidden alt="预览">`;
-    pending.appendChild(prog);
-    progressFill = prog.querySelector(".comfyProgressFill");
-    const previewImg = prog.querySelector(".comfyPreview");
-    if (useComfy) {
-      comfyClientId = crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`;
-      const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
-      imgUnsub = subscribeComfyProgress(comfyHost, comfyClientId, {
-        onProgress: setProgress,
-        onPreview: (url) => {
-          if (imgLastPreviewUrl) URL.revokeObjectURL(imgLastPreviewUrl);
-          imgLastPreviewUrl = url;
-          previewImg.src = url;
-          previewImg.hidden = false;
-        },
-      });
-    }
+  // response (read below). One bar is shared across a batch. Both feed the
+  // pending bubble through state so updates survive a tab switch.
+  let comfyClientId = null, imgUnsub = () => {};
+  const setProgress = (value, max) => pendingGenSetProgress(tabId, value, max);
+  if (useComfy) {
+    comfyClientId = crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`;
+    const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
+    imgUnsub = subscribeComfyProgress(comfyHost, comfyClientId, {
+      onProgress: setProgress,
+      onPreview: (url) => pendingGenSetPreview(tabId, url),
+    });
   }
   // Stop button → abort: also tell ComfyUI to interrupt the running render
   // (aborting the fetch alone leaves the GPU working). Ollama is cancelled
@@ -705,13 +616,6 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   try {
     const generatedImages = [];
     let errorCount = 0;
-
-    let pendingGrid = null;
-    if (pending) {
-      pendingGrid = document.createElement("div");
-      pendingGrid.className = "imageGrid";
-      pending.appendChild(pendingGrid);
-    }
 
     const promises = [];
     for (let ci = 0; ci < parsedList.length; ci++) {
@@ -767,30 +671,18 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
               if (r.ok) {
                 const imgs = (data.images || []).filter((s) => s && s.length > 100);
                 generatedImages.push(...imgs);
-                if (pendingGrid) {
-                  for (const imgData of imgs) {
-                    const img = document.createElement("img");
-                    img.className = "generatedImage";
-                    if (imgData.startsWith("data:")) {
-                      img.src = imgData;
-                    } else {
-                      const mime = imgData.startsWith("/9j/") ? "image/jpeg" : "image/png";
-                      img.src = `data:${mime};base64,${imgData}`;
-                    }
-                    img.alt = "AI 生成的图片";
-                    pendingGrid.appendChild(img);
-                    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
-                  }
+                for (const imgData of imgs) {
+                  const src = imgData.startsWith("data:")
+                    ? imgData
+                    : `data:${imgData.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${imgData}`;
+                  pendingGenAddImage(tabId, src);
                 }
               } else {
                 errorCount++;
                 console.warn("[image-gen] error:", data.error);
               }
               if (totalCount > 1) {
-                const label = genText(generatedImages.length + errorCount);
-                if (state.pendingGen && state.pendingGen.tabId === tabId) state.pendingGen.label = label;
-                const body = pending && pending.querySelector(".markdownBody");
-                if (body) body.innerHTML = `<span class="thinking-text">${label}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+                pendingGenSetLabel(tabId, genText(generatedImages.length + errorCount));
               }
             })
             .catch((err) => {
@@ -802,8 +694,6 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     }
 
     await Promise.all(promises);
-    // Generation finished — drop the restorable pending marker before render.
-    state.pendingGen = null;
 
     let content = "";
     // Ollama image editing only works reliably on flux2 models; warn otherwise.
@@ -854,19 +744,19 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     } else {
       tab.messages.push(replyMsg);
     }
+    // Drop the restorable pending bubble just before render so the live preview
+    // grid stays visible right up until the final message replaces it.
+    pendingGenClear(tabId);
     saveChat();
     if (state.activeTabId === tabId && _renderChat) _renderChat();
     setAvatarState("happy");
     setTimeout(() => setAvatarState("idle"), 2000);
   } catch (error) {
-    state.pendingGen = null;
+    pendingGenClear(tabId);
     if (error.name === "AbortError") {
-      if (pending) pending.remove();
-      // Clear any bubble restored after a tab switch (not the `pending` ref).
-      if (state.activeTabId === tabId && _renderChat) _renderChat();
+      // pendingGenClear already removed the bubble (live or restored).
     } else if (generatedImages.length > 0) {
       // Preserve already-generated images even when an error occurs
-      if (pending) pending.remove();
       let content = `⚠️ 图片生成出错：${error.message}\n\n`;
       const enhancedPrompts = parsedList
         .map((p, i) => (p.enhance && prompts[i] !== p.prompt) ? prompts[i] : null)
@@ -899,16 +789,17 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     } else {
-      if (pending) {
-        pending.className = "message system";
-        pending.textContent = `图片生成出错：${error.message}`;
-      }
+      // Failed with no images — surface the error as a normal message.
+      const errMsg = { role: "assistant", content: `图片生成出错：${error.message}`, timestamp: Date.now() };
+      if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errMsg);
+      else tab.messages.push(errMsg);
+      saveChat();
+      if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
     setAvatarState("idle");
   } finally {
-    state.pendingGen = null;
+    pendingGenClear(tabId);
     imgUnsub();
-    if (imgLastPreviewUrl) URL.revokeObjectURL(imgLastPreviewUrl);
     if (_setGenerating) _setGenerating(false);
     state.imageGenAbortController = null;
   }

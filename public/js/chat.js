@@ -11,6 +11,7 @@ import { parseNoteCommand, parseImagineCommands, generateImage, videoThumbnail }
 import { parseVoiceCommand, generateSpeech } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
+import { buildPendingGenBubble } from './pending-gen.js';
 import { t, getPrompt, getPromptLanguage } from './i18n.js';
 import { getNumCtx, recordContextUsage, renderContextMeter } from './context-meter.js';
 import { addMemory, getMemoryPromptBlock } from './memory.js';
@@ -2301,15 +2302,11 @@ export function renderChat() {
   }
 
   // Restore an in-progress media-generation (image/video/audio) bubble so it
-  // survives a tab switch — same approach as the streaming bubble above.
+  // survives a tab switch — same approach as the streaming bubble above. Rebuilt
+  // from state.pendingGen (label, enhanced prompt, images, progress, preview), so
+  // the live update helpers re-find it by class and keep streaming into it.
   if (state.pendingGen && state.pendingGen.tabId === state.activeTabId) {
-    const bubble = document.createElement("div");
-    bubble.className = "message assistant thinking imageGen";
-    const body = document.createElement("div");
-    body.className = "markdownBody";
-    const dots = `<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>`;
-    body.innerHTML = `<span class="thinking-text">${state.pendingGen.label || ""}${dots}</span>`;
-    bubble.appendChild(body);
+    const bubble = buildPendingGenBubble(state.pendingGen);
     const idx = state.pendingGen.insertIndex;
     const refNode = (idx != null && idx >= 0) ? dom.messagesEl.children[idx] : null;
     if (refNode) dom.messagesEl.insertBefore(bubble, refNode);

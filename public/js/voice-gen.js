@@ -8,6 +8,7 @@ import { setAvatarState } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab } from './tabs.js';
 import { markdownToSpeechText } from './speech.js';
+import { pendingGenStart, pendingGenClear } from './pending-gen.js';
 
 let _setGenerating = null;
 let _renderChat = null;
@@ -75,22 +76,8 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
   if (_setGenerating) _setGenerating(true);
   setAvatarState("thinking");
 
-  const dots = `<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>`;
-  // Track in state so the bubble can be restored after a tab switch.
-  state.pendingGen = { tabId, label: t("msg_generatingAudio"), insertIndex };
-  let pending = null;
-  if (state.activeTabId === tabId) {
-    pending = document.createElement("div");
-    pending.className = "message assistant thinking imageGen";
-    const body = document.createElement("div");
-    body.className = "markdownBody";
-    body.innerHTML = `<span class="thinking-text">${t("msg_generatingAudio")}${dots}</span>`;
-    pending.appendChild(body);
-    const refNode = insertIndex >= 0 ? dom.messagesEl.children[insertIndex] : null;
-    if (refNode) dom.messagesEl.insertBefore(pending, refNode);
-    else dom.messagesEl.appendChild(pending);
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
-  }
+  // Track in state so the spinner survives a tab switch (see pending-gen.js).
+  pendingGenStart({ tabId, kind: "audio", label: t("msg_generatingAudio"), insertIndex });
 
   try {
     const resp = await fetch("/api/tts", {
@@ -100,8 +87,7 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
       body: JSON.stringify({ text: speakText, voice, rate, timeout: 180 }),
     });
     const data = await resp.json();
-    state.pendingGen = null;
-    if (pending) pending.remove();
+    pendingGenClear(tabId);
 
     if (!resp.ok || !data.audio) {
       const errMsg = { role: "assistant", content: `语音生成失败：${data.error || "未返回音频"}`, timestamp: Date.now() };
@@ -136,19 +122,16 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
     setAvatarState("happy");
     setTimeout(() => setAvatarState("idle"), 2000);
   } catch (error) {
-    state.pendingGen = null;
-    if (pending) pending.remove();
+    pendingGenClear(tabId);
     if (error.name !== "AbortError") {
       const errMsg = { role: "assistant", content: `语音生成出错：${error.message}`, timestamp: Date.now() };
       tab.messages.push(errMsg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
-    } else if (state.activeTabId === tabId && _renderChat) {
-      _renderChat();
     }
     setAvatarState("idle");
   } finally {
-    state.pendingGen = null;
+    pendingGenClear(tabId);
     if (_setGenerating) _setGenerating(false);
     state.imageGenAbortController = null;
   }
