@@ -5,6 +5,13 @@ import { getActiveTab } from './tabs.js';
 import { dbSaveTabs } from './db.js';
 import { t } from './i18n.js';
 
+// "Her personality" is only editable when the personality type is "Custom preset".
+export function syncPersonaEditable() {
+  const isCustom = dom.personalitySelect.value === "temp";
+  dom.persona.readOnly = !isCustom;
+  dom.persona.classList.toggle("isReadonly", !isCustom);
+}
+
 export function saveCurrentSettings() {
   const currentTab = getActiveTab();
   if (currentTab) {

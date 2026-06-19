@@ -6,7 +6,7 @@ import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
 import { initAvatar } from './avatar.js';
 import { stopSpeech, populateVoiceList, speakAdjacent } from './speech.js';
-import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown } from './settings.js';
+import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
 import { setDeps as imageGenSetDeps } from './image-gen.js';
@@ -95,6 +95,7 @@ loadSavedSettings();
     dom.personalitySelect.value = initialTab.personality;
     dom.persona.value = initialTab.persona || getPersonalityPreset(initialTab.personality, getUILanguage()) || PERSONALITY_PRESETS.sweet;
   }
+  syncPersonaEditable();
 }
 
 // Personality select handler
@@ -106,6 +107,7 @@ dom.personalitySelect.addEventListener("change", () => {
   } else {
     dom.persona.value = getPersonalityPreset(val, getUILanguage()) || PERSONALITY_PRESETS.sweet;
   }
+  syncPersonaEditable();
   const currentTab = getActiveTab();
   if (currentTab) {
     currentTab.personality = val;
@@ -942,7 +944,12 @@ function exportJson(tab) {
     if (m.generatedVideos) { delete m.generatedVideos; delete m.videoMime; }
     return m;
   });
-  const data = JSON.stringify({ title: tab.title, userName: dom.userName.value, personality: tab.personality, persona: tab.persona, messages }, null, 2);
+  const payload = { title: tab.title, userName: dom.userName.value, personality: tab.personality };
+  // "Her personality" is only a user-authored value for the custom preset; for
+  // the built-in types it's derived from the preset, so don't export it.
+  if (tab.personality === "temp") payload.persona = tab.persona;
+  payload.messages = messages;
+  const data = JSON.stringify(payload, null, 2);
   downloadBlob(`${tab.title || "对话"}.json`, data, "application/json");
 }
 

@@ -1,7 +1,7 @@
 // Tab management and tag context menu
 import { dom, state } from './state.js';
 import { PERSONALITY_PRESETS, TAG_COLORS } from './constants.js';
-import { saveTabs, saveChat } from './settings.js';
+import { saveTabs, saveChat, syncPersonaEditable } from './settings.js';
 import { stopSpeech } from './speech.js';
 import { escapeHtml } from './utils.js';
 import { dbLoadTabs, dbLoadActiveTabId, migrateFromLocalStorage } from './db.js';
@@ -83,6 +83,7 @@ export function switchTab(tabId) {
     dom.personalitySelect.value = newTab.personality;
     dom.persona.value = newTab.persona || PERSONALITY_PRESETS[newTab.personality] || PERSONALITY_PRESETS.sweet;
   }
+  syncPersonaEditable();
   // Restore the new tab's saved draft (empty if it has none).
   dom.messageInput.value = (newTab && newTab.draft) || "";
   saveTabs();

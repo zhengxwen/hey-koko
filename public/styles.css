@@ -755,6 +755,11 @@ textarea {
   font-weight: 400;
 }
 
+textarea.isReadonly {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 input:focus,
 select:focus,
 textarea:focus {
