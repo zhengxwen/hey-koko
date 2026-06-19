@@ -1,6 +1,34 @@
 import Cocoa
 import WebKit
 
+// Custom window to handle zoom keyboard shortcuts
+class ZoomWindow: NSWindow {
+    var webView: WKWebView?
+
+    override func keyDown(with event: NSEvent) {
+        let commandKey = event.modifierFlags.contains(.command)
+        let characters = event.characters?.lowercased() ?? ""
+
+        if commandKey {
+            if characters == "=" || characters == "+" {
+                // Cmd+ : Zoom in
+                webView?.magnification += 0.1
+                return
+            } else if characters == "-" {
+                // Cmd- : Zoom out
+                webView?.magnification -= 0.1
+                return
+            } else if characters == "0" {
+                // Cmd+0 : Reset zoom
+                webView?.magnification = 1.0
+                return
+            }
+        }
+
+        super.keyDown(with: event)
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var webView: WKWebView!
@@ -92,7 +120,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let x = screenFrame.origin.x + (screenFrame.width - width) / 2
         let y = screenFrame.origin.y + (screenFrame.height - height) / 2
 
-        window = NSWindow(
+        window = ZoomWindow(
             contentRect: NSRect(x: x, y: y, width: width, height: height),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
@@ -109,6 +137,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         webView = WKWebView(frame: window.contentView!.bounds, configuration: config)
         webView.autoresizingMask = [.width, .height]
         window.contentView?.addSubview(webView)
+
+        // Connect webView to window for zoom handling
+        (window as? ZoomWindow)?.webView = webView
     }
 
     func waitAndLoad() {
