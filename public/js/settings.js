@@ -19,6 +19,7 @@ export function saveCurrentSettings() {
       imageModel: dom.imageModelSelect.value,
       comfyModel: dom.comfyModelSelect?.value || "",
       comfyParams: {
+        negative: dom.comfyParamNegative?.value || "",
         sampler: dom.comfyParamSampler?.value || "",
         scheduler: dom.comfyParamScheduler?.value || "",
         steps: dom.comfyParamSteps?.value || "",
@@ -118,6 +119,7 @@ export function loadSavedSettings() {
   if (savedSettings.comfyModel && dom.comfyModelSelect) dom.comfyModelSelect.value = savedSettings.comfyModel;
   if (savedSettings.comfyParams) {
     const cp = savedSettings.comfyParams;
+    if (dom.comfyParamNegative) dom.comfyParamNegative.value = cp.negative || "";
     if (dom.comfyParamSampler) dom.comfyParamSampler.value = cp.sampler || "";
     if (dom.comfyParamScheduler) dom.comfyParamScheduler.value = cp.scheduler || "";
     if (dom.comfyParamSteps) dom.comfyParamSteps.value = cp.steps || "";

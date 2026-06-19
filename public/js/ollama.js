@@ -303,6 +303,7 @@ function initComfyParamsModal() {
   const modal = dom.comfyParamsModal;
   if (!modal) return;
   const fields = [
+    dom.comfyParamNegative,
     dom.comfyParamSampler,
     dom.comfyParamScheduler,
     dom.comfyParamSteps,

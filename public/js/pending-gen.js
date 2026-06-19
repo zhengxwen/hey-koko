@@ -42,12 +42,20 @@ function _ensureGrid(bubble) {
   return grid;
 }
 
+// Inner markup of a .comfyProgress block: a fill bar at the given percent and an
+// optional preview frame. Single source of truth for both the live patch path
+// (_ensureProgress) and the full rebuild (buildPendingGenBubble).
+function _progressHtml(pct, preview) {
+  return `<div class="comfyProgressBar"><div class="comfyProgressFill" style="width:${pct}%"></div></div>`
+    + `<img class="comfyPreview"${preview ? ` src="${preview}"` : ' hidden'} alt="Preview">`;
+}
+
 function _ensureProgress(bubble) {
   let prog = bubble.querySelector('.comfyProgress');
   if (!prog) {
     prog = document.createElement('div');
     prog.className = 'comfyProgress';
-    prog.innerHTML = `<div class="comfyProgressBar"><div class="comfyProgressFill"></div></div><img class="comfyPreview" hidden alt="预览">`;
+    prog.innerHTML = _progressHtml(0, null);
     bubble.appendChild(prog);
   }
   return prog;
@@ -75,7 +83,7 @@ export function buildPendingGenBubble(pg) {
     const prog = document.createElement('div');
     prog.className = 'comfyProgress';
     const pct = (pg.progress && pg.progress.max) ? Math.min(100, Math.round(pg.progress.value / pg.progress.max * 100)) : 0;
-    prog.innerHTML = `<div class="comfyProgressBar"><div class="comfyProgressFill" style="width:${pct}%"></div></div><img class="comfyPreview"${pg.preview ? ` src="${pg.preview}"` : ' hidden'} alt="预览">`;
+    prog.innerHTML = _progressHtml(pct, pg.preview);
     bubble.appendChild(prog);
   }
   return bubble;

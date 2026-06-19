@@ -45,6 +45,15 @@ function comfyOverrides() {
   return ov;
 }
 
+// The persistent negative prompt from the ⚙ ComfyUI params modal. A per-command
+// `--no ...` always wins; this is the default applied to image AND video gen when
+// no `--no` is given. Empty → undefined so the server falls back to its own default.
+function comfyNegative(parsedNegative) {
+  if (parsedNegative && parsedNegative.trim()) return parsedNegative.trim();
+  const v = dom.comfyParamNegative?.value?.trim();
+  return v || undefined;
+}
+
 export function parseNoteCommand(input) {
   const match = input.match(/^\/note\s+(.+)$/s);
   if (!match) return null;
@@ -409,6 +418,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       body: JSON.stringify({
         model,
         prompt: videoPrompt,
+        negative_prompt: comfyNegative(parsed.negativePrompt),
         options: reqOptions,
         images: refImages || undefined,
         timeout: 600, // video is slow
@@ -651,7 +661,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
             body: JSON.stringify({
               model: activeModel,
               prompt,
-              negative_prompt: parsed.negativePrompt || undefined,
+              negative_prompt: comfyNegative(parsed.negativePrompt),
               options: reqOptions,
               images: refImages || undefined,
               timeout: reqTimeout,

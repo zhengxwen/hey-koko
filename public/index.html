@@ -411,6 +411,10 @@
         <div class="comfyParamsBody">
           <p class="hint" id="comfyParamsHint">Leave empty = auto-pick the optimal params for the selected model</p>
           <label>
+            <span id="comfyParamNegativeLabel">Negative prompt</span>
+            <textarea id="comfyParamNegative" rows="2" placeholder="e.g. blurry, low quality, extra fingers (overridden by --no)"></textarea>
+          </label>
+          <label>
             <span id="comfyParamSamplerLabel">Sampler</span>
             <select id="comfyParamSampler">
               <option value="">Auto</option>

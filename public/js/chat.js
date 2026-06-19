@@ -47,9 +47,11 @@ function deleteChatMessage(index) {
   if (tab.locked) return;
   if (tab.messages[index]?.locked) return; // pinned bubble — can't delete
   stopSpeech();
+  const scrollY = dom.messagesEl.scrollTop;
   tab.messages.splice(index, 1);
   saveChat();
   renderChat();
+  dom.messagesEl.scrollTop = scrollY;
 }
 
 function deleteMessageImage(msgIndex, imgIndex) {
