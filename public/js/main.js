@@ -21,6 +21,7 @@ import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
 import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
 import { loadReminders, getReminders, removeReminder, describeReminder, setReminderChangeHandler, setDeliverHandler, startScheduler } from './proactive.js';
+import { initPanelResize } from './panel-resize.js';
 
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
@@ -1899,6 +1900,9 @@ state.openLightbox = lightboxApi.openLightbox;
 
 // Initialize archive
 initArchive();
+
+// Enable drag-to-resize / auto-collapse for the settings panel.
+initPanelResize();
 
 // Initial render
 saveTabs();

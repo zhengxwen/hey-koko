@@ -208,10 +208,76 @@ textarea {
 
 .shell {
   display: grid;
-  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: var(--panel-w, 320px) 10px minmax(0, 1fr);
+  gap: 8px;
   height: 100vh;
   padding: 18px;
+}
+
+.shell.panelCollapsed {
+  grid-template-columns: 0 10px minmax(0, 1fr);
+}
+
+.shell.panelCollapsed .panel {
+  display: none;
+}
+
+/* The panel is display:none when collapsed; pin the survivors to their tracks so
+   grid auto-placement doesn't slide the chat area into the gutter column. */
+.shell.panelCollapsed .panelResizer {
+  grid-column: 2;
+}
+
+.shell.panelCollapsed .chatArea {
+  grid-column: 3;
+}
+
+/* Draggable gutter between the settings panel and the chat area. */
+.panelResizer {
+  align-self: stretch;
+  width: 10px;
+  border-radius: 6px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  transition: background 0.15s;
+}
+
+.panelResizer::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 4px;
+  height: 42px;
+  border-radius: 4px;
+  background: var(--line);
+  transition: background 0.15s;
+}
+
+.panelResizer:hover::before,
+.panelResizer.isDragging::before {
+  background: var(--accent);
+}
+
+.panelResizer:hover {
+  background: var(--accent-subtle);
+}
+
+/* When collapsed, the gutter is the only way back — make it inviting. */
+.shell.panelCollapsed .panelResizer {
+  cursor: pointer;
+}
+
+.shell.panelCollapsed .panelResizer::before {
+  height: 60px;
+  background: var(--accent);
+}
+
+body.isResizingPanel {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .panel,
@@ -2463,11 +2529,25 @@ button.secondary:disabled {
 }
 
 @media (max-width: 760px) {
-  .shell {
+  .shell,
+  .shell.panelCollapsed {
     grid-template-columns: 1fr;
     height: auto;
     min-height: 100vh;
     padding: 10px;
+  }
+
+  .panelResizer {
+    display: none;
+  }
+
+  .shell.panelCollapsed .panel {
+    display: flex;
+  }
+
+  .shell.panelCollapsed .panelResizer,
+  .shell.panelCollapsed .chatArea {
+    grid-column: auto;
   }
 
   .panel {
