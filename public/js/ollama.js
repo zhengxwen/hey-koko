@@ -135,10 +135,13 @@ export async function loadComfyModels() {
       option.textContent = t("comfy_model_none");
       dom.comfyModelSelect.appendChild(option);
     } else {
+      // Display without the file extension; the value keeps the full filename
+      // (the server matches models by filename). An explicit label wins as-is.
+      const stripExt = (n) => n.replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
       const addOption = (parent, name, label) => {
         const option = document.createElement("option");
         option.value = name;
-        option.textContent = label || name;
+        option.textContent = label || stripExt(name);
         parent.appendChild(option);
       };
       if (models.length) {

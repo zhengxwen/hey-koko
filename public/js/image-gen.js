@@ -436,9 +436,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       setAvatarState("idle");
       return;
     }
-    // "Video generated (W×H)" in the prompt language, with the real output size.
+    // "Video generated (W×H) · <model>" in the prompt language, with the real
+    // output size and the model used (the selected name, extension stripped).
     const plang = getPromptLanguage();
-    const doneLine = t("msg_videoDone", { w: data.width || "?", h: data.height || "?" }, plang);
+    const doneLine = t("msg_videoDone", { w: data.width || "?", h: data.height || "?" }, plang)
+      + (vidModel ? ` · ${vidModel}` : "");
     // If more images were attached than the model can use, tell the user how many
     // were actually consumed (2 = first-last-frame, 1 = plain image-to-video).
     const nInput = refImages ? refImages.length : 0;
@@ -736,6 +738,8 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       doneLine = totalCount > 1
         ? t("msg_imageDoneBatch", { done: generatedImages.length, total: totalCount, ...dims }, plang)
         : t("msg_imageDone", dims, plang);
+      // Append the model used (selected name, extension stripped).
+      if (shortModel) doneLine += ` · ${shortModel}`;
     }
 
     const replyMsg = {

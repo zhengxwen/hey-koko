@@ -25,6 +25,7 @@ function editTypeOf(model) {
   if (/omnigen/i.test(model)) return "omnigen";
   if (/pix2pix|instruct.?pix|ip2p/i.test(model)) return "ip2p";
   if (/hidream.?e1/i.test(model)) return "hidream-e1";
+  if (/boogu.*edit|boogu[-_]?image[-_]?edit/i.test(model)) return "boogu-edit";
   return null;
 }
 
@@ -101,7 +102,11 @@ async function proxyComfyModels(res) {
     const hidreamImage = all.filter((n) => /hidream.?i1/i.test(n));
     // Z-Image-Turbo lives in diffusion_models/ (UNETLoader) — add it to txt2img.
     const zimage = all.filter((n) => /z.?image/i.test(n));
-    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...zimage], editModels, videoModels });
+    // boogu (base + turbo) — UNETLoader image model, AuraFlow/SD3-latent pipeline.
+    // boogu_image_edit is an instruction-edit model → excluded here (it's picked
+    // up by editTypeOf into editModels instead).
+    const boogu = all.filter((n) => /boogu/i.test(n) && !editTypeOf(n));
+    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...zimage, ...boogu], editModels, videoModels });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [] });
   }
@@ -149,6 +154,17 @@ async function editCompanions(editType) {
     if (missing.length) throw new Error("缺少 OmniGen2 所需文件：\n- " + missing.join("\n- "));
     return { clip, vae };
   }
+  if (editType === "boogu-edit") {
+    // Same companions as boogu txt2img: qwen3vl encoder (CLIPLoader type "boogu")
+    // + the flux VAE.
+    const clip = find(clips, /qwen3vl/i) || find(clips, /qwen.*vl.*8b/i);
+    const vae = find(vaes, /flux1?_?vae/i) || find(vaes, /flux/i);
+    const missing = [];
+    if (!clip) missing.push("qwen3vl_8b_fp8_scaled.safetensors → text_encoders/");
+    if (!vae) missing.push("flux1_vae_bf16.safetensors → vae/");
+    if (missing.length) throw new Error("缺少 boogu 编辑所需文件：\n- " + missing.join("\n- "));
+    return { clip, vae };
+  }
   return {};
 }
 
@@ -185,6 +201,21 @@ function familyPreset(model) {
     // Z-Image-Turbo: distilled few-step model — cfg=1 with the negative zeroed,
     // ~8 steps, res_multistep/simple (per the official ComfyUI template).
     return { sampler: "res_multistep", scheduler: "simple", cfg: 1, guidance: null, steps: 8, sd3Latent: true };
+  }
+  if (/boogu.*edit|boogu[-_]?image[-_]?edit/i.test(model)) {
+    // boogu instruction-edit (boogu_image_edit): res_multistep/simple, cfg 2.5,
+    // 20 steps (exact from the user's boogu_image_edit_api.json export).
+    return { sampler: "res_multistep", scheduler: "simple", cfg: 2.5, guidance: null, steps: 20, sd3Latent: false };
+  }
+  if (/boogu/i.test(model)) {
+    // boogu: AuraFlow/SD3-latent image model (qwen3vl CLIP type "boogu" + flux VAE).
+    // turbo = distilled: cfg=1 / 8 steps / res_multistep+simple (from the user's
+    // exported API graph). base = non-distilled — real CFG + a proper negative and
+    // more steps (best-guess until a base graph is provided).
+    if (/turbo/i.test(model)) {
+      return { sampler: "res_multistep", scheduler: "simple", cfg: 1, guidance: null, steps: 4, sd3Latent: true };
+    }
+    return { sampler: "res_multistep", scheduler: "simple", cfg: 4.5, guidance: null, steps: 28, sd3Latent: true };
   }
   if (/flux/i.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: 3.5, steps: 20, sd3Latent: true };
@@ -297,7 +328,9 @@ async function zimageCompanions() {
     comfyEnum("VAELoader", "vae_name"),
   ]);
   const find = (list, re) => list.find((x) => re.test(x));
-  const clip = find(clips, /qwen_?3/i);
+  // Qwen3-4B encoder — NOT the Qwen3-VL (vision) one. boogu's `qwen3vl_8b` also
+  // matches /qwen_?3/ and sorts first, so exclude any "vl" variant explicitly.
+  const clip = clips.find((x) => /qwen_?3/i.test(x) && !/vl/i.test(x));
   const vae = find(vaes, /^ae\b|ae\.safetensors/i) || find(vaes, /flux/i);
   const missing = [];
   if (!clip) missing.push("qwen_3_4b.safetensors → text_encoders/");
@@ -323,6 +356,57 @@ function buildZImage({ model, prompt, width, height, seed, cfg, comp }) {
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
+}
+
+// boogu needs its own text encoder (qwen3vl, loaded with CLIPLoader type "boogu")
+// and the flux VAE (flux1_vae_bf16, NOT the bare ae). Throws naming any missing
+// file so the UI can tell the user what to download.
+async function boogiCompanions() {
+  const [clips, vaes] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+  ]);
+  const find = (list, re) => list.find((x) => re.test(x));
+  const clip = find(clips, /qwen3vl/i) || find(clips, /qwen.*vl.*8b/i);
+  const vae = find(vaes, /flux1?_?vae/i) || find(vaes, /flux/i);
+  const missing = [];
+  if (!clip) missing.push("qwen3vl_8b_fp8_scaled.safetensors → text_encoders/");
+  if (!vae) missing.push("flux1_vae_bf16.safetensors → vae/");
+  if (missing.length) throw new Error("缺少 boogu 所需文件：\n- " + missing.join("\n- "));
+  return { clip, vae };
+}
+
+// boogu txt2img / img2img. AuraFlow/SD3-latent pipeline (mirrors the user's
+// exported turbo API graph): UNETLoader + CLIPLoader(qwen3vl, type "boogu") +
+// flux VAE + ModelSamplingAuraFlow(shift 3). Turbo is distilled (cfg≈1) so the
+// negative is a ConditioningZeroOut of the positive; base uses a real negative.
+// With an input image the canvas is a VAEEncode of it (img2img, denoise<1);
+// otherwise a fresh EmptySD3LatentImage (txt2img).
+function buildBoogu({ model, prompt, negative, width, height, seed, cfg, comp, turbo, imageName, denoise }) {
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "boogu", device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "4": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: prompt } },
+    "7": { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 3.0 } },
+    "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+  };
+  // Negative: distilled turbo (cfg≈1) zeroes it; base encodes a real one.
+  wf["5"] = turbo
+    ? { class_type: "ConditioningZeroOut", inputs: { conditioning: ["4", 0] } }
+    : { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: negative || "" } };
+  // Canvas: img2img encodes the input; txt2img starts from an empty SD3 latent.
+  let dn = 1;
+  if (imageName) {
+    wf["11"] = { class_type: "LoadImage", inputs: { image: imageName } };
+    wf["6"] = { class_type: "VAEEncode", inputs: { pixels: ["11", 0], vae: ["3", 0] } };
+    dn = denoise != null ? denoise : 0.75;
+  } else {
+    wf["6"] = { class_type: "EmptySD3LatentImage", inputs: { width, height, batch_size: 1 } };
+  }
+  wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: dn, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } };
+  return wf;
 }
 
 // HiDream-E1.1 instruction editing. Same loaders as I1, but the source image is
@@ -508,12 +592,47 @@ function buildInstructPix2Pix({ model, prompt, negative, imageName, seed, cfg, w
   return wf;
 }
 
+// boogu instruction editing (boogu_image_edit). Mirrors the user's exported edit
+// graph: the prompt + reference image(s) go through the dedicated
+// TextEncodeBooguEdit node (which embeds the reference into the conditioning), the
+// negative is a ConditioningZeroOut, the canvas is a VAEEncode of the primary
+// reference, and the KSampler runs at denoise 1 (the edit is driven by the
+// conditioning, not a partial denoise). The node's reference input is a
+// COMFY_AUTOGROW_V3 named `images` that takes a LIST of image links
+// (`[[id,0],[id,0],…]`) — VERIFIED on the live node: the indexed `image_1` keys
+// and the hand-export's singular `image` both fail at execute(); a single link
+// errors "Boolean value of Tensor ambiguous"; only the list form runs. Same
+// AuraFlow shift-3 + flux-VAE stack.
+function buildBooguEdit({ model, prompt, negative, imageName, imageNames, seed, cfg, comp }) {
+  const refs = imageNames && imageNames.length ? imageNames : (imageName ? [imageName] : []);
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "boogu", device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "7": { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 3.0 } },
+    "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+  };
+  const imageLinks = refs.map((name, i) => {
+    const id = String(30 + i);
+    wf[id] = { class_type: "LoadImage", inputs: { image: name } };
+    return [id, 0];
+  });
+  wf["4"] = { class_type: "TextEncodeBooguEdit", inputs: { prompt, negative_prompt: negative || "", clip: ["2", 0], vae: ["3", 0], images: imageLinks } };
+  wf["5"] = { class_type: "ConditioningZeroOut", inputs: { conditioning: ["4", 0] } };
+  // Reference latent = VAEEncode of the primary image (LoadImage node 30).
+  wf["6"] = { class_type: "VAEEncode", inputs: { pixels: ["30", 0], vae: ["3", 0] } };
+  wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } };
+  return wf;
+}
+
 function buildEditWorkflow(editType, args) {
   if (editType === "kontext") return buildKontext(args);
   if (editType === "qwen") return buildQwenEdit(args);
   if (editType === "ip2p") return buildInstructPix2Pix(args);
   if (editType === "hidream-e1") return buildHiDreamEdit(args);
   if (editType === "omnigen") return buildOmniGen2Edit(args);
+  if (editType === "boogu-edit") return buildBooguEdit(args);
   return null;
 }
 
@@ -1041,11 +1160,14 @@ async function generateComfyImage(req, res) {
         } else {
           comp = editIsCheckpoint(editType) ? {} : await editCompanions(editType);
         }
-        if (editType === "qwen" && isMultiImage) {
-          // Qwen-Image-Edit-2509 Plus: compose from 2–3 reference images.
+        if ((editType === "qwen" || editType === "boogu-edit") && isMultiImage) {
+          // Multi-reference compose: Qwen-Image-Edit-2509 Plus, or boogu's
+          // TextEncodeBooguEdit autogrow (image_1..image_N). Cap at 3.
           const imageNames = [];
           for (const im of images.slice(0, 3)) imageNames.push(await uploadImage(im, controller.signal));
-          workflow = buildQwenEditPlus({ model, prompt, imageNames, seed, cfg, comp, width: ew, height: eh });
+          workflow = editType === "boogu-edit"
+            ? buildBooguEdit({ model, prompt, negative: negative_prompt || "", imageNames, seed, cfg, comp })
+            : buildQwenEditPlus({ model, prompt, imageNames, seed, cfg, comp, width: ew, height: eh });
         } else {
           const imageName = await uploadImage(images[0], controller.signal);
           workflow = buildEditWorkflow(editType, { model, prompt, negative: negative_prompt || "", imageName, seed, cfg, comp, denoise: editDenoise, width: ew, height: eh });
@@ -1058,6 +1180,12 @@ async function generateComfyImage(req, res) {
         // Z-Image-Turbo txt2img (UNET + CLIPLoader lumina2 + ae VAE).
         const comp = await zimageCompanions();
         workflow = buildZImage({ model, prompt, width, height, seed, cfg, comp });
+      } else if (/boogu/i.test(model)) {
+        // boogu txt2img / img2img (UNET + CLIPLoader "boogu" + flux VAE).
+        const comp = await boogiCompanions();
+        const turbo = /turbo/i.test(model);
+        const imageName = isImg2Img ? await uploadImage(images[0], controller.signal) : null;
+        workflow = buildBoogu({ model, prompt, negative: negative_prompt || "", width: ew || width, height: eh || height, seed, cfg, comp, turbo, imageName, denoise });
       } else if (isImg2Img) {
         const imageName = await uploadImage(images[0], controller.signal);
         workflow = buildImg2Img({
