@@ -492,24 +492,25 @@ function buildKontext({ model, prompt, imageName, seed, cfg, comp, width, height
 // Qwen-Image-Edit — TextEncodeQwenImageEdit folds the reference image + prompt
 // into the conditioning (multimodal Qwen2.5-VL encoder). Negative is the same
 // node with an empty prompt.
-function buildQwenEdit({ model, prompt, imageName, seed, cfg, comp, width, height }) {
-  // A target size resizes the canvas (VAEEncode) only; conditioning still sees
-  // the original image so the edit semantics are unchanged.
-  const px = (width && height) ? ["11", 0] : ["4", 0];
-  const wf = {
+function buildQwenEdit({ model, prompt, imageName, seed, cfg, comp }) {
+  // The reference image drives BOTH the conditioning and the latent — they must
+  // match. Do NOT force an output size by VAE-encoding a resized copy: the
+  // TextEncodeQwenImageEdit conditioning encodes the original, so a mismatched
+  // latent size desyncs them and the model reconstructs the input INSTEAD of
+  // applying the instruction (the edit appears ignored). Output size follows the
+  // input, which is how Qwen-Image-Edit is meant to work.
+  return {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "qwen_image" } },
     "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
     "4": { class_type: "LoadImage", inputs: { image: imageName } },
     "5": { class_type: "TextEncodeQwenImageEdit", inputs: { clip: ["2", 0], prompt, vae: ["3", 0], image: ["4", 0] } },
     "6": { class_type: "TextEncodeQwenImageEdit", inputs: { clip: ["2", 0], prompt: "", vae: ["3", 0], image: ["4", 0] } },
-    "7": { class_type: "VAEEncode", inputs: { pixels: px, vae: ["3", 0] } },
+    "7": { class_type: "VAEEncode", inputs: { pixels: ["4", 0], vae: ["3", 0] } },
     "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["1", 0], positive: ["5", 0], negative: ["6", 0], latent_image: ["7", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
-  if (width && height) wf["11"] = scaleNode(["4", 0], width, height);
-  return wf;
 }
 
 // Qwen-Image-Edit-2509 "Plus" — MULTI-image composition (up to 3 reference

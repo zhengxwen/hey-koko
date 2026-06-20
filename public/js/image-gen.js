@@ -410,41 +410,30 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     onPreview: (url) => pendingGenSetPreview(tabId, url),
   });
 
-  try {
-    const resp = await fetch("/api/generate-comfy", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: abortController.signal,
-      body: JSON.stringify({
-        model,
-        prompt: videoPrompt,
-        negative_prompt: comfyNegative(parsed.negativePrompt),
-        options: reqOptions,
-        images: refImages || undefined,
-        timeout: 600, // video is slow
-        clientId,
-      }),
-    });
-    const data = await resp.json();
-    pendingGenClear(tabId);
-    if (!resp.ok || !data.videos || !data.videos.length) {
-      const errMsg = { role: "assistant", content: `视频生成失败：${data.error || "未返回视频"}`, timestamp: Date.now() };
-      if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errMsg);
-      else tab.messages.push(errMsg);
-      saveChat();
-      if (state.activeTabId === tabId && _renderChat) _renderChat();
-      setAvatarState("idle");
-      return;
-    }
-    // "Video generated (W×H) · <model>" in the prompt language, with the real
-    // output size and the model used (the selected name, extension stripped).
+  // "/imagine Nx …" makes N videos (1–8). They render sequentially on ComfyUI;
+  // each finished video is shown in the bubble IMMEDIATELY (not held until the
+  // whole batch ends), while the next one's live preview frames keep streaming in
+  // the pending bubble. All videos collect into ONE message (rendered as a grid).
+  const count = Math.min(Math.max(parsed.count || 1, 1), 8);
+  const allVideos = [];
+  const allThumbs = [];
+  let lastData = null;
+  let replyMsg = null; // the single message holding the videos finished so far
+
+  // Create-or-update the reply message in place so each completed video appears
+  // right away. generatedVideos/Thumbnails point at the growing arrays.
+  const renderReply = () => {
+    if (!allVideos.length) return;
     const plang = getPromptLanguage();
-    const doneLine = t("msg_videoDone", { w: data.width || "?", h: data.height || "?" }, plang)
+    const vmime = lastData.videoMime || "video/mp4";
+    // "Video generated (W×H)", suffixed with ×N when a batch, then the model.
+    const sizeLine = t("msg_videoDone", { w: lastData.width || "?", h: lastData.height || "?" }, plang);
+    const doneLine = (count > 1 ? `${sizeLine} ×${allVideos.length}${allVideos.length < count ? `/${count}` : ""}` : sizeLine)
       + (vidModel ? ` · ${vidModel}` : "");
     // If more images were attached than the model can use, tell the user how many
     // were actually consumed (2 = first-last-frame, 1 = plain image-to-video).
     const nInput = refImages ? refImages.length : 0;
-    const nUsed = data.imagesUsed != null ? data.imagesUsed : nInput;
+    const nUsed = lastData.imagesUsed != null ? lastData.imagesUsed : nInput;
     let capNote = "";
     if (nInput > nUsed && nUsed > 0) {
       const flf = nUsed === 2 ? t("msg_videoFlfSuffix", null, plang) : "";
@@ -453,30 +442,83 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     const videoContent = (promptWasEnhanced
       ? `**${t("msg_enhancedPrompt")}**\n> ${videoPrompt}\n\n${capNote}${doneLine}`
       : `${capNote}${doneLine}`);
-    const vmime = data.videoMime || "video/mp4";
-    // Grab a poster frame per video — shown before playback and used in place of
-    // the (heavy) video when the conversation is exported or archived.
-    const videoThumbs = await Promise.all(data.videos.map((v) =>
-      videoThumbnail(v.startsWith("data:") ? v : `data:${vmime};base64,${v}`)));
-    const replyMsg = {
-      role: "assistant",
-      content: videoContent,
-      generatedVideos: data.videos,
-      videoMime: vmime,
-      generatedVideoThumbnails: videoThumbs,
-      imagePrompt: videoPrompt,
-      timestamp: Date.now(),
-      genMs: Date.now() - genStart,
-    };
-    if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, replyMsg);
-    else tab.messages.push(replyMsg);
+    if (!replyMsg) {
+      replyMsg = {
+        role: "assistant",
+        content: videoContent,
+        generatedVideos: allVideos,
+        videoMime: vmime,
+        generatedVideoThumbnails: allThumbs,
+        imagePrompt: videoPrompt,
+        timestamp: Date.now(),
+        genMs: Date.now() - genStart,
+      };
+      if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, replyMsg);
+      else tab.messages.push(replyMsg);
+    } else {
+      replyMsg.content = videoContent;
+      replyMsg.videoMime = vmime;
+      replyMsg.genMs = Date.now() - genStart;
+    }
     saveChat();
     if (state.activeTabId === tabId && _renderChat) _renderChat();
+  };
+
+  try {
+    for (let i = 0; i < count; i++) {
+      if (abortController.signal.aborted) break;
+      if (count > 1) pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
+      pendingGenSetProgress(tabId, 0, 1); // reset the bar for each render
+      // Vary the seed per video so the N outputs differ (only when the user
+      // pinned a --seed; otherwise the server randomizes each call already).
+      const perOptions = { ...reqOptions };
+      if (perOptions.seed !== undefined) perOptions.seed = reqOptions.seed + i;
+      const resp = await fetch("/api/generate-comfy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: abortController.signal,
+        body: JSON.stringify({
+          model,
+          prompt: videoPrompt,
+          negative_prompt: comfyNegative(parsed.negativePrompt),
+          options: perOptions,
+          images: refImages || undefined,
+          timeout: 600, // video is slow
+          clientId,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.videos || !data.videos.length) {
+        // First render failed → surface the error. A later one failing → keep
+        // the videos we have and stop.
+        if (!allVideos.length) {
+          pendingGenClear(tabId);
+          const errMsg = { role: "assistant", content: `视频生成失败：${data.error || "未返回视频"}`, timestamp: Date.now() };
+          if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errMsg);
+          else tab.messages.push(errMsg);
+          saveChat();
+          if (state.activeTabId === tabId && _renderChat) _renderChat();
+          setAvatarState("idle");
+          return;
+        }
+        break;
+      }
+      lastData = data;
+      const vmime = data.videoMime || "video/mp4";
+      // Poster frame(s) for the just-finished video(s) — appended, not rebuilt.
+      const newThumbs = await Promise.all(data.videos.map((v) =>
+        videoThumbnail(v.startsWith("data:") ? v : `data:${vmime};base64,${v}`)));
+      allVideos.push(...data.videos);
+      allThumbs.push(...newThumbs);
+      renderReply(); // show this completed video immediately
+    }
+    pendingGenClear(tabId);
     setAvatarState("happy");
     setTimeout(() => setAvatarState("idle"), 2000);
   } catch (error) {
     pendingGenClear(tabId);
-    if (error.name !== "AbortError") {
+    // Videos finished before a stop/error are already shown via renderReply().
+    if (error.name !== "AbortError" && !allVideos.length) {
       const errMsg = { role: "assistant", content: `视频生成出错：${error.message}`, timestamp: Date.now() };
       tab.messages.push(errMsg);
       saveChat();
