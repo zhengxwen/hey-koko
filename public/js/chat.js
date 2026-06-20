@@ -2086,6 +2086,12 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       const vthumb = generatedVideoThumbnails && generatedVideoThumbnails[vi];
       if (vthumb) video.poster = vthumb.startsWith("data:") ? vthumb : `data:image/jpeg;base64,${vthumb}`;
       video.src = vData.startsWith("data:") ? vData : `data:${vmime};base64,${vData}`;
+      // Only one video plays at a time — starting this one pauses the others.
+      video.addEventListener("play", () => {
+        dom.messagesEl.querySelectorAll("video.generatedVideo").forEach((other) => {
+          if (other !== video && !other.paused) other.pause();
+        });
+      });
       wrapper.appendChild(video);
 
       // Volume slider — shown ONLY when the video has an audio track (LTX with
@@ -2159,8 +2165,14 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       dl.className = "videoDownloadBtn";
       dl.href = video.src;
       dl.download = `heykoko_video_${vi + 1}.${vext}`;
-      dl.title = t("btn_downloadVideo");
-      dl.setAttribute("aria-label", t("btn_downloadVideo"));
+      // Decoded byte size from the base64 (len×3/4 − padding) → tooltip hint.
+      const b64 = vData.startsWith("data:") ? vData.slice(vData.indexOf(",") + 1) : vData;
+      const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
+      const bytes = Math.max(0, Math.floor(b64.length * 3 / 4) - pad);
+      const sizeStr = bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+      const dlLabel = `${t("btn_downloadVideo")} · ${sizeStr}`;
+      dl.title = dlLabel;
+      dl.setAttribute("aria-label", dlLabel);
       dl.textContent = "⬇";
       wrapper.appendChild(dl);
       vgrid.appendChild(wrapper);
