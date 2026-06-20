@@ -1527,6 +1527,7 @@ button.secondary:disabled {
 .message.isFolded > .plainBody,
 .message.isFolded > .imageGrid,
 .message.isFolded > .messageImage,
+.message.isFolded > .messageImageWrapper,
 .message.isFolded > .messageImages,
 .message.isFolded > .messageTimestamp,
 .message.isFolded > .messageLockToggle,
@@ -3311,6 +3312,53 @@ button.secondary:disabled {
 .imageDeleteBtn:hover {
   background: rgba(220, 50, 50, 0.85);
   border-radius: 50%;
+}
+
+/* Download overlay (bottom-right) for image previews — mirrors .videoDownloadBtn. */
+.imageDownloadBtn {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 15px;
+  text-decoration: none;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+  z-index: 2;
+}
+
+.imageWrapper:hover .imageDownloadBtn {
+  opacity: 1;
+}
+
+.imageDownloadBtn:hover {
+  background: var(--accent);
+}
+
+/* Uploaded image previews — wrap each img so the download overlay can anchor. */
+.messageImageWrapper {
+  position: relative;
+  display: inline-block;
+  width: fit-content;
+  max-width: min(240px, 100%);
+  margin-bottom: 7px;
+}
+
+.messageImageWrapper .messageImage {
+  margin-bottom: 0;
+}
+
+.messageImages .messageImageWrapper {
+  margin-bottom: 0;
+  max-width: 100%;
 }
 
 .generatedImage {

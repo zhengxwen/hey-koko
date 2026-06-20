@@ -376,12 +376,16 @@
               <span id="filePreviewName" class="filePreviewName"></span>
               <button id="removeFile" type="button" class="iconButton" aria-label="Remove file">×</button>
             </div>
+            <div id="videoPreview" class="filePreview" hidden>
+              <span id="videoPreviewName" class="filePreviewName"></span>
+              <button id="removeVideo" type="button" class="iconButton" aria-label="Remove video">×</button>
+            </div>
             <textarea id="messageInput" rows="2" placeholder="Say something to Bella..." autofocus></textarea>
           </div>
           <button id="quickPromptBtn" type="button" class="quickPromptBtn" title="Quick prompts (type / or ? to trigger)">«</button>
           <button id="askSuggestBtn" type="button" class="askSuggestBtn" title="Let AI suggest a question">?</button>
           <label class="uploadButton" title="Upload file">
-            <input id="fileInput" type="file" accept="image/*,.pdf,.docx,.pptx,.eml,.txt,.md,.markdown" multiple />
+            <input id="fileInput" type="file" accept="image/*,video/*,.pdf,.docx,.pptx,.eml,.txt,.md,.markdown" multiple />
             File
           </label>
           <button id="sendButton" type="submit">Send</button>

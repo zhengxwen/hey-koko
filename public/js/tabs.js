@@ -78,6 +78,7 @@ export function switchTab(tabId) {
   state.activeTabId = tabId;
   clearSelectedImage();
   clearSelectedFile();
+  clearSelectedVideo();
   const newTab = getActiveTab();
   if (newTab && newTab.personality) {
     dom.personalitySelect.value = newTab.personality;
@@ -124,6 +125,12 @@ export function clearSelectedFile() {
   state.selectedFile = null;
   dom.filePreviewName.textContent = "";
   dom.filePreview.hidden = true;
+}
+
+export function clearSelectedVideo() {
+  state.selectedVideo = null;
+  if (dom.videoPreviewName) dom.videoPreviewName.textContent = "";
+  if (dom.videoPreview) dom.videoPreview.hidden = true;
 }
 
 function finishRename(tab, input) {

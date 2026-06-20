@@ -7,7 +7,7 @@ import { initTheme } from './theme.js';
 import { initAvatar } from './avatar.js';
 import { stopSpeech, populateVoiceList, speakAdjacent } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
-import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
+import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
 import { setDeps as imageGenSetDeps } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
@@ -196,17 +196,19 @@ dom.chatForm.addEventListener("submit", async (event) => {
   }
 
   const content = dom.messageInput.value.trim();
-  if (!content && !state.selectedImage && !state.selectedFile) return;
+  if (!content && !state.selectedImage && !state.selectedFile && !state.selectedVideo) return;
 
   saveCurrentSettings();
   const image = state.selectedImage;
   const file = state.selectedFile;
+  const video = state.selectedVideo;
   dom.messageInput.value = "";
   // Sent — drop the saved draft so it doesn't reappear on tab switch.
   const _activeTab = getActiveTab();
   if (_activeTab) _activeTab.draft = "";
   clearSelectedImage();
   clearSelectedFile();
+  clearSelectedVideo();
 
   if (file && file.multi) {
     // Multiple documents: process sequentially
@@ -231,7 +233,7 @@ dom.chatForm.addEventListener("submit", async (event) => {
     renderChat();
     await parseAndSendFile(content, file);
   } else {
-    sendMessage(content, image, undefined, file);
+    sendMessage(content, image, undefined, file, video);
   }
 });
 
@@ -607,6 +609,9 @@ dom.removeImage.addEventListener("click", clearSelectedImage);
 
 // Remove file button
 dom.removeFile.addEventListener("click", clearSelectedFile);
+
+// Remove video button
+dom.removeVideo.addEventListener("click", clearSelectedVideo);
 
 // Stop translation button
 dom.stopTranslateBtn.addEventListener("click", stopTranslation);
@@ -1170,13 +1175,40 @@ async function selectFile(file) {
 
   const ext = getFileExtension(file.name);
   const isImage = file.type.startsWith("image/");
+  const isVideo = file.type.startsWith("video/");
   const isDocument = DOC_EXTENSIONS.includes(ext);
 
-  if (!isImage && !isDocument) {
+  if (!isImage && !isVideo && !isDocument) {
     const msgEl = document.createElement("div");
     msgEl.className = "message system";
-    msgEl.textContent = "不支持的文件类型。请选择图片、PDF、DOCX、PPTX、EML、TXT 或 MD 文件。";
+    msgEl.textContent = "不支持的文件类型。请选择图片、视频、PDF、DOCX、PPTX、EML、TXT 或 MD 文件。";
     dom.messagesEl.appendChild(msgEl);
+    return;
+  }
+
+  // Video handling — short clips are attached for display only; they are never
+  // sent to the model (no AI analysis), so we just stage the raw bytes.
+  if (isVideo) {
+    if (file.size > 30 * 1024 * 1024) {
+      const msgEl = document.createElement("div");
+      msgEl.className = "message system";
+      msgEl.textContent = "视频太大了，请选择 30MB 以内的短视频。";
+      dom.messagesEl.appendChild(msgEl);
+      return;
+    }
+    const dataUrl = await readFileAsDataUrl(file);
+    state.selectedVideo = {
+      base64: dataUrl.split(",")[1],
+      mime: file.type || "video/mp4",
+      name: file.name,
+    };
+    // A video can ride along with staged images, but only one video at a time
+    // (assigning state.selectedVideo replaces any previous one). Documents use a
+    // separate send path that ignores videos, so those stay mutually exclusive.
+    clearSelectedFile();
+    dom.videoPreviewName.textContent = `🎬 ${file.name}`;
+    dom.videoPreview.hidden = false;
+    dom.messageInput.focus();
     return;
   }
 
@@ -1195,7 +1227,7 @@ async function selectFile(file) {
     const needsConvert = !/^image\/(jpeg|png|gif|webp)$/i.test(file.type);
     const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : dataUrl;
     const preview = await makePreview(dataUrl);
-    addStagedImages([{ base64: sendDataUrl.split(",")[1], preview }]);
+    addStagedImages([{ base64: sendDataUrl.split(",")[1], preview, name: file.name }]);
     clearSelectedFile();
     dom.messageInput.focus();
     return;
@@ -1233,6 +1265,7 @@ async function selectFile(file) {
         state.selectedFile = newFile;
       }
       clearSelectedImage();
+      clearSelectedVideo();
       // Show all file names
       const allFiles = state.selectedFile.multi || [state.selectedFile];
       dom.filePreviewName.innerHTML = "";
@@ -1265,6 +1298,7 @@ async function selectFile(file) {
       state.selectedFile = newFile;
     }
     clearSelectedImage();
+    clearSelectedVideo();
     const allFiles = state.selectedFile.multi || [state.selectedFile];
     dom.filePreviewName.innerHTML = "";
     for (const f of allFiles) {
@@ -1285,6 +1319,14 @@ async function selectFile(file) {
 
 // Handle multiple file selection
 async function selectMultipleFiles(files) {
+  // Videos are attached one at a time (display-only, no AI analysis).
+  if (files.some(f => f.type.startsWith("video/"))) {
+    const msgEl = document.createElement("div");
+    msgEl.className = "message system";
+    msgEl.textContent = "视频请单独上传，一次一个。";
+    dom.messagesEl.appendChild(msgEl);
+    return;
+  }
   const hasImage = files.some(f => f.type.startsWith("image/"));
   const hasNonImage = files.some(f => !f.type.startsWith("image/"));
 
@@ -1312,7 +1354,7 @@ async function selectMultipleFiles(files) {
       const needsConvert = !/^image\/(jpeg|png|gif|webp)$/i.test(file.type);
       const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : dataUrl;
       const preview = await makePreview(dataUrl);
-      images.push({ base64: sendDataUrl.split(",")[1], preview });
+      images.push({ base64: sendDataUrl.split(",")[1], preview, name: file.name });
     }
     if (images.length === 0) return;
     // Append to any already-staged images (don't replace)
@@ -1344,6 +1386,7 @@ async function selectMultipleFiles(files) {
     if (validFiles.length === 0) return;
     state.selectedFile = validFiles.length === 1 ? validFiles[0] : { multi: validFiles };
     clearSelectedImage();
+    clearSelectedVideo();
     // Show all file names in preview
     dom.filePreviewName.innerHTML = "";
     for (const f of validFiles) {

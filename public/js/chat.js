@@ -1513,7 +1513,7 @@ function dispatchReply(tabId, insertIndex = -1, contextEndIndex = -1) {
   else regenerateReply(tabId, insertIndex, contextEndIndex);
 }
 
-export async function sendMessage(content, image, tabId = state.activeTabId, file = null) {
+export async function sendMessage(content, image, tabId = state.activeTabId, file = null, video = null) {
   const tab = getTab(tabId);
   if (!tab) return;
   if (tab.locked) return;
@@ -1642,9 +1642,11 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       if (image.multi) {
         userMessage.images = image.multi.map(img => img.base64);
         userMessage.previewImages = image.multi.map(img => img.preview);
+        userMessage.imageNames = image.multi.map(img => img.name || null);
       } else {
         userMessage.images = [image.base64];
         userMessage.previewImages = [image.preview];
+        userMessage.imageNames = [image.name || null];
       }
       userMessage.previewImage = userMessage.previewImages[0];
     }
@@ -1733,7 +1735,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
 
   const userMessage = {
     role: "user",
-    content: content || getPrompt("imageFallback"),
+    content: content || (image ? getPrompt("imageFallback") : ""),
     timestamp: Date.now(),
   };
 
@@ -1741,16 +1743,31 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     if (image.multi) {
       userMessage.images = image.multi.map(img => img.base64);
       userMessage.previewImages = image.multi.map(img => img.preview);
+      userMessage.imageNames = image.multi.map(img => img.name || null);
     } else {
       userMessage.images = [image.base64];
       userMessage.previewImages = [image.preview];
+      userMessage.imageNames = [image.name || null];
     }
     userMessage.previewImage = userMessage.previewImages[0]; // backward compat
+  }
+
+  // An uploaded video rides along on the user bubble for display only. It reuses
+  // the generatedVideos field so it renders/persists like a generated clip, but
+  // buildMessages() never forwards videos to the model — so there's no AI analysis.
+  if (video) {
+    userMessage.generatedVideos = [video.base64];
+    userMessage.videoMime = video.mime || "video/mp4";
+    if (video.name) userMessage.videoName = video.name;
   }
 
   tab.messages.push(userMessage);
   saveChat();
   if (state.activeTabId === tabId) renderChat();
+
+  // A video with no accompanying text/image is purely an upload — nothing for the
+  // model to respond to, so don't trigger a reply.
+  if (video && !content && !image) return;
 
   // Tools enabled (and no image — vision + tools is unreliable on local models) → agent loop.
   if (dom.toolsToggle?.checked && !image) {
@@ -1772,6 +1789,65 @@ async function backfillVideoThumbnails(message) {
     message.generatedVideoThumbnails = thumbs;
     saveChat();
   }
+}
+
+// Human-readable byte size for download tooltips (empty when unknown).
+function formatFileSize(bytes) {
+  if (!bytes || bytes < 0) return "";
+  return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+// Decoded byte length of a base64 (or data:) string. 0 for remote URLs.
+function base64ByteLength(src) {
+  if (!src || src.startsWith("http")) return 0;
+  const data = src.startsWith("data:") ? src.slice(src.indexOf(",") + 1) : src;
+  const pad = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor(data.length * 3 / 4) - pad);
+}
+
+// File extension (no dot) for an image src — from the data: mime, the URL path,
+// or the raw base64 magic bytes. Defaults to png.
+function imageExtFromSrc(src) {
+  if (!src) return "png";
+  if (src.startsWith("data:")) {
+    const sub = src.slice(5, src.indexOf(";") === -1 ? undefined : src.indexOf(";")).split("/")[1];
+    if (sub) return sub === "jpeg" ? "jpg" : sub.split("+")[0];
+  } else if (src.startsWith("http")) {
+    const m = src.split(/[?#]/)[0].match(/\.(png|jpe?g|webp|gif|bmp|avif)$/i);
+    return m ? (m[1].toLowerCase() === "jpeg" ? "jpg" : m[1].toLowerCase()) : "jpg";
+  }
+  return src.startsWith("/9j/") ? "jpg" : "png";
+}
+
+// "YYYYMMDD-HHMMSS" from a timestamp (ms; now if absent) for default filenames.
+function timestampStamp(ts) {
+  const d = ts ? new Date(ts) : new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+// Default download filename when the media has no name of its own: the owning
+// message's timestamp + kind (+ index when the message holds several), e.g.
+// "20260620-130910-image.png". `name`, if given, wins (kept with its extension).
+function mediaFilename(name, ts, kind, ext, idx, count) {
+  if (name) return /\.[a-z0-9]+$/i.test(name) ? name : `${name}.${ext}`;
+  const suffix = count > 1 ? `-${idx + 1}` : "";
+  return `${timestampStamp(ts)}-${kind}${suffix}.${ext}`;
+}
+
+// The small bottom-right "download" overlay shared by image/video previews.
+// The tooltip (title + aria-label) carries the filename and, when known, size.
+function makeDownloadButton(className, href, filename, bytes, actionLabel) {
+  const dl = document.createElement("a");
+  dl.className = className;
+  dl.href = href;
+  dl.download = filename;
+  const size = formatFileSize(bytes);
+  const label = size ? `${filename} · ${size}` : filename;
+  dl.title = label;
+  dl.setAttribute("aria-label", actionLabel ? `${actionLabel}: ${label}` : label);
+  dl.textContent = "⬇";
+  return dl;
 }
 
 function renderMessage(role, content, previewImage, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMime, generatedAudio, audioMime, generatedVideoThumbnails) {
@@ -1919,11 +1995,15 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
 
   if (previewImage) {
     const previews = Array.isArray(previewImage) ? previewImage : [previewImage];
+    // Original upload filenames, when preserved, so the download keeps the real name.
+    const imageNames = Number.isInteger(index) ? getActiveTab().messages[index]?.imageNames : null;
     // Multiple images render in a compact grid; a single image stays inline.
     const container = previews.length > 1
       ? Object.assign(document.createElement("div"), { className: "messageImages" })
       : item;
     previews.forEach((src, imgIdx) => {
+      const wrapper = document.createElement("div");
+      wrapper.className = "imageWrapper messageImageWrapper";
       const image = document.createElement("img");
       image.className = "messageImage";
       image.src = src;
@@ -1932,7 +2012,10 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
         image.dataset.msgIndex = index;
         image.dataset.imgIndex = imgIdx;
       }
-      container.appendChild(image);
+      wrapper.appendChild(image);
+      const fname = mediaFilename(imageNames?.[imgIdx], timestamp, "image", imageExtFromSrc(src), imgIdx, previews.length);
+      wrapper.appendChild(makeDownloadButton("imageDownloadBtn", src, fname, base64ByteLength(src), t("btn_downloadImage")));
+      container.appendChild(wrapper);
     });
     if (container !== item) item.appendChild(container);
   }
@@ -2057,6 +2140,10 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
           });
           wrapper.appendChild(delBtn);
         }
+        // Download button (bottom-right) — full-res src when available.
+        const dlSrc = img.dataset.fullSrc || img.src;
+        const iname = mediaFilename(null, timestamp, "image", imageExtFromSrc(dlSrc), i, validImages.length);
+        wrapper.appendChild(makeDownloadButton("imageDownloadBtn", dlSrc, iname, base64ByteLength(dlSrc), t("btn_downloadImage")));
         grid.appendChild(wrapper);
       }
       item.appendChild(grid);
@@ -2161,20 +2248,12 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
         wrapper.appendChild(del);
       }
       // Download button (bottom-right) — an <a download> pointing at the (data) URL.
-      const dl = document.createElement("a");
-      dl.className = "videoDownloadBtn";
-      dl.href = video.src;
-      dl.download = `heykoko_video_${vi + 1}.${vext}`;
-      // Decoded byte size from the base64 (len×3/4 − padding) → tooltip hint.
-      const b64 = vData.startsWith("data:") ? vData.slice(vData.indexOf(",") + 1) : vData;
-      const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
-      const bytes = Math.max(0, Math.floor(b64.length * 3 / 4) - pad);
-      const sizeStr = bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
-      const dlLabel = `${t("btn_downloadVideo")} · ${sizeStr}`;
-      dl.title = dlLabel;
-      dl.setAttribute("aria-label", dlLabel);
-      dl.textContent = "⬇";
-      wrapper.appendChild(dl);
+      // Tooltip shows the filename and decoded byte size.
+      // An uploaded clip keeps its original filename; generated clips fall back to
+      // the timestamp. (videoName only exists for single uploaded videos.)
+      const uploadedName = Number.isInteger(index) ? getActiveTab().messages[index]?.videoName : null;
+      const vname = mediaFilename(generatedVideos.length === 1 ? uploadedName : null, timestamp, "video", vext, vi, generatedVideos.length);
+      wrapper.appendChild(makeDownloadButton("videoDownloadBtn", video.src, vname, base64ByteLength(vData), t("btn_downloadVideo")));
       vgrid.appendChild(wrapper);
     }
     if (vgrid.children.length) item.appendChild(vgrid);
@@ -2193,14 +2272,8 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
     audio.preload = "metadata";
     audio.src = src;
     wrapper.appendChild(audio);
-    const dl = document.createElement("a");
-    dl.className = "audioDownloadBtn";
-    dl.href = src;
-    dl.download = `heykoko_voice.${aext}`;
-    dl.title = t("btn_downloadAudio");
-    dl.setAttribute("aria-label", t("btn_downloadAudio"));
-    dl.textContent = "⬇";
-    wrapper.appendChild(dl);
+    const aname = mediaFilename(null, timestamp, "audio", aext, 0, 1);
+    wrapper.appendChild(makeDownloadButton("audioDownloadBtn", src, aname, base64ByteLength(generatedAudio), t("btn_downloadAudio")));
     item.appendChild(wrapper);
   }
 
