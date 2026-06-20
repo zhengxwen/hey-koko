@@ -123,6 +123,23 @@ function deleteMessageImage(msgIndex, imgIndex) {
   dom.messagesEl.scrollTop = scrollY;
 }
 
+function deleteMessageVideo(msgIndex, vidIndex) {
+  const tab = getActiveTab();
+  if (tab.locked) return;
+  const message = tab.messages[msgIndex];
+  if (!message) return;
+  if (message.generatedVideos && message.generatedVideos.length > vidIndex) {
+    message.generatedVideos.splice(vidIndex, 1);
+  }
+  if (message.generatedVideoThumbnails && message.generatedVideoThumbnails.length > vidIndex) {
+    message.generatedVideoThumbnails.splice(vidIndex, 1);
+  }
+  saveChat();
+  const scrollY = dom.messagesEl.scrollTop;
+  renderChat();
+  dom.messagesEl.scrollTop = scrollY;
+}
+
 function resendChatMessage(index) {
   if (state.currentAbortController || state.imageGenAbortController) return;
   const tab = getActiveTab();
@@ -2122,7 +2139,22 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       video.addEventListener("play", revealIfAudio);
       video.addEventListener("timeupdate", revealIfAudio);
 
-      // Download button — an <a download> pointing at the (data) URL.
+      // Delete button (top-right) — removes just this video from the message.
+      if (Number.isInteger(index)) {
+        const del = document.createElement("button");
+        del.className = "videoDeleteBtn";
+        del.type = "button";
+        del.title = t("btn_deleteVideo");
+        del.setAttribute("aria-label", t("btn_deleteVideo"));
+        del.textContent = "×";
+        del.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (!confirm(t("confirm_deleteVideo"))) return;
+          deleteMessageVideo(index, vi);
+        });
+        wrapper.appendChild(del);
+      }
+      // Download button (bottom-right) — an <a download> pointing at the (data) URL.
       const dl = document.createElement("a");
       dl.className = "videoDownloadBtn";
       dl.href = video.src;

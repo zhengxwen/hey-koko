@@ -2250,11 +2250,12 @@ button.secondary:disabled {
   position: absolute;
   right: 14px;
   bottom: calc(100% + 6px);
-  padding: 3px 10px;
-  border-radius: 12px;
+  padding: 5px 14px;
+  border-radius: 14px;
   background: var(--accent);
   color: #fff;
-  font-size: 0.72rem;
+  font-size: 0.95rem;
+  font-weight: 600;
   white-space: nowrap;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
   pointer-events: none;
@@ -3354,27 +3355,61 @@ button.secondary:disabled {
 
 .videoDownloadBtn {
   position: absolute;
-  top: 6px;
   right: 6px;
+  bottom: 6px; /* download → bottom-right */
   width: 28px;
   height: 28px;
   display: grid;
   place-items: center;
+  border: none;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   font-size: 15px;
   text-decoration: none;
+  cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s ease, background 0.15s ease;
 }
 
-.videoWrapper:hover .videoDownloadBtn {
+/* Perfect circle, matching .imageDeleteBtn (locked dims so it never distorts). */
+.videoDeleteBtn {
+  position: absolute;
+  top: 6px; /* delete → top-right */
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  max-width: 22px;
+  max-height: 22px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.videoWrapper:hover .videoDownloadBtn,
+.videoWrapper:hover .videoDeleteBtn {
   opacity: 1;
 }
 
 .videoDownloadBtn:hover {
   background: var(--accent);
+}
+
+.videoDeleteBtn:hover {
+  background: rgba(220, 50, 50, 0.85); /* red — destructive */
 }
 
 .message.isFolded > .videoGrid {
