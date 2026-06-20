@@ -1083,6 +1083,26 @@ function getFileExtension(name) {
   return dot >= 0 ? name.slice(dot).toLowerCase() : "";
 }
 
+// "YYYYMMDD-HHMMSS" stamp marking when an upload was captured.
+function uploadStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+// Name an upload "<stamp>-<kind>(-N).<ext>" — the -N suffix is added only when
+// several of the same kind are captured together. ext comes from the original
+// filename, falling back to the mime subtype, then a per-kind default.
+function makeUploadName(stamp, kind, file, idx, count) {
+  let ext = getFileExtension(file.name).replace(/^\./, "").toLowerCase();
+  if (!ext) {
+    const sub = (file.type || "").split("/")[1] || "";
+    ext = sub ? (sub === "jpeg" ? "jpg" : sub.split("+")[0]) : (kind === "video" ? "mp4" : "jpg");
+  }
+  const suffix = count > 1 ? `-${idx + 1}` : "";
+  return `${stamp}-${kind}${suffix}.${ext}`;
+}
+
 // Normalize the staged image state into a flat array of {base64, preview}.
 function getStagedImages() {
   if (!state.selectedImage) return [];
@@ -1200,7 +1220,7 @@ async function selectFile(file) {
     state.selectedVideo = {
       base64: dataUrl.split(",")[1],
       mime: file.type || "video/mp4",
-      name: file.name,
+      name: makeUploadName(uploadStamp(), "video", file, 0, 1),
     };
     // A video can ride along with staged images, but only one video at a time
     // (assigning state.selectedVideo replaces any previous one). Documents use a
@@ -1227,7 +1247,7 @@ async function selectFile(file) {
     const needsConvert = !/^image\/(jpeg|png|gif|webp)$/i.test(file.type);
     const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : dataUrl;
     const preview = await makePreview(dataUrl);
-    addStagedImages([{ base64: sendDataUrl.split(",")[1], preview, name: file.name }]);
+    addStagedImages([{ base64: sendDataUrl.split(",")[1], preview, name: makeUploadName(uploadStamp(), "image", file, 0, 1) }]);
     clearSelectedFile();
     dom.messageInput.focus();
     return;
@@ -1342,6 +1362,7 @@ async function selectMultipleFiles(files) {
   if (hasImage) {
     // All images: collect into a single multi-image selection
     const images = [];
+    const validFiles = [];
     for (const file of files) {
       if (file.size > 8 * 1024 * 1024) {
         const msgEl = document.createElement("div");
@@ -1354,9 +1375,13 @@ async function selectMultipleFiles(files) {
       const needsConvert = !/^image\/(jpeg|png|gif|webp)$/i.test(file.type);
       const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : dataUrl;
       const preview = await makePreview(dataUrl);
-      images.push({ base64: sendDataUrl.split(",")[1], preview, name: file.name });
+      images.push({ base64: sendDataUrl.split(",")[1], preview });
+      validFiles.push(file);
     }
     if (images.length === 0) return;
+    // Stamp the whole batch with one time; -1/-2 distinguishes them.
+    const stamp = uploadStamp();
+    images.forEach((img, i) => { img.name = makeUploadName(stamp, "image", validFiles[i], i, images.length); });
     // Append to any already-staged images (don't replace)
     addStagedImages(images);
     clearSelectedFile();
