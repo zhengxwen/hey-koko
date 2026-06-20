@@ -59,6 +59,7 @@ export const dom = {
   avatarSvg: document.querySelector("#avatarSvg"),
   avatarPicker: document.querySelector("#avatarPicker"),
   sendButton: document.querySelector("#sendButton"),
+  sendStatus: document.querySelector("#sendStatus"),
   stopTranslateBtn: document.querySelector("#stopTranslateBtn"),
   commandPopup: document.querySelector("#commandPopup"),
   aiName: document.querySelector("#aiName"),
@@ -103,4 +104,14 @@ export const state = {
   pendingGen: null,                  // in-progress image/video/audio gen: { tabId, label, insertIndex }
   comfyVideoModels: new Set(),       // ComfyUI model names that generate video
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
+  scrollPin: null,                   // when set (resend/edit in place), auto-scroll holds this scrollTop instead of jumping to the bottom
+  _pinClearTimer: null,              // delayed release of scrollPin once generation fully ends
 };
+
+// Auto-scroll the chat. Normally jumps to the bottom (new content), but while a
+// resend/edit regenerates in place, state.scrollPin holds the position so the
+// view doesn't jump away from the message being edited.
+export function scrollChatToEnd() {
+  if (state.scrollPin != null) dom.messagesEl.scrollTop = state.scrollPin;
+  else dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+}

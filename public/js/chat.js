@@ -1,5 +1,5 @@
 // Chat rendering, message handling, and sending
-import { dom, state } from './state.js';
+import { dom, state, scrollChatToEnd } from './state.js';
 import { PERSONALITY_PRESETS, TAG_COLORS } from './constants.js';
 import { escapeHtml, formatTimestamp, formatDuration, makePreview } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
@@ -18,14 +18,63 @@ import { addMemory, getMemoryPromptBlock } from './memory.js';
 import { parseRemind, addReminder, describeReminder, markActivity } from './proactive.js';
 import { TOOL_SCHEMAS, executeTool, getToolLabel } from './tools.js';
 
+// Delayed "正在发送中 / 正在停止中" status: only shown when the operation is slow
+// (>2s after pressing send/stop). The "sending" pill is for the gap between
+// clicking send and the response starting — it's dropped the moment the response
+// begins streaming (sendSucceeded), NOT when the whole reply finishes. Avoids
+// flicker for the common fast case.
+let _sendStatusTimer = null;
+let _sendStatusKind = null; // 'sending' | 'stopping' | null
+function scheduleStatus(kind, key) {
+  clearTimeout(_sendStatusTimer);
+  _sendStatusKind = kind;
+  const el = dom.sendStatus;
+  if (!el) return;
+  _sendStatusTimer = setTimeout(() => { el.textContent = t(key); el.hidden = false; }, 2000);
+}
+function clearSendStatus() {
+  clearTimeout(_sendStatusTimer);
+  _sendStatusKind = null;
+  if (dom.sendStatus) dom.sendStatus.hidden = true;
+}
+// The response started coming back → "send" succeeded → drop the Sending pill.
+// Leaves a Stopping pill alone (the user is mid-cancel).
+function sendSucceeded() {
+  if (_sendStatusKind === 'stopping') return;
+  clearSendStatus();
+}
+// Pressing stop/pause: switch to "正在停止中". If a pill is already visible
+// (sending was slow), swap text immediately; otherwise only reveal it if the
+// stop itself takes >2s.
+export function markStopping() {
+  const el = dom.sendStatus;
+  if (!el) return;
+  if (!el.hidden) {
+    clearTimeout(_sendStatusTimer);
+    _sendStatusKind = 'stopping';
+    el.textContent = t("status_stopping");
+  } else {
+    scheduleStatus('stopping', "status_stopping");
+  }
+}
+
 export function setGenerating(active) {
   if (active) {
+    // A new (or chained) generation phase started — keep the scroll pin alive.
+    clearTimeout(state._pinClearTimer);
     dom.sendButton.textContent = t("btn_stop");
     dom.sendButton.classList.add("isStop");
+    scheduleStatus('sending', "status_sending");
   } else {
     dom.sendButton.textContent = t("btn_send");
     dom.sendButton.classList.remove("isStop");
+    clearSendStatus();
     state.currentAbortController = null;
+    // Release the resend/edit scroll pin shortly after generation ends. The small
+    // delay lets multi-phase commands (e.g. /search → answer) keep the pin across
+    // the brief gap when they toggle generating off between phases.
+    clearTimeout(state._pinClearTimer);
+    state._pinClearTimer = setTimeout(() => { state.scrollPin = null; }, 150);
   }
 }
 
@@ -81,6 +130,10 @@ function resendChatMessage(index) {
   const message = tab.messages[index];
   if (!message || message.role !== "user") return;
 
+  // Pin the scroll position so regenerating a mid-conversation message (here or via
+  // double-click edit, which delegates here) doesn't jump the view to the bottom.
+  state.scrollPin = dom.messagesEl.scrollTop;
+
   // A locked reply is kept; the new reply is inserted before it (at index+1).
   if (tab.messages[index + 1]?.role === "assistant" && !tab.messages[index + 1].locked) {
     tab.messages.splice(index + 1, 1);
@@ -123,10 +176,18 @@ function resendChatMessage(index) {
   // Handle /url command on resend
   const urlTarget = parseUrlCommand(message.content);
   if (urlTarget) {
+    // Remove the old /url output block (messages tagged urlPart) right after this
+    // bubble, then regenerate in place with context truncated to it. Locked stay.
+    while (tab.messages[index + 1]?.urlPart && !tab.messages[index + 1].locked) {
+      tab.messages.splice(index + 1, 1);
+    }
+    saveChat();
+    renderChat();
+    const cursor = { pos: index + 1 };
     if (urlTarget.entries.length === 1) {
-      handleUrlCommand(urlTarget.entries[0].url, tab, state.activeTabId, message.content, urlTarget.entries[0].prompt);
+      handleUrlCommand(urlTarget.entries[0].url, tab, state.activeTabId, message.content, urlTarget.entries[0].prompt, cursor, true);
     } else {
-      handleMultiUrlCommand(urlTarget.entries, tab, state.activeTabId, message.content);
+      handleMultiUrlCommand(urlTarget.entries, tab, state.activeTabId, message.content, cursor);
     }
     return;
   }
@@ -297,7 +358,7 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
     const refNode = inPlace ? dom.messagesEl.children[insertIndex] : null;
     if (refNode) dom.messagesEl.insertBefore(pending, refNode);
     else dom.messagesEl.appendChild(pending);
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    scrollChatToEnd();
   }
 
   try {
@@ -358,7 +419,7 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
         const t = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
         if (t) {
           t.innerHTML = markdownToHtml(content);
-          dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+          scrollChatToEnd();
         }
       }
     }
@@ -469,7 +530,7 @@ async function handleTitleCommand(tab, tabId, content) {
         body.innerHTML = `<span class="thinking-text">${t("msg_generatingTitle")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
         pending.appendChild(body);
         dom.messagesEl.appendChild(pending);
-        dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+        scrollChatToEnd();
       }
 
       try {
@@ -639,7 +700,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     body.innerHTML = `<span class="thinking-text">${t("msg_thinking")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
     pending.appendChild(body);
     dom.messagesEl.appendChild(pending);
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    scrollChatToEnd();
   }
 
   // Build limited message context
@@ -731,7 +792,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
           const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
           if (thinkEl) {
             thinkEl.innerHTML = markdownToHtml(thinkingContent);
-            dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+            scrollChatToEnd();
           }
         }
         return;
@@ -772,7 +833,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
           const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
           if (md) {
             md.innerHTML = markdownToHtml(content);
-            dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+            scrollChatToEnd();
           }
         }
       }
@@ -838,7 +899,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
   return aborted;
 }
 
-export async function regenerateReply(tabId = state.activeTabId, insertIndex = -1, contextEndIndex = -1) {
+export async function regenerateReply(tabId = state.activeTabId, insertIndex = -1, contextEndIndex = -1, replyMeta = {}) {
   const tab = getTab(tabId);
   if (!tab) return;
 
@@ -861,7 +922,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     } else {
       dom.messagesEl.appendChild(pending);
     }
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    scrollChatToEnd();
   }
 
   let content = "";
@@ -942,7 +1003,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
           const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
           if (thinkEl) {
             thinkEl.innerHTML = markdownToHtml(thinkingContent);
-            dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+            scrollChatToEnd();
           }
         }
         return;
@@ -984,7 +1045,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
           const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
           if (md) {
             md.innerHTML = markdownToHtml(content);
-            dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+            scrollChatToEnd();
           }
         }
       }
@@ -1008,7 +1069,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
       if (md) md.innerHTML = markdownToHtml(content);
     }
-    const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart };
+    const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart, ...replyMeta };
     if (thinkingContent) reply.thinking = thinkingContent;
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
       tab.messages.splice(insertIndex, 0, reply);
@@ -1031,7 +1092,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
           const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
           if (md) md.innerHTML = markdownToHtml(content);
         }
-        const reply = { role: "assistant", content: content.trim(), timestamp: Date.now(), genMs: Date.now() - genStart };
+        const reply = { role: "assistant", content: content.trim(), timestamp: Date.now(), genMs: Date.now() - genStart, ...replyMeta };
         if (thinkingContent) reply.thinking = thinkingContent;
         if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
           tab.messages.splice(insertIndex, 0, reply);
@@ -1088,7 +1149,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
     const refNode = inPlace ? dom.messagesEl.children[insertIndex] : null;
     if (refNode) dom.messagesEl.insertBefore(pending, refNode);
     else dom.messagesEl.appendChild(pending);
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    scrollChatToEnd();
   }
 
   let content = "";
@@ -1140,7 +1201,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
         const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
         if (md) {
           md.innerHTML = markdownToHtml(content);
-          dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+          scrollChatToEnd();
         }
       }
     }
@@ -1238,7 +1299,7 @@ async function handleSearchCommand(raw, tab, tabId, fullContent, insertIndex = -
     const refNode = inPlace ? dom.messagesEl.children[insertIndex] : null;
     if (refNode) dom.messagesEl.insertBefore(pending, refNode);
     else dom.messagesEl.appendChild(pending);
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    scrollChatToEnd();
   }
 
   const finish = (assistantContent) => {
@@ -1331,7 +1392,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
     }
     pending.querySelector(".markdownBody").innerHTML =
       `<span class="thinking-text">${text}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    scrollChatToEnd();
   };
   setPending(t("msg_thinking"));
 
@@ -1439,6 +1500,9 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   const tab = getTab(tabId);
   if (!tab) return;
   if (tab.locked) return;
+
+  // A newly sent message always scrolls to the bottom — drop any resend scroll pin.
+  state.scrollPin = null;
 
   markActivity();
 
@@ -1873,6 +1937,15 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
         text.replaceWith(input);
         input.focus();
         input.setSelectionRange(input.value.length, input.value.length);
+        // Grow the box to show the whole message (wrapped lines included), capped at
+        // half the viewport so long messages scroll within the textarea instead of
+        // taking over the screen. Keep growing as the user types.
+        const autosizeInput = () => {
+          input.style.height = "auto";
+          input.style.height = Math.min(input.scrollHeight + 2, Math.round(window.innerHeight * 0.5)) + "px";
+        };
+        autosizeInput();
+        input.addEventListener("input", autosizeInput);
         function finishEdit(save, triggerSend = true) {
           const newContent = input.value.trim();
           if (save && newContent && newContent !== original) {
@@ -1881,76 +1954,18 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
             tab.messages[index].content = newContent;
             if (triggerSend) tab.messages[index].timestamp = Date.now();
             if (role === "user" && triggerSend) {
-              // Handle /0 and /1 — do NOT remove existing assistant reply
-              const isoMatch = newContent.match(/^\/(0|1)\s+([\s\S]+)/);
-              if (isoMatch) {
+              // /memory and /remind already took effect when first sent; editing
+              // only updates the displayed text — don't re-execute (this mirrors why
+              // the resend button is hidden for them). Everything else behaves
+              // exactly like the resend button — context truncation, in-place
+              // insertion and locked-safe cleanup all come from resendChatMessage,
+              // so the two paths can never drift apart again.
+              if (/^\/(memory|remind)(\s|$)/.test(newContent)) {
                 saveChat();
                 renderChat();
-                const insertIdx = index + 1;
-                isolatedReply(isoMatch[2], isoMatch[1], getActiveTab(), state.activeTabId, insertIdx);
-              } else if (/^\/(memory|remind)(\s|$)/.test(newContent)) {
-                // Already took effect when first sent; editing only updates the
-                // displayed text — don't re-execute and don't trigger a reply.
+              } else {
                 saveChat();
-                renderChat();
-              } else if (/^\/search(\s|$)/.test(newContent)) {
-                // Re-run the web search with the edited query.
-                const q = newContent.replace(/^\/search\s*/, "").trim();
-                if (q) {
-                  // Remove the old results bubble + answer, and the command bubble itself.
-                  if (tab.messages[index + 1]?.role === "assistant") tab.messages.splice(index + 1, 1);
-                  if (tab.messages[index + 1]?.role === "assistant") tab.messages.splice(index + 1, 1);
-                  tab.messages.splice(index, 1);
-                  saveChat();
-                  renderChat();
-                  handleSearchCommand(q, getActiveTab(), state.activeTabId, newContent);
-                } else {
-                  saveChat();
-                  renderChat();
-                }
-              } else {
-              // A locked reply is kept; the new reply is inserted before it.
-              if (tab.messages[index + 1]?.role === "assistant" && !tab.messages[index + 1].locked) {
-                tab.messages.splice(index + 1, 1);
-              }
-              saveChat();
-              renderChat();
-              if (parseNoteCommand(newContent)) {
-                // do nothing
-              } else if (/^\/compact\s*$/.test(newContent)) {
-                handleCompactCommand(tab, state.activeTabId);
-              } else if (parseUrlCommand(newContent)) {
-                const urlParsed = parseUrlCommand(newContent);
-                if (urlParsed.entries.length === 1) {
-                  handleUrlCommand(urlParsed.entries[0].url, tab, state.activeTabId, newContent, urlParsed.entries[0].prompt);
-                } else {
-                  handleMultiUrlCommand(urlParsed.entries, tab, state.activeTabId, newContent);
-                }
-              } else {
-                const voiceCmd = parseVoiceCommand(newContent);
-                const imagineCmds = voiceCmd ? null : parseImagineCommands(newContent);
-                if (voiceCmd) {
-                  if (voiceCmd.error) {
-                    tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_commandError", { error: voiceCmd.error }), timestamp: Date.now() });
-                    saveChat();
-                    renderChat();
-                  } else {
-                    generateSpeech(voiceCmd, state.activeTabId, index + 1);
-                  }
-                } else if (imagineCmds) {
-                  const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
-                  if (firstError) {
-                    tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_commandError", { error: firstError.error }), timestamp: Date.now() });
-                    saveChat();
-                    renderChat();
-                  } else {
-                    const validCmds = imagineCmds.filter((cmd) => cmd && cmd.prompt);
-                    generateImage(validCmds, state.activeTabId, index + 1, tab.messages[index]?.images || null);
-                  }
-                } else {
-                  dispatchReply(state.activeTabId, index + 1);
-                }
-              }
+                resendChatMessage(index);
               }
             } else {
               saveChat();
@@ -2055,6 +2070,58 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       if (vthumb) video.poster = vthumb.startsWith("data:") ? vthumb : `data:image/jpeg;base64,${vthumb}`;
       video.src = vData.startsWith("data:") ? vData : `data:${vmime};base64,${vData}`;
       wrapper.appendChild(video);
+
+      // Volume slider — shown ONLY when the video has an audio track (LTX with
+      // audio); WAN/Hunyuan are silent so it stays hidden. Synced with the native
+      // controls' volume both ways.
+      const volWrap = document.createElement("div");
+      volWrap.className = "videoVolume";
+      volWrap.hidden = true;
+      const volIcon = document.createElement("button");
+      volIcon.type = "button";
+      volIcon.className = "videoVolumeIcon";
+      volIcon.textContent = "🔊";
+      volIcon.title = t("video_volume");
+      volIcon.setAttribute("aria-label", t("video_volume"));
+      const volSlider = document.createElement("input");
+      volSlider.type = "range";
+      volSlider.min = "0";
+      volSlider.max = "1";
+      volSlider.step = "0.05";
+      volSlider.value = "1";
+      volSlider.className = "videoVolumeSlider";
+      volSlider.setAttribute("aria-label", t("video_volume"));
+      volWrap.append(volIcon, volSlider);
+      wrapper.appendChild(volWrap);
+      volSlider.addEventListener("input", () => {
+        video.muted = false;
+        video.volume = Number(volSlider.value);
+      });
+      volIcon.addEventListener("click", () => {
+        video.muted = !video.muted;
+        if (!video.muted && video.volume === 0) { video.volume = 1; }
+      });
+      // Keep the slider/icon in sync whether the user uses this or the native bar.
+      video.addEventListener("volumechange", () => {
+        const v = video.muted ? 0 : video.volume;
+        volSlider.value = String(v);
+        volIcon.textContent = v === 0 ? "🔇" : v < 0.5 ? "🔉" : "🔊";
+      });
+      // Detect an audio track and reveal the slider. mozHasAudio/audioTracks are
+      // ready at metadata (Firefox/Safari); Chrome only sets
+      // webkitAudioDecodedByteCount once audio decodes, so also check on play.
+      const hasAudio = (vd) => !!(vd.mozHasAudio || vd.webkitAudioDecodedByteCount || (vd.audioTracks && vd.audioTracks.length));
+      const revealIfAudio = () => {
+        if (!hasAudio(video)) return;
+        volWrap.hidden = false;
+        video.removeEventListener("loadeddata", revealIfAudio);
+        video.removeEventListener("play", revealIfAudio);
+        video.removeEventListener("timeupdate", revealIfAudio);
+      };
+      video.addEventListener("loadeddata", revealIfAudio);
+      video.addEventListener("play", revealIfAudio);
+      video.addEventListener("timeupdate", revealIfAudio);
+
       // Download button — an <a download> pointing at the (data) URL.
       const dl = document.createElement("a");
       dl.className = "videoDownloadBtn";
@@ -2094,7 +2161,7 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
   }
 
   dom.messagesEl.appendChild(item);
-  dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+  scrollChatToEnd();
 
   // Add fold/unfold toggle
   if (content && content !== "thinking-placeholder" && Number.isInteger(index)) {
@@ -2248,7 +2315,7 @@ export function renderChat() {
       transEl.appendChild(transBody);
       row.appendChild(transEl);
       dom.messagesEl.appendChild(row);
-      dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+      scrollChatToEnd();
     } else if (message.translation && el) {
       // Render side-by-side: original + translation
       const row = document.createElement("div");
@@ -2296,9 +2363,11 @@ export function renderChat() {
       closeBtn.title = t("tooltip_closeTranslation");
       closeBtn.textContent = "×";
       closeBtn.addEventListener("click", () => {
+        const scrollY = dom.messagesEl.scrollTop;
         delete message.translation;
         saveChat();
         renderChat();
+        dom.messagesEl.scrollTop = scrollY;
       });
       transActionsRight.appendChild(closeBtn);
 
@@ -2312,7 +2381,7 @@ export function renderChat() {
 
       row.appendChild(transEl);
       dom.messagesEl.appendChild(row);
-      dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+      scrollChatToEnd();
     }
   });
 
@@ -2328,6 +2397,9 @@ export function renderChat() {
       body.innerHTML = `<span class="thinking-text">${label}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
       bubble.appendChild(body);
     } else {
+      // The response is now streaming content → the "send" succeeded, so drop the
+      // delayed "Sending…" pill (idempotent; won't touch a "Stopping…" pill).
+      sendSucceeded();
       const body = document.createElement("div");
       body.className = "markdownBody";
       body.innerHTML = markdownToHtml(state.streamingInfo.content);
@@ -2340,7 +2412,7 @@ export function renderChat() {
     } else {
       dom.messagesEl.appendChild(bubble);
     }
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    scrollChatToEnd();
   }
 
   // Restore an in-progress media-generation (image/video/audio) bubble so it
@@ -2348,15 +2420,22 @@ export function renderChat() {
   // from state.pendingGen (label, enhanced prompt, images, progress, preview), so
   // the live update helpers re-find it by class and keep streaming into it.
   if (state.pendingGen && state.pendingGen.tabId === state.activeTabId) {
+    // The image/video/audio gen bubble is showing → the request started, so drop
+    // the delayed "Sending…" pill (leaves a "Stopping…" pill alone).
+    sendSucceeded();
     const bubble = buildPendingGenBubble(state.pendingGen);
     const idx = state.pendingGen.insertIndex;
     const refNode = (idx != null && idx >= 0) ? dom.messagesEl.children[idx] : null;
     if (refNode) dom.messagesEl.insertBefore(bubble, refNode);
     else dom.messagesEl.appendChild(bubble);
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    scrollChatToEnd();
   }
 
   highlightCodeBlocks();
   renderMermaidDiagrams();
   renderContextMeter();
+
+  // Rebuilding innerHTML above resets scrollTop to 0; while a resend/edit is
+  // regenerating in place, restore the pinned position so the view stays put.
+  if (state.scrollPin != null) dom.messagesEl.scrollTop = state.scrollPin;
 }

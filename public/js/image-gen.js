@@ -426,8 +426,14 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     if (!allVideos.length) return;
     const plang = getPromptLanguage();
     const vmime = lastData.videoMime || "video/mp4";
-    // "Video generated (W×H)", suffixed with ×N when a batch, then the model.
-    const sizeLine = t("msg_videoDone", { w: lastData.width || "?", h: lastData.height || "?" }, plang);
+    // "Video generated (W×H, Ns)", suffixed with ×N when a batch, then the model.
+    // Duration = frame count / fps (both resolved server-side); omitted if unknown.
+    let dur = "";
+    if (lastData.length && lastData.fps) {
+      const r = Math.round((lastData.length / lastData.fps) * 10) / 10;
+      dur = `, ${Number.isInteger(r) ? r : r.toFixed(1)}s`;
+    }
+    const sizeLine = t("msg_videoDone", { w: lastData.width || "?", h: lastData.height || "?", dur }, plang);
     const doneLine = (count > 1 ? `${sizeLine} ×${allVideos.length}${allVideos.length < count ? `/${count}` : ""}` : sizeLine)
       + (vidModel ? ` · ${vidModel}` : "");
     // If more images were attached than the model can use, tell the user how many

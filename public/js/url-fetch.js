@@ -1,5 +1,5 @@
 // URL fetching and content parsing (/url command)
-import { dom, state } from './state.js';
+import { dom, state, scrollChatToEnd } from './state.js';
 import { setAvatarState } from './avatar.js';
 import { markdownToHtml } from './markdown.js';
 import { saveChat } from './settings.js';
@@ -17,6 +17,21 @@ export function setDeps({ setGenerating, renderChat, regenerateReply }) {
   _setGenerating = setGenerating;
   _renderChat = renderChat;
   _regenerateReply = regenerateReply;
+}
+
+// On resend, a /url command regenerates in place: every message it produces is
+// tagged `urlPart: true` (so a later resend can remove exactly this block) and
+// spliced at a shared mutable cursor { pos } right after the command bubble.
+// On a fresh send, cursor is null and messages are appended at the end.
+function placeMsg(tab, msg, cursor) {
+  msg.urlPart = true;
+  if (cursor && cursor.pos >= 0 && cursor.pos <= tab.messages.length) tab.messages.splice(cursor.pos++, 0, msg);
+  else tab.messages.push(msg);
+}
+function placePending(pending, cursor) {
+  const ref = (cursor && cursor.pos >= 0) ? dom.messagesEl.children[cursor.pos] : null;
+  if (ref) dom.messagesEl.insertBefore(pending, ref);
+  else dom.messagesEl.appendChild(pending);
 }
 
 export function parseUrlCommand(content) {
@@ -51,14 +66,23 @@ export function parseUrlCommand(content) {
   return entries.length > 0 ? { entries } : null;
 }
 
-export async function handleUrlCommand(url, tab, tabId, fullContent, prompt) {
+export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cursor = null, skipUserBubble = false) {
   // Ensure URL has protocol
   if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+  const inPlace = !!(cursor && cursor.pos >= 0);
 
-  const userMessage = { role: "user", content: fullContent || `/url ${url}`, timestamp: Date.now() };
-  tab.messages.push(userMessage);
+  // On resend the command bubble already exists in place (skipUserBubble); a fresh
+  // send (or a continuation /url line in multi-url) adds its own command bubble.
+  if (!skipUserBubble) placeMsg(tab, { role: "user", content: fullContent || `/url ${url}`, timestamp: Date.now() }, cursor);
   saveChat();
   if (state.activeTabId === tabId && _renderChat) _renderChat();
+
+  // Reply right after the produced content (in place) or at the end (fresh).
+  const runReply = async () => {
+    if (!_regenerateReply) return;
+    if (inPlace) { await _regenerateReply(tabId, cursor.pos, cursor.pos - 1, { urlPart: true }); cursor.pos++; }
+    else _regenerateReply(tabId, -1, -1, { urlPart: true });
+  };
 
   // Show thinking state with animated bubble
   setAvatarState("thinking");
@@ -75,8 +99,8 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt) {
     body.className = "markdownBody";
     body.innerHTML = '<span class="thinking-text">正在获取内容<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
     pending.appendChild(body);
-    dom.messagesEl.appendChild(pending);
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    placePending(pending, cursor);
+    scrollChatToEnd();
   }
 
   try {
@@ -92,7 +116,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt) {
     if (pending) pending.remove();
 
     if (!res.ok || data.type === "error") {
-      tab.messages.push({ role: "assistant", content: `⚠️ ${data.error || data.content || "获取失败"}`, timestamp: Date.now() });
+      placeMsg(tab, { role: "assistant", content: `⚠️ ${data.error || data.content || "获取失败"}`, timestamp: Date.now() }, cursor);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
       setAvatarState("idle");
@@ -101,7 +125,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt) {
     }
 
     if (data.type === "unsupported") {
-      tab.messages.push({ role: "assistant", content: `⚠️ ${data.content}`, timestamp: Date.now() });
+      placeMsg(tab, { role: "assistant", content: `⚠️ ${data.content}`, timestamp: Date.now() }, cursor);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
       setAvatarState("idle");
@@ -144,7 +168,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt) {
     } else if (data.type === "webpage" && Array.isArray(data.images) && data.images.length) {
       msgObj.generatedThumbnails = await Promise.all(data.images.map((img) => makePreview(img)));
     }
-    tab.messages.push(msgObj);
+    placeMsg(tab, msgObj, cursor);
     saveChat();
     if (state.activeTabId === tabId && _renderChat) _renderChat();
 
@@ -153,39 +177,39 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt) {
 
     // For YouTube, ask AI to format the transcript into readable text
     if (hasRealTranscript) {
-      await formatTranscriptChunked(data.title, data.content, tab, tabId);
+      await formatTranscriptChunked(data.title, data.content, tab, tabId, undefined, cursor);
       // After transcript is formatted, if there's a prompt, send it
       if (prompt) {
-        tab.messages.push({ role: "user", content: prompt, timestamp: Date.now() });
+        placeMsg(tab, { role: "user", content: prompt, timestamp: Date.now() }, cursor);
         saveChat();
         if (state.activeTabId === tabId && _renderChat) _renderChat();
-        if (_regenerateReply) _regenerateReply(tabId);
+        await runReply();
       }
     } else if (data.type === "youtube" && data.videoId && !hasRealTranscript) {
       // No subtitles — try audio transcription via whisper
-      await transcribeYouTubeFromAudio(data.videoId, data.title, tab, tabId);
+      await transcribeYouTubeFromAudio(data.videoId, data.title, tab, tabId, cursor);
       // After transcription, if there's a prompt, send it
       if (prompt) {
-        tab.messages.push({ role: "user", content: prompt, timestamp: Date.now() });
+        placeMsg(tab, { role: "user", content: prompt, timestamp: Date.now() }, cursor);
         saveChat();
         if (state.activeTabId === tabId && _renderChat) _renderChat();
-        if (_regenerateReply) _regenerateReply(tabId);
+        await runReply();
       }
     } else if (data.type !== "youtube") {
       // For non-YouTube: if prompt exists, add user message with prompt; otherwise let AI process normally
       if (prompt) {
-        tab.messages.push({ role: "user", content: prompt, timestamp: Date.now() });
+        placeMsg(tab, { role: "user", content: prompt, timestamp: Date.now() }, cursor);
         saveChat();
         if (state.activeTabId === tabId && _renderChat) _renderChat();
       }
-      if (_regenerateReply) _regenerateReply(tabId);
+      await runReply();
     }
   } catch (error) {
     if (pending) pending.remove();
     if (error.name === "AbortError") {
       // User cancelled
     } else {
-      tab.messages.push({ role: "assistant", content: `⚠️ 获取失败：${error.message}`, timestamp: Date.now() });
+      placeMsg(tab, { role: "assistant", content: `⚠️ 获取失败：${error.message}`, timestamp: Date.now() }, cursor);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
@@ -195,9 +219,12 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt) {
 }
 
 // Handle multiple URLs sequentially
-export async function handleMultiUrlCommand(entries, tab, tabId, fullContent) {
+export async function handleMultiUrlCommand(entries, tab, tabId, fullContent, cursor = null) {
+  const inPlace = !!(cursor && cursor.pos >= 0);
   for (let i = 0; i < entries.length; i++) {
-    await handleUrlCommand(entries[i].url, tab, tabId, i === 0 ? fullContent : `/url ${entries[i].url}`, entries[i].prompt);
+    // On resend the first entry reuses the existing command bubble; continuation
+    // entries add their own `/url …` bubble (spliced at the shared cursor).
+    await handleUrlCommand(entries[i].url, tab, tabId, i === 0 ? fullContent : `/url ${entries[i].url}`, entries[i].prompt, cursor, inPlace && i === 0);
   }
 }
 
@@ -220,7 +247,7 @@ function splitTranscript(text, limit) {
 
 // Process transcript in chunks, streaming each chunk's AI response
 // source: "subtitle" (default) or "whisper" (from audio transcription)
-async function formatTranscriptChunked(title, transcript, tab, tabId, source) {
+async function formatTranscriptChunked(title, transcript, tab, tabId, source, cursor = null) {
   const chunks = splitTranscript(transcript, CHUNK_CHAR_LIMIT);
   const totalChunks = chunks.length;
 
@@ -230,7 +257,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source) {
     : `请将以下YouTube视频「${title}」的原始字幕整理成易读的文本。要求：\n1. 添加标点符号，连成完整的句子和段落\n2. 适当分段换行（按语义自然分段）\n3. 不要改变原意，不要添加内容\n4. 不要省略任何字幕内容`;
   const label = source === "whisper" ? "**[语音识别结果]**" : "**[原始字幕]**";
   const userMsg = `${instructions}\n\n${label}\n\n${transcript}`;
-  tab.messages.push({ role: "user", content: userMsg, timestamp: Date.now() });
+  placeMsg(tab, { role: "user", content: userMsg, timestamp: Date.now() }, cursor);
   saveChat();
   if (state.activeTabId === tabId && _renderChat) _renderChat();
 
@@ -251,8 +278,8 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source) {
     body.className = "markdownBody";
     body.innerHTML = '<span class="thinking-text">正在整理字幕 (1/' + totalChunks + ')<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
     pending.appendChild(body);
-    dom.messagesEl.appendChild(pending);
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    placePending(pending, cursor);
+    scrollChatToEnd();
   }
 
   try {
@@ -263,7 +290,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source) {
       if (i > 0 && pending && textEl) {
         fullContent += `\n\n---\n*正在整理第 ${i + 1}/${totalChunks} 段...*\n\n`;
         textEl.innerHTML = markdownToHtml(fullContent);
-        dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+        scrollChatToEnd();
       } else if (i > 0 && pending && !textEl) {
         const body = pending.querySelector(".markdownBody");
         if (body) body.innerHTML = '<span class="thinking-text">正在整理字幕 (' + (i + 1) + '/' + totalChunks + ')<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
@@ -317,7 +344,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source) {
         fullContent += chunk;
         if (state.activeTabId === tabId && textEl) {
           textEl.innerHTML = markdownToHtml(fullContent);
-          dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+          scrollChatToEnd();
         }
       }
 
@@ -347,13 +374,13 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source) {
     fullContent = fullContent.trim() || "整理失败，请重试。";
     fullContent = `**📝 整理好的字幕**\n\n${fullContent}`;
     if (state.activeTabId === tabId && textEl) textEl.innerHTML = markdownToHtml(fullContent);
-    tab.messages.push({ role: "assistant", content: fullContent, timestamp: Date.now() });
+    placeMsg(tab, { role: "assistant", content: fullContent, timestamp: Date.now() }, cursor);
     saveChat();
     if (state.activeTabId === tabId && _renderChat) _renderChat();
   } catch (error) {
     if (error.name === "AbortError") {
       if (fullContent.trim()) {
-        tab.messages.push({ role: "assistant", content: fullContent.trim(), timestamp: Date.now() });
+        placeMsg(tab, { role: "assistant", content: fullContent.trim(), timestamp: Date.now() }, cursor);
         saveChat();
         if (state.activeTabId === tabId && _renderChat) _renderChat();
       } else if (pending) {
@@ -361,7 +388,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source) {
       }
     } else {
       if (pending) pending.remove();
-      tab.messages.push({ role: "assistant", content: `⚠️ 字幕整理失败：${error.message}`, timestamp: Date.now() });
+      placeMsg(tab, { role: "assistant", content: `⚠️ 字幕整理失败：${error.message}`, timestamp: Date.now() }, cursor);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
@@ -373,7 +400,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source) {
 }
 
 // Transcribe YouTube audio when no subtitles are available
-async function transcribeYouTubeFromAudio(videoId, title, tab, tabId) {
+async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = null) {
   if (_setGenerating) _setGenerating(true);
   setAvatarState("thinking");
   const abortController = new AbortController();
@@ -388,8 +415,8 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId) {
     body.className = "markdownBody";
     body.innerHTML = '<span class="thinking-text">正在通过语音识别获取内容<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
     pending.appendChild(body);
-    dom.messagesEl.appendChild(pending);
-    dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+    placePending(pending, cursor);
+    scrollChatToEnd();
   }
 
   try {
@@ -446,7 +473,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId) {
           const errMsg = msg.message || msg.error || "转录失败";
           if (pending) pending.remove();
           pending = null;
-          tab.messages.push({ role: "assistant", content: `⚠️ 语音识别失败：${errMsg}`, timestamp: Date.now() });
+          placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${errMsg}`, timestamp: Date.now() }, cursor);
           saveChat();
           if (state.activeTabId === tabId && _renderChat) _renderChat();
         }
@@ -461,7 +488,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId) {
           hasError = true;
           if (pending) pending.remove();
           pending = null;
-          tab.messages.push({ role: "assistant", content: `⚠️ 语音识别失败：${msg.message || msg.error}`, timestamp: Date.now() });
+          placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${msg.message || msg.error}`, timestamp: Date.now() }, cursor);
           saveChat();
           if (state.activeTabId === tabId && _renderChat) _renderChat();
         }
@@ -482,9 +509,9 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId) {
       state.currentAbortController = null;
       if (_setGenerating) _setGenerating(false);
       setAvatarState("idle");
-      await formatTranscriptChunked(title, transcriptText, tab, tabId, "whisper");
+      await formatTranscriptChunked(title, transcriptText, tab, tabId, "whisper", cursor);
     } else {
-      tab.messages.push({ role: "assistant", content: "⚠️ 语音识别未返回内容", timestamp: Date.now() });
+      placeMsg(tab, { role: "assistant", content: "⚠️ 语音识别未返回内容", timestamp: Date.now() }, cursor);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
       setAvatarState("idle");
@@ -494,7 +521,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId) {
   } catch (error) {
     if (pending) pending.remove();
     if (error.name !== "AbortError") {
-      tab.messages.push({ role: "assistant", content: `⚠️ 语音识别失败：${error.message}`, timestamp: Date.now() });
+      placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${error.message}`, timestamp: Date.now() }, cursor);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }

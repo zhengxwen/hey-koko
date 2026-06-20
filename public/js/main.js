@@ -12,7 +12,7 @@ import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedMode
 import { setDeps as imageGenSetDeps } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
-import { renderChat, sendMessage, setGenerating, regenerateReply, generateProactiveReply } from './chat.js';
+import { renderChat, sendMessage, setGenerating, regenerateReply, generateProactiveReply, markStopping } from './chat.js';
 import { setDeps as urlFetchSetDeps } from './url-fetch.js';
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
 import { initLightbox } from './lightbox.js';
@@ -184,11 +184,13 @@ dom.chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   if (state.currentAbortController) {
+    markStopping();
     state.currentAbortController.abort();
     return;
   }
 
   if (state.imageGenAbortController) {
+    markStopping();
     state.imageGenAbortController.abort();
     return;
   }

@@ -1127,7 +1127,7 @@ async function generateComfyImage(req, res) {
           }
         }
         const v = resolveVideoConfig(videoType, vOpts, model, turbo);
-        videoDims = { width: v.width, height: v.height };
+        videoDims = { width: v.width, height: v.height, fps: v.fps, length: v.length };
         // A WAN 14B t2v checkpoint can't consume a start image — ignore any attach.
         const wantImage = isImg2Img && !(videoType === "wan" && /14b/i.test(model) && /t2v/i.test(model));
         // Multi-image video. WAN 2.2 14B i2v + 2 imgs → first-last-frame (FLF2V).
@@ -1268,7 +1268,7 @@ async function generateComfyImage(req, res) {
       const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
       if (videoType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
-        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);

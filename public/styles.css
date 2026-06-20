@@ -2234,6 +2234,7 @@ button.secondary:disabled {
 }
 
 .composer {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto auto auto;
   gap: 10px;
@@ -2241,6 +2242,23 @@ button.secondary:disabled {
   border-top: 1px solid var(--line);
   padding: 14px;
   background: var(--panel-alpha);
+}
+
+/* Delayed "Sending…/Stopping…" pill — floats above the composer, out of the grid
+   flow (absolute), only shown when an op is slow (>2s). [hidden] keeps it gone. */
+.sendStatus {
+  position: absolute;
+  right: 14px;
+  bottom: calc(100% + 6px);
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  z-index: 5;
 }
 
 .composer.isLocked .quickPromptBtn,
@@ -3361,6 +3379,65 @@ button.secondary:disabled {
 
 .message.isFolded > .videoGrid {
   display: none;
+}
+
+/* Floating volume control — overlays the video like the download button (top-left,
+   appears on hover), shown only when the clip has an audio track. The slider
+   expands when the button is hovered. */
+.videoVolume {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+/* The class's display:flex would otherwise override [hidden]'s display:none. */
+.videoVolume[hidden] {
+  display: none;
+}
+
+.videoWrapper:hover .videoVolume {
+  opacity: 1;
+}
+
+.videoVolume:hover {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.videoVolumeIcon {
+  border: none;
+  background: none;
+  padding: 0;
+  width: 22px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.videoVolumeSlider {
+  width: 0;
+  min-width: 0;
+  opacity: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  height: 4px;
+  transition: width 0.18s ease, opacity 0.18s ease;
+}
+
+.videoVolume:hover .videoVolumeSlider {
+  width: 64px;
+  opacity: 1;
 }
 
 /* /voice — generated speech player + download */

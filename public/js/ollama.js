@@ -172,13 +172,29 @@ export async function loadComfyModels() {
   }
 }
 
+// The "auto" fps/length the server picks per video model (mirrors videoPreset in
+// server/comfy.js). Lets the ⚙ placeholders show the REAL default for the chosen
+// model — WAN 14B is 16fps/81f, NOT the generic 24/49.
+function videoAutoDefaults(modelName) {
+  const m = (modelName || "").toLowerCase();
+  if (/ltx/.test(m)) return { fps: 24, length: 97 };
+  if (/hunyuan/.test(m)) return { fps: 24, length: 49 };
+  if (/wan/.test(m)) return /14b/.test(m) ? { fps: 16, length: 81 } : { fps: 24, length: 49 };
+  return null;
+}
+
 // Show the "supports multi-image" hint when a multi-reference edit model
-// (Qwen-Image-Edit) is selected.
+// (Qwen-Image-Edit) is selected, and update the ⚙ fps/length placeholders to the
+// selected video model's real "auto" values.
 export function updateComfyMultiHint() {
-  if (!dom.comfyMultiHint) return;
   const v = dom.comfyModelSelect?.value;
-  const isMulti = !!(v && state.comfyMultiImageModels && state.comfyMultiImageModels.has(v));
-  dom.comfyMultiHint.hidden = !isMulti;
+  if (dom.comfyMultiHint) {
+    const isMulti = !!(v && state.comfyMultiImageModels && state.comfyMultiImageModels.has(v));
+    dom.comfyMultiHint.hidden = !isMulti;
+  }
+  const auto = (v && state.comfyVideoModels && state.comfyVideoModels.has(v)) ? videoAutoDefaults(v) : null;
+  if (dom.comfyParamFps) dom.comfyParamFps.placeholder = `Auto (${auto ? auto.fps : 24})`;
+  if (dom.comfyParamLength) dom.comfyParamLength.placeholder = `Auto (${auto ? auto.length : 49})`;
 }
 
 export async function loadEmbedModels() {
