@@ -91,13 +91,13 @@ function resendChatMessage(index) {
   if (parseNoteCommand(message.content)) return;
   const searchResend = message.content.match(/^\/search\s+([\s\S]+)/);
   if (searchResend) {
-    // The results bubble (index+1) was already removed above; drop the answer too,
-    // then the command bubble, and re-run the search fresh. Locked replies stay.
+    // The sources bubble (index+1) was already removed above; drop the answer too.
+    // Keep the /search command bubble in place and regenerate right after it, with
+    // context truncated to this bubble (contextEndIndex=index). Locked replies stay.
     if (tab.messages[index + 1]?.role === "assistant" && !tab.messages[index + 1].locked) tab.messages.splice(index + 1, 1);
-    tab.messages.splice(index, 1);
     saveChat();
     renderChat();
-    handleSearchCommand(searchResend[1].trim(), tab, state.activeTabId, message.content);
+    handleSearchCommand(searchResend[1].trim(), tab, state.activeTabId, message.content, index + 1, index);
     return;
   }
   const rememberResend = message.content.match(/^\/memory\s+([\s\S]+)/);
@@ -110,7 +110,9 @@ function resendChatMessage(index) {
     return;
   }
   if (/^\/compact\s*$/.test(message.content)) {
-    handleCompactCommand(tab, state.activeTabId);
+    // Resend in place: compact only messages before this bubble (contextEndIndex=index),
+    // insert the summary right after it (insertIndex=index+1).
+    handleCompactCommand(tab, state.activeTabId, index + 1, index);
     return;
   }
   if (/^\/title(\s|$)/.test(message.content)) {
@@ -163,7 +165,9 @@ function resendChatMessage(index) {
       generateImage(validCmds, state.activeTabId, index + 1, message.images || null);
     }
   } else {
-    dispatchReply(state.activeTabId, index + 1);
+    // Truncate context to the resent bubble: only messages up to and including
+    // index are sent to the AI, and the new reply is inserted right after it.
+    dispatchReply(state.activeTabId, index + 1, index);
   }
 }
 
@@ -258,17 +262,23 @@ export async function imagineFromContent(index) {
   }
 }
 
-async function handleCompactCommand(tab, tabId) {
+async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndIndex = -1) {
   if (tab.messages.length === 0) return;
+  const inPlace = insertIndex >= 0;
 
-  // Collect messages to compact (everything up to now)
-  const messagesToCompact = tab.messages.map(({ role, content }) => ({ role, content }));
+  // Collect messages to compact: on resend, only those before the resent /compact
+  // bubble (contextEndIndex); on a fresh command, everything so far (the bubble is
+  // pushed below, after this map).
+  const compactSource = inPlace ? tab.messages.slice(0, contextEndIndex) : tab.messages;
+  const messagesToCompact = compactSource.map(({ role, content }) => ({ role, content }));
   if (messagesToCompact.length === 0) return;
 
-  // Add user message bubble showing /compact
-  tab.messages.push({ role: "user", content: "/compact", timestamp: Date.now() });
-  saveChat();
-  if (state.activeTabId === tabId) renderChat();
+  // Fresh command: add the /compact user bubble. On resend it already exists in place.
+  if (!inPlace) {
+    tab.messages.push({ role: "user", content: "/compact", timestamp: Date.now() });
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+  }
 
   // Show thinking bubble
   setAvatarState("thinking");
@@ -276,7 +286,7 @@ async function handleCompactCommand(tab, tabId) {
   const abortController = new AbortController();
   state.currentAbortController = abortController;
 
-  state.streamingInfo = { tabId, content: '', phase: 'thinking', insertIndex: -1, thinkingText: t("msg_compressing") };
+  state.streamingInfo = { tabId, content: '', phase: 'thinking', insertIndex, thinkingText: t("msg_compressing") };
   if (state.activeTabId === tabId) {
     const pending = document.createElement("div");
     pending.className = "message assistant thinking streaming-bubble";
@@ -284,7 +294,9 @@ async function handleCompactCommand(tab, tabId) {
     body.className = "markdownBody";
     body.innerHTML = `<span class="thinking-text">${t("msg_compressing")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
     pending.appendChild(body);
-    dom.messagesEl.appendChild(pending);
+    const refNode = inPlace ? dom.messagesEl.children[insertIndex] : null;
+    if (refNode) dom.messagesEl.insertBefore(pending, refNode);
+    else dom.messagesEl.appendChild(pending);
     dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
   }
 
@@ -380,7 +392,8 @@ async function handleCompactCommand(tab, tabId) {
       isCompactSummary: true,
     };
     state.streamingInfo = null;
-    tab.messages.push(summaryMessage);
+    if (inPlace && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, summaryMessage);
+    else tab.messages.push(summaryMessage);
     saveChat();
     if (state.activeTabId === tabId) renderChat();
   } catch (error) {
@@ -388,7 +401,9 @@ async function handleCompactCommand(tab, tabId) {
     const bubble = dom.messagesEl.querySelector('.streaming-bubble');
     if (bubble) bubble.remove();
     if (error.name !== "AbortError") {
-      tab.messages.push({ role: "assistant", content: t("msg_compressFail", { error: error.message }), timestamp: Date.now() });
+      const errMsg = { role: "assistant", content: t("msg_compressFail", { error: error.message }), timestamp: Date.now() };
+      if (inPlace && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errMsg);
+      else tab.messages.push(errMsg);
       saveChat();
       if (state.activeTabId === tabId) renderChat();
     }
@@ -1051,16 +1066,17 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
 // Deliver a proactive message (reminder / greeting / nudge) into the active tab.
 // The model phrases it in character using `instruction`; nothing is added as a
 // user message. Returns when done (used by the scheduler to serialize firings).
-export async function generateProactiveReply(instruction, tabId = state.activeTabId) {
+export async function generateProactiveReply(instruction, tabId = state.activeTabId, insertIndex = -1, contextEndIndex = -1) {
   const tab = getTab(tabId);
   if (!tab || tab.locked) return;
   if (state.currentAbortController || state.imageGenAbortController) return;
+  const inPlace = insertIndex >= 0;
 
   const abortController = new AbortController();
   state.currentAbortController = abortController;
   setGenerating(true);
   setAvatarState("thinking");
-  state.streamingInfo = { tabId, content: '', phase: 'thinking', insertIndex: -1 };
+  state.streamingInfo = { tabId, content: '', phase: 'thinking', insertIndex };
 
   if (state.activeTabId === tabId) {
     const pending = document.createElement("div");
@@ -1069,13 +1085,15 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
     body.className = "markdownBody";
     body.innerHTML = `<span class="thinking-text">${t("msg_thinking")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
     pending.appendChild(body);
-    dom.messagesEl.appendChild(pending);
+    const refNode = inPlace ? dom.messagesEl.children[insertIndex] : null;
+    if (refNode) dom.messagesEl.insertBefore(pending, refNode);
+    else dom.messagesEl.appendChild(pending);
     dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
   }
 
   let content = "";
   try {
-    const messages = [...buildMessages(tabId), { role: "user", content: instruction }];
+    const messages = [...buildMessages(tabId, contextEndIndex), { role: "user", content: instruction }];
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1144,7 +1162,9 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
     if (bubble) bubble.remove();
     if (!content) return;
 
-    tab.messages.push({ role: "assistant", content, timestamp: Date.now() });
+    const reply = { role: "assistant", content, timestamp: Date.now() };
+    if (inPlace && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, reply);
+    else tab.messages.push(reply);
     saveChat();
     if (state.activeTabId === tabId) renderChat();
     showExpression(detectExpression(content));
@@ -1179,12 +1199,21 @@ function parseSearchOptions(raw) {
 // Web search via DuckDuckGo: fetch results, show them as a sources bubble, then
 // let the model answer the query using those results (and, with --deep, the
 // fetched page contents) as context.
-async function handleSearchCommand(raw, tab, tabId, fullContent) {
+async function handleSearchCommand(raw, tab, tabId, fullContent, insertIndex = -1, contextEndIndex = -1) {
   const { query, deep, deepCount, count, timelimit } = parseSearchOptions(raw);
+  const inPlace = insertIndex >= 0;
+  // On resend the /search command bubble already exists in place; bubbles produced
+  // here are spliced in right after it (incrementing cursor). On a fresh command
+  // everything is appended at the end.
+  let cursor = insertIndex;
+  const place = (msg) => {
+    if (inPlace && cursor <= tab.messages.length) tab.messages.splice(cursor++, 0, msg);
+    else tab.messages.push(msg);
+  };
 
-  tab.messages.push({ role: "user", content: fullContent, timestamp: Date.now() });
+  if (!inPlace) tab.messages.push({ role: "user", content: fullContent, timestamp: Date.now() });
   if (!query) {
-    tab.messages.push({ role: "assistant", content: t("search_usage"), timestamp: Date.now() });
+    place({ role: "assistant", content: t("search_usage"), timestamp: Date.now() });
     saveChat();
     if (state.activeTabId === tabId) renderChat();
     return;
@@ -1206,13 +1235,15 @@ async function handleSearchCommand(raw, tab, tabId, fullContent) {
     const label = deep ? t("search_searchingDeep") : t("search_searching");
     body.innerHTML = `<span class="thinking-text">${label}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
     pending.appendChild(body);
-    dom.messagesEl.appendChild(pending);
+    const refNode = inPlace ? dom.messagesEl.children[insertIndex] : null;
+    if (refNode) dom.messagesEl.insertBefore(pending, refNode);
+    else dom.messagesEl.appendChild(pending);
     dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
   }
 
   const finish = (assistantContent) => {
     if (pending) pending.remove();
-    if (assistantContent) tab.messages.push({ role: "assistant", content: assistantContent, timestamp: Date.now() });
+    if (assistantContent) place({ role: "assistant", content: assistantContent, timestamp: Date.now() });
     saveChat();
     if (state.activeTabId === tabId) renderChat();
     setAvatarState("idle");
@@ -1238,7 +1269,7 @@ async function handleSearchCommand(raw, tab, tabId, fullContent) {
       lines.push(`${i + 1}. [${r.title}](${r.url})`);
       if (r.snippet) lines.push(`   ${r.snippet}`);
     });
-    tab.messages.push({ role: "assistant", content: lines.join("\n"), timestamp: Date.now() });
+    place({ role: "assistant", content: lines.join("\n"), timestamp: Date.now() });
     saveChat();
     if (state.activeTabId === tabId) renderChat();
 
@@ -1255,7 +1286,9 @@ async function handleSearchCommand(raw, tab, tabId, fullContent) {
         .join("\n\n");
       if (excerpts) instruction = getPrompt("searchAnswerDeep", query, excerpts);
     }
-    await generateProactiveReply(instruction, tabId);
+    // The answer goes right after the sources bubble (cursor), grounded in context
+    // up to and including that sources bubble (cursor - 1).
+    await generateProactiveReply(instruction, tabId, inPlace ? cursor : -1, inPlace ? cursor - 1 : -1);
   } catch (error) {
     if (error.name === "AbortError") {
       if (pending) pending.remove();
@@ -1273,7 +1306,7 @@ async function handleSearchCommand(raw, tab, tabId, fullContent) {
 // Agentic reply: model can call tools (datetime/calculate/web_search/recall_memory)
 // in a loop. Uses stream:false (local models call tools more reliably non-streamed),
 // so the final answer renders at once after a "using tools" indicator.
-export async function agenticReply(tabId = state.activeTabId) {
+export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, contextEndIndex = -1) {
   const tab = getTab(tabId);
   if (!tab || tab.locked) return;
 
@@ -1291,7 +1324,10 @@ export async function agenticReply(tabId = state.activeTabId) {
       const body = document.createElement("div");
       body.className = "markdownBody";
       pending.appendChild(body);
-      dom.messagesEl.appendChild(pending);
+      // Insert right after the resent bubble when regenerating; else append.
+      const refNode = insertIndex >= 0 ? dom.messagesEl.children[insertIndex] : null;
+      if (refNode) dom.messagesEl.insertBefore(pending, refNode);
+      else dom.messagesEl.appendChild(pending);
     }
     pending.querySelector(".markdownBody").innerHTML =
       `<span class="thinking-text">${text}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
@@ -1300,7 +1336,7 @@ export async function agenticReply(tabId = state.activeTabId) {
   setPending(t("msg_thinking"));
 
   const genStart = Date.now();
-  const messages = buildMessages(tabId);
+  const messages = buildMessages(tabId, contextEndIndex);
   const toolSteps = [];
   const seen = new Map(); // tool-call signature -> cached result (kills repeat loops)
   const showThinking = dom.showThinkingCheckbox?.checked || false;
@@ -1359,7 +1395,9 @@ export async function agenticReply(tabId = state.activeTabId) {
   } catch (error) {
     if (pending) pending.remove();
     if (error.name !== "AbortError") {
-      tab.messages.push({ role: "assistant", content: `⚠️ ${error.message}`, timestamp: Date.now() });
+      const errReply = { role: "assistant", content: `⚠️ ${error.message}`, timestamp: Date.now() };
+      if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errReply);
+      else tab.messages.push(errReply);
       saveChat();
       if (state.activeTabId === tabId) renderChat();
     }
@@ -1374,7 +1412,8 @@ export async function agenticReply(tabId = state.activeTabId) {
     const reply = { role: "assistant", content: finalContent, timestamp: Date.now(), genMs: Date.now() - genStart };
     if (toolSteps.length) reply.toolSteps = toolSteps;
     if (thinkingContent) reply.thinking = thinkingContent;
-    tab.messages.push(reply);
+    if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, reply);
+    else tab.messages.push(reply);
     saveChat();
     if (state.activeTabId === tabId) renderChat();
     showExpression(detectExpression(finalContent));
@@ -1389,10 +1428,11 @@ export async function agenticReply(tabId = state.activeTabId) {
 }
 
 // Route a regenerated reply through the agent loop when tools are enabled,
-// otherwise the normal streaming path. (insertIndex only applies to the latter.)
-function dispatchReply(tabId, insertIndex = -1) {
-  if (dom.toolsToggle?.checked) agenticReply(tabId);
-  else regenerateReply(tabId, insertIndex);
+// otherwise the normal streaming path. Both honor insertIndex/contextEndIndex so
+// a resent bubble truncates context to itself and inserts the reply right after.
+function dispatchReply(tabId, insertIndex = -1, contextEndIndex = -1) {
+  if (dom.toolsToggle?.checked) agenticReply(tabId, insertIndex, contextEndIndex);
+  else regenerateReply(tabId, insertIndex, contextEndIndex);
 }
 
 export async function sendMessage(content, image, tabId = state.activeTabId, file = null) {
