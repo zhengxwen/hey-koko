@@ -4,7 +4,7 @@ import { PERSONALITY_PRESETS, TAG_COLORS } from './constants.js';
 import { saveTabs, saveChat, syncPersonaEditable } from './settings.js';
 import { stopSpeech } from './speech.js';
 import { escapeHtml } from './utils.js';
-import { dbLoadTabs, dbLoadActiveTabId, migrateFromLocalStorage } from './db.js';
+import { dbLoadTabs, dbLoadActiveTabId, migrateFromLocalStorage, dbDeleteDatabase } from './db.js';
 import { t } from './i18n.js';
 
 // renderChat will be set from main.js to avoid circular dependency
@@ -32,6 +32,17 @@ export async function loadTabs() {
     }
   } catch (e) {
     console.warn("[loadTabs] IndexedDB read failed:", e);
+    // The local database appears corrupted. Offer to wipe and rebuild it so the
+    // app can start, instead of failing to open. Message is English by request.
+    const ok = window.confirm(
+      "Hey-Koko's local database is corrupted and can't be opened.\n\n" +
+      "Click OK to delete it and start fresh. Your saved chats, tabs, and " +
+      "memories will be lost (this cannot be undone).\n\n" +
+      "Click Cancel to keep the data and try again later — but the app may not load."
+    );
+    if (ok) {
+      await dbDeleteDatabase();
+    }
   }
 
   // Migrate from localStorage if IndexedDB is empty

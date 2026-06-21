@@ -6,10 +6,34 @@ const DB_VERSION = 1;
 
 let dbPromise = null;
 
+const OPEN_TIMEOUT_MS = 5000;
+
 function openDB() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    let settled = false;
+    const finish = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      fn(arg);
+    };
+
+    let request;
+    try {
+      request = indexedDB.open(DB_NAME, DB_VERSION);
+    } catch (err) {
+      // indexedDB.open can throw synchronously (e.g. disabled storage)
+      finish(reject, err);
+      return;
+    }
+
+    // A corrupted or locked IndexedDB can leave open() hanging forever without
+    // firing onsuccess/onerror. Time out so callers can fall back instead of
+    // blocking app startup indefinitely.
+    const timer = setTimeout(() => {
+      finish(reject, new Error("IndexedDB open timed out"));
+    }, OPEN_TIMEOUT_MS);
+
     request.onupgradeneeded = (e) => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains("tabs")) {
@@ -19,10 +43,49 @@ function openDB() {
         db.createObjectStore("meta");
       }
     };
-    request.onsuccess = (e) => resolve(e.target.result);
-    request.onerror = (e) => reject(e.target.error);
+    request.onsuccess = (e) => {
+      clearTimeout(timer);
+      finish(resolve, e.target.result);
+    };
+    request.onerror = (e) => {
+      clearTimeout(timer);
+      finish(reject, e.target.error);
+    };
+    // Another tab holds an older-version connection; don't hang waiting on it.
+    request.onblocked = () => {
+      clearTimeout(timer);
+      finish(reject, new Error("IndexedDB open blocked by another connection"));
+    };
   });
+  // Don't cache a rejected promise — let the next caller retry a fresh open.
+  dbPromise.catch(() => { dbPromise = null; });
   return dbPromise;
+}
+
+// Delete the whole database so it can be recreated fresh. Used to recover from
+// a corrupted IndexedDB that won't open. Drops the cached connection first so a
+// stale handle doesn't block the delete. Resolves even on blocked/timeout — the
+// goal is best-effort recovery, not a guarantee.
+export function dbDeleteDatabase() {
+  dbPromise = null;
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; resolve(); } };
+
+    let request;
+    try {
+      request = indexedDB.deleteDatabase(DB_NAME);
+    } catch (err) {
+      console.warn("[dbDeleteDatabase] delete threw:", err);
+      done();
+      return;
+    }
+
+    const timer = setTimeout(done, OPEN_TIMEOUT_MS);
+    request.onsuccess = () => { clearTimeout(timer); done(); };
+    request.onerror = () => { clearTimeout(timer); done(); };
+    request.onblocked = () => { clearTimeout(timer); done(); };
+  });
 }
 
 // Save all tabs + activeTabId to IndexedDB

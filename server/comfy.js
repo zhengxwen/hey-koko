@@ -100,7 +100,7 @@ async function proxyComfyModels(res) {
       // "bernini" entry (v2v / rv2v auto-picked at generation time).
       if (vt === "bernini") {
         if (/low_noise/i.test(n)) continue; // hidden — derived from the high twin
-        if (!addedBernini) { videoModels.push({ name: BERNINI_AUTO, type: "bernini", label: "bernini (video edit / i2v)" }); addedBernini = true; }
+        if (!addedBernini) { videoModels.push({ name: BERNINI_AUTO, type: "bernini", label: "bernini (i2v / video edit)" }); addedBernini = true; }
         continue;
       }
       const is14b = /14b/i.test(n);
