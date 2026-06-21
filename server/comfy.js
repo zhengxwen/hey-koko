@@ -38,6 +38,9 @@ function editIsCheckpoint(editType) {
 // Video models (text→video / image→video). Detected by filename.
 function videoTypeOf(model) {
   if (!model) return null;
+  // Bernini is a WAN-2.2 video-EDIT model (source video in). Its filename
+  // contains "wan", so check it BEFORE the generic /wan/ branch.
+  if (/bernini/i.test(model)) return "bernini";
   if (/wan/i.test(model)) return "wan";
   if (/ltx/i.test(model)) return "ltx";
   if (/hunyuan.?video/i.test(model)) return "hunyuan";
@@ -57,6 +60,15 @@ async function resolveWan14bAuto(isImg2Img) {
   const all = [...ckpts, ...unets];
   const kind = isImg2Img ? "i2v" : "t2v";
   return all.find((n) => /14b/i.test(n) && new RegExp(kind, "i").test(n) && /high_noise/i.test(n)) || null;
+}
+
+// Sentinel for the merged Bernini dropdown entry — resolved at generation time to
+// the real high_noise GGUF/safetensors (the low twin is derived from the name).
+const BERNINI_AUTO = "bernini";
+
+async function resolveBerniniAuto() {
+  const unets = await comfyEnum("UNETLoader", "unet_name");
+  return unets.find((n) => /bernini/i.test(n) && /high_noise/i.test(n)) || null;
 }
 
 // List both classic checkpoints (txt2img / classic img2img) and the
@@ -80,9 +92,17 @@ async function proxyComfyModels(res) {
     const merge14b = has14bT2v && has14bI2v;
     const videoModels = [];
     let added14bAuto = false;
+    let addedBernini = false;
     for (const n of all) {
       const vt = videoTypeOf(n);
       if (!vt) continue;
+      // Bernini = WAN 2.2 MoE video-edit. Collapse its high/low pair into ONE
+      // "bernini" entry (v2v / rv2v auto-picked at generation time).
+      if (vt === "bernini") {
+        if (/low_noise/i.test(n)) continue; // hidden — derived from the high twin
+        if (!addedBernini) { videoModels.push({ name: BERNINI_AUTO, type: "bernini", label: "bernini (video edit / i2v)" }); addedBernini = true; }
+        continue;
+      }
       const is14b = /14b/i.test(n);
       if (is14b && /low_noise/i.test(n)) continue; // hidden — derived from the high twin
       if (merge14b && is14b && (/t2v/i.test(n) || /i2v/i.test(n))) {
@@ -929,6 +949,92 @@ function buildVideoWorkflow(videoType, args) {
   return null;
 }
 
+// Bernini-R companions: umt5 (CLIPLoader type "wan") + the WAN 2.1 VAE + the
+// optional LightX2V T2V-14B distill LoRA (present → turbo: cfg 1 / 6 steps).
+async function berniniCompanions() {
+  const [clips, vaes, loras] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+    comfyEnum("LoraLoaderModelOnly", "lora_name"),
+  ]);
+  const find = (list, re) => list.find((x) => re.test(x));
+  const clip = find(clips, /umt5/i);
+  const vae = find(vaes, /wan.?2[._]1.*vae/i) || find(vaes, /wan.*vae/i); // Bernini uses the WAN 2.1 VAE
+  const lora = find(loras, /lightx2v.*t2v.*14b.*distill|cfg_step_distill/i); // distill turbo LoRA (optional)
+  const missing = [];
+  if (!clip) missing.push("umt5_xxl_fp8_e4m3fn_scaled.safetensors → text_encoders/");
+  if (!vae) missing.push("wan_2.1_vae.safetensors → vae/");
+  if (missing.length) throw new Error("缺少 Bernini 所需文件：\n- " + missing.join("\n- "));
+  return { clip, vae, lora };
+}
+
+// Bernini's task system prompts (prepended to the user's instruction — the model
+// was trained with these). v2v = plain video edit; rv2v = edit with a reference.
+const BERNINI_SYS_V2V = "You are a helpful assistant specialized in video editing.";
+const BERNINI_SYS_RV2V = "You are a helpful assistant specialized in video editing with reference.";
+const BERNINI_SYS_I2V = "You are a helpful assistant specialized in image-to-video generation.";
+
+// Bernini-R (WAN 2.2 MoE). Three modes, all verified end-to-end:
+//   • v2v  — source video + instruction → edited video.
+//   • rv2v — source video + reference image + instruction.
+//   • i2v  — reference image only (NO source video) → generated video.
+// Two-expert CUSTOM sampling: BasicScheduler → SplitSigmas at `split`, then two
+// SamplerCustom (high adds noise, low continues), each on its sigma slice. turbo
+// (distill LoRA mounted) = cfg 1 / 6 steps / split 3 (high str 3, low 1.5);
+// non-turbo = cfg 5 / 40 steps / split 20. v2v/rv2v keep the SOURCE video's fps +
+// audio (CreateVideo reads them from GetVideoComponents); i2v uses an explicit fps.
+function buildBernini({ model, prompt, negative, comp, videoName, refImageName, width, height, length, seed, turbo, fps, refMaxSize }) {
+  const highModel = model.replace(/low_noise/i, "high_noise");
+  const lowModel = model.replace(/high_noise/i, "low_noise");
+  const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
+  const i2v = !videoName; // image-to-video: no source clip to edit
+  const sys = i2v ? BERNINI_SYS_I2V : (refImageName ? BERNINI_SYS_RV2V : BERNINI_SYS_V2V);
+  const useTurbo = turbo && !!comp.lora;
+  const steps = useTurbo ? 6 : 40;
+  const split = useTurbo ? 3 : 20;
+  const cfg = useTurbo ? 1 : 5;
+  const wf = {
+    "1": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
+    "2": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "3": { class_type: "UNETLoader", inputs: { unet_name: highModel, weight_dtype: "default" } },
+    "4": { class_type: "UNETLoader", inputs: { unet_name: lowModel, weight_dtype: "default" } },
+    "7": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 0], text: `${sys}\n${prompt}` } },
+    "8": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 0], text: neg } },
+    "9": { class_type: "BerniniConditioning", inputs: { positive: ["7", 0], negative: ["8", 0], vae: ["2", 0], width, height, length, batch_size: 1, ref_max_size: refMaxSize || Math.max(width, height) } },
+    "10": { class_type: "BasicScheduler", inputs: { model: ["4", 0], scheduler: "simple", steps, denoise: 1 } },
+    "11": { class_type: "SplitSigmas", inputs: { sigmas: ["10", 0], step: split } },
+    "12": { class_type: "KSamplerSelect", inputs: { sampler_name: "res_multistep" } },
+    "17": { class_type: "VAEDecode", inputs: { samples: ["16", 0], vae: ["2", 0] } },
+    "19": { class_type: "SaveVideo", inputs: { video: ["18", 0], filename_prefix: "heykoko_bernini", format: "auto", codec: "auto" } },
+  };
+  // Source clip (v2v/rv2v): LoadVideo → GetVideoComponents feeds source_video and
+  // the output's audio + fps. i2v has no source — CreateVideo gets an explicit fps.
+  if (!i2v) {
+    wf["5"] = { class_type: "LoadVideo", inputs: { file: videoName } };
+    wf["6"] = { class_type: "GetVideoComponents", inputs: { video: ["5", 0] } };
+    wf["9"].inputs.source_video = ["6", 0];
+    wf["18"] = { class_type: "CreateVideo", inputs: { images: ["17", 0], audio: ["6", 1], fps: ["6", 2] } };
+  } else {
+    wf["18"] = { class_type: "CreateVideo", inputs: { images: ["17", 0], fps: fps || 16 } };
+  }
+  // Models feeding the two samplers — turbo mounts the distill LoRA on each.
+  let highRef = ["3", 0], lowRef = ["4", 0];
+  if (useTurbo) {
+    wf["13"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["3", 0], lora_name: comp.lora, strength_model: 3 } };
+    wf["14"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["4", 0], lora_name: comp.lora, strength_model: 1.5 } };
+    highRef = ["13", 0]; lowRef = ["14", 0];
+  }
+  wf["15"] = { class_type: "SamplerCustom", inputs: { add_noise: true, noise_seed: seed, cfg, model: highRef, positive: ["9", 0], negative: ["9", 1], sampler: ["12", 0], sigmas: ["11", 0], latent_image: ["9", 2] } };
+  wf["16"] = { class_type: "SamplerCustom", inputs: { add_noise: false, noise_seed: 0, cfg, model: lowRef, positive: ["9", 0], negative: ["9", 1], sampler: ["12", 0], sigmas: ["11", 1], latent_image: ["15", 0] } };
+  // Reference image — rv2v (alongside a source video) OR i2v (the image is the
+  // whole basis). Same autogrow slot either way.
+  if (refImageName) {
+    wf["20"] = { class_type: "LoadImage", inputs: { image: refImageName } };
+    wf["9"].inputs["reference_images.reference_image_0"] = ["20", 0];
+  }
+  return wf;
+}
+
 // Parse intrinsic pixel dimensions from a base64 PNG/JPEG without an image lib.
 // Used to match a video's aspect ratio to the i2v conditioning image.
 function imageDims(b64) {
@@ -1005,6 +1111,22 @@ async function uploadImage(b64, signal) {
   return data.subfolder ? `${data.subfolder}/${data.name}` : data.name;
 }
 
+// Upload a source video to ComfyUI's input dir (same /upload/image endpoint —
+// it accepts video too). Returns the filename for a LoadVideo node. Used by the
+// Bernini video-edit path.
+async function uploadVideo(b64, signal, mime = "video/mp4") {
+  const clean = typeof b64 === "string" && b64.startsWith("data:") ? b64.split(",")[1] : b64;
+  const buf = Buffer.from(clean, "base64");
+  const ext = /webm/i.test(mime) ? "webm" : /quicktime|mov/i.test(mime) ? "mov" : "mp4";
+  const form = new FormData();
+  form.append("image", new Blob([buf], { type: mime }), `heykoko_source.${ext}`);
+  form.append("overwrite", "true");
+  const r = await fetch(`${config.comfyUrl}/upload/image`, { method: "POST", body: form, signal });
+  if (!r.ok) throw new Error(`video upload failed (${r.status})`);
+  const data = await r.json();
+  return data.subfolder ? `${data.subfolder}/${data.name}` : data.name;
+}
+
 // Poll /history until the queued prompt reports outputs (or we time out / abort).
 async function waitForOutputs(promptId, signal, deadline) {
   while (Date.now() < deadline) {
@@ -1028,7 +1150,7 @@ async function generateComfyImage(req, res) {
   let clientGone = false; // set if the client disconnects before we respond
   try {
     const body = await readBody(req);
-    const { prompt, negative_prompt, options, images, timeout: reqTimeout, clientId: bodyClientId } = body;
+    const { prompt, negative_prompt, options, images, sourceVideo, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
     let model = body.model;
 
     if (!model || !prompt) {
@@ -1098,7 +1220,54 @@ async function generateComfyImage(req, res) {
       let workflow;
       let videoDims = null; // actual resolved output size (for the client's caption)
       let imagesUsed = 0;   // how many input images the video path actually consumed
-      if (videoType) {
+      if (videoType === "bernini") {
+        // Bernini-R video EDIT: a SOURCE VIDEO (required) + instruction → edited
+        // video (v2v); + a reference image → rv2v. Resolve the merged entry to the
+        // real high_noise model, upload the source video (and any ref image).
+        if (model === BERNINI_AUTO) {
+          model = await resolveBerniniAuto();
+          if (!model) { sendJson(res, 400, { error: "未找到 Bernini 模型文件（需 wan2.2_bernini_r_high_noise…）。" }); return; }
+        }
+        const hasVideo = !!sourceVideo;
+        const hasImage = Array.isArray(images) && images.length > 0;
+        // Source video → v2v (+ ref image → rv2v); image only → i2v.
+        if (!hasVideo && !hasImage) { sendJson(res, 400, { error: "Bernini 需要一个源视频（视频编辑 v2v）或一张图片（图生视频 i2v），再用 /imagine <描述>。" }); return; }
+        const comp = await berniniCompanions();
+        const turbo = !!comp.lora;
+        // Size to the SOURCE's aspect (video for v2v/rv2v, image for i2v) so frames
+        // aren't stretched, at the preset pixel budget (832×480) — or the --size
+        // budget if the user set one. Falls back to 832×480.
+        let aspW = Number(sourceVideoWidth), aspH = Number(sourceVideoHeight);
+        if (!(aspW > 0 && aspH > 0)) {
+          // i2v: follow the reference image's aspect. Prefer the browser-decoded
+          // size the client sent (any format); fall back to parsing the base64.
+          if (Number(refImageWidth) > 0 && Number(refImageHeight) > 0) {
+            aspW = Number(refImageWidth); aspH = Number(refImageHeight);
+          } else if (hasImage) {
+            const d = imageDims(images[0]);
+            if (d) { aspW = d.width; aspH = d.height; }
+          }
+        }
+        let bw = snapDim(opts.width || 832, 16);
+        let bh = snapDim(opts.height || 480, 16);
+        if (aspW > 0 && aspH > 0) {
+          const aspect = aspW / aspH;
+          const budget = (opts.width && opts.height) ? opts.width * opts.height : 832 * 480;
+          bw = snapDim(Math.sqrt(budget * aspect), 16);
+          bh = snapDim(Math.sqrt(budget / aspect), 16);
+        }
+        const bl = Math.max(5, Math.round(((opts.length || 81) - 1) / 4) * 4 + 1); // 4n+1
+        const bfps = opts.fps || 16; // i2v output fps (v2v/rv2v keep the source's)
+        // The reference resolution must track the output size — a fixed large
+        // ref_max_size (848) crops the reference into a small output frame.
+        const refMax = snapDim(Math.max(bw, bh), 16);
+        const videoName = hasVideo ? await uploadVideo(sourceVideo, controller.signal, sourceVideoMime) : null;
+        const refImageName = hasImage ? await uploadImage(images[0], controller.signal) : null;
+        imagesUsed = refImageName ? 1 : 0;
+        workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: bw, height: bh, length: bl, seed, turbo, fps: bfps, refMaxSize: refMax });
+        // v2v/rv2v keep the source video's fps; i2v uses bfps (so it can show duration).
+        videoDims = { width: bw, height: bh, length: bl, fps: hasVideo ? undefined : bfps };
+      } else if (videoType) {
         // Video. WAN 5B ti2v + 14B i2v do image→video; WAN 14B t2v / Hunyuan are
         // text→video only. The dedicated WAN 2.2 14B i2v model needs a ref image.
         if (videoType === "wan" && /14b/i.test(model) && /i2v/i.test(model) && !isImg2Img) {

@@ -127,6 +127,7 @@ const UI = {
     video_volume: "Volume",
     btn_downloadAudio: "Download audio",
     btn_downloadImage: "Download image",
+    btn_scrollToBottom: "Scroll to bottom",
     btn_file: "File",
     btn_stopTranslate: "Stop Translation",
     tooltip_quickPrompt: "Quick commands or prompts (type / or ? to trigger)",
@@ -381,6 +382,7 @@ const UI = {
     video_volume: "音量",
     btn_downloadAudio: "下载音频",
     btn_downloadImage: "下载图片",
+    btn_scrollToBottom: "回到底部",
     btn_file: "文件",
     btn_stopTranslate: "停止翻译",
     tooltip_quickPrompt: "快捷指令（输入 / 或 ? 触发）",
@@ -630,6 +632,7 @@ const UI = {
     video_volume: "音量",
     btn_downloadAudio: "下載音訊",
     btn_downloadImage: "下載圖片",
+    btn_scrollToBottom: "回到底部",
     btn_file: "檔案",
     btn_stopTranslate: "停止翻譯",
     tooltip_quickPrompt: "快捷指令（輸入 / 或 ? 觸發）",
@@ -892,6 +895,7 @@ export function getPrompt(key, ...args) {
 // --- DOM binding for static text updates ---
 
 const BINDINGS = [
+  { sel: "#scrollToBottomBtn .scrollToBottomText", key: "btn_scrollToBottom" },
   // Panel tabs
   { sel: '.panelTab[data-panel-tab="basic"]', key: "panelTab_basic" },
   { sel: '.panelTab[data-panel-tab="more"]', key: "panelTab_more" },

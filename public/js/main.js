@@ -1,5 +1,5 @@
 // Main entry point - imports and initializes all modules
-import { dom, state } from './state.js';
+import { dom, state, scrollChatToEnd, refreshScrollState } from './state.js';
 import { SETTINGS_KEY, PERSONALITY_PRESETS, getPersonalityPreset } from './constants.js';
 import { readFileAsDataUrl, convertToJpeg, makePreview, escapeHtml } from './utils.js';
 import { markdownToHtml } from './markdown.js';
@@ -9,7 +9,7 @@ import { stopSpeech, populateVoiceList, speakAdjacent } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
-import { setDeps as imageGenSetDeps } from './image-gen.js';
+import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
 import { renderChat, sendMessage, setGenerating, regenerateReply, generateProactiveReply, markStopping } from './chat.js';
@@ -197,6 +197,9 @@ dom.chatForm.addEventListener("submit", async (event) => {
 
   const content = dom.messageInput.value.trim();
   if (!content && !state.selectedImage && !state.selectedFile && !state.selectedVideo) return;
+
+  // Sending always returns the user to the bottom, even if they'd scrolled up.
+  state.stickToBottom = true;
 
   saveCurrentSettings();
   const image = state.selectedImage;
@@ -612,6 +615,14 @@ dom.removeFile.addEventListener("click", clearSelectedFile);
 
 // Remove video button
 dom.removeVideo.addEventListener("click", clearSelectedVideo);
+
+// Streaming auto-scroll yields to the user: track whether they're near the
+// bottom, and offer a one-click jump back when they've scrolled up.
+dom.messagesEl.addEventListener("scroll", refreshScrollState, { passive: true });
+dom.scrollToBottomBtn?.addEventListener("click", () => {
+  dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+  refreshScrollState();
+});
 
 // Stop translation button
 dom.stopTranslateBtn.addEventListener("click", stopTranslation);
@@ -1217,10 +1228,17 @@ async function selectFile(file) {
       return;
     }
     const dataUrl = await readFileAsDataUrl(file);
+    // Capture a poster frame now so it shows before the clip is played (the same
+    // helper the generated-clip backfill uses, so the format is consistent).
+    const thumbnail = await videoThumbnail(dataUrl);
+    const dims = await videoNaturalSize(dataUrl); // for Bernini source-aspect sizing
     state.selectedVideo = {
       base64: dataUrl.split(",")[1],
       mime: file.type || "video/mp4",
       name: makeUploadName(uploadStamp(), "video", file, 0, 1),
+      thumbnail,
+      width: dims?.w,
+      height: dims?.h,
     };
     // A video can ride along with staged images, but only one video at a time
     // (assigning state.selectedVideo replaces any previous one). Documents use a

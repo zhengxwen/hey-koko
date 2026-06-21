@@ -6,7 +6,7 @@
 // update instead of holding a stale node reference. That's what lets a
 // generation that started in tab A keep updating live when the user switches
 // away and back — and always land in tab A regardless of what's on screen.
-import { dom, state, scrollChatToEnd } from './state.js';
+import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned } from './state.js';
 
 const DOTS = `<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>`;
 
@@ -150,7 +150,7 @@ export function pendingGenAddImage(tabId, src) {
   const bubble = _bubble();
   if (!bubble) return;
   _ensureGrid(bubble).appendChild(_imgEl(src));
-  scrollChatToEnd();
+  scrollChatToEndIfPinned();
 }
 
 export function pendingGenSetProgress(tabId, value, max) {

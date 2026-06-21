@@ -1,5 +1,5 @@
 // Chat rendering, message handling, and sending
-import { dom, state, scrollChatToEnd } from './state.js';
+import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState } from './state.js';
 import { PERSONALITY_PRESETS, TAG_COLORS } from './constants.js';
 import { escapeHtml, formatTimestamp, formatDuration, makePreview } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
@@ -123,6 +123,21 @@ function deleteMessageImage(msgIndex, imgIndex) {
   dom.messagesEl.scrollTop = scrollY;
 }
 
+// Reconstruct the source-video object (for Bernini v2v/rv2v) from a stored user
+// message, so resend / edit-then-enter re-trigger the video edit with the same
+// source clip. The uploaded source rides on the message's generatedVideos field.
+function messageSourceVideo(m) {
+  if (!m || !Array.isArray(m.generatedVideos) || !m.generatedVideos.length) return null;
+  return {
+    base64: m.generatedVideos[0],
+    mime: m.videoMime || "video/mp4",
+    name: m.videoName,
+    thumbnail: m.generatedVideoThumbnails?.[0],
+    width: m.videoWidth,
+    height: m.videoHeight,
+  };
+}
+
 function deleteMessageVideo(msgIndex, vidIndex) {
   const tab = getActiveTab();
   if (tab.locked) return;
@@ -240,7 +255,7 @@ function resendChatMessage(index) {
       renderChat();
     } else {
       const validCmds = imagineCmds.filter((cmd) => cmd && cmd.prompt);
-      generateImage(validCmds, state.activeTabId, index + 1, message.images || null);
+      generateImage(validCmds, state.activeTabId, index + 1, message.images || null, messageSourceVideo(message));
     }
   } else {
     // Truncate context to the resent bubble: only messages up to and including
@@ -436,7 +451,7 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
         const t = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
         if (t) {
           t.innerHTML = markdownToHtml(content);
-          scrollChatToEnd();
+          scrollChatToEndIfPinned();
         }
       }
     }
@@ -809,7 +824,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
           const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
           if (thinkEl) {
             thinkEl.innerHTML = markdownToHtml(thinkingContent);
-            scrollChatToEnd();
+            scrollChatToEndIfPinned();
           }
         }
         return;
@@ -850,7 +865,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
           const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
           if (md) {
             md.innerHTML = markdownToHtml(content);
-            scrollChatToEnd();
+            scrollChatToEndIfPinned();
           }
         }
       }
@@ -1020,7 +1035,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
           const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
           if (thinkEl) {
             thinkEl.innerHTML = markdownToHtml(thinkingContent);
-            scrollChatToEnd();
+            scrollChatToEndIfPinned();
           }
         }
         return;
@@ -1062,7 +1077,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
           const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
           if (md) {
             md.innerHTML = markdownToHtml(content);
-            scrollChatToEnd();
+            scrollChatToEndIfPinned();
           }
         }
       }
@@ -1218,7 +1233,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
         const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
         if (md) {
           md.innerHTML = markdownToHtml(content);
-          scrollChatToEnd();
+          scrollChatToEndIfPinned();
         }
       }
     }
@@ -1650,6 +1665,16 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       }
       userMessage.previewImage = userMessage.previewImages[0];
     }
+    // An attached video is the SOURCE for a video-edit model (Bernini v2v/rv2v).
+    // It rides on the user bubble for display (reusing the generatedVideos field).
+    if (video) {
+      userMessage.generatedVideos = [video.base64];
+      userMessage.videoMime = video.mime || "video/mp4";
+      if (video.name) userMessage.videoName = video.name;
+      if (video.thumbnail) userMessage.generatedVideoThumbnails = [video.thumbnail];
+      if (video.width) userMessage.videoWidth = video.width;
+      if (video.height) userMessage.videoHeight = video.height;
+    }
     tab.messages.push(userMessage);
     const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
     if (firstError) {
@@ -1660,7 +1685,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       saveChat();
       if (state.activeTabId === tabId) renderChat();
       const validCmds = imagineCmds.filter((cmd) => cmd && cmd.prompt);
-      generateImage(validCmds, tabId, -1, userMessage.images || null);
+      generateImage(validCmds, tabId, -1, userMessage.images || null, video || null);
     }
     return;
   }
@@ -1759,6 +1784,8 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     userMessage.generatedVideos = [video.base64];
     userMessage.videoMime = video.mime || "video/mp4";
     if (video.name) userMessage.videoName = video.name;
+    // Poster shown before playback (reuses the generated-clip thumbnail field).
+    if (video.thumbnail) userMessage.generatedVideoThumbnails = [video.thumbnail];
   }
 
   tab.messages.push(userMessage);
@@ -1995,8 +2022,11 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
 
   if (previewImage) {
     const previews = Array.isArray(previewImage) ? previewImage : [previewImage];
-    // Original upload filenames, when preserved, so the download keeps the real name.
-    const imageNames = Number.isInteger(index) ? getActiveTab().messages[index]?.imageNames : null;
+    // Original upload filenames + full-res bytes, when kept, so the download uses
+    // the real name and the original image (falling back to the thumbnail).
+    const msg = Number.isInteger(index) ? getActiveTab().messages[index] : null;
+    const imageNames = msg?.imageNames;
+    const fullImages = msg?.images;
     // Multiple images render in a compact grid; a single image stays inline.
     const container = previews.length > 1
       ? Object.assign(document.createElement("div"), { className: "messageImages" })
@@ -2013,8 +2043,15 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
         image.dataset.imgIndex = imgIdx;
       }
       wrapper.appendChild(image);
-      const fname = mediaFilename(imageNames?.[imgIdx], timestamp, "image", imageExtFromSrc(src), imgIdx, previews.length);
-      wrapper.appendChild(makeDownloadButton("imageDownloadBtn", src, fname, base64ByteLength(src), t("btn_downloadImage")));
+      // Download the original image when we still have it; else the thumbnail.
+      const full = fullImages?.[imgIdx];
+      const dlSrc = full
+        ? (full.startsWith("data:") || full.startsWith("http")
+            ? full
+            : `data:${full.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${full}`)
+        : src;
+      const fname = mediaFilename(imageNames?.[imgIdx], timestamp, "image", imageExtFromSrc(dlSrc), imgIdx, previews.length);
+      wrapper.appendChild(makeDownloadButton("imageDownloadBtn", dlSrc, fname, base64ByteLength(dlSrc), t("btn_downloadImage")));
       container.appendChild(wrapper);
     });
     if (container !== item) item.appendChild(container);
@@ -2343,6 +2380,10 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
 }
 
 export function renderChat() {
+  // Capture position before the rebuild so we can keep the user where they were
+  // when they've scrolled up (e.g. reading history while a reply finishes).
+  const prevScrollTop = dom.messagesEl.scrollTop;
+  const keepPosition = state.scrollPin == null && !state.stickToBottom;
   dom.messagesEl.innerHTML = "";
   const chat = getActiveTab().messages;
   if (chat.length === 0) {
@@ -2554,5 +2595,9 @@ export function renderChat() {
 
   // Rebuilding innerHTML above resets scrollTop to 0; while a resend/edit is
   // regenerating in place, restore the pinned position so the view stays put.
+  // Otherwise, if the user had scrolled up, keep their spot instead of snapping
+  // to the bottom; only a pinned (at-bottom) view follows new content down.
   if (state.scrollPin != null) dom.messagesEl.scrollTop = state.scrollPin;
+  else if (keepPosition) dom.messagesEl.scrollTop = prevScrollTop;
+  refreshScrollState();
 }

@@ -307,7 +307,10 @@
           <button id="addTab" type="button" class="addTab" aria-label="New chat">+</button>
           <div id="chatTabs" class="chatTabs" role="tablist"></div>
         </div>
-        <div id="messages" class="messages" aria-live="polite"></div>
+        <div class="messagesWrap">
+          <div id="messages" class="messages" aria-live="polite"></div>
+          <button id="scrollToBottomBtn" type="button" class="scrollToBottomBtn" hidden aria-label="回到底部"><span class="scrollToBottomIcon">↓</span><span class="scrollToBottomText">回到底部</span></button>
+        </div>
 
         <!-- Archive Workspace Overlay -->
         <div id="archiveOverlay" class="archiveOverlay">
@@ -417,6 +420,7 @@
         </div>
         <div class="comfyParamsBody">
           <p class="hint" id="comfyParamsHint">Leave empty = auto-pick the optimal params for the selected model</p>
+          <div class="comfyModelInfo" id="comfyModelInfo" hidden></div>
           <label>
             <span id="comfyParamNegativeLabel">Negative prompt</span>
             <textarea id="comfyParamNegative" rows="2" placeholder="e.g. blurry, low quality, extra fingers (overridden by --no)"></textarea>

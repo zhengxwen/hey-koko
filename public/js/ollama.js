@@ -183,9 +183,36 @@ function videoAutoDefaults(modelName) {
   return null;
 }
 
+// The key ComfyUI workflow components hey-koko wires for a model — inferred from
+// its filename (mirrors the build functions in server/comfy.js). Shown in the ⚙
+// panel so the user can see the pipeline a model actually runs.
+function comfyModelComponents(name) {
+  const n = (name || "").toLowerCase();
+  // Video
+  if (/bernini/.test(n)) return "WAN2.2 MoE · UNETLoader ×2 · CLIP umt5(wan) · VAE wan_2.1 · BerniniConditioning · SamplerCustom ×2 · v2v: LoadVideo→GetVideoComponents · turbo: LightX2V distill LoRA";
+  if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b"
+    ? "WAN2.2 14B MoE · UNETLoader ×2 · CLIP umt5 · VAE wan_2.1 · WanImageToVideo · KSamplerAdvanced ×2 · turbo: LightX2V 4-step LoRA"
+    : "WAN2.2 5B · UNETLoader · CLIP umt5 · VAE wan_2.2 · WanImageToVideo · KSampler";
+  if (/hunyuan/.test(n)) return "HunyuanVideo · UNETLoader · CLIP clip_l + llava · VAE hunyuan · KSampler";
+  if (/ltx/.test(n)) return "LTX-2 · CheckpointLoader · LTXAVTextEncoder(gemma) · LTXVConditioning · KSampler (+audio)";
+  // Edit
+  if (/kontext/.test(n)) return "FLUX Kontext · UNETLoader · DualCLIP(t5+clip_l) · VAE ae · ReferenceLatent · FluxGuidance · KSampler";
+  if (/boogu.*edit/.test(n)) return "boogu edit · UNETLoader · CLIP qwen3vl(boogu) · VAE flux1 · TextEncodeBooguEdit · ModelSamplingAuraFlow · KSampler";
+  if (/qwen.*edit/.test(n)) return "Qwen-Image-Edit · UNETLoader · CLIP qwen2.5-vl(qwen_image) · VAE qwen_image · TextEncodeQwenImageEdit · KSampler";
+  if (/omnigen/.test(n)) return "OmniGen2 · UNETLoader · CLIP qwen2.5-vl(omnigen2) · VAE ae · KSampler";
+  if (/pix2pix|ip2p|instruct/.test(n)) return "InstructPix2Pix · CheckpointLoader · InstructPixToPixConditioning · DualCFGGuider · SamplerCustomAdvanced";
+  if (/hidream.?e1/.test(n)) return "HiDream-E1 · UNETLoader · QuadrupleCLIPLoader · VAE ae · ModelSamplingSD3 · VAEEncode · KSampler";
+  // txt2img
+  if (/hidream.?i1/.test(n)) return "HiDream-I1 · UNETLoader · QuadrupleCLIPLoader · VAE ae · ModelSamplingSD3 · KSampler";
+  if (/z.?image/.test(n)) return "Z-Image-Turbo · UNETLoader · CLIP qwen_3_4b(lumina2) · VAE ae · ModelSamplingAuraFlow · KSampler (8-step)";
+  if (/boogu/.test(n)) return "boogu · UNETLoader · CLIP qwen3vl(boogu) · VAE flux1 · ModelSamplingAuraFlow · KSampler";
+  if (!n) return "";
+  return "Checkpoint · CheckpointLoaderSimple · CLIPTextEncode · KSampler" + (/flux/.test(n) ? " · FluxGuidance" : "");
+}
+
 // Show the "supports multi-image" hint when a multi-reference edit model
-// (Qwen-Image-Edit) is selected, and update the ⚙ fps/length placeholders to the
-// selected video model's real "auto" values.
+// (Qwen-Image-Edit) is selected, update the ⚙ fps/length placeholders to the
+// selected video model's real "auto" values, and show its key pipeline components.
 export function updateComfyMultiHint() {
   const v = dom.comfyModelSelect?.value;
   if (dom.comfyMultiHint) {
@@ -195,6 +222,11 @@ export function updateComfyMultiHint() {
   const auto = (v && state.comfyVideoModels && state.comfyVideoModels.has(v)) ? videoAutoDefaults(v) : null;
   if (dom.comfyParamFps) dom.comfyParamFps.placeholder = `Auto (${auto ? auto.fps : 24})`;
   if (dom.comfyParamLength) dom.comfyParamLength.placeholder = `Auto (${auto ? auto.length : 49})`;
+  if (dom.comfyModelInfo) {
+    const comps = comfyModelComponents(v);
+    dom.comfyModelInfo.textContent = comps;
+    dom.comfyModelInfo.hidden = !comps;
+  }
 }
 
 export async function loadEmbedModels() {

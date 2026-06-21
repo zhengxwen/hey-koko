@@ -594,6 +594,22 @@ p {
   display: none;
 }
 
+/* Read-only "key workflow components" line for the selected model. */
+.comfyModelInfo {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-alpha);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.comfyModelInfo[hidden] {
+  display: none;
+}
+
 /* ComfyUI advanced-params modal: scrollable form inside the shared modal shell. */
 .comfyParamsBody {
   display: flex;
@@ -1383,12 +1399,67 @@ button.secondary:disabled {
   opacity: 1;
 }
 
+/* Wraps the scroll container so the jump-to-bottom button can float over it
+   (an absolute child of #messages itself would scroll away with the content). */
+.messagesWrap {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.messagesWrap > .messages {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .messages {
   display: flex;
   flex-direction: column;
   gap: 8px;
   overflow: auto;
   padding: 20px;
+}
+
+.scrollToBottomBtn {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%); /* horizontally centered bar */
+  display: flex;
+  align-items: center;
+  justify-content: center; /* center the icon + text */
+  gap: 6px;
+  min-width: 240px;
+  padding: 4px 36px; /* flatter and longer bar */
+  border: none;
+  border-radius: 7px; /* long rounded rectangle */
+  background: rgba(0, 0, 0, 0.55); /* semi-transparent black */
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.25);
+  opacity: 0.92;
+  transition: opacity 0.15s ease, background 0.15s ease;
+  z-index: 6;
+}
+
+.scrollToBottomBtn:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.scrollToBottomBtn .scrollToBottomIcon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* display:flex above would otherwise beat the UA [hidden] rule. */
+.scrollToBottomBtn[hidden] {
+  display: none;
 }
 
 /* Side-by-side translation row */

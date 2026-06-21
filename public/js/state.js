@@ -2,6 +2,7 @@
 
 export const dom = {
   messagesEl: document.querySelector("#messages"),
+  scrollToBottomBtn: document.querySelector("#scrollToBottomBtn"),
   chatTabsEl: document.querySelector("#chatTabs"),
   addTab: document.querySelector("#addTab"),
   chatForm: document.querySelector("#chatForm"),
@@ -44,6 +45,7 @@ export const dom = {
   comfyParamsModal: document.querySelector("#comfyParamsModal"),
   comfyParamsClose: document.querySelector("#comfyParamsClose"),
   comfyParamsReset: document.querySelector("#comfyParamsReset"),
+  comfyModelInfo: document.querySelector("#comfyModelInfo"),
   comfyParamNegative: document.querySelector("#comfyParamNegative"),
   comfyParamSampler: document.querySelector("#comfyParamSampler"),
   comfyParamScheduler: document.querySelector("#comfyParamScheduler"),
@@ -110,6 +112,7 @@ export const state = {
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
   scrollPin: null,                   // when set (resend/edit in place), auto-scroll holds this scrollTop instead of jumping to the bottom
   _pinClearTimer: null,              // delayed release of scrollPin once generation fully ends
+  stickToBottom: true,               // streaming auto-scroll only while the user sits near the bottom (so they can scroll up mid-generation)
 };
 
 // Auto-scroll the chat. Normally jumps to the bottom (new content), but while a
@@ -118,4 +121,23 @@ export const state = {
 export function scrollChatToEnd() {
   if (state.scrollPin != null) dom.messagesEl.scrollTop = state.scrollPin;
   else dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+  refreshScrollState();
+}
+
+// Streaming/progress auto-scroll that yields to the user: only follows new
+// content while they're still near the bottom. Dragging up to read mid-stream
+// flips state.stickToBottom off (via refreshScrollState on the scroll event),
+// and this becomes a no-op until they return to the bottom.
+export function scrollChatToEndIfPinned() {
+  if (state.stickToBottom) scrollChatToEnd();
+}
+
+// Recompute "pinned to bottom?" from live geometry and toggle the floating
+// jump-to-bottom button. Called on user scroll and after each auto-scroll.
+export function refreshScrollState() {
+  const el = dom.messagesEl;
+  if (!el) return;
+  const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+  state.stickToBottom = distance <= 40;
+  if (dom.scrollToBottomBtn) dom.scrollToBottomBtn.hidden = distance <= 80;
 }

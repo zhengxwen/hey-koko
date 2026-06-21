@@ -202,6 +202,22 @@ function imageNaturalSize(src) {
   });
 }
 
+// Decode a video's natural pixel size (data URL) in the browser. Resolves null on
+// failure. Used to size Bernini video-edit output to the source's aspect ratio.
+export function videoNaturalSize(src) {
+  return new Promise((resolve) => {
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.muted = true;
+    let done = false;
+    const finish = (val) => { if (done) return; done = true; clearTimeout(timer); resolve(val); };
+    v.addEventListener("loadedmetadata", () => finish(v.videoWidth && v.videoHeight ? { w: v.videoWidth, h: v.videoHeight } : null), { once: true });
+    v.addEventListener("error", () => finish(null), { once: true });
+    const timer = setTimeout(() => finish(null), 4000);
+    v.src = src;
+  });
+}
+
 // Capture a still frame from a video (data URL) as a JPEG data URL. Used as the
 // poster for generated videos and as the lightweight stand-in for the video in
 // exports/archives (the video itself is megabytes; the thumbnail is a few KB).
@@ -329,11 +345,21 @@ async function readOllamaImageStream(r, onProgress) {
 
 // ComfyUI video generation (WAN ti2v): text→video, or image→video when a
 // reference image is attached. Single output, rendered as a <video>.
-export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null) {
+export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null) {
   const tab = getTab(tabId);
   if (!tab) return;
   const genStart = Date.now();
   const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
+
+  // For Bernini i2v the output aspect must follow the reference image. Decode its
+  // natural size in the browser (works for any format) and send it, so the server
+  // doesn't depend on parsing the base64 (a WebP etc. would fail → square crop).
+  let refImageDims = null;
+  if (refImages && refImages.length && !sourceVideo) {
+    const b = refImages[0];
+    const src = b.startsWith("data:") ? b : `data:image/${b.startsWith("/9j/") ? "jpeg" : b.startsWith("UklGR") ? "webp" : "png"};base64,${b}`;
+    refImageDims = await imageNaturalSize(src);
+  }
 
   // /imagine flags (steps/seed) win; the ⚙ modal fills the rest
   // (length/fps/cfg/sampler/scheduler). For text→video, drop any default image
@@ -489,6 +515,15 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
           negative_prompt: comfyNegative(parsed.negativePrompt),
           options: perOptions,
           images: refImages || undefined,
+          // Bernini video-edit source clip (base64) + its size (for source-aspect
+          // output sizing). Ignored by other video models.
+          sourceVideo: sourceVideo?.base64 || undefined,
+          sourceVideoMime: sourceVideo?.mime || undefined,
+          sourceVideoWidth: sourceVideo?.width || undefined,
+          sourceVideoHeight: sourceVideo?.height || undefined,
+          // Bernini i2v: reference image's natural size → source-aspect output.
+          refImageWidth: refImageDims?.w || undefined,
+          refImageHeight: refImageDims?.h || undefined,
           timeout: 600, // video is slow
           clientId,
         }),
@@ -539,7 +574,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   }
 }
 
-export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null) {
+export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null, initVideo = null) {
   const parsedList = Array.isArray(parsedInput) ? parsedInput : [parsedInput];
   const tab = getTab(tabId);
   if (!tab) return;
@@ -555,7 +590,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
 
   // A selected ComfyUI VIDEO model routes to the dedicated video path.
   if (!imageModel && comfyModel && state.comfyVideoModels && state.comfyVideoModels.has(comfyModel)) {
-    return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages);
+    return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages, initVideo);
   }
 
   const useComfy = !imageModel && !!comfyModel;
