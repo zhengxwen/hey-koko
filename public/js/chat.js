@@ -1542,11 +1542,18 @@ function dispatchReply(tabId, insertIndex = -1, contextEndIndex = -1) {
   else regenerateReply(tabId, insertIndex, contextEndIndex);
 }
 
-// Parse /analyze [extra question]. Returns null if it isn't an /analyze command.
+// Parse /analyze [-f N] [extra question]. `-f`/`--frames` sets how many frames to
+// sample from a video (1–32, default 8). Returns null if it isn't an /analyze command.
 function parseAnalyzeCommand(input) {
   const m = input.match(/^\/analyze(?:\s+([\s\S]+))?\s*$/i);
   if (!m) return null;
-  return { prompt: (m[1] || "").trim() };
+  let rest = (m[1] || "").trim();
+  let frames = null;
+  rest = rest.replace(/(?:^|\s)(?:-f|--frames)\s+(\d+)(?=\s|$)/i, (_, n) => {
+    frames = Math.min(32, Math.max(1, parseInt(n, 10)));
+    return " ";
+  });
+  return { prompt: rest.trim(), frames };
 }
 
 // Strip a data-URL prefix so we hand the model raw base64 (what Ollama expects).
@@ -1602,10 +1609,11 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
     // 1. Resolve the media to analyze and turn it into a flat array of frames.
     let images = [];
     let kind = "";
+    const frameTarget = parsed.frames || 8;
     const framesFromVideo = async (b64, mime) => {
       showPending(t("analyze_extracting"));
       const src = b64.startsWith("data:") ? b64 : `data:${mime || "video/mp4"};base64,${b64}`;
-      const frames = await extractVideoFrames(src);
+      const frames = await extractVideoFrames(src, frameTarget);
       return frames.map(rawBase64);
     };
 
@@ -1660,7 +1668,7 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
       basePrompt = t("analyze_mixedPrompt", { images: imageCount, frames: frameCount });
       systemPrompt = t("analyze_mixedSystem");
     } else if (kind === "video") {
-      basePrompt = t("analyze_videoPrompt");
+      basePrompt = t("analyze_videoPrompt", { frames: frameCount });
       systemPrompt = t("analyze_videoSystem");
     } else {
       basePrompt = t("analyze_imagePrompt");
@@ -1672,7 +1680,10 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
       { role: "user", content: instruction, images },
     ];
 
-    showPending(t("msg_thinking"));
+    const working = kind === "mixed" ? t("analyze_workingMixed", { images: imageCount, frames: frameCount })
+      : kind === "video" ? t("analyze_workingVideo", { frames: frameCount })
+      : t("analyze_workingImage");
+    showPending(working);
 
     const response = await fetch("/api/chat", {
       method: "POST",
