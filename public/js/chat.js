@@ -7,7 +7,7 @@ import { setAvatarState, showExpression, detectExpression } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.js';
-import { parseNoteCommand, parseImagineCommands, generateImage, videoThumbnail } from './image-gen.js';
+import { parseNoteCommand, parseImagineCommands, generateImage, videoThumbnail, extractVideoFrames } from './image-gen.js';
 import { parseVoiceCommand, generateSpeech } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
@@ -231,6 +231,18 @@ function resendChatMessage(index) {
     const actualContent = isolatedMatch[2];
     const insertIndex = index + 1;
     isolatedReply(actualContent, mode, tab, state.activeTabId, insertIndex);
+    return;
+  }
+
+  // Handle /analyze on resend — re-run the vision analysis in place. Reconstruct
+  // the attached media from the stored bubble (images + optional source video); if
+  // the bubble carried none, the fallback scans the bubbles before it (anchor=index-1).
+  const analyzeResend = parseAnalyzeCommand(message.content);
+  if (analyzeResend) {
+    const imageObj = message.images?.length
+      ? { multi: message.images.map((b) => ({ base64: b })) }
+      : null;
+    analyzeMedia(analyzeResend, state.activeTabId, imageObj, messageSourceVideo(message), index + 1, index - 1);
     return;
   }
 
@@ -699,6 +711,8 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
     if (msg.role === "user" && /^\/remind(\s|$)/.test(msg.content)) continue;
     // Skip /search command line (results are injected as the assistant bubble that follows)
     if (msg.role === "user" && /^\/search(\s|$)/.test(msg.content)) continue;
+    // Skip /analyze command line (its analysis is the assistant bubble that follows)
+    if (msg.role === "user" && /^\/analyze(\s|$)/.test(msg.content)) continue;
     if (msg.role === "assistant" && /^✅ 标题已更新为/.test(msg.content)) continue;
     // File preview bubbles: send to LLM as user-role (contains the parsed file content)
     if (msg.isFilePreview) {
@@ -1528,6 +1542,213 @@ function dispatchReply(tabId, insertIndex = -1, contextEndIndex = -1) {
   else regenerateReply(tabId, insertIndex, contextEndIndex);
 }
 
+// Parse /analyze [extra question]. Returns null if it isn't an /analyze command.
+function parseAnalyzeCommand(input) {
+  const m = input.match(/^\/analyze(?:\s+([\s\S]+))?\s*$/i);
+  if (!m) return null;
+  return { prompt: (m[1] || "").trim() };
+}
+
+// Strip a data-URL prefix so we hand the model raw base64 (what Ollama expects).
+function rawBase64(s) {
+  return s.includes(",") && s.startsWith("data:") ? s.split(",")[1] : s;
+}
+
+// Run the vision model over the media on the just-sent /analyze bubble (attached
+// image/video) or, if none was attached, the most recent user bubble carrying
+// media. Video is sampled into frames first. Streams the answer like a reply.
+async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, anchorIndex = -1) {
+  const tab = getTab(tabId);
+  if (!tab) return;
+  if (state.currentAbortController || state.imageGenAbortController) return;
+
+  // On resend/edit the result is spliced right after the /analyze bubble
+  // (insertIndex); on a fresh command it's appended at the end.
+  const inPlace = insertIndex >= 0;
+  const place = (msg) => {
+    if (inPlace && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, msg);
+    else tab.messages.push(msg);
+  };
+
+  const abortController = new AbortController();
+  state.currentAbortController = abortController;
+  setGenerating(true);
+  setAvatarState("thinking");
+
+  const showPending = (text) => {
+    if (state.activeTabId !== tabId) return;
+    let bubble = dom.messagesEl.querySelector('.streaming-bubble');
+    if (!bubble) {
+      bubble = document.createElement("div");
+      bubble.className = "message assistant thinking streaming-bubble";
+      const body = document.createElement("div");
+      body.className = "markdownBody";
+      bubble.appendChild(body);
+      const refNode = inPlace ? dom.messagesEl.children[insertIndex] : null;
+      if (refNode) dom.messagesEl.insertBefore(bubble, refNode);
+      else dom.messagesEl.appendChild(bubble);
+    }
+    bubble.querySelector(".markdownBody").innerHTML =
+      `<span class="thinking-text">${text}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+    scrollChatToEnd();
+  };
+
+  const cleanupPending = () => {
+    const bubble = dom.messagesEl.querySelector('.streaming-bubble');
+    if (bubble) bubble.remove();
+  };
+
+  try {
+    // 1. Resolve the media to analyze and turn it into a flat array of frames.
+    let images = [];
+    let kind = "";
+    const framesFromVideo = async (b64, mime) => {
+      showPending(t("analyze_extracting"));
+      const src = b64.startsWith("data:") ? b64 : `data:${mime || "video/mp4"};base64,${b64}`;
+      const frames = await extractVideoFrames(src);
+      return frames.map(rawBase64);
+    };
+
+    // When both an image and a video are present they're MERGED into one turn:
+    // the uploaded image(s) first, then the sampled video frames. kindOf() labels
+    // the result so the right system prompt / instruction is chosen below.
+    let imageCount = 0, frameCount = 0;
+    const kindOf = (imgs, frames) => (imgs && frames) ? "mixed" : (frames ? "video" : "image");
+    const uploaded = image
+      ? (image.multi ? image.multi.map(img => rawBase64(img.base64)) : [rawBase64(image.base64)])
+      : [];
+
+    if (image || video) {
+      const frames = video ? await framesFromVideo(video.base64, video.mime) : [];
+      imageCount = uploaded.length;
+      frameCount = frames.length;
+      images = [...uploaded, ...frames];
+      kind = kindOf(uploaded.length, frames.length);
+    } else {
+      // Fall back to the nearest preceding user bubble with media. anchorIndex is
+      // the bubble just before the /analyze command (resend passes index-1; a fresh
+      // command defaults to the second-to-last message = the bubble before it).
+      const start = anchorIndex >= 0 ? anchorIndex : tab.messages.length - 2;
+      for (let i = start; i >= 0; i--) {
+        const m = tab.messages[i];
+        if (m.role !== "user") continue;
+        const hasImg = m.images?.length, hasVid = m.generatedVideos?.length;
+        if (!hasImg && !hasVid) continue;
+        const imgs = hasImg ? m.images.map(rawBase64) : [];
+        const frames = hasVid ? await framesFromVideo(m.generatedVideos[0], m.videoMime) : [];
+        imageCount = imgs.length;
+        frameCount = frames.length;
+        images = [...imgs, ...frames];
+        kind = kindOf(imgs.length, frames.length);
+        break;
+      }
+    }
+
+    if (!images.length) {
+      cleanupPending();
+      place({ role: "assistant", content: t("analyze_noMedia"), timestamp: Date.now() });
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+      return;
+    }
+
+    // 2. Build the analysis request as a self-contained turn: a dedicated
+    // "visual analysis expert" system prompt (NOT the chat persona) and a single
+    // user turn carrying the frames + instruction — no prior conversation context.
+    let basePrompt, systemPrompt;
+    if (kind === "mixed") {
+      basePrompt = t("analyze_mixedPrompt", { images: imageCount, frames: frameCount });
+      systemPrompt = t("analyze_mixedSystem");
+    } else if (kind === "video") {
+      basePrompt = t("analyze_videoPrompt");
+      systemPrompt = t("analyze_videoSystem");
+    } else {
+      basePrompt = t("analyze_imagePrompt");
+      systemPrompt = t("analyze_imageSystem");
+    }
+    const instruction = parsed.prompt ? `${basePrompt}\n\n${parsed.prompt}` : basePrompt;
+    const messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: instruction, images },
+    ];
+
+    showPending(t("msg_thinking"));
+
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abortController.signal,
+      body: JSON.stringify({
+        model: dom.modelSelect.value,
+        messages,
+        options: { temperature: 0.5, num_ctx: getNumCtx() },
+        timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+      }),
+    });
+    if (!response.ok) {
+      const d = await response.json().catch(() => ({}));
+      throw new Error(d.error || "请求失败");
+    }
+
+    // 3. Stream the answer into the bubble.
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let content = "";
+    let firstChunk = false;
+    const appendLine = (line) => {
+      if (!line.trim()) return;
+      const data = JSON.parse(line);
+      const chunk = data.message?.content || "";
+      if (!chunk) return;
+      if (!firstChunk) {
+        firstChunk = true;
+        setAvatarState("talking");
+        if (state.activeTabId === tabId) {
+          const bubble = dom.messagesEl.querySelector('.streaming-bubble');
+          if (bubble) { bubble.classList.remove("thinking"); bubble.querySelector(".markdownBody").innerHTML = ""; }
+        }
+      }
+      content += chunk;
+      if (state.activeTabId === tabId) {
+        const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
+        if (md) { md.innerHTML = markdownToHtml(content); scrollChatToEndIfPinned(); }
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) appendLine(line);
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) appendLine(buffer);
+
+    cleanupPending();
+    content = content.trim();
+    if (content) {
+      place({ role: "assistant", content, timestamp: Date.now() });
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+      showExpression(detectExpression(content));
+    }
+  } catch (error) {
+    cleanupPending();
+    if (error.name !== "AbortError") {
+      place({ role: "assistant", content: `⚠️ ${error.message}`, timestamp: Date.now() });
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+    }
+  } finally {
+    setGenerating(false);
+    setAvatarState("idle");
+    state.currentAbortController = null;
+  }
+}
+
 export async function sendMessage(content, image, tabId = state.activeTabId, file = null, video = null) {
   const tab = getTab(tabId);
   if (!tab) return;
@@ -1703,6 +1924,36 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     } else {
       generateSpeech(voiceCmd, tabId, -1);
     }
+    return;
+  }
+
+  // Handle /analyze — feed the attached image(s)/video (or the most recent bubble
+  // with media) to the vision model and ask it to describe/analyze the content.
+  const analyzeCmd = content ? parseAnalyzeCommand(content) : null;
+  if (analyzeCmd) {
+    const userMessage = { role: "user", content, timestamp: Date.now() };
+    if (image) {
+      if (image.multi) {
+        userMessage.images = image.multi.map(img => img.base64);
+        userMessage.previewImages = image.multi.map(img => img.preview);
+        userMessage.imageNames = image.multi.map(img => img.name || null);
+      } else {
+        userMessage.images = [image.base64];
+        userMessage.previewImages = [image.preview];
+        userMessage.imageNames = [image.name || null];
+      }
+      userMessage.previewImage = userMessage.previewImages[0];
+    }
+    if (video) {
+      userMessage.generatedVideos = [video.base64];
+      userMessage.videoMime = video.mime || "video/mp4";
+      if (video.name) userMessage.videoName = video.name;
+      if (video.thumbnail) userMessage.generatedVideoThumbnails = [video.thumbnail];
+    }
+    tab.messages.push(userMessage);
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+    analyzeMedia(analyzeCmd, tabId, image, video);
     return;
   }
 

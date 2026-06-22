@@ -259,6 +259,60 @@ export function videoThumbnail(src, quality = 0.72) {
   });
 }
 
+// Grab `count` frames evenly spaced across a video, returned as JPEG data URLs.
+// Vision models can't read video directly, so /analyze samples frames and feeds
+// them as a sequence of images. The longest side is capped to keep payloads sane.
+export function extractVideoFrames(src, count = 8, quality = 0.7, maxSide = 768) {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.preload = "auto";
+    const frames = [];
+    const canvas = document.createElement("canvas");
+    let times = [];
+    let idx = 0;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      video.removeAttribute("src");
+      try { video.load(); } catch {}
+      resolve(frames);
+    };
+    const grab = () => {
+      const w = video.videoWidth, h = video.videoHeight;
+      if (w && h) {
+        try {
+          const scale = Math.min(1, maxSide / Math.max(w, h));
+          canvas.width = Math.max(1, Math.round(w * scale));
+          canvas.height = Math.max(1, Math.round(h * scale));
+          canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+          frames.push(canvas.toDataURL("image/jpeg", quality));
+        } catch { /* tainted/oversized frame — skip it */ }
+      }
+      idx++;
+      if (idx >= times.length) return finish();
+      seekNext();
+    };
+    const seekNext = () => {
+      try { video.currentTime = times[idx]; }
+      catch { grab(); }
+    };
+    video.addEventListener("loadeddata", () => {
+      const dur = video.duration;
+      if (!dur || !isFinite(dur)) times = [0.1];
+      // Sample the midpoint of each of `count` equal slices, skipping the lead-in/out.
+      else times = Array.from({ length: count }, (_, i) => (dur * (i + 0.5)) / count);
+      video.addEventListener("seeked", grab);
+      seekNext();
+    }, { once: true });
+    video.addEventListener("error", finish, { once: true });
+    const timer = setTimeout(finish, 20000); // safety cap if seeking stalls
+    video.src = src;
+  });
+}
+
 // Tell ComfyUI to actually STOP — aborting our fetch only stops us waiting; the
 // queued workflow keeps running on the GPU. /interrupt kills the running prompt
 // and clearing the queue drops anything still pending (e.g. a batch). comfyHost
