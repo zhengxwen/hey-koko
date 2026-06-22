@@ -2332,6 +2332,18 @@ button.secondary:disabled {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
   pointer-events: none;
   z-index: 5;
+  /* Slide+fade in on appear, then gently pulse so it reads as "in progress". */
+  animation: sendStatusIn 0.18s ease-out, sendStatusPulse 1.4s ease-in-out 0.18s infinite;
+}
+
+@keyframes sendStatusIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes sendStatusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
 .composer.isLocked .quickPromptBtn,

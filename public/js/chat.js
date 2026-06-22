@@ -18,11 +18,10 @@ import { addMemory, getMemoryPromptBlock } from './memory.js';
 import { parseRemind, addReminder, describeReminder, markActivity } from './proactive.js';
 import { TOOL_SCHEMAS, executeTool, getToolLabel } from './tools.js';
 
-// Delayed "正在发送中 / 正在停止中" status: only shown when the operation is slow
-// (>2s after pressing send/stop). The "sending" pill is for the gap between
-// clicking send and the response starting — it's dropped the moment the response
-// begins streaming (sendSucceeded), NOT when the whole reply finishes. Avoids
-// flicker for the common fast case.
+// "正在发送/接收中 / 正在停止中" status pill (bottom-right, blue). Shown IMMEDIATELY on
+// send/resend/edit (no delay) and animated via CSS (fade-in + pulse). The "sending"
+// pill covers the gap between clicking send and the response starting — it's dropped
+// the moment the response begins streaming (sendSucceeded), NOT when the reply finishes.
 let _sendStatusTimer = null;
 let _sendStatusKind = null; // 'sending' | 'stopping' | null
 function scheduleStatus(kind, key) {
@@ -30,7 +29,10 @@ function scheduleStatus(kind, key) {
   _sendStatusKind = kind;
   const el = dom.sendStatus;
   if (!el) return;
-  _sendStatusTimer = setTimeout(() => { el.textContent = t(key); el.hidden = false; }, 2000);
+  // Show the pill IMMEDIATELY (no 2s delay) so send/resend/edit get instant feedback;
+  // the CSS fades+pulses it in. It's still dropped on first response chunk (fast case).
+  el.textContent = t(key);
+  el.hidden = false;
 }
 function clearSendStatus() {
   clearTimeout(_sendStatusTimer);
@@ -1542,18 +1544,20 @@ function dispatchReply(tabId, insertIndex = -1, contextEndIndex = -1) {
   else regenerateReply(tabId, insertIndex, contextEndIndex);
 }
 
-// Parse /analyze [-f N] [extra question]. `-f`/`--frames` sets how many frames to
-// sample from a video (1–32, default 8). Returns null if it isn't an /analyze command.
+// Parse /analyze [-f N] [-d] [extra question]. `-f`/`--frames` sets how many frames to
+// sample from a video (1–32, default 8); `-d`/`--debug` shows the extracted frames in
+// the chat instead of analyzing (to verify they actually differ). Null if not /analyze.
 function parseAnalyzeCommand(input) {
   const m = input.match(/^\/analyze(?:\s+([\s\S]+))?\s*$/i);
   if (!m) return null;
   let rest = (m[1] || "").trim();
-  let frames = null;
+  let frames = null, debug = false;
+  rest = rest.replace(/(?:^|\s)(?:-d|--debug)(?=\s|$)/i, () => { debug = true; return " "; });
   rest = rest.replace(/(?:^|\s)(?:-f|--frames)\s+(\d+)(?=\s|$)/i, (_, n) => {
     frames = Math.min(32, Math.max(1, parseInt(n, 10)));
     return " ";
   });
-  return { prompt: rest.trim(), frames };
+  return { prompt: rest.trim(), frames, debug };
 }
 
 // Strip a data-URL prefix so we hand the model raw base64 (what Ollama expects).
@@ -1582,6 +1586,17 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
   setGenerating(true);
   setAvatarState("thinking");
 
+  // The collapsible "thinking" content (frame→time map + optional -d frames). Filled
+  // in once the frames are sampled, then shown folded in the pending/streaming bubble
+  // (and carried onto the final reply), so it's visible during "analyzing video…".
+  let thinkingMd = "";
+  let debugFrames = null;
+  const syncThinking = (bubble) => {
+    if (!bubble || bubble.querySelector(":scope > .thinking-details")) return;
+    const el = buildThinkingDetails(thinkingMd, debugFrames);
+    if (el) bubble.insertBefore(el, bubble.firstChild);
+  };
+
   const showPending = (text) => {
     if (state.activeTabId !== tabId) return;
     let bubble = dom.messagesEl.querySelector('.streaming-bubble');
@@ -1595,7 +1610,9 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
       if (refNode) dom.messagesEl.insertBefore(bubble, refNode);
       else dom.messagesEl.appendChild(bubble);
     }
-    bubble.querySelector(".markdownBody").innerHTML =
+    syncThinking(bubble);
+    const mainBody = bubble.querySelector(":scope > .markdownBody");
+    if (mainBody) mainBody.innerHTML =
       `<span class="thinking-text">${text}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
     scrollChatToEnd();
   };
@@ -1609,12 +1626,18 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
     // 1. Resolve the media to analyze and turn it into a flat array of frames.
     let images = [];
     let kind = "";
+    let frameTimes = []; // timestamps (s) of the sampled frames, shown to the user as a map
     const frameTarget = parsed.frames || 8;
+    // Sample the video into N still frames and send them as SEPARATE images in
+    // chronological order — the model refers to them by frame number (#1..#N),
+    // which is far more reliable than mapping moments to timestamps. The actual
+    // timestamps are surfaced to the user as a frame→time table (not to the model).
     const framesFromVideo = async (b64, mime) => {
       showPending(t("analyze_extracting"));
       const src = b64.startsWith("data:") ? b64 : `data:${mime || "video/mp4"};base64,${b64}`;
       const frames = await extractVideoFrames(src, frameTarget);
-      return frames.map(rawBase64);
+      frameTimes = frames.map(f => f.t);
+      return frames.map(f => rawBase64(f.url));
     };
 
     // When both an image and a video are present they're MERGED into one turn:
@@ -1626,12 +1649,15 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
       ? (image.multi ? image.multi.map(img => rawBase64(img.base64)) : [rawBase64(image.base64)])
       : [];
 
+    // frameCount = number of video frames (each sent as its own image); imageCount =
+    // standalone uploaded images. kindOf() picks image/video/mixed from the two.
+    let videoFrames = [];
     if (image || video) {
-      const frames = video ? await framesFromVideo(video.base64, video.mime) : [];
+      videoFrames = video ? await framesFromVideo(video.base64, video.mime) : [];
       imageCount = uploaded.length;
-      frameCount = frames.length;
-      images = [...uploaded, ...frames];
-      kind = kindOf(uploaded.length, frames.length);
+      frameCount = videoFrames.length;
+      images = [...uploaded, ...videoFrames];
+      kind = kindOf(uploaded.length, frameCount);
     } else {
       // Fall back to the nearest preceding user bubble with media. anchorIndex is
       // the bubble just before the /analyze command (resend passes index-1; a fresh
@@ -1643,11 +1669,11 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
         const hasImg = m.images?.length, hasVid = m.generatedVideos?.length;
         if (!hasImg && !hasVid) continue;
         const imgs = hasImg ? m.images.map(rawBase64) : [];
-        const frames = hasVid ? await framesFromVideo(m.generatedVideos[0], m.videoMime) : [];
+        videoFrames = hasVid ? await framesFromVideo(m.generatedVideos[0], m.videoMime) : [];
         imageCount = imgs.length;
-        frameCount = frames.length;
-        images = [...imgs, ...frames];
-        kind = kindOf(imgs.length, frames.length);
+        frameCount = videoFrames.length;
+        images = [...imgs, ...videoFrames];
+        kind = kindOf(imgs.length, frameCount);
         break;
       }
     }
@@ -1659,6 +1685,7 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
       if (state.activeTabId === tabId) renderChat();
       return;
     }
+
 
     // 2. Build the analysis request as a self-contained turn: a dedicated
     // "visual analysis expert" system prompt (NOT the chat persona) and a single
@@ -1679,6 +1706,17 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
       { role: "system", content: systemPrompt },
       { role: "user", content: instruction, images },
     ];
+
+    // Build the thinking content now (before the model call) so it shows folded in
+    // the pending/streaming bubble: frame→time map, plus the -d frame screenshots.
+    if (frameTimes.length) {
+      const rows = frameTimes.map((s, i) => t("analyze_frameRow", { n: i + 1, t: (s || 0).toFixed(1) })).join("\n");
+      thinkingMd = `${t("analyze_frameMap")}\n\n${rows}`;
+    }
+    if (parsed.debug && videoFrames.length) {
+      debugFrames = videoFrames;
+      thinkingMd = `${t("analyze_debugFrames", { frames: videoFrames.length })}\n\n${thinkingMd || ""}`.trim();
+    }
 
     const working = kind === "mixed" ? t("analyze_workingMixed", { images: imageCount, frames: frameCount })
       : kind === "video" ? t("analyze_workingVideo", { frames: frameCount })
@@ -1717,7 +1755,8 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
         setAvatarState("talking");
         if (state.activeTabId === tabId) {
           const bubble = dom.messagesEl.querySelector('.streaming-bubble');
-          if (bubble) { bubble.classList.remove("thinking"); bubble.querySelector(".markdownBody").innerHTML = ""; }
+          // Clear ONLY the main body (the thinking <details> stays folded above it).
+          if (bubble) { bubble.classList.remove("thinking"); const mb = bubble.querySelector(":scope > .markdownBody"); if (mb) mb.innerHTML = ""; }
         }
       }
       content += chunk;
@@ -1741,7 +1780,12 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
     cleanupPending();
     content = content.trim();
     if (content) {
-      place({ role: "assistant", content, timestamp: Date.now() });
+      // Carry the same thinking content (frame→time map; -d frame screenshots) onto
+      // the final reply — it already showed folded during streaming.
+      const reply = { role: "assistant", content, timestamp: Date.now() };
+      if (thinkingMd) reply.thinking = thinkingMd;
+      if (debugFrames) reply.thinkingFrames = debugFrames;
+      place(reply);
       saveChat();
       if (state.activeTabId === tabId) renderChat();
       showExpression(detectExpression(content));
@@ -2137,6 +2181,33 @@ function makeDownloadButton(className, href, filename, bytes, actionLabel) {
   dl.setAttribute("aria-label", actionLabel ? `${actionLabel}: ${label}` : label);
   dl.textContent = "⬇";
   return dl;
+}
+
+// Build the collapsible "thinking" <details> block: optional markdown text plus an
+// optional grid of frame screenshots (used by /analyze and its -d flag). Shared by
+// renderMessage and the live /analyze streaming bubble. Returns null if both empty.
+function buildThinkingDetails(thinkingText, frames) {
+  if (!thinkingText && !(frames && frames.length)) return null;
+  const details = document.createElement("details");
+  details.className = "thinking-details";
+  const inner = thinkingText ? markdownToHtml(thinkingText) : "";
+  details.innerHTML = `<summary>${t("msg_thinkingSummary")}</summary><div class="thinking-content markdownBody">${inner}</div>`;
+  if (frames && frames.length) {
+    const content = details.querySelector(".thinking-content");
+    const grid = document.createElement("div");
+    grid.className = "imageGrid";
+    for (const f of frames) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "imageWrapper";
+      const img = document.createElement("img");
+      img.className = "generatedImage";
+      img.src = f.startsWith("data:") ? f : `data:image/jpeg;base64,${f}`;
+      wrapper.appendChild(img);
+      grid.appendChild(wrapper);
+    }
+    content.appendChild(grid);
+  }
+  return details;
 }
 
 function renderMessage(role, content, previewImage, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMime, generatedAudio, audioMime, generatedVideoThumbnails) {
@@ -2674,15 +2745,11 @@ export function renderChat() {
     if (message.generatedVideos?.length && !message.generatedVideoThumbnails?.length) {
       backfillVideoThumbnails(message);
     }
-    // Insert thinking details block if present and setting enabled
-    if (el && message.thinking) {
+    // Insert thinking details block if present
+    if (el && (message.thinking || message.thinkingFrames?.length)) {
       const markdownBody = el.querySelector(".markdownBody");
-      if (markdownBody) {
-        const details = document.createElement("details");
-        details.className = "thinking-details";
-        details.innerHTML = `<summary>${t("msg_thinkingSummary")}</summary><div class="thinking-content markdownBody">${markdownToHtml(message.thinking)}</div>`;
-        el.insertBefore(details, markdownBody);
-      }
+      const details = buildThinkingDetails(message.thinking, message.thinkingFrames);
+      if (markdownBody && details) el.insertBefore(details, markdownBody);
     }
     // Insert tool-call details block (which tools the AI used, args + results)
     if (el && message.toolSteps && message.toolSteps.length) {

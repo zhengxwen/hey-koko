@@ -5,11 +5,22 @@
 import { dom } from './state.js';
 import { getActiveTab } from './tabs.js';
 import { t } from './i18n.js';
+import { SETTINGS_KEY } from './constants.js';
 
 // Cache the architectural max context length per model (from /api/model-info)
 const modelMaxCtxCache = new Map();
 
 const DEFAULT_NUM_CTX = 32768;
+
+// The num_ctx the user last chose, read from localStorage. Used when rebuilding the
+// option ladder so the saved choice survives — the default <select> only lists up to
+// 32768, so a larger saved value can't be applied until the ladder is rebuilt here.
+function savedNumCtx() {
+  try {
+    const v = parseInt(JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}").numCtx, 10);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  } catch { return 0; }
+}
 
 /** Configured context window (num_ctx) the app sends to Ollama. */
 export function getNumCtx() {
@@ -47,7 +58,9 @@ export async function refreshModelMaxContext(model) {
   }
   const max = modelMaxCtxCache.get(model);
   if (dom.numCtxSelect && max) {
-    const prev = parseInt(dom.numCtxSelect.value, 10) || DEFAULT_NUM_CTX;
+    // Prefer the persisted choice (the default <select> can't hold values >32768, so
+    // a saved larger value only becomes selectable once the ladder is rebuilt here).
+    const prev = savedNumCtx() || parseInt(dom.numCtxSelect.value, 10) || DEFAULT_NUM_CTX;
     // Build the option ladder up to the model's real architectural max.
     const ladder = [4096, 8192, 16384, 32768, 65536, 131072, 262144];
     const values = ladder.filter((v) => v <= max);
@@ -59,7 +72,7 @@ export async function refreshModelMaxContext(model) {
       opt.textContent = v >= 1024 ? `${v} (${Math.round(v / 1024)}K)` : String(v);
       dom.numCtxSelect.appendChild(opt);
     }
-    // Keep the previous choice if still valid, else fall to the nearest smaller one.
+    // Keep the saved/previous choice if still valid, else fall to the nearest smaller one.
     const valid = values.includes(prev) ? prev : (values.filter((v) => v <= prev).pop() || values[0]);
     dom.numCtxSelect.value = String(valid);
   }

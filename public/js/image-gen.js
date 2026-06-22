@@ -259,10 +259,12 @@ export function videoThumbnail(src, quality = 0.72) {
   });
 }
 
-// Grab `count` frames evenly spaced across a video, returned as JPEG data URLs.
-// Vision models can't read video directly, so /analyze samples frames and feeds
-// them as a sequence of images. The longest side is capped to keep payloads sane.
-export function extractVideoFrames(src, count = 8, quality = 0.7, maxSide = 768) {
+// Grab `count` frames evenly spaced across a video, returned as `{url, t}` objects
+// (JPEG data URL + the frame's actual timestamp in seconds) in chronological order.
+// Vision models can't read video directly, so /analyze feeds the frames as separate
+// images (the model refers to them by frame number = their order); the timestamps are
+// shown to the user as a frame→time map. Longest side capped at maxSide (high for 4K).
+export function extractVideoFrames(src, count = 8, quality = 0.72, maxSide = 1280) {
   return new Promise((resolve) => {
     const video = document.createElement("video");
     video.muted = true;
@@ -288,7 +290,8 @@ export function extractVideoFrames(src, count = 8, quality = 0.7, maxSide = 768)
           canvas.width = Math.max(1, Math.round(w * scale));
           canvas.height = Math.max(1, Math.round(h * scale));
           canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-          frames.push(canvas.toDataURL("image/jpeg", quality));
+          // Record the frame's ACTUAL time (the browser may snap a seek to a nearby keyframe).
+          frames.push({ url: canvas.toDataURL("image/jpeg", quality), t: video.currentTime });
         } catch { /* tainted/oversized frame — skip it */ }
       }
       idx++;
