@@ -409,6 +409,58 @@ function preCleanEmailHtml(html) {
   return h;
 }
 
+// Fetch one remote image, applying the same trash filters as the URL fetcher
+// (skip non-images, SVG, tiny trackers, and oversized files). Returns null on
+// any failure so a single bad link never blocks the rest.
+async function fetchOneImage(url) {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; LocalAIChat/1.0)",
+        "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+      },
+      signal: AbortSignal.timeout(8000),
+      redirect: "follow",
+    });
+    if (!res.ok) return null;
+    const mime = (res.headers.get("content-type") || "").split(";")[0].trim();
+    if (!mime.startsWith("image/") || mime === "image/svg+xml") return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 3000 || buf.length > 5 * 1024 * 1024) return null; // tracker / oversized
+    return { base64: buf.toString("base64"), mime };
+  } catch {
+    return null;
+  }
+}
+
+// Download every http(s) image referenced in the email's Markdown and return
+// them as inline attachments ({name, base64, mime}). Remote ![](url) references
+// are replaced with lightweight ［图片：alt］ placeholders so the rendered email
+// never re-fetches remote (tracking) URLs and reads the same offline.
+async function downloadEmailImages(markdown) {
+  const IMG_RE = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+?)(?:\s+"[^"]*")?\)/g;
+  const urls = [...new Set([...markdown.matchAll(IMG_RE)].map((m) => m[2]))];
+  if (urls.length === 0) return { markdown, images: [] };
+
+  const MAX = 15;
+  const fetched = await Promise.all(urls.slice(0, MAX).map(fetchOneImage));
+
+  const images = [];
+  for (const f of fetched) {
+    if (!f) continue;
+    const ext = f.mime === "image/png" ? ".png" : f.mime === "image/gif" ? ".gif"
+      : f.mime === "image/webp" ? ".webp" : ".jpg";
+    const name = `image_${String(images.length + 1).padStart(2, "0")}${ext}`;
+    images.push({ name, base64: f.base64, mime: f.mime });
+  }
+
+  const md = markdown.replace(IMG_RE, (_whole, alt) => {
+    const a = (alt || "").trim();
+    return a && a.length <= 60 ? `［图片：${a}］` : "［图片］";
+  });
+  return { markdown: md, images };
+}
+
 function parseHtml(req, res) {
   if (!hasPandoc) {
     sendJson(res, 501, { error: "pandoc_unavailable" });
@@ -442,7 +494,11 @@ function parseHtml(req, res) {
           .replace(/\n{3,}/g, "\n\n")
           .replace(/\\\s*$/, "")                          // trailing hard break
           .trim();
-        sendJson(res, 200, { markdown });
+        // Auto-download images linked in the email HTML so they display offline
+        // and the browser never re-fetches remote/tracking URLs.
+        downloadEmailImages(markdown)
+          .then(({ markdown: md, images }) => sendJson(res, 200, { markdown: md, images }))
+          .catch(() => sendJson(res, 200, { markdown, images: [] }));
       }).stdin.end(cleaned);
     } catch (e) {
       sendJson(res, 400, { error: e.message });

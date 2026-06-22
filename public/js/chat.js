@@ -2090,6 +2090,11 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     if (file.images && file.images.length > 0) {
       assistantPreview.images = file.images.map((img) => img.base64);
     }
+    // Display-only thumbnails (e.g. images downloaded from email HTML): shown in
+    // the bubble but kept out of `images` so they never enter the model context.
+    if (file.displayThumbnails && file.displayThumbnails.length > 0) {
+      assistantPreview.generatedThumbnails = file.displayThumbnails;
+    }
     tab.messages.push(assistantPreview);
 
     // Show prompt as a user message bubble after the file preview
@@ -2781,7 +2786,9 @@ export function renderChat() {
     // Skip old-style translation messages (backward compat)
     if (message.isTranslation) return;
 
-    const genImages = message.generatedImages || (message.isFilePreview && message.images?.length
+    // For file previews, prefer display-only thumbnails (which already bundle any
+    // inline images as previews); otherwise derive the grid from `images`.
+    const genImages = message.generatedImages || (message.isFilePreview && !message.generatedThumbnails?.length && message.images?.length
       ? message.images.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
       : undefined);
     const previews = message.previewImages || (message.previewImage ? [message.previewImage] : undefined);

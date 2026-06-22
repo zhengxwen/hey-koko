@@ -1522,6 +1522,7 @@ async function parseAndSendFile(content, fileInfo) {
     let text = "";
     let images = [];
     let tool = "";
+    let displayThumbnails = null;
 
     if (ext === ".eml") {
       // EML: parse locally, optionally convert HTML body via Pandoc
@@ -1541,6 +1542,14 @@ async function parseAndSendFile(content, fileInfo) {
           if (response.ok) {
             const data = await response.json();
             text = result.headers + "\n---\n\n" + data.markdown;
+            // Images linked in the email HTML are downloaded server-side and
+            // shown as display-only thumbnails (NOT sent to the model). Inline
+            // (cid:) attachments stay in `images` so vision still sees them.
+            if (data.images && data.images.length) {
+              const cidUrls = images.map((img) => `data:${img.mime || "image/png"};base64,${img.base64}`);
+              const htmlUrls = data.images.map((img) => `data:${img.mime || "image/jpeg"};base64,${img.base64}`);
+              displayThumbnails = await Promise.all([...cidUrls, ...htmlUrls].map(makePreview));
+            }
             tool = "eml+pandoc";
           } else {
             text = result.text;
@@ -1593,7 +1602,7 @@ async function parseAndSendFile(content, fileInfo) {
     }
 
     pending.remove();
-    const parsedFile = { name, text, images, tool };
+    const parsedFile = { name, text, images, tool, displayThumbnails };
     sendMessage(content, null, undefined, parsedFile);
   } catch (e) {
     pending.remove();
