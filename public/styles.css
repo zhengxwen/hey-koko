@@ -2346,6 +2346,15 @@ button.secondary:disabled {
   50% { opacity: 0.6; }
 }
 
+/* Error state: red, no pulse (it's done, not in progress), wraps long reasons. */
+.sendStatus.isError {
+  background: #e74c3c;
+  white-space: normal;
+  max-width: min(360px, 70vw);
+  line-height: 1.3;
+  animation: sendStatusIn 0.18s ease-out;
+}
+
 .composer.isLocked .quickPromptBtn,
 .composer.isLocked .askSuggestBtn,
 .composer.isLocked .uploadButton {

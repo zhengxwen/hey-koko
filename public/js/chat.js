@@ -23,7 +23,7 @@ import { TOOL_SCHEMAS, executeTool, getToolLabel } from './tools.js';
 // pill covers the gap between clicking send and the response starting — it's dropped
 // the moment the response begins streaming (sendSucceeded), NOT when the reply finishes.
 let _sendStatusTimer = null;
-let _sendStatusKind = null; // 'sending' | 'stopping' | null
+let _sendStatusKind = null; // 'sending' | 'stopping' | 'error' | null
 function scheduleStatus(kind, key) {
   clearTimeout(_sendStatusTimer);
   _sendStatusKind = kind;
@@ -31,13 +31,51 @@ function scheduleStatus(kind, key) {
   if (!el) return;
   // Show the pill IMMEDIATELY (no 2s delay) so send/resend/edit get instant feedback;
   // the CSS fades+pulses it in. It's still dropped on first response chunk (fast case).
+  // Starting a new request also clears any lingering red error pill.
+  el.classList.remove('isError');
   el.textContent = t(key);
   el.hidden = false;
 }
 function clearSendStatus() {
+  // A red error pill is sticky — keep it (it auto-dismisses, or a new send clears it),
+  // so the finally's setGenerating(false) doesn't wipe the error before it's read.
+  if (_sendStatusKind === 'error') return;
   clearTimeout(_sendStatusTimer);
   _sendStatusKind = null;
-  if (dom.sendStatus) dom.sendStatus.hidden = true;
+  if (dom.sendStatus) { dom.sendStatus.hidden = true; dom.sendStatus.classList.remove('isError'); }
+}
+// Backends often wrap the real error in nested JSON, e.g.
+//   {"error":"{\"error\":{\"code\":400,\"message\":\"...too many tokens...\"}}"}
+// Peel it down to the human-readable message so bubbles/pills don't show raw JSON.
+export function cleanErrorMessage(raw) {
+  let s = (raw == null ? "" : String(raw)).trim();
+  for (let i = 0; i < 6 && (s.startsWith("{") || s.startsWith("[")); i++) {
+    let obj;
+    try { obj = JSON.parse(s); } catch { break; }
+    const next = (obj && (obj.error?.message ?? obj.message ?? obj.error)) ?? null;
+    if (next == null) break;
+    s = (typeof next === "object" ? JSON.stringify(next) : String(next)).trim();
+  }
+  return s;
+}
+
+// Turn the status pill RED and show the error reason (paired with "正在发送/接收中…").
+// Sticky (survives setGenerating(false)); auto-dismisses after a while. Exported so
+// dependency-injected modules (url-fetch.js) can surface their errors the same way.
+export function showSendError(msg) {
+  clearTimeout(_sendStatusTimer);
+  _sendStatusKind = 'error';
+  const el = dom.sendStatus;
+  if (!el) return;
+  el.textContent = `⚠️ ${(cleanErrorMessage(msg) || t('status_error')).replace(/\s+/g, ' ').trim().slice(0, 200)}`;
+  el.classList.add('isError');
+  el.hidden = false;
+  _sendStatusTimer = setTimeout(() => {
+    if (_sendStatusKind !== 'error') return;
+    _sendStatusKind = null;
+    el.hidden = true;
+    el.classList.remove('isError');
+  }, 15000);
 }
 // The response started coming back → "send" succeeded → drop the Sending pill.
 // Leaves a Stopping pill alone (the user is mid-cancel).
@@ -319,7 +357,7 @@ export async function imagineFromContent(index) {
       body: JSON.stringify({ model: dom.modelSelect.value, content: message.content, language: dom.promptLanguageSelect?.value || "en" }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Request failed");
+    if (!res.ok) throw new Error(cleanErrorMessage(data.error) || "Request failed");
 
     let prompts = data.prompts || "";
     const lines = prompts.split("\n")
@@ -428,7 +466,7 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
 
     if (!response.ok) {
       const data = await response.json();
-      throw new Error(data.error || "请求失败");
+      throw new Error(cleanErrorMessage(data.error) || "请求失败");
     }
 
     const reader = response.body.getReader();
@@ -513,6 +551,7 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
       else tab.messages.push(errMsg);
       saveChat();
       if (state.activeTabId === tabId) renderChat();
+      showSendError(error.message);
     }
   } finally {
     state.streamingInfo = null;
@@ -624,6 +663,7 @@ async function handleTitleCommand(tab, tabId, content) {
       } catch (e) {
         if (e.name !== "AbortError") {
           finalTitle = tab.title; // Keep original on error
+          showSendError(e.message);
         }
       } finally {
         state.streamingInfo = null;
@@ -788,7 +828,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
 
     if (!response.ok) {
       const data = await response.json();
-      throw new Error(data.error || "请求失败");
+      throw new Error(cleanErrorMessage(data.error) || "请求失败");
     }
 
     const reader = response.body.getReader();
@@ -934,6 +974,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
         bubble.className = "message system";
         bubble.textContent = `${error.message}`;
       }
+      showSendError(error.message);
     }
     setAvatarState("idle");
   } finally {
@@ -998,7 +1039,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
 
     if (!response.ok) {
       const data = await response.json();
-      throw new Error(data.error || "请求失败");
+      throw new Error(cleanErrorMessage(data.error) || "请求失败");
     }
 
     const reader = response.body.getReader();
@@ -1159,6 +1200,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
         bubble.className = "message system";
         bubble.textContent = `${error.message}\n\n提示：先打开 Ollama，并下载模型，例如：ollama pull qwen2.5:7b`;
       }
+      showSendError(error.message);
     }
     setAvatarState("idle");
   } finally {
@@ -1216,7 +1258,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
     });
     if (!response.ok) {
       const d = await response.json();
-      throw new Error(d.error || "请求失败");
+      throw new Error(cleanErrorMessage(d.error) || "请求失败");
     }
 
     const reader = response.body.getReader();
@@ -1369,7 +1411,7 @@ async function handleSearchCommand(raw, tab, tabId, fullContent, insertIndex = -
     });
     const data = await res.json();
 
-    if (data.error === "captcha") { finish(`⚠️ ${t("search_captcha")}`); return; }
+    if (data.error === "captcha") { showSendError(t("search_captcha")); finish(`⚠️ ${t("search_captcha")}`); return; }
     if (!res.ok || !data.results || data.results.length === 0) { finish(`⚠️ ${t("search_noResults")}`); return; }
 
     if (pending) pending.remove();
@@ -1407,7 +1449,9 @@ async function handleSearchCommand(raw, tab, tabId, fullContent, insertIndex = -
       setGenerating(false);
       state.currentAbortController = null;
     } else {
-      finish(`⚠️ ${t("search_failed", { error: error.message })}`);
+      const m = t("search_failed", { error: error.message });
+      showSendError(m);
+      finish(`⚠️ ${m}`);
     }
   }
 }
@@ -1469,7 +1513,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
           timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
         }),
       });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.error || "请求失败"); }
+      if (!res.ok) { const d = await res.json(); throw new Error(cleanErrorMessage(d.error) || "请求失败"); }
       const msg = (await res.json()).message || {};
       if (msg.thinking) thinkingContent += (thinkingContent ? "\n\n" : "") + msg.thinking;
       const toolCalls = msg.tool_calls || [];
@@ -1509,6 +1553,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
       else tab.messages.push(errReply);
       saveChat();
       if (state.activeTabId === tabId) renderChat();
+      showSendError(error.message);
     }
     setAvatarState("idle");
     setGenerating(false);
@@ -1736,7 +1781,7 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
     });
     if (!response.ok) {
       const d = await response.json().catch(() => ({}));
-      throw new Error(d.error || "请求失败");
+      throw new Error(cleanErrorMessage(d.error) || "请求失败");
     }
 
     // 3. Stream the answer into the bubble.
@@ -1796,6 +1841,7 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
       place({ role: "assistant", content: `⚠️ ${error.message}`, timestamp: Date.now() });
       saveChat();
       if (state.activeTabId === tabId) renderChat();
+      showSendError(error.message);
     }
   } finally {
     setGenerating(false);

@@ -12,11 +12,18 @@ const CHUNK_CHAR_LIMIT = 3000; // Split transcripts longer than this
 let _setGenerating = null;
 let _renderChat = null;
 let _regenerateReply = null;
+let _showSendError = null;
 
-export function setDeps({ setGenerating, renderChat, regenerateReply }) {
+export function setDeps({ setGenerating, renderChat, regenerateReply, showSendError }) {
   _setGenerating = setGenerating;
   _renderChat = renderChat;
   _regenerateReply = regenerateReply;
+  _showSendError = showSendError;
+}
+
+// Surface a /url failure as the red status pill (best-effort; dep may be unset).
+function urlError(reason) {
+  if (_showSendError) _showSendError(reason);
 }
 
 // On resend, a /url command regenerates in place: every message it produces is
@@ -117,6 +124,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
 
     if (!res.ok || data.type === "error") {
       placeMsg(tab, { role: "assistant", content: `⚠️ ${data.error || data.content || "获取失败"}`, timestamp: Date.now() }, cursor);
+      urlError(data.error || data.content || "获取失败");
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
       setAvatarState("idle");
@@ -126,6 +134,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
 
     if (data.type === "unsupported") {
       placeMsg(tab, { role: "assistant", content: `⚠️ ${data.content}`, timestamp: Date.now() }, cursor);
+      urlError(data.content);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
       setAvatarState("idle");
@@ -210,6 +219,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
       // User cancelled
     } else {
       placeMsg(tab, { role: "assistant", content: `⚠️ 获取失败：${error.message}`, timestamp: Date.now() }, cursor);
+      urlError(`获取失败：${error.message}`);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
@@ -389,6 +399,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
     } else {
       if (pending) pending.remove();
       placeMsg(tab, { role: "assistant", content: `⚠️ 字幕整理失败：${error.message}`, timestamp: Date.now() }, cursor);
+      urlError(`字幕整理失败：${error.message}`);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
@@ -474,6 +485,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
           if (pending) pending.remove();
           pending = null;
           placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${errMsg}`, timestamp: Date.now() }, cursor);
+          urlError(`语音识别失败：${errMsg}`);
           saveChat();
           if (state.activeTabId === tabId && _renderChat) _renderChat();
         }
@@ -489,6 +501,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
           if (pending) pending.remove();
           pending = null;
           placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${msg.message || msg.error}`, timestamp: Date.now() }, cursor);
+          urlError(`语音识别失败：${msg.message || msg.error}`);
           saveChat();
           if (state.activeTabId === tabId && _renderChat) _renderChat();
         }
@@ -512,6 +525,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
       await formatTranscriptChunked(title, transcriptText, tab, tabId, "whisper", cursor);
     } else {
       placeMsg(tab, { role: "assistant", content: "⚠️ 语音识别未返回内容", timestamp: Date.now() }, cursor);
+      urlError("语音识别未返回内容");
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
       setAvatarState("idle");
@@ -522,6 +536,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
     if (pending) pending.remove();
     if (error.name !== "AbortError") {
       placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${error.message}`, timestamp: Date.now() }, cursor);
+      urlError(`语音识别失败：${error.message}`);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }

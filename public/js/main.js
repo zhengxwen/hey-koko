@@ -12,7 +12,7 @@ import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedMode
 import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
-import { renderChat, sendMessage, setGenerating, regenerateReply, generateProactiveReply, markStopping } from './chat.js';
+import { renderChat, sendMessage, setGenerating, regenerateReply, generateProactiveReply, markStopping, showSendError } from './chat.js';
 import { setDeps as urlFetchSetDeps } from './url-fetch.js';
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
 import { initLightbox } from './lightbox.js';
@@ -28,7 +28,7 @@ tabsSetRenderChat(renderChat);
 translateSetRenderChat(renderChat);
 imageGenSetDeps({ setGenerating, renderChat });
 voiceGenSetDeps({ setGenerating, renderChat });
-urlFetchSetDeps({ setGenerating, renderChat, regenerateReply });
+urlFetchSetDeps({ setGenerating, renderChat, regenerateReply, showSendError });
 
 // Initialize mermaid
 if (typeof mermaid !== "undefined") {
