@@ -703,7 +703,7 @@ dom.stopTranslateBtn.addEventListener("click", stopTranslation);
     const items = quickPromptPopup.querySelectorAll(".quickPromptItem");
     const active = items[quickPromptActiveIndex];
     if (!active) { quickPromptPopup.hidden = true; return; }
-    const prompt = active.dataset.prompt;
+    const prompt = active.dataset.prompt + " ";
     const input = dom.messageInput;
     const start = input.selectionStart;
     const end = input.selectionEnd;
