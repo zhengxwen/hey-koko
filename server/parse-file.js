@@ -443,20 +443,27 @@ async function downloadEmailImages(markdown) {
   if (urls.length === 0) return { markdown, images: [] };
 
   const MAX = 15;
-  const fetched = await Promise.all(urls.slice(0, MAX).map(fetchOneImage));
+  const targets = urls.slice(0, MAX);
+  const fetched = await Promise.all(targets.map(fetchOneImage));
 
   const images = [];
-  for (const f of fetched) {
+  const nameByUrl = new Map();
+  for (let i = 0; i < targets.length; i++) {
+    const f = fetched[i];
     if (!f) continue;
     const ext = f.mime === "image/png" ? ".png" : f.mime === "image/gif" ? ".gif"
       : f.mime === "image/webp" ? ".webp" : ".jpg";
     const name = `image_${String(images.length + 1).padStart(2, "0")}${ext}`;
     images.push({ name, base64: f.base64, mime: f.mime });
+    nameByUrl.set(targets[i], name);
   }
 
-  const md = markdown.replace(IMG_RE, (_whole, alt) => {
-    const a = (alt || "").trim();
-    return a && a.length <= 60 ? `［图片：${a}］` : "［图片］";
+  // Rewrite each remote ![](url) to reference its downloaded filename. Images
+  // that couldn't be fetched collapse to a lightweight placeholder so the
+  // rendered email never re-requests a remote (tracking) URL.
+  const md = markdown.replace(IMG_RE, (_whole, alt, url) => {
+    const name = nameByUrl.get(url);
+    return name ? `![${alt || ""}](${name})` : "［图片］";
   });
   return { markdown: md, images };
 }
