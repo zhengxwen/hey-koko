@@ -84,14 +84,12 @@ export function parseImagineCommands(input) {
 }
 
 function parseImagineCommand(input) {
-  const match = input.match(/^\/imagine\s+(.+)$/s);
+  // Allow a bare "/imagine" (no prompt) — attachment-driven gen (video edit /
+  // img2img). The caller requires an attachment when the prompt is empty.
+  const match = input.match(/^\/imagine(?:\s+([\s\S]+))?$/);
   if (!match) return null;
 
-  if (!match[1].trim()) {
-    return { error: "缺少提示词。用法：/imagine <提示词>" };
-  }
-
-  let rest = match[1].trim();
+  let rest = (match[1] || "").trim();
   const result = { prompt: "", count: 1, options: {}, negativePrompt: "", enhance: false };
 
   const batchMatch = rest.match(/^(\d+)x\s+(.+)$/s);
@@ -183,11 +181,9 @@ function parseImagineCommand(input) {
   }
 
   result.prompt = rest.trim();
-
-  if (!result.prompt) {
-    return { error: "缺少提示词。请在参数后面添加图片描述，如：/imagine --landscape 一片星空" };
-  }
-
+  // Empty prompt is allowed (no error) — gen is attachment-driven for video-edit
+  // / img2img. sendMessage requires an attachment when the prompt is empty.
+  result.emptyPrompt = !result.prompt;
   return result;
 }
 
@@ -337,6 +333,21 @@ function interruptComfy(comfyHost) {
 //   - text "progress" messages → onProgress(value, max) (KSampler step counter)
 //   - binary messages → a preview frame: 8-byte header (uint32 event=1, uint32
 //     format 1=JPEG/2=PNG) then the image bytes → onPreview(objectUrl)
+// Upload a source video (Bernini/Animate) to ComfyUI via the server proxy as RAW
+// binary, so the generation request body stays tiny (vs a 30MB+ base64 in JSON
+// that freezes the tab). Returns the ComfyUI filename. The data-URL→Blob decode is
+// browser-native, off the hot path.
+async function uploadComfySourceVideo(video, signal, targetFps) {
+  const mime = video.mime || "video/mp4";
+  const blob = await (await fetch(`data:${mime};base64,${video.base64}`)).blob();
+  const headers = { "Content-Type": mime };
+  if (targetFps > 0) headers["X-Target-Fps"] = String(targetFps); // resample to a custom fps
+  const r = await fetch("/api/comfy-upload-video", { method: "POST", headers, body: blob, signal });
+  if (!r.ok) throw new Error(`source video upload failed (${r.status})`);
+  const d = await r.json();
+  return { name: d.name, frames: d.frames || 0, fps: d.fps || 0 }; // post-(resample) frame count + fps
+}
+
 function subscribeComfyProgress(comfyHost, clientId, { onProgress, onPreview }) {
   if (!comfyHost) return () => {};
   let ws;
@@ -402,6 +413,24 @@ async function readOllamaImageStream(r, onProgress) {
 
 // ComfyUI video generation (WAN ti2v): text→video, or image→video when a
 // reference image is attached. Single output, rendered as a <video>.
+// Wan Animate can only generate up to ~`cap` frames in one pass. For a longer
+// source, tile it into back-to-back chunks (each a 4n+1 length ≤ cap); the server
+// seeks into the pose video per chunk (video_frame_offset) and we merge the chunk
+// videos afterwards. ≤4 trailing source frames may be dropped (negligible).
+const ANIMATE_FRAME_CAP = 241;
+function computeAnimateSegments(frames, cap = ANIMATE_FRAME_CAP) {
+  const segs = [];
+  let off = 0;
+  while (off < frames) {
+    let len = Math.min(cap, frames - off);
+    len = Math.max(5, Math.floor((len - 1) / 4) * 4 + 1); // 4n+1, ≤ remaining
+    segs.push({ offset: off, length: len });
+    off += len;
+    if (frames - off < 5) break; // a <5-frame tail can't form a chunk — drop it
+  }
+  return segs;
+}
+
 export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null) {
   const tab = getTab(tabId);
   if (!tab) return;
@@ -446,6 +475,34 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // state.pendingGen so it survives a tab switch (see pending-gen.js).
   const firstStatus = parsed.enhance ? t("msg_enhancing") : t("msg_generatingVideo");
   pendingGenStart({ tabId, kind: "video", label: `${firstStatus}${vidSuffix}`, insertIndex });
+  // Let the browser PAINT the just-mounted bubble before the heavy synchronous
+  // work would otherwise block the main thread → the bubble appears to never show.
+  await new Promise((r) => setTimeout(r, 0));
+
+  // Source video (Bernini v2v/rv2v, Wan Animate) → upload ONCE as raw binary so the
+  // generation request body stays tiny. On failure, fall back to inline base64.
+  let sourceVideoName = null;
+  let sourceVideoFrames = 0;
+  let sourceVideoFps = 0;
+  if (sourceVideo?.base64) {
+    pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix}`);
+    try {
+      // A custom ⚙ fps resamples the source so the output timing is correct;
+      // "auto" (no fps) keeps the source's own fps.
+      const up = await uploadComfySourceVideo(sourceVideo, abortController.signal, reqOptions.fps);
+      sourceVideoName = up.name;
+      sourceVideoFrames = up.frames;
+      sourceVideoFps = up.fps;
+    } catch (e) {
+      if (e.name === "AbortError") {
+        pendingGenClear(tabId); setAvatarState("idle");
+        if (_setGenerating) _setGenerating(false);
+        state.imageGenAbortController = null;
+        return;
+      }
+      /* non-fatal: fall back to sending the base64 inline below */
+    }
+  }
 
   // Enhance the prompt for the video model (motion / camera oriented) when asked.
   let videoPrompt = parsed.prompt;
@@ -528,6 +585,18 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       const flf = nUsed === 2 ? t("msg_videoFlfSuffix", null, plang) : "";
       capNote = t("msg_videoImagesCapped", { used: nUsed, total: nInput, flf }, plang) + "\n\n";
     }
+    // Wan Animate long source: generated in N chunks and merged into one clip.
+    if (lastData.segments > 1) {
+      capNote += t("msg_videoMerged", { n: lastData.segments }, plang) + "\n\n";
+    }
+    // Wan Animate: source clip longer than the single-pass cap → was truncated.
+    if (lastData.truncatedFrom && lastData.length) {
+      const fps = lastData.fps || 16;
+      capNote += t("msg_videoTruncated", {
+        full: lastData.truncatedFrom, used: lastData.length,
+        fullS: (lastData.truncatedFrom / fps).toFixed(1), usedS: (lastData.length / fps).toFixed(1),
+      }, plang) + "\n\n";
+    }
     const videoContent = (promptWasEnhanced
       ? `**${t("msg_enhancedPrompt")}**\n> ${videoPrompt}\n\n${capNote}${doneLine}`
       : `${capNote}${doneLine}`);
@@ -553,53 +622,116 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     if (state.activeTabId === tabId && _renderChat) _renderChat();
   };
 
+  // Surface a fatal "nothing generated" error in the bubble and bail.
+  const failFatal = (errText) => {
+    pendingGenClear(tabId);
+    const errMsg = { role: "assistant", content: `视频生成失败：${errText || "未返回视频"}`, timestamp: Date.now() };
+    if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errMsg);
+    else tab.messages.push(errMsg);
+    saveChat();
+    if (state.activeTabId === tabId && _renderChat) _renderChat();
+    setAvatarState("idle");
+  };
+
+  // One /api/generate-comfy request. `extra` carries per-segment offset/length for
+  // a chunked Wan Animate render; ignored otherwise.
+  const requestVideo = (perOptions, extra) => fetch("/api/generate-comfy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: abortController.signal,
+    body: JSON.stringify({
+      model,
+      prompt: videoPrompt,
+      negative_prompt: comfyNegative(parsed.negativePrompt),
+      options: perOptions,
+      images: refImages || undefined,
+      // Bernini/Animate source clip — prefer the pre-uploaded filename (tiny); only
+      // fall back to inline base64 if that upload failed. Plus its size (for
+      // source-aspect output sizing). Ignored by other video models.
+      sourceVideoName: sourceVideoName || undefined,
+      sourceVideo: sourceVideoName ? undefined : (sourceVideo?.base64 || undefined),
+      sourceVideoMime: sourceVideo?.mime || undefined,
+      sourceVideoWidth: sourceVideo?.width || undefined,
+      sourceVideoHeight: sourceVideo?.height || undefined,
+      sourceVideoFrames: sourceVideoFrames || undefined, // Wan Animate full-length
+      sourceVideoFps: sourceVideoFps || undefined,       // output fps = source (or resampled) fps
+      // Bernini i2v: reference image's natural size → source-aspect output.
+      refImageWidth: refImageDims?.w || undefined,
+      refImageHeight: refImageDims?.h || undefined,
+      timeout: 600, // video is slow
+      clientId,
+      ...(extra || {}),
+    }),
+  });
+
+  // Wan Animate: a source longer than the single-pass cap is generated in segments
+  // and merged — unless the user pinned a ⚙ length (forces one bounded pass).
+  const canChunk = /animate/i.test(model) && !!sourceVideoName && sourceVideoFrames > ANIMATE_FRAME_CAP && !reqOptions.length;
+  const segments = canChunk ? computeAnimateSegments(sourceVideoFrames) : null;
+
   try {
     for (let i = 0; i < count; i++) {
       if (abortController.signal.aborted) break;
-      if (count > 1) pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
       pendingGenSetProgress(tabId, 0, 1); // reset the bar for each render
       // Vary the seed per video so the N outputs differ (only when the user
       // pinned a --seed; otherwise the server randomizes each call already).
       const perOptions = { ...reqOptions };
       if (perOptions.seed !== undefined) perOptions.seed = reqOptions.seed + i;
-      const resp = await fetch("/api/generate-comfy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: abortController.signal,
-        body: JSON.stringify({
-          model,
-          prompt: videoPrompt,
-          negative_prompt: comfyNegative(parsed.negativePrompt),
-          options: perOptions,
-          images: refImages || undefined,
-          // Bernini video-edit source clip (base64) + its size (for source-aspect
-          // output sizing). Ignored by other video models.
-          sourceVideo: sourceVideo?.base64 || undefined,
-          sourceVideoMime: sourceVideo?.mime || undefined,
-          sourceVideoWidth: sourceVideo?.width || undefined,
-          sourceVideoHeight: sourceVideo?.height || undefined,
-          // Bernini i2v: reference image's natural size → source-aspect output.
-          refImageWidth: refImageDims?.w || undefined,
-          refImageHeight: refImageDims?.h || undefined,
-          timeout: 600, // video is slow
-          clientId,
-        }),
-      });
-      const data = await resp.json();
-      if (!resp.ok || !data.videos || !data.videos.length) {
-        // First render failed → surface the error. A later one failing → keep
-        // the videos we have and stop.
-        if (!allVideos.length) {
-          pendingGenClear(tabId);
-          const errMsg = { role: "assistant", content: `视频生成失败：${data.error || "未返回视频"}`, timestamp: Date.now() };
-          if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errMsg);
-          else tab.messages.push(errMsg);
-          saveChat();
-          if (state.activeTabId === tabId && _renderChat) _renderChat();
-          setAvatarState("idle");
-          return;
+
+      let data;
+      if (segments) {
+        // All segments of one clip must share a seed, or the server randomizes each
+        // call and the character/lighting drifts between segments.
+        if (perOptions.seed === undefined) perOptions.seed = Math.floor(Math.random() * 2147483647);
+        // Chunked long render: one request per segment (telling the user which
+        // segment is in progress), then ffmpeg-merge them into a single clip.
+        const segVideos = [];
+        let segData = null;
+        for (let s = 0; s < segments.length; s++) {
+          if (abortController.signal.aborted) break;
+          pendingGenSetLabel(tabId, `${t("msg_generatingSegment", { seg: s + 1, total: segments.length })}${vidSuffix}`);
+          pendingGenSetProgress(tabId, 0, 1);
+          const resp = await requestVideo(perOptions, { segmentOffset: segments[s].offset, segmentLength: segments[s].length });
+          const d = await resp.json();
+          if (!resp.ok || !d.videos || !d.videos.length) {
+            if (!segVideos.length && !allVideos.length) { failFatal(d.error); return; }
+            break; // a later segment failed → merge the ones we got
+          }
+          segData = d;
+          segVideos.push(d.videos[0]);
         }
-        break;
+        if (!segVideos.length) break;
+        // Merge the segments (single segment → no merge needed).
+        let merged = segVideos[0];
+        if (segVideos.length > 1) {
+          pendingGenSetLabel(tabId, `${t("msg_mergingSegments", { total: segVideos.length })}${vidSuffix}`);
+          const mResp = await fetch("/api/comfy-merge-videos", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: abortController.signal,
+            body: JSON.stringify({ videos: segVideos, mime: segData.videoMime || "video/mp4" }),
+          });
+          const mData = await mResp.json();
+          if (!mResp.ok || !mData.video) {
+            if (!allVideos.length) { failFatal(mData.error || "视频片段合并失败"); return; }
+            break;
+          }
+          merged = mData.video;
+        }
+        // Synthesize a result describing the full merged clip (total frames at the
+        // source fps → correct duration in the done message).
+        const usedFrames = segments.slice(0, segVideos.length).reduce((a, sg) => a + sg.length, 0);
+        data = { videos: [merged], videoMime: segData.videoMime, model: segData.model, width: segData.width, height: segData.height, fps: segData.fps, length: usedFrames, imagesUsed: segData.imagesUsed, segments: segVideos.length };
+      } else {
+        if (count > 1) pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
+        const resp = await requestVideo(perOptions);
+        data = await resp.json();
+        if (!resp.ok || !data.videos || !data.videos.length) {
+          // First render failed → surface the error. A later one failing → keep
+          // the videos we have and stop.
+          if (!allVideos.length) { failFatal(data.error); return; }
+          break;
+        }
       }
       lastData = data;
       const vmime = data.videoMime || "video/mp4";

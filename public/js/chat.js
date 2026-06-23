@@ -301,13 +301,19 @@ function resendChatMessage(index) {
   const imagineCmds = parseImagineCommands(message.content);
   if (imagineCmds) {
     const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
+    const srcVid = messageSourceVideo(message);
+    const hasAttach = !!((message.images && message.images.length) || srcVid);
+    const validCmds = imagineCmds.filter((cmd) => cmd && !cmd.error && (cmd.prompt || hasAttach));
     if (firstError) {
       tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_commandError", { error: firstError.error }), timestamp: Date.now() });
       saveChat();
       renderChat();
+    } else if (validCmds.length === 0) {
+      tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_commandError", { error: "缺少提示词，或附带一张图片 / 一段视频再发送。" }), timestamp: Date.now() });
+      saveChat();
+      renderChat();
     } else {
-      const validCmds = imagineCmds.filter((cmd) => cmd && cmd.prompt);
-      generateImage(validCmds, state.activeTabId, index + 1, message.images || null, messageSourceVideo(message));
+      generateImage(validCmds, state.activeTabId, index + 1, message.images || null, srcVid);
     }
   } else {
     // Truncate context to the resent bubble: only messages up to and including
@@ -1999,14 +2005,21 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     }
     tab.messages.push(userMessage);
     const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
+    // A bare "/imagine" (no prompt) is valid only when something is attached
+    // (image or video) — the gen is then attachment-driven (video edit / img2img).
+    const hasAttach = !!(image || video);
+    const validCmds = imagineCmds.filter((cmd) => cmd && !cmd.error && (cmd.prompt || hasAttach));
     if (firstError) {
       tab.messages.push({ role: "assistant", content: t("msg_commandError", { error: firstError.error }), timestamp: Date.now() });
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+    } else if (validCmds.length === 0) {
+      tab.messages.push({ role: "assistant", content: t("msg_commandError", { error: "缺少提示词，或附带一张图片 / 一段视频再发送。" }), timestamp: Date.now() });
       saveChat();
       if (state.activeTabId === tabId) renderChat();
     } else {
       saveChat();
       if (state.activeTabId === tabId) renderChat();
-      const validCmds = imagineCmds.filter((cmd) => cmd && cmd.prompt);
       generateImage(validCmds, tabId, -1, userMessage.images || null, video || null);
     }
     return;

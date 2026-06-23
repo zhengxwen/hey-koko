@@ -15,7 +15,7 @@ const { sendJson, serveStatic, readBody } = require("./server/utils");
 const { proxyOllamaChat, proxyOllamaTags, proxyOllamaShow } = require("./server/chat");
 const { scanOllamaStream, scanComfyStream } = require("./server/network");
 const { proxyOllamaImageModels, generateImage, enhancePrompt, contentToImagePrompts } = require("./server/image");
-const { proxyComfyModels, generateComfyImage } = require("./server/comfy");
+const { proxyComfyModels, generateComfyImage, uploadComfyVideo, mergeComfyVideos } = require("./server/comfy");
 const { fetchUrlContent, transcribeYouTubeAudio } = require("./server/url-fetch");
 const { searchWeb } = require("./server/search");
 const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
@@ -65,6 +65,16 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/generate-comfy") {
     generateComfyImage(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/comfy-upload-video") {
+    uploadComfyVideo(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/comfy-merge-videos") {
+    mergeComfyVideos(req, res);
     return;
   }
 

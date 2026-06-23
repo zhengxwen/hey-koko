@@ -122,6 +122,8 @@ export async function loadComfyModels() {
     const editModels = data.editModels || [];         // instruction-edit models (need a ref image)
     const videoModels = data.videoModels || [];       // text→video / image→video
     state.comfyVideoModels = new Set(videoModels.map((m) => m.name));
+    // Source-video models (bernini / animate): output fps follows the source video.
+    state.comfyVideoInModels = new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name));
     // Qwen-Image-Edit accepts 2-3 reference images (multi-image composition).
     state.comfyMultiImageModels = new Set(editModels.filter((m) => m.type === "qwen").map((m) => m.name));
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
@@ -156,10 +158,20 @@ export async function loadComfyModels() {
         for (const m of editModels) addOption(group, m.name);
         dom.comfyModelSelect.appendChild(group);
       }
-      if (videoModels.length) {
+      // Split video models: text/image→video generators vs. ones that need a
+      // SOURCE VIDEO input (video-edit / pose transfer).
+      const videoGen = videoModels.filter((m) => !m.needsVideo);
+      const videoIn = videoModels.filter((m) => m.needsVideo);
+      if (videoGen.length) {
         const group = document.createElement("optgroup");
         group.label = t("comfy_video_group");
-        for (const m of videoModels) addOption(group, m.name, m.label);
+        for (const m of videoGen) addOption(group, m.name, m.label);
+        dom.comfyModelSelect.appendChild(group);
+      }
+      if (videoIn.length) {
+        const group = document.createElement("optgroup");
+        group.label = t("comfy_video_input_group");
+        for (const m of videoIn) addOption(group, m.name, m.label);
         dom.comfyModelSelect.appendChild(group);
       }
       dom.comfyModelSelect.value = allNames.includes(current) ? current : allNames[0];
@@ -189,6 +201,7 @@ function videoAutoDefaults(modelName) {
 function comfyModelComponents(name) {
   const n = (name || "").toLowerCase();
   // Video
+  if (/animate/.test(n)) return "Wan Animate (pose transfer) · UNETLoader + lightx2v + relight LoRA · ModelSamplingSD3 · LoadVideo→DWPose(pose+face) · WanAnimateToVideo · ~241 frames/segment — a longer source is generated in segments (video_frame_offset) and merged";
   if (/bernini/.test(n)) return "WAN2.2 MoE · UNETLoader ×2 · CLIP umt5(wan) · VAE wan_2.1 · BerniniConditioning · SamplerCustom ×2 · v2v: LoadVideo→GetVideoComponents · turbo: LightX2V distill LoRA";
   if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b"
     ? "WAN2.2 14B MoE · UNETLoader ×2 · CLIP umt5 · VAE wan_2.1 · WanImageToVideo · KSamplerAdvanced ×2 · turbo: LightX2V 4-step LoRA"
@@ -220,8 +233,14 @@ export function updateComfyMultiHint() {
     dom.comfyMultiHint.hidden = !isMulti;
   }
   const auto = (v && state.comfyVideoModels && state.comfyVideoModels.has(v)) ? videoAutoDefaults(v) : null;
-  if (dom.comfyParamFps) dom.comfyParamFps.placeholder = `Auto (${auto ? auto.fps : 24})`;
-  if (dom.comfyParamLength) dom.comfyParamLength.placeholder = `Auto (${auto ? auto.length : 49})`;
+  // Source-video models (bernini / animate): "auto" fps mirrors the source video,
+  // not a fixed preset — make that explicit in the placeholder.
+  const followsSource = !!(v && state.comfyVideoInModels && state.comfyVideoInModels.has(v));
+  if (dom.comfyParamFps) dom.comfyParamFps.placeholder = followsSource ? t("comfy_fps_source") : `Auto (${auto ? auto.fps : 24})`;
+  // Wan Animate "auto" length = the FULL source clip (generated in segments + merged
+  // when it exceeds the single-pass cap); other models use a fixed preset length.
+  const lengthFollowsSource = !!(v && /animate/i.test(v));
+  if (dom.comfyParamLength) dom.comfyParamLength.placeholder = lengthFollowsSource ? t("comfy_length_source") : `Auto (${auto ? auto.length : 49})`;
   if (dom.comfyModelInfo) {
     const comps = comfyModelComponents(v);
     dom.comfyModelInfo.textContent = comps;

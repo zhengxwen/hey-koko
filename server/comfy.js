@@ -1,6 +1,51 @@
 const crypto = require("crypto");
+const { spawn } = require("child_process");
+const os = require("os");
+const path = require("path");
+const fsp = require("fs/promises");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
+
+// Best-effort ffprobe of a video buffer → { frames, fps }. frames = r_frame_rate ×
+// duration; used to let Wan Animate generate the FULL clip at the SOURCE fps (so
+// timing is preserved). Returns { frames: 0, fps: 0 } if ffprobe is absent/fails.
+async function probeVideo(buf) {
+  let tmp;
+  try {
+    tmp = path.join(os.tmpdir(), `hk_probe_${crypto.randomUUID()}.bin`);
+    await fsp.writeFile(tmp, buf);
+    const out = await new Promise((resolve) => {
+      const p = spawn("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate,duration", "-of", "default=noprint_wrappers=1:nokey=1", tmp]);
+      let s = ""; p.stdout.on("data", (d) => (s += d)); p.on("close", () => resolve(s)); p.on("error", () => resolve(""));
+    });
+    const lines = out.trim().split("\n");
+    const [num, den] = (lines[0] || "").split("/").map(Number);
+    const fps = (num && den) ? num / den : (num || 0);
+    const dur = parseFloat(lines[1] || "0");
+    return { frames: (fps > 0 && dur > 0) ? Math.round(fps * dur) : 0, fps: fps || 0 };
+  } catch { return { frames: 0, fps: 0 }; }
+  finally { if (tmp) fsp.unlink(tmp).catch(() => {}); }
+}
+
+// Re-encode a video buffer to a target fps (ffmpeg -r). Used so a custom Animate
+// output fps produces correct timing (the model emits one frame per source frame).
+// Returns the new buffer, or null on failure (caller keeps the original).
+async function resampleVideo(buf, targetFps) {
+  let inP, outP;
+  try {
+    const id = crypto.randomUUID();
+    inP = path.join(os.tmpdir(), `hk_rs_in_${id}.mp4`);
+    outP = path.join(os.tmpdir(), `hk_rs_out_${id}.mp4`);
+    await fsp.writeFile(inP, buf);
+    const ok = await new Promise((resolve) => {
+      const p = spawn("ffmpeg", ["-y", "-i", inP, "-r", String(targetFps), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", outP]);
+      p.on("close", (code) => resolve(code === 0)); p.on("error", () => resolve(false));
+    });
+    if (!ok) return null;
+    return await fsp.readFile(outP);
+  } catch { return null; }
+  finally { for (const f of [inP, outP]) if (f) fsp.unlink(f).catch(() => {}); }
+}
 
 // Read a model-name enum out of a ComfyUI node's input schema (e.g. the list of
 // checkpoints, diffusion models, text encoders or VAEs the server has on disk).
@@ -38,9 +83,10 @@ function editIsCheckpoint(editType) {
 // Video models (text→video / image→video). Detected by filename.
 function videoTypeOf(model) {
   if (!model) return null;
-  // Bernini is a WAN-2.2 video-EDIT model (source video in). Its filename
-  // contains "wan", so check it BEFORE the generic /wan/ branch.
+  // Bernini (video-edit) and Animate (pose-transfer) are WAN-2.2 variants whose
+  // filenames contain "wan" — check them BEFORE the generic /wan/ branch.
   if (/bernini/i.test(model)) return "bernini";
+  if (/animate/i.test(model)) return "animate";
   if (/wan/i.test(model)) return "wan";
   if (/ltx/i.test(model)) return "ltx";
   if (/hunyuan.?video/i.test(model)) return "hunyuan";
@@ -98,9 +144,16 @@ async function proxyComfyModels(res) {
       if (!vt) continue;
       // Bernini = WAN 2.2 MoE video-edit. Collapse its high/low pair into ONE
       // "bernini" entry (v2v / rv2v auto-picked at generation time).
+      // needsVideo: requires a SOURCE VIDEO input (video-edit / pose transfer) —
+      // grouped separately from the text/image→video generators in the UI.
       if (vt === "bernini") {
         if (/low_noise/i.test(n)) continue; // hidden — derived from the high twin
-        if (!addedBernini) { videoModels.push({ name: BERNINI_AUTO, type: "bernini", label: "bernini (i2v / video edit)" }); addedBernini = true; }
+        if (!addedBernini) { videoModels.push({ name: BERNINI_AUTO, type: "bernini", label: "bernini (i2v / video edit)", needsVideo: true }); addedBernini = true; }
+        continue;
+      }
+      // Wan Animate (pose transfer) — single model; give it a clean label.
+      if (vt === "animate") {
+        videoModels.push({ name: n, type: "animate", label: "wan animate (move)", needsVideo: true });
         continue;
       }
       const is14b = /14b/i.test(n);
@@ -1035,6 +1088,86 @@ function buildBernini({ model, prompt, negative, comp, videoName, refImageName, 
   return wf;
 }
 
+// Wan 2.2 Animate (Move/pose-transfer) companions: umt5 + WAN 2.1 VAE + clip_vision_h
+// + the lightx2v I2V distill LoRA + the relight LoRA. All required.
+async function animateCompanions() {
+  const [clips, vaes, loras, cvs] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+    comfyEnum("LoraLoaderModelOnly", "lora_name"),
+    comfyEnum("CLIPVisionLoader", "clip_name"),
+  ]);
+  const find = (list, re) => list.find((x) => re.test(x));
+  const clip = find(clips, /umt5/i);
+  const vae = find(vaes, /wan.?2[._]1.*vae/i) || find(vaes, /wan.*vae/i);
+  const clipVision = find(cvs, /clip_vision_h|clip.?vision.*h\b/i) || find(cvs, /clip.?vision/i);
+  const loraSpeed = find(loras, /lightx2v.*i2v.*14b.*distill|lightx2v_I2V_14B/i);
+  const loraRelight = find(loras, /animate.*relight|relight.*lora/i);
+  const missing = [];
+  if (!clip) missing.push("umt5_xxl_fp8_e4m3fn_scaled.safetensors → text_encoders/");
+  if (!vae) missing.push("wan_2.1_vae.safetensors → vae/");
+  if (!clipVision) missing.push("clip_vision_h.safetensors → clip_vision/");
+  if (!loraSpeed) missing.push("lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors → loras/");
+  if (!loraRelight) missing.push("WanAnimate_relight_lora_fp16.safetensors → loras/");
+  if (missing.length) throw new Error("缺少 Wan Animate 所需文件：\n- " + missing.join("\n- "));
+  return { clip, vae, clipVision, loraSpeed, loraRelight };
+}
+
+// Wan 2.2 Animate — MOVE mode (pose transfer). A reference person image + a source
+// video → the character performs the video's motion. Flattened from the official
+// "Wan2.2 14B Animate" template (Move = no background_video / character_mask),
+// VERIFIED end-to-end. The source frames are scaled to width×height, then DWPose
+// extracts a body+hands pose (pose_video) and a face (face_video) that drive
+// WanAnimateToVideo; the reference image (+ its clip_vision encode) supplies the
+// character. Single pass = up to `length` frames (no video-extend yet). Two LoRAs
+// (lightx2v distill for 6-step turbo + relight); ModelSamplingSD3 shift 8.
+function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, length, seed, fps, videoFrameOffset = 0 }) {
+  const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
+  const dw = (face) => ({
+    class_type: "DWPreprocessor",
+    inputs: {
+      image: ["13", 0], resolution: ["14", 0],
+      detect_hand: face ? "disable" : "enable",
+      detect_body: face ? "disable" : "enable",
+      detect_face: face ? "enable" : "disable",
+      bbox_detector: "yolox_l.onnx",
+      pose_estimator: "dw-ll_ucoco_384_bs5.torchscript.pt",
+      scale_stick_for_xinsr_cn: "disable",
+    },
+  });
+  return {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.loraSpeed, strength_model: 1 } },
+    "3": { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraRelight, strength_model: 1 } },
+    "4": { class_type: "ModelSamplingSD3", inputs: { model: ["3", 0], shift: 8 } },
+    "5": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
+    "6": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "7": { class_type: "CLIPVisionLoader", inputs: { clip_name: comp.clipVision } },
+    "8": { class_type: "CLIPTextEncode", inputs: { clip: ["5", 0], text: prompt } },
+    "9": { class_type: "CLIPTextEncode", inputs: { clip: ["5", 0], text: neg } },
+    "10": { class_type: "LoadImage", inputs: { image: refImageName } },
+    "11": { class_type: "CLIPVisionEncode", inputs: { clip_vision: ["7", 0], image: ["10", 0], crop: "none" } },
+    "12": { class_type: "LoadVideo", inputs: { file: videoName } },
+    "15": { class_type: "GetVideoComponents", inputs: { video: ["12", 0] } },
+    "13": { class_type: "ImageScale", inputs: { image: ["15", 0], upscale_method: "lanczos", width, height, crop: "center" } },
+    "14": { class_type: "PixelPerfectResolution", inputs: { original_image: ["15", 0], image_gen_width: width, image_gen_height: height, resize_mode: "Just Resize" } },
+    "16": dw(true),  // face_video
+    "17": dw(false), // pose_video (body + hands)
+    // video_frame_offset seeks this many frames into the pose/face videos so a long
+    // source can be generated in chunks (each ≤ the single-pass cap), then merged.
+    "18": { class_type: "WanAnimateToVideo", inputs: { positive: ["8", 0], negative: ["9", 0], vae: ["6", 0], clip_vision_output: ["11", 0], reference_image: ["10", 0], face_video: ["16", 0], pose_video: ["17", 0], width, height, length, batch_size: 1, continue_motion_max_frames: 5, video_frame_offset: videoFrameOffset } },
+    "19": { class_type: "KSampler", inputs: { model: ["4", 0], positive: ["18", 0], negative: ["18", 1], latent_image: ["18", 2], seed, steps: 6, cfg: 1, sampler_name: "euler", scheduler: "simple", denoise: 1 } },
+    "20": { class_type: "TrimVideoLatent", inputs: { samples: ["19", 0], trim_amount: ["18", 3] } },
+    "21": { class_type: "VAEDecode", inputs: { samples: ["20", 0], vae: ["6", 0] } },
+    "22": { class_type: "ImageFromBatch", inputs: { image: ["21", 0], batch_index: ["18", 4], length: 4096 } },
+    // Output fps = the SOURCE video's fps (GetVideoComponents.fps) so the timing is
+    // preserved (not forced to 16 → slow-mo). For a custom fps the client resamples
+    // the source on upload, so this still equals the desired rate.
+    "23": { class_type: "CreateVideo", inputs: { images: ["22", 0], audio: ["15", 1], fps: ["15", 2] } },
+    "24": { class_type: "SaveVideo", inputs: { video: ["23", 0], filename_prefix: "heykoko_animate", format: "auto", codec: "auto" } },
+  };
+}
+
 // Parse intrinsic pixel dimensions from a base64 PNG/JPEG without an image lib.
 // Used to match a video's aspect ratio to the i2v conditioning image.
 function imageDims(b64) {
@@ -1114,17 +1247,91 @@ async function uploadImage(b64, signal) {
 // Upload a source video to ComfyUI's input dir (same /upload/image endpoint —
 // it accepts video too). Returns the filename for a LoadVideo node. Used by the
 // Bernini video-edit path.
-async function uploadVideo(b64, signal, mime = "video/mp4") {
-  const clean = typeof b64 === "string" && b64.startsWith("data:") ? b64.split(",")[1] : b64;
-  const buf = Buffer.from(clean, "base64");
-  const ext = /webm/i.test(mime) ? "webm" : /quicktime|mov/i.test(mime) ? "mov" : "mp4";
+async function uploadVideoBuffer(buf, mime, signal) {
+  const m = mime || "video/mp4";
+  const ext = /webm/i.test(m) ? "webm" : /quicktime|mov/i.test(m) ? "mov" : "mp4";
   const form = new FormData();
-  form.append("image", new Blob([buf], { type: mime }), `heykoko_source.${ext}`);
+  form.append("image", new Blob([buf], { type: m }), `heykoko_source.${ext}`);
   form.append("overwrite", "true");
   const r = await fetch(`${config.comfyUrl}/upload/image`, { method: "POST", body: form, signal });
   if (!r.ok) throw new Error(`video upload failed (${r.status})`);
   const data = await r.json();
   return data.subfolder ? `${data.subfolder}/${data.name}` : data.name;
+}
+
+async function uploadVideo(b64, signal, mime = "video/mp4") {
+  const clean = typeof b64 === "string" && b64.startsWith("data:") ? b64.split(",")[1] : b64;
+  return uploadVideoBuffer(Buffer.from(clean, "base64"), mime, signal);
+}
+
+// POST /api/comfy-upload-video — the browser sends the source video as the RAW
+// request body (a Blob, not base64-in-JSON), we forward it to ComfyUI's input dir
+// and return its filename. Keeps the heavy video OFF the generation request body.
+async function uploadComfyVideo(req, res) {
+  try {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    let buf = Buffer.concat(chunks);
+    if (!buf.length) { sendJson(res, 400, { error: "empty video body" }); return; }
+    let mime = req.headers["content-type"] || "video/mp4";
+    // Optional target fps (custom Animate output rate) → resample the source so the
+    // output timing is correct (model emits one frame per source frame).
+    const targetFps = Number(req.headers["x-target-fps"]) || 0;
+    if (targetFps > 0) {
+      const rs = await resampleVideo(buf, targetFps);
+      if (rs) { buf = rs; mime = "video/mp4"; }
+    }
+    const [name, probe] = await Promise.all([
+      uploadVideoBuffer(buf, mime),
+      probeVideo(buf),
+    ]);
+    sendJson(res, 200, { name, frames: probe.frames, fps: probe.fps });
+  } catch (e) {
+    sendJson(res, 500, { error: String((e && e.message) || e) });
+  }
+}
+
+// Concatenate the per-segment videos of a chunked Wan Animate render into one clip
+// (ffmpeg concat demuxer, re-encoded for clean joins; audio kept). The browser drives
+// the chunk loop (so it can show "segment N/M") and POSTs the finished segments here.
+// Body: { videos: [base64…], mime }. Returns { video: base64, videoMime }.
+async function mergeComfyVideos(req, res) {
+  let dir;
+  try {
+    const body = await readBody(req);
+    const vids = Array.isArray(body.videos) ? body.videos : [];
+    if (vids.length < 2) { sendJson(res, 400, { error: "need at least 2 segments to merge" }); return; }
+    const mime = body.mime || "video/mp4";
+    const ext = /webm/i.test(mime) ? "webm" : "mp4";
+    dir = await fsp.mkdtemp(path.join(os.tmpdir(), "hk_merge_"));
+    const files = [];
+    for (let i = 0; i < vids.length; i++) {
+      const b = typeof vids[i] === "string" && vids[i].startsWith("data:") ? vids[i].split(",")[1] : vids[i];
+      const f = path.join(dir, `seg${String(i).padStart(3, "0")}.${ext}`);
+      await fsp.writeFile(f, Buffer.from(b, "base64"));
+      files.push(f);
+    }
+    // concat demuxer list file (single-quoted paths, escaped per ffmpeg's rules).
+    const listFile = path.join(dir, "list.txt");
+    await fsp.writeFile(listFile, files.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join("\n") + "\n");
+    const outFile = path.join(dir, `merged.${ext}`);
+    const args = ["-y", "-f", "concat", "-safe", "0", "-i", listFile];
+    if (ext === "webm") args.push("-c:v", "libvpx-vp9", "-c:a", "libopus");
+    else args.push("-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac");
+    args.push(outFile);
+    const ok = await new Promise((resolve) => {
+      const p = spawn("ffmpeg", args);
+      let err = ""; p.stderr.on("data", (d) => (err += d));
+      p.on("close", (code) => resolve(code === 0)); p.on("error", () => resolve(false));
+    });
+    if (!ok) { sendJson(res, 500, { error: "ffmpeg merge failed (is ffmpeg installed?)" }); return; }
+    const out = await fsp.readFile(outFile);
+    sendJson(res, 200, { video: out.toString("base64"), videoMime: mime });
+  } catch (e) {
+    sendJson(res, 500, { error: String((e && e.message) || e) });
+  } finally {
+    if (dir) fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 // Poll /history until the queued prompt reports outputs (or we time out / abort).
@@ -1150,7 +1357,7 @@ async function generateComfyImage(req, res) {
   let clientGone = false; // set if the client disconnects before we respond
   try {
     const body = await readBody(req);
-    const { prompt, negative_prompt, options, images, sourceVideo, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
+    const { prompt, negative_prompt, options, images, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, segmentOffset, segmentLength, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
     let model = body.model;
 
     if (!model || !prompt) {
@@ -1228,7 +1435,7 @@ async function generateComfyImage(req, res) {
           model = await resolveBerniniAuto();
           if (!model) { sendJson(res, 400, { error: "未找到 Bernini 模型文件（需 wan2.2_bernini_r_high_noise…）。" }); return; }
         }
-        const hasVideo = !!sourceVideo;
+        const hasVideo = !!(sourceVideo || sourceVideoName);
         const hasImage = Array.isArray(images) && images.length > 0;
         // Source video → v2v (+ ref image → rv2v); image only → i2v.
         if (!hasVideo && !hasImage) { sendJson(res, 400, { error: "Bernini 需要一个源视频（视频编辑 v2v）或一张图片（图生视频 i2v），再用 /imagine <描述>。" }); return; }
@@ -1261,12 +1468,51 @@ async function generateComfyImage(req, res) {
         // The reference resolution must track the output size — a fixed large
         // ref_max_size (848) crops the reference into a small output frame.
         const refMax = snapDim(Math.max(bw, bh), 16);
-        const videoName = hasVideo ? await uploadVideo(sourceVideo, controller.signal, sourceVideoMime) : null;
+        // Prefer a pre-uploaded video (multipart /api/comfy-upload-video) → its
+        // ComfyUI filename; else fall back to inline base64.
+        const videoName = sourceVideoName || (sourceVideo ? await uploadVideo(sourceVideo, controller.signal, sourceVideoMime) : null);
         const refImageName = hasImage ? await uploadImage(images[0], controller.signal) : null;
         imagesUsed = refImageName ? 1 : 0;
         workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: bw, height: bh, length: bl, seed, turbo, fps: bfps, refMaxSize: refMax });
         // v2v/rv2v keep the source video's fps; i2v uses bfps (so it can show duration).
         videoDims = { width: bw, height: bh, length: bl, fps: hasVideo ? undefined : bfps };
+      } else if (videoType === "animate") {
+        // Wan Animate MOVE (pose transfer): reference person image + source video
+        // (the motion) → the character does the video's motion. Needs BOTH.
+        if (!sourceVideo && !sourceVideoName) { sendJson(res, 400, { error: "Wan Animate 需要一段动作来源视频（再附一张人物参考图），用 /imagine <场景描述>。" }); return; }
+        if (!(Array.isArray(images) && images.length)) { sendJson(res, 400, { error: "Wan Animate 需要一张人物参考图（再附一段动作来源视频）。" }); return; }
+        const comp = await animateCompanions();
+        // Output follows the SOURCE video's aspect (the pose is scaled to it), at
+        // the preset budget (or --size budget). Both dims must be /16.
+        let aspW = Number(sourceVideoWidth), aspH = Number(sourceVideoHeight);
+        let aw = snapDim(opts.width || 640, 16);
+        let ah = snapDim(opts.height || 640, 16);
+        if (aspW > 0 && aspH > 0) {
+          const aspect = aspW / aspH;
+          const budget = (opts.width && opts.height) ? opts.width * opts.height : 640 * 640;
+          aw = snapDim(Math.sqrt(budget * aspect), 16);
+          ah = snapDim(Math.sqrt(budget / aspect), 16);
+        }
+        // Length. The client may chunk a long source into segments (each ≤ the
+        // single-pass cap) and merge them — then it sends segmentOffset/segmentLength
+        // and we seek into the pose video. Otherwise length = the FULL source clip
+        // (from ffprobe), snapped to 4n+1 and capped. An explicit ⚙ length wins.
+        const srcFrames = Number(sourceVideoFrames) || 0;
+        const segLen = Number(segmentLength) || 0;
+        const vfo = Math.max(0, Number(segmentOffset) || 0);
+        const wantLen = segLen || opts.length || (srcFrames > 0 ? Math.min(srcFrames, 241) : 77);
+        const al = Math.max(5, Math.round((wantLen - 1) / 4) * 4 + 1); // 4n+1
+        // Output fps = the source's fps (or the rate it was resampled to) — wired
+        // at the CreateVideo node; this is just for the done-message duration.
+        const afps = Number(sourceVideoFps) || opts.fps || 16;
+        const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+        const refImageName = await uploadImage(images[0], controller.signal);
+        imagesUsed = 1;
+        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, length: al, seed, fps: afps, videoFrameOffset: vfo });
+        videoDims = { width: aw, height: ah, length: al, fps: afps };
+        // Single-pass only (no chunking): if the source is longer than the frames we
+        // generated, tell the client it was cut. When chunking, the client merges.
+        if (!segLen && srcFrames > al) videoDims.truncatedFrom = srcFrames;
       } else if (videoType) {
         // Video. WAN 5B ti2v + 14B i2v do image→video; WAN 14B t2v / Hunyuan are
         // text→video only. The dedicated WAN 2.2 14B i2v model needs a ref image.
@@ -1437,7 +1683,7 @@ async function generateComfyImage(req, res) {
       const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
       if (videoType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
-        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, truncatedFrom: videoDims?.truncatedFrom, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);
@@ -1462,4 +1708,4 @@ async function generateComfyImage(req, res) {
   }
 }
 
-module.exports = { proxyComfyModels, generateComfyImage };
+module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, mergeComfyVideos };

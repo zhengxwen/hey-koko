@@ -109,6 +109,7 @@ export const state = {
   streamingInfo: null,
   pendingGen: null,                  // in-progress image/video/audio gen: { tabId, label, insertIndex }
   comfyVideoModels: new Set(),       // ComfyUI model names that generate video
+  comfyVideoInModels: new Set(),     // ComfyUI video models that need a SOURCE video (fps follows source)
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
   scrollPin: null,                   // when set (resend/edit in place), auto-scroll holds this scrollTop instead of jumping to the bottom
   _pinClearTimer: null,              // delayed release of scrollPin once generation fully ends

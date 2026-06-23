@@ -1220,10 +1220,10 @@ async function selectFile(file) {
   // Video handling — short clips are attached for display only; they are never
   // sent to the model (no AI analysis), so we just stage the raw bytes.
   if (isVideo) {
-    if (file.size > 30 * 1024 * 1024) {
+    if (file.size > 100 * 1024 * 1024) {
       const msgEl = document.createElement("div");
       msgEl.className = "message system";
-      msgEl.textContent = "视频太大了，请选择 30MB 以内的短视频。";
+      msgEl.textContent = "视频太大了，请选择 100MB 以内的视频。";
       dom.messagesEl.appendChild(msgEl);
       return;
     }
