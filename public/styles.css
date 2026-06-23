@@ -1597,6 +1597,7 @@ button.secondary:disabled {
 .message.isFolded > .markdownBody,
 .message.isFolded > .plainBody,
 .message.isFolded > .imageGrid,
+.message.isFolded > .messageMediaRow,
 .message.isFolded > .messageImage,
 .message.isFolded > .messageImageWrapper,
 .message.isFolded > .messageImages,
@@ -3359,6 +3360,29 @@ button.secondary:disabled {
   max-width: 100%;
 }
 
+/* User bubbles: uploaded image(s) and the uploaded video share one row, above
+   the text. */
+.messageMediaRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 7px;
+  max-width: 100%;
+}
+
+.messageMediaRow .messageImageWrapper,
+.messageMediaRow .videoWrapper {
+  margin-bottom: 0;
+}
+
+/* Uploaded video matches the uploaded image's height limit (260px) so they line
+   up at the same height in the shared row. */
+.messageMediaRow .generatedVideo {
+  max-height: 260px;
+  width: auto;
+}
+
 .imageWrapper {
   position: relative;
   display: inline-block;
@@ -3556,18 +3580,20 @@ button.secondary:disabled {
   display: none;
 }
 
-/* Floating volume control — overlays the video like the download button (top-left,
-   appears on hover), shown only when the clip has an audio track. The slider
-   expands when the button is hovered. */
+/* Floating volume control — overlays the video at the bottom-right, sitting just
+   above the download button; shown only when the clip has an audio track. The
+   icon is the anchor at the bottom and the vertical slider expands upward when
+   the control is hovered (up = louder). */
 .videoVolume {
   position: absolute;
-  top: 6px;
-  left: 6px;
+  bottom: 40px; /* above the 28px download button (bottom:6 + 28 + ~6 gap) */
+  right: 6px;
   display: flex;
+  flex-direction: column-reverse; /* icon at the bottom, slider grows upward */
   align-items: center;
-  gap: 2px;
-  height: 28px;
-  padding: 0 4px;
+  gap: 4px;
+  width: 28px;
+  padding: 4px 0;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.55);
   opacity: 0;
@@ -3587,11 +3613,18 @@ button.secondary:disabled {
   background: rgba(0, 0, 0, 0.7);
 }
 
+/* Square — pin every box dimension so the generic `button` rule (min-height:42px)
+   can't stretch it into a tall rectangle. */
 .videoVolumeIcon {
   border: none;
   background: none;
   padding: 0;
   width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  box-sizing: border-box;
+  border-radius: 6px;
   display: grid;
   place-items: center;
   cursor: pointer;
@@ -3600,18 +3633,25 @@ button.secondary:disabled {
   line-height: 1;
 }
 
+/* Accent (blue) square on hover. */
+.videoVolumeIcon:hover {
+  background: var(--accent);
+}
+
 .videoVolumeSlider {
-  width: 0;
-  min-width: 0;
+  /* Vertical orientation; direction:rtl puts max at the top so dragging up = louder. */
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 16px;
+  height: 0;
   opacity: 0;
   accent-color: var(--accent);
   cursor: pointer;
-  height: 4px;
-  transition: width 0.18s ease, opacity 0.18s ease;
+  transition: height 0.18s ease, opacity 0.18s ease;
 }
 
 .videoVolume:hover .videoVolumeSlider {
-  width: 64px;
+  height: 96px; /* 1.5× the previous 64px */
   opacity: 1;
 }
 

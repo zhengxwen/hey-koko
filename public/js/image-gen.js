@@ -413,12 +413,24 @@ async function readOllamaImageStream(r, onProgress) {
 
 // ComfyUI video generation (WAN ti2v): text→video, or image→video when a
 // reference image is attached. Single output, rendered as a <video>.
-// Wan Animate can only generate up to ~`cap` frames in one pass. For a longer
-// source, tile it into back-to-back chunks (each a 4n+1 length ≤ cap); the server
-// seeks into the pose video per chunk (video_frame_offset) and we merge the chunk
-// videos afterwards. ≤4 trailing source frames may be dropped (negligible).
-const ANIMATE_FRAME_CAP = 241;
-function computeAnimateSegments(frames, cap = ANIMATE_FRAME_CAP) {
+// Frames Wan Animate can generate in one pass, by OUTPUT pixel budget. 3D-attention
+// VRAM/compute grows with (spatial tokens × frames), so a higher resolution needs a
+// shorter segment to stay within a 32GB (RTX 5090) budget. Tuned so each tier fits
+// comfortably; the chunks are merged so total length is unchanged. Mirrors
+// animateSegmentCap in server/comfy.js.
+function animateSegmentCap(pixelBudget) {
+  if (pixelBudget <= 520000) return 241;   // ≤ ~640×640 budget
+  if (pixelBudget <= 1000000) return 121;  // ~720p (1280×720)
+  if (pixelBudget <= 2100000) return 65;   // ~1080p (1920×1080)
+  return 33;                               // beyond 1080p — keep segments short
+}
+
+// Wan Animate can only generate up to `cap` frames in one pass (cap depends on the
+// output resolution — see animateSegmentCap). For a longer source, tile it into
+// back-to-back chunks (each a 4n+1 length ≤ cap); the server seeks into the pose
+// video per chunk (video_frame_offset) and we merge the chunk videos afterwards.
+// ≤4 trailing source frames may be dropped (negligible).
+function computeAnimateSegments(frames, cap) {
   const segs = [];
   let off = 0;
   while (off < frames) {
@@ -658,16 +670,20 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       // Bernini i2v: reference image's natural size → source-aspect output.
       refImageWidth: refImageDims?.w || undefined,
       refImageHeight: refImageDims?.h || undefined,
-      timeout: 600, // video is slow
+      timeout: 1800, // video is slow — a full ~241-frame Animate segment needs headroom
       clientId,
       ...(extra || {}),
     }),
   });
 
   // Wan Animate: a source longer than the single-pass cap is generated in segments
-  // and merged — unless the user pinned a ⚙ length (forces one bounded pass).
-  const canChunk = /animate/i.test(model) && !!sourceVideoName && sourceVideoFrames > ANIMATE_FRAME_CAP && !reqOptions.length;
-  const segments = canChunk ? computeAnimateSegments(sourceVideoFrames) : null;
+  // and merged — unless the user pinned a ⚙ length (forces one bounded pass). The
+  // cap shrinks at higher output resolutions (VRAM headroom). Budget = the selected
+  // ⚙/--size area, or the 640×640 default (mirrors the server's sizing).
+  const animBudget = (reqOptions.width && reqOptions.height) ? reqOptions.width * reqOptions.height : 640 * 640;
+  const segCap = animateSegmentCap(animBudget);
+  const canChunk = /animate/i.test(model) && !!sourceVideoName && sourceVideoFrames > segCap && !reqOptions.length;
+  const segments = canChunk ? computeAnimateSegments(sourceVideoFrames, segCap) : null;
 
   try {
     for (let i = 0; i < count; i++) {

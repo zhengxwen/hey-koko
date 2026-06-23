@@ -2417,6 +2417,12 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
     if (rightActions.children.length) item.appendChild(rightActions);
   }
 
+  // For user bubbles we group the uploaded image(s) AND the uploaded video into a
+  // single flex row placed above the text (the video block below fills it too).
+  const mediaRowEnabled = role === "user";
+  let mediaRow = null;
+  let textEl = null;
+
   if (previewImage) {
     const previews = Array.isArray(previewImage) ? previewImage : [previewImage];
     // Original upload filenames + full-res bytes, when kept, so the download uses
@@ -2424,10 +2430,13 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
     const msg = Number.isInteger(index) ? getActiveTab().messages[index] : null;
     const imageNames = msg?.imageNames;
     const fullImages = msg?.images;
-    // Multiple images render in a compact grid; a single image stays inline.
-    const container = previews.length > 1
-      ? Object.assign(document.createElement("div"), { className: "messageImages" })
-      : item;
+    // User bubbles: one shared media row (images + video on the same line).
+    // Otherwise multiple images render in a compact grid; a single image stays inline.
+    const container = mediaRowEnabled
+      ? (mediaRow = Object.assign(document.createElement("div"), { className: "messageMediaRow" }))
+      : (previews.length > 1
+          ? Object.assign(document.createElement("div"), { className: "messageImages" })
+          : item);
     previews.forEach((src, imgIdx) => {
       const wrapper = document.createElement("div");
       wrapper.className = "imageWrapper messageImageWrapper";
@@ -2519,6 +2528,7 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       });
     }
     item.appendChild(text);
+    textEl = text;
   }
 
   const displayImages = generatedImages && generatedImages.length > 0 ? generatedImages : generatedThumbnails;
@@ -2587,8 +2597,10 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
   // AI-generated videos (ComfyUI WAN etc.) — base64 mp4/webm as <video>.
   if (generatedVideos && generatedVideos.length > 0) {
     const vmime = videoMime || "video/mp4";
-    const vgrid = document.createElement("div");
-    vgrid.className = "videoGrid";
+    // User bubbles share the media row built above (images + video, same line,
+    // above the text); everyone else gets a standalone grid below the text.
+    const vgrid = mediaRowEnabled ? null : document.createElement("div");
+    if (vgrid) vgrid.className = "videoGrid";
     const vext = vmime.includes("webm") ? "webm" : vmime.includes("quicktime") ? "mov" : "mp4";
     for (let vi = 0; vi < generatedVideos.length; vi++) {
       const vData = generatedVideos[vi];
@@ -2688,9 +2700,21 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       const uploadedName = Number.isInteger(index) ? getActiveTab().messages[index]?.videoName : null;
       const vname = mediaFilename(generatedVideos.length === 1 ? uploadedName : null, timestamp, "video", vext, vi, generatedVideos.length);
       wrapper.appendChild(makeDownloadButton("videoDownloadBtn", video.src, vname, base64ByteLength(vData), t("btn_downloadVideo")));
-      vgrid.appendChild(wrapper);
+      if (mediaRowEnabled) {
+        // Lazily create the row when there were no images, then keep it above text.
+        if (!mediaRow) mediaRow = Object.assign(document.createElement("div"), { className: "messageMediaRow" });
+        mediaRow.appendChild(wrapper);
+      } else {
+        vgrid.appendChild(wrapper);
+      }
     }
-    if (vgrid.children.length) item.appendChild(vgrid);
+    if (mediaRowEnabled) {
+      // A freshly-created row (video-only message) isn't in the DOM yet — insert it
+      // above the text. If the row already held images it's connected; leave it.
+      if (mediaRow && !mediaRow.isConnected) item.insertBefore(mediaRow, textEl);
+    } else if (vgrid.children.length) {
+      item.appendChild(vgrid);
+    }
   }
 
   // AI-generated speech (/voice command) — base64 wav as <audio> + download.

@@ -47,6 +47,18 @@ async function resampleVideo(buf, targetFps) {
   finally { for (const f of [inP, outP]) if (f) fsp.unlink(f).catch(() => {}); }
 }
 
+// Frames Wan Animate can generate in one pass, by OUTPUT pixel budget (width×height).
+// 3D-attention VRAM/compute grows with (spatial tokens × frames), so higher
+// resolution needs a shorter segment to stay within a 32GB budget. Mirrors
+// animateSegmentCap in public/js/image-gen.js (the client drives the chunk loop;
+// this is the fallback / single-pass default).
+function animateSegmentCap(pixelBudget) {
+  if (pixelBudget <= 520000) return 241;   // ≤ ~640×640 budget
+  if (pixelBudget <= 1000000) return 121;  // ~720p (1280×720)
+  if (pixelBudget <= 2100000) return 65;   // ~1080p (1920×1080)
+  return 33;                               // beyond 1080p — keep segments short
+}
+
 // Read a model-name enum out of a ComfyUI node's input schema (e.g. the list of
 // checkpoints, diffusion models, text encoders or VAEs the server has on disk).
 async function comfyEnum(node, input) {
@@ -1355,6 +1367,7 @@ async function waitForOutputs(promptId, signal, deadline) {
 
 async function generateComfyImage(req, res) {
   let clientGone = false; // set if the client disconnects before we respond
+  let isVideoReq = false; // for a video-aware timeout message in the catch
   try {
     const body = await readBody(req);
     const { prompt, negative_prompt, options, images, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, segmentOffset, segmentLength, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
@@ -1412,7 +1425,11 @@ async function generateComfyImage(req, res) {
     // The browser can supply its own clientId so it can subscribe to ComfyUI's
     // WebSocket for live progress / preview frames using the same id.
     const clientId = (typeof bodyClientId === "string" && bodyClientId) || crypto.randomUUID();
-    const timeoutMs = Math.min(600, Math.max(60, reqTimeout || 120)) * 1000;
+    // Video renders (esp. a full ~241-frame Wan Animate segment) can run well past
+    // the 10-min image cap — allow up to 30 min for video, 10 min otherwise.
+    isVideoReq = !!videoType;
+    const maxTimeout = videoType ? 1800 : 600;
+    const timeoutMs = Math.min(maxTimeout, Math.max(60, reqTimeout || 120)) * 1000;
     const deadline = Date.now() + timeoutMs;
     const controller = new AbortController();
     // On timeout, stop waiting AND interrupt ComfyUI so the stuck render doesn't
@@ -1500,7 +1517,11 @@ async function generateComfyImage(req, res) {
         const srcFrames = Number(sourceVideoFrames) || 0;
         const segLen = Number(segmentLength) || 0;
         const vfo = Math.max(0, Number(segmentOffset) || 0);
-        const wantLen = segLen || opts.length || (srcFrames > 0 ? Math.min(srcFrames, 241) : 77);
+        // Single-pass cap scales down with the output resolution (VRAM). Only used
+        // for the rare non-chunked fallback (client couldn't chunk); when the client
+        // chunks it sends segmentLength directly.
+        const segCap = animateSegmentCap(aw * ah);
+        const wantLen = segLen || opts.length || (srcFrames > 0 ? Math.min(srcFrames, segCap) : 77);
         const al = Math.max(5, Math.round((wantLen - 1) / 4) * 4 + 1); // 4n+1
         // Output fps = the source's fps (or the rate it was resampled to) — wired
         // at the CreateVideo node; this is just for the done-message duration.
@@ -1695,7 +1716,9 @@ async function generateComfyImage(req, res) {
   } catch (error) {
     if (clientGone || res.writableEnded) return; // client already disconnected — nothing to send
     if (error.name === "AbortError") {
-      sendJson(res, 504, { error: "ComfyUI 图片生成超时，请重试或减少步数。" });
+      sendJson(res, 504, { error: isVideoReq
+        ? "ComfyUI 视频生成超时（已等待 30 分钟）。可降低分辨率(⚙ 尺寸)、减少帧数(⚙ Length)或步数后重试。"
+        : "ComfyUI 图片生成超时，请重试或减少步数。" });
     } else if (typeof error.message === "string" && (error.message.startsWith("缺少") || error.message.includes("暂未接入"))) {
       // Missing companion files, or an unsupported model — surface the message.
       sendJson(res, 400, { error: error.message });
