@@ -867,7 +867,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   }
 }
 
-export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null, initVideo = null) {
+export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null, initVideo = null, maskB64 = null) {
   const parsedList = Array.isArray(parsedInput) ? parsedInput : [parsedInput];
   const tab = getTab(tabId);
   if (!tab) return;
@@ -1044,6 +1044,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
               negative_prompt: comfyNegative(parsed.negativePrompt),
               options: reqOptions,
               images: refImages || undefined,
+              // Inpaint mask (white = repaint region) — only used by the ComfyUI
+              // path; routes the gen to a masked edit / SetLatentNoiseMask inpaint.
+              mask: (useComfy && maskB64) ? maskB64 : undefined,
               timeout: reqTimeout,
               clientId: comfyClientId || undefined,
             }),

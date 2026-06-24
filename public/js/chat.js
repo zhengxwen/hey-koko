@@ -313,7 +313,7 @@ function resendChatMessage(index) {
       saveChat();
       renderChat();
     } else {
-      generateImage(validCmds, state.activeTabId, index + 1, message.images || null, srcVid);
+      generateImage(validCmds, state.activeTabId, index + 1, message.images || null, srcVid, message.mask || null);
     }
   } else {
     // Truncate context to the resent bubble: only messages up to and including
@@ -1990,6 +1990,9 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
         userMessage.images = [image.base64];
         userMessage.previewImages = [image.preview];
         userMessage.imageNames = [image.name || null];
+        // Inpaint mask painted on a single staged image (white = repaint region).
+        // Persisted on the message so a resend reproduces the same masked edit.
+        if (image.mask) userMessage.mask = image.mask;
       }
       userMessage.previewImage = userMessage.previewImages[0];
     }
@@ -2020,7 +2023,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     } else {
       saveChat();
       if (state.activeTabId === tabId) renderChat();
-      generateImage(validCmds, tabId, -1, userMessage.images || null, video || null);
+      generateImage(validCmds, tabId, -1, userMessage.images || null, video || null, userMessage.mask || null);
     }
     return;
   }
@@ -2055,6 +2058,9 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
         userMessage.images = [image.base64];
         userMessage.previewImages = [image.preview];
         userMessage.imageNames = [image.name || null];
+        // Inpaint mask painted on a single staged image (white = repaint region).
+        // Persisted on the message so a resend reproduces the same masked edit.
+        if (image.mask) userMessage.mask = image.mask;
       }
       userMessage.previewImage = userMessage.previewImages[0];
     }

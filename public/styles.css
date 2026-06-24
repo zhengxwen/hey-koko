@@ -2591,6 +2591,131 @@ button.secondary:disabled {
   background: rgba(0, 0, 0, 0.8);
 }
 
+/* Inpaint mask button — bottom-right of a single staged thumbnail. */
+.previewThumbMask {
+  position: absolute;
+  bottom: -8px;
+  right: -8px;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(32, 33, 36, 0.55);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.previewThumb:hover .previewThumbMask,
+.previewThumbMask:focus-visible {
+  opacity: 1;
+}
+
+.previewThumbMask:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+/* A mask has been painted — highlight so the user knows it's active. */
+.previewThumbMask.hasMask {
+  opacity: 1;
+  background: var(--accent, #d6336c);
+  box-shadow: 0 0 0 2px rgba(214, 51, 108, 0.4);
+}
+
+/* Mask painter modal — wider than the scan modal to fit the image canvas. */
+.scanModal.maskModal {
+  width: min(720px, 94vw);
+  max-height: 90vh;
+}
+
+.maskBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px 16px;
+  overflow-y: auto;
+}
+
+.maskStage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  align-self: center;
+  line-height: 0;
+  background: #1a1a1a;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.maskStage img {
+  display: block;
+  max-width: 100%;
+  max-height: 62vh;
+  width: auto;
+  height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+#maskCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.maskControls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.maskBrushLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.maskBrushLabel input[type="range"] {
+  width: 120px;
+}
+
+.maskSpacer {
+  flex: 1;
+}
+
+.maskControls button {
+  cursor: pointer;
+}
+
+.maskEraseBtn.isActive,
+#maskEraseBtn.isActive {
+  background: var(--accent-subtle);
+  border-color: var(--accent, #d6336c);
+  color: var(--ink);
+}
+
+.maskSaveBtn {
+  background: var(--accent, #d6336c);
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-weight: 600;
+}
+
 .filePreview {
   position: relative;
   display: inline-flex;

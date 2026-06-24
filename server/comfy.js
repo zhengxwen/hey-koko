@@ -472,7 +472,7 @@ async function boogiCompanions() {
 // negative is a ConditioningZeroOut of the positive; base uses a real negative.
 // With an input image the canvas is a VAEEncode of it (img2img, denoise<1);
 // otherwise a fresh EmptySD3LatentImage (txt2img).
-function buildBoogu({ model, prompt, negative, width, height, seed, cfg, comp, turbo, imageName, denoise }) {
+function buildBoogu({ model, prompt, negative, width, height, seed, cfg, comp, turbo, imageName, maskName, denoise }) {
   const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "boogu", device: "default" } },
@@ -496,6 +496,13 @@ function buildBoogu({ model, prompt, negative, width, height, seed, cfg, comp, t
     wf["6"] = { class_type: "EmptySD3LatentImage", inputs: { width, height, batch_size: 1 } };
   }
   wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: dn, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } };
+  // Masked inpaint (img2img only): repaint just the painted region. Needs the
+  // VAEEncode latent (node 6), which only exists when an input image was given.
+  if (maskName && imageName) {
+    wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+    wf["21"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["6", 0], mask: ["20", 0] } };
+    wf["8"].inputs.latent_image = ["21", 0];
+  }
   return wf;
 }
 
@@ -503,7 +510,7 @@ function buildBoogu({ model, prompt, negative, width, height, seed, cfg, comp, t
 // VAE-encoded as the latent and partially denoised (~0.85) so the subject is
 // preserved while the instruction is applied. E1 expects the prompt phrased as
 // "Editing Instruction: …" — we prepend that if the user didn't.
-function buildHiDreamEdit({ model, prompt, negative, imageName, seed, cfg, comp, denoise, width, height }) {
+function buildHiDreamEdit({ model, prompt, negative, imageName, maskName, seed, cfg, comp, denoise, width, height }) {
   const instr = /^\s*editing instruction:/i.test(prompt) ? prompt : `Editing Instruction: ${prompt}`;
   const enc = (text) => ({ class_type: "CLIPTextEncodeHiDream", inputs: { clip: ["2", 0], clip_l: text, clip_g: text, t5xxl: text, llama: text } });
   // A target size resizes the source before VAEEncode so the output matches it.
@@ -522,6 +529,12 @@ function buildHiDreamEdit({ model, prompt, negative, imageName, seed, cfg, comp,
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
   if (width && height) wf["16"] = scaleNode(["14", 0], width, height);
+  // Masked edit: confine the instruction to the painted region (gate the latent).
+  if (maskName) {
+    wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+    wf["21"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["15", 0], mask: ["20", 0] } };
+    wf["8"].inputs.latent_image = ["21", 0];
+  }
   return wf;
 }
 
@@ -552,6 +565,28 @@ function buildImg2Img({ model, prompt, negative, seed, denoise, imageName, cfg, 
   return wf;
 }
 
+// Inpaint (local repaint) with a plain checkpoint: the user paints a mask and only
+// that region is regenerated from the prompt — everything outside the mask is kept.
+// The source is VAE-encoded, SetLatentNoiseMask confines denoising to the white
+// area of the mask, and the KSampler runs at `denoise` (1.0 = fully repaint the
+// region; lower keeps more of the original under it). The mask is a SEPARATE PNG
+// (white = edit); ComfyUI resizes the noise mask to the latent automatically, so it
+// only needs to share the source's aspect ratio — no manual alignment. The scale
+// node uses id 13 (not 12) so it never collides with commonNodes' FluxGuidance.
+function buildInpaint({ model, prompt, negative, imageName, maskName, seed, cfg, denoise, width, height }) {
+  const px = (width && height) ? ["13", 0] : ["11", 0];
+  const wf = {
+    ...commonNodes({ model, prompt, negative, guidance: cfg.guidance }),
+    "3": ksampler({ seed, steps: cfg.steps, cfg: cfg.cfg, sampler: cfg.sampler, scheduler: cfg.scheduler, denoise: denoise != null ? denoise : 1, latentRef: ["21", 0], guidance: cfg.guidance }),
+    "10": { class_type: "VAEEncode", inputs: { pixels: px, vae: ["4", 2] } },
+    "11": { class_type: "LoadImage", inputs: { image: imageName } },
+    "20": { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } },
+    "21": { class_type: "SetLatentNoiseMask", inputs: { samples: ["10", 0], mask: ["20", 0] } },
+  };
+  if (width && height) wf["13"] = scaleNode(["11", 0], width, height);
+  return wf;
+}
+
 // ── Instruction-edit workflows ──────────────────────────────────────────────
 // These take a natural-language instruction + a reference image and edit it,
 // preserving identity/composition far better than classic denoise img2img.
@@ -559,8 +594,8 @@ function buildImg2Img({ model, prompt, negative, seed, denoise, imageName, cfg, 
 // FLUX.1 Kontext — official ComfyUI graph: the input image is scaled to a
 // Kontext-friendly size, VAE-encoded, and injected into the positive
 // conditioning via ReferenceLatent. cfg=1 + FluxGuidance, like base Flux.
-function buildKontext({ model, prompt, imageName, seed, cfg, comp, width, height }) {
-  return {
+function buildKontext({ model, prompt, imageName, maskName, seed, cfg, comp, width, height }) {
+  const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "DualCLIPLoader", inputs: { clip_name1: comp.t5, clip_name2: comp.clipL, type: "flux" } },
     "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
@@ -577,19 +612,28 @@ function buildKontext({ model, prompt, imageName, seed, cfg, comp, width, height
     "12": { class_type: "VAEDecode", inputs: { samples: ["11", 0], vae: ["3", 0] } },
     "13": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["12", 0] } },
   };
+  // Masked Kontext: confine the instruction edit to the painted region. The mask
+  // gates the latent that the sampler denoises (SetLatentNoiseMask), so the
+  // instruction only repaints inside the mask while the rest is reconstructed.
+  if (maskName) {
+    wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+    wf["21"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["6", 0], mask: ["20", 0] } };
+    wf["11"].inputs.latent_image = ["21", 0];
+  }
+  return wf;
 }
 
 // Qwen-Image-Edit — TextEncodeQwenImageEdit folds the reference image + prompt
 // into the conditioning (multimodal Qwen2.5-VL encoder). Negative is the same
 // node with an empty prompt.
-function buildQwenEdit({ model, prompt, imageName, seed, cfg, comp }) {
+function buildQwenEdit({ model, prompt, imageName, maskName, seed, cfg, comp }) {
   // The reference image drives BOTH the conditioning and the latent — they must
   // match. Do NOT force an output size by VAE-encoding a resized copy: the
   // TextEncodeQwenImageEdit conditioning encodes the original, so a mismatched
   // latent size desyncs them and the model reconstructs the input INSTEAD of
   // applying the instruction (the edit appears ignored). Output size follows the
   // input, which is how Qwen-Image-Edit is meant to work.
-  return {
+  const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "qwen_image" } },
     "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
@@ -601,6 +645,14 @@ function buildQwenEdit({ model, prompt, imageName, seed, cfg, comp }) {
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
+  // Masked Qwen-Image-Edit: gate the latent so the instruction only repaints the
+  // painted region (the conditioning still sees the whole image for context).
+  if (maskName) {
+    wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+    wf["21"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["7", 0], mask: ["20", 0] } };
+    wf["8"].inputs.latent_image = ["21", 0];
+  }
+  return wf;
 }
 
 // Qwen-Image-Edit-2509 "Plus" — MULTI-image composition (up to 3 reference
@@ -638,7 +690,7 @@ function buildQwenEditPlus({ model, prompt, imageNames, seed, cfg, comp, width, 
 // num_tokens itself. Used as an instruction editor here: VAEEncode(source) →
 // latent at denoise ~0.8 + the instruction (preserves the subject, applies the
 // edit). (It can also do txt2img, but we surface it in the edit group.)
-function buildOmniGen2Edit({ model, prompt, negative, imageName, seed, cfg, comp, denoise, width, height }) {
+function buildOmniGen2Edit({ model, prompt, negative, imageName, maskName, seed, cfg, comp, denoise, width, height }) {
   const px = (width && height) ? ["16", 0] : ["14", 0];
   const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
@@ -653,6 +705,12 @@ function buildOmniGen2Edit({ model, prompt, negative, imageName, seed, cfg, comp
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
   if (width && height) wf["16"] = scaleNode(["14", 0], width, height);
+  // Masked edit: confine the instruction to the painted region (gate the latent).
+  if (maskName) {
+    wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+    wf["21"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["15", 0], mask: ["20", 0] } };
+    wf["8"].inputs.latent_image = ["21", 0];
+  }
   return wf;
 }
 
@@ -662,7 +720,7 @@ function buildOmniGen2Edit({ model, prompt, negative, imageName, seed, cfg, comp
 //   no image). cfg_conds is text guidance; cfg_cond2_negative is image guidance
 //   (raise it to preserve the input more). A plain single-cfg KSampler over-
 //   edits and ignores the source image — this is the correct ip2p sampler.
-function buildInstructPix2Pix({ model, prompt, negative, imageName, seed, cfg, width, height }) {
+function buildInstructPix2Pix({ model, prompt, negative, imageName, maskName, seed, cfg, width, height }) {
   const imageCfg = cfg.imageCfg != null ? cfg.imageCfg : 1.5;
   const px = (width && height) ? ["13", 0] : ["4", 0];
   const wf = {
@@ -680,6 +738,13 @@ function buildInstructPix2Pix({ model, prompt, negative, imageName, seed, cfg, w
     "12": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["11", 0] } },
   };
   if (width && height) wf["13"] = scaleNode(["4", 0], width, height);
+  // Masked edit: gate the ip2p latent (from InstructPixToPixConditioning, ["5",2])
+  // so SamplerCustomAdvanced only repaints inside the painted region.
+  if (maskName) {
+    wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+    wf["21"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["5", 2], mask: ["20", 0] } };
+    wf["10"].inputs.latent_image = ["21", 0];
+  }
   return wf;
 }
 
@@ -694,7 +759,7 @@ function buildInstructPix2Pix({ model, prompt, negative, imageName, seed, cfg, w
 // and the hand-export's singular `image` both fail at execute(); a single link
 // errors "Boolean value of Tensor ambiguous"; only the list form runs. Same
 // AuraFlow shift-3 + flux-VAE stack.
-function buildBooguEdit({ model, prompt, negative, imageName, imageNames, seed, cfg, comp }) {
+function buildBooguEdit({ model, prompt, negative, imageName, imageNames, maskName, seed, cfg, comp }) {
   const refs = imageNames && imageNames.length ? imageNames : (imageName ? [imageName] : []);
   const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
@@ -714,6 +779,13 @@ function buildBooguEdit({ model, prompt, negative, imageName, imageNames, seed, 
   // Reference latent = VAEEncode of the primary image (LoadImage node 30).
   wf["6"] = { class_type: "VAEEncode", inputs: { pixels: ["30", 0], vae: ["3", 0] } };
   wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } };
+  // Masked edit: confine the instruction to the painted region (gate the latent).
+  // Single-image only — a multi-ref compose has no single canvas to align to.
+  if (maskName) {
+    wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+    wf["21"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["6", 0], mask: ["20", 0] } };
+    wf["8"].inputs.latent_image = ["21", 0];
+  }
   return wf;
 }
 
@@ -1270,12 +1342,15 @@ async function interruptComfyServer() {
 }
 
 // Upload a base64 image to ComfyUI's input folder so a LoadImage node can use
-// it. Returns the name (prefixed with subfolder when ComfyUI nests it).
-async function uploadImage(b64, signal) {
+// it. Returns the name (prefixed with subfolder when ComfyUI nests it). The
+// filename defaults to a shared "heykoko_input.png"; pass a distinct name when an
+// image must coexist with another upload in the same workflow (e.g. an inpaint
+// mask alongside its source — both overwrite=true, so a shared name would clobber).
+async function uploadImage(b64, signal, filename = "heykoko_input.png") {
   const clean = typeof b64 === "string" && b64.startsWith("data:") ? b64.split(",")[1] : b64;
   const buf = Buffer.from(clean, "base64");
   const form = new FormData();
-  form.append("image", new Blob([buf], { type: "image/png" }), "heykoko_input.png");
+  form.append("image", new Blob([buf], { type: "image/png" }), filename);
   form.append("overwrite", "true");
   const r = await fetch(`${config.comfyUrl}/upload/image`, { method: "POST", body: form, signal });
   if (!r.ok) throw new Error(`image upload failed (${r.status})`);
@@ -1458,7 +1533,7 @@ async function generateComfyImage(req, res) {
   let isVideoReq = false; // for a video-aware timeout message in the catch
   try {
     const body = await readBody(req);
-    const { prompt, negative_prompt, options, images, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, segmentOffset, segmentLength, continueVideoName, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
+    const { prompt, negative_prompt, options, images, mask, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, segmentOffset, segmentLength, continueVideoName, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
     let model = body.model;
 
     if (!model || !prompt) {
@@ -1499,6 +1574,9 @@ async function generateComfyImage(req, res) {
     }
     // denoise controls how much the input image is changed (1 = ignore it).
     const denoise = opts.denoise !== undefined ? opts.denoise : 0.75;
+    // Inpaint: a painted mask (white = repaint) confines the edit to that region.
+    // Only meaningful with a source image; ignored without one.
+    const hasMask = isImg2Img && typeof mask === "string" && mask.length > 100;
     // Per-model defaults merged with any user overrides from the params modal.
     const cfg = resolveConfig(model, opts);
     const editType = editTypeOf(model);
@@ -1695,7 +1773,11 @@ async function generateComfyImage(req, res) {
             : buildQwenEditPlus({ model, prompt, imageNames, seed, cfg, comp, width: ew, height: eh });
         } else {
           const imageName = await uploadImage(images[0], controller.signal);
-          workflow = buildEditWorkflow(editType, { model, prompt, negative: negative_prompt || "", imageName, seed, cfg, comp, denoise: editDenoise, width: ew, height: eh });
+          // Masked instruction-edit (Kontext / Qwen): confine the edit to the
+          // painted region. Other edit types ignore maskName (their builds don't
+          // read it) — they fall back to whole-image editing.
+          const maskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mask.png") : null;
+          workflow = buildEditWorkflow(editType, { model, prompt, negative: negative_prompt || "", imageName, maskName, seed, cfg, comp, denoise: editDenoise, width: ew, height: eh });
         }
       } else if (/hidream.?i1/i.test(model)) {
         // HiDream-I1 txt2img (UNET + QuadrupleCLIPLoader); ignores any attached image.
@@ -1710,7 +1792,27 @@ async function generateComfyImage(req, res) {
         const comp = await boogiCompanions();
         const turbo = /turbo/i.test(model);
         const imageName = isImg2Img ? await uploadImage(images[0], controller.signal) : null;
-        workflow = buildBoogu({ model, prompt, negative: negative_prompt || "", width: ew || width, height: eh || height, seed, cfg, comp, turbo, imageName, denoise });
+        // A painted mask turns img2img into inpaint (repaint only the masked region).
+        const maskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mask.png") : null;
+        workflow = buildBoogu({ model, prompt, negative: negative_prompt || "", width: ew || width, height: eh || height, seed, cfg, comp, turbo, imageName, maskName, denoise });
+      } else if (hasMask) {
+        // Inpaint with a plain checkpoint (SD / SDXL / Flux): repaint ONLY the
+        // painted region from the prompt, preserving everything outside the mask.
+        // denoise defaults to 1.0 (full repaint of the region) for inpaint.
+        const imageName = await uploadImage(images[0], controller.signal);
+        const maskName = await uploadImage(mask, controller.signal, "heykoko_mask.png");
+        workflow = buildInpaint({
+          model,
+          prompt,
+          negative: negative_prompt || "",
+          imageName,
+          maskName,
+          seed,
+          cfg,
+          denoise: opts.denoise !== undefined ? opts.denoise : 1,
+          width: ew,
+          height: eh,
+        });
       } else if (isImg2Img) {
         const imageName = await uploadImage(images[0], controller.signal);
         workflow = buildImg2Img({
@@ -1813,7 +1915,7 @@ async function generateComfyImage(req, res) {
         }
         sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, frames: outFrames, videoFrameOffset: nextOffset, truncatedFrom: videoDims?.truncatedFrom, imagesUsed });
       } else {
-        const mode = editType ? `edit:${editType}` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
+        const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);
         sendJson(res, 200, { images: outImages, model });
       }

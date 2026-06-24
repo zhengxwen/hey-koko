@@ -492,6 +492,34 @@
       </div>
     </div>
 
+    <!-- Inpaint mask painter -->
+    <div id="maskModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal maskModal" role="dialog" aria-modal="true" aria-labelledby="maskModalTitle">
+        <div class="scanModalHeader">
+          <h3 id="maskModalTitle" class="scanModalTitle">涂抹要修改的区域</h3>
+          <button id="maskModalClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
+        </div>
+        <div class="maskBody">
+          <p class="hint" id="maskHint">用画笔涂抹要让 AI 重绘的区域（高亮处），其余部分保持不变。</p>
+          <div class="maskStage" id="maskStage">
+            <img id="maskBaseImg" alt="" />
+            <canvas id="maskCanvas"></canvas>
+          </div>
+          <div class="maskControls">
+            <label class="maskBrushLabel">
+              <span>画笔</span>
+              <input id="maskBrushSize" type="range" min="5" max="200" step="1" value="40" />
+            </label>
+            <button id="maskEraseBtn" type="button" class="secondary">橡皮擦</button>
+            <button id="maskClearBtn" type="button" class="secondary">清除</button>
+            <span class="maskSpacer"></span>
+            <button id="maskCancelBtn" type="button" class="secondary">取消</button>
+            <button id="maskSaveBtn" type="button" class="primary maskSaveBtn">应用蒙版</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script type="module" src="/js/main.js"></script>
   </body>
 </html>

@@ -22,6 +22,7 @@ import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
 import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
 import { loadReminders, getReminders, removeReminder, describeReminder, setReminderChangeHandler, setDeliverHandler, startScheduler } from './proactive.js';
 import { initPanelResize } from './panel-resize.js';
+import { openMaskModal } from './mask-paint.js';
 
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
@@ -314,8 +315,8 @@ dom.modelSelect.addEventListener("change", () => {
   saveCurrentSettings();
   refreshModelMaxContext(dom.modelSelect.value);
 });
-dom.imageModelSelect.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); });
-dom.comfyModelSelect?.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); updateComfyMultiHint(); applyInputPlaceholder(); });
+dom.imageModelSelect.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); renderStagedImagePreview(); });
+dom.comfyModelSelect?.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); updateComfyMultiHint(); applyInputPlaceholder(); renderStagedImagePreview(); });
 dom.voiceSelect.addEventListener("change", saveCurrentSettings);
 if (dom.numCtxSelect) {
   dom.numCtxSelect.addEventListener("change", () => {
@@ -1174,6 +1175,33 @@ function renderStagedImagePreview() {
     btn.textContent = "×";
     btn.addEventListener("click", () => removeStagedImage(idx));
     thumb.appendChild(btn);
+
+    // Inpaint mask: only for a SINGLE staged image with a ComfyUI IMAGE model
+    // selected (the Ollama path can't use a mask; video models don't take one).
+    // Lets the user paint the region to repaint.
+    const comfyModel = dom.comfyModelSelect && dom.comfyModelSelect.value;
+    const comfyActive = !!(comfyModel && !dom.imageModelSelect.value && !(state.comfyVideoModels && state.comfyVideoModels.has(comfyModel)));
+    if (images.length === 1 && comfyActive) {
+      const maskBtn = document.createElement("button");
+      maskBtn.type = "button";
+      maskBtn.className = "previewThumbMask" + (img.mask ? " hasMask" : "");
+      maskBtn.title = img.mask ? "编辑修改区域蒙版（已设置）" : "涂抹要修改的区域（局部重绘）";
+      maskBtn.setAttribute("aria-label", "涂抹蒙版");
+      maskBtn.textContent = "🖌";
+      maskBtn.addEventListener("click", async () => {
+        // Paint on the full-res image (reconstruct a data URL from the raw base64),
+        // not the 360px preview, so the brushed region is precise.
+        const b64 = img.base64 || "";
+        const fullSrc = b64
+          ? `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`
+          : img.preview;
+        const result = await openMaskModal(fullSrc, img.mask || null);
+        // null = cancelled or cleared → drop any existing mask.
+        img.mask = result || undefined;
+        renderStagedImagePreview();
+      });
+      thumb.appendChild(maskBtn);
+    }
 
     dom.imagePreview.appendChild(thumb);
   });
