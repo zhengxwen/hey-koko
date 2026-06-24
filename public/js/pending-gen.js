@@ -66,8 +66,11 @@ function _ensureVideoGrid(bubble) {
 // Inner markup of a .comfyProgress block: a fill bar at the given percent and an
 // optional preview frame. Single source of truth for both the live patch path
 // (_ensureProgress) and the full rebuild (buildPendingGenBubble).
-function _progressHtml(pct, preview) {
-  return `<div class="comfyProgressBar"><div class="comfyProgressFill" style="width:${pct}%"></div></div>`
+function _progressHtml(pct, preview, eta) {
+  return `<div class="comfyProgressRow">`
+    + `<div class="comfyProgressBar"><div class="comfyProgressFill" style="width:${pct}%"></div></div>`
+    + `<span class="comfyEta"${eta ? '' : ' hidden'}>${eta || ''}</span>`
+    + `</div>`
     + `<img class="comfyPreview"${preview ? ` src="${preview}"` : ' hidden'} alt="Preview">`;
 }
 
@@ -76,7 +79,7 @@ function _ensureProgress(bubble) {
   if (!prog) {
     prog = document.createElement('div');
     prog.className = 'comfyProgress';
-    prog.innerHTML = _progressHtml(0, null);
+    prog.innerHTML = _progressHtml(0, null, null);
     const vgrid = bubble.querySelector('.videoGrid');
     if (vgrid) bubble.insertBefore(prog, vgrid); // keep progress ABOVE the segment videos
     else bubble.appendChild(prog);
@@ -102,11 +105,12 @@ export function buildPendingGenBubble(pg) {
     for (const src of pg.images) grid.appendChild(_imgEl(src));
     bubble.appendChild(grid);
   }
-  if (pg.progress || pg.preview) {
+  if (pg.progress || pg.preview || pg.eta || pg.indeterminate) {
     const prog = document.createElement('div');
     prog.className = 'comfyProgress';
     const pct = (pg.progress && pg.progress.max) ? Math.min(100, Math.round(pg.progress.value / pg.progress.max * 100)) : 0;
-    prog.innerHTML = _progressHtml(pct, pg.preview);
+    prog.innerHTML = _progressHtml(pct, pg.preview, pg.eta);
+    if (pg.indeterminate) prog.querySelector('.comfyProgressBar')?.classList.add('indeterminate');
     bubble.appendChild(prog);
   }
   // Finished segment videos go BELOW the progress bar + live preview.
@@ -144,6 +148,8 @@ export function pendingGenStart({ tabId, kind, label, insertIndex }) {
     videos: [],
     progress: null,
     preview: null,
+    eta: '',
+    indeterminate: false,
   };
   if (state.activeTabId === tabId) _mount();
 }
@@ -206,6 +212,36 @@ export function pendingGenSetProgress(tabId, value, max) {
   if (!bubble) return;
   const fill = _ensureProgress(bubble).querySelector('.comfyProgressFill');
   if (fill) fill.style.width = `${Math.min(100, Math.round(value / max * 100))}%`;
+}
+
+// Toggle an indeterminate (sliding) bar for phases ComfyUI reports NO progress for
+// (DWPose preprocessing, VAE decode) so the bar doesn't look frozen.
+export function pendingGenSetIndeterminate(tabId, on) {
+  const pg = _pg(tabId);
+  if (!pg) return;
+  pg.indeterminate = !!on;
+  const bubble = _bubble();
+  if (!bubble) return;
+  const bar = _ensureProgress(bubble).querySelector('.comfyProgressBar');
+  if (bar) bar.classList.toggle('indeterminate', !!on);
+}
+
+// Estimated time remaining, shown next to the progress bar (e.g. "⏳ ~3:20").
+export function pendingGenSetEta(tabId, text) {
+  const pg = _pg(tabId);
+  if (!pg) return;
+  pg.eta = text || '';
+  const bubble = _bubble();
+  if (!bubble) return;
+  const prog = _ensureProgress(bubble);
+  let el = prog.querySelector('.comfyEta');
+  if (!el) {
+    el = document.createElement('span');
+    el.className = 'comfyEta';
+    (prog.querySelector('.comfyProgressRow') || prog).appendChild(el); // sit to the right of the bar
+  }
+  el.textContent = text || '';
+  el.hidden = !text;
 }
 
 export function pendingGenSetPreview(tabId, src) {

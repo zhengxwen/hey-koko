@@ -500,16 +500,26 @@
           <button id="maskModalClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
         </div>
         <div class="maskBody">
-          <p class="hint" id="maskHint">用画笔涂抹要让 AI 重绘的区域（高亮处），其余部分保持不变。</p>
-          <div class="maskStage" id="maskStage">
-            <img id="maskBaseImg" alt="" />
-            <canvas id="maskCanvas"></canvas>
+          <p class="hint" id="maskHint">用画笔涂抹要让 AI 重绘的区域（高亮处），其余部分保持不变。滚轮缩放，放大后可拖动滚动条查看。</p>
+          <div class="maskStageScroll" id="maskStageScroll">
+            <div class="maskStage" id="maskStage">
+              <img id="maskBaseImg" alt="" />
+              <canvas id="maskCanvas"></canvas>
+              <div id="maskBrushCursor" class="maskBrushCursor" hidden></div>
+            </div>
           </div>
           <div class="maskControls">
             <label class="maskBrushLabel">
               <span>画笔</span>
-              <input id="maskBrushSize" type="range" min="5" max="200" step="1" value="40" />
+              <input id="maskBrushSize" type="range" min="5" max="300" step="1" value="60" />
+              <input id="maskBrushVal" type="number" min="5" max="300" step="1" value="60" class="maskBrushVal" aria-label="画笔大小(像素)" />
+              <span class="maskBrushUnit">px</span>
             </label>
+            <span class="maskZoomCtrl">
+              <button id="maskZoomOut" type="button" class="secondary maskZoomBtn" aria-label="缩小">−</button>
+              <span id="maskZoomLabel">100%</span>
+              <button id="maskZoomIn" type="button" class="secondary maskZoomBtn" aria-label="放大">+</button>
+            </span>
             <button id="maskEraseBtn" type="button" class="secondary">橡皮擦</button>
             <button id="maskClearBtn" type="button" class="secondary">清除</button>
             <span class="maskSpacer"></span>

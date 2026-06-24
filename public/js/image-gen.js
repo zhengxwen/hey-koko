@@ -9,8 +9,15 @@ import { getTab, getActiveTab } from './tabs.js';
 import { markdownToHtml } from './markdown.js';
 import {
   pendingGenStart, pendingGenSetLabel, pendingGenSetEnhanced,
-  pendingGenAddImage, pendingGenAddVideo, pendingGenSetProgress, pendingGenSetPreview, pendingGenClear,
+  pendingGenAddImage, pendingGenAddVideo, pendingGenSetProgress, pendingGenSetPreview, pendingGenSetEta, pendingGenSetIndeterminate, pendingGenClear,
 } from './pending-gen.js';
+
+// Compact "time remaining" → "m:ss" or "h:mm:ss" (language-neutral).
+function formatEta(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+}
 
 // setGenerating and renderChat will be injected from main
 let _setGenerating = null;
@@ -592,6 +599,14 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix}`);
   }
 
+  // Estimated chunk count for a chained Wan Animate (each chunk = one KSampler pass).
+  // Drives both the scaled timeout (below) and the overall progress / ETA. The server
+  // decides the real count; ±1 here is fine for an estimate.
+  const animBudgetEta = (reqOptions.width && reqOptions.height) ? reqOptions.width * reqOptions.height : 640 * 640;
+  const estPasses = (/animate/i.test(model) && sourceVideoFrames > 0 && !reqOptions.length)
+    ? Math.max(1, Math.ceil(sourceVideoFrames / Math.max(1, animateSegmentCap(animBudgetEta, !!reqOptions.torchCompile) - 5)))
+    : 1;
+
   // Live progress bar + preview frames via ComfyUI's WebSocket. The browser owns
   // the clientId and hands it to the server so both subscribe to the same stream.
   // Both feed the pending bubble through state so they survive a tab switch.
@@ -599,8 +614,46 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
   // Stop button → abort: also tell ComfyUI to interrupt the running render.
   abortController.signal.addEventListener("abort", () => interruptComfy(comfyHost), { once: true });
+  // OVERALL progress + ETA. A chained render emits a fresh 0→max KSampler progress per
+  // chunk; we detect each chunk boundary (value resets). The bar shows overall progress
+  // across all `estPasses`. The ETA is paced by the MEASURED per-chunk WALL time (which
+  // includes the no-progress VAE decode between chunks) × the remaining chunks — so it
+  // factors the segment count and the real per-segment cost, not just sampling steps.
+  // DWPose preprocessing + VAE decode report NO progress → INDETERMINATE (sliding) bar
+  // by default and during any >2.5s stall.
+  let _passesDone = 0, _prevVal = 0, _firstStepT = 0, _boundaryT = 0, _progStall = null;
+  pendingGenSetIndeterminate(tabId, true); // pulse until the first sampling step arrives
+  const onVideoProgress = (value, max) => {
+    if (!max) return;
+    const now = Date.now();
+    // Clock starts at the FIRST sampling step (the one-time DWPose before it reports no
+    // progress and shouldn't count toward the per-chunk pace).
+    if (!_firstStepT) { _firstStepT = now; _boundaryT = now; }
+    if (value < _prevVal) { _passesDone++; _boundaryT = now; } // a chunk finished, next started
+    _prevVal = value;
+
+    const N = Math.max(estPasses, _passesDone + 1); // total chunks (≥ what we've seen)
+    pendingGenSetIndeterminate(tabId, false);
+    pendingGenSetProgress(tabId, _passesDone * max + value, N * max); // overall, not per-chunk
+
+    // ETA. Only show a number when it's RELIABLE: a measured per-chunk time (≥1 chunk
+    // done) for multi-segment, or the step pace for a true single pass. Otherwise NA —
+    // never a wild extrapolation from a partial first chunk.
+    let etaText = "NA";
+    if (_passesDone >= 1) {
+      const avgChunkMs = (_boundaryT - _firstStepT) / _passesDone; // incl. VAE decode
+      const remMs = Math.max(0, (N - _passesDone) * avgChunkMs - (now - _boundaryT));
+      etaText = `~${formatEta(remMs / 1000)}`;
+    } else if (N === 1 && value > 0) {
+      etaText = `~${formatEta((now - _firstStepT) / 1000 * (max - value) / value)}`;
+    } // else: multi-segment, first chunk not finished → NA
+    pendingGenSetEta(tabId, `⏳ ${etaText}`);
+
+    clearTimeout(_progStall);
+    _progStall = setTimeout(() => pendingGenSetIndeterminate(tabId, true), 2500);
+  };
   const unsubscribe = subscribeComfyProgress(comfyHost, clientId, {
-    onProgress: (value, max) => pendingGenSetProgress(tabId, value, max),
+    onProgress: onVideoProgress,
     onPreview: (url) => pendingGenSetPreview(tabId, url),
   });
 
@@ -693,11 +746,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // A chained Wan Animate runs ALL chunks in one ComfyUI pass, so the whole render
   // must fit one timeout — scale it with the estimated chunk count (≈15 min/chunk),
   // clamped 30 min … 2 h (server cap). Other videos use a flat 30 min.
-  const animBudget0 = (reqOptions.width && reqOptions.height) ? reqOptions.width * reqOptions.height : 640 * 640;
-  const estChunks = (/animate/i.test(model) && sourceVideoFrames > 0 && !reqOptions.length)
-    ? Math.max(1, Math.ceil(sourceVideoFrames / Math.max(1, animateSegmentCap(animBudget0, !!reqOptions.torchCompile) - 5)))
-    : 1;
-  const videoTimeout = Math.min(7200, Math.max(1800, estChunks * 900));
+  const videoTimeout = Math.min(7200, Math.max(1800, estPasses * 900));
 
   // One /api/generate-comfy request. `extra` carries per-segment offset/length for
   // a chunked Wan Animate render; ignored otherwise.
@@ -749,7 +798,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
 
       // A long Wan Animate source is chunked SEAMLESSLY by the server in ONE ComfyUI
       // graph (chained continue_motion) → a single request returns one merged clip.
-      if (willChunk) pendingGenSetLabel(tabId, `${t("msg_generatingVideoSeamless")}${vidSuffix}`);
+      if (willChunk) pendingGenSetLabel(tabId, `${t("msg_generatingVideoSeamless", { n: estPasses })}${vidSuffix}`);
       else if (count > 1) pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
       const resp = await requestVideo(perOptions);
       let data = await resp.json();
@@ -782,6 +831,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     }
     setAvatarState("idle");
   } finally {
+    clearTimeout(_progStall);
     pendingGenClear(tabId);
     unsubscribe();
     releaseWakeLock();
