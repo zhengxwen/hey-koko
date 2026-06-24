@@ -1138,7 +1138,7 @@ async function animateCompanions() {
 // WanAnimateToVideo; the reference image (+ its clip_vision encode) supplies the
 // character. Single pass = up to `length` frames (no video-extend yet). Two LoRAs
 // (lightx2v distill for 6-step turbo + relight); ModelSamplingSD3 shift 8.
-function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, length, seed, fps, videoFrameOffset = 0, torchCompile = false }) {
+function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, length, seed, fps, videoFrameOffset = 0, torchCompile = false, continueVideoName = null }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   const dw = (face) => ({
     class_type: "DWPreprocessor",
@@ -1188,6 +1188,22 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
     "24": { class_type: "SaveVideo", inputs: { video: ["23", 0], filename_prefix: "heykoko_animate", format: "auto", codec: "auto" } },
   };
   if (torchCompile) wf["25"] = { class_type: "TorchCompileModel", inputs: { model: ["3", 0], backend: "inductor" } };
+  // continue_motion (long-video seam fix): feed the PREVIOUS chunk's frames in so the
+  // model continues its motion instead of resetting at the boundary. The node uses
+  // the last `continue_motion_max_frames` (5) and emits trim_latent/trim_image (already
+  // wired to nodes 20/22) to drop the regenerated overlap → each chunk returns only the
+  // genuinely-new frames. Mirrors the template's "Video Extend" subgraph.
+  if (continueVideoName) {
+    wf["26"] = { class_type: "LoadVideo", inputs: { file: continueVideoName } };
+    wf["27"] = { class_type: "GetVideoComponents", inputs: { video: ["26", 0] } };
+    wf["18"].inputs.continue_motion = ["27", 0];
+  }
+  // Expose WanAnimateToVideo's video_frame_offset OUTPUT (out 5) so the server can read
+  // it from /history and hand the NEXT chunk the exact seek the node computed
+  // (offset_out = offset_in + length − trim_image). Verified live: chaining this output
+  // → next input gives seamless, correct-length joins. PreviewAny is an output node, so
+  // its value lands in history.outputs["28"].text[0].
+  wf["28"] = { class_type: "PreviewAny", inputs: { source: ["18", 5] } };
   return wf;
 }
 
@@ -1442,7 +1458,7 @@ async function generateComfyImage(req, res) {
   let isVideoReq = false; // for a video-aware timeout message in the catch
   try {
     const body = await readBody(req);
-    const { prompt, negative_prompt, options, images, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, segmentOffset, segmentLength, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
+    const { prompt, negative_prompt, options, images, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, segmentOffset, segmentLength, continueVideoName, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
     let model = body.model;
 
     if (!model || !prompt) {
@@ -1601,7 +1617,7 @@ async function generateComfyImage(req, res) {
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         const refImageName = await uploadImage(images[0], controller.signal);
         imagesUsed = 1;
-        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, length: al, seed, fps: afps, videoFrameOffset: vfo, torchCompile: !!opts.torchCompile });
+        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, length: al, seed, fps: afps, videoFrameOffset: vfo, torchCompile: !!opts.torchCompile, continueVideoName: (typeof continueVideoName === "string" && continueVideoName) ? continueVideoName : null });
         videoDims = { width: aw, height: ah, length: al, fps: afps };
         // Single-pass only (no chunking): if the source is longer than the frames we
         // generated, tell the client it was cut. When chunking, the client merges.
@@ -1752,6 +1768,7 @@ async function generateComfyImage(req, res) {
       const outImages = [];
       const outVideos = [];
       let videoMime = "video/mp4";
+      let firstVideoBuf = null; // kept to ffprobe the real output frame count (animate chunking)
       for (const nodeId of Object.keys(outputs)) {
         for (const img of outputs[nodeId].images || []) {
           if (img.type === "temp") continue; // skip previews, keep final outputs
@@ -1765,11 +1782,22 @@ async function generateComfyImage(req, res) {
           const buf = Buffer.from(await viewResp.arrayBuffer());
           if (/\.(mp4|webm|mov)$/i.test(img.filename)) {
             videoMime = /\.webm$/i.test(img.filename) ? "video/webm" : "video/mp4";
+            if (!firstVideoBuf) firstVideoBuf = buf;
             outVideos.push(buf.toString("base64"));
           } else {
             outImages.push(buf.toString("base64"));
           }
         }
+      }
+      // Animate chunking: return this chunk's net frame count (ffprobe) AND the
+      // WanAnimateToVideo video_frame_offset OUTPUT (from the PreviewAny node 28) — the
+      // client feeds that exact offset to the next chunk for a seamless continue_motion
+      // join (offset_out = offset_in + length − trim_image; verified live).
+      let outFrames, nextOffset;
+      if (videoType === "animate") {
+        if (firstVideoBuf) { try { outFrames = (await probeVideo(firstVideoBuf)).frames || undefined; } catch { /* best-effort */ } }
+        const ov = outputs?.["28"]?.text?.[0];
+        if (ov != null && ov !== "" && !Number.isNaN(Number(ov))) nextOffset = Number(ov);
       }
 
       const now = new Date();
@@ -1783,7 +1811,7 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI 完成了但未产出视频文件（输出节点：${nodeIds}）。请确认工作流包含 SaveVideo 节点，或重试。` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, truncatedFrom: videoDims?.truncatedFrom, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, frames: outFrames, videoFrameOffset: nextOffset, truncatedFrom: videoDims?.truncatedFrom, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);

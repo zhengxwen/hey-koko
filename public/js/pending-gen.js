@@ -58,9 +58,7 @@ function _ensureVideoGrid(bubble) {
   if (!grid) {
     grid = document.createElement('div');
     grid.className = 'videoGrid';
-    const prog = bubble.querySelector('.comfyProgress');
-    if (prog) bubble.insertBefore(grid, prog); // keep above the progress bar
-    else bubble.appendChild(grid);
+    bubble.appendChild(grid); // BELOW the progress bar + live preview
   }
   return grid;
 }
@@ -79,7 +77,9 @@ function _ensureProgress(bubble) {
     prog = document.createElement('div');
     prog.className = 'comfyProgress';
     prog.innerHTML = _progressHtml(0, null);
-    bubble.appendChild(prog);
+    const vgrid = bubble.querySelector('.videoGrid');
+    if (vgrid) bubble.insertBefore(prog, vgrid); // keep progress ABOVE the segment videos
+    else bubble.appendChild(prog);
   }
   return prog;
 }
@@ -102,18 +102,19 @@ export function buildPendingGenBubble(pg) {
     for (const src of pg.images) grid.appendChild(_imgEl(src));
     bubble.appendChild(grid);
   }
-  if (pg.videos && pg.videos.length) {
-    const grid = document.createElement('div');
-    grid.className = 'videoGrid';
-    for (const src of pg.videos) grid.appendChild(_videoEl(src));
-    bubble.appendChild(grid);
-  }
   if (pg.progress || pg.preview) {
     const prog = document.createElement('div');
     prog.className = 'comfyProgress';
     const pct = (pg.progress && pg.progress.max) ? Math.min(100, Math.round(pg.progress.value / pg.progress.max * 100)) : 0;
     prog.innerHTML = _progressHtml(pct, pg.preview);
     bubble.appendChild(prog);
+  }
+  // Finished segment videos go BELOW the progress bar + live preview.
+  if (pg.videos && pg.videos.length) {
+    const grid = document.createElement('div');
+    grid.className = 'videoGrid';
+    for (const src of pg.videos) grid.appendChild(_videoEl(src));
+    bubble.appendChild(grid);
   }
   return bubble;
 }

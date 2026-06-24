@@ -484,24 +484,6 @@ function animateSegmentCap(pixelBudget, torchCompile = false) {
   return torchCompile ? 17 : 33;           // beyond 1080p
 }
 
-// Wan Animate can only generate up to `cap` frames in one pass (cap depends on the
-// output resolution — see animateSegmentCap). For a longer source, tile it into
-// back-to-back chunks (each a 4n+1 length ≤ cap); the server seeks into the pose
-// video per chunk (video_frame_offset) and we merge the chunk videos afterwards.
-// ≤4 trailing source frames may be dropped (negligible).
-function computeAnimateSegments(frames, cap) {
-  const segs = [];
-  let off = 0;
-  while (off < frames) {
-    let len = Math.min(cap, frames - off);
-    len = Math.max(5, Math.floor((len - 1) / 4) * 4 + 1); // 4n+1, ≤ remaining
-    segs.push({ offset: off, length: len });
-    off += len;
-    if (frames - off < 5) break; // a <5-frame tail can't form a chunk — drop it
-  }
-  return segs;
-}
-
 export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null) {
   const tab = getTab(tabId);
   if (!tab) return;
@@ -746,7 +728,6 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   const animBudget = (reqOptions.width && reqOptions.height) ? reqOptions.width * reqOptions.height : 640 * 640;
   const segCap = animateSegmentCap(animBudget, !!reqOptions.torchCompile);
   const canChunk = /animate/i.test(model) && !!sourceVideoName && sourceVideoFrames > segCap && !reqOptions.length;
-  const segments = canChunk ? computeAnimateSegments(sourceVideoFrames, segCap) : null;
 
   try {
     for (let i = 0; i < count; i++) {
@@ -758,45 +739,71 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       if (perOptions.seed !== undefined) perOptions.seed = reqOptions.seed + i;
 
       let data;
-      if (segments) {
-        // All segments of one clip must share a seed, or the server randomizes each
-        // call and the character/lighting drifts between segments.
+      if (canChunk) {
+        // All chunks of one clip must share a seed, or the server randomizes each
+        // call and the character/lighting drifts between chunks.
         if (perOptions.seed === undefined) perOptions.seed = Math.floor(Math.random() * 2147483647);
-        // Chunked long render: one request per segment (telling the user which
-        // segment is in progress), then ffmpeg-merge them into a single clip.
+        // Long render → SEAMLESS chunking. Each chunk (after the first) feeds the
+        // PREVIOUS chunk's tail into the model's continue_motion so the motion continues
+        // instead of resetting. The next chunk's pose seek is the EXACT video_frame_offset
+        // the node reports (`d.videoFrameOffset`, read from the node via PreviewAny) —
+        // verified live: chaining it gives seamless, correct-length joins (estimating it
+        // froze the tail). Loop until the offset reaches the full source length.
+        const total = sourceVideoFrames;
+        const CONTINUE_MAX = 5; // == buildWanAnimate continue_motion_max_frames
+        const estTotal = Math.max(1, Math.ceil(total / Math.max(1, segCap - CONTINUE_MAX)));
         const segVideos = [];
         let segData = null;
-        let stopped = false; // user hit Stop mid-run → salvage the segments we have
-        for (let s = 0; s < segments.length; s++) {
+        let stopped = false;          // user hit Stop mid-run → salvage the chunks we have
+        let offset = 0, netTotal = 0; // node-reported pose offset; merged frame count
+        let continueVideoName = null; // prev chunk uploaded → continue_motion for the next
+        let segIdx = 0;
+        while (offset < total) {
           if (abortController.signal.aborted) { stopped = true; break; }
-          pendingGenSetLabel(tabId, `${t("msg_generatingSegment", { seg: s + 1, total: segments.length })}${vidSuffix}`);
+          let len = Math.min(segCap, total - offset);
+          len = Math.max(5, Math.floor((len - 1) / 4) * 4 + 1); // 4n+1, ≤ remaining
+          if (segIdx > 0 && len <= CONTINUE_MAX) break; // can't trim the overlap from ≤5 frames
+          pendingGenSetLabel(tabId, `${t("msg_generatingSegment", { seg: segIdx + 1, total: Math.max(estTotal, segIdx + 1) })}${vidSuffix}`);
           pendingGenSetProgress(tabId, 0, 1);
           let d;
           try {
-            const resp = await requestVideo(perOptions, { segmentOffset: segments[s].offset, segmentLength: segments[s].length });
+            const resp = await requestVideo(perOptions, { segmentOffset: offset, segmentLength: len, continueVideoName: continueVideoName || undefined });
             d = await resp.json();
             if (!resp.ok || !d.videos || !d.videos.length) {
               if (!segVideos.length && !allVideos.length) { failFatal(d.error || d.detail); return; }
-              break; // a later segment failed → merge the ones we got
+              break; // a later chunk failed → merge the ones we got
             }
           } catch (e) {
-            // Stop button aborts the in-flight fetch — keep finished segments and merge.
-            if (e.name === "AbortError") { stopped = true; break; }
+            if (e.name === "AbortError") { stopped = true; break; } // Stop → keep finished chunks
             throw e;
           }
           segData = d;
-          segVideos.push(d.videos[0]);
-          // Show this finished segment as a PLAYABLE video in the pending bubble so
-          // the user can click and watch each completed segment as they accumulate.
-          // Transient (lives in state.pendingGen, never persisted) — only the final
-          // merged clip is saved to the message.
           const sv = d.videos[0];
+          segVideos.push(sv);
+          // Show this finished chunk as a PLAYABLE video in the pending bubble (transient,
+          // never persisted — only the final merged clip is saved to the message).
           pendingGenAddVideo(tabId, sv.startsWith("data:") ? sv : `data:${d.videoMime || "video/mp4"};base64,${sv}`);
+          netTotal += (Number(d.frames) || len);
+          // Advance to the offset the NODE reported (fallback: offset+len if absent).
+          const nextOffset = Number(d.videoFrameOffset);
+          offset = (Number.isFinite(nextOffset) && nextOffset > offset) ? nextOffset : offset + len;
+          segIdx++;
+          // Upload this chunk so the NEXT one can continue_motion from its tail.
+          if (offset < total) {
+            try {
+              const up = await uploadComfySourceVideo({ base64: sv, mime: d.videoMime || "video/mp4" }, abortController.signal, 0);
+              continueVideoName = up.name;
+            } catch (e) {
+              if (e.name === "AbortError") { stopped = true; break; }
+              continueVideoName = null; // upload failed → next chunk falls back to a seam
+            }
+          }
+          if (segIdx > 400) break; // safety
         }
-        if (!segVideos.length) break; // stopped before the first segment finished → nothing to save
-        // Merge the finished segments into one usable clip. NO abort signal here:
-        // generation is the expensive part and it's done — once we have segments we
-        // always finalize them (incl. after a Stop), so the user gets a usable video.
+        if (!segVideos.length) break; // stopped before the first chunk finished → nothing to save
+        // Merge the finished chunks into one usable clip. NO abort signal here:
+        // generation is the expensive part and it's done — once we have chunks we always
+        // finalize them (incl. after a Stop), so the user gets a usable video.
         let merged = segVideos[0];
         if (segVideos.length > 1) {
           pendingGenSetLabel(tabId, `${t("msg_mergingSegments", { total: segVideos.length })}${vidSuffix}`);
@@ -804,7 +811,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
             method: "POST",
             headers: { "Content-Type": "application/json" },
             // sourceVideoName → the server re-muxes the FULL original audio over the
-            // merged clip (the per-segment audio all starts at t=0, so it would loop).
+            // merged clip (the per-chunk audio all starts at t=0, so it would loop).
             body: JSON.stringify({ videos: segVideos, mime: segData.videoMime || "video/mp4", sourceVideoName: sourceVideoName || undefined }),
           });
           const mData = await mResp.json();
@@ -814,12 +821,10 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
           }
           merged = mData.video;
         }
-        // Synthesize a result describing the merged clip (total frames at the source
-        // fps → correct duration). `partial` marks a Stop-salvaged clip (fewer segments
-        // than planned) so the done message says so.
-        const usedFrames = segments.slice(0, segVideos.length).reduce((a, sg) => a + sg.length, 0);
-        const partial = stopped && segVideos.length < segments.length;
-        data = { videos: [merged], videoMime: segData.videoMime, model: segData.model, width: segData.width, height: segData.height, fps: segData.fps, length: usedFrames, imagesUsed: segData.imagesUsed, segments: segVideos.length, partial, plannedSegments: segments.length };
+        // Synthesize a result describing the merged clip. `partial` marks a Stop-salvaged
+        // clip (didn't reach the full source length) so the done message says so.
+        const partial = stopped && offset < total;
+        data = { videos: [merged], videoMime: segData.videoMime, model: segData.model, width: segData.width, height: segData.height, fps: segData.fps, length: netTotal || undefined, imagesUsed: segData.imagesUsed, segments: segVideos.length, partial, plannedSegments: Math.max(estTotal, segVideos.length) };
       } else {
         if (count > 1) pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
         const resp = await requestVideo(perOptions);
