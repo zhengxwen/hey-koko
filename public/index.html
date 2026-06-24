@@ -483,6 +483,10 @@
             <span id="comfyParamFpsLabel">Video FPS</span>
             <input id="comfyParamFps" type="number" min="8" max="60" step="1" placeholder="Auto (24)" />
           </label>
+          <label class="comfyParamCheck" title="Wan Animate only: compile the model (inductor) for ~20–30% faster sampling. First run at each resolution pays a one-time compile (tens of seconds); best for fixed-resolution batches. Uses extra VRAM — when on, segments are auto-shortened to avoid OOM; at 720p+ it may still OOM, then turn this off or lower the size.">
+            <input id="comfyParamTorchCompile" type="checkbox" />
+            <span id="comfyParamTorchCompileLabel">torch.compile speedup (Wan Animate)</span>
+          </label>
           <button id="comfyParamsReset" type="button" class="secondary comfyParamsReset">Reset to auto</button>
         </div>
       </div>

@@ -9,7 +9,7 @@ import { getTab, getActiveTab } from './tabs.js';
 import { markdownToHtml } from './markdown.js';
 import {
   pendingGenStart, pendingGenSetLabel, pendingGenSetEnhanced,
-  pendingGenAddImage, pendingGenSetProgress, pendingGenSetPreview, pendingGenClear,
+  pendingGenAddImage, pendingGenAddVideo, pendingGenSetProgress, pendingGenSetPreview, pendingGenClear,
 } from './pending-gen.js';
 
 // setGenerating and renderChat will be injected from main
@@ -19,6 +19,30 @@ export function setDeps({ setGenerating, renderChat }) {
   _setGenerating = setGenerating;
   _renderChat = renderChat;
 }
+
+// Screen Wake Lock — keep the display awake during a long (minutes-to-30min) video
+// render so the OS doesn't sleep and drop the connection mid-generation. The lock
+// auto-releases when the tab is hidden, so re-acquire it when the tab returns AND a
+// generation is still running (state.imageGenAbortController is the "busy" signal).
+let _wakeLock = null, _wakeLockWanted = false;
+async function acquireWakeLock() {
+  _wakeLockWanted = true;
+  try {
+    if ("wakeLock" in navigator && !_wakeLock && document.visibilityState === "visible") {
+      _wakeLock = await navigator.wakeLock.request("screen");
+      _wakeLock.addEventListener("release", () => { _wakeLock = null; });
+    }
+  } catch { /* unsupported / denied — best-effort */ }
+}
+function releaseWakeLock() {
+  _wakeLockWanted = false;
+  try { _wakeLock && _wakeLock.release(); } catch { /* already gone */ }
+  _wakeLock = null;
+}
+// The lock auto-releases when the tab hides — re-acquire on return if still wanted.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && _wakeLockWanted) acquireWakeLock();
+});
 
 // Read the ComfyUI advanced-params modal into an options overlay. Only fields
 // the user explicitly set are included — empty fields fall back to the server's
@@ -42,6 +66,7 @@ function comfyOverrides() {
   if (length !== undefined) ov.length = length;
   const fps = num(dom.comfyParamFps?.value);
   if (fps !== undefined) ov.fps = fps;
+  if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
   return ov;
 }
 
@@ -350,15 +375,15 @@ async function uploadComfySourceVideo(video, signal, targetFps) {
 
 function subscribeComfyProgress(comfyHost, clientId, { onProgress, onPreview }) {
   if (!comfyHost) return () => {};
-  let ws;
-  try {
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(`${proto}//${comfyHost}/ws?clientId=${encodeURIComponent(clientId)}`);
-    ws.binaryType = "arraybuffer";
-  } catch {
-    return () => {};
-  }
-  ws.onmessage = (ev) => {
+  // A long video render can outlast an idle/sleep that silently drops the socket,
+  // freezing the progress bar (the render keeps going server-side). So AUTO-RECONNECT
+  // with the SAME clientId until unsubscribe — ComfyUI keeps broadcasting to that id,
+  // so progress/preview resume. Also reconnect eagerly when the tab returns to view.
+  let ws = null, closed = false, retryTimer = null;
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${proto}//${comfyHost}/ws?clientId=${encodeURIComponent(clientId)}`;
+
+  const onMessage = (ev) => {
     if (typeof ev.data === "string") {
       try {
         const msg = JSON.parse(ev.data);
@@ -374,8 +399,36 @@ function subscribeComfyProgress(comfyHost, clientId, { onProgress, onPreview }) 
       }
     } catch { /* malformed binary frame */ }
   };
-  ws.onerror = () => {};
-  return () => { try { ws.close(); } catch { /* already closed */ } };
+  const scheduleReconnect = () => {
+    if (closed || retryTimer) return;
+    retryTimer = setTimeout(() => { retryTimer = null; connect(); }, 2000);
+  };
+  function connect() {
+    if (closed) return;
+    try {
+      ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+    } catch { scheduleReconnect(); return; }
+    ws.onmessage = onMessage;
+    ws.onerror = () => {};                         // let onclose drive reconnection
+    ws.onclose = () => { if (!closed) scheduleReconnect(); };
+  }
+  // When the tab is shown again, the dead socket may not have fired onclose yet —
+  // nudge a reconnect if it's not OPEN.
+  const onVis = () => {
+    if (!closed && document.visibilityState === "visible" && (!ws || ws.readyState > 1)) {
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+      connect();
+    }
+  };
+  document.addEventListener("visibilitychange", onVis);
+  connect();
+  return () => {
+    closed = true;
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    document.removeEventListener("visibilitychange", onVis);
+    try { ws && ws.close(); } catch { /* already closed */ }
+  };
 }
 
 // Read the streamed NDJSON response from /api/generate-image (Ollama path).
@@ -418,11 +471,17 @@ async function readOllamaImageStream(r, onProgress) {
 // shorter segment to stay within a 32GB (RTX 5090) budget. Tuned so each tier fits
 // comfortably; the chunks are merged so total length is unchanged. Mirrors
 // animateSegmentCap in server/comfy.js.
-function animateSegmentCap(pixelBudget) {
-  if (pixelBudget <= 520000) return 241;   // ≤ ~640×640 budget
-  if (pixelBudget <= 1000000) return 121;  // ~720p (1280×720)
-  if (pixelBudget <= 2100000) return 65;   // ~1080p (1920×1080)
-  return 33;                               // beyond 1080p — keep segments short
+function animateSegmentCap(pixelBudget, torchCompile = false) {
+  // torch.compile (inductor) adds VRAM overhead (autotuning scratch + compiled
+  // buffers) → at 720p+ on 32GB it can OOM. When it's on, use one tier shorter
+  // segments to free headroom (more segments also amortizes the compile better).
+  // 720p (1M) compile-off tuned from a real measurement: 121f used ~22.5/31.5GB on
+  // the 5090, so 161f (~+33%) still leaves headroom under a ~28GB ceiling.
+  const tiers = torchCompile
+    ? [[520000, 121], [1000000, 65], [2100000, 33]]    // compile on — conservative (extra VRAM)
+    : [[520000, 241], [1000000, 161], [2100000, 65]];  // compile off
+  for (const [lim, cap] of tiers) if (pixelBudget <= lim) return cap;
+  return torchCompile ? 17 : 33;           // beyond 1080p
 }
 
 // Wan Animate can only generate up to `cap` frames in one pass (cap depends on the
@@ -477,6 +536,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   const abortController = new AbortController();
   state.imageGenAbortController = abortController;
   if (_setGenerating) _setGenerating(true);
+  acquireWakeLock(); // keep the display awake for the (long) render
   setAvatarState("thinking");
 
   const vidModel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
@@ -597,8 +657,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       const flf = nUsed === 2 ? t("msg_videoFlfSuffix", null, plang) : "";
       capNote = t("msg_videoImagesCapped", { used: nUsed, total: nInput, flf }, plang) + "\n\n";
     }
-    // Wan Animate long source: generated in N chunks and merged into one clip.
-    if (lastData.segments > 1) {
+    // Stopped early: only the segments finished before Stop were merged.
+    if (lastData.partial) {
+      capNote += t("msg_videoPartial", { done: lastData.segments, total: lastData.plannedSegments }, plang) + "\n\n";
+    } else if (lastData.segments > 1) {
+      // Wan Animate long source: generated in N chunks and merged into one clip.
       capNote += t("msg_videoMerged", { n: lastData.segments }, plang) + "\n\n";
     }
     // Wan Animate: source clip longer than the single-pass cap → was truncated.
@@ -681,7 +744,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // cap shrinks at higher output resolutions (VRAM headroom). Budget = the selected
   // ⚙/--size area, or the 640×640 default (mirrors the server's sizing).
   const animBudget = (reqOptions.width && reqOptions.height) ? reqOptions.width * reqOptions.height : 640 * 640;
-  const segCap = animateSegmentCap(animBudget);
+  const segCap = animateSegmentCap(animBudget, !!reqOptions.torchCompile);
   const canChunk = /animate/i.test(model) && !!sourceVideoName && sourceVideoFrames > segCap && !reqOptions.length;
   const segments = canChunk ? computeAnimateSegments(sourceVideoFrames, segCap) : null;
 
@@ -703,29 +766,46 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
         // segment is in progress), then ffmpeg-merge them into a single clip.
         const segVideos = [];
         let segData = null;
+        let stopped = false; // user hit Stop mid-run → salvage the segments we have
         for (let s = 0; s < segments.length; s++) {
-          if (abortController.signal.aborted) break;
+          if (abortController.signal.aborted) { stopped = true; break; }
           pendingGenSetLabel(tabId, `${t("msg_generatingSegment", { seg: s + 1, total: segments.length })}${vidSuffix}`);
           pendingGenSetProgress(tabId, 0, 1);
-          const resp = await requestVideo(perOptions, { segmentOffset: segments[s].offset, segmentLength: segments[s].length });
-          const d = await resp.json();
-          if (!resp.ok || !d.videos || !d.videos.length) {
-            if (!segVideos.length && !allVideos.length) { failFatal(d.error); return; }
-            break; // a later segment failed → merge the ones we got
+          let d;
+          try {
+            const resp = await requestVideo(perOptions, { segmentOffset: segments[s].offset, segmentLength: segments[s].length });
+            d = await resp.json();
+            if (!resp.ok || !d.videos || !d.videos.length) {
+              if (!segVideos.length && !allVideos.length) { failFatal(d.error || d.detail); return; }
+              break; // a later segment failed → merge the ones we got
+            }
+          } catch (e) {
+            // Stop button aborts the in-flight fetch — keep finished segments and merge.
+            if (e.name === "AbortError") { stopped = true; break; }
+            throw e;
           }
           segData = d;
           segVideos.push(d.videos[0]);
+          // Show this finished segment as a PLAYABLE video in the pending bubble so
+          // the user can click and watch each completed segment as they accumulate.
+          // Transient (lives in state.pendingGen, never persisted) — only the final
+          // merged clip is saved to the message.
+          const sv = d.videos[0];
+          pendingGenAddVideo(tabId, sv.startsWith("data:") ? sv : `data:${d.videoMime || "video/mp4"};base64,${sv}`);
         }
-        if (!segVideos.length) break;
-        // Merge the segments (single segment → no merge needed).
+        if (!segVideos.length) break; // stopped before the first segment finished → nothing to save
+        // Merge the finished segments into one usable clip. NO abort signal here:
+        // generation is the expensive part and it's done — once we have segments we
+        // always finalize them (incl. after a Stop), so the user gets a usable video.
         let merged = segVideos[0];
         if (segVideos.length > 1) {
           pendingGenSetLabel(tabId, `${t("msg_mergingSegments", { total: segVideos.length })}${vidSuffix}`);
           const mResp = await fetch("/api/comfy-merge-videos", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            signal: abortController.signal,
-            body: JSON.stringify({ videos: segVideos, mime: segData.videoMime || "video/mp4" }),
+            // sourceVideoName → the server re-muxes the FULL original audio over the
+            // merged clip (the per-segment audio all starts at t=0, so it would loop).
+            body: JSON.stringify({ videos: segVideos, mime: segData.videoMime || "video/mp4", sourceVideoName: sourceVideoName || undefined }),
           });
           const mData = await mResp.json();
           if (!mResp.ok || !mData.video) {
@@ -734,10 +814,12 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
           }
           merged = mData.video;
         }
-        // Synthesize a result describing the full merged clip (total frames at the
-        // source fps → correct duration in the done message).
+        // Synthesize a result describing the merged clip (total frames at the source
+        // fps → correct duration). `partial` marks a Stop-salvaged clip (fewer segments
+        // than planned) so the done message says so.
         const usedFrames = segments.slice(0, segVideos.length).reduce((a, sg) => a + sg.length, 0);
-        data = { videos: [merged], videoMime: segData.videoMime, model: segData.model, width: segData.width, height: segData.height, fps: segData.fps, length: usedFrames, imagesUsed: segData.imagesUsed, segments: segVideos.length };
+        const partial = stopped && segVideos.length < segments.length;
+        data = { videos: [merged], videoMime: segData.videoMime, model: segData.model, width: segData.width, height: segData.height, fps: segData.fps, length: usedFrames, imagesUsed: segData.imagesUsed, segments: segVideos.length, partial, plannedSegments: segments.length };
       } else {
         if (count > 1) pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
         const resp = await requestVideo(perOptions);
@@ -745,7 +827,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
         if (!resp.ok || !data.videos || !data.videos.length) {
           // First render failed → surface the error. A later one failing → keep
           // the videos we have and stop.
-          if (!allVideos.length) { failFatal(data.error); return; }
+          if (!allVideos.length) { failFatal(data.error || data.detail); return; }
           break;
         }
       }
@@ -774,6 +856,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   } finally {
     pendingGenClear(tabId);
     unsubscribe();
+    releaseWakeLock();
     if (_setGenerating) _setGenerating(false);
     state.imageGenAbortController = null;
   }
@@ -829,6 +912,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   const abortController = new AbortController();
   state.imageGenAbortController = abortController;
   if (_setGenerating) _setGenerating(true);
+  acquireWakeLock(); // keep the display awake for a long (batch / img2img) render
 
   if (anyEnhance) {
     setAvatarState("thinking");
@@ -863,6 +947,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   } catch (e) {
     // Enhancement cancelled by the user — clean up the status bubble and bail.
     pendingGenClear(tabId);
+    releaseWakeLock();
     setAvatarState("idle");
     if (_setGenerating) _setGenerating(false);
     state.imageGenAbortController = null;
@@ -1102,6 +1187,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   } finally {
     pendingGenClear(tabId);
     imgUnsub();
+    releaseWakeLock();
     if (_setGenerating) _setGenerating(false);
     state.imageGenAbortController = null;
   }

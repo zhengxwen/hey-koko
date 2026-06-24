@@ -38,7 +38,9 @@ async function resampleVideo(buf, targetFps) {
     outP = path.join(os.tmpdir(), `hk_rs_out_${id}.mp4`);
     await fsp.writeFile(inP, buf);
     const ok = await new Promise((resolve) => {
-      const p = spawn("ffmpeg", ["-y", "-i", inP, "-r", String(targetFps), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", outP]);
+      // Keep the audio (-c:a aac) — the merge step re-muxes the source soundtrack
+      // onto the chunked output, so a resampled source must still carry its audio.
+      const p = spawn("ffmpeg", ["-y", "-i", inP, "-r", String(targetFps), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", outP]);
       p.on("close", (code) => resolve(code === 0)); p.on("error", () => resolve(false));
     });
     if (!ok) return null;
@@ -52,11 +54,14 @@ async function resampleVideo(buf, targetFps) {
 // resolution needs a shorter segment to stay within a 32GB budget. Mirrors
 // animateSegmentCap in public/js/image-gen.js (the client drives the chunk loop;
 // this is the fallback / single-pass default).
-function animateSegmentCap(pixelBudget) {
-  if (pixelBudget <= 520000) return 241;   // ≤ ~640×640 budget
-  if (pixelBudget <= 1000000) return 121;  // ~720p (1280×720)
-  if (pixelBudget <= 2100000) return 65;   // ~1080p (1920×1080)
-  return 33;                               // beyond 1080p — keep segments short
+function animateSegmentCap(pixelBudget, torchCompile = false) {
+  // torch.compile adds VRAM overhead → use one tier shorter segments when it's on
+  // (mirrors public/js/image-gen.js).
+  const tiers = torchCompile
+    ? [[520000, 121], [1000000, 65], [2100000, 33]]
+    : [[520000, 241], [1000000, 161], [2100000, 65]]; // 720p 161f tuned to ~22.5GB measured headroom
+  for (const [lim, cap] of tiers) if (pixelBudget <= lim) return cap;
+  return torchCompile ? 17 : 33;
 }
 
 // Read a model-name enum out of a ComfyUI node's input schema (e.g. the list of
@@ -1133,7 +1138,7 @@ async function animateCompanions() {
 // WanAnimateToVideo; the reference image (+ its clip_vision encode) supplies the
 // character. Single pass = up to `length` frames (no video-extend yet). Two LoRAs
 // (lightx2v distill for 6-step turbo + relight); ModelSamplingSD3 shift 8.
-function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, length, seed, fps, videoFrameOffset = 0 }) {
+function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, length, seed, fps, videoFrameOffset = 0, torchCompile = false }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   const dw = (face) => ({
     class_type: "DWPreprocessor",
@@ -1147,11 +1152,15 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
       scale_stick_for_xinsr_cn: "disable",
     },
   });
-  return {
+  // Optional torch.compile (comfy-core TorchCompileModel / inductor) between the
+  // relight LoRA and ModelSamplingSD3 — ~20–30% faster after a one-time per-shape
+  // compile. Matches the official template's node 284 wiring (99→284→60).
+  const samplingSrc = torchCompile ? "25" : "3";
+  const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.loraSpeed, strength_model: 1 } },
     "3": { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraRelight, strength_model: 1 } },
-    "4": { class_type: "ModelSamplingSD3", inputs: { model: ["3", 0], shift: 8 } },
+    "4": { class_type: "ModelSamplingSD3", inputs: { model: [samplingSrc, 0], shift: 8 } },
     "5": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
     "6": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
     "7": { class_type: "CLIPVisionLoader", inputs: { clip_name: comp.clipVision } },
@@ -1178,6 +1187,8 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
     "23": { class_type: "CreateVideo", inputs: { images: ["22", 0], audio: ["15", 1], fps: ["15", 2] } },
     "24": { class_type: "SaveVideo", inputs: { video: ["23", 0], filename_prefix: "heykoko_animate", format: "auto", codec: "auto" } },
   };
+  if (torchCompile) wf["25"] = { class_type: "TorchCompileModel", inputs: { model: ["3", 0], backend: "inductor" } };
+  return wf;
 }
 
 // Parse intrinsic pixel dimensions from a base64 PNG/JPEG without an image lib.
@@ -1307,6 +1318,26 @@ async function uploadComfyVideo(req, res) {
 // (ffmpeg concat demuxer, re-encoded for clean joins; audio kept). The browser drives
 // the chunk loop (so it can show "segment N/M") and POSTs the finished segments here.
 // Body: { videos: [base64…], mime }. Returns { video: base64, videoMime }.
+// Spawn ffmpeg with args → resolves true on exit 0. Shared by the merge path.
+function runFfmpeg(args) {
+  return new Promise((resolve) => {
+    const p = spawn("ffmpeg", args);
+    let err = ""; p.stderr.on("data", (d) => (err += d));
+    p.on("close", (code) => resolve(code === 0));
+    p.on("error", () => resolve(false));
+  });
+}
+
+// Download an uploaded ComfyUI input file (e.g. the source video) → Buffer, or null.
+async function fetchComfyInput(filename) {
+  try {
+    const params = new URLSearchParams({ filename, subfolder: "", type: "input" });
+    const r = await fetch(`${config.comfyUrl}/view?${params}`);
+    if (!r.ok) return null;
+    return Buffer.from(await r.arrayBuffer());
+  } catch { return null; }
+}
+
 async function mergeComfyVideos(req, res) {
   let dir;
   try {
@@ -1315,6 +1346,7 @@ async function mergeComfyVideos(req, res) {
     if (vids.length < 2) { sendJson(res, 400, { error: "need at least 2 segments to merge" }); return; }
     const mime = body.mime || "video/mp4";
     const ext = /webm/i.test(mime) ? "webm" : "mp4";
+    const sourceVideoName = typeof body.sourceVideoName === "string" ? body.sourceVideoName : "";
     dir = await fsp.mkdtemp(path.join(os.tmpdir(), "hk_merge_"));
     const files = [];
     for (let i = 0; i < vids.length; i++) {
@@ -1326,18 +1358,32 @@ async function mergeComfyVideos(req, res) {
     // concat demuxer list file (single-quoted paths, escaped per ffmpeg's rules).
     const listFile = path.join(dir, "list.txt");
     await fsp.writeFile(listFile, files.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join("\n") + "\n");
-    const outFile = path.join(dir, `merged.${ext}`);
-    const args = ["-y", "-f", "concat", "-safe", "0", "-i", listFile];
-    if (ext === "webm") args.push("-c:v", "libvpx-vp9", "-c:a", "libopus");
-    else args.push("-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac");
-    args.push(outFile);
-    const ok = await new Promise((resolve) => {
-      const p = spawn("ffmpeg", args);
-      let err = ""; p.stderr.on("data", (d) => (err += d));
-      p.on("close", (code) => resolve(code === 0)); p.on("error", () => resolve(false));
-    });
-    if (!ok) { sendJson(res, 500, { error: "ffmpeg merge failed (is ffmpeg installed?)" }); return; }
-    const out = await fsp.readFile(outFile);
+    // Step A: concat the segment VIDEO streams ONLY. The per-segment audio is wrong —
+    // each chunk carries the source audio from t=0 (GetVideoComponents.audio), so a
+    // plain concat would loop the first chunk's audio. We re-attach the real audio next.
+    const mergedV = path.join(dir, `merged_v.${ext}`);
+    const concatArgs = ["-y", "-f", "concat", "-safe", "0", "-i", listFile, "-an"];
+    if (ext === "webm") concatArgs.push("-c:v", "libvpx-vp9");
+    else concatArgs.push("-c:v", "libx264", "-pix_fmt", "yuv420p");
+    concatArgs.push(mergedV);
+    if (!(await runFfmpeg(concatArgs))) { sendJson(res, 500, { error: "ffmpeg merge failed (is ffmpeg installed?)" }); return; }
+    // Step B: mux the FULL source audio (fetched from ComfyUI) over the merged video,
+    // so the whole clip carries the original soundtrack once, in sync. Falls back to
+    // the silent merge if the source can't be fetched or has no audio.
+    let finalFile = mergedV;
+    if (sourceVideoName) {
+      const srcBuf = await fetchComfyInput(sourceVideoName);
+      if (srcBuf) {
+        const srcFile = path.join(dir, "source_input");
+        await fsp.writeFile(srcFile, srcBuf);
+        const muxed = path.join(dir, `merged.${ext}`);
+        const muxArgs = ["-y", "-i", mergedV, "-i", srcFile, "-map", "0:v", "-map", "1:a?", "-c:v", "copy", "-shortest"];
+        muxArgs.push("-c:a", ext === "webm" ? "libopus" : "aac");
+        muxArgs.push(muxed);
+        if (await runFfmpeg(muxArgs)) finalFile = muxed;
+      }
+    }
+    const out = await fsp.readFile(finalFile);
     sendJson(res, 200, { video: out.toString("base64"), videoMime: mime });
   } catch (e) {
     sendJson(res, 500, { error: String((e && e.message) || e) });
@@ -1346,7 +1392,25 @@ async function mergeComfyVideos(req, res) {
   }
 }
 
-// Poll /history until the queued prompt reports outputs (or we time out / abort).
+// Pull a human-readable message out of a ComfyUI history `status` whose
+// status_str is "error" — the failing node + the exception text (incl. CUDA OOM).
+function comfyExecError(status) {
+  try {
+    const msgs = Array.isArray(status && status.messages) ? status.messages : [];
+    const err = msgs.find((m) => Array.isArray(m) && m[0] === "execution_error");
+    if (err && err[1]) {
+      const d = err[1];
+      const exc = d.exception_message || d.exception_type || "未知错误";
+      const node = d.node_type ? `节点 ${d.node_type}${d.node_id != null ? " #" + d.node_id : ""} ` : "";
+      return `ComfyUI 执行错误：${node}${exc}`;
+    }
+  } catch { /* fall through */ }
+  return "ComfyUI 执行错误（未提供详情）";
+}
+
+// Poll /history until the queued prompt reports outputs (or it errors / times out /
+// aborts). On a ComfyUI execution error we throw the real message (not poll to a
+// misleading timeout); we only return empty outputs once the run is truly completed.
 async function waitForOutputs(promptId, signal, deadline) {
   while (Date.now() < deadline) {
     if (signal.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
@@ -1355,10 +1419,18 @@ async function waitForOutputs(promptId, signal, deadline) {
       if (r.ok) {
         const hist = await r.json();
         const entry = hist[promptId];
-        if (entry && entry.outputs) return entry.outputs;
+        if (entry) {
+          const status = entry.status;
+          if (status && status.status_str === "error") {
+            throw Object.assign(new Error(comfyExecError(status)), { isComfyError: true });
+          }
+          if (entry.outputs && Object.keys(entry.outputs).length) return entry.outputs;
+          // Completed (success) but produced nothing → return empty, let the caller report it.
+          if (status && status.completed) return entry.outputs || {};
+        }
       }
     } catch (e) {
-      if (e.name === "AbortError") throw e;
+      if (e.name === "AbortError" || e.isComfyError) throw e;
     }
     await new Promise((res) => setTimeout(res, 800));
   }
@@ -1520,7 +1592,7 @@ async function generateComfyImage(req, res) {
         // Single-pass cap scales down with the output resolution (VRAM). Only used
         // for the rare non-chunked fallback (client couldn't chunk); when the client
         // chunks it sends segmentLength directly.
-        const segCap = animateSegmentCap(aw * ah);
+        const segCap = animateSegmentCap(aw * ah, !!opts.torchCompile);
         const wantLen = segLen || opts.length || (srcFrames > 0 ? Math.min(srcFrames, segCap) : 77);
         const al = Math.max(5, Math.round((wantLen - 1) / 4) * 4 + 1); // 4n+1
         // Output fps = the source's fps (or the rate it was resampled to) — wired
@@ -1529,7 +1601,7 @@ async function generateComfyImage(req, res) {
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         const refImageName = await uploadImage(images[0], controller.signal);
         imagesUsed = 1;
-        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, length: al, seed, fps: afps, videoFrameOffset: vfo });
+        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, length: al, seed, fps: afps, videoFrameOffset: vfo, torchCompile: !!opts.torchCompile });
         videoDims = { width: aw, height: ah, length: al, fps: afps };
         // Single-pass only (no chunking): if the source is longer than the frames we
         // generated, tell the client it was cut. When chunking, the client merges.
@@ -1704,6 +1776,13 @@ async function generateComfyImage(req, res) {
       const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
       if (videoType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
+        // Ran to completion but no video file came back — tell the client why rather
+        // than a bare "no video" (usually SaveVideo missing or an output-collection miss).
+        if (!outVideos.length) {
+          const nodeIds = Object.keys(outputs || {}).join(", ") || "无";
+          sendJson(res, 502, { error: `ComfyUI 完成了但未产出视频文件（输出节点：${nodeIds}）。请确认工作流包含 SaveVideo 节点，或重试。` });
+          return;
+        }
         sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, truncatedFrom: videoDims?.truncatedFrom, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
@@ -1719,6 +1798,14 @@ async function generateComfyImage(req, res) {
       sendJson(res, 504, { error: isVideoReq
         ? "ComfyUI 视频生成超时（已等待 30 分钟）。可降低分辨率(⚙ 尺寸)、减少帧数(⚙ Length)或步数后重试。"
         : "ComfyUI 图片生成超时，请重试或减少步数。" });
+    } else if (error.isComfyError || (typeof error.message === "string" && error.message.startsWith("ComfyUI 执行错误"))) {
+      // A real ComfyUI execution error (incl. CUDA OOM) — surface it verbatim, with
+      // an actionable hint when we recognize an out-of-memory failure.
+      let msg = error.message;
+      if (/out of memory|CUDA error|alloc/i.test(msg)) {
+        msg += "\n\n显存不足：请降低 ⚙ 尺寸（如 720p→≤640）、关闭 torch.compile，或减少帧数后重试。";
+      }
+      sendJson(res, 500, { error: msg });
     } else if (typeof error.message === "string" && (error.message.startsWith("缺少") || error.message.includes("暂未接入"))) {
       // Missing companion files, or an unsupported model — surface the message.
       sendJson(res, 400, { error: error.message });
