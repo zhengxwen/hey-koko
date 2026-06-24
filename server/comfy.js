@@ -1204,14 +1204,19 @@ async function animateCompanions() {
 
 // Wan 2.2 Animate — MOVE mode (pose transfer). A reference person image + a source
 // video → the character performs the video's motion. Flattened from the official
-// "Wan2.2 14B Animate" template (Move = no background_video / character_mask),
-// VERIFIED end-to-end. The source frames are scaled to width×height, then DWPose
-// extracts a body+hands pose (pose_video) and a face (face_video) that drive
-// WanAnimateToVideo; the reference image (+ its clip_vision encode) supplies the
-// character. Single pass = up to `length` frames (no video-extend yet). Two LoRAs
-// (lightx2v distill for 6-step turbo + relight); ModelSamplingSD3 shift 8.
-function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, length, seed, fps, videoFrameOffset = 0, torchCompile = false, continueVideoName = null }) {
+// "Wan2.2 14B Animate" template (Move = no background_video / character_mask).
+// For a source longer than one pass, the graph CHAINS N chunks IN-GRAPH (the
+// template's "Video Extend" mechanism, LIVE-VERIFIED seamless): chunk 0 runs at
+// video_frame_offset 0; each later chunk feeds the PREVIOUS chunk's frames into
+// continue_motion (the node uses the last continue_motion_max_frames=5 and trims the
+// regenerated overlap via trim_latent/trim_image) and takes the previous chunk's
+// video_frame_offset OUTPUT as its seek; ImageBatch concatenates all chunks; ONE
+// CreateVideo muxes the source audio+fps. `chunks` = [{offset,length}, …] (length 1 =
+// single pass). Two LoRAs (lightx2v distill 6-step turbo + relight); ModelSamplingSD3
+// shift 8; optional torch.compile.
+function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, fps, torchCompile = false, chunks }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
+  const segs = (Array.isArray(chunks) && chunks.length) ? chunks : [{ offset: 0, length: 77 }];
   const dw = (face) => ({
     class_type: "DWPreprocessor",
     inputs: {
@@ -1225,9 +1230,9 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
     },
   });
   // Optional torch.compile (comfy-core TorchCompileModel / inductor) between the
-  // relight LoRA and ModelSamplingSD3 — ~20–30% faster after a one-time per-shape
-  // compile. Matches the official template's node 284 wiring (99→284→60).
+  // relight LoRA and ModelSamplingSD3 — ~20–30% faster after a one-time per-shape compile.
   const samplingSrc = torchCompile ? "25" : "3";
+  // Shared loaders + source preprocessing (DWPose pose/face from the full source).
   const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.loraSpeed, strength_model: 1 } },
@@ -1246,36 +1251,29 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
     "14": { class_type: "PixelPerfectResolution", inputs: { original_image: ["15", 0], image_gen_width: width, image_gen_height: height, resize_mode: "Just Resize" } },
     "16": dw(true),  // face_video
     "17": dw(false), // pose_video (body + hands)
-    // video_frame_offset seeks this many frames into the pose/face videos so a long
-    // source can be generated in chunks (each ≤ the single-pass cap), then merged.
-    "18": { class_type: "WanAnimateToVideo", inputs: { positive: ["8", 0], negative: ["9", 0], vae: ["6", 0], clip_vision_output: ["11", 0], reference_image: ["10", 0], face_video: ["16", 0], pose_video: ["17", 0], width, height, length, batch_size: 1, continue_motion_max_frames: 5, video_frame_offset: videoFrameOffset } },
-    "19": { class_type: "KSampler", inputs: { model: ["4", 0], positive: ["18", 0], negative: ["18", 1], latent_image: ["18", 2], seed, steps: 6, cfg: 1, sampler_name: "euler", scheduler: "simple", denoise: 1 } },
-    "20": { class_type: "TrimVideoLatent", inputs: { samples: ["19", 0], trim_amount: ["18", 3] } },
-    "21": { class_type: "VAEDecode", inputs: { samples: ["20", 0], vae: ["6", 0] } },
-    "22": { class_type: "ImageFromBatch", inputs: { image: ["21", 0], batch_index: ["18", 4], length: 4096 } },
-    // Output fps = the SOURCE video's fps (GetVideoComponents.fps) so the timing is
-    // preserved (not forced to 16 → slow-mo). For a custom fps the client resamples
-    // the source on upload, so this still equals the desired rate.
-    "23": { class_type: "CreateVideo", inputs: { images: ["22", 0], audio: ["15", 1], fps: ["15", 2] } },
-    "24": { class_type: "SaveVideo", inputs: { video: ["23", 0], filename_prefix: "heykoko_animate", format: "auto", codec: "auto" } },
   };
   if (torchCompile) wf["25"] = { class_type: "TorchCompileModel", inputs: { model: ["3", 0], backend: "inductor" } };
-  // continue_motion (long-video seam fix): feed the PREVIOUS chunk's frames in so the
-  // model continues its motion instead of resetting at the boundary. The node uses
-  // the last `continue_motion_max_frames` (5) and emits trim_latent/trim_image (already
-  // wired to nodes 20/22) to drop the regenerated overlap → each chunk returns only the
-  // genuinely-new frames. Mirrors the template's "Video Extend" subgraph.
-  if (continueVideoName) {
-    wf["26"] = { class_type: "LoadVideo", inputs: { file: continueVideoName } };
-    wf["27"] = { class_type: "GetVideoComponents", inputs: { video: ["26", 0] } };
-    wf["18"].inputs.continue_motion = ["27", 0];
-  }
-  // Expose WanAnimateToVideo's video_frame_offset OUTPUT (out 5) so the server can read
-  // it from /history and hand the NEXT chunk the exact seek the node computed
-  // (offset_out = offset_in + length − trim_image). Verified live: chaining this output
-  // → next input gives seamless, correct-length joins. PreviewAny is an output node, so
-  // its value lands in history.outputs["28"].text[0].
-  wf["28"] = { class_type: "PreviewAny", inputs: { source: ["18", 5] } };
+  // Per-chunk: WanAnimateToVideo → KSampler → TrimVideoLatent → VAEDecode → ImageFromBatch.
+  // Chunk k>0 continues from chunk k-1 (continue_motion + chained video_frame_offset).
+  let accFrames = null;   // [nodeId, 0] of frames accumulated so far (ImageBatch)
+  let prevAnim = null, prevFrames = null;
+  segs.forEach((ck, k) => {
+    const b = 100 + k * 10;
+    const A = String(b), S = String(b + 1), T = String(b + 2), D = String(b + 3), F = String(b + 4);
+    const animInputs = { positive: ["8", 0], negative: ["9", 0], vae: ["6", 0], clip_vision_output: ["11", 0], reference_image: ["10", 0], face_video: ["16", 0], pose_video: ["17", 0], width, height, length: ck.length, batch_size: 1, continue_motion_max_frames: 5, video_frame_offset: k === 0 ? 0 : [prevAnim, 5] };
+    if (k > 0) animInputs.continue_motion = [prevFrames, 0]; // prev chunk's frames (node uses last 5)
+    wf[A] = { class_type: "WanAnimateToVideo", inputs: animInputs };
+    wf[S] = { class_type: "KSampler", inputs: { model: ["4", 0], positive: [A, 0], negative: [A, 1], latent_image: [A, 2], seed, steps: 6, cfg: 1, sampler_name: "euler", scheduler: "simple", denoise: 1 } };
+    wf[T] = { class_type: "TrimVideoLatent", inputs: { samples: [S, 0], trim_amount: [A, 3] } };
+    wf[D] = { class_type: "VAEDecode", inputs: { samples: [T, 0], vae: ["6", 0] } };
+    wf[F] = { class_type: "ImageFromBatch", inputs: { image: [D, 0], batch_index: [A, 4], length: 4096 } };
+    if (k === 0) accFrames = [F, 0];
+    else { const B = String(b + 5); wf[B] = { class_type: "ImageBatch", inputs: { image1: accFrames, image2: [F, 0] } }; accFrames = [B, 0]; }
+    prevAnim = A; prevFrames = F;
+  });
+  // Single CreateVideo over all accumulated frames — output keeps the SOURCE fps+audio.
+  wf["90"] = { class_type: "CreateVideo", inputs: { images: accFrames, audio: ["15", 1], fps: ["15", 2] } };
+  wf["91"] = { class_type: "SaveVideo", inputs: { video: ["90", 0], filename_prefix: "heykoko_animate", format: "auto", codec: "auto" } };
   return wf;
 }
 
@@ -1591,10 +1589,11 @@ async function generateComfyImage(req, res) {
     // The browser can supply its own clientId so it can subscribe to ComfyUI's
     // WebSocket for live progress / preview frames using the same id.
     const clientId = (typeof bodyClientId === "string" && bodyClientId) || crypto.randomUUID();
-    // Video renders (esp. a full ~241-frame Wan Animate segment) can run well past
-    // the 10-min image cap — allow up to 30 min for video, 10 min otherwise.
+    // Video renders run long; a chained multi-chunk Wan Animate runs ALL chunks in one
+    // pass, so allow up to 2h for video (the client sends a chunk-count-scaled timeout),
+    // 10 min otherwise.
     isVideoReq = !!videoType;
-    const maxTimeout = videoType ? 1800 : 600;
+    const maxTimeout = videoType ? 7200 : 600;
     const timeoutMs = Math.min(maxTimeout, Math.max(60, reqTimeout || 120)) * 1000;
     const deadline = Date.now() + timeoutMs;
     const controller = new AbortController();
@@ -1676,30 +1675,42 @@ async function generateComfyImage(req, res) {
           aw = snapDim(Math.sqrt(budget * aspect), 16);
           ah = snapDim(Math.sqrt(budget / aspect), 16);
         }
-        // Length. The client may chunk a long source into segments (each ≤ the
-        // single-pass cap) and merge them — then it sends segmentOffset/segmentLength
-        // and we seek into the pose video. Otherwise length = the FULL source clip
-        // (from ffprobe), snapped to 4n+1 and capped. An explicit ⚙ length wins.
+        // Chunk schedule. A source longer than the single-pass cap (which scales down
+        // with resolution for VRAM) is generated as N chained chunks IN ONE graph
+        // (continue_motion → seamless). Deterministic per the LIVE-VERIFIED node rule:
+        // offset_out = offset_in + length − trim, trim = continue_motion_max_frames(5)
+        // for k>0 else 0. A pinned ⚙ length forces one bounded pass.
+        const snap4 = (n) => Math.max(5, Math.floor((n - 1) / 4) * 4 + 1); // 4n+1, ≤ n
         const srcFrames = Number(sourceVideoFrames) || 0;
-        const segLen = Number(segmentLength) || 0;
-        const vfo = Math.max(0, Number(segmentOffset) || 0);
-        // Single-pass cap scales down with the output resolution (VRAM). Only used
-        // for the rare non-chunked fallback (client couldn't chunk); when the client
-        // chunks it sends segmentLength directly.
         const segCap = animateSegmentCap(aw * ah, !!opts.torchCompile);
-        const wantLen = segLen || opts.length || (srcFrames > 0 ? Math.min(srcFrames, segCap) : 77);
-        const al = Math.max(5, Math.round((wantLen - 1) / 4) * 4 + 1); // 4n+1
-        // Output fps = the source's fps (or the rate it was resampled to) — wired
-        // at the CreateVideo node; this is just for the done-message duration.
+        const OVERLAP = 5; // == continue_motion_max_frames in buildWanAnimate
+        let chunks, truncatedFrom;
+        if (opts.length) {
+          chunks = [{ offset: 0, length: snap4(Math.min(opts.length, segCap)) }];
+          if (srcFrames > chunks[0].length) truncatedFrom = srcFrames; // pinned length cut the clip
+        } else if (srcFrames > 0) {
+          chunks = [];
+          let off = 0, k = 0;
+          while (off < srcFrames) {
+            const len = snap4(Math.min(segCap, srcFrames - off));
+            if (k > 0 && len <= OVERLAP) break; // can't trim the overlap from ≤5 frames
+            chunks.push({ offset: off, length: len });
+            off = off + len - (k > 0 ? OVERLAP : 0); // = this chunk's video_frame_offset OUTPUT
+            k++;
+            if (k > 400) break; // safety
+          }
+        } else {
+          chunks = [{ offset: 0, length: 77 }];
+        }
+        // Total output frames = chunk0 length + Σ(later chunk length − overlap).
+        const totalFrames = chunks.reduce((a, c, i) => a + c.length - (i > 0 ? OVERLAP : 0), 0);
         const afps = Number(sourceVideoFps) || opts.fps || 16;
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         const refImageName = await uploadImage(images[0], controller.signal);
         imagesUsed = 1;
-        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, length: al, seed, fps: afps, videoFrameOffset: vfo, torchCompile: !!opts.torchCompile, continueVideoName: (typeof continueVideoName === "string" && continueVideoName) ? continueVideoName : null });
-        videoDims = { width: aw, height: ah, length: al, fps: afps };
-        // Single-pass only (no chunking): if the source is longer than the frames we
-        // generated, tell the client it was cut. When chunking, the client merges.
-        if (!segLen && srcFrames > al) videoDims.truncatedFrom = srcFrames;
+        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, fps: afps, torchCompile: !!opts.torchCompile, chunks });
+        videoDims = { width: aw, height: ah, length: totalFrames, fps: afps, segments: chunks.length };
+        if (truncatedFrom) videoDims.truncatedFrom = truncatedFrom;
       } else if (videoType) {
         // Video. WAN 5B ti2v + 14B i2v do image→video; WAN 14B t2v / Hunyuan are
         // text→video only. The dedicated WAN 2.2 14B i2v model needs a ref image.
@@ -1891,16 +1902,6 @@ async function generateComfyImage(req, res) {
           }
         }
       }
-      // Animate chunking: return this chunk's net frame count (ffprobe) AND the
-      // WanAnimateToVideo video_frame_offset OUTPUT (from the PreviewAny node 28) — the
-      // client feeds that exact offset to the next chunk for a seamless continue_motion
-      // join (offset_out = offset_in + length − trim_image; verified live).
-      let outFrames, nextOffset;
-      if (videoType === "animate") {
-        if (firstVideoBuf) { try { outFrames = (await probeVideo(firstVideoBuf)).frames || undefined; } catch { /* best-effort */ } }
-        const ov = outputs?.["28"]?.text?.[0];
-        if (ov != null && ov !== "" && !Number.isNaN(Number(ov))) nextOffset = Number(ov);
-      }
 
       const now = new Date();
       const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
@@ -1913,7 +1914,7 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI 完成了但未产出视频文件（输出节点：${nodeIds}）。请确认工作流包含 SaveVideo 节点，或重试。` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, frames: outFrames, videoFrameOffset: nextOffset, truncatedFrom: videoDims?.truncatedFrom, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);
@@ -1926,7 +1927,7 @@ async function generateComfyImage(req, res) {
     if (clientGone || res.writableEnded) return; // client already disconnected — nothing to send
     if (error.name === "AbortError") {
       sendJson(res, 504, { error: isVideoReq
-        ? "ComfyUI 视频生成超时（已等待 30 分钟）。可降低分辨率(⚙ 尺寸)、减少帧数(⚙ Length)或步数后重试。"
+        ? "ComfyUI 视频生成超时。长视频会分多段一次跑完——可降低分辨率(⚙ 尺寸)、减少帧数(⚙ Length)，或把源视频剪短分次处理后重试。"
         : "ComfyUI 图片生成超时，请重试或减少步数。" });
     } else if (error.isComfyError || (typeof error.message === "string" && error.message.startsWith("ComfyUI 执行错误"))) {
       // A real ComfyUI execution error (incl. CUDA OOM) — surface it verbatim, with
