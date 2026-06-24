@@ -2685,7 +2685,9 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       video.addEventListener("timeupdate", revealIfAudio);
 
       // Delete button (top-right) — removes just this video from the message.
-      if (Number.isInteger(index)) {
+      // User-bubble videos are uploads the message depends on, so they're not
+      // individually deletable (no × shown); delete the whole bubble instead.
+      if (Number.isInteger(index) && role !== "user") {
         const del = document.createElement("button");
         del.className = "videoDeleteBtn";
         del.type = "button";
