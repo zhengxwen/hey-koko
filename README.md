@@ -20,7 +20,7 @@ Hey-Koko gives you a personal AI chat experience without sending a single byte t
 - **Web & YouTube** — `/url` fetches and summarizes a web page, or transcribes and tidies up a YouTube video.
 - **Web search** — `/search` queries DuckDuckGo, optionally reading the top results in depth.
 - **Image & video generation** — `/imagine` with local Ollama image models; optionally connect [ComfyUI](#comfyui-advanced-image--video-generation) for advanced text-to-image, instruction editing, multi-image composition, and video.
-- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file (Kokoro / CosyVoice, or macOS system voices). Optional auto-speak reads replies aloud.
+- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file (Kokoro, or macOS system voices). Optional auto-speak reads replies aloud.
 - **Long-term memory & proactive messages** — remembers facts about you, and can greet, nudge, or remind you on its own.
 - **Agentic tools** — an optional tool-use loop (date/time, calculator, web search, recall memory, set reminders, remember facts).
 - **Background task queue** — long-running jobs run detached so you can keep chatting; see [Background Jobs](#background-jobs).
@@ -84,7 +84,7 @@ Type `/` in the chat box to open the command palette. The main commands:
 | `/analyze [question]` | Analyze an attached image/video with the vision model. `-f N` sets how many video frames to sample (default 8). |
 | `/url [prompt] <link>` | Parse & summarize a web page, or transcribe & tidy up a YouTube video. |
 | `/search <query>` | DuckDuckGo search. `--deep[=N]`/`--read` to read pages, `--n N` result count, `--day`/`--week`/`--month`/`--year` recency. |
-| `/voice <text>` | Text-to-speech → downloadable audio file. `--use`/`-u engine:voice` (e.g. `cosyvoice:中文男`), `--speed`/`-s 0.5–2`. |
+| `/voice <text>` | Text-to-speech → downloadable audio file. `--use`/`-u engine:voice` (e.g. `kokoro:zm_yunxi`), `--speed`/`-s 0.5–2`. |
 | `/memory <fact>` | Remember a fact about you long-term. |
 | `/note <text>` | Record a note (no AI reply). |
 | `/remind <when> <text>` | Set a reminder, e.g. `/remind 30m drink water`. |
@@ -215,14 +215,13 @@ When a YouTube video has no subtitles, `/url` falls back to downloading the audi
 ### Local text-to-speech (`/voice` command)
 
 The `/voice <text>` command synthesizes a **downloadable audio file** with a
-local open-source engine. Two engines are supported, each exposing fixed preset
-voices (male/female) selectable in the **Settings voice dropdown** or inline with
-`--use`/`-u`:
+local open-source engine. The **Kokoro** engine is light & fast and exposes
+fixed preset voices (male/female) selectable in the **Settings voice dropdown**
+or inline with `--use`/`-u`:
 
 | Engine | Strength | Preset voices |
 |--------|----------|---------------|
 | **Kokoro** | light & fast | Chinese `kokoro:zf_xiaoxiao` (女) / `kokoro:zm_yunxi` (男); English `kokoro:af_heart` (US ♀) / `kokoro:bm_george` (UK ♂) … |
-| **CosyVoice** | higher Chinese quality | `cosyvoice:中文女`, `cosyvoice:中文男`, `cosyvoice:粤语女` |
 
 These need PyTorch/MLX wheels that don't yet exist for the newest Python, so
 install them in a **dedicated venv (Python 3.10–3.11)**. The easiest way is
@@ -246,35 +245,9 @@ The server **auto-detects `~/venv/tts/bin/python`**, so you can just run
 `TTS_PYTHON` at its `bin/python`.) AAC encoding uses `ffmpeg` (`brew install
 ffmpeg`); without it the audio falls back to wav.
 
-<details>
-<summary>CosyVoice (optional, higher Chinese quality — harder on macOS)</summary>
-
-CosyVoice is not a pip package; clone the repo, install deps, and download the
-SFT model. Its `pynini`/WeTextProcessing dependency has no macOS wheel — install
-that one via conda-forge (`conda install -c conda-forge pynini`). Then add to the
-**same venv** so both engines show up:
-
-```bash
-git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git ~/CosyVoice
-uv pip install --python ~/venv/tts/bin/python torch torchaudio modelscope \
-  librosa onnxruntime hyperpyyaml conformer diffusers gdown inflect lightning
-~/venv/tts/bin/python -c "from modelscope import snapshot_download; \
-  snapshot_download('iic/CosyVoice-300M-SFT', \
-  local_dir='$HOME/CosyVoice/pretrained_models/CosyVoice-300M-SFT')"
-```
-
-Launch with the repo + model on the path:
-
-```bash
-PYTHONPATH=$HOME/CosyVoice:$HOME/CosyVoice/third_party/Matcha-TTS \
-COSYVOICE_MODEL_DIR=$HOME/CosyVoice/pretrained_models/CosyVoice-300M-SFT \
-TTS_PYTHON=~/venv/tts/bin/python node server.js
-```
-</details>
-
-Engines that fail to import are simply hidden from the voice dropdown (the macOS
+The engine is hidden from the voice dropdown if it fails to import (the macOS
 `say` voices are always available). Usage: `/voice 你好世界`,
-`/voice --use cosyvoice:中文男 --speed 1.1 早上好` (`-u`/`-s` short forms).
+`/voice --use kokoro:zm_yunxi --speed 1.1 早上好` (`-u`/`-s` short forms).
 
 Examples:
 - `/voice 今天天气不错` → uses the default voice from settings
@@ -338,8 +311,7 @@ OLLAMA_URL=http://127.0.0.1:11434 PORT=1314 node server.js
 | `COMFY_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
 | `PORT` | `1314` | Server port |
 | `WHISPER_MODEL` | auto-detect | Path to whisper.cpp model file |
-| `TTS_PYTHON` | `python3` | Python (venv) with kokoro/cosyvoice for `/voice` |
-| `COSYVOICE_MODEL_DIR` | `pretrained_models/CosyVoice-300M-SFT` | CosyVoice SFT model path |
+| `TTS_PYTHON` | `python3` | Python (venv) with kokoro for `/voice` |
 
 
 ## Tech Stack
