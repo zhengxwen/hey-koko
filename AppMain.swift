@@ -29,7 +29,7 @@ class ZoomWindow: NSWindow {
     }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
     var window: NSWindow!
     var webView: WKWebView!
     var serverProcess: Process?
@@ -93,6 +93,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             env["PATH"] = commonPaths.joined(separator: ":")
         }
+        // ComfyUI endpoint. Read COMFY_URL from the environment so the server can
+        // reach a ComfyUI on another host. A Finder-launched app gets only the
+        // launchd environment, so set it once with:
+        //     launchctl setenv COMFY_URL http://192.168.1.3:8188
+        // (then relaunch the app), or export it when launching from a terminal.
+        // env already inherits it; this just surfaces it explicitly + logs it.
+        if let comfyUrl = ProcessInfo.processInfo.environment["COMFY_URL"], !comfyUrl.isEmpty {
+            env["COMFY_URL"] = comfyUrl
+            NSLog("[hey-koko] COMFY_URL = \(comfyUrl)")
+        } else {
+            NSLog("[hey-koko] COMFY_URL not set — server defaults to http://127.0.0.1:8188")
+        }
         process.environment = env
 
         // Log the command being executed
@@ -136,6 +148,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         webView = WKWebView(frame: window.contentView!.bounds, configuration: config)
         webView.autoresizingMask = [.width, .height]
+        webView.uiDelegate = self   // so JS alert()/confirm()/prompt() show native dialogs
         window.contentView?.addSubview(webView)
 
         // Connect webView to window for zoom handling
@@ -183,6 +196,55 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     NSApp.terminate(nil)
                 }
             }
+        }
+    }
+
+    // MARK: - WKUIDelegate (JS dialogs)
+    // Without these, window.alert/confirm/prompt are silently dropped by WKWebView.
+    // Shown as window sheets so they don't block the app's run loop.
+
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        if let win = webView.window {
+            alert.beginSheetModal(for: win) { _ in completionHandler() }
+        } else {
+            alert.runModal(); completionHandler()
+        }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        if let win = webView.window {
+            alert.beginSheetModal(for: win) { resp in completionHandler(resp == .alertFirstButtonReturn) }
+        } else {
+            completionHandler(alert.runModal() == .alertFirstButtonReturn)
+        }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
+                 defaultText: String?, initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (String?) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = prompt
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = defaultText ?? ""
+        alert.accessoryView = field
+        let finish: (NSApplication.ModalResponse) -> Void = { resp in
+            completionHandler(resp == .alertFirstButtonReturn ? field.stringValue : nil)
+        }
+        if let win = webView.window {
+            alert.beginSheetModal(for: win, completionHandler: finish)
+        } else {
+            finish(alert.runModal())
         }
     }
 
