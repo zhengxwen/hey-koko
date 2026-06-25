@@ -66,9 +66,10 @@ function _ensureVideoGrid(bubble) {
 // Inner markup of a .comfyProgress block: a fill bar at the given percent and an
 // optional preview frame. Single source of truth for both the live patch path
 // (_ensureProgress) and the full rebuild (buildPendingGenBubble).
-function _progressHtml(pct, preview, eta) {
+function _progressHtml(pct, preview, eta, seg) {
   return `<div class="comfyProgressRow">`
     + `<div class="comfyProgressBar"><div class="comfyProgressFill" style="width:${pct}%"></div></div>`
+    + `<span class="comfySeg"${seg ? '' : ' hidden'}>${seg || ''}</span>`
     + `<span class="comfyEta"${eta ? '' : ' hidden'}>${eta || ''}</span>`
     + `</div>`
     + `<img class="comfyPreview"${preview ? ` src="${preview}"` : ' hidden'} alt="Preview">`;
@@ -79,7 +80,7 @@ function _ensureProgress(bubble) {
   if (!prog) {
     prog = document.createElement('div');
     prog.className = 'comfyProgress';
-    prog.innerHTML = _progressHtml(0, null, null);
+    prog.innerHTML = _progressHtml(0, null, null, null);
     const vgrid = bubble.querySelector('.videoGrid');
     if (vgrid) bubble.insertBefore(prog, vgrid); // keep progress ABOVE the segment videos
     else bubble.appendChild(prog);
@@ -105,11 +106,11 @@ export function buildPendingGenBubble(pg) {
     for (const src of pg.images) grid.appendChild(_imgEl(src));
     bubble.appendChild(grid);
   }
-  if (pg.progress || pg.preview || pg.eta || pg.indeterminate) {
+  if (pg.progress || pg.preview || pg.eta || pg.indeterminate || pg.seg) {
     const prog = document.createElement('div');
     prog.className = 'comfyProgress';
     const pct = (pg.progress && pg.progress.max) ? Math.min(100, Math.round(pg.progress.value / pg.progress.max * 100)) : 0;
-    prog.innerHTML = _progressHtml(pct, pg.preview, pg.eta);
+    prog.innerHTML = _progressHtml(pct, pg.preview, pg.eta, pg.seg);
     if (pg.indeterminate) prog.querySelector('.comfyProgressBar')?.classList.add('indeterminate');
     bubble.appendChild(prog);
   }
@@ -149,6 +150,7 @@ export function pendingGenStart({ tabId, kind, label, insertIndex }) {
     progress: null,
     preview: null,
     eta: '',
+    seg: '',
     indeterminate: false,
   };
   if (state.activeTabId === tabId) _mount();
@@ -224,6 +226,25 @@ export function pendingGenSetIndeterminate(tabId, on) {
   if (!bubble) return;
   const bar = _ensureProgress(bubble).querySelector('.comfyProgressBar');
   if (bar) bar.classList.toggle('indeterminate', !!on);
+}
+
+// Which chunk is being processed (e.g. "第 2/4 段"), shown left of the ETA. Multi-segment only.
+export function pendingGenSetSeg(tabId, text) {
+  const pg = _pg(tabId);
+  if (!pg) return;
+  pg.seg = text || '';
+  const bubble = _bubble();
+  if (!bubble) return;
+  const prog = _ensureProgress(bubble);
+  let el = prog.querySelector('.comfySeg');
+  if (!el) {
+    el = document.createElement('span');
+    el.className = 'comfySeg';
+    const row = prog.querySelector('.comfyProgressRow') || prog;
+    row.insertBefore(el, row.querySelector('.comfyEta')); // sit to the LEFT of the clock
+  }
+  el.textContent = text || '';
+  el.hidden = !text;
 }
 
 // Estimated time remaining, shown next to the progress bar (e.g. "⏳ ~3:20").

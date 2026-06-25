@@ -9,7 +9,7 @@ import { getTab, getActiveTab } from './tabs.js';
 import { markdownToHtml } from './markdown.js';
 import {
   pendingGenStart, pendingGenSetLabel, pendingGenSetEnhanced,
-  pendingGenAddImage, pendingGenAddVideo, pendingGenSetProgress, pendingGenSetPreview, pendingGenSetEta, pendingGenSetIndeterminate, pendingGenClear,
+  pendingGenAddImage, pendingGenAddVideo, pendingGenSetProgress, pendingGenSetPreview, pendingGenSetEta, pendingGenSetSeg, pendingGenSetIndeterminate, pendingGenClear,
 } from './pending-gen.js';
 
 // Compact "time remaining" → "m:ss" or "h:mm:ss" (language-neutral).
@@ -635,6 +635,8 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     const N = Math.max(estPasses, _passesDone + 1); // total chunks (≥ what we've seen)
     pendingGenSetIndeterminate(tabId, false);
     pendingGenSetProgress(tabId, _passesDone * max + value, N * max); // overall, not per-chunk
+    // Which chunk is rendering now (multi-segment only) — shown left of the ETA clock.
+    if (N > 1) pendingGenSetSeg(tabId, t("msg_chunkBadge", { seg: _passesDone + 1, total: N }));
 
     // ETA. Only show a number when it's RELIABLE: a measured per-chunk time (≥1 chunk
     // done) for multi-segment, or the step pace for a true single pass. Otherwise NA —

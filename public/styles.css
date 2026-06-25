@@ -3929,6 +3929,7 @@ button.secondary:disabled {
   0% { margin-left: -35%; }
   100% { margin-left: 100%; }
 }
+.comfySeg,
 .comfyEta {
   flex: none;
   white-space: nowrap;
@@ -3936,6 +3937,7 @@ button.secondary:disabled {
   opacity: 0.7;
   font-variant-numeric: tabular-nums;
 }
+.comfySeg[hidden],
 .comfyEta[hidden] {
   display: none;
 }
