@@ -290,8 +290,9 @@ function makeBgSink(job, controller) {
     enhanced() {},             // surfaced in the final message instead
     addImage() {},             // results delivered via place()
     addVideo() {},
-    // Progress ticks are frequent → drawer only, never a full chat re-render.
-    progress(v, m) { if (m) { job.progress = { value: v, max: m }; renderDrawer(); } },
+    // Progress ticks are frequent → update the drawer + poke the placeholder's bar
+    // directly in the DOM, never a full chat re-render.
+    progress(v, m) { if (m) { job.progress = { value: v, max: m }; renderDrawer(); updatePlaceholderBar(job); } },
     // Live preview frame → shown in the drawer row. Revoke the prior blob URL.
     preview(url) {
       if (job.preview && job.preview !== url && job.preview.startsWith('blob:')) { try { URL.revokeObjectURL(job.preview); } catch {} }
@@ -334,14 +335,33 @@ function syncPlaceholder(job) {
   found.msg.status = job.status;
   found.msg.label = job.label;
   found.msg.error = job.error;
+  found.msg.progress = job.progress;   // so a renderChat redraws the bar at the right %
   found.msg.queuePos = queuePosition(job);
   return true;
+}
+
+// Tick a running job's placeholder progress bar in place (no full chat re-render).
+// Keeps the placeholder message's progress in sync for the next renderChat, and—if
+// its tab is visible—pokes the bar's width directly, flipping it determinate.
+function updatePlaceholderBar(job) {
+  const found = findMsg(job.msgId);
+  if (found && found.msg.bgPlaceholder) found.msg.progress = job.progress;
+  if (state.activeTabId !== job.tabId) return;
+  const el = document.querySelector(`[data-msg-id="${job.msgId}"]`);
+  if (!el) return;
+  const bar = el.querySelector('.bgPhBar');
+  const fill = el.querySelector('.bgPhBarFill');
+  if (!bar || !fill || !job.progress || !job.progress.max) return;
+  const pct = Math.min(100, Math.round(job.progress.value / job.progress.max * 100));
+  bar.classList.remove('indeterminate');
+  fill.style.width = pct + '%';
 }
 
 // Re-sync every placeholder (queue positions shift as jobs finish), then re-render
 // the chat + drawer once. For DISCRETE events only (enqueue / status change /
 // cancel / label) — never per progress tick (those call renderDrawer() alone).
 function refreshPlaceholders() {
+  cancelActiveDrag();   // a job started/finished/was added → abort any in-flight reorder
   for (const job of state.bgJobs) syncPlaceholder(job);
   rerender();
   renderDrawer();
@@ -433,10 +453,40 @@ export function updateBadge() {
   badge.hidden = n === 0;
 }
 
+// ---- reorder (drag) of queued jobs -----------------------------------------
+// Only not-yet-started (queued) jobs can be reordered, by dragging their drawer
+// rows. A drag is CANCELED if the queue changes underneath it (a job starts or
+// finishes) — cancelActiveDrag is called from refreshPlaceholders on every status
+// transition, so the stale drop becomes a no-op.
+let bgDrag = null;          // { jobId } while a queued row is being dragged
+let bgDragCanceled = false; // set when a start/finish aborts the in-flight drag
+
+function cancelActiveDrag() {
+  if (!bgDrag) return;
+  bgDrag = null;
+  bgDragCanceled = true;
+  renderDrawer();           // rebuild fresh now that bgDrag is cleared (guard passes)
+}
+
+// Move queued job `srcId` to just before queued job `tgtId`. No-op (just redraw) if
+// either is no longer queued — e.g. it started/finished between dragstart and drop.
+function reorderQueued(srcId, tgtId) {
+  const src = state.bgJobs.find((j) => j.id === srcId);
+  const tgt = state.bgJobs.find((j) => j.id === tgtId);
+  if (!src || !tgt || src === tgt || src.status !== 'queued' || tgt.status !== 'queued') { renderDrawer(); return; }
+  state.bgJobs.splice(state.bgJobs.indexOf(src), 1);
+  state.bgJobs.splice(state.bgJobs.indexOf(tgt), 0, src);
+  persist();
+  refreshPlaceholders();    // updates queue positions (排队第 N 位) + redraws the drawer
+}
+
 export function renderDrawer() {
   updateBadge();
   const list = document.querySelector('#bgJobsList');
   if (!list) return;
+  // Don't rebuild the list mid-drag — replacing the dragged row breaks the gesture.
+  // (Progress ticks still call this; they just skip until the drag ends or is canceled.)
+  if (bgDrag) return;
   list.innerHTML = '';
   if (!state.bgJobs.length) {
     const empty = document.createElement('div');
@@ -448,6 +498,35 @@ export function renderDrawer() {
   for (const job of state.bgJobs) {
     const row = document.createElement('div');
     row.className = `bgJobRow bgJob-${job.status}`;
+
+    // Only not-yet-started jobs can be dragged to reorder the queue.
+    if (job.status === 'queued') {
+      row.classList.add('bgJobDraggable');
+      row.draggable = true;
+      row.addEventListener('dragstart', (e) => {
+        bgDrag = { jobId: job.id }; bgDragCanceled = false;
+        if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', job.id); } catch {} }
+      });
+      row.addEventListener('dragover', (e) => {
+        if (!bgDrag || bgDrag.jobId === job.id) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        row.classList.add('bgDragOver');
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('bgDragOver'));
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        row.classList.remove('bgDragOver');
+        const src = (bgDrag && !bgDragCanceled) ? bgDrag.jobId : null;
+        bgDrag = null; bgDragCanceled = false;
+        if (src && src !== job.id) reorderQueued(src, job.id);
+        else renderDrawer();
+      });
+      row.addEventListener('dragend', () => {
+        row.classList.remove('bgDragOver');
+        if (bgDrag) { bgDrag = null; bgDragCanceled = false; renderDrawer(); }
+      });
+    }
 
     const main = document.createElement('button');
     main.type = 'button';

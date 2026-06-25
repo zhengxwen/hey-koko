@@ -4268,6 +4268,18 @@ button.secondary:disabled {
 .bgJobStatus { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
 .bgJobBar { height: 4px; border-radius: 4px; background: var(--surface-hover); margin-top: 4px; overflow: hidden; }
 .bgJobBarFill { height: 100%; background: var(--accent); transition: width 0.2s; }
+
+/* Queued rows are draggable to reorder the not-yet-started part of the queue. */
+.bgJobRow.bgJobDraggable { cursor: grab; }
+.bgJobRow.bgJobDraggable:active { cursor: grabbing; }
+.bgJobRow.bgDragOver { outline: 2px dashed var(--accent); outline-offset: -2px; border-radius: 8px; }
+
+/* Progress bar inside a running job's chat placeholder bubble. Determinate (width %)
+   for generation; indeterminate sliding bar for label-only phases (parse/url/analyze). */
+.bgPhBar { height: 4px; border-radius: 4px; background: var(--surface-hover); margin-top: 8px; overflow: hidden; width: 100%; }
+.bgPhBarFill { height: 100%; background: var(--accent); width: 0; transition: width 0.2s; }
+.bgPhBar.indeterminate .bgPhBarFill { width: 40%; animation: bgPhIndet 1.1s ease-in-out infinite; }
+@keyframes bgPhIndet { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
 .bgJobPreview {
   display: block;
   margin-top: 6px;

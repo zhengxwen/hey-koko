@@ -204,6 +204,18 @@ function renderBgPlaceholder(message) {
     + `<span class="bgPhLabel">${escapeHtml(mainLabel)}</span>`
     + (detail ? `<span class="bgPhModel">${escapeHtml(detail)}</span>` : '')
     + (statusTxt ? `<span class="bgPhStatus">${escapeHtml(statusTxt)}</span>` : '');
+  // Running jobs get a progress bar: determinate (width %) once numeric progress
+  // arrives (generation), indeterminate animated otherwise (parse/url/analyze phases).
+  if (message.status === 'running') {
+    const hasNum = message.progress && message.progress.max;
+    const bar = document.createElement('div');
+    bar.className = hasNum ? 'bgPhBar' : 'bgPhBar indeterminate';
+    const fill = document.createElement('div');
+    fill.className = 'bgPhBarFill';
+    if (hasNum) fill.style.width = Math.min(100, Math.round(message.progress.value / message.progress.max * 100)) + '%';
+    bar.appendChild(fill);
+    body.appendChild(bar);
+  }
   const actions = document.createElement('div');
   actions.className = 'bgPhActions';
   const goto = document.createElement('button');
