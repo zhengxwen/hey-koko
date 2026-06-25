@@ -188,7 +188,7 @@ function renderBgPlaceholder(message) {
   body.className = 'markdownBody';
   let statusTxt;
   switch (message.status) {
-    case 'running': statusTxt = ''; break;   // label already reads "正在生成…" — no extra "运行中"
+    case 'running': statusTxt = message.seg || ''; break;   // chunk badge "第 N/M 段" (multi-segment video), else nothing
     case 'done': statusTxt = t('bg_statusDone'); break;
     case 'error': statusTxt = t('bg_statusError'); break;
     case 'interrupted': statusTxt = t('bg_statusInterrupted'); break;
@@ -203,7 +203,8 @@ function renderBgPlaceholder(message) {
   body.innerHTML = `<span class="bgPhIcon">${KIND_ICON[message.kind] || '⚙'}</span>`
     + `<span class="bgPhLabel">${escapeHtml(mainLabel)}</span>`
     + (detail ? `<span class="bgPhModel">${escapeHtml(detail)}</span>` : '')
-    + (statusTxt ? `<span class="bgPhStatus">${escapeHtml(statusTxt)}</span>` : '');
+    // Always render the status span while running so the live chunk-badge poke has a target.
+    + ((statusTxt || message.status === 'running') ? `<span class="bgPhStatus">${escapeHtml(statusTxt)}</span>` : '');
   // Running jobs get a progress bar: determinate (width %) once numeric progress
   // arrives (generation), indeterminate animated otherwise (parse/url/analyze phases).
   if (message.status === 'running') {

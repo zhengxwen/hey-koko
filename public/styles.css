@@ -2042,6 +2042,10 @@ button.secondary:disabled {
 .importButton {
   display: grid;
   place-items: center;
+  /* The label's text node carries large leading/trailing whitespace (markup
+     indentation + i18n), which inflates the auto grid column past the text
+     width; text-align centers the text within that wider column. */
+  text-align: center;
   cursor: pointer;
   min-height: 42px;
   padding: 0 16px;

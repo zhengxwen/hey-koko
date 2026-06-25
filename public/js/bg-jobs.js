@@ -43,7 +43,7 @@ const jobControllers = new Map();
 // Strip runtime-only fields before persisting (controllers live in the Map; the
 // preview is a transient blob: URL that's meaningless after a reload).
 function persist() {
-  const clean = state.bgJobs.map(({ preview, ...j }) => j);
+  const clean = state.bgJobs.map(({ preview, seg, ...j }) => j);
   dbSaveJobs(clean).catch((e) => console.warn('[bg-jobs] persist failed:', e));
 }
 
@@ -128,6 +128,7 @@ export async function pumpQueue() {
     while ((job = state.bgJobs.find((j) => j.status === 'queued'))) {
       job.status = 'running';
       job.progress = null;
+      job.seg = null;
       persist();
       refreshPlaceholders();
       try {
@@ -300,7 +301,9 @@ function makeBgSink(job, controller) {
       renderDrawer();
     },
     eta() {},
-    seg() {},
+    // Multi-segment video: "第 N/M 段" — surface which chunk is rendering. Changes only
+    // at chunk boundaries; refresh the drawer/placeholder then (progress() also redraws).
+    seg(x) { if (job.seg !== x) { job.seg = x; renderDrawer(); updatePlaceholderBar(job); } },
     indeterminate() {},
     clearBubble() {},          // placeholder persists until place() swaps it
     // Swap the placeholder message for the real result (keeping its id/position).
@@ -336,6 +339,7 @@ function syncPlaceholder(job) {
   found.msg.label = job.label;
   found.msg.error = job.error;
   found.msg.progress = job.progress;   // so a renderChat redraws the bar at the right %
+  found.msg.seg = job.seg;             // "第 N/M 段" for multi-segment video
   found.msg.queuePos = queuePosition(job);
   return true;
 }
@@ -345,10 +349,12 @@ function syncPlaceholder(job) {
 // its tab is visible—pokes the bar's width directly, flipping it determinate.
 function updatePlaceholderBar(job) {
   const found = findMsg(job.msgId);
-  if (found && found.msg.bgPlaceholder) found.msg.progress = job.progress;
+  if (found && found.msg.bgPlaceholder) { found.msg.progress = job.progress; found.msg.seg = job.seg; }
   if (state.activeTabId !== job.tabId) return;
   const el = document.querySelector(`[data-msg-id="${job.msgId}"]`);
   if (!el) return;
+  const segEl = el.querySelector('.bgPhStatus');   // live chunk badge "第 N/M 段"
+  if (segEl) segEl.textContent = job.seg || '';
   const bar = el.querySelector('.bgPhBar');
   const fill = el.querySelector('.bgPhBarFill');
   if (!bar || !fill || !job.progress || !job.progress.max) return;
@@ -453,7 +459,8 @@ function statusText(job) {
     case 'running': {
       const pct = job.progress && job.progress.max
         ? Math.min(100, Math.round(job.progress.value / job.progress.max * 100)) : null;
-      return pct != null ? t('bg_statusRunningPct', { pct }) : t('bg_statusRunning');
+      const base = pct != null ? t('bg_statusRunningPct', { pct }) : t('bg_statusRunning');
+      return job.seg ? `${job.seg} · ${base}` : base;   // "第 N/M 段 · 运行中 94%"
     }
     case 'done': return t('bg_statusDone');
     case 'error': return t('bg_statusError');
