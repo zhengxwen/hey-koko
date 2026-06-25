@@ -16,10 +16,22 @@ import { t } from './i18n.js';
 import { generateImage } from './image-gen.js';
 import { generateSpeech } from './voice-gen.js';
 
-// renderChat is injected (chat.js imports this module, so importing it back would
-// be circular). Set from main.js via setBgDeps.
+// renderChat + the analysis generators are injected (chat.js imports this module, so
+// importing it back would be circular). Set from main.js via setBgDeps.
 let _renderChat = null;
-export function setBgDeps({ renderChat }) { _renderChat = renderChat; }
+let _analyzeMedia = null;
+let _regenerateReply = null;
+let _parseDocumentHeadless = null;
+let _handleUrlCommand = null;
+let _handleMultiUrlCommand = null;
+export function setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand }) {
+  if (renderChat) _renderChat = renderChat;
+  if (analyzeMedia) _analyzeMedia = analyzeMedia;
+  if (regenerateReply) _regenerateReply = regenerateReply;
+  if (parseDocumentHeadless) _parseDocumentHeadless = parseDocumentHeadless;
+  if (handleUrlCommand) _handleUrlCommand = handleUrlCommand;
+  if (handleMultiUrlCommand) _handleMultiUrlCommand = handleMultiUrlCommand;
+}
 function rerender() { if (_renderChat) _renderChat(); }
 
 // Runtime-only AbortControllers, keyed by job id. NOT stored on the job objects
@@ -152,6 +164,18 @@ async function runJob(job) {
   const p = job.payload || {};
   if (job.kind === 'audio') {
     await generateSpeech(p.parsed, job.tabId, -1, sink);
+  } else if (job.kind === 'analyze') {
+    // Vision analysis: -1 insertIndex (bg.place swaps by msgId); anchorIndex feeds the
+    // no-attachment fallback that scans backwards for the nearest media bubble.
+    await _analyzeMedia(p.parsed, job.tabId, p.image || null, p.video || null, -1, p.anchorIndex ?? -1, sink);
+  } else if (job.kind === 'doc' || job.kind === 'chat') {
+    // Document summary / headless chat reply: builds context from the conversation
+    // (placeholder is skipped by buildMessages) and swaps the placeholder via bg.place.
+    await _regenerateReply(job.tabId, -1, p.contextEndIndex ?? -1, p.replyMeta || {}, sink);
+  } else if (job.kind === 'docfull') {
+    await runDocFull(job, sink);
+  } else if (job.kind === 'url') {
+    await runUrl(job, sink);
   } else {
     // image OR video — generateImage routes to generateVideo for a video model.
     // modelOverride pins the model captured at submit time, so switching the model
@@ -159,6 +183,97 @@ async function runJob(job) {
     await generateImage(p.parsedInput, job.tabId, -1, p.initImages || null,
       p.initVideo || null, p.maskB64 || null, sink, p.modelOverride || null);
   }
+}
+
+// ---- multi-message jobs (docfull / url) -----------------------------------
+// These produce SEVERAL bubbles at the placeholder position instead of swapping
+// it for one. The pattern: point a cursor at the placeholder's live index, let the
+// headless runner splice real messages there (placeholder drifts down, showing the
+// current phase), then remove the placeholder when the run finishes.
+
+// Remove a job's placeholder bubble (used by multi-message jobs once they've spliced
+// their real result bubbles in front of it).
+function removePlaceholder(job) {
+  const found = findMsg(job.msgId);
+  if (found && found.msg.bgPlaceholder) {
+    found.tab.messages.splice(found.index, 1);
+    saveChat();
+    if (state.activeTabId === job.tabId) rerender();
+  }
+}
+
+// docfull: parse a document (MinerU PDF / Pandoc DOCX·PPTX / client fallbacks / EML)
+// HEADLESS with phase progress, then drop a file-preview + auto-prompt (+ summary for
+// PDF/DOCX) at the placeholder position.
+async function runDocFull(job, sink) {
+  const p = job.payload || {};
+  const found = findMsg(job.msgId);
+  if (!found) return; // canceled before it started
+  sink.label(t('bg_parsing'));
+  const parsed = await _parseDocumentHeadless(p.fileB64, p.name, p.ext, p.content || '', (txt) => {
+    if (txt) sink.label(txt);
+  });
+  const text = (parsed && parsed.text) || '';
+  const images = (parsed && parsed.images) || [];
+  if (!text.trim() && !images.length) throw new Error(t('bg_parseEmpty'));
+  const tool = (parsed && parsed.tool) || '';
+  const displayThumbnails = parsed && parsed.displayThumbnails;
+
+  // Build the same two bubbles sendMessage's file branch builds (verbatim prompts).
+  const ext = (p.ext || '').replace(/^\./, '').toLowerCase();
+  const isPdfOrDocx = ext === 'pdf' || ext === 'docx';
+  let autoPrompt;
+  if (isPdfOrDocx) {
+    const base = images.length
+      ? '请对这篇文章做一个全面的总结，然后逐一描述每张图片的内容。'
+      : '请对这篇文章做一个全面的总结。';
+    autoPrompt = p.content ? `${base}\n\n用户补充: ${p.content}` : base;
+  } else if (p.content) {
+    autoPrompt = p.content;
+  } else {
+    autoPrompt = '请阅读以上文件内容并等待我的提问。';
+  }
+  const previewMsg = {
+    id: genId(), role: 'assistant',
+    content: `📄 **FILE: ${p.name}**${tool ? ` (via ${tool})` : ''}\n\n${text}`,
+    timestamp: Date.now(), isFilePreview: true,
+  };
+  if (images.length) previewMsg.images = images.map((img) => img.base64);
+  if (displayThumbnails && displayThumbnails.length) previewMsg.generatedThumbnails = displayThumbnails;
+  const promptMsg = { id: genId(), role: 'user', content: autoPrompt, timestamp: Date.now() };
+
+  // Splice both right before the placeholder (its index may have shifted during parse).
+  const f2 = findMsg(job.msgId);
+  if (!f2) return; // canceled mid-parse
+  const tab = f2.tab;
+  let pos = f2.index;
+  tab.messages.splice(pos++, 0, previewMsg);
+  tab.messages.splice(pos++, 0, promptMsg);
+  saveChat();
+  if (state.activeTabId === job.tabId) rerender();
+
+  // PDF/DOCX auto-summarize: insert the reply at the cursor (just before placeholder).
+  if (isPdfOrDocx) {
+    await _regenerateReply(job.tabId, pos, pos - 1, {}, sink);
+  }
+  removePlaceholder(job);
+}
+
+// url: run the whole /url chain (fetch → maybe whisper → format → reply) HEADLESS,
+// splicing its bubbles before the placeholder via a cursor.
+async function runUrl(job, sink) {
+  const found = findMsg(job.msgId);
+  if (!found) return;
+  const tab = found.tab;
+  const cursor = { pos: found.index };
+  const p = job.payload || {};
+  const entries = p.entries || [];
+  if (entries.length === 1) {
+    await _handleUrlCommand(entries[0].url, tab, job.tabId, p.fullContent, entries[0].prompt, cursor, true, sink);
+  } else {
+    await _handleMultiUrlCommand(entries, tab, job.tabId, p.fullContent, cursor, sink);
+  }
+  removePlaceholder(job);
 }
 
 // Background sink: same shape as foregroundSink, but writes to the job record +
@@ -277,7 +392,7 @@ export function jumpToJob(jobId) {
 
 // ---- drawer UI -------------------------------------------------------------
 
-const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', analyze: '🔍', url: '🔗' };
+const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄' };
 
 export function openBgDrawer() {
   state.bgDrawerOpen = true;

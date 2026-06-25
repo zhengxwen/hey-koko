@@ -148,6 +148,26 @@ function enqueueImagineGen(validCmds, tabId, images, video, mask, insertIndex = 
   });
 }
 
+// /analyze (image/video vision) also runs through the background queue. Builds a
+// slim media payload (base64 only — preview blobs / names aren't needed headlessly)
+// so the job can re-run the vision pass detached from the live bubble. anchorIndex
+// lets the no-attachment fallback find the nearest preceding media bubble at run time.
+function enqueueAnalyzeJob(parsed, tabId, image, video, anchorIndex, insertIndex = -1) {
+  let payloadImage = null;
+  if (image) {
+    if (image.multi) payloadImage = { multi: image.multi.map((im) => ({ base64: im.base64 })) };
+    else { payloadImage = { base64: image.base64 }; if (image.mask) payloadImage.mask = image.mask; }
+  }
+  const payloadVideo = video ? { base64: video.base64, mime: video.mime || "video/mp4" } : null;
+  enqueueBgJob({
+    tabId,
+    kind: "analyze",
+    label: t("bg_analyzing"),
+    insertIndex,
+    payload: { parsed, image: payloadImage, video: payloadVideo, anchorIndex },
+  });
+}
+
 // Resend / edit-in-place must not run while the background queue is non-empty —
 // generation stays strictly serial. Pops a DIALOG and returns true if blocked (the
 // caller restores any edited text). The queue is the place to add new work, not here.
@@ -160,7 +180,7 @@ function bgBlockResend() {
 // Build a placeholder bubble for a background job sitting in the chat at its
 // original position. Mirrors the jobs-drawer status text; offers jump + cancel.
 function renderBgPlaceholder(message) {
-  const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', analyze: '🔍', url: '🔗' };
+  const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄' };
   const el = document.createElement('div');
   el.className = `message assistant bgPlaceholder bgPlaceholder-${message.status || 'queued'}`;
   el.dataset.msgId = message.id;
@@ -347,22 +367,18 @@ function resendChatMessage(index) {
     return;
   }
 
-  // Handle /url command on resend
+  // Handle /url command on resend — re-run the whole chain in the background queue
+  // (reached only when the queue is empty; non-empty is blocked above with a dialog).
   const urlTarget = parseUrlCommand(message.content);
   if (urlTarget) {
     // Remove the old /url output block (messages tagged urlPart) right after this
-    // bubble, then regenerate in place with context truncated to it. Locked stay.
+    // bubble; the placeholder + new output land right after it. Locked stay.
     while (tab.messages[index + 1]?.urlPart && !tab.messages[index + 1].locked) {
       tab.messages.splice(index + 1, 1);
     }
     saveChat();
     renderChat();
-    const cursor = { pos: index + 1 };
-    if (urlTarget.entries.length === 1) {
-      handleUrlCommand(urlTarget.entries[0].url, tab, state.activeTabId, message.content, urlTarget.entries[0].prompt, cursor, true);
-    } else {
-      handleMultiUrlCommand(urlTarget.entries, tab, state.activeTabId, message.content, cursor);
-    }
+    enqueueBgJob({ tabId: state.activeTabId, kind: "url", label: t("bg_fetchingUrl"), insertIndex: index + 1, payload: { entries: urlTarget.entries, fullContent: message.content } });
     return;
   }
 
@@ -384,7 +400,9 @@ function resendChatMessage(index) {
     const imageObj = message.images?.length
       ? { multi: message.images.map((b) => ({ base64: b })) }
       : null;
-    analyzeMedia(analyzeResend, state.activeTabId, imageObj, messageSourceVideo(message), index + 1, index - 1);
+    // Resend of vision analysis also goes to the queue (reached only when empty — a
+    // non-empty queue is blocked above). Placeholder lands right after this bubble.
+    enqueueAnalyzeJob(analyzeResend, state.activeTabId, imageObj, messageSourceVideo(message), index - 1, index + 1);
     return;
   }
 
@@ -977,7 +995,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
         if (!firstChunkReceived) {
           firstChunkReceived = true;
           if (state.streamingInfo) state.streamingInfo.phase = 'streaming';
-          setAvatarState("talking");
+          if (!bg) setAvatarState("talking");
           if (state.activeTabId === tabId) {
             const bubble = dom.messagesEl.querySelector('.streaming-bubble');
             if (bubble) {
@@ -1020,7 +1038,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
         if (!firstChunkReceived) {
           firstChunkReceived = true;
           if (state.streamingInfo) state.streamingInfo.phase = 'streaming';
-          setAvatarState("talking");
+          if (!bg) setAvatarState("talking");
           if (state.activeTabId === tabId) {
             const bubble = dom.messagesEl.querySelector('.streaming-bubble');
             if (bubble) {
@@ -1106,17 +1124,21 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
   return aborted;
 }
 
-export async function regenerateReply(tabId = state.activeTabId, insertIndex = -1, contextEndIndex = -1, replyMeta = {}) {
+export async function regenerateReply(tabId = state.activeTabId, insertIndex = -1, contextEndIndex = -1, replyMeta = {}, bg = null) {
   const tab = getTab(tabId);
   if (!tab) return;
 
-  const abortController = new AbortController();
-  state.currentAbortController = abortController;
-  setGenerating(true);
-
-  setAvatarState("thinking");
-  state.streamingInfo = { tabId, content: '', phase: 'thinking', insertIndex };
-  if (state.activeTabId === tabId) {
+  // A background job (bg set) runs headless: it uses bg.signal instead of the global
+  // abort controller, never touches the send-button lock / avatar / streaming bubble,
+  // and swaps its placeholder via bg.place() at the end (position is by msgId).
+  const abortController = bg ? { signal: bg.signal } : new AbortController();
+  if (!bg) {
+    state.currentAbortController = abortController;
+    setGenerating(true);
+    setAvatarState("thinking");
+    state.streamingInfo = { tabId, content: '', phase: 'thinking', insertIndex };
+  }
+  if (!bg && state.activeTabId === tabId) {
     const pending = document.createElement("div");
     pending.className = "message assistant thinking streaming-bubble";
     const body = document.createElement("div");
@@ -1189,7 +1211,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
         if (!firstChunkReceived) {
           firstChunkReceived = true;
           if (state.streamingInfo) state.streamingInfo.phase = 'streaming';
-          setAvatarState("talking");
+          if (!bg) setAvatarState("talking");
           if (state.activeTabId === tabId) {
             const bubble = dom.messagesEl.querySelector('.streaming-bubble');
             if (bubble) {
@@ -1233,7 +1255,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
         if (!firstChunkReceived) {
           firstChunkReceived = true;
           if (state.streamingInfo) state.streamingInfo.phase = 'streaming';
-          setAvatarState("talking");
+          if (!bg) setAvatarState("talking");
           if (state.activeTabId === tabId) {
             const bubble = dom.messagesEl.querySelector('.streaming-bubble');
             if (bubble) {
@@ -1271,26 +1293,42 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     if (buffer.trim()) appendStreamLine(buffer);
 
     content = content.trim() || "我刚才有点走神了，你再说一次好吗？";
-    state.streamingInfo = null;
-    if (state.activeTabId === tabId) {
+    if (!bg) state.streamingInfo = null;
+    if (!bg && state.activeTabId === tabId) {
       const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
       if (md) md.innerHTML = markdownToHtml(content);
     }
     const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart, ...replyMeta };
     if (thinkingContent) reply.thinking = thinkingContent;
-    if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
-      tab.messages.splice(insertIndex, 0, reply);
+    if (bg) {
+      // Multi-message bg job (docfull/url) passes a real insertIndex (the cursor) →
+      // splice there, keeping the placeholder below. Single-result job (insertIndex<0)
+      // → swap the placeholder by msgId (Phase 2 behavior).
+      if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
+        tab.messages.splice(insertIndex, 0, reply);
+        bg.commit();
+      } else {
+        bg.place(reply);
+      }
     } else {
-      tab.messages.push(reply);
-    }
-    saveChat();
-    if (state.activeTabId === tabId) renderChat();
-    showExpression(detectExpression(content));
-    if (dom.autoSpeakCheckbox.checked && state.activeTabId === tabId) {
-      const lastSpeakBtn = dom.messagesEl.querySelector(".message.assistant:last-child .speakMessage");
-      if (lastSpeakBtn) speakMessage(content, lastSpeakBtn);
+      if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
+        tab.messages.splice(insertIndex, 0, reply);
+      } else {
+        tab.messages.push(reply);
+      }
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+      showExpression(detectExpression(content));
+      if (dom.autoSpeakCheckbox.checked && state.activeTabId === tabId) {
+        const lastSpeakBtn = dom.messagesEl.querySelector(".message.assistant:last-child .speakMessage");
+        if (lastSpeakBtn) speakMessage(content, lastSpeakBtn);
+      }
     }
   } catch (error) {
+    if (bg) {
+      if (error.name === "AbortError") return;  // canceled — the job is already removed
+      throw error;                               // let the queue mark it errored + retryable
+    }
     state.streamingInfo = null;
     if (error.name === "AbortError") {
       aborted = true;
@@ -1322,11 +1360,13 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     }
     setAvatarState("idle");
   } finally {
-    state.streamingInfo = null;
-    setGenerating(false);
+    if (!bg) {
+      state.streamingInfo = null;
+      setGenerating(false);
+    }
     if (usageStats) {
       recordContextUsage(tab, usageStats.prompt, usageStats.eval, usageStats.tps);
-      if (state.activeTabId === tabId) renderContextMeter();
+      if (!bg && state.activeTabId === tabId) renderContextMeter();
     }
   }
   return aborted;
@@ -1731,23 +1771,29 @@ function rawBase64(s) {
 // Run the vision model over the media on the just-sent /analyze bubble (attached
 // image/video) or, if none was attached, the most recent user bubble carrying
 // media. Video is sampled into frames first. Streams the answer like a reply.
-async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, anchorIndex = -1) {
+export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, anchorIndex = -1, bg = null) {
   const tab = getTab(tabId);
   if (!tab) return;
-  if (state.currentAbortController || state.imageGenAbortController) return;
+  if (!bg && (state.currentAbortController || state.imageGenAbortController)) return;
 
   // On resend/edit the result is spliced right after the /analyze bubble
-  // (insertIndex); on a fresh command it's appended at the end.
+  // (insertIndex); on a fresh command it's appended at the end. A background job
+  // (bg set) instead swaps its placeholder via bg.place() — position is by msgId.
   const inPlace = insertIndex >= 0;
   const place = (msg) => {
+    if (bg) { bg.place(msg); return; }
     if (inPlace && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, msg);
     else tab.messages.push(msg);
   };
+  // Foreground persists + rerenders after place(); the bg sink's place() already does.
+  const commit = () => { if (bg) return; saveChat(); if (state.activeTabId === tabId) renderChat(); };
 
-  const abortController = new AbortController();
-  state.currentAbortController = abortController;
-  setGenerating(true);
-  setAvatarState("thinking");
+  const abortController = bg ? { signal: bg.signal } : new AbortController();
+  if (!bg) {
+    state.currentAbortController = abortController;
+    setGenerating(true);
+    setAvatarState("thinking");
+  }
 
   // The collapsible "thinking" content (frame→time map + optional -d frames). Filled
   // in once the frames are sampled, then shown folded in the pending/streaming bubble
@@ -1761,6 +1807,7 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
   };
 
   const showPending = (text) => {
+    if (bg) { bg.label(text); return; }  // headless: surface phase text in the drawer/placeholder
     if (state.activeTabId !== tabId) return;
     let bubble = dom.messagesEl.querySelector('.streaming-bubble');
     if (!bubble) {
@@ -1781,6 +1828,7 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
   };
 
   const cleanupPending = () => {
+    if (bg) return;
     const bubble = dom.messagesEl.querySelector('.streaming-bubble');
     if (bubble) bubble.remove();
   };
@@ -1844,8 +1892,7 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
     if (!images.length) {
       cleanupPending();
       place({ role: "assistant", content: t("analyze_noMedia"), timestamp: Date.now() });
-      saveChat();
-      if (state.activeTabId === tabId) renderChat();
+      commit();
       return;
     }
 
@@ -1915,15 +1962,15 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
       if (!chunk) return;
       if (!firstChunk) {
         firstChunk = true;
-        setAvatarState("talking");
-        if (state.activeTabId === tabId) {
+        if (!bg) setAvatarState("talking");
+        if (!bg && state.activeTabId === tabId) {
           const bubble = dom.messagesEl.querySelector('.streaming-bubble');
           // Clear ONLY the main body (the thinking <details> stays folded above it).
           if (bubble) { bubble.classList.remove("thinking"); const mb = bubble.querySelector(":scope > .markdownBody"); if (mb) mb.innerHTML = ""; }
         }
       }
       content += chunk;
-      if (state.activeTabId === tabId) {
+      if (!bg && state.activeTabId === tabId) {
         const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
         if (md) { md.innerHTML = markdownToHtml(content); scrollChatToEndIfPinned(); }
       }
@@ -1949,22 +1996,30 @@ async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1, ancho
       if (thinkingMd) reply.thinking = thinkingMd;
       if (debugFrames) reply.thinkingFrames = debugFrames;
       place(reply);
-      saveChat();
-      if (state.activeTabId === tabId) renderChat();
-      showExpression(detectExpression(content));
+      commit();
+      if (!bg) showExpression(detectExpression(content));
+    } else if (bg) {
+      // A background job can't show an inline empty-result bubble — surface it to the
+      // queue so the drawer/placeholder offers a retry instead of silently finishing.
+      throw new Error(t("bg_analyzeEmpty"));
     }
   } catch (error) {
     cleanupPending();
-    if (error.name !== "AbortError") {
+    if (error.name === "AbortError") {
+      // Canceled (foreground stop or a bg job cancel) — nothing to place.
+    } else if (bg) {
+      throw error;  // let the queue mark the job errored + retryable
+    } else {
       place({ role: "assistant", content: `⚠️ ${error.message}`, timestamp: Date.now() });
-      saveChat();
-      if (state.activeTabId === tabId) renderChat();
+      commit();
       showSendError(error.message);
     }
   } finally {
-    setGenerating(false);
-    setAvatarState("idle");
-    state.currentAbortController = null;
+    if (!bg) {
+      setGenerating(false);
+      setAvatarState("idle");
+      state.currentAbortController = null;
+    }
   }
 }
 
@@ -2052,14 +2107,14 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     return;
   }
 
-  // Handle /url command
+  // Handle /url command — the whole chain (fetch → maybe whisper → format → reply)
+  // runs in the background queue (whisper transcription especially can be slow).
   const urlTarget = parseUrlCommand(content);
   if (urlTarget) {
-    if (urlTarget.entries.length === 1) {
-      await handleUrlCommand(urlTarget.entries[0].url, tab, tabId, content, urlTarget.entries[0].prompt);
-    } else {
-      await handleMultiUrlCommand(urlTarget.entries, tab, tabId, content);
-    }
+    tab.messages.push({ role: "user", content, timestamp: Date.now() });
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+    enqueueBgJob({ tabId, kind: "url", label: t("bg_fetchingUrl"), payload: { entries: urlTarget.entries, fullContent: content } });
     return;
   }
 
@@ -2185,9 +2240,14 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       if (video.thumbnail) userMessage.generatedVideoThumbnails = [video.thumbnail];
     }
     tab.messages.push(userMessage);
+    // anchorIndex = the bubble just before this /analyze command, for the
+    // no-attachment fallback that scans backwards for the nearest media bubble.
+    const anchorIndex = tab.messages.length - 2;
     saveChat();
     if (state.activeTabId === tabId) renderChat();
-    analyzeMedia(analyzeCmd, tabId, image, video);
+    // Vision analysis ALWAYS goes to the background queue (it can be slow — frame
+    // sampling + a multi-image vision pass).
+    enqueueAnalyzeJob(analyzeCmd, tabId, image, video, anchorIndex);
     return;
   }
 
@@ -2241,9 +2301,11 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     saveChat();
     if (state.activeTabId === tabId) renderChat();
 
-    // Auto-trigger LLM reply for PDF/DOCX
+    // Auto-summarize PDF/DOCX in the background queue — large docs mean long context
+    // and a slow first reply, so it shouldn't block the live bubble. The placeholder
+    // appends after the prompt; regenerateReply (headless) swaps in the summary.
     if (isPdfOrDocx) {
-      regenerateReply(tabId);
+      enqueueBgJob({ tabId, kind: "doc", label: t("bg_analyzingDoc"), payload: { contextEndIndex: -1, replyMeta: {} } });
     }
     return;
   }

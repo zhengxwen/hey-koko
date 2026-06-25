@@ -4,7 +4,7 @@ import { setAvatarState } from './avatar.js';
 import { markdownToHtml } from './markdown.js';
 import { saveChat } from './settings.js';
 import { makePreview } from './utils.js';
-import { getPromptLanguage } from './i18n.js';
+import { getPromptLanguage, t } from './i18n.js';
 
 const CHUNK_CHAR_LIMIT = 3000; // Split transcripts longer than this
 
@@ -73,7 +73,7 @@ export function parseUrlCommand(content) {
   return entries.length > 0 ? { entries } : null;
 }
 
-export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cursor = null, skipUserBubble = false) {
+export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cursor = null, skipUserBubble = false, bg = null) {
   // Ensure URL has protocol
   if (!/^https?:\/\//i.test(url)) url = "https://" + url;
   const inPlace = !!(cursor && cursor.pos >= 0);
@@ -84,22 +84,28 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
   saveChat();
   if (state.activeTabId === tabId && _renderChat) _renderChat();
 
-  // Reply right after the produced content (in place) or at the end (fresh).
+  // Reply right after the produced content (in place) or at the end (fresh). bg jobs
+  // are always in-place (cursor set) and run the reply headless.
   const runReply = async () => {
     if (!_regenerateReply) return;
-    if (inPlace) { await _regenerateReply(tabId, cursor.pos, cursor.pos - 1, { urlPart: true }); cursor.pos++; }
+    if (inPlace) { await _regenerateReply(tabId, cursor.pos, cursor.pos - 1, { urlPart: true }, bg); cursor.pos++; }
     else _regenerateReply(tabId, -1, -1, { urlPart: true });
   };
 
-  // Show thinking state with animated bubble
-  setAvatarState("thinking");
-  if (_setGenerating) _setGenerating(true);
-  const abortController = new AbortController();
-  state.currentAbortController = abortController;
+  // Show thinking state with animated bubble (foreground); a bg job surfaces phase
+  // text in the drawer/placeholder via bg.label instead.
+  const abortController = bg ? { signal: bg.signal } : new AbortController();
+  if (!bg) {
+    setAvatarState("thinking");
+    if (_setGenerating) _setGenerating(true);
+    state.currentAbortController = abortController;
+  } else {
+    bg.label(t("bg_fetchingContent"));
+  }
 
   // Add animated "fetching" bubble
   let pending = null;
-  if (state.activeTabId === tabId) {
+  if (!bg && state.activeTabId === tabId) {
     pending = document.createElement("div");
     pending.className = "message assistant thinking";
     const body = document.createElement("div");
@@ -127,8 +133,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
       urlError(data.error || data.content || "获取失败");
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
-      setAvatarState("idle");
-      if (_setGenerating) _setGenerating(false);
+      if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); }
       return;
     }
 
@@ -137,8 +142,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
       urlError(data.content);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
-      setAvatarState("idle");
-      if (_setGenerating) _setGenerating(false);
+      if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); }
       return;
     }
 
@@ -181,12 +185,11 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
     saveChat();
     if (state.activeTabId === tabId && _renderChat) _renderChat();
 
-    state.currentAbortController = null;
-    if (_setGenerating) _setGenerating(false);
+    if (!bg) { state.currentAbortController = null; if (_setGenerating) _setGenerating(false); }
 
     // For YouTube, ask AI to format the transcript into readable text
     if (hasRealTranscript) {
-      await formatTranscriptChunked(data.title, data.content, tab, tabId, undefined, cursor);
+      await formatTranscriptChunked(data.title, data.content, tab, tabId, undefined, cursor, bg);
       // After transcript is formatted, if there's a prompt, send it
       if (prompt) {
         placeMsg(tab, { role: "user", content: prompt, timestamp: Date.now() }, cursor);
@@ -196,7 +199,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
       }
     } else if (data.type === "youtube" && data.videoId && !hasRealTranscript) {
       // No subtitles — try audio transcription via whisper
-      await transcribeYouTubeFromAudio(data.videoId, data.title, tab, tabId, cursor);
+      await transcribeYouTubeFromAudio(data.videoId, data.title, tab, tabId, cursor, bg);
       // After transcription, if there's a prompt, send it
       if (prompt) {
         placeMsg(tab, { role: "user", content: prompt, timestamp: Date.now() }, cursor);
@@ -223,18 +226,17 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
-    setAvatarState("idle");
-    if (_setGenerating) _setGenerating(false);
+    if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); }
   }
 }
 
 // Handle multiple URLs sequentially
-export async function handleMultiUrlCommand(entries, tab, tabId, fullContent, cursor = null) {
+export async function handleMultiUrlCommand(entries, tab, tabId, fullContent, cursor = null, bg = null) {
   const inPlace = !!(cursor && cursor.pos >= 0);
   for (let i = 0; i < entries.length; i++) {
     // On resend the first entry reuses the existing command bubble; continuation
     // entries add their own `/url …` bubble (spliced at the shared cursor).
-    await handleUrlCommand(entries[i].url, tab, tabId, i === 0 ? fullContent : `/url ${entries[i].url}`, entries[i].prompt, cursor, inPlace && i === 0);
+    await handleUrlCommand(entries[i].url, tab, tabId, i === 0 ? fullContent : `/url ${entries[i].url}`, entries[i].prompt, cursor, inPlace && i === 0, bg);
   }
 }
 
@@ -257,7 +259,7 @@ function splitTranscript(text, limit) {
 
 // Process transcript in chunks, streaming each chunk's AI response
 // source: "subtitle" (default) or "whisper" (from audio transcription)
-async function formatTranscriptChunked(title, transcript, tab, tabId, source, cursor = null) {
+async function formatTranscriptChunked(title, transcript, tab, tabId, source, cursor = null, bg = null) {
   const chunks = splitTranscript(transcript, CHUNK_CHAR_LIMIT);
   const totalChunks = chunks.length;
 
@@ -272,16 +274,20 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
   if (state.activeTabId === tabId && _renderChat) _renderChat();
 
   // Process chunks sequentially, streaming into one assistant bubble
-  if (_setGenerating) _setGenerating(true);
-  setAvatarState("thinking");
-  const abortController = new AbortController();
-  state.currentAbortController = abortController;
+  const abortController = bg ? { signal: bg.signal } : new AbortController();
+  if (!bg) {
+    if (_setGenerating) _setGenerating(true);
+    setAvatarState("thinking");
+    state.currentAbortController = abortController;
+  } else {
+    bg.label(t("bg_formattingSubs", { i: 1, n: totalChunks }));
+  }
 
   let pending = null;
   let textEl = null;
   let fullContent = "";
 
-  if (state.activeTabId === tabId) {
+  if (!bg && state.activeTabId === tabId) {
     pending = document.createElement("div");
     pending.className = "message assistant thinking";
     const body = document.createElement("div");
@@ -296,6 +302,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
     for (let i = 0; i < chunks.length; i++) {
       if (abortController.signal.aborted) break;
 
+      if (bg) bg.label(t("bg_formattingSubs", { i: i + 1, n: totalChunks }));
       // Show progress between chunks
       if (i > 0 && pending && textEl) {
         fullContent += `\n\n---\n*正在整理第 ${i + 1}/${totalChunks} 段...*\n\n`;
@@ -342,7 +349,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
         const chunk = parsed.message?.content || "";
         if (!chunk) return;
 
-        if (!textEl && pending) {
+        if (!bg && !textEl && pending) {
           pending.innerHTML = "";
           pending.classList.remove("thinking");
           setAvatarState("talking");
@@ -404,22 +411,28 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
   } finally {
-    setAvatarState("idle");
-    if (_setGenerating) _setGenerating(false);
-    state.currentAbortController = null;
+    if (!bg) {
+      setAvatarState("idle");
+      if (_setGenerating) _setGenerating(false);
+      state.currentAbortController = null;
+    }
   }
 }
 
 // Transcribe YouTube audio when no subtitles are available
-async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = null) {
-  if (_setGenerating) _setGenerating(true);
-  setAvatarState("thinking");
-  const abortController = new AbortController();
-  state.currentAbortController = abortController;
+async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = null, bg = null) {
+  const abortController = bg ? { signal: bg.signal } : new AbortController();
+  if (!bg) {
+    if (_setGenerating) _setGenerating(true);
+    setAvatarState("thinking");
+    state.currentAbortController = abortController;
+  } else {
+    bg.label(t("bg_transcribing"));
+  }
 
   // Add a progress bubble
   let pending = null;
-  if (state.activeTabId === tabId) {
+  if (!bg && state.activeTabId === tabId) {
     pending = document.createElement("div");
     pending.className = "message assistant thinking";
     const body = document.createElement("div");
@@ -461,18 +474,21 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
         let msg;
         try { msg = JSON.parse(line); } catch { continue; }
         if (msg.status === "downloading" || msg.status === "converting") {
+          if (bg) bg.label(msg.message);
           if (pending) {
             const body = pending.querySelector(".markdownBody");
             if (body) body.innerHTML = `<span class="thinking-text">${msg.message}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
           }
         } else if (msg.status === "downloaded") {
           downloadInfo = msg.message;
+          if (bg) bg.label(msg.message);
           if (pending) {
             const body = pending.querySelector(".markdownBody");
             if (body) body.innerHTML = `<span class="thinking-text">${msg.message}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
           }
         } else if (msg.status === "transcribing") {
           const display = downloadInfo ? `${downloadInfo}\n${msg.message}` : msg.message;
+          if (bg) bg.label(display);
           if (pending) {
             const body = pending.querySelector(".markdownBody");
             if (body) body.innerHTML = `<span class="thinking-text">${display.replace('\n', '<br>')}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
@@ -511,26 +527,20 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
     if (pending) pending.remove();
 
     if (hasError) {
-      setAvatarState("idle");
-      if (_setGenerating) _setGenerating(false);
-      state.currentAbortController = null;
+      if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); state.currentAbortController = null; }
       return;
     }
 
     if (transcriptText) {
       // Process transcript same as subtitle flow
-      state.currentAbortController = null;
-      if (_setGenerating) _setGenerating(false);
-      setAvatarState("idle");
-      await formatTranscriptChunked(title, transcriptText, tab, tabId, "whisper", cursor);
+      if (!bg) { state.currentAbortController = null; if (_setGenerating) _setGenerating(false); setAvatarState("idle"); }
+      await formatTranscriptChunked(title, transcriptText, tab, tabId, "whisper", cursor, bg);
     } else {
       placeMsg(tab, { role: "assistant", content: "⚠️ 语音识别未返回内容", timestamp: Date.now() }, cursor);
       urlError("语音识别未返回内容");
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
-      setAvatarState("idle");
-      if (_setGenerating) _setGenerating(false);
-      state.currentAbortController = null;
+      if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); state.currentAbortController = null; }
     }
   } catch (error) {
     if (pending) pending.remove();
@@ -540,8 +550,6 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
-    setAvatarState("idle");
-    if (_setGenerating) _setGenerating(false);
-    state.currentAbortController = null;
+    if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); state.currentAbortController = null; }
   }
 }

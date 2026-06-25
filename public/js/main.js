@@ -12,8 +12,8 @@ import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedMode
 import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
-import { renderChat, sendMessage, setGenerating, regenerateReply, generateProactiveReply, markStopping, showSendError } from './chat.js';
-import { setDeps as urlFetchSetDeps } from './url-fetch.js';
+import { renderChat, sendMessage, setGenerating, regenerateReply, analyzeMedia, generateProactiveReply, markStopping, showSendError } from './chat.js';
+import { setDeps as urlFetchSetDeps, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
 import { initLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
@@ -23,7 +23,7 @@ import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMe
 import { loadReminders, getReminders, removeReminder, describeReminder, setReminderChangeHandler, setDeliverHandler, startScheduler } from './proactive.js';
 import { initPanelResize } from './panel-resize.js';
 import { openMaskModal } from './mask-paint.js';
-import { setBgDeps, restoreBgJobsOnLoad, toggleBgDrawer, closeBgDrawer } from './bg-jobs.js';
+import { setBgDeps, restoreBgJobsOnLoad, toggleBgDrawer, closeBgDrawer, enqueueBgJob } from './bg-jobs.js';
 
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
@@ -31,7 +31,7 @@ translateSetRenderChat(renderChat);
 imageGenSetDeps({ setGenerating, renderChat });
 voiceGenSetDeps({ setGenerating, renderChat });
 urlFetchSetDeps({ setGenerating, renderChat, regenerateReply, showSendError });
-setBgDeps({ renderChat });
+setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand });
 
 // Background Jobs drawer toggle + close.
 if (dom.bgJobsBtn) dom.bgJobsBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleBgDrawer(); });
@@ -224,7 +224,8 @@ dom.chatForm.addEventListener("submit", async (event) => {
   clearSelectedVideo();
 
   if (file && file.multi) {
-    // Multiple documents: process sequentially
+    // Multiple documents: each becomes its own background job (the queue runs them
+    // serially, so parsing/summary never blocks the page).
     for (const f of file.multi) {
       const tab = getActiveTab();
       const userContent = content || `📄 **${f.name}**`;
@@ -232,19 +233,19 @@ dom.chatForm.addEventListener("submit", async (event) => {
       saveChat();
       renderChat();
       if (f.needsParse) {
-        await parseAndSendFile(content, f);
+        await enqueueDocParse(f.rawFile, f.name, f.ext, content);
       } else {
         sendMessage(content, null, undefined, f);
       }
     }
   } else if (file && file.needsParse) {
-    // Show user bubble first (with file name), then parse
+    // Show the "📄 name" user bubble, then parse + summarize in the background queue.
     const tab = getActiveTab();
     const userContent = content || `📄 **${file.name}**`;
     tab.messages.push({ role: "user", content: userContent, timestamp: Date.now() });
     saveChat();
     renderChat();
-    await parseAndSendFile(content, file);
+    await enqueueDocParse(file.rawFile, file.name, file.ext, content);
   } else {
     sendMessage(content, image, undefined, file, video);
   }
@@ -1480,7 +1481,7 @@ async function selectMultipleFiles(files) {
   }
 }
 
-async function tryServerParse(file) {
+async function tryServerParse(file, onProgress = null) {
   try {
     const formData = new FormData();
     formData.append("file", file);
@@ -1490,12 +1491,16 @@ async function tryServerParse(file) {
 
     // Handle streaming ndjson (MinerU with progress)
     if (contentType.includes("ndjson")) {
-      // Show progress element
-      let progressEl = document.createElement("div");
-      progressEl.className = "message system fileParseProgress";
-      progressEl.textContent = "⏳ 正在解析文件...";
-      dom.messagesEl.appendChild(progressEl);
-      dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+      // Foreground shows a status bubble; a headless (background-job) caller passes
+      // onProgress and gets the progress text routed there instead (no DOM).
+      let progressEl = null;
+      if (!onProgress) {
+        progressEl = document.createElement("div");
+        progressEl.className = "message system fileParseProgress";
+        progressEl.textContent = "⏳ 正在解析文件...";
+        dom.messagesEl.appendChild(progressEl);
+        dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+      }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -1514,10 +1519,10 @@ async function tryServerParse(file) {
           try {
             const data = JSON.parse(line);
             if (data.progress) {
-              progressEl.textContent = `⏳ ${data.progress}`;
-              dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+              if (onProgress) onProgress(`⏳ ${data.progress}`);
+              else { progressEl.textContent = `⏳ ${data.progress}`; dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight; }
             } else if (data.error) {
-              progressEl.textContent = `❌ ${data.error}`;
+              if (progressEl) progressEl.textContent = `❌ ${data.error}`;
               return null;
             } else if (data.text !== undefined) {
               result = data;
@@ -1526,7 +1531,7 @@ async function tryServerParse(file) {
         }
       }
 
-      progressEl.remove();
+      if (progressEl) progressEl.remove();
       return result;
     }
 
@@ -1648,6 +1653,81 @@ async function parseAndSendFile(content, fileInfo) {
     msgEl.textContent = `文件解析失败：${e.message}`;
     dom.messagesEl.appendChild(msgEl);
   }
+}
+
+// ---- headless document parsing (for the background queue) ------------------
+// Chunked base64 helpers (btoa/String.fromCharCode would overflow on a 20 MB file).
+function bytesToB64(bytes) {
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  return btoa(bin);
+}
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+// The DOM-free core of parseAndSendFile: reconstruct the file from base64 and parse
+// it (server MinerU/Pandoc with onProgress, or client fallbacks, or EML), returning
+// { text, images, tool, displayThumbnails }. Injected into bg-jobs via setBgDeps so a
+// `docfull` job can parse a document headlessly with phase progress.
+async function parseDocumentHeadless(fileB64, name, ext, content, onProgress) {
+  const rawFile = new File([b64ToBytes(fileB64)], name);
+  let text = "", images = [], tool = "", displayThumbnails = null;
+
+  if (ext === ".eml") {
+    const raw = await rawFile.text();
+    const result = parseEml(raw);
+    images = result.images;
+    tool = "eml";
+    if (result.rawHtml && serverCapabilities.pandoc) {
+      try {
+        const response = await fetch("/api/parse-html", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ html: result.rawHtml }),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          text = result.headers + "\n---\n\n" + data.markdown;
+          if (data.images && data.images.length) {
+            const cidUrls = images.map((img) => `data:${img.mime || "image/png"};base64,${img.base64}`);
+            const htmlUrls = data.images.map((img) => `data:${img.mime || "image/jpeg"};base64,${img.base64}`);
+            displayThumbnails = await Promise.all([...cidUrls, ...htmlUrls].map(makePreview));
+          }
+          tool = "eml+pandoc";
+        } else text = result.text;
+      } catch { text = result.text; }
+    } else text = result.text;
+  } else {
+    const canServer = (ext === ".pdf" && serverCapabilities.mineru) ||
+                      (ext === ".docx" && serverCapabilities.pandoc) ||
+                      (ext === ".pptx" && serverCapabilities.pandoc);
+    let serverResult = null;
+    if (canServer) serverResult = await tryServerParse(rawFile, onProgress);
+    if (serverResult) {
+      text = serverResult.text;
+      images = serverResult.images || [];
+      tool = serverResult.tool || (ext === ".pdf" ? "MinerU" : "Pandoc");
+    } else if (ext === ".pdf") {
+      text = await extractPdfText(rawFile); tool = "pdf.js";
+    } else if (ext === ".pptx") {
+      const r = await extractPptxContent(rawFile); text = r.text; images = r.images; tool = "jszip";
+    } else {
+      const r = await extractDocxContent(rawFile); text = r.text; images = r.images; tool = "mammoth";
+    }
+  }
+  return { text, images, tool, displayThumbnails };
+}
+
+// Read a raw document into a docfull background job (parse + preview + summary run
+// detached). The "📄 name" user bubble is pushed by the caller beforehand.
+async function enqueueDocParse(rawFile, name, ext, content) {
+  const buf = await rawFile.arrayBuffer();
+  const fileB64 = bytesToB64(new Uint8Array(buf));
+  enqueueBgJob({ tabId: state.activeTabId, kind: "docfull", label: t("bg_parsing"), payload: { fileB64, name, ext, content } });
 }
 
 function readFileAsText(file) {
