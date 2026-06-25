@@ -7,10 +7,7 @@ import { setAvatarState } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab, getActiveTab } from './tabs.js';
 import { markdownToHtml } from './markdown.js';
-import {
-  pendingGenStart, pendingGenSetLabel, pendingGenSetEnhanced,
-  pendingGenAddImage, pendingGenAddVideo, pendingGenSetProgress, pendingGenSetPreview, pendingGenSetEta, pendingGenSetSeg, pendingGenSetIndeterminate, pendingGenClear,
-} from './pending-gen.js';
+import { foregroundSink } from './gen-sink.js';
 
 // Compact "time remaining" → "m:ss" or "h:mm:ss" (language-neutral).
 function formatEta(sec) {
@@ -491,11 +488,15 @@ function animateSegmentCap(pixelBudget, torchCompile = false) {
   return torchCompile ? 17 : 33;           // beyond 1080p
 }
 
-export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null) {
+export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null, sink = null) {
   const tab = getTab(tabId);
   if (!tab) return;
   const genStart = Date.now();
   const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
+  // Foreground unless the jobs runner handed in a background sink. The sink owns
+  // the AbortController, the send-button lock, the progress bubble and where the
+  // result message lands (live bubble vs. background placeholder).
+  if (!sink) sink = foregroundSink({ tabId, insertIndex, setGenerating: _setGenerating, renderChat: _renderChat, saveChat, getTab });
 
   // For Bernini i2v the output aspect must follow the reference image. Decode its
   // natural size in the browser (works for any format) and send it, so the server
@@ -522,9 +523,8 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     if (reqOptions[k] === undefined) reqOptions[k] = ov[k];
   }
 
-  const abortController = new AbortController();
-  state.imageGenAbortController = abortController;
-  if (_setGenerating) _setGenerating(true);
+  const abortController = { signal: sink.signal }; // sink owns the real controller
+  sink.lock(true);
   acquireWakeLock(); // keep the display awake for the (long) render
   setAvatarState("thinking");
 
@@ -535,7 +535,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // generating status once the (slow) prompt rewrite returns. The bubble lives in
   // state.pendingGen so it survives a tab switch (see pending-gen.js).
   const firstStatus = parsed.enhance ? t("msg_enhancing") : t("msg_generatingVideo");
-  pendingGenStart({ tabId, kind: "video", label: `${firstStatus}${vidSuffix}`, insertIndex });
+  sink.start("video", `${firstStatus}${vidSuffix}`);
   // Let the browser PAINT the just-mounted bubble before the heavy synchronous
   // work would otherwise block the main thread → the bubble appears to never show.
   await new Promise((r) => setTimeout(r, 0));
@@ -546,7 +546,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   let sourceVideoFrames = 0;
   let sourceVideoFps = 0;
   if (sourceVideo?.base64) {
-    pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix}`);
+    sink.label(`${t("msg_generatingVideo")}${vidSuffix}`);
     try {
       // A custom ⚙ fps resamples the source so the output timing is correct;
       // "auto" (no fps) keeps the source's own fps.
@@ -556,9 +556,8 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       sourceVideoFps = up.fps;
     } catch (e) {
       if (e.name === "AbortError") {
-        pendingGenClear(tabId); setAvatarState("idle");
-        if (_setGenerating) _setGenerating(false);
-        state.imageGenAbortController = null;
+        sink.clearBubble(); setAvatarState("idle");
+        sink.done(); sink.cleanup();
         return;
       }
       /* non-fatal: fall back to sending the base64 inline below */
@@ -583,10 +582,9 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       }
     } catch (e) {
       if (e.name === "AbortError") {
-        pendingGenClear(tabId);
+        sink.clearBubble();
         setAvatarState("idle");
-        if (_setGenerating) _setGenerating(false);
-        state.imageGenAbortController = null;
+        sink.done(); sink.cleanup();
         return;
       }
       // non-fatal: fall back to the original prompt
@@ -594,9 +592,9 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     // Flip the status bubble to the generating state and surface the improved
     // prompt above it, so the user sees it BEFORE the (slow) video render.
     if (promptWasEnhanced) {
-      pendingGenSetEnhanced(tabId, `<div class="enhancedLabel">${t("msg_enhancedPrompt")}</div><blockquote>${escapeHtml(videoPrompt)}</blockquote>`);
+      sink.enhanced(`<div class="enhancedLabel">${t("msg_enhancedPrompt")}</div><blockquote>${escapeHtml(videoPrompt)}</blockquote>`);
     }
-    pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix}`);
+    sink.label(`${t("msg_generatingVideo")}${vidSuffix}`);
   }
 
   // Estimated chunk count for a chained Wan Animate (each chunk = one KSampler pass).
@@ -622,7 +620,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // DWPose preprocessing + VAE decode report NO progress → INDETERMINATE (sliding) bar
   // by default and during any >2.5s stall.
   let _passesDone = 0, _prevVal = 0, _firstStepT = 0, _boundaryT = 0, _progStall = null;
-  pendingGenSetIndeterminate(tabId, true); // pulse until the first sampling step arrives
+  sink.indeterminate(true); // pulse until the first sampling step arrives
   const onVideoProgress = (value, max) => {
     if (!max) return;
     const now = Date.now();
@@ -633,10 +631,10 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     _prevVal = value;
 
     const N = Math.max(estPasses, _passesDone + 1); // total chunks (≥ what we've seen)
-    pendingGenSetIndeterminate(tabId, false);
-    pendingGenSetProgress(tabId, _passesDone * max + value, N * max); // overall, not per-chunk
+    sink.indeterminate(false);
+    sink.progress(_passesDone * max + value, N * max); // overall, not per-chunk
     // Which chunk is rendering now (multi-segment only) — shown left of the ETA clock.
-    if (N > 1) pendingGenSetSeg(tabId, t("msg_chunkBadge", { seg: _passesDone + 1, total: N }));
+    if (N > 1) sink.seg(t("msg_chunkBadge", { seg: _passesDone + 1, total: N }));
 
     // ETA. Only show a number when it's RELIABLE: a measured per-chunk time (≥1 chunk
     // done) for multi-segment, or the step pace for a true single pass. Otherwise NA —
@@ -649,14 +647,14 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     } else if (N === 1 && value > 0) {
       etaText = `~${formatEta((now - _firstStepT) / 1000 * (max - value) / value)}`;
     } // else: multi-segment, first chunk not finished → NA
-    pendingGenSetEta(tabId, `⏳ ${etaText}`);
+    sink.eta(`⏳ ${etaText}`);
 
     clearTimeout(_progStall);
-    _progStall = setTimeout(() => pendingGenSetIndeterminate(tabId, true), 2500);
+    _progStall = setTimeout(() => sink.indeterminate(true), 2500);
   };
   const unsubscribe = subscribeComfyProgress(comfyHost, clientId, {
     onProgress: onVideoProgress,
-    onPreview: (url) => pendingGenSetPreview(tabId, url),
+    onPreview: (url) => sink.preview(url),
   });
 
   // "/imagine Nx …" makes N videos (1–8). They render sequentially on ComfyUI;
@@ -723,25 +721,19 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
         timestamp: Date.now(),
         genMs: Date.now() - genStart,
       };
-      if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, replyMsg);
-      else tab.messages.push(replyMsg);
+      sink.place(replyMsg);
     } else {
       replyMsg.content = videoContent;
       replyMsg.videoMime = vmime;
       replyMsg.genMs = Date.now() - genStart;
+      sink.commit();
     }
-    saveChat();
-    if (state.activeTabId === tabId && _renderChat) _renderChat();
   };
 
   // Surface a fatal "nothing generated" error in the bubble and bail.
   const failFatal = (errText) => {
-    pendingGenClear(tabId);
-    const errMsg = { role: "assistant", content: `视频生成失败：${errText || "未返回视频"}`, timestamp: Date.now() };
-    if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errMsg);
-    else tab.messages.push(errMsg);
-    saveChat();
-    if (state.activeTabId === tabId && _renderChat) _renderChat();
+    sink.clearBubble();
+    sink.place({ role: "assistant", content: `视频生成失败：${errText || "未返回视频"}`, timestamp: Date.now() });
     setAvatarState("idle");
   };
 
@@ -788,11 +780,13 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // pick the "seamless long video" label — the SERVER does the actual chunking in-graph.
   const animBudget = (reqOptions.width && reqOptions.height) ? reqOptions.width * reqOptions.height : 640 * 640;
   const willChunk = /animate/i.test(model) && !!sourceVideoName && sourceVideoFrames > animateSegmentCap(animBudget, !!reqOptions.torchCompile) && !reqOptions.length;
+  // Total output duration of the long video (full source: frames ÷ fps), e.g. 5.4.
+  const fullSec = (willChunk && sourceVideoFps > 0) ? Math.round(sourceVideoFrames / sourceVideoFps * 10) / 10 : 0;
 
   try {
     for (let i = 0; i < count; i++) {
       if (abortController.signal.aborted) break;
-      pendingGenSetProgress(tabId, 0, 1); // reset the bar for each render
+      sink.progress(0, 1); // reset the bar for each render
       // Vary the seed per video so the N outputs differ (only when the user
       // pinned a --seed; otherwise the server randomizes each call already).
       const perOptions = { ...reqOptions };
@@ -800,8 +794,8 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
 
       // A long Wan Animate source is chunked SEAMLESSLY by the server in ONE ComfyUI
       // graph (chained continue_motion) → a single request returns one merged clip.
-      if (willChunk) pendingGenSetLabel(tabId, `${t("msg_generatingVideoSeamless", { n: estPasses })}${vidSuffix}`);
-      else if (count > 1) pendingGenSetLabel(tabId, `${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
+      if (willChunk) sink.label(`${t("msg_generatingVideoSeamless", { n: estPasses, sec: fullSec || "?" })}${vidSuffix}`);
+      else if (count > 1) sink.label(`${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
       const resp = await requestVideo(perOptions);
       let data = await resp.json();
       if (!resp.ok || !data.videos || !data.videos.length) {
@@ -819,30 +813,27 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       allThumbs.push(...newThumbs);
       renderReply(); // show this completed video immediately
     }
-    pendingGenClear(tabId);
+    sink.clearBubble();
     setAvatarState("happy");
     setTimeout(() => setAvatarState("idle"), 2000);
   } catch (error) {
-    pendingGenClear(tabId);
+    sink.clearBubble();
     // Videos finished before a stop/error are already shown via renderReply().
     if (error.name !== "AbortError" && !allVideos.length) {
-      const errMsg = { role: "assistant", content: `视频生成出错：${error.message}`, timestamp: Date.now() };
-      tab.messages.push(errMsg);
-      saveChat();
-      if (state.activeTabId === tabId && _renderChat) _renderChat();
+      sink.place({ role: "assistant", content: `视频生成出错：${error.message}`, timestamp: Date.now() });
     }
     setAvatarState("idle");
   } finally {
     clearTimeout(_progStall);
-    pendingGenClear(tabId);
+    sink.clearBubble();
+    sink.done();
     unsubscribe();
     releaseWakeLock();
-    if (_setGenerating) _setGenerating(false);
-    state.imageGenAbortController = null;
+    sink.cleanup();
   }
 }
 
-export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null, initVideo = null, maskB64 = null) {
+export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null, initVideo = null, maskB64 = null, sink = null, modelOverride = null) {
   const parsedList = Array.isArray(parsedInput) ? parsedInput : [parsedInput];
   const tab = getTab(tabId);
   if (!tab) return;
@@ -852,26 +843,27 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
 
   // An empty Ollama image model means "generate via ComfyUI". Fall back to the
-  // selected ComfyUI checkpoint in that case.
-  const imageModel = dom.imageModelSelect.value;
-  const comfyModel = dom.comfyModelSelect ? dom.comfyModelSelect.value : "";
+  // selected ComfyUI checkpoint in that case. modelOverride pins the model chosen
+  // at submit time for a queued background job (DOM may have changed since).
+  const imageModel = modelOverride ? (modelOverride.imageModel || "") : dom.imageModelSelect.value;
+  const comfyModel = modelOverride ? (modelOverride.comfyModel || "") : (dom.comfyModelSelect ? dom.comfyModelSelect.value : "");
 
-  // A selected ComfyUI VIDEO model routes to the dedicated video path.
+  // A selected ComfyUI VIDEO model routes to the dedicated video path. Pass the
+  // sink through so a background video job stays headless.
   if (!imageModel && comfyModel && state.comfyVideoModels && state.comfyVideoModels.has(comfyModel)) {
-    return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages, initVideo);
+    return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages, initVideo, sink);
   }
 
   const useComfy = !imageModel && !!comfyModel;
   const activeModel = imageModel || comfyModel;
+
+  // Build the sink now (foreground unless the jobs runner supplied a background
+  // one). It owns the AbortController, the lock, the bubble and message placement.
+  if (!sink) sink = foregroundSink({ tabId, insertIndex, setGenerating: _setGenerating, renderChat: _renderChat, saveChat, getTab });
+
   if (!activeModel) {
-    const errMsg = { role: "assistant", content: t("msg_noImageModel"), timestamp: Date.now() };
-    if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
-      tab.messages.splice(insertIndex, 0, errMsg);
-    } else {
-      tab.messages.push(errMsg);
-    }
-    saveChat();
-    if (state.activeTabId === tabId && _renderChat) _renderChat();
+    sink.place({ role: "assistant", content: t("msg_noImageModel"), timestamp: Date.now() });
+    sink.cleanup();
     return;
   }
 
@@ -888,15 +880,15 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     promptTexts.map((p) => `<blockquote>${escapeHtml(p)}</blockquote>`).join("");
 
   // Set up cancellation before enhancement so the stop button can interrupt the
-  // (potentially slow) prompt-enhancement step, not just image generation.
-  const abortController = new AbortController();
-  state.imageGenAbortController = abortController;
-  if (_setGenerating) _setGenerating(true);
+  // (potentially slow) prompt-enhancement step, not just image generation. The
+  // sink owns the real AbortController; this shim keeps existing .signal refs working.
+  const abortController = { signal: sink.signal };
+  sink.lock(true);
   acquireWakeLock(); // keep the display awake for a long (batch / img2img) render
 
   if (anyEnhance) {
     setAvatarState("thinking");
-    pendingGenStart({ tabId, kind: "image", label: t("msg_enhancing"), insertIndex });
+    sink.start("image", t("msg_enhancing"));
   }
 
   // Enhance prompts if requested
@@ -926,11 +918,11 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     }
   } catch (e) {
     // Enhancement cancelled by the user — clean up the status bubble and bail.
-    pendingGenClear(tabId);
+    sink.clearBubble();
     releaseWakeLock();
     setAvatarState("idle");
-    if (_setGenerating) _setGenerating(false);
-    state.imageGenAbortController = null;
+    sink.done();
+    sink.cleanup();
     return;
   }
 
@@ -938,7 +930,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   const enhancedShown = parsedList
     .map((p, i) => (p.enhance && prompts[i] !== p.prompt) ? prompts[i] : null)
     .filter(Boolean);
-  if (enhancedShown.length) pendingGenSetEnhanced(tabId, enhancedHtml(enhancedShown));
+  if (enhancedShown.length) sink.enhanced(enhancedHtml(enhancedShown));
 
   setAvatarState("thinking");
 
@@ -950,10 +942,10 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   const genText = (done) => (totalCount > 1 ? t("msg_generatingCount", { done, total: totalCount }) : t("msg_generating")) + statusSuffix;
 
   // Start tracking now (or just relabel if the enhance step already started it).
-  if (state.pendingGen && state.pendingGen.tabId === tabId) {
-    pendingGenSetLabel(tabId, genText("0"));
+  if (sink.started()) {
+    sink.label(genText("0"));
   } else {
-    pendingGenStart({ tabId, kind: "image", label: genText("0"), insertIndex });
+    sink.start("image", genText("0"));
   }
 
   // Live progress bar (+ preview frame for ComfyUI). ComfyUI streams over its
@@ -961,13 +953,13 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // response (read below). One bar is shared across a batch. Both feed the
   // pending bubble through state so updates survive a tab switch.
   let comfyClientId = null, imgUnsub = () => {};
-  const setProgress = (value, max) => pendingGenSetProgress(tabId, value, max);
+  const setProgress = (value, max) => sink.progress(value, max);
   if (useComfy) {
     comfyClientId = crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`;
     const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
     imgUnsub = subscribeComfyProgress(comfyHost, comfyClientId, {
       onProgress: setProgress,
-      onPreview: (url) => pendingGenSetPreview(tabId, url),
+      onPreview: (url) => sink.preview(url),
     });
   }
   // Stop button → abort: also tell ComfyUI to interrupt the running render
@@ -1043,14 +1035,14 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                   const src = imgData.startsWith("data:")
                     ? imgData
                     : `data:${imgData.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${imgData}`;
-                  pendingGenAddImage(tabId, src);
+                  sink.addImage(src);
                 }
               } else {
                 errorCount++;
                 console.warn("[image-gen] error:", data.error);
               }
               if (totalCount > 1) {
-                pendingGenSetLabel(tabId, genText(generatedImages.length + errorCount));
+                sink.label(genText(generatedImages.length + errorCount));
               }
             })
             .catch((err) => {
@@ -1109,22 +1101,16 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       genMs: Date.now() - genStart,
     };
 
-    if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
-      tab.messages.splice(insertIndex, 0, replyMsg);
-    } else {
-      tab.messages.push(replyMsg);
-    }
     // Drop the restorable pending bubble just before render so the live preview
     // grid stays visible right up until the final message replaces it.
-    pendingGenClear(tabId);
-    saveChat();
-    if (state.activeTabId === tabId && _renderChat) _renderChat();
+    sink.clearBubble();
+    sink.place(replyMsg);
     setAvatarState("happy");
     setTimeout(() => setAvatarState("idle"), 2000);
   } catch (error) {
-    pendingGenClear(tabId);
+    sink.clearBubble();
     if (error.name === "AbortError") {
-      // pendingGenClear already removed the bubble (live or restored).
+      // clearBubble already removed the bubble (live or restored).
     } else if (generatedImages.length > 0) {
       // Preserve already-generated images even when an error occurs
       let content = `⚠️ 图片生成出错：${error.message}\n\n`;
@@ -1151,27 +1137,17 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         timestamp: Date.now(),
         genMs: Date.now() - genStart,
       };
-      if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
-        tab.messages.splice(insertIndex, 0, replyMsg);
-      } else {
-        tab.messages.push(replyMsg);
-      }
-      saveChat();
-      if (state.activeTabId === tabId && _renderChat) _renderChat();
+      sink.place(replyMsg);
     } else {
       // Failed with no images — surface the error as a normal message.
-      const errMsg = { role: "assistant", content: `图片生成出错：${error.message}`, timestamp: Date.now() };
-      if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errMsg);
-      else tab.messages.push(errMsg);
-      saveChat();
-      if (state.activeTabId === tabId && _renderChat) _renderChat();
+      sink.place({ role: "assistant", content: `图片生成出错：${error.message}`, timestamp: Date.now() });
     }
     setAvatarState("idle");
   } finally {
-    pendingGenClear(tabId);
+    sink.clearBubble();
+    sink.done();
     imgUnsub();
     releaseWakeLock();
-    if (_setGenerating) _setGenerating(false);
-    state.imageGenAbortController = null;
+    sink.cleanup();
   }
 }

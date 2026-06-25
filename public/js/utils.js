@@ -1,5 +1,20 @@
 // Pure utility functions
 
+// Short unique id for messages / background jobs. crypto.randomUUID where
+// available, else a timestamp+random fallback (older WebKit in the wrapper).
+export function genId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+// Build a chat message, guaranteeing a stable `id`. Use at message-construction
+// sites that the background-jobs queue needs to locate later (placeholders +
+// their results). Spreads the caller's fields over the generated id so an
+// explicit id wins.
+export function newMsg(obj) {
+  return { id: genId(), ...obj };
+}
+
 export function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }

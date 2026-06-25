@@ -304,9 +304,21 @@
 
       <section class="chatArea">
         <div class="tabBar" aria-label="Chat tabs">
-          <button id="addTab" type="button" class="addTab" aria-label="New chat">+</button>
+          <div class="tabBarTools">
+            <button id="addTab" type="button" class="addTab" aria-label="New chat">+</button>
+            <button id="bgJobsBtn" type="button" class="bgJobsBtn" title="后台任务" aria-label="后台任务">⚙<span id="bgJobsBadge" class="bgJobsBadge" hidden></span></button>
+          </div>
           <div id="chatTabs" class="chatTabs" role="tablist"></div>
         </div>
+
+        <!-- Background Jobs drawer (slides in from the right) -->
+        <aside id="bgJobsDrawer" class="bgJobsDrawer" aria-label="后台任务">
+          <div class="bgJobsHeader">
+            <span class="bgJobsTitle">后台任务</span>
+            <button id="bgJobsCloseBtn" type="button" class="bgJobsCloseBtn" aria-label="关闭">×</button>
+          </div>
+          <div id="bgJobsList" class="bgJobsList"></div>
+        </aside>
         <div class="messagesWrap">
           <div id="messages" class="messages" aria-live="polite"></div>
           <button id="scrollToBottomBtn" type="button" class="scrollToBottomBtn" hidden aria-label="回到底部"><span class="scrollToBottomIcon">↓</span><span class="scrollToBottomText">回到底部</span></button>

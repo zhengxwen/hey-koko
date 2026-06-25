@@ -7,11 +7,12 @@ import { setAvatarState, showExpression, detectExpression } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.js';
-import { parseNoteCommand, parseImagineCommands, generateImage, videoThumbnail, extractVideoFrames } from './image-gen.js';
-import { parseVoiceCommand, generateSpeech } from './voice-gen.js';
+import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractVideoFrames } from './image-gen.js';
+import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
 import { buildPendingGenBubble } from './pending-gen.js';
+import { enqueueBgJob, bgQueueActive, cancelBgJob, retryBgJob, openBgDrawer } from './bg-jobs.js';
 import { t, getPrompt, getPromptLanguage } from './i18n.js';
 import { getNumCtx, recordContextUsage, renderContextMeter } from './context-meter.js';
 import { addMemory, getMemoryPromptBlock } from './memory.js';
@@ -118,6 +119,105 @@ export function setGenerating(active) {
   }
 }
 
+// Short label for a queued /imagine job (first prompt, or a generic fallback).
+function bgImagineLabel(cmds, isVideo) {
+  const txt = cmds.map((c) => c.prompt).filter(Boolean).join("; ").trim();
+  if (txt) return txt.length > 48 ? txt.slice(0, 48) + "…" : txt;
+  return isVideo ? t("bg_kindVideo") : t("bg_kindImage");
+}
+
+// Generation (image/video/audio) always runs through the background queue. This
+// builds the image/video job from the parsed /imagine commands — shared by a fresh
+// send and a resend so the model is snapshotted the same way in both.
+function enqueueImagineGen(validCmds, tabId, images, video, mask, insertIndex = -1) {
+  // A ComfyUI video model (no Ollama image model) routes through generateVideo —
+  // capture model + kind at submit time so a later dropdown change can't redirect it.
+  const isVideo = !dom.imageModelSelect.value && dom.comfyModelSelect && state.comfyVideoModels.has(dom.comfyModelSelect.value);
+  enqueueBgJob({
+    tabId,
+    kind: isVideo ? "video" : "image",
+    label: bgImagineLabel(validCmds, isVideo),
+    insertIndex,
+    payload: {
+      parsedInput: validCmds,
+      initImages: images || null,
+      initVideo: video || null,
+      maskB64: mask || null,
+      modelOverride: { imageModel: dom.imageModelSelect.value, comfyModel: dom.comfyModelSelect ? dom.comfyModelSelect.value : "" },
+    },
+  });
+}
+
+// Resend / edit-in-place must not run while the background queue is non-empty —
+// generation stays strictly serial. Pops a DIALOG and returns true if blocked (the
+// caller restores any edited text). The queue is the place to add new work, not here.
+function bgBlockResend() {
+  if (!bgQueueActive()) return false;
+  alert(t('bg_queueBusyAlert'));
+  return true;
+}
+
+// Build a placeholder bubble for a background job sitting in the chat at its
+// original position. Mirrors the jobs-drawer status text; offers jump + cancel.
+function renderBgPlaceholder(message) {
+  const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', analyze: '🔍', url: '🔗' };
+  const el = document.createElement('div');
+  el.className = `message assistant bgPlaceholder bgPlaceholder-${message.status || 'queued'}`;
+  el.dataset.msgId = message.id;
+  const body = document.createElement('div');
+  body.className = 'markdownBody';
+  let statusTxt;
+  switch (message.status) {
+    case 'running': statusTxt = ''; break;   // label already reads "正在生成…" — no extra "运行中"
+    case 'done': statusTxt = t('bg_statusDone'); break;
+    case 'error': statusTxt = t('bg_statusError'); break;
+    case 'interrupted': statusTxt = t('bg_statusInterrupted'); break;
+    case 'canceled': statusTxt = t('bg_statusCanceled'); break;
+    default: statusTxt = message.queuePos ? t('bg_statusQueued', { n: message.queuePos }) : t('bg_statusQueuedPlain');
+  }
+  // The label is "正在生成… · <model> · <extra>". Keep the action text at normal
+  // size and render everything after the first " · " (the long model name etc.) small.
+  const labelParts = (message.label || '').split(' · ');
+  const mainLabel = labelParts[0] || '';
+  const detail = labelParts.slice(1).join(' · ');
+  body.innerHTML = `<span class="bgPhIcon">${KIND_ICON[message.kind] || '⚙'}</span>`
+    + `<span class="bgPhLabel">${escapeHtml(mainLabel)}</span>`
+    + (detail ? `<span class="bgPhModel">${escapeHtml(detail)}</span>` : '')
+    + (statusTxt ? `<span class="bgPhStatus">${escapeHtml(statusTxt)}</span>` : '');
+  const actions = document.createElement('div');
+  actions.className = 'bgPhActions';
+  const goto = document.createElement('button');
+  goto.type = 'button';
+  goto.className = 'bgPhGoto';
+  goto.textContent = t('bg_goto');
+  goto.addEventListener('click', () => openBgDrawer());
+  actions.appendChild(goto);
+  if (message.status === 'error' || message.status === 'interrupted') {
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'bgPhRetry';
+    retry.textContent = t('bg_retry');
+    retry.addEventListener('click', () => retryBgJob(message.jobId));
+    actions.appendChild(retry);
+  }
+  body.appendChild(actions);
+  el.appendChild(body);
+  // Close (×) — identical to a normal bubble's delete button: a hover-revealed
+  // round action pinned to the top-right corner (reuses .messageAction.deleteMessage).
+  const rightActions = document.createElement('div');
+  rightActions.className = 'messageActions messageActionsRight';
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'messageAction deleteMessage';
+  del.title = t('bg_cancel');
+  del.setAttribute('aria-label', 'cancel');
+  del.textContent = '×';
+  del.addEventListener('click', () => cancelBgJob(message.jobId));
+  rightActions.appendChild(del);
+  el.appendChild(rightActions);
+  return el;
+}
+
 function forkConversation(index) {
   const tab = getActiveTab();
   const forkedMessages = tab.messages.slice(0, index + 1).map((m) => ({ ...m }));
@@ -197,6 +297,8 @@ function deleteMessageVideo(msgIndex, vidIndex) {
 
 function resendChatMessage(index) {
   if (state.currentAbortController || state.imageGenAbortController) return;
+  // In-place regeneration collides with queued placeholders — block while busy.
+  if (bgBlockResend()) return;
   const tab = getActiveTab();
   if (tab.locked) return;
   const message = tab.messages[index];
@@ -293,7 +395,10 @@ function resendChatMessage(index) {
       saveChat();
       renderChat();
     } else {
-      generateSpeech(voiceCmd, state.activeTabId, index + 1);
+      // Resend of audio gen also goes to the background queue (reached only when
+      // the queue is empty — a non-empty queue is blocked above with a dialog). The
+      // placeholder lands right after the resent user bubble (index + 1).
+      enqueueBgJob({ tabId: state.activeTabId, kind: "audio", label: voiceCmd.text.slice(0, 48), payload: { parsed: voiceCmd }, insertIndex: index + 1 });
     }
     return;
   }
@@ -313,7 +418,10 @@ function resendChatMessage(index) {
       saveChat();
       renderChat();
     } else {
-      generateImage(validCmds, state.activeTabId, index + 1, message.images || null, srcVid, message.mask || null);
+      // Resend of image/video gen also goes to the background queue (reached only
+      // when the queue is empty — a non-empty queue is blocked above with a dialog).
+      // The placeholder lands right after the resent user bubble (index + 1).
+      enqueueImagineGen(validCmds, state.activeTabId, message.images || null, srcVid, message.mask || null, index + 1);
     }
   } else {
     // Truncate context to the resent bubble: only messages up to and including
@@ -392,7 +500,9 @@ export async function imagineFromContent(index) {
         renderChat();
       } else {
         const validCmds = imagineCmds.filter((cmd) => cmd && cmd.prompt);
-        generateImage(validCmds, state.activeTabId, index + 2);
+        // Route the actual image gen into the background queue; the placeholder lands
+        // right after the generated-prompts bubble (which sits at index + 1).
+        enqueueImagineGen(validCmds, state.activeTabId, null, null, null, index + 2);
       }
     }
   } catch (error) {
@@ -744,6 +854,8 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
 
   const mapped = [];
   for (const msg of relevantMessages) {
+    // Background-job placeholders carry no content — never send them to the model.
+    if (msg.bgPlaceholder) continue;
     // Include compact summary as system context
     if (msg.isCompactSummary) {
       mapped.push({ role: "system", content: `${getPrompt("summaryContext")}${msg.content}` });
@@ -2021,9 +2133,10 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       saveChat();
       if (state.activeTabId === tabId) renderChat();
     } else {
+      // Generation ALWAYS goes to the background queue.
       saveChat();
       if (state.activeTabId === tabId) renderChat();
-      generateImage(validCmds, tabId, -1, userMessage.images || null, video || null, userMessage.mask || null);
+      enqueueImagineGen(validCmds, tabId, userMessage.images || null, video || null, userMessage.mask || null);
     }
     return;
   }
@@ -2039,7 +2152,8 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       saveChat();
       if (state.activeTabId === tabId) renderChat();
     } else {
-      generateSpeech(voiceCmd, tabId, -1);
+      // Audio generation ALWAYS goes to the background queue.
+      enqueueBgJob({ tabId, kind: "audio", label: voiceCmd.text.slice(0, 48), payload: { parsed: voiceCmd } });
     }
     return;
   }
@@ -2497,6 +2611,15 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
         input.addEventListener("input", autosizeInput);
         function finishEdit(save, triggerSend = true) {
           const newContent = input.value.trim();
+          // Editing a user bubble re-runs it (a generation edit re-queues; text
+          // edits regenerate in place). While the queue is non-empty, refuse with a
+          // dialog and restore the original text (revert this edit) instead.
+          if (save && triggerSend && role === "user" && newContent && newContent !== original
+              && !/^\/(memory|remind)(\s|$)/.test(newContent) && bgQueueActive()) {
+            alert(t('bg_queueBusyAlert'));
+            input.replaceWith(text);
+            return;
+          }
           if (save && newContent && newContent !== original) {
             const scrollY = dom.messagesEl.scrollTop;
             const tab = getActiveTab();
@@ -2831,6 +2954,12 @@ export function renderChat() {
     // Skip old-style translation messages (backward compat)
     if (message.isTranslation) return;
 
+    // Background-job placeholder: a status bubble at the job's original position.
+    if (message.bgPlaceholder) {
+      dom.messagesEl.appendChild(renderBgPlaceholder(message));
+      return;
+    }
+
     // For file previews, prefer display-only thumbnails (which already bundle any
     // inline images as previews); otherwise derive the grid from `images`.
     const genImages = message.generatedImages || (message.isFilePreview && !message.generatedThumbnails?.length && message.images?.length
@@ -2838,6 +2967,8 @@ export function renderChat() {
       : undefined);
     const previews = message.previewImages || (message.previewImage ? [message.previewImage] : undefined);
     const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails, message.generatedVideos, message.videoMime, message.generatedAudio, message.audioMime, message.generatedVideoThumbnails);
+    // Tag with the stable id so the jobs drawer can scroll a finished job into view.
+    if (el && message.id) el.dataset.msgId = message.id;
     // Backfill posters for videos generated before thumbnails existed, so they
     // also get a still for export/archive and a poster on next render.
     if (message.generatedVideos?.length && !message.generatedVideoThumbnails?.length) {

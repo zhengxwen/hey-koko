@@ -66,6 +66,7 @@ export const dom = {
   avatarPicker: document.querySelector("#avatarPicker"),
   sendButton: document.querySelector("#sendButton"),
   sendStatus: document.querySelector("#sendStatus"),
+  bgJobsBtn: document.querySelector("#bgJobsBtn"),
   stopTranslateBtn: document.querySelector("#stopTranslateBtn"),
   commandPopup: document.querySelector("#commandPopup"),
   aiName: document.querySelector("#aiName"),
@@ -109,6 +110,9 @@ export const state = {
   commandActiveIndex: 0,
   streamingInfo: null,
   pendingGen: null,                  // in-progress image/video/audio gen: { tabId, label, insertIndex }
+  bgJobs: [],                        // background-job queue (FIFO, serial). See bg-jobs.js for the shape.
+  bgRunnerActive: false,             // true while the serial runner loop is draining the queue
+  bgDrawerOpen: false,               // whether the Background Jobs drawer is visible
   comfyVideoModels: new Set(),       // ComfyUI model names that generate video
   comfyVideoInModels: new Set(),     // ComfyUI video models that need a SOURCE video (fps follows source)
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images

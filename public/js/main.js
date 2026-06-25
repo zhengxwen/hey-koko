@@ -23,6 +23,7 @@ import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMe
 import { loadReminders, getReminders, removeReminder, describeReminder, setReminderChangeHandler, setDeliverHandler, startScheduler } from './proactive.js';
 import { initPanelResize } from './panel-resize.js';
 import { openMaskModal } from './mask-paint.js';
+import { setBgDeps, restoreBgJobsOnLoad, toggleBgDrawer, closeBgDrawer } from './bg-jobs.js';
 
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
@@ -30,6 +31,14 @@ translateSetRenderChat(renderChat);
 imageGenSetDeps({ setGenerating, renderChat });
 voiceGenSetDeps({ setGenerating, renderChat });
 urlFetchSetDeps({ setGenerating, renderChat, regenerateReply, showSendError });
+setBgDeps({ renderChat });
+
+// Background Jobs drawer toggle + close.
+if (dom.bgJobsBtn) dom.bgJobsBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleBgDrawer(); });
+{
+  const bgClose = document.querySelector("#bgJobsCloseBtn");
+  if (bgClose) bgClose.addEventListener("click", () => closeBgDrawer());
+}
 
 // Initialize mermaid
 if (typeof mermaid !== "undefined") {
@@ -2041,5 +2050,10 @@ renderChat();
 }
 loadModels().then(() => refreshModelMaxContext(dom.modelSelect.value)).catch(() => {});
 loadImageModels().catch(() => {});
-loadComfyModels().then(() => applyInputPlaceholder()).catch(() => {});
+// Resume the background-jobs queue only AFTER ComfyUI models are known, so a
+// resumed video job routes to the video path (state.comfyVideoModels populated).
+loadComfyModels()
+  .then(() => applyInputPlaceholder())
+  .catch(() => {})
+  .finally(() => { restoreBgJobsOnLoad().catch((e) => console.warn("[bg-jobs] restore failed:", e)); });
 loadEmbedModels().catch(() => {});

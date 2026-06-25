@@ -8,7 +8,7 @@ import { setAvatarState } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab } from './tabs.js';
 import { markdownToSpeechText } from './speech.js';
-import { pendingGenStart, pendingGenClear } from './pending-gen.js';
+import { foregroundSink } from './gen-sink.js';
 
 let _setGenerating = null;
 let _renderChat = null;
@@ -59,7 +59,7 @@ export function parseVoiceCommand(input) {
   return result;
 }
 
-export async function generateSpeech(parsed, tabId = state.activeTabId, insertIndex = -1) {
+export async function generateSpeech(parsed, tabId = state.activeTabId, insertIndex = -1, sink = null) {
   const tab = getTab(tabId);
   if (!tab) return;
   const genStart = Date.now();
@@ -71,30 +71,27 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
   // Strip markdown / LaTeX so the engine reads clean text (reuses the say path's cleaner).
   const speakText = markdownToSpeechText(parsed.text);
 
-  const abortController = new AbortController();
-  state.imageGenAbortController = abortController;
-  if (_setGenerating) _setGenerating(true);
+  // Foreground unless a background sink was handed in by the jobs runner. The sink
+  // owns the AbortController, the send-button lock, the progress bubble and where
+  // the final message lands (live bubble vs. background placeholder).
+  if (!sink) sink = foregroundSink({ tabId, insertIndex, setGenerating: _setGenerating, renderChat: _renderChat, saveChat, getTab });
+  sink.lock(true);
   setAvatarState("thinking");
-
   // Track in state so the spinner survives a tab switch (see pending-gen.js).
-  pendingGenStart({ tabId, kind: "audio", label: t("msg_generatingAudio"), insertIndex });
+  sink.start("audio", t("msg_generatingAudio"));
 
   try {
     const resp = await fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      signal: abortController.signal,
+      signal: sink.signal,
       body: JSON.stringify({ text: speakText, voice, rate, timeout: 180 }),
     });
     const data = await resp.json();
-    pendingGenClear(tabId);
+    sink.clearBubble();
 
     if (!resp.ok || !data.audio) {
-      const errMsg = { role: "assistant", content: `语音生成失败：${data.error || "未返回音频"}`, timestamp: Date.now() };
-      if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errMsg);
-      else tab.messages.push(errMsg);
-      saveChat();
-      if (state.activeTabId === tabId && _renderChat) _renderChat();
+      sink.place({ role: "assistant", content: `语音生成失败：${data.error || "未返回音频"}`, timestamp: Date.now() });
       setAvatarState("idle");
       return;
     }
@@ -106,7 +103,7 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
       ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
       : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 
-    const replyMsg = {
+    sink.place({
       role: "assistant",
       content: t("msg_audioDone", { size: sizeStr }),
       generatedAudio: data.audio,
@@ -114,25 +111,18 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
       imagePrompt: parsed.text,
       timestamp: Date.now(),
       genMs: Date.now() - genStart,
-    };
-    if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, replyMsg);
-    else tab.messages.push(replyMsg);
-    saveChat();
-    if (state.activeTabId === tabId && _renderChat) _renderChat();
+    });
     setAvatarState("happy");
     setTimeout(() => setAvatarState("idle"), 2000);
   } catch (error) {
-    pendingGenClear(tabId);
+    sink.clearBubble();
     if (error.name !== "AbortError") {
-      const errMsg = { role: "assistant", content: `语音生成出错：${error.message}`, timestamp: Date.now() };
-      tab.messages.push(errMsg);
-      saveChat();
-      if (state.activeTabId === tabId && _renderChat) _renderChat();
+      sink.place({ role: "assistant", content: `语音生成出错：${error.message}`, timestamp: Date.now() });
     }
     setAvatarState("idle");
   } finally {
-    pendingGenClear(tabId);
-    if (_setGenerating) _setGenerating(false);
-    state.imageGenAbortController = null;
+    sink.clearBubble();
+    sink.done();
+    sink.cleanup();
   }
 }

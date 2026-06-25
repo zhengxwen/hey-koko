@@ -183,6 +183,30 @@ export async function dbLoadReminders() {
   });
 }
 
+// Save the background-job queue (single array in the meta store). Persisted on
+// every queue mutation so jobs survive a tab switch / reload.
+export async function dbSaveJobs(jobs) {
+  const db = await openDB();
+  const tx = db.transaction("meta", "readwrite");
+  tx.objectStore("meta").put(jobs, "bgJobs");
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = (e) => reject(e.target.error);
+  });
+}
+
+// Load the background-job queue
+export async function dbLoadJobs() {
+  const db = await openDB();
+  const tx = db.transaction("meta", "readonly");
+  const store = tx.objectStore("meta");
+  return new Promise((resolve, reject) => {
+    const request = store.get("bgJobs");
+    request.onsuccess = () => resolve(Array.isArray(request.result) ? request.result : []);
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
 // Migrate existing localStorage data into IndexedDB (one-time)
 export async function migrateFromLocalStorage() {
   const raw = localStorage.getItem(TABS_KEY);

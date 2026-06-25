@@ -5,7 +5,21 @@ import { saveTabs, saveChat, syncPersonaEditable } from './settings.js';
 import { stopSpeech } from './speech.js';
 import { escapeHtml } from './utils.js';
 import { dbLoadTabs, dbLoadActiveTabId, migrateFromLocalStorage, dbDeleteDatabase } from './db.js';
+import { genId } from './utils.js';
 import { t } from './i18n.js';
+
+// Give every persisted message a stable `id` so the background-jobs queue can
+// re-locate a placeholder after inserts/deletes shift array indices. Cheap,
+// idempotent, and harmless to messages that already have one.
+function backfillMessageIds(tabs) {
+  for (const tab of tabs) {
+    if (!Array.isArray(tab.messages)) continue;
+    for (const m of tab.messages) {
+      if (m && !m.id) m.id = genId();
+    }
+  }
+  return tabs;
+}
 
 // renderChat will be set from main.js to avoid circular dependency
 let _renderChat = null;
@@ -28,7 +42,7 @@ export async function loadTabs() {
     const tabs = await dbLoadTabs();
     if (Array.isArray(tabs) && tabs.length > 0) {
       const activeTabId = await dbLoadActiveTabId();
-      return { tabs, activeTabId };
+      return { tabs: backfillMessageIds(tabs), activeTabId };
     }
   } catch (e) {
     console.warn("[loadTabs] IndexedDB read failed:", e);
