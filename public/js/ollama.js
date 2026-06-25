@@ -3,20 +3,35 @@ import { dom, state } from './state.js';
 import { SETTINGS_KEY } from './constants.js';
 import { t } from './i18n.js';
 import { saveCurrentSettings } from './settings.js';
+import { getBgWorkers, setBgWorkerStatus } from './bg-jobs.js';
 
-function updateUrlDisplay(url, imageUrl, comfyUrl) {
-  const display = url.replace(/^https?:\/\//, "");
-  dom.llmUrlDisplay.textContent = display;
-  dom.imageUrlDisplay.textContent = (imageUrl || url).replace(/^https?:\/\//, "");
+// "http://127.0.0.1:11434" + "localhost" -> "127.0.0.1:11434 (localhost)".
+// The hostname (reverse-DNS, from the server) is only appended when present.
+function formatUrl(url, hostname) {
+  const display = (url || "").replace(/^https?:\/\//, "");
+  return hostname ? `${display} (${hostname})` : display;
+}
+
+// Pull the bare address back out of a urlDisplay element, dropping any
+// " (hostname)" suffix that formatUrl appended, for use as an actual URL.
+export function urlFromDisplay(el) {
+  return (el?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim();
+}
+
+function updateUrlDisplay(data) {
+  const { url, imageUrl, comfyUrl, hostname, imageHostname, comfyHostname } = data;
+  dom.llmUrlDisplay.textContent = formatUrl(url, hostname);
+  dom.imageUrlDisplay.textContent = formatUrl(imageUrl || url, imageHostname || (imageUrl ? "" : hostname));
   if (dom.comfyUrlDisplay) {
-    dom.comfyUrlDisplay.textContent = (comfyUrl || "http://127.0.0.1:8188").replace(/^https?:\/\//, "");
+    dom.comfyUrlDisplay.textContent = formatUrl(comfyUrl || "http://127.0.0.1:8188", comfyHostname);
   }
 }
 
 function editOllamaUrl(type) {
   const displayEl =
     type === "comfy" ? dom.comfyUrlDisplay : type === "image" ? dom.imageUrlDisplay : dom.llmUrlDisplay;
-  const currentUrl = displayEl.textContent;
+  // Strip any " (hostname)" suffix so the prompt offers just the editable address.
+  const currentUrl = displayEl.textContent.replace(/\s*\(.*\)\s*$/, "");
   const labels = { comfy: "ComfyUI", image: "图片模型", llm: "LLM" };
   const defaultHint = type === "comfy" ? "127.0.0.1:8188" : "127.0.0.1:11434";
   const newUrl = prompt(`编辑${labels[type] || "LLM"}服务地址（留空使用本机 ${defaultHint}）:`, currentUrl);
@@ -26,7 +41,7 @@ function editOllamaUrl(type) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ type, url: newUrl })
   }).then(r => r.json()).then(data => {
-    displayEl.textContent = data.url.replace(/^https?:\/\//, "");
+    displayEl.textContent = formatUrl(data.url, data.hostname);
     if (type === "comfy") {
       loadComfyModels().catch(() => {});
     } else if (type === "image") {
@@ -113,11 +128,52 @@ export async function loadImageModels() {
   }
 }
 
+// Scan the default ComfyUI endpoint and populate the dropdown (single-endpoint path).
 export async function loadComfyModels() {
   if (!dom.comfyModelSelect) return;
+  let data = { models: [], editModels: [], videoModels: [] };
+  try { data = await (await fetch("/api/comfy-models")).json(); } catch { /* leave placeholder */ }
+  applyComfyModels(data);
+}
+
+// Scan EVERY enabled ComfyUI worker (parallel lanes): record each endpoint's online
+// status + per-endpoint model sets (for the scheduler), and populate the dropdown with
+// the UNION of models across all machines. Falls back to the single default if no
+// workers are configured.
+export async function refreshBgWorkers() {
+  if (!dom.comfyModelSelect) return;
+  const workers = getBgWorkers().filter((w) => w.enabled);
+  const targets = workers.length
+    ? workers.map((w) => w.url)
+    : [urlFromDisplay(dom.comfyUrlDisplay)].filter(Boolean);
+  if (!targets.length) { loadComfyModels(); return; }
+  const uModels = new Map(), uEdit = new Map(), uVideo = new Map();
+  await Promise.all(targets.map(async (url) => {
+    try {
+      const d = await (await fetch(`/api/comfy-models?comfyUrl=${encodeURIComponent(url)}`)).json();
+      const models = d.models || [], editModels = d.editModels || [], videoModels = d.videoModels || [];
+      const sets = {
+        image: new Set(models),
+        edit: new Set(editModels.map((m) => m.name)),
+        video: new Set(videoModels.map((m) => m.name)),
+        videoIn: new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name)),
+        multiImage: new Set(editModels.filter((m) => m.type === "qwen").map((m) => m.name)),
+      };
+      const online = (models.length + editModels.length + videoModels.length) > 0;
+      setBgWorkerStatus(url, { online, models: sets });
+      for (const n of models) if (!uModels.has(n)) uModels.set(n, n);
+      for (const m of editModels) if (!uEdit.has(m.name)) uEdit.set(m.name, m);
+      for (const m of videoModels) if (!uVideo.has(m.name)) uVideo.set(m.name, m);
+    } catch { setBgWorkerStatus(url, { online: false }); }
+  }));
+  applyComfyModels({ models: [...uModels.values()], editModels: [...uEdit.values()], videoModels: [...uVideo.values()] });
+}
+
+// Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
+// videoModels} dataset (a single endpoint or the union across worker lanes).
+function applyComfyModels(data) {
+  if (!dom.comfyModelSelect) return;
   try {
-    const response = await fetch("/api/comfy-models");
-    const data = await response.json();
     const models = data.models || [];                 // checkpoints (txt2img / img2img)
     const editModels = data.editModels || [];         // instruction-edit models (need a ref image)
     const videoModels = data.videoModels || [];       // text→video / image→video
@@ -416,7 +472,7 @@ function initComfyParamsModal() {
 }
 
 export function initOllama() {
-  fetch("/api/ollama-url").then(r => r.json()).then(d => updateUrlDisplay(d.url, d.imageUrl, d.comfyUrl)).catch(() => {});
+  fetch("/api/ollama-url").then(r => r.json()).then(d => updateUrlDisplay(d)).catch(() => {});
 
   initComfyParamsModal();
 
@@ -435,7 +491,7 @@ export function initOllama() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "llm", url })
       }).then(r => r.json()).then(data => {
-        dom.llmUrlDisplay.textContent = data.url.replace(/^https?:\/\//, "");
+        dom.llmUrlDisplay.textContent = formatUrl(data.url, data.hostname);
         loadModels().catch(() => {});
         loadImageModels().catch(() => {});
       }).catch(() => {});
@@ -451,7 +507,7 @@ export function initOllama() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "comfy", url })
       }).then(r => r.json()).then(data => {
-        if (dom.comfyUrlDisplay) dom.comfyUrlDisplay.textContent = data.url.replace(/^https?:\/\//, "");
+        if (dom.comfyUrlDisplay) dom.comfyUrlDisplay.textContent = formatUrl(data.url, data.hostname);
         loadComfyModels().catch(() => {});
       }).catch(() => {});
     },

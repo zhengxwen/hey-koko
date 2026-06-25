@@ -7,9 +7,9 @@
 // This is the (B) "in-page background" model: the work still runs in this page's
 // JS, so a reload interrupts an in-flight job — its payload is persisted so it can
 // resume (queued) or be retried (interrupted).
-import { state } from './state.js';
+import { state, dom } from './state.js';
 import { genId } from './utils.js';
-import { dbSaveJobs, dbLoadJobs } from './db.js';
+import { dbSaveJobs, dbLoadJobs, dbSaveWorkers, dbLoadWorkers } from './db.js';
 import { saveChat } from './settings.js';
 import { getTab, switchTab } from './tabs.js';
 import { t } from './i18n.js';
@@ -24,13 +24,15 @@ let _regenerateReply = null;
 let _parseDocumentHeadless = null;
 let _handleUrlCommand = null;
 let _handleMultiUrlCommand = null;
-export function setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand }) {
+let _refreshWorkers = null;   // re-scan worker endpoints (ollama.refreshBgWorkers), injected
+export function setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand, refreshWorkers }) {
   if (renderChat) _renderChat = renderChat;
   if (analyzeMedia) _analyzeMedia = analyzeMedia;
   if (regenerateReply) _regenerateReply = regenerateReply;
   if (parseDocumentHeadless) _parseDocumentHeadless = parseDocumentHeadless;
   if (handleUrlCommand) _handleUrlCommand = handleUrlCommand;
   if (handleMultiUrlCommand) _handleMultiUrlCommand = handleMultiUrlCommand;
+  if (refreshWorkers) _refreshWorkers = refreshWorkers;
 }
 function rerender() { if (_renderChat) _renderChat(); }
 
@@ -67,11 +69,94 @@ function findMsg(msgId) {
   return null;
 }
 
-// Queue position (1-based) among still-queued jobs; 0 if not queued.
+// Queue position (1-based) among still-queued jobs IN THE SAME LANE; 0 if not queued.
 function queuePosition(job) {
   if (job.status !== 'queued') return 0;
-  const queued = state.bgJobs.filter((j) => j.status === 'queued');
+  const wid = laneOf(job);
+  const queued = state.bgJobs.filter((j) => j.status === 'queued' && laneOf(j) === wid);
   return queued.indexOf(job) + 1;
+}
+
+// ---- worker registry + scheduler -------------------------------------------
+// A "worker" is a backend that runs a job. Each ComfyUI endpoint is its own lane
+// (GPU bottleneck → serial within, parallel across machines). Everything non-ComfyUI
+// (audio / analyze / docfull / url) shares the synthetic 'local' lane.
+
+function laneOf(job) { return job.workerId || 'local'; }
+
+// The enabled ComfyUI workers. If none are configured yet, fall back to a single
+// synthetic worker built from the currently-configured endpoint (back-compat = 1 lane).
+function comfyWorkers() {
+  const ws = state.bgWorkers.filter((w) => w.enabled);
+  if (ws.length) return ws;
+  // Drop any " (hostname)" suffix the display shows — we need the bare address.
+  const url = (dom.comfyUrlDisplay?.textContent || '').replace(/\s*\(.*\)\s*$/, '').trim();
+  return url ? [{ id: 'comfy:' + url, url, label: url, enabled: true, online: true, models: null }] : [];
+}
+
+// Does a worker have this model? null models = unknown (not yet scanned) → assume yes
+// so a freshly-added worker isn't excluded before its first scan.
+function workerHasModel(w, model) {
+  if (!model) return true;
+  if (!w.models) return true;
+  const m = w.models;
+  return (m.image && m.image.has(model)) || (m.edit && m.edit.has(model)) || (m.video && m.video.has(model));
+}
+
+// Lane load = queued + running jobs already on that worker.
+function laneLoad(workerId) {
+  return state.bgJobs.filter((j) => laneOf(j) === workerId && (j.status === 'queued' || j.status === 'running')).length;
+}
+
+// Pick which backend runs a job. ComfyUI jobs go to the least-busy enabled+online
+// worker that has the model; others go to 'local'. Snapshot onto the job (like
+// modelOverride) so a later config change can't redirect a queued job.
+function assignWorker(job) {
+  if (job.kind !== 'image' && job.kind !== 'video') { job.workerId = 'local'; job.workerUrl = null; return; }
+  const model = (job.payload && job.payload.modelOverride && job.payload.modelOverride.comfyModel) || job.payload?.model || '';
+  const all = comfyWorkers();
+  if (!all.length) { job.workerId = 'local'; job.workerUrl = null; return; } // no comfy → Ollama image path
+  const online = all.filter((w) => w.online !== false);
+  let cands = online.filter((w) => workerHasModel(w, model));
+  if (!cands.length) cands = online.length ? online : all;  // fall back: any online, else any
+  cands.sort((a, b) => laneLoad('comfy:' + a.url) - laneLoad('comfy:' + b.url));
+  const w = cands[0];
+  job.workerId = 'comfy:' + w.url;
+  job.workerUrl = w.url;
+}
+
+// Persist the worker list (strip runtime-only online/models).
+function persistWorkers() {
+  const clean = state.bgWorkers.map(({ online, models, ...w }) => w);
+  dbSaveWorkers(clean).catch((e) => console.warn('[bg-jobs] worker persist failed:', e));
+}
+
+export function getBgWorkers() { return state.bgWorkers; }
+export function addBgWorker(url) {
+  const u = (url || '').trim().replace(/\/+$/, '');
+  if (!u) return null;
+  if (state.bgWorkers.some((w) => w.url === u)) return null;  // dedupe
+  const w = { id: 'comfy:' + u, url: u, label: u, enabled: true, online: undefined, models: null };
+  state.bgWorkers.push(w);
+  persistWorkers();
+  renderDrawer();
+  return w;
+}
+export function removeBgWorker(id) {
+  const i = state.bgWorkers.findIndex((w) => w.id === id || w.url === id);
+  if (i >= 0) { state.bgWorkers.splice(i, 1); persistWorkers(); renderDrawer(); }
+}
+export function setBgWorkerEnabled(id, on) {
+  const w = state.bgWorkers.find((x) => x.id === id || x.url === id);
+  if (w) { w.enabled = !!on; persistWorkers(); renderDrawer(); }
+}
+// Called by the health/scan code with a freshly-scanned model set + online flag.
+export function setBgWorkerStatus(url, { online, models }) {
+  const w = state.bgWorkers.find((x) => x.url === url);
+  if (!w) return;
+  if (online !== undefined) w.online = online;
+  if (models !== undefined) w.models = models;
+  renderDrawer();
 }
 
 // ---- enqueue ---------------------------------------------------------------
@@ -96,6 +181,7 @@ export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1 }) 
     createdAt: Date.now(),
   };
   state.bgJobs.push(job);
+  assignWorker(job);   // pick which backend/lane runs it (snapshot, like modelOverride)
   // Persisted placeholder bubble — at insertIndex (resend/edit: just after the user
   // bubble) or appended (fresh sends). Reattach is by msgId, so position is free.
   const placeholder = {
@@ -120,12 +206,21 @@ export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1 }) 
 
 // ---- the serial runner -----------------------------------------------------
 
-export async function pumpQueue() {
-  if (state.bgRunnerActive) return;
-  state.bgRunnerActive = true;
+// Start a serial runner for every lane that has queued work and isn't already
+// draining. Lanes run in PARALLEL (each ComfyUI machine + the 'local' lane), so a
+// video on box A renders while an image renders on box B and an analysis runs locally.
+export function pumpQueue() {
+  const lanes = new Set(state.bgJobs.filter((j) => j.status === 'queued').map(laneOf));
+  for (const wid of lanes) { if (!state.bgLanes.has(wid)) pumpLane(wid); }  // not awaited → concurrent
+}
+
+// Drain ONE lane serially (FIFO within a worker protects its GPU).
+async function pumpLane(workerId) {
+  if (state.bgLanes.has(workerId)) return;
+  state.bgLanes.add(workerId);
   try {
     let job;
-    while ((job = state.bgJobs.find((j) => j.status === 'queued'))) {
+    while ((job = state.bgJobs.find((j) => j.status === 'queued' && laneOf(j) === workerId))) {
       job.status = 'running';
       job.progress = null;
       job.seg = null;
@@ -153,7 +248,7 @@ export async function pumpQueue() {
       refreshPlaceholders();
     }
   } finally {
-    state.bgRunnerActive = false;
+    state.bgLanes.delete(workerId);
   }
 }
 
@@ -180,9 +275,11 @@ async function runJob(job) {
   } else {
     // image OR video — generateImage routes to generateVideo for a video model.
     // modelOverride pins the model captured at submit time, so switching the model
-    // dropdown afterwards doesn't change a queued job's destination.
+    // dropdown afterwards doesn't change a queued job's destination. job.workerUrl
+    // (set by the scheduler) pins WHICH ComfyUI machine runs it — its parallel lane.
+    const mo = (p.modelOverride && job.workerUrl) ? { ...p.modelOverride, comfyUrl: job.workerUrl } : (p.modelOverride || null);
     await generateImage(p.parsedInput, job.tabId, -1, p.initImages || null,
-      p.initVideo || null, p.maskB64 || null, sink, p.modelOverride || null);
+      p.initVideo || null, p.maskB64 || null, sink, mo);
   }
 }
 
@@ -397,6 +494,7 @@ export function retryBgJob(jobId) {
   job.status = 'queued';
   job.error = '';
   job.progress = null;
+  assignWorker(job);   // re-route on retry — may land on a different online machine (failover)
   persist();
   refreshPlaceholders();
   pumpQueue();
@@ -499,7 +597,7 @@ function cancelActiveDrag() {
 function reorderQueued(srcId, tgtId, after) {
   const src = state.bgJobs.find((j) => j.id === srcId);
   const tgt = state.bgJobs.find((j) => j.id === tgtId);
-  if (!src || !tgt || src === tgt || src.status !== 'queued' || tgt.status !== 'queued') { renderDrawer(); return; }
+  if (!src || !tgt || src === tgt || src.status !== 'queued' || tgt.status !== 'queued' || laneOf(src) !== laneOf(tgt)) { renderDrawer(); return; }
   state.bgJobs.splice(state.bgJobs.indexOf(src), 1);
   const to = state.bgJobs.indexOf(tgt) + (after ? 1 : 0);
   state.bgJobs.splice(to, 0, src);
@@ -515,6 +613,7 @@ export function renderDrawer() {
   // (Progress ticks still call this; they just skip until the drag ends or is canceled.)
   if (bgDrag) return;
   list.innerHTML = '';
+  list.appendChild(buildWorkersBar());   // ComfyUI worker endpoints (parallel lanes) manager
   if (!state.bgJobs.length) {
     const empty = document.createElement('div');
     empty.className = 'bgJobsEmpty';
@@ -522,7 +621,80 @@ export function renderDrawer() {
     list.appendChild(empty);
     return;
   }
+  // Group jobs by lane (worker). Lanes run in PARALLEL, so when more than one is in
+  // play show a header per lane — the user sees what's running on which machine.
+  const lanes = [];
+  const byLane = new Map();
   for (const job of state.bgJobs) {
+    const wid = laneOf(job);
+    if (!byLane.has(wid)) { byLane.set(wid, []); lanes.push(wid); }
+    byLane.get(wid).push(job);
+  }
+  const showHeaders = lanes.length > 1;
+  for (const wid of lanes) {
+    if (showHeaders) list.appendChild(buildLaneHeader(wid, byLane.get(wid)));
+    for (const job of byLane.get(wid)) list.appendChild(buildJobRow(job));
+  }
+}
+
+// The ComfyUI workers manager shown at the top of the drawer: each endpoint as a chip
+// (online dot + model count, click to enable/disable, × to remove) + an Add button.
+function buildWorkersBar() {
+  const bar = document.createElement('div');
+  bar.className = 'bgWorkersBar';
+  const title = document.createElement('div');
+  title.className = 'bgWorkersTitle';
+  title.textContent = t('bg_workers');
+  bar.appendChild(title);
+  const chips = document.createElement('div');
+  chips.className = 'bgWorkersChips';
+  const reload = () => { if (_refreshWorkers) _refreshWorkers(); else renderDrawer(); };
+  for (const w of state.bgWorkers) {
+    const chip = document.createElement('span');
+    chip.className = 'bgWorkerChip' + (w.enabled ? '' : ' disabled') + (w.online === false ? ' offline' : '');
+    chip.title = w.url;
+    const mc = w.models ? (w.models.image.size + w.models.edit.size + w.models.video.size) : 0;
+    const meta = w.online === false ? t('bg_workerOffline') : t('bg_workerModels', { n: mc });
+    chip.innerHTML = `<span class="bgWorkerDot">${w.online === false ? '○' : '●'}</span>`
+      + `<span class="bgWorkerLabel">${escapeText(w.label)}</span>`
+      + `<span class="bgWorkerMeta">${escapeText(meta)}</span>`;
+    chip.addEventListener('click', () => { setBgWorkerEnabled(w.id, !w.enabled); reload(); });
+    const x = document.createElement('button');
+    x.type = 'button'; x.className = 'bgWorkerRemove'; x.textContent = '×'; x.title = t('bg_workerRemove');
+    x.addEventListener('click', (e) => { e.stopPropagation(); removeBgWorker(w.id); reload(); });
+    chip.appendChild(x);
+    chips.appendChild(chip);
+  }
+  const add = document.createElement('button');
+  add.type = 'button'; add.className = 'bgWorkerAdd'; add.textContent = '+ ' + t('bg_workerAdd');
+  add.addEventListener('click', () => {
+    const url = prompt('ComfyUI host:port', '127.0.0.1:8188');
+    if (url && url.trim()) { addBgWorker(url); reload(); }
+  });
+  chips.appendChild(add);
+  bar.appendChild(chips);
+  return bar;
+}
+
+function laneLabel(wid) {
+  if (wid === 'local') return t('bg_laneLocal');
+  const w = state.bgWorkers.find((x) => x.id === wid);
+  return (w && w.label) || wid.replace(/^comfy:/, '');
+}
+function buildLaneHeader(wid, jobs) {
+  const h = document.createElement('div');
+  h.className = 'bgLaneHeader';
+  const running = jobs.filter((j) => j.status === 'running').length;
+  const queued = jobs.filter((j) => j.status === 'queued').length;
+  const w = wid === 'local' ? null : state.bgWorkers.find((x) => x.id === wid);
+  const dot = wid === 'local' ? '' : `<span class="bgLaneDot ${w && w.online === false ? 'off' : 'on'}"></span>`;
+  h.innerHTML = `${dot}<span class="bgLaneName">${escapeText(laneLabel(wid))}</span>`
+    + `<span class="bgLaneCounts">${escapeText(t('bg_laneCounts', { running, queued }))}</span>`;
+  return h;
+}
+
+function buildJobRow(job) {
+  {
     const row = document.createElement('div');
     row.className = `bgJobRow bgJob-${job.status}`;
     row.dataset.jobId = job.id;
@@ -616,7 +788,7 @@ export function renderDrawer() {
     del.addEventListener('click', (e) => { e.stopPropagation(); cancelBgJob(job.id); });
     row.appendChild(del);
 
-    list.appendChild(row);
+    return row;
   }
 }
 
@@ -641,4 +813,13 @@ export async function restoreBgJobsOnLoad() {
   // Re-sync placeholders to their restored status + render chat/drawer.
   refreshPlaceholders();
   pumpQueue();
+}
+
+// Load the persisted ComfyUI worker list (runtime online/models start unknown — the
+// health/scan code refreshes them). Call before restoreBgJobsOnLoad so lanes resolve.
+export async function restoreBgWorkersOnLoad() {
+  let workers = [];
+  try { workers = await dbLoadWorkers(); } catch { workers = []; }
+  state.bgWorkers = workers.map((w) => ({ ...w, online: undefined, models: null }));
+  renderDrawer();
 }

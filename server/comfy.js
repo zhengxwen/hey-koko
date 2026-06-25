@@ -3,8 +3,24 @@ const { spawn } = require("child_process");
 const os = require("os");
 const path = require("path");
 const fsp = require("fs/promises");
+const { AsyncLocalStorage } = require("async_hooks");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
+
+// Per-request ComfyUI endpoint. Background jobs can target DIFFERENT machines in
+// parallel, so the target URL must not be a shared mutable global (concurrent
+// requests would clobber it). AsyncLocalStorage scopes it to each request's async
+// call tree — parallel-safe — and falls back to the configured default when unset.
+const comfyCtx = new AsyncLocalStorage();
+function currentComfyUrl() { return comfyCtx.getStore()?.comfyUrl || config.comfyUrl; }
+// Normalize a host[:port] or full URL to a fetchable origin (no trailing slash).
+function normComfyUrl(u) {
+  if (!u || typeof u !== "string") return null;
+  let s = u.trim();
+  if (!s) return null;
+  if (!/^https?:\/\//i.test(s)) s = "http://" + s;
+  return s.replace(/\/+$/, "");
+}
 
 // Best-effort ffprobe of a video buffer → { frames, fps }. frames = r_frame_rate ×
 // duration; used to let Wan Animate generate the FULL clip at the SOURCE fps (so
@@ -68,7 +84,7 @@ function animateSegmentCap(pixelBudget, torchCompile = false) {
 // checkpoints, diffusion models, text encoders or VAEs the server has on disk).
 async function comfyEnum(node, input) {
   try {
-    const r = await fetch(`${config.comfyUrl}/object_info/${node}`);
+    const r = await fetch(`${currentComfyUrl()}/object_info/${node}`);
     if (!r.ok) return [];
     const data = await r.json();
     const spec = data?.[node]?.input?.required?.[input] || data?.[node]?.input?.optional?.[input];
@@ -136,8 +152,11 @@ async function resolveBerniniAuto() {
 
 // List both classic checkpoints (txt2img / classic img2img) and the
 // instruction-edit models found in diffusion_models/.
-async function proxyComfyModels(res) {
+async function proxyComfyModels(req, res) {
   try {
+    // ?comfyUrl=host:port scans a SPECIFIC endpoint (per-worker model list); default global.
+    const q = new URL(req.url, "http://x").searchParams.get("comfyUrl");
+    comfyCtx.enterWith({ comfyUrl: normComfyUrl(q) || config.comfyUrl });
     const [ckpts, unets] = await Promise.all([
       comfyEnum("CheckpointLoaderSimple", "ckpt_name"),
       comfyEnum("UNETLoader", "unet_name"),
@@ -1335,7 +1354,7 @@ function scaleNode(srcRef, width, height) {
 // stop waiting. Best-effort, with its own short timeout so it can't hang.
 async function interruptComfyServer() {
   try {
-    await fetch(`${config.comfyUrl}/interrupt`, { method: "POST", signal: AbortSignal.timeout(5000) });
+    await fetch(`${currentComfyUrl()}/interrupt`, { method: "POST", signal: AbortSignal.timeout(5000) });
   } catch { /* best-effort */ }
 }
 
@@ -1350,7 +1369,7 @@ async function uploadImage(b64, signal, filename = "heykoko_input.png") {
   const form = new FormData();
   form.append("image", new Blob([buf], { type: "image/png" }), filename);
   form.append("overwrite", "true");
-  const r = await fetch(`${config.comfyUrl}/upload/image`, { method: "POST", body: form, signal });
+  const r = await fetch(`${currentComfyUrl()}/upload/image`, { method: "POST", body: form, signal });
   if (!r.ok) throw new Error(`image upload failed (${r.status})`);
   const data = await r.json();
   return data.subfolder ? `${data.subfolder}/${data.name}` : data.name;
@@ -1365,7 +1384,7 @@ async function uploadVideoBuffer(buf, mime, signal) {
   const form = new FormData();
   form.append("image", new Blob([buf], { type: m }), `heykoko_source.${ext}`);
   form.append("overwrite", "true");
-  const r = await fetch(`${config.comfyUrl}/upload/image`, { method: "POST", body: form, signal });
+  const r = await fetch(`${currentComfyUrl()}/upload/image`, { method: "POST", body: form, signal });
   if (!r.ok) throw new Error(`video upload failed (${r.status})`);
   const data = await r.json();
   return data.subfolder ? `${data.subfolder}/${data.name}` : data.name;
@@ -1381,6 +1400,8 @@ async function uploadVideo(b64, signal, mime = "video/mp4") {
 // and return its filename. Keeps the heavy video OFF the generation request body.
 async function uploadComfyVideo(req, res) {
   try {
+    // Raw-body request → the target endpoint rides in a header.
+    comfyCtx.enterWith({ comfyUrl: normComfyUrl(req.headers["x-comfy-url"]) || config.comfyUrl });
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     let buf = Buffer.concat(chunks);
@@ -1421,7 +1442,7 @@ function runFfmpeg(args) {
 async function fetchComfyInput(filename) {
   try {
     const params = new URLSearchParams({ filename, subfolder: "", type: "input" });
-    const r = await fetch(`${config.comfyUrl}/view?${params}`);
+    const r = await fetch(`${currentComfyUrl()}/view?${params}`);
     if (!r.ok) return null;
     return Buffer.from(await r.arrayBuffer());
   } catch { return null; }
@@ -1431,6 +1452,7 @@ async function mergeComfyVideos(req, res) {
   let dir;
   try {
     const body = await readBody(req);
+    comfyCtx.enterWith({ comfyUrl: normComfyUrl(body.comfyUrl) || config.comfyUrl });
     const vids = Array.isArray(body.videos) ? body.videos : [];
     if (vids.length < 2) { sendJson(res, 400, { error: "need at least 2 segments to merge" }); return; }
     const mime = body.mime || "video/mp4";
@@ -1504,7 +1526,7 @@ async function waitForOutputs(promptId, signal, deadline) {
   while (Date.now() < deadline) {
     if (signal.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
     try {
-      const r = await fetch(`${config.comfyUrl}/history/${promptId}`, { signal });
+      const r = await fetch(`${currentComfyUrl()}/history/${promptId}`, { signal });
       if (r.ok) {
         const hist = await r.json();
         const entry = hist[promptId];
@@ -1531,6 +1553,8 @@ async function generateComfyImage(req, res) {
   let isVideoReq = false; // for a video-aware timeout message in the catch
   try {
     const body = await readBody(req);
+    // Target the ComfyUI endpoint this job was routed to (parallel lanes); default global.
+    comfyCtx.enterWith({ comfyUrl: normComfyUrl(body.comfyUrl) || config.comfyUrl });
     const { prompt, negative_prompt, options, images, mask, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, segmentOffset, segmentLength, continueVideoName, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
     let model = body.model;
 
@@ -1850,7 +1874,7 @@ async function generateComfyImage(req, res) {
       }
 
       // Queue the prompt.
-      const queueResp = await fetch(`${config.comfyUrl}/prompt`, {
+      const queueResp = await fetch(`${currentComfyUrl()}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: workflow, client_id: clientId }),
@@ -1890,7 +1914,7 @@ async function generateComfyImage(req, res) {
             subfolder: img.subfolder || "",
             type: img.type || "output",
           });
-          const viewResp = await fetch(`${config.comfyUrl}/view?${params}`, { signal: controller.signal });
+          const viewResp = await fetch(`${currentComfyUrl()}/view?${params}`, { signal: controller.signal });
           if (!viewResp.ok) continue;
           const buf = Buffer.from(await viewResp.arrayBuffer());
           if (/\.(mp4|webm|mov)$/i.test(img.filename)) {

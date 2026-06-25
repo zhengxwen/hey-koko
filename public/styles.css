@@ -4291,6 +4291,28 @@ button.secondary:disabled {
 .bgJobRow.bgDragOverTop { box-shadow: inset 0 2px 0 0 var(--accent); }
 .bgJobRow.bgDragOverBottom { box-shadow: inset 0 -2px 0 0 var(--accent); }
 
+/* ComfyUI workers manager (parallel lanes) at the top of the drawer. */
+.bgWorkersBar { padding: 4px 4px 8px; border-bottom: 1px solid var(--surface-hover); margin-bottom: 6px; }
+.bgWorkersTitle { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.bgWorkersChips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.bgWorkerChip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 7px; border-radius: 12px; background: var(--surface-hover); font-size: 11px; cursor: pointer; }
+.bgWorkerChip.disabled { opacity: 0.45; }
+.bgWorkerDot { color: #34a853; font-size: 9px; }
+.bgWorkerChip.offline .bgWorkerDot { color: var(--muted); }
+.bgWorkerLabel { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bgWorkerMeta { color: var(--muted); }
+.bgWorkerRemove { min-height: 0; padding: 0 2px; background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; }
+.bgWorkerRemove:hover { color: #d93025; }
+.bgWorkerAdd { min-height: 0; padding: 2px 8px; border-radius: 12px; background: transparent; border: 1px dashed var(--muted); color: var(--muted); font-size: 11px; cursor: pointer; }
+
+/* Lane (worker) headers grouping the drawer rows when more than one lane is active. */
+.bgLaneHeader { display: flex; align-items: center; gap: 6px; padding: 7px 4px 2px; font-size: 11px; color: var(--muted); }
+.bgLaneName { font-weight: 600; }
+.bgLaneCounts { margin-left: auto; }
+.bgLaneDot::before { content: '●'; font-size: 8px; }
+.bgLaneDot.on { color: #34a853; }
+.bgLaneDot.off { color: var(--muted); }
+
 /* Flash a row to draw attention (after "go to background jobs" on a placeholder). */
 @keyframes bgJobFlash {
   0%, 100% { box-shadow: 0 0 0 0 transparent; background: var(--surface); }

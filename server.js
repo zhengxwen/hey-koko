@@ -13,7 +13,7 @@ const http = require("http");
 const config = require("./server/config");
 const { sendJson, serveStatic, readBody } = require("./server/utils");
 const { proxyOllamaChat, proxyOllamaTags, proxyOllamaShow } = require("./server/chat");
-const { scanOllamaStream, scanComfyStream } = require("./server/network");
+const { scanOllamaStream, scanComfyStream, hostnameFor } = require("./server/network");
 const { proxyOllamaImageModels, generateImage, enhancePrompt, contentToImagePrompts } = require("./server/image");
 const { proxyComfyModels, generateComfyImage, uploadComfyVideo, mergeComfyVideos } = require("./server/comfy");
 const { fetchUrlContent, transcribeYouTubeAudio } = require("./server/url-fetch");
@@ -58,8 +58,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === "GET" && req.url === "/api/comfy-models") {
-    proxyComfyModels(res);
+  if (req.method === "GET" && (req.url === "/api/comfy-models" || req.url.startsWith("/api/comfy-models?"))) {
+    proxyComfyModels(req, res);
     return;
   }
 
@@ -114,7 +114,16 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "GET" && req.url === "/api/ollama-url") {
-    sendJson(res, 200, { url: config.ollamaUrl, imageUrl: config.imageOllamaUrl, comfyUrl: config.comfyUrl });
+    Promise.all([
+      hostnameFor(config.ollamaUrl),
+      hostnameFor(config.imageOllamaUrl),
+      hostnameFor(config.comfyUrl),
+    ]).then(([hostname, imageHostname, comfyHostname]) => {
+      sendJson(res, 200, {
+        url: config.ollamaUrl, imageUrl: config.imageOllamaUrl, comfyUrl: config.comfyUrl,
+        hostname, imageHostname, comfyHostname,
+      });
+    });
     return;
   }
 
@@ -138,14 +147,12 @@ const server = http.createServer((req, res) => {
       }
       if (body.type === "comfy") {
         config.comfyUrl = url;
-        sendJson(res, 200, { url: config.comfyUrl });
       } else if (body.type === "image") {
         config.imageOllamaUrl = url;
-        sendJson(res, 200, { url: config.imageOllamaUrl });
       } else {
         config.ollamaUrl = url;
-        sendJson(res, 200, { url: config.ollamaUrl });
       }
+      hostnameFor(url).then((hostname) => sendJson(res, 200, { url, hostname }));
     }).catch(() => sendJson(res, 400, { error: "invalid body" }));
     return;
   }

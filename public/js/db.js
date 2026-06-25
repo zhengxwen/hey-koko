@@ -207,6 +207,30 @@ export async function dbLoadJobs() {
   });
 }
 
+// Save / load the ComfyUI worker list (background-job lanes). Stored as a single
+// array in the meta store; runtime-only fields (online, models Sets) are stripped
+// by the caller before saving.
+export async function dbSaveWorkers(workers) {
+  const db = await openDB();
+  const tx = db.transaction("meta", "readwrite");
+  tx.objectStore("meta").put(workers, "bgWorkers");
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = (e) => reject(e.target.error);
+  });
+}
+
+export async function dbLoadWorkers() {
+  const db = await openDB();
+  const tx = db.transaction("meta", "readonly");
+  const store = tx.objectStore("meta");
+  return new Promise((resolve, reject) => {
+    const request = store.get("bgWorkers");
+    request.onsuccess = () => resolve(Array.isArray(request.result) ? request.result : []);
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
 // Migrate existing localStorage data into IndexedDB (one-time)
 export async function migrateFromLocalStorage() {
   const raw = localStorage.getItem(TABS_KEY);

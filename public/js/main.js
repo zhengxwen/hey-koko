@@ -8,7 +8,7 @@ import { initAvatar } from './avatar.js';
 import { stopSpeech, populateVoiceList, speakAdjacent } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
-import { initOllama, loadModels, loadImageModels, loadComfyModels, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
+import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
 import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
@@ -23,7 +23,7 @@ import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMe
 import { loadReminders, getReminders, removeReminder, describeReminder, setReminderChangeHandler, setDeliverHandler, startScheduler } from './proactive.js';
 import { initPanelResize } from './panel-resize.js';
 import { openMaskModal } from './mask-paint.js';
-import { setBgDeps, restoreBgJobsOnLoad, toggleBgDrawer, closeBgDrawer, enqueueBgJob } from './bg-jobs.js';
+import { setBgDeps, restoreBgJobsOnLoad, restoreBgWorkersOnLoad, toggleBgDrawer, closeBgDrawer, enqueueBgJob } from './bg-jobs.js';
 
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
@@ -31,7 +31,7 @@ translateSetRenderChat(renderChat);
 imageGenSetDeps({ setGenerating, renderChat });
 voiceGenSetDeps({ setGenerating, renderChat });
 urlFetchSetDeps({ setGenerating, renderChat, regenerateReply, showSendError });
-setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand });
+setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand, refreshWorkers: refreshBgWorkers });
 
 // Background Jobs drawer toggle + close.
 if (dom.bgJobsBtn) dom.bgJobsBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleBgDrawer(); });
@@ -2135,5 +2135,12 @@ loadImageModels().catch(() => {});
 loadComfyModels()
   .then(() => applyInputPlaceholder())
   .catch(() => {})
-  .finally(() => { restoreBgJobsOnLoad().catch((e) => console.warn("[bg-jobs] restore failed:", e)); });
+  .finally(() => {
+    restoreBgWorkersOnLoad()
+      .catch((e) => console.warn("[bg-jobs] worker restore failed:", e))
+      .finally(() => {
+        refreshBgWorkers();   // ping each worker → online + per-endpoint model list
+        restoreBgJobsOnLoad().catch((e) => console.warn("[bg-jobs] restore failed:", e));
+      });
+  });
 loadEmbedModels().catch(() => {});

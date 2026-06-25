@@ -1,4 +1,33 @@
 const os = require("os");
+const net = require("net");
+const dns = require("dns");
+
+// Reverse-resolve the host in a URL to a hostname, so the UI can show
+// "127.0.0.1:11434 (localhost)". Only IP literals are looked up — if the URL
+// already uses a name there's nothing to add. Uses getnameinfo (lookupService)
+// rather than dns.reverse so /etc/hosts and mDNS (.local) are consulted, which
+// is how 127.0.0.1 -> localhost and LAN names resolve. Returns "" on
+// failure/timeout (a LAN IP can hang or simply have no name).
+async function hostnameFor(url) {
+  let host;
+  try {
+    host = new URL(/^https?:\/\//i.test(url) ? url : "http://" + url).hostname;
+  } catch {
+    return "";
+  }
+  if (!net.isIP(host)) return "";
+  return await new Promise((resolve) => {
+    let done = false;
+    const finish = (val) => { if (!done) { done = true; resolve(val); } };
+    const timer = setTimeout(() => finish(""), 1500);
+    dns.lookupService(host, 0, (err, hostname) => {
+      clearTimeout(timer);
+      // getnameinfo echoes the IP back when no name exists — treat that as none.
+      const name = !err && hostname && hostname !== host ? hostname.replace(/\.$/, "") : "";
+      finish(name);
+    });
+  });
+}
 
 // All of this host's non-internal IPv4 addresses. A machine often has several
 // (Wi-Fi, Ethernet, VPN, Docker bridge…), so we can't assume the LAN one is
@@ -100,4 +129,4 @@ function scanComfyStream(req, res) {
   streamScan(req, res, (host, signal) => checkHost(host, 8188, "/system_stats", signal));
 }
 
-module.exports = { scanOllamaStream, scanComfyStream };
+module.exports = { scanOllamaStream, scanComfyStream, hostnameFor };

@@ -110,8 +110,9 @@ export const state = {
   commandActiveIndex: 0,
   streamingInfo: null,
   pendingGen: null,                  // in-progress image/video/audio gen: { tabId, label, insertIndex }
-  bgJobs: [],                        // background-job queue (FIFO, serial). See bg-jobs.js for the shape.
-  bgRunnerActive: false,             // true while the serial runner loop is draining the queue
+  bgJobs: [],                        // background-job queue. Per-worker FIFO lanes run in PARALLEL. See bg-jobs.js.
+  bgLanes: new Set(),                // workerIds whose serial runner loop is currently draining (parallel across lanes)
+  bgWorkers: [],                     // ComfyUI worker endpoints: { id, url, label, enabled, online, models:{image,edit,video,videoIn,multiImage} }
   bgDrawerOpen: false,               // whether the Background Jobs drawer is visible
   comfyVideoModels: new Set(),       // ComfyUI model names that generate video
   comfyVideoInModels: new Set(),     // ComfyUI video models that need a SOURCE video (fps follows source)

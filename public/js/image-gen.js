@@ -366,11 +366,12 @@ function interruptComfy(comfyHost) {
 // binary, so the generation request body stays tiny (vs a 30MB+ base64 in JSON
 // that freezes the tab). Returns the ComfyUI filename. The data-URL→Blob decode is
 // browser-native, off the hot path.
-async function uploadComfySourceVideo(video, signal, targetFps) {
+async function uploadComfySourceVideo(video, signal, targetFps, comfyHost) {
   const mime = video.mime || "video/mp4";
   const blob = await (await fetch(`data:${mime};base64,${video.base64}`)).blob();
   const headers = { "Content-Type": mime };
   if (targetFps > 0) headers["X-Target-Fps"] = String(targetFps); // resample to a custom fps
+  if (comfyHost) headers["X-Comfy-Url"] = comfyHost;              // target this job's ComfyUI worker
   const r = await fetch("/api/comfy-upload-video", { method: "POST", headers, body: blob, signal });
   if (!r.ok) throw new Error(`source video upload failed (${r.status})`);
   const d = await r.json();
@@ -488,9 +489,12 @@ function animateSegmentCap(pixelBudget, torchCompile = false) {
   return torchCompile ? 17 : 33;           // beyond 1080p
 }
 
-export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null, sink = null) {
+export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null, sink = null, comfyUrl = null) {
   const tab = getTab(tabId);
   if (!tab) return;
+  // This job's ComfyUI worker (multi-machine parallel lanes) — falls back to the
+  // single configured endpoint. Normalized to host:port for WS / interrupt / upload.
+  const comfyHost = ((comfyUrl || dom.comfyUrlDisplay?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim()).replace(/^https?:\/\//i, "").replace(/\/+$/, "");
   const genStart = Date.now();
   const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
   // Foreground unless the jobs runner handed in a background sink. The sink owns
@@ -550,7 +554,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     try {
       // A custom ⚙ fps resamples the source so the output timing is correct;
       // "auto" (no fps) keeps the source's own fps.
-      const up = await uploadComfySourceVideo(sourceVideo, abortController.signal, reqOptions.fps);
+      const up = await uploadComfySourceVideo(sourceVideo, abortController.signal, reqOptions.fps, comfyHost);
       sourceVideoName = up.name;
       sourceVideoFrames = up.frames;
       sourceVideoFps = up.fps;
@@ -609,7 +613,6 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // the clientId and hands it to the server so both subscribe to the same stream.
   // Both feed the pending bubble through state so they survive a tab switch.
   const clientId = crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`;
-  const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
   // Stop button → abort: also tell ComfyUI to interrupt the running render.
   abortController.signal.addEventListener("abort", () => interruptComfy(comfyHost), { once: true });
   // OVERALL progress + ETA. A chained render emits a fresh 0→max KSampler progress per
@@ -769,6 +772,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       refImageHeight: refImageDims?.h || undefined,
       timeout: videoTimeout, // scaled with the estimated chunk count (chained animate runs all chunks in one pass)
       clientId,
+      comfyUrl: comfyHost || undefined, // target this job's ComfyUI worker (parallel lanes)
       ...(extra || {}),
     }),
   });
@@ -847,11 +851,15 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // at submit time for a queued background job (DOM may have changed since).
   const imageModel = modelOverride ? (modelOverride.imageModel || "") : dom.imageModelSelect.value;
   const comfyModel = modelOverride ? (modelOverride.comfyModel || "") : (dom.comfyModelSelect ? dom.comfyModelSelect.value : "");
+  // This job's ComfyUI worker (multi-machine parallel lanes); modelOverride pins it at
+  // submit. ovComfyUrl is the raw worker url; comfyHost is host:port for WS/interrupt.
+  const ovComfyUrl = modelOverride ? (modelOverride.comfyUrl || "") : "";
+  const comfyHost = ((ovComfyUrl || dom.comfyUrlDisplay?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim()).replace(/^https?:\/\//i, "").replace(/\/+$/, "");
 
   // A selected ComfyUI VIDEO model routes to the dedicated video path. Pass the
-  // sink through so a background video job stays headless.
+  // sink + the worker url through so a background video job stays headless + on-target.
   if (!imageModel && comfyModel && state.comfyVideoModels && state.comfyVideoModels.has(comfyModel)) {
-    return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages, initVideo, sink);
+    return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages, initVideo, sink, ovComfyUrl);
   }
 
   const useComfy = !imageModel && !!comfyModel;
@@ -956,7 +964,6 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   const setProgress = (value, max) => sink.progress(value, max);
   if (useComfy) {
     comfyClientId = crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`;
-    const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
     imgUnsub = subscribeComfyProgress(comfyHost, comfyClientId, {
       onProgress: setProgress,
       onPreview: (url) => sink.preview(url),
@@ -966,7 +973,6 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // (aborting the fetch alone leaves the GPU working). Ollama is cancelled
   // server-side when the connection drops.
   if (useComfy) {
-    const comfyHost = (dom.comfyUrlDisplay?.textContent || "").trim();
     abortController.signal.addEventListener("abort", () => interruptComfy(comfyHost), { once: true });
   }
 
@@ -1016,6 +1022,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
               mask: (useComfy && maskB64) ? maskB64 : undefined,
               timeout: reqTimeout,
               clientId: comfyClientId || undefined,
+              comfyUrl: (useComfy && comfyHost) ? comfyHost : undefined, // this job's ComfyUI worker
             }),
           })
             .then(async (r) => {
