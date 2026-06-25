@@ -414,11 +414,29 @@ export function jumpToJob(jobId) {
 
 const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄' };
 
-export function openBgDrawer() {
+export function openBgDrawer(flashJobId) {
   state.bgDrawerOpen = true;
   const d = document.querySelector('#bgJobsDrawer');
   if (d) d.classList.add('isOpen');
   renderDrawer();
+  if (flashJobId) flashJobRow(flashJobId);
+}
+
+// Briefly flash a job's drawer row to draw the eye to it (e.g. after the user taps
+// "go to background jobs" on its placeholder bubble). No-op if the row is gone
+// (e.g. the job already finished and was auto-removed).
+function flashJobRow(jobId) {
+  setTimeout(() => {
+    const row = document.querySelector(`#bgJobsList .bgJobRow[data-job-id="${jobId}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: 'nearest' });
+    row.classList.remove('bgJobFlash');
+    void row.offsetWidth;            // restart the animation if it's still applied
+    row.classList.add('bgJobFlash');
+    const clear = () => row.classList.remove('bgJobFlash');
+    row.addEventListener('animationend', clear, { once: true });
+    setTimeout(clear, 1000);         // fallback (animationend can be flaky when backgrounded)
+  }, 60);
 }
 export function closeBgDrawer() {
   state.bgDrawerOpen = false;
@@ -468,14 +486,16 @@ function cancelActiveDrag() {
   renderDrawer();           // rebuild fresh now that bgDrag is cleared (guard passes)
 }
 
-// Move queued job `srcId` to just before queued job `tgtId`. No-op (just redraw) if
-// either is no longer queued — e.g. it started/finished between dragstart and drop.
-function reorderQueued(srcId, tgtId) {
+// Move queued job `srcId` to just before (or after, per `after`) queued job `tgtId`.
+// No-op (just redraw) if either is no longer queued — e.g. it started/finished between
+// dragstart and drop.
+function reorderQueued(srcId, tgtId, after) {
   const src = state.bgJobs.find((j) => j.id === srcId);
   const tgt = state.bgJobs.find((j) => j.id === tgtId);
   if (!src || !tgt || src === tgt || src.status !== 'queued' || tgt.status !== 'queued') { renderDrawer(); return; }
   state.bgJobs.splice(state.bgJobs.indexOf(src), 1);
-  state.bgJobs.splice(state.bgJobs.indexOf(tgt), 0, src);
+  const to = state.bgJobs.indexOf(tgt) + (after ? 1 : 0);
+  state.bgJobs.splice(to, 0, src);
   persist();
   refreshPlaceholders();    // updates queue positions (排队第 N 位) + redraws the drawer
 }
@@ -498,11 +518,16 @@ export function renderDrawer() {
   for (const job of state.bgJobs) {
     const row = document.createElement('div');
     row.className = `bgJobRow bgJob-${job.status}`;
+    row.dataset.jobId = job.id;
 
-    // Only not-yet-started jobs can be dragged to reorder the queue.
+    // Only not-yet-started jobs can be dragged (via the ⠿ handle) to reorder the queue.
     if (job.status === 'queued') {
-      row.classList.add('bgJobDraggable');
-      row.draggable = true;
+      const clearCue = () => row.classList.remove('bgDragOverTop', 'bgDragOverBottom');
+      // Whether the pointer is in the lower half of this row → drop AFTER it, else before.
+      const isAfter = (e) => { const r = row.getBoundingClientRect(); return e.clientY > r.top + r.height / 2; };
+      // Drag is armed only by a mousedown on the handle, so clicking the row body
+      // (which jumps to the bubble) never starts a drag.
+      row.draggable = false;
       row.addEventListener('dragstart', (e) => {
         bgDrag = { jobId: job.id }; bgDragCanceled = false;
         if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', job.id); } catch {} }
@@ -511,21 +536,33 @@ export function renderDrawer() {
         if (!bgDrag || bgDrag.jobId === job.id) return;
         e.preventDefault();
         if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-        row.classList.add('bgDragOver');
+        const after = isAfter(e);
+        row.classList.toggle('bgDragOverBottom', after);
+        row.classList.toggle('bgDragOverTop', !after);
       });
-      row.addEventListener('dragleave', () => row.classList.remove('bgDragOver'));
+      row.addEventListener('dragleave', clearCue);
       row.addEventListener('drop', (e) => {
         e.preventDefault();
-        row.classList.remove('bgDragOver');
+        const after = isAfter(e);
+        clearCue();
+        row.draggable = false;
         const src = (bgDrag && !bgDragCanceled) ? bgDrag.jobId : null;
         bgDrag = null; bgDragCanceled = false;
-        if (src && src !== job.id) reorderQueued(src, job.id);
+        if (src && src !== job.id) reorderQueued(src, job.id, after);
         else renderDrawer();
       });
       row.addEventListener('dragend', () => {
-        row.classList.remove('bgDragOver');
+        clearCue();
+        row.draggable = false;
         if (bgDrag) { bgDrag = null; bgDragCanceled = false; renderDrawer(); }
       });
+      row.addEventListener('mouseup', () => { row.draggable = false; });
+      const handle = document.createElement('span');
+      handle.className = 'bgJobHandle';
+      handle.textContent = '⠿';
+      handle.title = t('bg_reorder');
+      handle.addEventListener('mousedown', () => { row.draggable = true; });
+      row.appendChild(handle);
     }
 
     const main = document.createElement('button');

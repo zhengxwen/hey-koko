@@ -4269,10 +4269,31 @@ button.secondary:disabled {
 .bgJobBar { height: 4px; border-radius: 4px; background: var(--surface-hover); margin-top: 4px; overflow: hidden; }
 .bgJobBarFill { height: 100%; background: var(--accent); transition: width 0.2s; }
 
-/* Queued rows are draggable to reorder the not-yet-started part of the queue. */
-.bgJobRow.bgJobDraggable { cursor: grab; }
-.bgJobRow.bgJobDraggable:active { cursor: grabbing; }
-.bgJobRow.bgDragOver { outline: 2px dashed var(--accent); outline-offset: -2px; border-radius: 8px; }
+/* Queued rows can be dragged (by the ⠿ handle) to reorder the not-yet-started queue. */
+.bgJobHandle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+}
+.bgJobHandle:active { cursor: grabbing; }
+/* Drop indicator: an accent line at the top (before) or bottom (after) of the target. */
+.bgJobRow.bgDragOverTop { box-shadow: inset 0 2px 0 0 var(--accent); }
+.bgJobRow.bgDragOverBottom { box-shadow: inset 0 -2px 0 0 var(--accent); }
+
+/* Flash a row to draw attention (after "go to background jobs" on a placeholder). */
+@keyframes bgJobFlash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; background: var(--surface); }
+  20%, 60% { box-shadow: 0 0 0 3px var(--accent); background: var(--surface-hover); }
+  40%, 80% { box-shadow: 0 0 0 0 transparent; background: var(--surface); }
+}
+.bgJobRow.bgJobFlash { animation: bgJobFlash 0.85s ease; }
 
 /* Progress bar inside a running job's chat placeholder bubble. Determinate (width %)
    for generation; indeterminate sliding bar for label-only phases (parse/url/analyze). */

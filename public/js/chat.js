@@ -222,7 +222,7 @@ function renderBgPlaceholder(message) {
   goto.type = 'button';
   goto.className = 'bgPhGoto';
   goto.textContent = t('bg_goto');
-  goto.addEventListener('click', () => openBgDrawer());
+  goto.addEventListener('click', () => openBgDrawer(message.jobId));
   actions.appendChild(goto);
   if (message.status === 'error' || message.status === 'interrupted') {
     const retry = document.createElement('button');
