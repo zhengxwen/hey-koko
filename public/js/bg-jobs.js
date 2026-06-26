@@ -227,8 +227,10 @@ async function pumpLane(workerId) {
       job.status = 'running';
       job.progress = null;
       job.seg = null;
+      job.startedAt = Date.now();   // for the live elapsed-time display
       persist();
       refreshPlaceholders();
+      startElapsedTicker();
       try {
         await runJob(job);
         if (job.status === 'running') job.status = 'done';
@@ -440,6 +442,7 @@ function syncPlaceholder(job) {
   found.msg.error = job.error;
   found.msg.progress = job.progress;   // so a renderChat redraws the bar at the right %
   found.msg.seg = job.seg;             // "第 N/M 段" for multi-segment video
+  found.msg.elapsed = runningElapsed(job);   // "1:23" elapsed since the job started
   found.msg.queuePos = queuePosition(job);
   return true;
 }
@@ -449,12 +452,12 @@ function syncPlaceholder(job) {
 // its tab is visible—pokes the bar's width directly, flipping it determinate.
 function updatePlaceholderBar(job) {
   const found = findMsg(job.msgId);
-  if (found && found.msg.bgPlaceholder) { found.msg.progress = job.progress; found.msg.seg = job.seg; }
+  if (found && found.msg.bgPlaceholder) { found.msg.progress = job.progress; found.msg.seg = job.seg; found.msg.elapsed = runningElapsed(job); }
   if (state.activeTabId !== job.tabId) return;
   const el = document.querySelector(`[data-msg-id="${job.msgId}"]`);
   if (!el) return;
-  const segEl = el.querySelector('.bgPhStatus');   // live chunk badge "第 N/M 段"
-  if (segEl) segEl.textContent = job.seg || '';
+  const segEl = el.querySelector('.bgPhStatus');   // live "第 N/M 段 · 1:23"
+  if (segEl) segEl.textContent = phStatusText(job);
   const bar = el.querySelector('.bgPhBar');
   const fill = el.querySelector('.bgPhBarFill');
   if (!bar || !fill || !job.progress || !job.progress.max) return;
@@ -554,6 +557,35 @@ export function toggleBgDrawer() {
   if (state.bgDrawerOpen) closeBgDrawer(); else openBgDrawer();
 }
 
+// Elapsed time a running job has taken so far → "m:ss" / "h:mm:ss".
+function fmtElapsed(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}` : `${m}:${String(x).padStart(2, '0')}`;
+}
+function runningElapsed(job) { return job.startedAt ? fmtElapsed(Date.now() - job.startedAt) : ''; }
+// Combined running status for a placeholder bubble: "第 N/M 段 · 1:23".
+function phStatusText(job) { return [job.seg, runningElapsed(job)].filter(Boolean).join(' · '); }
+
+// 1-second ticker that refreshes the elapsed time on every running job (drawer rows +
+// the visible placeholder) without a full chat re-render. Self-stops when none run.
+let _elapsedTimer = null;
+function startElapsedTicker() {
+  if (_elapsedTimer) return;
+  _elapsedTimer = setInterval(() => {
+    const running = state.bgJobs.filter((j) => j.status === 'running');
+    if (!running.length) { clearInterval(_elapsedTimer); _elapsedTimer = null; return; }
+    renderDrawer();   // drawer rows show elapsed in their status text
+    for (const job of running) {
+      const found = findMsg(job.msgId);
+      if (found && found.msg.bgPlaceholder) found.msg.elapsed = runningElapsed(job);
+      if (state.activeTabId !== job.tabId) continue;
+      const el = document.querySelector(`[data-msg-id="${job.msgId}"] .bgPhStatus`);
+      if (el) el.textContent = phStatusText(job);
+    }
+  }, 1000);
+}
+
 function statusText(job) {
   switch (job.status) {
     case 'queued': { const p = queuePosition(job); return p ? t('bg_statusQueued', { n: p }) : t('bg_statusQueuedPlain'); }
@@ -561,7 +593,9 @@ function statusText(job) {
       const pct = job.progress && job.progress.max
         ? Math.min(100, Math.round(job.progress.value / job.progress.max * 100)) : null;
       const base = pct != null ? t('bg_statusRunningPct', { pct }) : t('bg_statusRunning');
-      return job.seg ? `${job.seg} · ${base}` : base;   // "第 N/M 段 · 运行中 94%"
+      const head = job.seg ? `${job.seg} · ${base}` : base;   // "第 N/M 段 · 运行中 94%"
+      const el = runningElapsed(job);
+      return el ? `${head} · ${el}` : head;                    // … · 1:23
     }
     case 'done': return t('bg_statusDone');
     case 'error': return t('bg_statusError');

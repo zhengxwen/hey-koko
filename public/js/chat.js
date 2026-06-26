@@ -191,7 +191,7 @@ function renderBgPlaceholder(message) {
   body.className = 'markdownBody';
   let statusTxt;
   switch (message.status) {
-    case 'running': statusTxt = message.seg || ''; break;   // chunk badge "第 N/M 段" (multi-segment video), else nothing
+    case 'running': statusTxt = [message.seg, message.elapsed].filter(Boolean).join(' · '); break;   // "第 N/M 段 · 1:23"
     case 'done': statusTxt = t('bg_statusDone'); break;
     case 'error': statusTxt = t('bg_statusError'); break;
     case 'interrupted': statusTxt = t('bg_statusInterrupted'); break;
