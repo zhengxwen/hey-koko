@@ -572,14 +572,16 @@ p {
 
 .comfyParamsBtn {
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  min-height: 34px;
+  /* Rounded square (8px from the base button radius), bottoms aligned by the
+     row's flex-end. */
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: 20px;
   line-height: 1;
 }
 
@@ -4188,6 +4190,10 @@ button.secondary:disabled {
   transition: background 0.15s;
 }
 .bgJobsBtn:hover { background: var(--surface-hover); }
+/* ☰ ink sits ~1px low in its em box (vs ⚙ at 0) — nudge up so it's optically centered.
+   Wrapped in its own span (keeping the inherited line-height that already centered ⚙)
+   so only the glyph moves, not the absolute count badge. */
+.bgJobsIcon { display: block; transform: translateY(-2px); }
 .bgJobsBadge {
   position: absolute;
   top: -4px;
@@ -4214,6 +4220,10 @@ button.secondary:disabled {
   background: var(--panel);
   box-shadow: var(--shadow);
   border-left: 1px solid var(--surface-hover);
+  /* Rounded arcs on the inner (left) edge — top-left + bottom-left corners. */
+  border-top-left-radius: 16px;
+  border-bottom-left-radius: 16px;
+  overflow: hidden;          /* clip content to the rounded corners */
   transform: translateX(105%);
   transition: transform 0.22s ease;
   z-index: 40;
@@ -4301,8 +4311,11 @@ button.secondary:disabled {
 .bgWorkerChip.offline .bgWorkerDot { color: var(--muted); }
 .bgWorkerLabel { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bgWorkerMeta { color: var(--muted); }
-.bgWorkerRemove { min-height: 0; padding: 0 2px; background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; }
-.bgWorkerRemove:hover { color: #d93025; }
+/* × reuses the chat bubble's delete-button look (.messageAction.deleteMessage,
+   incl. hover→red); this only shrinks it to fit the chip. */
+.bgWorkerRemove { width: 14px; height: 14px; min-height: 14px; font-size: 12px; cursor: pointer; }
+/* Nudge only the × glyph up (the round button stays centered in the chip). */
+.bgWorkerX { display: block; transform: translateY(-1px); }
 .bgWorkerAdd { min-height: 0; padding: 2px 8px; border-radius: 12px; background: transparent; border: 1px dashed var(--muted); color: var(--muted); font-size: 11px; cursor: pointer; }
 
 /* Lane (worker) headers grouping the drawer rows when more than one lane is active. */

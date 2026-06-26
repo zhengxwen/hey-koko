@@ -660,7 +660,8 @@ function buildWorkersBar() {
       + `<span class="bgWorkerMeta">${escapeText(meta)}</span>`;
     chip.addEventListener('click', () => { setBgWorkerEnabled(w.id, !w.enabled); reload(); });
     const x = document.createElement('button');
-    x.type = 'button'; x.className = 'bgWorkerRemove'; x.textContent = '×'; x.title = t('bg_workerRemove');
+    // Same × look as a chat bubble's delete button; .bgWorkerRemove only resizes it.
+    x.type = 'button'; x.className = 'messageAction deleteMessage bgWorkerRemove'; x.innerHTML = '<span class="bgWorkerX">×</span>'; x.title = t('bg_workerRemove');
     x.addEventListener('click', (e) => { e.stopPropagation(); removeBgWorker(w.id); reload(); });
     chip.appendChild(x);
     chips.appendChild(chip);
