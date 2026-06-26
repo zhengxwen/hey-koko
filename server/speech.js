@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 const { execFile, spawn } = require("child_process");
 const fs = require("fs");
 const { sendJson, readBody, cleanSpeechText } = require("./utils");

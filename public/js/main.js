@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Main entry point - imports and initializes all modules
 import { dom, state, scrollChatToEnd, refreshScrollState } from './state.js';
 import { SETTINGS_KEY, PERSONALITY_PRESETS, getPersonalityPreset } from './constants.js';

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // URL fetching and content parsing (/url command)
 import { dom, state, scrollChatToEnd } from './state.js';
 import { setAvatarState } from './avatar.js';

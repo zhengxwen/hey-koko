@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Storage keys
 export const SETTINGS_KEY = "local-ai-companion-settings";
 export const CHAT_KEY = "local-ai-companion-chat";

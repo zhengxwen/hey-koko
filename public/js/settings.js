@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Settings persistence
 import { dom, state } from './state.js';
 import { SETTINGS_KEY, PERSONALITY_PRESETS } from './constants.js';

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Proactive messages: reminders, daily greeting, and idle nudges.
 // A lightweight client-side scheduler checks for due items and asks the
 // companion to speak up (in character) via a registered deliver handler.

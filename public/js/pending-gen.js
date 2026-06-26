@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // In-progress media generation (image / video / audio) bubble.
 //
 // The bubble's data lives in state.pendingGen so renderChat() can rebuild it

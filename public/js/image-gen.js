@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Image generation and /imagine command parsing
 import { dom, state } from './state.js';
 import { SIZE_PRESETS } from './constants.js';

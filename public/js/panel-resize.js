@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Drag-to-resize divider between the settings panel and the chat area.
 //
 // The panel width lives in a CSS variable (--panel-w) on .shell. Dragging the

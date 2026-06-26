@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Background Jobs: a serial (FIFO) queue for long-running generations so the user
 // can keep chatting while video / image / audio renders run "detached" from the
 // live bubble. Each job owns a persisted placeholder message in its source tab

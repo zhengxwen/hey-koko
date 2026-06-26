@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 const crypto = require("crypto");
 const { spawn } = require("child_process");
 const os = require("os");

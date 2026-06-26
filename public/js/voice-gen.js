@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Text-to-speech generation and the /voice command.
 // Mirrors image-gen.js: parse the command, show a "generating" bubble, POST to
 // the local TTS backend, then store the result on the message as `generatedAudio`

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Pure utility functions
 
 // Short unique id for messages / background jobs. crypto.randomUUID where

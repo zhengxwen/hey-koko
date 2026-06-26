@@ -1,0 +1,24 @@
+{
+  "name": "hey-koko",
+  "version": "1.0.0",
+  "description": "A lightweight, privacy-first AI companion that runs entirely on your machine, powered by Ollama.",
+  "license": "AGPL-3.0-only",
+  "author": "Xiuwen Zheng",
+  "homepage": "https://github.com/zhengxwen/hey-koko#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhengxwen/hey-koko.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zhengxwen/hey-koko/issues"
+  },
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true
+}

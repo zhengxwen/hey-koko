@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Safety net: a non-fatal async error (e.g. an optional-tool probe rejecting on
 // a minimal Finder-launch PATH) must never take down the server after it has
 // bound the port — otherwise the native app just times out with "Unable to

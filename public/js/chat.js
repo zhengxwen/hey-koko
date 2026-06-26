@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Chat rendering, message handling, and sending
 import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState } from './state.js';
 import { PERSONALITY_PRESETS, TAG_COLORS } from './constants.js';

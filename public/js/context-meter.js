@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Context / token usage meter
 // Shows how full the model's context window is after each reply, so the
 // user knows when to run /compact. Token counts come straight from Ollama's

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Inpaint mask painter — overlays a brush canvas on a staged image so the user
 // can paint the region they want the AI to repaint. On save it exports a
 // black/white PNG (white = repaint region) sized to the source image; the server

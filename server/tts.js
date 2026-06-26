@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Local text-to-speech for the /voice command. Drives a persistent Python
 // daemon (server/tts_engine.py) that wraps the Kokoro and CosyVoice engines —
 // persistent so the (slow-to-load) models stay warm between requests. The

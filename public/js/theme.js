@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Theme system (dark/light mode, accent colors)
 import { dom, state } from './state.js';
 import { SETTINGS_KEY } from './constants.js';

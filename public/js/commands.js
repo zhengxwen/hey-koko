@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Command autocomplete popup
 import { dom, state } from './state.js';
 import { getLocalizedCommands } from './i18n.js';

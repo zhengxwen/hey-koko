@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Archive and retrieve functionality
 import { dom, state } from './state.js';
 import { escapeHtml } from './utils.js';

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // IndexedDB persistence layer for tabs/chat data
 import { TABS_KEY, ACTIVE_TAB_KEY, CHAT_KEY } from './constants.js';
 

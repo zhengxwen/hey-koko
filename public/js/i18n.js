@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Internationalization module - multilingual support (en, zh, zh-Hant)
 import { dom } from './state.js';
 

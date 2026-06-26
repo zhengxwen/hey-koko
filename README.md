@@ -32,7 +32,12 @@ Hey-Koko gives you a personal AI chat experience without sending a single byte t
 
 ## License
 
-GPL-3.0
+Copyright (C) 2026 Xiuwen Zheng
+
+Hey-Koko is licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0).
+See [LICENSE](LICENSE) for the full text. Because it is a network-facing
+application, the AGPL requires that anyone who runs a modified version as a
+service also make the modified source available to its users.
 
 
 ## Quick Start

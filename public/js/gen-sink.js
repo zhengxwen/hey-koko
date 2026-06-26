@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // A generation "sink" is the destination for a generation run's progress + final
 // message. It lets the SAME generator code (generateImage / generateVideo /
 // generateSpeech) drive either:

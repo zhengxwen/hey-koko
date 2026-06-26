@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Avatar styles, picker, and state machine
 import { dom, state } from './state.js';
 import { AVATAR_KEY, AVATAR_STYLES } from './constants.js';

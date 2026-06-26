@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Xiuwen Zheng
+
 // Tool definitions + executors for the agentic (tool-calling) chat loop.
 // The model decides when to call these; we run them locally and feed back results.
 import { dom } from './state.js';
