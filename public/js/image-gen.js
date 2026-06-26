@@ -636,15 +636,20 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     if (value < _prevVal) { _passesDone++; _boundaryT = now; } // a chunk finished, next started
     _prevVal = value;
 
-    const N = Math.max(estPasses, _passesDone + 1); // total chunks (≥ what we've seen)
+    // Bar denominator keeps growing with observed ramps so the bar never exceeds
+    // 100%, but the user-facing segment badge uses the PLANNED content-segment
+    // count (estPasses) as a fixed total and clamps the current number to it.
+    const N = Math.max(estPasses, _passesDone + 1); // ≥ what we've seen — for the bar only
     sink.indeterminate(false);
     sink.progress(_passesDone * max + value, N * max); // overall, not per-chunk
     // Which chunk is rendering now — only for a genuinely chunked multi-segment
-    // animate render (estPasses > 1). A single-segment video whose workflow has
-    // several internal sampler passes (e.g. WAN 2.2's two-expert high+low MoE)
-    // also resets progress, but those passes are NOT user-facing segments — so
-    // gating on estPasses (not N) avoids a bogus "第 3/3 段" on a one-segment clip.
-    if (estPasses > 1) sink.seg(t("msg_chunkBadge", { seg: _passesDone + 1, total: N }));
+    // animate render (estPasses > 1). Use estPasses (not N) as the total: a single
+    // segment can emit several sampler ramps that are NOT user-facing segments —
+    // the rv2v "still" pose-adoption pass, or a model's two-expert high+low MoE —
+    // and those would otherwise inflate the total to a bogus "第 3/3 段" / "3/2".
+    if (estPasses > 1) {
+      sink.seg(t("msg_chunkBadge", { seg: Math.min(_passesDone + 1, estPasses), total: estPasses }));
+    }
 
     // ETA. Only show a number when it's RELIABLE: a measured per-chunk time (≥1 chunk
     // done) for multi-segment, or the step pace for a true single pass. Otherwise NA —

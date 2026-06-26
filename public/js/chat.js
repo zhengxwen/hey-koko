@@ -2374,7 +2374,23 @@ function mediaFilename(name, ts, kind, ext, idx, count) {
 function makeDownloadButton(className, href, filename, bytes, actionLabel) {
   const dl = document.createElement("a");
   dl.className = className;
-  dl.href = href;
+  // href may be a function (lazy): resolve it to a real URL on the first hover/
+  // focus/press — before the activating click — so a lazily-loaded video's blob
+  // URL isn't built (decoding the whole clip) until the user actually reaches for
+  // the download. These events all fire ahead of the click that triggers the save.
+  if (typeof href === "function") {
+    dl.href = "#";
+    const resolve = () => {
+      if (dl.dataset.hrefResolved) return;
+      const url = href();
+      if (url) { dl.href = url; dl.dataset.hrefResolved = "1"; }
+    };
+    dl.addEventListener("pointerenter", resolve);
+    dl.addEventListener("pointerdown", resolve);
+    dl.addEventListener("focus", resolve);
+  } else {
+    dl.href = href;
+  }
   dl.download = filename;
   const size = formatFileSize(bytes);
   const label = size ? `${filename} · ${size}` : filename;
@@ -2409,6 +2425,57 @@ function buildThinkingDetails(thinkingText, frames) {
     content.appendChild(grid);
   }
   return details;
+}
+
+// --- Lazy video loading -----------------------------------------------------
+// Assigning a base64 data: URL as a <video> src forces the browser to decode the
+// whole clip up front (data: URLs can't be streamed or range-requested), so a tab
+// holding a few large videos makes every refresh crawl while they all decode at
+// once. Instead we keep the poster visible and only build a STREAMABLE blob object
+// URL — with preload="metadata" the browser then reads just the header, not the
+// whole file — once the video scrolls near the visible area. The object URLs are
+// revoked on the next renderChat so they don't leak.
+let videoLazyObserver = null;
+const videoObjectUrls = new Set();
+const videoLazyData = new WeakMap(); // video element → { data, mime } until loaded
+
+function resetVideoLazyLoading() {
+  if (videoLazyObserver) { videoLazyObserver.disconnect(); videoLazyObserver = null; }
+  for (const url of videoObjectUrls) URL.revokeObjectURL(url);
+  videoObjectUrls.clear();
+}
+
+function base64ToBlobUrl(b64, mime) {
+  const raw = b64.startsWith("data:") ? b64.slice(b64.indexOf(",") + 1) : b64;
+  const bin = atob(raw);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  videoObjectUrls.add(url);
+  return url;
+}
+
+function loadVideoNow(video) {
+  const stash = videoLazyData.get(video);
+  if (!stash) return;
+  videoLazyData.delete(video);
+  video.preload = "metadata"; // header only — the full clip decodes on play
+  video.src = base64ToBlobUrl(stash.data, stash.mime);
+}
+
+function lazyLoadVideo(video, base64, mime) {
+  video.preload = "none"; // nothing loads until it nears the viewport
+  videoLazyData.set(video, { data: base64, mime });
+  if (!videoLazyObserver) {
+    videoLazyObserver = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        loadVideoNow(e.target);
+        videoLazyObserver.unobserve(e.target);
+      }
+    }, { root: dom.messagesEl, rootMargin: "400px" }); // load a bit before it's in view
+  }
+  videoLazyObserver.observe(video);
 }
 
 function renderMessage(role, content, previewImage, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMime, generatedAudio, audioMime, generatedVideoThumbnails) {
@@ -2759,12 +2826,13 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       video.loop = true;
       video.playsInline = true;
       // No autoplay — the user presses play. Don't force-mute so audio (LTX) plays
-      // when they do. preload metadata so the first frame shows even without a poster.
-      video.preload = "metadata";
+      // when they do. The poster shows immediately; the heavy video bytes load
+      // lazily (streamable blob URL) only once it scrolls near view — see
+      // lazyLoadVideo — so a tab full of large clips doesn't stall every refresh.
       // Use the captured thumbnail as the poster so a still shows before playback.
       const vthumb = generatedVideoThumbnails && generatedVideoThumbnails[vi];
       if (vthumb) video.poster = vthumb.startsWith("data:") ? vthumb : `data:image/jpeg;base64,${vthumb}`;
-      video.src = vData.startsWith("data:") ? vData : `data:${vmime};base64,${vData}`;
+      lazyLoadVideo(video, vData, vmime);
       // Only one video plays at a time — starting this one pauses the others.
       video.addEventListener("play", () => {
         dom.messagesEl.querySelectorAll("video.generatedVideo").forEach((other) => {
@@ -2847,7 +2915,12 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       // the timestamp. (videoName only exists for single uploaded videos.)
       const uploadedName = Number.isInteger(index) ? getActiveTab().messages[index]?.videoName : null;
       const vname = mediaFilename(generatedVideos.length === 1 ? uploadedName : null, timestamp, "video", vext, vi, generatedVideos.length);
-      wrapper.appendChild(makeDownloadButton("videoDownloadBtn", video.src, vname, base64ByteLength(vData), t("btn_downloadVideo")));
+      // Lazy href: reuses the already-loaded blob URL if the video is loaded,
+      // else builds one on demand (see makeDownloadButton) — avoids decoding the
+      // clip at render time just to populate the link.
+      wrapper.appendChild(makeDownloadButton("videoDownloadBtn",
+        () => video.currentSrc || video.src || base64ToBlobUrl(vData, vmime),
+        vname, base64ByteLength(vData), t("btn_downloadVideo")));
       if (mediaRowEnabled) {
         // Lazily create the row when there were no images, then keep it above text.
         if (!mediaRow) mediaRow = Object.assign(document.createElement("div"), { className: "messageMediaRow" });
@@ -2953,6 +3026,8 @@ export function renderChat() {
   // when they've scrolled up (e.g. reading history while a reply finishes).
   const prevScrollTop = dom.messagesEl.scrollTop;
   const keepPosition = state.scrollPin == null && !state.stickToBottom;
+  // Free the previous render's video blob URLs + observer before tearing down the DOM.
+  resetVideoLazyLoading();
   dom.messagesEl.innerHTML = "";
   const chat = getActiveTab().messages;
   if (chat.length === 0) {
