@@ -8,6 +8,7 @@ import { markdownToHtml } from './markdown.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, createTab, closeTab, switchTab, renderTabs } from './tabs.js';
 import { t } from './i18n.js';
+import { tabActiveJobCount, cancelTabJobs } from './bg-jobs.js';   // Option B: warn + cancel jobs on archive
 
 export function initArchive() {
   const archiveOverlay = document.querySelector("#archiveOverlay");
@@ -64,6 +65,12 @@ export function initArchive() {
     if (!tab.messages || tab.messages.length === 0) {
       alert(t("archive_empty"));
       return;
+    }
+    // Active background tasks would be lost (archive doesn't keep videos) → confirm + cancel.
+    const nActive = tabActiveJobCount(tab.id);
+    if (nActive > 0) {
+      if (!confirm(t("bg_closeActiveJobs", { n: nActive }))) return;
+      cancelTabJobs(tab.id);
     }
 
     const exportMessages = tab.messages.map((msg) => {

@@ -22,6 +22,7 @@ const config = {
   comfyUrl: process.env.COMFY_URL || "http://127.0.0.1:8188",
   PUBLIC_DIR: path.join(__dirname, "..", "public"),
   ARCHIVES_DIR: path.join(os.homedir(), "ai_archives"),
+  JOBS_DIR: path.join(os.homedir(), "ai_archives", "jobs"),  // Option B: server-side background job queue store
   whisperModel: process.env.WHISPER_MODEL || "",
   // Local text-to-speech (/voice command). TTS_PYTHON should point at a venv
   // python (3.10/3.11) with kokoro and/or cosyvoice installed — the system

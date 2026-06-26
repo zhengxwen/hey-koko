@@ -27,6 +27,7 @@ import { loadReminders, getReminders, removeReminder, describeReminder, setRemin
 import { initPanelResize } from './panel-resize.js';
 import { openMaskModal } from './mask-paint.js';
 import { setBgDeps, restoreBgJobsOnLoad, restoreBgWorkersOnLoad, toggleBgDrawer, closeBgDrawer, enqueueBgJob } from './bg-jobs.js';
+import { connectServerQueue } from './server-queue.js';   // Option B: SSE stream of server-side gen jobs
 
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
@@ -2157,6 +2158,7 @@ loadComfyModels()
       .catch((e) => console.warn("[bg-jobs] worker restore failed:", e))
       .finally(() => {
         refreshBgWorkers();   // ping each worker → online + per-endpoint model list
+        connectServerQueue(); // Option B: SSE — must be live before restore so reconnects resolve from the snapshot
         restoreBgJobsOnLoad().catch((e) => console.warn("[bg-jobs] restore failed:", e));
       });
   });

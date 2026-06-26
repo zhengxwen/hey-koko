@@ -11,6 +11,7 @@ import { saveChat } from './settings.js';
 import { getTab, getActiveTab } from './tabs.js';
 import { markdownToHtml } from './markdown.js';
 import { foregroundSink } from './gen-sink.js';
+import { comfyFetch } from './server-queue.js';   // Option B: run ComfyUI gen on the server queue
 
 // Compact "time remaining" → "m:ss" or "h:mm:ss" (language-neutral).
 function formatEta(sec) {
@@ -759,11 +760,8 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
 
   // One /api/generate-comfy request. `extra` carries per-segment offset/length for
   // a chunked Wan Animate render; ignored otherwise.
-  const requestVideo = (perOptions, extra) => fetch("/api/generate-comfy", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal: abortController.signal,
-    body: JSON.stringify({
+  const requestVideo = (perOptions, extra) => {
+    const vbody = {
       model,
       prompt: videoPrompt,
       negative_prompt: comfyNegative(parsed.negativePrompt),
@@ -786,8 +784,13 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       clientId,
       comfyUrl: comfyHost || undefined, // target this job's ComfyUI worker (parallel lanes)
       ...(extra || {}),
-    }),
-  });
+    };
+    // Option B: a background video job runs on the SERVER queue (survives reload);
+    // comfyFetch returns a Response-like {ok,json} so the handling below is unchanged.
+    return sink.server
+      ? comfyFetch(vbody, { bgJob: sink.server.bgJob, kind: "video", comfyUrl: comfyHost, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, clientId, signal: abortController.signal })
+      : fetch("/api/generate-comfy", { method: "POST", headers: { "Content-Type": "application/json" }, signal: abortController.signal, body: JSON.stringify(vbody) });
+  };
 
   // Wan Animate: a source longer than the single-pass cap is generated in segments
   // and merged — unless the user pinned a ⚙ length (forces one bounded pass). The
@@ -1025,25 +1028,27 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         const baseTimeout = parseInt(dom.imageTimeoutInput.value, 10) || 120;
         const reqTimeout = refImages ? Math.max(baseTimeout, 300) : baseTimeout;
 
+        const reqBody = {
+          model: activeModel,
+          prompt,
+          negative_prompt: comfyNegative(parsed.negativePrompt),
+          options: reqOptions,
+          images: refImages || undefined,
+          // Inpaint mask (white = repaint region) — only used by the ComfyUI
+          // path; routes the gen to a masked edit / SetLatentNoiseMask inpaint.
+          mask: (useComfy && maskB64) ? maskB64 : undefined,
+          timeout: reqTimeout,
+          clientId: comfyClientId || undefined,
+          comfyUrl: (useComfy && comfyHost) ? comfyHost : undefined, // this job's ComfyUI worker
+        };
+        // Option B: a background ComfyUI job runs on the SERVER queue (survives reload);
+        // foreground / Ollama-image keep the direct call. comfyFetch returns a Response-
+        // like {ok,json} so the result handling below is unchanged.
+        const execP = (useComfy && sink.server)
+          ? comfyFetch(reqBody, { bgJob: totalCount === 1 ? sink.server.bgJob : null, kind: "image", comfyUrl: comfyHost, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, clientId: comfyClientId, signal: abortController.signal })
+          : fetch(useComfy ? "/api/generate-comfy" : "/api/generate-image", { method: "POST", headers: { "Content-Type": "application/json" }, signal: abortController.signal, body: JSON.stringify(reqBody) });
         promises.push(
-          fetch(useComfy ? "/api/generate-comfy" : "/api/generate-image", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            signal: abortController.signal,
-            body: JSON.stringify({
-              model: activeModel,
-              prompt,
-              negative_prompt: comfyNegative(parsed.negativePrompt),
-              options: reqOptions,
-              images: refImages || undefined,
-              // Inpaint mask (white = repaint region) — only used by the ComfyUI
-              // path; routes the gen to a masked edit / SetLatentNoiseMask inpaint.
-              mask: (useComfy && maskB64) ? maskB64 : undefined,
-              timeout: reqTimeout,
-              clientId: comfyClientId || undefined,
-              comfyUrl: (useComfy && comfyHost) ? comfyHost : undefined, // this job's ComfyUI worker
-            }),
-          })
+          execP
             .then(async (r) => {
               let data;
               if (!r.ok) {

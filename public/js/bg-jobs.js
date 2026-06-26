@@ -18,6 +18,7 @@ import { getTab, switchTab } from './tabs.js';
 import { t } from './i18n.js';
 import { generateImage } from './image-gen.js';
 import { generateSpeech } from './voice-gen.js';
+import { setServerQueueDeps, cancelServerJob, ackServerJob, cancelConversationServerJobs } from './server-queue.js';   // Option B
 
 // renderChat + the analysis generators are injected (chat.js imports this module, so
 // importing it back would be circular). Set from main.js via setBgDeps.
@@ -75,11 +76,24 @@ function persist() {
   const clean = state.bgJobs.map(({ preview, seg, ...j }) => j);
   dbSaveJobs(clean).catch((e) => console.warn('[bg-jobs] persist failed:', e));
 }
+// Let the server-queue client persist a job's serverJobId (so a reload can reconnect).
+setServerQueueDeps({ persist });
 
 // ---- queue helpers ---------------------------------------------------------
 
 export function bgQueueActive() {
   return state.bgJobs.some((j) => j.status === 'queued' || j.status === 'running');
+}
+
+// Active (queued/running) jobs belonging to a conversation — used by archive/delete
+// to warn + cancel before the conversation goes away (covers both in-page analysis
+// jobs and server-side gen jobs, which are all entries in state.bgJobs).
+export function tabActiveJobCount(tabId) {
+  return state.bgJobs.filter((j) => j.tabId === tabId && (j.status === 'queued' || j.status === 'running')).length;
+}
+export function cancelTabJobs(tabId) {
+  for (const j of state.bgJobs.filter((j) => j.tabId === tabId && (j.status === 'queued' || j.status === 'running'))) cancelBgJob(j.id);
+  cancelConversationServerJobs(tabId);   // server-side belt-and-suspenders
 }
 
 function unfinishedCount() {
@@ -267,6 +281,13 @@ async function pumpLane(workerId) {
         }
       }
       jobControllers.delete(job.id);
+      // Option B: server-side gen job finished → ack it (server drops the delivered
+      // result). On error/interrupted clear serverJobId so a retry submits a fresh job
+      // instead of reconnecting to a removed one.
+      if (job.serverJobId) {
+        ackServerJob(job.serverJobId);
+        if (job.status !== 'done') job.serverJobId = null;
+      }
       // Auto-remove a successfully-finished job — its result is already in the chat,
       // so the drawer entry is just clutter. Errors/interrupted stay (retryable).
       if (job.status === 'done') {
@@ -410,6 +431,9 @@ function makeBgSink(job, controller) {
     background: true,
     signal: controller.signal,
     tabId: job.tabId,
+    // Option B: identifies this job to the server queue so generation runs server-side
+    // (image/video/audio). Generators submit via comfyFetch/ttsFetch when this is set.
+    server: { bgJob: job, conversationId: job.tabId, msgId: job.msgId, label: job.label, comfyUrl: job.workerUrl || '' },
     lock() {},                 // never lock the send button for a background run
     started() { return true; }, // placeholder already exists
     start(kind, label) { if (label) job.label = label; refreshPlaceholders(); },
@@ -509,6 +533,7 @@ export function cancelBgJob(jobId) {
   if (!job) return;
   const ctrl = jobControllers.get(jobId);
   if (ctrl) { try { ctrl.abort(); } catch {} jobControllers.delete(jobId); }
+  if (job.serverJobId) cancelServerJob(job.serverJobId);   // Option B: cancel it on the server too
   // Remove the bubble (placeholder or already-finished result) from its tab.
   const found = findMsg(job.msgId);
   if (found) { found.tab.messages.splice(found.index, 1); saveChat(); }
@@ -877,7 +902,13 @@ export async function restoreBgJobsOnLoad() {
   let jobs = [];
   try { jobs = await dbLoadJobs(); } catch { jobs = []; }
   for (const j of jobs) {
-    if (j.status === 'running') { j.status = 'interrupted'; j.progress = null; }
+    // Option B: a server-side gen job (has serverJobId) kept running on the server while
+    // the page was gone → requeue so it re-runs + RECONNECTS by serverJobId (the SSE
+    // snapshot delivers the result). In-page jobs (no serverJobId) can't resume → interrupted.
+    if (j.status === 'running') {
+      if (j.serverJobId) { j.status = 'queued'; j.progress = null; j.seg = null; }
+      else { j.status = 'interrupted'; j.progress = null; }
+    }
   }
   state.bgJobs = jobs;
   persist();

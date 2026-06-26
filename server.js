@@ -26,6 +26,7 @@ const { listSystemVoices, speak, stopSay } = require("./server/speech");
 const { listTtsVoices, synthesize } = require("./server/tts");
 const { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives } = require("./server/archive");
 const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file");
+const bgQueue = require("./server/jobs");   // Option B: server-side background job queue
 
 console.log("[hey-koko] All modules loaded, starting server...");
 
@@ -80,6 +81,15 @@ const server = http.createServer((req, res) => {
     mergeComfyVideos(req, res);
     return;
   }
+
+  // ---- Option B: server-side background job queue ----
+  if (req.method === "POST" && req.url === "/api/jobs") { bgQueue.submitJob(req, res); return; }
+  if (req.method === "GET" && req.url === "/api/jobs/events") { bgQueue.streamEvents(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/jobs/ack") { bgQueue.ackJobs(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/jobs/reorder") { bgQueue.reorderJobs(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/jobs/cancel-conversation") { bgQueue.cancelConversation(req, res); return; }
+  if (req.method === "POST" && /^\/api\/jobs\/[^/]+\/cancel$/.test(req.url)) { bgQueue.cancelJob(req, res, req.url.split("/")[3]); return; }
+  if (req.method === "POST" && /^\/api\/jobs\/[^/]+\/retry$/.test(req.url)) { bgQueue.retryJob(req, res, req.url.split("/")[3]); return; }
 
   if (req.method === "POST" && req.url === "/api/enhance-prompt") {
     enhancePrompt(req, res);

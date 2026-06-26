@@ -10,6 +10,7 @@ import { t } from './i18n.js';
 import { setAvatarState } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab } from './tabs.js';
+import { ttsFetch } from './server-queue.js';   // Option B: run TTS on the server queue
 import { markdownToSpeechText } from './speech.js';
 import { foregroundSink } from './gen-sink.js';
 
@@ -84,12 +85,12 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
   sink.start("audio", t("msg_generatingAudio"));
 
   try {
-    const resp = await fetch("/api/tts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: sink.signal,
-      body: JSON.stringify({ text: speakText, voice, rate, timeout: 180 }),
-    });
+    const ttsBody = { text: speakText, voice, rate, timeout: 180 };
+    // Option B: a background /voice job runs on the SERVER queue (survives reload);
+    // ttsFetch returns a Response-like {ok,json} so the handling below is unchanged.
+    const resp = sink.server
+      ? await ttsFetch(ttsBody, { bgJob: sink.server.bgJob, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, signal: sink.signal })
+      : await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, signal: sink.signal, body: JSON.stringify(ttsBody) });
     const data = await resp.json();
     sink.clearBubble();
 

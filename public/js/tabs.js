@@ -10,6 +10,7 @@ import { escapeHtml } from './utils.js';
 import { dbLoadTabs, dbLoadActiveTabId, migrateFromLocalStorage, dbDeleteDatabase } from './db.js';
 import { genId } from './utils.js';
 import { t } from './i18n.js';
+import { tabActiveJobCount, cancelTabJobs } from './bg-jobs.js';   // Option B: warn + cancel jobs on delete
 
 // Give every persisted message a stable `id` so the background-jobs queue can
 // re-locate a placeholder after inserts/deletes shift array indices. Cheap,
@@ -559,7 +560,12 @@ export function renderTabs() {
       } else {
         closeButton.addEventListener("click", (event) => {
           event.stopPropagation();
-          if (confirm(t("confirm_closeTab", { title: tab.title }))) {
+          const nActive = tabActiveJobCount(tab.id);
+          if (nActive > 0) {
+            if (!confirm(t("bg_closeActiveJobs", { n: nActive }))) return;
+            cancelTabJobs(tab.id);
+            closeTab(tab.id);
+          } else if (confirm(t("confirm_closeTab", { title: tab.title }))) {
             closeTab(tab.id);
           }
         });
