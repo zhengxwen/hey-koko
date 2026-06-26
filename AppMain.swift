@@ -36,8 +36,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
     var window: NSWindow!
     var webView: WKWebView!
     var serverProcess: Process?
+    var napActivity: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Disable App Nap so the background-job queue's timers and fetch/promise
+        // callbacks keep firing even when the window is occluded or the user is idle
+        // — otherwise macOS throttles the WebView and the next job won't start until
+        // the user moves the mouse. Still permits genuine idle system sleep.
+        napActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "hey-koko background job queue")
         startServer()
         createWindow()
         waitAndLoad()
