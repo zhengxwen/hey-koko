@@ -118,10 +118,28 @@ export function switchTab(tabId) {
   saveTabs();
   renderTabs();
   updateLockedState();
-  if (_renderChat) _renderChat();
-  // Restore scroll position for the new tab
-  if (newTab && typeof newTab._scrollY === 'number') {
-    dom.messagesEl.scrollTop = newTab._scrollY;
+  const restoreScroll = () => {
+    if (newTab && typeof newTab._scrollY === 'number') dom.messagesEl.scrollTop = newTab._scrollY;
+  };
+  // Switching to a heavy tab (videos, or a long history) means a blocking re-render
+  // that briefly freezes the UI. Show the loading overlay and let it PAINT (double
+  // rAF) before the render runs, so it doesn't look stuck. Light tabs render fast
+  // enough that the overlay would only flicker, so skip it for them.
+  const heavy = !!(newTab && Array.isArray(newTab.messages) && (
+    newTab.messages.length > 60 ||
+    newTab.messages.some((m) => m && Array.isArray(m.generatedVideos) && m.generatedVideos.length)
+  ));
+  const loadEl = heavy ? document.querySelector("#chatLoading") : null;
+  if (loadEl) {
+    loadEl.hidden = false;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (_renderChat) _renderChat();
+      restoreScroll();
+      loadEl.hidden = true;
+    }));
+  } else {
+    if (_renderChat) _renderChat();
+    restoreScroll();
   }
 }
 

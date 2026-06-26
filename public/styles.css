@@ -1413,6 +1413,46 @@ button.secondary:disabled {
   display: flex;
   flex-direction: column;
 }
+/* Tab-loading overlay: covers the messages area while a tab loads/renders so the
+   UI doesn't look frozen. Hidden via the [hidden] attribute once rendered. */
+.chatLoading {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-alpha, rgba(255, 255, 255, 0.6));
+  backdrop-filter: blur(2px);
+}
+.chatLoading[hidden] { display: none; }
+.chatLoadingDots {
+  display: inline-flex;
+  gap: 8px;
+}
+.chatLoadingDots span {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: chatLoadingBounce 1.4s ease-in-out infinite both;
+  /* Promote each dot to its own compositor layer so the transform/opacity wave
+     keeps running on the COMPOSITOR thread even while the main thread is frozen
+     doing the heavy tab render — otherwise the animation stalls mid-freeze and
+     only the first dot (zero delay) appears to have moved. */
+  will-change: transform, opacity;
+}
+/* NEGATIVE delays: each dot starts already partway INTO the cycle (different
+   phase = the wave look) instead of waiting to begin. A positive delay makes the
+   later dots sit still until their turn, so on a short-lived overlay the last
+   dot never gets to move; negative delays have all three animating from frame 1. */
+.chatLoadingDots span:nth-child(1) { animation-delay: -0.93s; }
+.chatLoadingDots span:nth-child(2) { animation-delay: -0.47s; }
+.chatLoadingDots span:nth-child(3) { animation-delay: 0s; }
+@keyframes chatLoadingBounce {
+  0%, 60%, 100% { transform: translateY(0) scale(0.85); opacity: 0.4; }
+  30% { transform: translateY(-11px) scale(1); opacity: 1; }
+}
 
 .messagesWrap > .messages {
   flex: 1 1 auto;

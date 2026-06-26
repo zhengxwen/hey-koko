@@ -323,6 +323,13 @@
         </aside>
         <div class="messagesWrap">
           <div id="messages" class="messages" aria-live="polite"></div>
+          <!-- Tab-loading overlay. Visible by default so it paints on refresh BEFORE
+               the heavy module scripts run + the first render blocks the thread; the
+               app hides it once the chat has rendered (and re-shows it briefly when
+               switching to a heavy tab). -->
+          <div id="chatLoading" class="chatLoading" role="status" aria-label="加载中">
+            <span class="chatLoadingDots"><span></span><span></span><span></span></span>
+          </div>
           <button id="scrollToBottomBtn" type="button" class="scrollToBottomBtn" hidden aria-label="回到底部"><span class="scrollToBottomIcon">↓</span><span class="scrollToBottomText">回到底部</span></button>
         </div>
 

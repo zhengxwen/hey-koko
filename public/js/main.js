@@ -2135,6 +2135,11 @@ saveTabs();
 renderTabs();
 updateLockedState();
 renderChat();
+// The first render is done — drop the loading overlay that covered the freeze.
+{
+  const el = document.querySelector("#chatLoading");
+  if (el) el.hidden = true;
+}
 // Restore the active tab's saved input draft.
 {
   const _initTab = getActiveTab();
