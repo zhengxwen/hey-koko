@@ -461,96 +461,35 @@ function resendChatMessage(index) {
   }
 }
 
-export async function imagineFromContent(index) {
-  if (state.currentAbortController || state.imageGenAbortController) return;
-  const tab = getActiveTab();
-  const message = tab.messages[index];
-  if (!message || !message.content) return;
-
-  const imageModel = dom.imageModelSelect.value;
-  if (!imageModel) {
-    const errMsg = { role: "assistant", content: t("msg_noImageModel"), timestamp: Date.now() };
-    tab.messages.splice(index + 1, 0, errMsg);
-    saveChat();
-    renderChat();
+// Copy a message bubble's text to the clipboard, flashing the button label to
+// confirm. Falls back to a hidden textarea + execCommand when the async
+// Clipboard API is unavailable (insecure origin / older browser).
+async function copyMessageText(text, btn) {
+  const value = typeof text === "string" ? text : "";
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+  } catch {
     return;
   }
-
-  const placeholderMsg = { role: "user", content: `${t("msg_generatingPrompt")}...`, timestamp: Date.now() };
-  tab.messages.splice(index + 1, 0, placeholderMsg);
-  saveChat();
-  renderChat();
-
-  const placeholderEl = dom.messagesEl.children[index + 1];
-  if (placeholderEl) {
-    const body = placeholderEl.querySelector(".plainBody");
-    if (body) {
-      body.innerHTML = `<span class="thinking-text">${t("msg_generatingPrompt")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
-    }
-  }
-
-  const abortController = new AbortController();
-  state.currentAbortController = abortController;
-  setGenerating(true);
-  setAvatarState("thinking");
-
-  try {
-    const res = await fetch("/api/content-to-imagine", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: abortController.signal,
-      body: JSON.stringify({ model: dom.modelSelect.value, content: message.content, language: dom.promptLanguageSelect?.value || "en" }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(cleanErrorMessage(data.error) || "Request failed");
-
-    let prompts = data.prompts || "";
-    const lines = prompts.split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0)
-      .map((l) => l.startsWith("/imagine") ? l : `/imagine ${l}`);
-
-    if (lines.length === 0) {
-      placeholderMsg.content = "无法从内容中提取图片提示词。";
-      saveChat();
-      renderChat();
-      return;
-    }
-
-    const imagineContent = lines.join("\n");
-    placeholderMsg.content = imagineContent;
-    saveChat();
-    renderChat();
-
-    const imagineCmds = parseImagineCommands(imagineContent);
-    if (imagineCmds) {
-      const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
-      if (firstError) {
-        tab.messages.splice(index + 2, 0, { role: "assistant", content: t("msg_commandError", { error: firstError.error }), timestamp: Date.now() });
-        saveChat();
-        renderChat();
-      } else {
-        const validCmds = imagineCmds.filter((cmd) => cmd && cmd.prompt);
-        // Route the actual image gen into the background queue; the placeholder lands
-        // right after the generated-prompts bubble (which sits at index + 1).
-        enqueueImagineGen(validCmds, state.activeTabId, null, null, null, index + 2);
-      }
-    }
-  } catch (error) {
-    if (error.name === "AbortError") {
-      const placeholderIndex = tab.messages.indexOf(placeholderMsg);
-      if (placeholderIndex !== -1) tab.messages.splice(placeholderIndex, 1);
-      saveChat();
-      renderChat();
-    } else {
-      placeholderMsg.content = `生成图片提示词失败：${error.message}`;
-      saveChat();
-      renderChat();
-    }
-  } finally {
-    setGenerating(false);
-    state.currentAbortController = null;
-    setAvatarState("idle");
+  if (btn) {
+    const original = btn.textContent;
+    btn.textContent = t("btn_copied");
+    btn.classList.add("copied");
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.classList.remove("copied");
+    }, 1200);
   }
 }
 
@@ -2576,14 +2515,14 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       translateChButton.addEventListener("click", () => translateMessage(index, "zh"));
       leftActions.appendChild(translateChButton);
 
-      const imagineButton = document.createElement("button");
-      imagineButton.className = "messageAction imagineFromContent";
-      imagineButton.type = "button";
-      imagineButton.title = t("btn_imagine");
-      imagineButton.setAttribute("aria-label", t("btn_imagine"));
-      imagineButton.textContent = t("btn_imagine");
-      imagineButton.addEventListener("click", () => imagineFromContent(index));
-      leftActions.appendChild(imagineButton);
+      const copyButton = document.createElement("button");
+      copyButton.className = "messageAction copyMessage";
+      copyButton.type = "button";
+      copyButton.title = t("btn_copy");
+      copyButton.setAttribute("aria-label", t("btn_copy"));
+      copyButton.textContent = "📋";
+      copyButton.addEventListener("click", () => copyMessageText(content, copyButton));
+      leftActions.appendChild(copyButton);
     }
 
     if (Number.isInteger(index)) {
@@ -3135,13 +3074,14 @@ export function renderChat() {
       speakBtn.addEventListener("click", () => speakMessage(message.translation, speakBtn));
       transActions.appendChild(speakBtn);
 
-      const imgBtn = document.createElement("button");
-      imgBtn.className = "messageAction imagineFromContent";
-      imgBtn.type = "button";
-      imgBtn.title = t("btn_imagine");
-      imgBtn.textContent = t("btn_imagine");
-      imgBtn.addEventListener("click", () => imagineFromContent(index));
-      transActions.appendChild(imgBtn);
+      const copyBtn = document.createElement("button");
+      copyBtn.className = "messageAction copyMessage";
+      copyBtn.type = "button";
+      copyBtn.title = t("btn_copy");
+      copyBtn.setAttribute("aria-label", t("btn_copy"));
+      copyBtn.textContent = "📋";
+      copyBtn.addEventListener("click", () => copyMessageText(message.translation, copyBtn));
+      transActions.appendChild(copyBtn);
 
       transEl.appendChild(transActions);
 

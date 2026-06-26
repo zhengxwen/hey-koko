@@ -168,12 +168,6 @@ const VIDEO_ENHANCE_PROMPTS = {
   "zh-Hant": "你是「文生視訊模型」（如 WAN、Hunyuan、LTX）的提示詞專家。請把使用者的簡短描述擴展成一段生動的英文視訊提示詞，重點描述隨時間發生的【運動】：主體在做什麼、如何移動、鏡頭運動（平移/推拉/變焦/固定）、整體氛圍與光線。要描述一個連續的鏡頭，而不是靜止畫面。控制在150字以內。只輸出增強後的提示詞，不要有其他解釋或前綴。",
 };
 
-const CONTENT_TO_IMAGINE_PROMPTS = {
-  en: `You are an expert at converting text content into image generation prompts. Given the user's text, generate one or more vivid image prompts that would visually illustrate the key scenes or concepts. Output ONLY the prompts, one per line, each starting with "/imagine ". Each prompt should be a detailed visual description in English, under 100 words. Generate 1-3 prompts depending on the content richness. Do not include explanations, numbering, or any other text.`,
-  zh: `你是将文本内容转换为图片生成提示词的专家。根据用户的文本，生成一个或多个能视觉化展示关键场景或概念的图片提示词。只输出提示词，每行一个，每个以 "/imagine " 开头。每个提示词应为详细的英文视觉描述，不超过100字。根据内容丰富程度生成1-3个提示词。不要包含解释、编号或其他文字。`,
-  "zh-Hant": `你是將文本內容轉換為圖片生成提示詞的專家。根據使用者的文本，生成一個或多個能視覺化展示關鍵場景或概念的圖片提示詞。只輸出提示詞，每行一個，每個以 "/imagine " 開頭。每個提示詞應為詳細的英文視覺描述，不超過100字。根據內容豐富程度生成1-3個提示詞。不要包含解釋、編號或其他文字。`,
-};
-
 function getPromptByLang(templates, lang) {
   return templates[lang] || templates.zh || templates.en;
 }
@@ -222,43 +216,4 @@ async function enhancePrompt(req, res) {
   }
 }
 
-async function contentToImagePrompts(req, res) {
-  try {
-    const body = await readBody(req);
-    const { model, content, language } = body;
-
-    if (!model || !content) {
-      sendJson(res, 400, { error: "model and content are required" });
-      return;
-    }
-
-    const systemPrompt = getPromptByLang(CONTENT_TO_IMAGINE_PROMPTS, language || "en");
-
-    const response = await fetch(`${config.ollamaUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        stream: false,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content },
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      sendJson(res, response.status, { error: text || response.statusText });
-      return;
-    }
-
-    const data = await response.json();
-    const raw = data.message?.content?.trim() || "";
-    sendJson(res, 200, { prompts: raw });
-  } catch (error) {
-    sendJson(res, 500, { error: "生成图片提示词失败", detail: error.message });
-  }
-}
-
-module.exports = { proxyOllamaImageModels, generateImage, enhancePrompt, contentToImagePrompts };
+module.exports = { proxyOllamaImageModels, generateImage, enhancePrompt };

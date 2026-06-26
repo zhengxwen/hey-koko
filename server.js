@@ -14,7 +14,7 @@ const config = require("./server/config");
 const { sendJson, serveStatic, readBody } = require("./server/utils");
 const { proxyOllamaChat, proxyOllamaTags, proxyOllamaShow } = require("./server/chat");
 const { scanOllamaStream, scanComfyStream, hostnameFor } = require("./server/network");
-const { proxyOllamaImageModels, generateImage, enhancePrompt, contentToImagePrompts } = require("./server/image");
+const { proxyOllamaImageModels, generateImage, enhancePrompt } = require("./server/image");
 const { proxyComfyModels, generateComfyImage, uploadComfyVideo, mergeComfyVideos } = require("./server/comfy");
 const { fetchUrlContent, transcribeYouTubeAudio } = require("./server/url-fetch");
 const { searchWeb } = require("./server/search");
@@ -80,11 +80,6 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/enhance-prompt") {
     enhancePrompt(req, res);
-    return;
-  }
-
-  if (req.method === "POST" && req.url === "/api/content-to-imagine") {
-    contentToImagePrompts(req, res);
     return;
   }
 

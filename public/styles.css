@@ -1914,7 +1914,7 @@ button.secondary:disabled {
 .resendMessage,
 .forkMessage,
 .translateMessage,
-.imagineFromContent {
+.copyMessage {
   width: auto;
   padding: 0 8px;
   font-size: 12px;
