@@ -537,9 +537,17 @@ export function openBgDrawer(flashJobId) {
 // (e.g. the job already finished and was auto-removed).
 function flashJobRow(jobId) {
   setTimeout(() => {
-    const row = document.querySelector(`#bgJobsList .bgJobRow[data-job-id="${jobId}"]`);
+    const list = document.querySelector('#bgJobsList');
+    const row = list?.querySelector(`.bgJobRow[data-job-id="${jobId}"]`);
     if (!row) return;
-    row.scrollIntoView({ block: 'nearest' });
+    // Reveal the row by scrolling ONLY the list's own vertical scroll. NOT
+    // row.scrollIntoView() — while the drawer is mid-slide the row is still off
+    // the right edge, so scrollIntoView scrolls an ancestor horizontally and the
+    // chat visibly jumps left until the animation settles, then snaps back.
+    const r = row.getBoundingClientRect();
+    const lr = list.getBoundingClientRect();
+    if (r.top < lr.top) list.scrollTop -= (lr.top - r.top) + 8;
+    else if (r.bottom > lr.bottom) list.scrollTop += (r.bottom - lr.bottom) + 8;
     row.classList.remove('bgJobFlash');
     void row.offsetWidth;            // restart the animation if it's still applied
     row.classList.add('bgJobFlash');

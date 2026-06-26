@@ -859,9 +859,15 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   const ovComfyUrl = modelOverride ? (modelOverride.comfyUrl || "") : "";
   const comfyHost = ((ovComfyUrl || dom.comfyUrlDisplay?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim()).replace(/^https?:\/\//i, "").replace(/\/+$/, "");
 
+  // Wan Animate SINGLE-FRAME (still pose transfer): animate model, NO source video, and
+  // ≥2 images (1st = pose, 2nd = character) → an IMAGE result. Fall through to the image
+  // path below (which sends the images and renders the returned still) instead of the
+  // video path.
+  const isAnimateStill = /animate/i.test(comfyModel || "") && !initVideo && Array.isArray(refImages) && refImages.length >= 2;
+
   // A selected ComfyUI VIDEO model routes to the dedicated video path. Pass the
   // sink + the worker url through so a background video job stays headless + on-target.
-  if (!imageModel && comfyModel && state.comfyVideoModels && state.comfyVideoModels.has(comfyModel)) {
+  if (!imageModel && comfyModel && state.comfyVideoModels && state.comfyVideoModels.has(comfyModel) && !isAnimateStill) {
     return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages, initVideo, sink, ovComfyUrl);
   }
 
@@ -982,6 +988,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   try {
     const generatedImages = [];
     let errorCount = 0;
+    let lastError = "";
 
     const promises = [];
     for (let ci = 0; ci < parsedList.length; ci++) {
@@ -1049,7 +1056,8 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 }
               } else {
                 errorCount++;
-                console.warn("[image-gen] error:", data.error);
+                lastError = data.error || data.detail || "";
+                console.warn("[image-gen] error:", data.error, data.detail || "");
               }
               if (totalCount > 1) {
                 sink.label(genText(generatedImages.length + errorCount));
@@ -1080,7 +1088,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     if (errorCount > 0 && generatedImages.length > 0) {
       content += `⚠️ ${errorCount} 张图片生成失败\n\n`;
     } else if (errorCount > 0 && generatedImages.length === 0) {
-      content = "图片生成失败，请检查模型是否正确安装并支持图像生成。";
+      content = lastError
+        ? `图片生成失败：${lastError}`
+        : "图片生成失败，请检查模型是否正确安装并支持图像生成。";
     }
 
     const toSrc = (img) => (img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`);

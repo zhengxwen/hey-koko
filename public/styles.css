@@ -4199,7 +4199,7 @@ button.secondary:disabled {
 .bgJobsIcon { display: block; transform: translateY(-2px); }
 .bgJobsBadge {
   position: absolute;
-  top: -4px;
+  bottom: -4px;
   right: -4px;
   min-width: 16px;
   height: 16px;

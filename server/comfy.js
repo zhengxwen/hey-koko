@@ -1299,6 +1299,61 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
   return wf;
 }
 
+// Wan Animate SINGLE-FRAME (still pose transfer). Reference CHARACTER image + a POSE
+// IMAGE → the character posed like the pose image, as ONE still. Same model/pipeline
+// as Move but the source is a LoadImage (not a video), ending in SaveImage.
+// LIVE-VERIFIED gotcha: length 1 ANCHORS to the reference (the target pose does NOT
+// transfer — frame 0 ≈ the reference). So we hold the target pose for STILL_FRAMES
+// (RepeatImageBatch the DWPose output) and take the LAST decoded frame, by which point
+// the character has settled INTO the pose. Output size follows the pose image.
+const STILL_FRAMES = 9; // 4n+1; verified N=9 fully adopts the pose, N=1 does not
+function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, refImageName, width, height, seed, torchCompile = false }) {
+  const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
+  const dw = (face) => ({
+    class_type: "DWPreprocessor",
+    inputs: {
+      image: ["13", 0], resolution: ["14", 0],
+      detect_hand: face ? "disable" : "enable",
+      detect_body: face ? "disable" : "enable",
+      detect_face: face ? "enable" : "disable",
+      bbox_detector: "yolox_l.onnx",
+      pose_estimator: "dw-ll_ucoco_384_bs5.torchscript.pt",
+      scale_stick_for_xinsr_cn: "disable",
+    },
+  });
+  const samplingSrc = torchCompile ? "25" : "3";
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.loraSpeed, strength_model: 1 } },
+    "3": { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraRelight, strength_model: 1 } },
+    "4": { class_type: "ModelSamplingSD3", inputs: { model: [samplingSrc, 0], shift: 8 } },
+    "5": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
+    "6": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "7": { class_type: "CLIPVisionLoader", inputs: { clip_name: comp.clipVision } },
+    "8": { class_type: "CLIPTextEncode", inputs: { clip: ["5", 0], text: prompt } },
+    "9": { class_type: "CLIPTextEncode", inputs: { clip: ["5", 0], text: neg } },
+    "10": { class_type: "LoadImage", inputs: { image: refImageName } },  // reference character
+    "11": { class_type: "CLIPVisionEncode", inputs: { clip_vision: ["7", 0], image: ["10", 0], crop: "none" } },
+    "12": { class_type: "LoadImage", inputs: { image: poseImageName } }, // pose source (a still)
+    "13": { class_type: "ImageScale", inputs: { image: ["12", 0], upscale_method: "lanczos", width, height, crop: "center" } },
+    "14": { class_type: "PixelPerfectResolution", inputs: { original_image: ["12", 0], image_gen_width: width, image_gen_height: height, resize_mode: "Just Resize" } },
+    "16": dw(true),  // face (1 frame)
+    "17": dw(false), // pose (body + hands, 1 frame)
+    // Hold the single target pose for STILL_FRAMES so the model can settle into it.
+    "16r": { class_type: "RepeatImageBatch", inputs: { image: ["16", 0], amount: STILL_FRAMES } },
+    "17r": { class_type: "RepeatImageBatch", inputs: { image: ["17", 0], amount: STILL_FRAMES } },
+    "18": { class_type: "WanAnimateToVideo", inputs: { positive: ["8", 0], negative: ["9", 0], vae: ["6", 0], clip_vision_output: ["11", 0], reference_image: ["10", 0], face_video: ["16r", 0], pose_video: ["17r", 0], width, height, length: STILL_FRAMES, batch_size: 1, continue_motion_max_frames: 5, video_frame_offset: 0 } },
+    "19": { class_type: "KSampler", inputs: { model: ["4", 0], positive: ["18", 0], negative: ["18", 1], latent_image: ["18", 2], seed, steps: 6, cfg: 1, sampler_name: "euler", scheduler: "simple", denoise: 1 } },
+    "20": { class_type: "TrimVideoLatent", inputs: { samples: ["19", 0], trim_amount: ["18", 3] } },
+    "21": { class_type: "VAEDecode", inputs: { samples: ["20", 0], vae: ["6", 0] } },
+    // Take the LAST frame — by then the character has fully adopted the target pose.
+    "22": { class_type: "ImageFromBatch", inputs: { image: ["21", 0], batch_index: STILL_FRAMES - 1, length: 1 } },
+    "23": { class_type: "SaveImage", inputs: { images: ["22", 0], filename_prefix: "heykoko_animate_still" } },
+  };
+  if (torchCompile) wf["25"] = { class_type: "TorchCompileModel", inputs: { model: ["3", 0], backend: "inductor" } };
+  return wf;
+}
+
 // Parse intrinsic pixel dimensions from a base64 PNG/JPEG without an image lib.
 // Used to match a video's aspect ratio to the i2v conditioning image.
 function imageDims(b64) {
@@ -1561,7 +1616,11 @@ async function generateComfyImage(req, res) {
     const { prompt, negative_prompt, options, images, mask, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, segmentOffset, segmentLength, continueVideoName, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
     let model = body.model;
 
-    if (!model || !prompt) {
+    // A prompt is only required for pure txt2img — attachment-driven gen (img2img /
+    // instruction-edit / video-edit / Wan Animate) may run with an empty prompt.
+    const hasImgInput = Array.isArray(images) && images.length > 0;
+    const hasVidInput = !!(sourceVideo || sourceVideoName);
+    if (!model || (!prompt && !hasImgInput && !hasVidInput)) {
       sendJson(res, 400, { error: "model and prompt are required" });
       return;
     }
@@ -1636,6 +1695,7 @@ async function generateComfyImage(req, res) {
       let workflow;
       let videoDims = null; // actual resolved output size (for the client's caption)
       let imagesUsed = 0;   // how many input images the video path actually consumed
+      let stillMode = false; // single-frame Wan Animate → return an IMAGE, not a video
       if (videoType === "bernini") {
         // Bernini-R video EDIT: a SOURCE VIDEO (required) + instruction → edited
         // video (v2v); + a reference image → rv2v. Resolve the merged entry to the
@@ -1685,10 +1745,47 @@ async function generateComfyImage(req, res) {
         workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: bw, height: bh, length: bl, seed, turbo, fps: bfps, refMaxSize: refMax });
         // v2v/rv2v keep the source video's fps; i2v uses bfps (so it can show duration).
         videoDims = { width: bw, height: bh, length: bl, fps: hasVideo ? undefined : bfps };
+      } else if (videoType === "animate" && !sourceVideo && !sourceVideoName) {
+        // Wan Animate SINGLE-FRAME (still pose transfer): no source video, TWO images
+        // — image[0] = pose source (output size follows it), image[1] = reference
+        // character. Length 1 → one decoded frame, returned as an IMAGE.
+        if (!(Array.isArray(images) && images.length >= 2)) {
+          sendJson(res, 400, { error: "Wan Animate 单帧需要两张图：第1张姿势图、第2张角色图（或附一段源视频做多帧动作）。" });
+          return;
+        }
+        const comp = await animateCompanions();
+        // Output size. A ⚙/--size budget (when set) wins → scaled to the pose aspect.
+        // "auto" (no size) → use the POSE image's OWN size (capped to STILL_MAX_SIDE so a
+        // huge source can't OOM), /16-snapped — a still isn't time-critical and the extra
+        // pixels sharpen small faces/hands. Falls back to 896² if the pose dims are unknown.
+        const STILL_MAX_SIDE = 1536;
+        const d0 = imageDims(images[0]);
+        let aw, ah;
+        if (opts.width && opts.height) {
+          const aspect = (d0 && d0.width > 0) ? d0.width / d0.height : (opts.width / opts.height);
+          const budget = opts.width * opts.height;
+          aw = snapDim(Math.sqrt(budget * aspect), 16);
+          ah = snapDim(Math.sqrt(budget / aspect), 16);
+        } else if (d0 && d0.width > 0 && d0.height > 0) {
+          const s = Math.min(1, STILL_MAX_SIDE / Math.max(d0.width, d0.height));
+          aw = snapDim(d0.width * s, 16);
+          ah = snapDim(d0.height * s, 16);
+        } else {
+          aw = ah = snapDim(896, 16);
+        }
+        // DISTINCT filenames — uploadImage defaults to "heykoko_input.png" with
+        // overwrite, so two default-named uploads would clobber each other (the pose
+        // would become the character → DWPose reads the character's own pose → no
+        // transfer). Name them apart.
+        const poseImageName = await uploadImage(images[0], controller.signal, "heykoko_pose.png");
+        const refImageName = await uploadImage(images[1], controller.signal, "heykoko_animref.png");
+        imagesUsed = 2;
+        stillMode = true;
+        workflow = buildWanAnimateStill({ model, prompt, negative: negative_prompt || "", comp, poseImageName, refImageName, width: aw, height: ah, seed, torchCompile: !!opts.torchCompile });
+        videoDims = { width: aw, height: ah };
       } else if (videoType === "animate") {
         // Wan Animate MOVE (pose transfer): reference person image + source video
         // (the motion) → the character does the video's motion. Needs BOTH.
-        if (!sourceVideo && !sourceVideoName) { sendJson(res, 400, { error: "Wan Animate 需要一段动作来源视频（再附一张人物参考图），用 /imagine <场景描述>。" }); return; }
         if (!(Array.isArray(images) && images.length)) { sendJson(res, 400, { error: "Wan Animate 需要一张人物参考图（再附一段动作来源视频）。" }); return; }
         const comp = await animateCompanions();
         // Output follows the SOURCE video's aspect (the pose is scaled to it), at
@@ -1779,12 +1876,14 @@ async function generateComfyImage(req, res) {
         let imageName = null, endImageName = null, imageNames = null;
         if (wantImage && isLtxKeyframes) {
           imageNames = [];
-          for (const im of images.slice(0, LTX_MAX_KEYFRAMES)) imageNames.push(await uploadImage(im, controller.signal));
+          // DISTINCT filenames — uploadImage's default name + overwrite would clobber.
+          const kfs = images.slice(0, LTX_MAX_KEYFRAMES);
+          for (let ki = 0; ki < kfs.length; ki++) imageNames.push(await uploadImage(kfs[ki], controller.signal, `heykoko_kf${ki}.png`));
           imagesUsed = imageNames.length;
         } else if (wantImage) {
-          imageName = await uploadImage(images[0], controller.signal);
+          imageName = await uploadImage(images[0], controller.signal, "heykoko_start.png");
           imagesUsed = 1;
-          if (isFLF) { endImageName = await uploadImage(images[1], controller.signal); imagesUsed = 2; }
+          if (isFLF) { endImageName = await uploadImage(images[1], controller.signal, "heykoko_end.png"); imagesUsed = 2; }
         }
         workflow = buildVideoWorkflow(videoType, { model, prompt, negative: negative_prompt || "", comp, imageName, endImageName, imageNames, seed, v });
       } else if (editType) {
@@ -1805,7 +1904,10 @@ async function generateComfyImage(req, res) {
           // Multi-reference compose: Qwen-Image-Edit-2509 Plus, or boogu's
           // TextEncodeBooguEdit autogrow (image_1..image_N). Cap at 3.
           const imageNames = [];
-          for (const im of images.slice(0, 3)) imageNames.push(await uploadImage(im, controller.signal));
+          // DISTINCT filenames — uploadImage's default name + overwrite would clobber,
+          // collapsing all references to the last image (breaks multi-subject compose).
+          const refs = images.slice(0, 3);
+          for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `heykoko_ref${ri}.png`));
           workflow = editType === "boogu-edit"
             ? buildBooguEdit({ model, prompt, negative: negative_prompt || "", imageNames, seed, cfg, comp })
             : buildQwenEditPlus({ model, prompt, imageNames, seed, cfg, comp, width: ew, height: eh });
@@ -1932,7 +2034,12 @@ async function generateComfyImage(req, res) {
 
       const now = new Date();
       const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
-      if (videoType) {
+      if (stillMode) {
+        // Single-frame Wan Animate → an IMAGE result (not a video).
+        console.log(`${ts} [comfy-gen] model=${model}, mode=animate:still, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, images=${outImages.length}`);
+        if (!outImages.length) { sendJson(res, 502, { error: "ComfyUI 完成了但未产出图片。请重试。" }); return; }
+        sendJson(res, 200, { images: outImages, model, width: videoDims?.width, height: videoDims?.height, imagesUsed });
+      } else if (videoType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
         // Ran to completion but no video file came back — tell the client why rather
         // than a bare "no video" (usually SaveVideo missing or an output-collection miss).

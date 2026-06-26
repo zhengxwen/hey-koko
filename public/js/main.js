@@ -42,9 +42,14 @@ if (dom.bgJobsBtn) dom.bgJobsBtn.addEventListener("click", (e) => { e.stopPropag
   const bgClose = document.querySelector("#bgJobsCloseBtn");
   if (bgClose) bgClose.addEventListener("click", () => closeBgDrawer());
 }
-// Clicking the chat messages area — or focusing the message input — collapses the
+// Clicking the empty chat area — or focusing the message input — collapses the
 // background-jobs drawer (the user is turning their attention back to the conversation).
-dom.messagesEl.addEventListener("click", () => { if (state.bgDrawerOpen) closeBgDrawer(); });
+// Only blank space counts: e.target must be the container itself, not a bubble or a
+// button inside it (e.g. a placeholder's "go to background jobs" button, which would
+// otherwise open the drawer and have this same click immediately close it again).
+dom.messagesEl.addEventListener("click", (e) => {
+  if (state.bgDrawerOpen && e.target === dom.messagesEl) closeBgDrawer();
+});
 if (dom.messageInput) dom.messageInput.addEventListener("focus", () => { if (state.bgDrawerOpen) closeBgDrawer(); });
 
 // Initialize mermaid
