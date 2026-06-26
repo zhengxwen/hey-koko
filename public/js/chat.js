@@ -2492,11 +2492,14 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
   if (Number.isInteger(index)) {
     item.dataset.msgIndex = index;
     item.addEventListener("mousedown", (e) => {
-      if (!e.target.closest(".plainBody, .markdownBody, .editMessageInput, textarea")) {
-        item.draggable = true;
-      } else {
-        item.draggable = false;
-      }
+      // The bubble is drag-to-reorder, but pressing on its text (to select) or on
+      // its media/controls (to drag the image/video out, scrub, click a button)
+      // must NOT start a bubble drag — only a press on the bubble's own chrome does.
+      const noDrag = e.target.closest(
+        ".plainBody, .markdownBody, .editMessageInput, textarea, " +
+        "img, video, .imageWrapper, .videoWrapper, button, input, a"
+      );
+      item.draggable = !noDrag;
     });
     item.addEventListener("mouseup", () => { item.draggable = false; });
     item.addEventListener("dragstart", (e) => {
