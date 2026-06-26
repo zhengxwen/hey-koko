@@ -639,8 +639,12 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     const N = Math.max(estPasses, _passesDone + 1); // total chunks (≥ what we've seen)
     sink.indeterminate(false);
     sink.progress(_passesDone * max + value, N * max); // overall, not per-chunk
-    // Which chunk is rendering now (multi-segment only) — shown left of the ETA clock.
-    if (N > 1) sink.seg(t("msg_chunkBadge", { seg: _passesDone + 1, total: N }));
+    // Which chunk is rendering now — only for a genuinely chunked multi-segment
+    // animate render (estPasses > 1). A single-segment video whose workflow has
+    // several internal sampler passes (e.g. WAN 2.2's two-expert high+low MoE)
+    // also resets progress, but those passes are NOT user-facing segments — so
+    // gating on estPasses (not N) avoids a bogus "第 3/3 段" on a one-segment clip.
+    if (estPasses > 1) sink.seg(t("msg_chunkBadge", { seg: _passesDone + 1, total: N }));
 
     // ETA. Only show a number when it's RELIABLE: a measured per-chunk time (≥1 chunk
     // done) for multi-segment, or the step pace for a true single pass. Otherwise NA —
