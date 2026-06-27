@@ -25,9 +25,9 @@ const config = {
   JOBS_DIR: path.join(os.homedir(), "ai_archives", "jobs"),  // Option B: server-side background job queue store
   whisperModel: process.env.WHISPER_MODEL || "",
   // Local text-to-speech (/voice command). TTS_PYTHON should point at a venv
-  // python (3.10/3.11) with kokoro and/or cosyvoice installed — the system
-  // python may be too new for those ML wheels. Engines that fail to import are
-  // reported unavailable rather than breaking the daemon.
+  // python (3.10/3.11) with kokoro installed — the system python may be too
+  // new for those ML wheels. Engines that fail to import are reported
+  // unavailable rather than breaking the daemon.
   ttsPython: resolveTtsPython(),
   WHISPER_MODEL_SEARCH_PATHS: [
     path.join(os.homedir(), ".local", "share", "whisper-cpp"),

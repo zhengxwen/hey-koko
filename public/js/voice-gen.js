@@ -22,7 +22,7 @@ export function setDeps({ setGenerating, renderChat }) {
 }
 
 // Parse "/voice [--use|-u <id>] [--speed|-s <n>] <text>". --use/-u takes an
-// engine-prefixed id (e.g. kokoro:zm_yunxi or cosyvoice:中文女); omitted → the
+// engine-prefixed id (e.g. kokoro:zm_yunxi); omitted → the
 // default from settings. Returns { text, voice, rate } or { error }.
 export function parseVoiceCommand(input) {
   const match = input.match(/^\/voice\s+([\s\S]+)$/);
@@ -45,7 +45,7 @@ export function parseVoiceCommand(input) {
     }
     const name = flag[1], val = flag[2];
     if (name === "--use" || name === "-u") {
-      if (!val) return { error: "--use 需要参数，如：--use cosyvoice:中文男" };
+      if (!val) return { error: "--use 需要参数，如：--use kokoro:zm_yunxi" };
       result.voice = val;
     } else {
       if (!val) return { error: "--speed 需要参数，如：--speed 1.1" };

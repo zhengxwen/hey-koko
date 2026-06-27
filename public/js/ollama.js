@@ -163,7 +163,7 @@ export async function refreshBgWorkers() {
         multiImage: new Set(editModels.filter((m) => m.type === "qwen").map((m) => m.name)),
       };
       const online = (models.length + editModels.length + videoModels.length) > 0;
-      setBgWorkerStatus(url, { online, models: sets });
+      setBgWorkerStatus(url, { online, models: sets, hostname: d.hostname || "" });
       for (const n of models) if (!uModels.has(n)) uModels.set(n, n);
       for (const m of editModels) if (!uEdit.has(m.name)) uEdit.set(m.name, m);
       for (const m of videoModels) if (!uVideo.has(m.name)) uVideo.set(m.name, m);

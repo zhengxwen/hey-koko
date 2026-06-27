@@ -24,9 +24,6 @@ const VOICE_LABELS = {
   "kokoro:am_fenrir":   { en: "Fenrir · US Male",    zh: "Fenrir · 美式男声", "zh-Hant": "Fenrir · 美式男聲" },
   "kokoro:bf_emma":     { en: "Emma · UK Female",    zh: "Emma · 英式女声", "zh-Hant": "Emma · 英式女聲" },
   "kokoro:bm_george":   { en: "George · UK Male",    zh: "George · 英式男声", "zh-Hant": "George · 英式男聲" },
-  "cosyvoice:中文女":    { en: "Chinese · Female",   zh: "中文女",     "zh-Hant": "中文女" },
-  "cosyvoice:中文男":    { en: "Chinese · Male",     zh: "中文男",     "zh-Hant": "中文男" },
-  "cosyvoice:粤语女":    { en: "Cantonese · Female", zh: "粤语女",     "zh-Hant": "粵語女" },
 };
 
 function voiceOptionLabel(v) {
@@ -516,7 +513,7 @@ export async function speakMessage(content, button) {
 
 // One unified voice selector drives BOTH reading (朗读 button) and /voice
 // generation. Values are engine-prefixed: "say:<name>" (macOS, plays on the
-// server + reads aloud) or "kokoro:"/"cosyvoice:" (local neural, also
+// server + reads aloud) or "kokoro:" (local neural, also
 // downloadable). The chosen engine determines how each feature synthesizes.
 export function populateVoiceList() {
   Promise.all([
@@ -539,14 +536,13 @@ export function populateVoiceList() {
       dom.voiceSelect.appendChild(grp);
     }
 
-    // Neural voices, grouped by engine (kokoro / cosyvoice), with localized labels.
+    // Neural voices, grouped by engine (kokoro), with localized labels.
     const ttsVoices = ttsData.voices || [];
     const byEngine = {};
     for (const v of ttsVoices) (byEngine[v.engine] = byEngine[v.engine] || []).push(v);
     for (const engine of Object.keys(byEngine)) {
       const grp = document.createElement("optgroup");
-      grp.label = engine === "kokoro" ? t("voice_group_kokoro")
-        : engine === "cosyvoice" ? t("voice_group_cosyvoice") : engine;
+      grp.label = engine === "kokoro" ? t("voice_group_kokoro") : engine;
       for (const v of byEngine[engine]) {
         const opt = document.createElement("option");
         opt.value = v.value;

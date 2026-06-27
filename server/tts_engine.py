@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Local text-to-speech daemon for hey-koko's /voice command.
 
-Wraps two local engines, both exposing a few fixed preset voices (no cloning):
+Wraps a local engine exposing a few fixed preset voices (no cloning):
   - kokoro    : light & fast (hexgrad/Kokoro-82M), Mandarin via misaki[zh]
-  - cosyvoice : higher Chinese quality (CosyVoice-300M-SFT preset speakers)
 
 Protocol — newline-delimited JSON on stdin/stdout. Model/library logs go to
 stderr; ONLY protocol JSON is written to the real stdout (we swap sys.stdout to
@@ -84,32 +83,7 @@ def kokoro_synth(text, voice, speed):
     return np.concatenate(chunks), 24000
 
 
-# ── CosyVoice (preset SFT speakers) ─────────────────────────────────────────
-_cosy = None
-
-
-def cosyvoice_synth(text, voice, speed):
-    global _cosy
-    import numpy as np
-    if _cosy is None:
-        from cosyvoice.cli.cosyvoice import CosyVoice
-        model_dir = os.environ.get(
-            "COSYVOICE_MODEL_DIR", "pretrained_models/CosyVoice-300M-SFT"
-        )
-        _cosy = CosyVoice(model_dir, load_jit=False, load_trt=False, fp16=False)
-        log(f"cosyvoice loaded from {model_dir}")
-    parts = []
-    # inference_sft uses the model's built-in preset speakers (中文女/中文男/…).
-    for out in _cosy.inference_sft(text, voice, stream=False, speed=float(speed)):
-        sp = out["tts_speech"]
-        arr = sp.detach().cpu().numpy() if hasattr(sp, "detach") else np.asarray(sp)
-        parts.append(arr.reshape(-1))
-    if not parts:
-        raise RuntimeError("cosyvoice produced no audio")
-    return np.concatenate(parts), _cosy.sample_rate
-
-
-SYNTH = {"kokoro": kokoro_synth, "cosyvoice": cosyvoice_synth}
+SYNTH = {"kokoro": kokoro_synth}
 
 
 def probe_engines():
@@ -120,11 +94,6 @@ def probe_engines():
         available.append("kokoro")
     except Exception as e:
         log(f"kokoro unavailable: {e}")
-    try:
-        import cosyvoice  # noqa: F401
-        available.append("cosyvoice")
-    except Exception as e:
-        log(f"cosyvoice unavailable: {e}")
     return available
 
 

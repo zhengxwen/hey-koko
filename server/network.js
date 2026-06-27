@@ -19,6 +19,11 @@ async function hostnameFor(url) {
     return "";
   }
   if (!net.isIP(host)) return "";
+  // Loopback reverse-resolves to the useless "localhost" — show this machine's own
+  // FQDN instead (e.g. "icetop-desktop.hsd1.il.comcast.net"), which is what the user
+  // wants to see for a job running locally.
+  const isLoopback = host === "::1" || /^127\./.test(host);
+  if (isLoopback) return os.hostname();
   return await new Promise((resolve) => {
     let done = false;
     const finish = (val) => { if (!done) { done = true; resolve(val); } };
@@ -26,7 +31,9 @@ async function hostnameFor(url) {
     dns.lookupService(host, 0, (err, hostname) => {
       clearTimeout(timer);
       // getnameinfo echoes the IP back when no name exists — treat that as none.
-      const name = !err && hostname && hostname !== host ? hostname.replace(/\.$/, "") : "";
+      let name = !err && hostname && hostname !== host ? hostname.replace(/\.$/, "") : "";
+      // "localhost" (loopback alias) is unhelpful — prefer this machine's real FQDN.
+      if (/^localhost(\.localdomain)?$/i.test(name)) name = os.hostname();
       finish(name);
     });
   });

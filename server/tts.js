@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // Local text-to-speech for the /voice command. Drives a persistent Python
-// daemon (server/tts_engine.py) that wraps the Kokoro and CosyVoice engines —
+// daemon (server/tts_engine.py) that wraps the Kokoro engine —
 // persistent so the (slow-to-load) models stay warm between requests. The
 // daemon writes each clip to a temp wav; we base64 it for the browser, which
 // renders an <audio> + download button (mirrors the image/video generation flow).
@@ -55,7 +55,7 @@ function sayToAiff(voice, text, rate) {
   });
 }
 
-// Synthesize one chunk on a neural engine (kokoro/cosyvoice) to a wav file.
+// Synthesize one chunk on a neural engine (kokoro) to a wav file.
 // Exported for the reader (server/speech.js) to play per-sentence. Caller deletes.
 async function synthToWav({ engine, voice, text, speed }) {
   const engines = await ensureDaemon();
@@ -84,10 +84,6 @@ const VOICE_CATALOG = [
   { value: "kokoro:am_fenrir", engine: "kokoro", label: "Fenrir · US Male (Kokoro)", gender: "male" },
   { value: "kokoro:bf_emma", engine: "kokoro", label: "Emma · UK Female (Kokoro)", gender: "female" },
   { value: "kokoro:bm_george", engine: "kokoro", label: "George · UK Male (Kokoro)", gender: "male" },
-  // CosyVoice (higher Chinese quality) — built-in SFT speakers
-  { value: "cosyvoice:中文女", engine: "cosyvoice", label: "中文女 (CosyVoice)", gender: "female" },
-  { value: "cosyvoice:中文男", engine: "cosyvoice", label: "中文男 (CosyVoice)", gender: "male" },
-  { value: "cosyvoice:粤语女", engine: "cosyvoice", label: "粤语女 (CosyVoice)", gender: "female" },
 ];
 
 let daemon = null;           // the spawned python process, or null
@@ -207,7 +203,7 @@ async function listTtsVoices(res) {
 // POST /api/tts { text, voice, rate } → { audio: base64, mime }. Output is AAC
 // (ffmpeg) regardless of engine; falls back to the raw wav/aiff if ffmpeg is
 // missing. Routes by the voice's engine prefix: "say:" → macOS say, otherwise
-// the neural daemon (kokoro/cosyvoice).
+// the neural daemon (kokoro).
 async function synthesize(req, res) {
   let srcPath, aacPath;
   try {

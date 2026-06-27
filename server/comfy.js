@@ -9,6 +9,7 @@ const fsp = require("fs/promises");
 const { AsyncLocalStorage } = require("async_hooks");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
+const { hostnameFor } = require("./network");
 
 // Per-request ComfyUI endpoint. Background jobs can target DIFFERENT machines in
 // parallel, so the target URL must not be a shared mutable global (concurrent
@@ -159,10 +160,12 @@ async function proxyComfyModels(req, res) {
   try {
     // ?comfyUrl=host:port scans a SPECIFIC endpoint (per-worker model list); default global.
     const q = new URL(req.url, "http://x").searchParams.get("comfyUrl");
-    comfyCtx.enterWith({ comfyUrl: normComfyUrl(q) || config.comfyUrl });
-    const [ckpts, unets] = await Promise.all([
+    const scanUrl = normComfyUrl(q) || config.comfyUrl;
+    comfyCtx.enterWith({ comfyUrl: scanUrl });
+    const [ckpts, unets, hostname] = await Promise.all([
       comfyEnum("CheckpointLoaderSimple", "ckpt_name"),
       comfyEnum("UNETLoader", "unet_name"),
+      hostnameFor(scanUrl).catch(() => ""),
     ]);
     // Edit/video models can be either diffusion models (UNETLoader) or full
     // checkpoints (instruct-pix2pix, ltx). Plain checkpoints stay in `models`.
@@ -218,7 +221,7 @@ async function proxyComfyModels(req, res) {
     // boogu_image_edit is an instruction-edit model → excluded here (it's picked
     // up by editTypeOf into editModels instead).
     const boogu = all.filter((n) => /boogu/i.test(n) && !editTypeOf(n));
-    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...zimage, ...boogu], editModels, videoModels });
+    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...zimage, ...boogu], editModels, videoModels, hostname });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [] });
   }

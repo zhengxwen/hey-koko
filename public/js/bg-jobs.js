@@ -200,11 +200,12 @@ export function setBgWorkerEnabled(id, on) {
   if (w) { w.enabled = !!on; persistWorkers(); renderDrawer(); }
 }
 // Called by the health/scan code with a freshly-scanned model set + online flag.
-export function setBgWorkerStatus(url, { online, models }) {
+export function setBgWorkerStatus(url, { online, models, hostname }) {
   const w = state.bgWorkers.find((x) => x.url === url);
   if (!w) return;
   if (online !== undefined) w.online = online;
   if (models !== undefined) w.models = models;
+  if (hostname !== undefined && hostname !== w.hostname) { w.hostname = hostname; persistWorkers(); }
   renderDrawer();
 }
 
@@ -273,7 +274,9 @@ async function pumpLane(workerId) {
       job.status = 'running';
       job.progress = null;
       job.seg = null;
-      job.startedAt = Date.now();   // for the live elapsed-time display
+      // Keep the original start time across a reload (a reconnected server job was
+      // already running) so the elapsed clock continues instead of resetting to 0.
+      if (!job.startedAt) job.startedAt = Date.now();   // for the live elapsed-time display
       persist();
       refreshPlaceholders();
       startElapsedTicker();
@@ -558,6 +561,7 @@ export function retryBgJob(jobId) {
   job.status = 'queued';
   job.error = '';
   job.progress = null;
+  job.startedAt = null;   // fresh elapsed clock — this is a brand-new run, not a resume
   assignWorker(job);   // re-route on retry — may land on a different online machine (failover)
   persist();
   refreshPlaceholders();
@@ -792,6 +796,23 @@ function buildWorkersBar() {
   return bar;
 }
 
+// Human-readable address of the machine actually running this job — "host:port (hostname)"
+// for a ComfyUI worker, or the configured local backend for the 'local' lane. Used to
+// append the real execution host to the jump tooltip while a job is running.
+function jobMachine(job) {
+  if (job.workerUrl) {
+    const w = state.bgWorkers.find((x) => x.url === job.workerUrl);
+    return job.workerUrl + (w && w.hostname ? ` (${w.hostname})` : '');
+  }
+  // 'local' lane (Ollama image / local ComfyUI / TTS): the comfy display already
+  // carries the " (hostname)" suffix the server resolved.
+  if (job.kind === 'image' || job.kind === 'video') {
+    const d = (dom.comfyUrlDisplay?.textContent || '').trim();
+    if (d) return d;
+  }
+  return t('bg_machineLocal');
+}
+
 function laneLabel(wid) {
   if (wid === 'local') return t('bg_laneLocal');
   const w = state.bgWorkers.find((x) => x.id === wid);
@@ -863,7 +884,10 @@ function buildJobRow(job) {
     const main = document.createElement('button');
     main.type = 'button';
     main.className = 'bgJobMain';
-    main.title = t('bg_jumpTitle');
+    // While running, show WHICH machine is actually executing it (incl. hostname).
+    main.title = job.status === 'running'
+      ? `${t('bg_jumpTitle')} · ${jobMachine(job)}`
+      : t('bg_jumpTitle');
     main.addEventListener('click', () => jumpToJob(job.id));
     const icon = `<span class="bgJobIcon">${KIND_ICON[job.kind] || '⚙'}</span>`;
     const label = `<span class="bgJobLabel">${escapeText(job.label || job.kind)}</span>`;

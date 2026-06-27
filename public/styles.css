@@ -1646,6 +1646,7 @@ button.secondary:disabled {
 .message.isFolded > .messageImage,
 .message.isFolded > .messageImageWrapper,
 .message.isFolded > .messageImages,
+.message.isFolded > .thinking-details,
 .message.isFolded > .messageTimestamp,
 .message.isFolded > .messageLockToggle,
 .message.isFolded > .messageActions {
@@ -1670,6 +1671,7 @@ button.secondary:disabled {
 
 .message-row:has(.message-row-left.isFolded) .message-row-right > .markdownBody,
 .message-row:has(.message-row-left.isFolded) .message-row-right > .plainBody,
+.message-row:has(.message-row-left.isFolded) .message-row-right > .thinking-details,
 .message-row:has(.message-row-left.isFolded) .message-row-right > .messageTimestamp,
 .message-row:has(.message-row-left.isFolded) .message-row-right > .messageActions {
   display: none;
@@ -1976,6 +1978,15 @@ button.secondary:disabled {
 .deleteMessage {
   width: 24px;
   font-size: 16px;
+}
+
+/* The bubble × (normal messages + the in-chat bg-job placeholder, which reuse this
+   class) has its × glyph nudged up 1px inside the button so it reads visually centred
+   (the × character sits slightly low in its line box). padding-bottom on a
+   grid/place-items:center button shifts the centred glyph up by half the padding.
+   Excludes the drawer's corner × (.bgJobCancel), which is pinned separately. */
+.deleteMessage:not(.bgJobCancel) {
+  padding-bottom: 2px;
 }
 
 .message:hover .messageActions,
@@ -4427,6 +4438,8 @@ button.secondary:disabled {
   border: 1px dashed var(--surface-hover);
   background: var(--accent-subtle);
 }
+/* Only the placeholder bubble's × sits 8px higher (not the normal message ×). */
+.message.bgPlaceholder .deleteMessage { transform: translateY(-8px); }
 .message.bgPlaceholder .bgPhIcon { margin-right: 6px; }
 .message.bgPlaceholder .bgPhLabel { font-weight: 600; margin-right: 8px; }
 .message.bgPlaceholder .bgPhModel { font-size: 11px; color: var(--muted); margin-right: 8px; word-break: break-all; }

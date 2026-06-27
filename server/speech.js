@@ -43,7 +43,7 @@ function playFile(p) {
 // POST /api/speak — read a message aloud on the server, sentence by sentence,
 // streaming NDJSON {index,speaking|done} so the client can highlight along.
 // Routes by the selected voice's engine prefix: "say:"/none → macOS say (plays
-// directly); "kokoro:"/"cosyvoice:" → synthesize each sentence then afplay it.
+// directly); "kokoro:" → synthesize each sentence then afplay it.
 async function speak(req, res) {
   try {
     const body = await readBody(req);
