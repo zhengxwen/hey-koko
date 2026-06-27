@@ -85,19 +85,27 @@ export function bgQueueActive() {
   return state.bgJobs.some((j) => j.status === 'queued' || j.status === 'running');
 }
 
+// Active IN-PAGE jobs (analysis: analyze/docfull/url — they splice output at a captured
+// cursor, so a concurrent resend/edit would shift positions and corrupt them). Server-side
+// GENERATION jobs (serverJobId set) are detached + reattach by msgId, so they DON'T block
+// resend/edit — that's the whole point of running them in the background.
+export function bgInPageActive() {
+  return state.bgJobs.some((j) => !j.serverJobId && (j.status === 'queued' || j.status === 'running'));
+}
+
 // Active (queued/running) jobs belonging to a conversation — used by archive/delete
 // to warn + cancel before the conversation goes away (covers both in-page analysis
 // jobs and server-side gen jobs, which are all entries in state.bgJobs).
 export function tabActiveJobCount(tabId) {
-  return state.bgJobs.filter((j) => j.tabId === tabId && (j.status === 'queued' || j.status === 'running')).length;
+  return state.bgJobs.filter((j) => j.tabId === tabId && (j.status === 'queued' || j.status === 'running' || j.status === 'paused')).length;
 }
 export function cancelTabJobs(tabId) {
-  for (const j of state.bgJobs.filter((j) => j.tabId === tabId && (j.status === 'queued' || j.status === 'running'))) cancelBgJob(j.id);
+  for (const j of state.bgJobs.filter((j) => j.tabId === tabId && (j.status === 'queued' || j.status === 'running' || j.status === 'paused'))) cancelBgJob(j.id);
   cancelConversationServerJobs(tabId);   // server-side belt-and-suspenders
 }
 
 function unfinishedCount() {
-  return state.bgJobs.filter((j) => j.status === 'queued' || j.status === 'running').length;
+  return state.bgJobs.filter((j) => j.status === 'queued' || j.status === 'running' || j.status === 'paused').length;
 }
 
 // Locate a message by its stable id across all tabs.
@@ -556,6 +564,17 @@ export function retryBgJob(jobId) {
   pumpQueue();
 }
 
+// Pause a not-yet-started job so the runner skips it (status 'paused' ≠ 'queued').
+export function pauseBgJob(jobId) {
+  const job = state.bgJobs.find((j) => j.id === jobId);
+  if (job && job.status === 'queued') { job.status = 'paused'; persist(); refreshPlaceholders(); }
+}
+// Resume a paused job → back into the queue (and kick the runner).
+export function resumeBgJob(jobId) {
+  const job = state.bgJobs.find((j) => j.id === jobId);
+  if (job && job.status === 'paused') { job.status = 'queued'; persist(); refreshPlaceholders(); pumpQueue(); }
+}
+
 // ---- navigation ------------------------------------------------------------
 
 // Jump to a job's bubble: switch to its tab and scroll the placeholder into view.
@@ -655,6 +674,7 @@ function statusText(job) {
       const el = runningElapsed(job);
       return el ? `${head} · ${el}` : head;                    // … · 1:23
     }
+    case 'paused': return t('bg_statusPaused');
     case 'done': return t('bg_statusDone');
     case 'error': return t('bg_statusError');
     case 'canceled': return t('bg_statusCanceled');
@@ -874,6 +894,20 @@ function buildJobRow(job) {
       actions.appendChild(retry);
       row.appendChild(actions);
     }
+    // Not-yet-started job: pause (⏸) it so the runner skips it, or resume (▶) a paused one.
+    if (job.status === 'queued' || job.status === 'paused') {
+      const actions = document.createElement('div');
+      actions.className = 'bgJobActions';
+      const paused = job.status === 'paused';
+      const pr = document.createElement('button');
+      pr.type = 'button';
+      pr.className = 'bgJobRetry bgJobPauseToggle';
+      pr.textContent = paused ? '▶' : '⏸';
+      pr.title = paused ? t('bg_resume') : t('bg_pause');
+      pr.addEventListener('click', (e) => { e.stopPropagation(); paused ? resumeBgJob(job.id) : pauseBgJob(job.id); });
+      actions.appendChild(pr);
+      row.appendChild(actions);
+    }
     // Close (×) — same look as a chat bubble's delete button (.messageAction
     // .deleteMessage); .bgJobCancel only pins it to the row's top-right corner.
     const del = document.createElement('button');
@@ -912,6 +946,27 @@ export async function restoreBgJobsOnLoad() {
   }
   state.bgJobs = jobs;
   persist();
+  // Drop ORPHAN placeholder bubbles — a bgPlaceholder message whose job is gone (it
+  // finished/was canceled before the page died, or is stale data). Otherwise it sticks
+  // as a frozen placeholder. (A pre-fix placeholder that lost its bgPlaceholder flag is
+  // now an indistinguishable empty bubble — the user removes those with the × manually.)
+  const jobMsgIds = new Set(jobs.map((j) => j.msgId));
+  const isEmptyJunk = (m) => !m.bgPlaceholder && m.role === 'assistant' && (!m.content || !m.content.trim())
+    && !m.generatedImages && !m.generatedVideos && !m.generatedAudio && !m.generatedThumbnails
+    && !m.generatedVideoThumbnails && !m.images && !m.thinking && !m.toolSteps
+    && !m.isFilePreview && !m.isCompactSummary && !m.translation;
+  let removed = false;
+  for (const tab of state.tabs) {
+    if (!Array.isArray(tab.messages)) continue;
+    for (let i = tab.messages.length - 1; i >= 0; i--) {
+      const m = tab.messages[i];
+      if (!m) continue;
+      // Orphan placeholder (job gone), or a pre-fix corrupted placeholder that lost its
+      // flag and is now just an empty content-less bubble → remove (it shows nothing).
+      if ((m.bgPlaceholder && !jobMsgIds.has(m.id)) || isEmptyJunk(m)) { tab.messages.splice(i, 1); removed = true; }
+    }
+  }
+  if (removed) saveChat();
   // Re-sync placeholders to their restored status + render chat/drawer.
   refreshPlaceholders();
   pumpQueue();

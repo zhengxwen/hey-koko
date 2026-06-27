@@ -15,6 +15,7 @@
 // Ollama image). Serial within a lane (GPU safety), parallel across.
 
 const crypto = require("crypto");
+const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
@@ -98,12 +99,10 @@ async function pumpLane(laneId) {
 async function runJob(job) {
   const ctrl = new AbortController();
   controllers.set(job.id, ctrl);
-  const base = `http://127.0.0.1:${config.PORT}`;
-  const opt = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
 
   if (job.kind === "audio") {
-    const r = await fetch(`${base}/api/tts`, opt(job.payload));
-    const d = await r.json().catch(() => ({}));
+    const r = await loopbackPost("/api/tts", job.payload, ctrl.signal);
+    let d = {}; try { d = JSON.parse(r.text); } catch {}
     if (!r.ok || !d.audio) throw new Error(d.error || "tts failed");
     return { audio: d.audio, mime: d.mime || "audio/wav" };
   }
@@ -112,11 +111,10 @@ async function runJob(job) {
   if (job.comfyUrl) body.comfyUrl = job.comfyUrl;
 
   if (job.engine === "ollama") {                 // /api/generate-image → NDJSON stream
-    const r = await fetch(`${base}/api/generate-image`, opt(body));
-    if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || `gen failed (${r.status})`); }
-    const text = await r.text();
+    const r = await loopbackPost("/api/generate-image", body, ctrl.signal);
+    if (!r.ok) { let d = {}; try { d = JSON.parse(r.text); } catch {} throw new Error(d.error || `gen failed (${r.status})`); }
     let out = null;
-    for (const line of text.split("\n")) {
+    for (const line of r.text.split("\n")) {
       if (!line.trim()) continue;
       let o; try { o = JSON.parse(line); } catch { continue; }
       if (o.type === "done") out = o; else if (o.error) throw new Error(o.error);
@@ -125,11 +123,37 @@ async function runJob(job) {
     return { images: out.images, model: out.model };
   }
 
-  const r = await fetch(`${base}/api/generate-comfy`, opt(body));   // self-contained JSON result
-  const d = await r.json().catch(() => ({}));
+  const r = await loopbackPost("/api/generate-comfy", body, ctrl.signal);   // self-contained JSON result
+  let d = {}; try { d = JSON.parse(r.text); } catch {}
   if (!r.ok) throw new Error(d.error || `gen failed (${r.status})`);
   return d;   // { images|videos, videoMime, width, height, fps, length, model, segments, ... }
 }
+
+// Loopback POST to our OWN server using Node's http (NOT global fetch): a video gen
+// can hold the response for many minutes, which exceeds undici/fetch's default
+// ~5-minute headersTimeout and surfaces as "fetch failed". http.request has no such
+// idle timeout, so the runner waits as long as the generation takes.
+function loopbackPost(path, bodyObj, signal) {
+  return new Promise((resolve, reject) => {
+    const payload = Buffer.from(JSON.stringify(bodyObj));
+    const req = http.request({
+      host: "127.0.0.1", port: config.PORT, path, method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": payload.length },
+    }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, text: Buffer.concat(chunks).toString("utf-8") }));
+    });
+    req.on("error", reject);
+    req.setTimeout(0);   // no idle timeout — long video renders are fine
+    if (signal) {
+      if (signal.aborted) { req.destroy(abortErr()); return; }
+      signal.addEventListener("abort", () => { try { req.destroy(abortErr()); } catch {} }, { once: true });
+    }
+    req.end(payload);
+  });
+}
+function abortErr() { const e = new Error("Aborted"); e.name = "AbortError"; return e; }
 
 // ---- cancel / remove --------------------------------------------------------
 function removeJob(job) { const i = jobs.indexOf(job); if (i >= 0) jobs.splice(i, 1); }

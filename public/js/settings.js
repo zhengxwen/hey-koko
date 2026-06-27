@@ -97,6 +97,17 @@ function saveChatMessage(message) {
   if (message.translation) stored.translation = message.translation;
   if (message.thinking) stored.thinking = message.thinking;
   if (message.toolSteps && message.toolSteps.length) stored.toolSteps = message.toolSteps;
+  // A background-job placeholder must survive a reload as a placeholder (not a blank
+  // bubble): persist its id (the job's reattach anchor) + the placeholder fields so
+  // restoreBgJobsOnLoad can re-link the job and renderChat re-renders the placeholder.
+  if (message.bgPlaceholder) {
+    stored.bgPlaceholder = true;
+    if (message.id) stored.id = message.id;
+    if (message.jobId) stored.jobId = message.jobId;
+    if (message.kind) stored.kind = message.kind;
+    if (message.label) stored.label = message.label;
+    if (message.status) stored.status = message.status;
+  }
   return stored;
 }
 

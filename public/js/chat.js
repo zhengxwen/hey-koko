@@ -15,7 +15,7 @@ import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
 import { buildPendingGenBubble } from './pending-gen.js';
-import { enqueueBgJob, bgQueueActive, cancelBgJob, retryBgJob, openBgDrawer } from './bg-jobs.js';
+import { enqueueBgJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
 import { t, getPrompt, getPromptLanguage } from './i18n.js';
 import { getNumCtx, recordContextUsage, renderContextMeter } from './context-meter.js';
 import { addMemory, getMemoryPromptBlock } from './memory.js';
@@ -171,11 +171,30 @@ function enqueueAnalyzeJob(parsed, tabId, image, video, anchorIndex, insertIndex
   });
 }
 
-// Resend / edit-in-place must not run while the background queue is non-empty —
-// generation stays strictly serial. Pops a DIALOG and returns true if blocked (the
-// caller restores any edited text). The queue is the place to add new work, not here.
-function bgBlockResend() {
-  if (!bgQueueActive()) return false;
+// Does THIS user bubble's reply region currently hold a running in-page job? An
+// in-page analysis job (analyze/url/docfull) splices its output at a captured cursor,
+// so re-running the SAME bubble while its job runs would corrupt/duplicate it. Other
+// bubbles (no active job of their own) — and any server-side gen job (detached,
+// reattach by msgId) — do NOT block. The region runs from index+1 to the next real
+// user turn (urlPart user bubbles belong to the block).
+function bubbleHasActiveInPageJob(tab, index) {
+  if (!tab) return false;
+  for (let i = index + 1; i < tab.messages.length; i++) {
+    const m = tab.messages[i];
+    if (!m) continue;
+    if (m.role === "user" && !m.urlPart) break;
+    if (m.bgPlaceholder && m.jobId) {
+      const job = state.bgJobs.find((j) => j.id === m.jobId);
+      if (job && !job.serverJobId && (job.status === "queued" || job.status === "running")) return true;
+    }
+  }
+  return false;
+}
+
+// Pops a DIALOG and returns true if resending/editing THIS bubble is blocked (its own
+// in-page job is still running). The caller restores any edited text.
+function bgBlockResend(index) {
+  if (!bubbleHasActiveInPageJob(getActiveTab(), index)) return false;
   alert(t('bg_queueBusyAlert'));
   return true;
 }
@@ -192,6 +211,7 @@ function renderBgPlaceholder(message) {
   let statusTxt;
   switch (message.status) {
     case 'running': statusTxt = [message.seg, message.elapsed].filter(Boolean).join(' · '); break;   // "第 N/M 段 · 1:23"
+    case 'paused': statusTxt = t('bg_statusPaused'); break;
     case 'done': statusTxt = t('bg_statusDone'); break;
     case 'error': statusTxt = t('bg_statusError'); break;
     case 'interrupted': statusTxt = t('bg_statusInterrupted'); break;
@@ -235,6 +255,14 @@ function renderBgPlaceholder(message) {
     retry.textContent = t('bg_retry');
     retry.addEventListener('click', () => retryBgJob(message.jobId));
     actions.appendChild(retry);
+  }
+  if (message.status === 'paused') {
+    const resume = document.createElement('button');
+    resume.type = 'button';
+    resume.className = 'bgPhRetry';
+    resume.textContent = t('bg_resume');
+    resume.addEventListener('click', () => resumeBgJob(message.jobId));
+    actions.appendChild(resume);
   }
   body.appendChild(actions);
   el.appendChild(body);
@@ -333,8 +361,8 @@ function deleteMessageVideo(msgIndex, vidIndex) {
 
 function resendChatMessage(index) {
   if (state.currentAbortController || state.imageGenAbortController) return;
-  // In-place regeneration collides with queued placeholders — block while busy.
-  if (bgBlockResend()) return;
+  // Block only if THIS bubble's own in-page job is still running (would clobber it).
+  if (bgBlockResend(index)) return;
   const tab = getActiveTab();
   if (tab.locked) return;
   const message = tab.messages[index];
@@ -344,8 +372,9 @@ function resendChatMessage(index) {
   // double-click edit, which delegates here) doesn't jump the view to the bottom.
   state.scrollPin = dom.messagesEl.scrollTop;
 
-  // A locked reply is kept; the new reply is inserted before it (at index+1).
-  if (tab.messages[index + 1]?.role === "assistant" && !tab.messages[index + 1].locked) {
+  // A locked reply is kept; the new reply is inserted before it (at index+1). A bg
+  // placeholder (a running job's bubble) is NOT removed — that would orphan the job.
+  if (tab.messages[index + 1]?.role === "assistant" && !tab.messages[index + 1].locked && !tab.messages[index + 1].bgPlaceholder) {
     tab.messages.splice(index + 1, 1);
   }
   saveChat();
@@ -357,7 +386,7 @@ function resendChatMessage(index) {
     // The sources bubble (index+1) was already removed above; drop the answer too.
     // Keep the /search command bubble in place and regenerate right after it, with
     // context truncated to this bubble (contextEndIndex=index). Locked replies stay.
-    if (tab.messages[index + 1]?.role === "assistant" && !tab.messages[index + 1].locked) tab.messages.splice(index + 1, 1);
+    if (tab.messages[index + 1]?.role === "assistant" && !tab.messages[index + 1].locked && !tab.messages[index + 1].bgPlaceholder) tab.messages.splice(index + 1, 1);
     saveChat();
     renderChat();
     handleSearchCommand(searchResend[1].trim(), tab, state.activeTabId, message.content, index + 1, index);
@@ -2699,10 +2728,11 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
         function finishEdit(save, triggerSend = true) {
           const newContent = input.value.trim();
           // Editing a user bubble re-runs it (a generation edit re-queues; text
-          // edits regenerate in place). While the queue is non-empty, refuse with a
-          // dialog and restore the original text (revert this edit) instead.
+          // edits regenerate in place). Only an in-page analysis job blocks this (it
+          // splices in place) — server-side gen jobs are detached and don't. Refuse
+          // with a dialog + restore the original text (revert this edit) instead.
           if (save && triggerSend && role === "user" && newContent && newContent !== original
-              && !/^\/(memory|remind)(\s|$)/.test(newContent) && bgQueueActive()) {
+              && !/^\/(memory|remind)(\s|$)/.test(newContent) && bubbleHasActiveInPageJob(getActiveTab(), index)) {
             alert(t('bg_queueBusyAlert'));
             input.replaceWith(text);
             return;
