@@ -438,13 +438,22 @@ async function runUrl(job, sink) {
 // Background sink: same shape as foregroundSink, but writes to the job record +
 // placeholder + drawer instead of the live state.pendingGen bubble.
 function makeBgSink(job, controller) {
+  // STABLE ComfyUI progress clientId for this job: the server queues the ComfyUI
+  // prompt under it, so reusing it on a post-reload reconnect lets the browser
+  // re-subscribe to the SAME WS stream → live progress resumes (a fresh id would
+  // miss the running prompt's broadcasts and sit at 0% until completion). Generated
+  // once + persisted; cleared on retry (that's a brand-new server run).
+  if (!job.comfyClientId) {
+    job.comfyClientId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `hk-${job.id}`;
+    persist();
+  }
   return {
     background: true,
     signal: controller.signal,
     tabId: job.tabId,
     // Option B: identifies this job to the server queue so generation runs server-side
     // (image/video/audio). Generators submit via comfyFetch/ttsFetch when this is set.
-    server: { bgJob: job, conversationId: job.tabId, msgId: job.msgId, label: job.label, comfyUrl: job.workerUrl || '' },
+    server: { bgJob: job, conversationId: job.tabId, msgId: job.msgId, label: job.label, comfyUrl: job.workerUrl || '', comfyClientId: job.comfyClientId },
     lock() {},                 // never lock the send button for a background run
     started() { return true; }, // placeholder already exists
     start(kind, label) { if (label) job.label = label; refreshPlaceholders(); },
@@ -560,6 +569,7 @@ export function retryBgJob(jobId) {
   job.status = 'queued';
   job.error = '';
   job.progress = null;
+  job.comfyClientId = null; // brand-new server run → fresh ComfyUI progress stream
   job.startedAt = null;   // fresh elapsed clock — this is a brand-new run, not a resume
   assignWorker(job);   // re-route on retry — may land on a different online machine (failover)
   persist();
@@ -1006,8 +1016,12 @@ export async function restoreBgJobsOnLoad() {
     // the page was gone → requeue so it re-runs + RECONNECTS by serverJobId (the SSE
     // snapshot delivers the result). In-page jobs (no serverJobId) can't resume → interrupted.
     if (j.status === 'running') {
-      if (j.serverJobId) { j.status = 'queued'; j.progress = null; j.seg = null; }
-      else { j.status = 'interrupted'; j.progress = null; }
+      // Keep the persisted progress/seg on a resumable server job so it shows the
+      // last-known % (e.g. "运行中 47%") right away, then live updates resume once the
+      // re-run re-subscribes to ComfyUI with the job's stable comfyClientId — instead
+      // of snapping back to 0%. In-page jobs can't resume → interrupted (clear progress).
+      if (j.serverJobId) { j.status = 'queued'; }
+      else { j.status = 'interrupted'; j.progress = null; j.seg = null; }
     }
   }
   state.bgJobs = jobs;

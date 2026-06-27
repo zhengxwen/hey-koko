@@ -642,7 +642,10 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // Live progress bar + preview frames via ComfyUI's WebSocket. The browser owns
   // the clientId and hands it to the server so both subscribe to the same stream.
   // Both feed the pending bubble through state so they survive a tab switch.
-  const clientId = crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`;
+  // For a background job, reuse its STABLE clientId so a post-reload reconnect
+  // re-subscribes to the SAME running prompt's progress (else it resets to 0%).
+  const clientId = (sink.server && sink.server.comfyClientId)
+    || (crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`);
   // Stop button → abort: also tell ComfyUI to interrupt the running render.
   abortController.signal.addEventListener("abort", () => interruptComfy(comfyHost), { once: true });
   // OVERALL progress + ETA. A chained render emits a fresh 0→max KSampler progress per
@@ -1010,7 +1013,10 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   let comfyClientId = null, imgUnsub = () => {};
   const setProgress = (value, max) => sink.progress(value, max);
   if (useComfy) {
-    comfyClientId = crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`;
+    // Reuse a background job's stable clientId so a post-reload reconnect resumes
+    // live progress on the SAME running prompt (else the bar snaps to 0%).
+    comfyClientId = (sink.server && sink.server.comfyClientId)
+      || (crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`);
     imgUnsub = subscribeComfyProgress(comfyHost, comfyClientId, {
       onProgress: setProgress,
       onPreview: (url) => sink.preview(url),
