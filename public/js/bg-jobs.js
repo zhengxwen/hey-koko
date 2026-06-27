@@ -904,8 +904,10 @@ function buildJobRow(job) {
       preview = `<img class="bgJobPreview" src="${job.preview}" alt="preview">`;
     }
     main.innerHTML = `<div class="bgJobTop">${icon}${label}</div>${status}${bar}${preview}`;
-    row.appendChild(main);
 
+    // Control buttons (retry / pause / resume) go on the LEFT — right after the drag
+    // handle — so they never sit under the × (which is pinned to the top-right corner
+    // and would otherwise overlap a right-aligned button).
     if (job.status === 'error' || job.status === 'interrupted') {
       const actions = document.createElement('div');
       actions.className = 'bgJobActions';
@@ -932,6 +934,7 @@ function buildJobRow(job) {
       actions.appendChild(pr);
       row.appendChild(actions);
     }
+    row.appendChild(main);   // label fills the middle; the × (below) overlays only its tail end
     // Close (×) — same look as a chat bubble's delete button (.messageAction
     // .deleteMessage); .bgJobCancel only pins it to the row's top-right corner.
     const del = document.createElement('button');

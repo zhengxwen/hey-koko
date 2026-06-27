@@ -4438,8 +4438,6 @@ button.secondary:disabled {
   border: 1px dashed var(--surface-hover);
   background: var(--accent-subtle);
 }
-/* Only the placeholder bubble's × sits 8px higher (not the normal message ×). */
-.message.bgPlaceholder .deleteMessage { transform: translateY(-8px); }
 .message.bgPlaceholder .bgPhIcon { margin-right: 6px; }
 .message.bgPlaceholder .bgPhLabel { font-weight: 600; margin-right: 8px; }
 .message.bgPlaceholder .bgPhModel { font-size: 11px; color: var(--muted); margin-right: 8px; word-break: break-all; }

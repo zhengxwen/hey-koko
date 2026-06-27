@@ -79,7 +79,7 @@ function animateSegmentCap(pixelBudget, torchCompile = false) {
   // (mirrors public/js/image-gen.js).
   const tiers = torchCompile
     ? [[520000, 121], [1000000, 65], [2100000, 33]]
-    : [[520000, 241], [1000000, 161], [2100000, 65]]; // 720p 161f tuned to ~22.5GB measured headroom
+    : [[520000, 241], [1000000, 161], [2100000, 81]]; // 720p 161f (well-tested); 1080p 81f ≈ half of 720p's cap (1080p has ~2.25× the pixels) — conservative vs the 65f→22.9GB measurement
   for (const [lim, cap] of tiers) if (pixelBudget <= lim) return cap;
   return torchCompile ? 17 : 33;
 }

@@ -484,11 +484,12 @@ function animateSegmentCap(pixelBudget, torchCompile = false) {
   // torch.compile (inductor) adds VRAM overhead (autotuning scratch + compiled
   // buffers) → at 720p+ on 32GB it can OOM. When it's on, use one tier shorter
   // segments to free headroom (more segments also amortizes the compile better).
-  // 720p (1M) compile-off tuned from a real measurement: 121f used ~22.5/31.5GB on
-  // the 5090, so 161f (~+33%) still leaves headroom under a ~28GB ceiling.
+  // Compile-off caps from real 5090 measurements: 720p 161f is well-tested. 1080p
+  // (~2.25× the pixels of 720p) is set to 81f ≈ half the 720p cap — a conservative
+  // scaling that sits under the 65f→22.9GB measured point's headroom.
   const tiers = torchCompile
     ? [[520000, 121], [1000000, 65], [2100000, 33]]    // compile on — conservative (extra VRAM)
-    : [[520000, 241], [1000000, 161], [2100000, 65]];  // compile off
+    : [[520000, 241], [1000000, 161], [2100000, 81]];  // compile off
   for (const [lim, cap] of tiers) if (pixelBudget <= lim) return cap;
   return torchCompile ? 17 : 33;           // beyond 1080p
 }
