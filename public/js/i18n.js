@@ -209,6 +209,8 @@ const UI = {
     msg_imageDone: "🎨 Image generated (${w}×${h})",
     msg_imageDoneBatch: "🎨 Generated ${done}/${total} images (${w}×${h})",
     msg_videoDone: "🎬 Video generated (${w}×${h}${dur})",
+    msg_seedUsed: "🎲 seed ${seed} (reproduce with --seed ${seed})",
+    msg_seedsBatch: "🎲 seeds (in order): ${list}",
     msg_generatingAudio: "Generating audio",
     msg_audioDone: "🔊 Audio generated (${size})",
     // Background jobs
@@ -546,6 +548,8 @@ const UI = {
     msg_imageDone: "🎨 图片已生成（${w}×${h}）",
     msg_imageDoneBatch: "🎨 已生成 ${done}/${total} 张图片（${w}×${h}）",
     msg_videoDone: "🎬 视频已生成（${w}×${h}${dur}）",
+    msg_seedUsed: "🎲 种子 ${seed}（下次复现：--seed ${seed}）",
+    msg_seedsBatch: "🎲 各图种子（按显示顺序）：${list}",
     msg_generatingAudio: "正在生成语音",
     msg_audioDone: "🔊 语音已生成（${size}）",
     // 后台任务
@@ -882,6 +886,8 @@ const UI = {
     msg_imageDone: "🎨 圖片已生成（${w}×${h}）",
     msg_imageDoneBatch: "🎨 已生成 ${done}/${total} 張圖片（${w}×${h}）",
     msg_videoDone: "🎬 影片已生成（${w}×${h}${dur}）",
+    msg_seedUsed: "🎲 種子 ${seed}（下次重現：--seed ${seed}）",
+    msg_seedsBatch: "🎲 各圖種子（按顯示順序）：${list}",
     msg_generatingAudio: "正在生成語音",
     msg_audioDone: "🔊 語音已生成（${size}）",
     // 後台任務

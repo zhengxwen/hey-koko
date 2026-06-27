@@ -2145,7 +2145,7 @@ async function generateComfyImage(req, res) {
         // Single-frame Wan Animate → an IMAGE result (not a video).
         console.log(`${ts} [comfy-gen] model=${model}, mode=animate:still, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, images=${outImages.length}`);
         if (!outImages.length) { sendJson(res, 502, { error: "ComfyUI 完成了但未产出图片。请重试。" }); return; }
-        sendJson(res, 200, { images: outImages, model, width: videoDims?.width, height: videoDims?.height, imagesUsed });
+        sendJson(res, 200, { images: outImages, model, seed, width: videoDims?.width, height: videoDims?.height, imagesUsed });
       } else if (videoType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
         // Ran to completion but no video file came back — tell the client why rather
@@ -2155,11 +2155,11 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI 完成了但未产出视频文件（输出节点：${nodeIds}）。请确认工作流包含 SaveVideo 节点，或重试。` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);
-        sendJson(res, 200, { images: outImages, model });
+        sendJson(res, 200, { images: outImages, model, seed });
       }
     } finally {
       clearTimeout(timeout);

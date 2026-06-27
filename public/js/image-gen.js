@@ -709,6 +709,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   const count = Math.min(Math.max(parsed.count || 1, 1), 8);
   const allVideos = [];
   const allThumbs = [];
+  const videoSeeds = []; // per-video seed (aligned with allVideos) → reproduce any one
   let lastData = null;
   let replyMsg = null; // the single message holding the videos finished so far
 
@@ -726,8 +727,16 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       dur = `, ${Number.isInteger(r) ? r : r.toFixed(1)}s`;
     }
     const sizeLine = t("msg_videoDone", { w: lastData.width || "?", h: lastData.height || "?", dur }, plang);
-    const doneLine = (count > 1 ? `${sizeLine} ×${allVideos.length}${allVideos.length < count ? `/${count}` : ""}` : sizeLine)
+    let doneLine = (count > 1 ? `${sizeLine} ×${allVideos.length}${allVideos.length < count ? `/${count}` : ""}` : sizeLine)
       + (vidModel ? ` · ${vidModel}` : "");
+    // Seed(s) used → lets the user reproduce via --seed. Single video shows one;
+    // a batch lists each video's seed in display order so any one can be reproduced.
+    if (count === 1 && typeof lastData.seed === "number") {
+      doneLine += `\n${t("msg_seedUsed", { seed: lastData.seed }, plang)}`;
+    } else if (count > 1 && videoSeeds.some((s) => s !== null)) {
+      const list = videoSeeds.map((s, i) => `#${i + 1} ${s !== null ? s : "?"}`).join(" · ");
+      doneLine += `\n${t("msg_seedsBatch", { list }, plang)}`;
+    }
     // If more images were attached than the model can use, tell the user how many
     // were actually consumed (2 = first-last-frame, 1 = plain image-to-video).
     const nInput = refImages ? refImages.length : 0;
@@ -858,6 +867,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       const newThumbs = await Promise.all(data.videos.map((v) =>
         videoThumbnail(v.startsWith("data:") ? v : `data:${vmime};base64,${v}`)));
       allVideos.push(...data.videos);
+      for (let k = 0; k < data.videos.length; k++) videoSeeds.push(typeof data.seed === "number" ? data.seed : null);
       allThumbs.push(...newThumbs);
       renderReply(); // show this completed video immediately
     }
@@ -1033,6 +1043,12 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     const generatedImages = [];
     let errorCount = 0;
     let lastError = "";
+    // Seed actually used (random unless --seed was pinned) → surfaced on the done line
+    // so a single result can be reproduced. Only meaningful for a single output.
+    let usedSeed = null;
+    // Per-image seeds for a batch (aligned with generatedImages → grid order), so any
+    // one image can be reproduced via --seed.
+    const seeds = [];
 
     const promises = [];
     for (let ci = 0; ci < parsedList.length; ci++) {
@@ -1040,8 +1056,13 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       const prompt = prompts[ci];
       for (let i = 0; i < parsed.count; i++) {
         const reqOptions = { ...parsed.options };
-        if (reqOptions.seed === undefined && parsed.count > 1) {
-          reqOptions.seed = Math.floor(Math.random() * 2147483647);
+        if (parsed.count > 1) {
+          // Batch: every image needs a DISTINCT seed, else the grid is N identical
+          // copies. No --seed → a fresh random per image. Pinned --seed N → N, N+1,
+          // N+2… (predictable & each reproducible). Per-image seeds are shown below.
+          reqOptions.seed = (reqOptions.seed === undefined)
+            ? Math.floor(Math.random() * 2147483647)
+            : reqOptions.seed + i;
         }
         // For img2img the size is passed through: a specified size (default or
         // --size) makes the server render at that size's pixel budget keeping the
@@ -1093,7 +1114,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
               }
               if (r.ok) {
                 const imgs = (data.images || []).filter((s) => s && s.length > 100);
+                if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
                 generatedImages.push(...imgs);
+                for (let k = 0; k < imgs.length; k++) seeds.push(typeof data.seed === "number" ? data.seed : null);
                 for (const imgData of imgs) {
                   const src = imgData.startsWith("data:")
                     ? imgData
@@ -1154,6 +1177,13 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         : t("msg_imageDone", dims, plang);
       // Append the model used (selected name, extension stripped).
       if (shortModel) doneLine += ` · ${shortModel}`;
+      // Seed used (single output only) → lets the user reproduce via --seed.
+      if (usedSeed !== null) doneLine += `\n${t("msg_seedUsed", { seed: usedSeed }, plang)}`;
+      // Batch: list each image's seed (grid order) so any one can be reproduced.
+      else if (totalCount > 1 && seeds.some((s) => s !== null)) {
+        const list = seeds.map((s, i) => `#${i + 1} ${s !== null ? s : "?"}`).join(" · ");
+        doneLine += `\n${t("msg_seedsBatch", { list }, plang)}`;
+      }
     }
 
     const replyMsg = {
