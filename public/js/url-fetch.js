@@ -8,6 +8,7 @@ import { markdownToHtml } from './markdown.js';
 import { saveChat } from './settings.js';
 import { makePreview } from './utils.js';
 import { getPromptLanguage, t } from './i18n.js';
+import { youtubeFetch } from './server-queue.js';
 
 const CHUNK_CHAR_LIMIT = 3000; // Split transcripts longer than this
 
@@ -86,6 +87,14 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
   if (!skipUserBubble) placeMsg(tab, { role: "user", content: fullContent || `/url ${url}`, timestamp: Date.now() }, cursor);
   saveChat();
   if (state.activeTabId === tabId && _renderChat) _renderChat();
+
+  // /url youtube as a server-side bg job: the slow fetch+transcribe+format runs on the
+  // server (survives reload) and progress streams back to the drawer. We only place the
+  // result bubbles here. Webpages / foreground / non-server paths fall through unchanged.
+  if (bg && bg.server && /youtube\.com|youtu\.be/.test(url)) {
+    await handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg);
+    return;
+  }
 
   // Reply right after the produced content (in place) or at the end (fresh). bg jobs
   // are always in-place (cursor set) and run the reply headless.
@@ -230,6 +239,75 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
     if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); }
+  }
+}
+
+// /url youtube via the server-side queue: the server does fetch → (whisper) transcribe →
+// format (all the slow work; survives reload), with progress streaming to the drawer via
+// the onProgress channel. Here we only place the result bubbles, using stable ids derived
+// from the placeholder msgId so a reconnect-after-reload re-run upserts (never duplicates).
+async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
+  const base = bg.server.msgId;
+  const upsertById = (id, msg) => {
+    msg.id = id; msg.urlPart = true;
+    for (const tb of state.tabs) {
+      if (!Array.isArray(tb.messages)) continue;
+      const i = tb.messages.findIndex((m) => m && m.id === id);
+      if (i >= 0) { tb.messages[i] = msg; return; }
+    }
+    if (cursor && cursor.pos >= 0 && cursor.pos <= tab.messages.length) tab.messages.splice(cursor.pos++, 0, msg);
+    else tab.messages.push(msg);
+  };
+  const commit = () => { saveChat(); if (state.activeTabId === tabId && _renderChat) _renderChat(); };
+
+  bg.label(t('bg_fetchingContent'));
+  let data, ok;
+  try {
+    const r = await youtubeFetch(
+      { url, language: getPromptLanguage(), model: dom.modelSelect.value },
+      { bgJob: bg.server.bgJob, conversationId: bg.server.conversationId, msgId: bg.server.msgId, label: bg.server.label, signal: bg.signal });
+    ok = r.ok; data = await r.json();
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw e;   // canceled mid-run — let the queue handle it
+    ok = false; data = { error: (e && e.message) || '获取失败' };
+  }
+  data = data || {};
+
+  // 1. video info card — stable id, NEVER the placeholder msgId (that's reserved for the reply).
+  const infoParts = [`📺 **${data.title || url}**`, url, ''];
+  if (data.channel) infoParts.push(`频道：${data.channel}`);
+  if (data.duration) infoParts.push(`时长：${data.duration}`);
+  if (data.viewCount) infoParts.push(`播放：${Number(data.viewCount).toLocaleString()} 次`);
+  if (data.uploadDate) { const d = String(data.uploadDate).replace(/-/g, '').slice(0, 8); if (d.length === 8) infoParts.push(`日期：${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`); }
+  if (data.description) { const tags = data.description.match(/#[^\s#]+/g); if (tags && tags.length) infoParts.push('', tags.join(' ')); }
+  const infoMsg = { role: 'assistant', content: infoParts.join('\n'), timestamp: Date.now() };
+  if (data.thumbnail) { try { infoMsg.generatedThumbnails = [await makePreview(data.thumbnail)]; } catch {} infoMsg.ytVideoId = data.videoId; }
+  upsertById(base + ':info', infoMsg);
+
+  if (ok && data.formattedText) {
+    // 2a. success → only the cleaned transcript (no raw-subtitle user bubble)
+    upsertById(base + ':fmt', { role: 'assistant', content: data.formattedText, timestamp: Date.now() });
+  } else {
+    // 2b. failure → raw transcript as a fallback user bubble (if any) + the error
+    const errMsg = data.error || '字幕整理失败';
+    if (data.rawTranscript) {
+      const label = data.source === 'whisper' ? '**[语音识别结果]**' : '**[原始字幕]**';
+      upsertById(base + ':raw', { role: 'user', content: `${label}\n\n${data.rawTranscript}`, timestamp: Date.now() });
+    }
+    upsertById(base + ':fmt', { role: 'assistant', content: `⚠️ ${errMsg}`, timestamp: Date.now() });
+    commit();
+    urlError(errMsg);
+    return;
+  }
+
+  // 3. optional prompt → reply (front-end; needs conversation context). The reply swaps the
+  // placeholder msgId via bg.place() → idempotent on reconnect, no extra stable id needed.
+  if (prompt) {
+    upsertById(base + ':prompt', { role: 'user', content: prompt, timestamp: Date.now() });
+    commit();
+    if (_regenerateReply) await _regenerateReply(tabId, cursor.pos, cursor.pos - 1, { urlPart: true }, bg);
+  } else {
+    commit();
   }
 }
 

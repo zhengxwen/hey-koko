@@ -19,7 +19,7 @@ const { proxyOllamaChat, proxyOllamaTags, proxyOllamaShow } = require("./server/
 const { scanOllamaStream, scanComfyStream, hostnameFor } = require("./server/network");
 const { proxyOllamaImageModels, generateImage, enhancePrompt } = require("./server/image");
 const { proxyComfyModels, generateComfyImage, uploadComfyVideo } = require("./server/comfy");
-const { fetchUrlContent, transcribeYouTubeAudio } = require("./server/url-fetch");
+const { fetchUrlContent, transcribeYouTubeAudio, youtubeJob } = require("./server/url-fetch");
 const { searchWeb } = require("./server/search");
 const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
 const { listSystemVoices, speak, stopSay } = require("./server/speech");
@@ -102,6 +102,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/youtube-transcribe") {
     transcribeYouTubeAudio(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/youtube-job") {
+    youtubeJob(req, res);
     return;
   }
 

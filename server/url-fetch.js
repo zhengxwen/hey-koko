@@ -741,42 +741,27 @@ function findWhisperModel() {
 }
 
 // Transcribe YouTube audio via whisper.cpp
-async function transcribeYouTubeAudio(req, res) {
-  let body;
-  try { body = await readBody(req); } catch { sendJson(res, 400, { error: "invalid body" }); return; }
-  const { videoId } = body;
-  if (!videoId || !/^[\w-]{11}$/.test(videoId)) {
-    sendJson(res, 400, { error: "invalid videoId" });
-    return;
-  }
+function abortError() { const e = new Error("aborted"); e.name = "AbortError"; return e; }
 
-  // Check dependencies
+// Verify the CLI tools + whisper model are present (throws a user-facing message if not).
+async function ensureWhisperDeps() {
   const whisperCmd = await findCommand("whisper-cli");
-  if (!whisperCmd) {
-    sendJson(res, 200, { error: "whisper-cli 未安装。请运行: brew install whisper-cpp" });
-    return;
-  }
+  if (!whisperCmd) throw new Error("whisper-cli 未安装。请运行: brew install whisper-cpp");
   const ytdlpCmd = await findCommand("yt-dlp");
-  if (!ytdlpCmd) {
-    sendJson(res, 200, { error: "yt-dlp 未安装。请运行: brew install yt-dlp" });
-    return;
-  }
+  if (!ytdlpCmd) throw new Error("yt-dlp 未安装。请运行: brew install yt-dlp");
   const ffmpegCmd = await findCommand("ffmpeg");
-  if (!ffmpegCmd) {
-    sendJson(res, 200, { error: "ffmpeg 未安装。请运行: brew install ffmpeg" });
-    return;
-  }
+  if (!ffmpegCmd) throw new Error("ffmpeg 未安装。请运行: brew install ffmpeg");
   const modelPath = findWhisperModel();
-  if (!modelPath) {
-    sendJson(res, 200, { error: "未找到 whisper 模型文件。请下载: curl -L -o ~/.local/share/whisper-cpp/ggml-medium.bin --create-dirs https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin" });
-    return;
-  }
+  if (!modelPath) throw new Error("未找到 whisper 模型文件。请下载: curl -L -o ~/.local/share/whisper-cpp/ggml-medium.bin --create-dirs https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin");
+  return { whisperCmd, ytdlpCmd, ffmpegCmd, modelPath };
+}
 
-  // Setup streaming response
-  res.writeHead(200, {
-    "Content-Type": "application/x-ndjson; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
+// Callable core: download → convert → whisper-transcribe a YouTube video's audio,
+// returns the transcript text. onProgress({status,message,progress}) reports the same
+// phase objects the SSE handler used to write; signal aborts (kills child processes +
+// cleans up). Shared by the /api/youtube-transcribe SSE shell and the youtube job.
+async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, signal } = {}) {
+  const { whisperCmd, ytdlpCmd, ffmpegCmd, modelPath } = await ensureWhisperDeps();
 
   const tmpDir = path.join(os.tmpdir(), `yt-whisper-${videoId}-${Date.now()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -785,26 +770,17 @@ async function transcribeYouTubeAudio(req, res) {
 
   let aborted = false;
   const childProcesses = [];
-
-  req.on("close", () => {
-    aborted = true;
-    for (const cp of childProcesses) {
-      try { cp.kill("SIGTERM"); } catch {}
-    }
-    cleanupDir(tmpDir);
-  });
-
-  function send(obj) {
-    if (!aborted) {
-      try { res.write(JSON.stringify(obj) + "\n"); } catch {}
-    }
+  const onAbort = () => { aborted = true; for (const cp of childProcesses) { try { cp.kill("SIGTERM"); } catch {} } };
+  if (signal) {
+    if (signal.aborted) { cleanupDir(tmpDir); throw abortError(); }
+    signal.addEventListener("abort", onAbort, { once: true });
   }
 
   try {
     // Step 1: Download audio
-    send({ status: "downloading", message: "正在下载音频..." });
+    onProgress({ status: "downloading", message: "正在下载音频..." });
     await new Promise((resolve, reject) => {
-      if (aborted) return reject(new Error("aborted"));
+      if (aborted) return reject(abortError());
       const proc = spawn(ytdlpCmd, [
         "-x", "--audio-quality", "worst",
         "-o", audioRaw + ".%(ext)s",
@@ -815,30 +791,25 @@ async function transcribeYouTubeAudio(req, res) {
       let stderr = "";
       proc.stderr.on("data", (d) => { stderr += d.toString(); });
       proc.on("close", (code) => {
-        if (aborted) return reject(new Error("aborted"));
+        if (aborted) return reject(abortError());
         if (code !== 0) return reject(new Error(`yt-dlp 失败 (code ${code}): ${stderr.slice(-200)}`));
         resolve();
       });
       proc.on("error", reject);
     });
-    if (aborted) return;
+    if (aborted) throw abortError();
 
     // Find the downloaded file (yt-dlp may produce .opus, .m4a, .webm, .wav etc.)
     const files = fs.readdirSync(tmpDir).filter(f => f.startsWith("audio") && f !== "converted.wav");
-    if (files.length === 0) {
-      send({ status: "error", message: "音频下载失败：未找到下载文件" });
-      res.end();
-      cleanupDir(tmpDir);
-      return;
-    }
+    if (files.length === 0) throw new Error("音频下载失败：未找到下载文件");
     const downloadedFile = path.join(tmpDir, files[0]);
     const fileSizeMB = (fs.statSync(downloadedFile).size / 1024 / 1024).toFixed(1);
-    send({ status: "downloaded", message: `音频下载完成（${fileSizeMB} MB）` });
+    onProgress({ status: "downloaded", message: `音频下载完成（${fileSizeMB} MB）` });
 
     // Step 2: Convert to 16kHz mono WAV
-    send({ status: "converting", message: "正在转换音频格式..." });
+    onProgress({ status: "converting", message: "正在转换音频格式..." });
     await new Promise((resolve, reject) => {
-      if (aborted) return reject(new Error("aborted"));
+      if (aborted) return reject(abortError());
       const proc = spawn(ffmpegCmd, [
         "-i", downloadedFile,
         "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
@@ -846,65 +817,175 @@ async function transcribeYouTubeAudio(req, res) {
       ]);
       childProcesses.push(proc);
       proc.on("close", (code) => {
-        if (aborted) return reject(new Error("aborted"));
+        if (aborted) return reject(abortError());
         if (code !== 0) return reject(new Error(`ffmpeg 转换失败 (code ${code})`));
         resolve();
       });
       proc.on("error", reject);
     });
-    if (aborted) return;
+    if (aborted) throw abortError();
 
-    // Step 3: Transcribe with whisper-cli (with timestamps for natural segmentation)
-    send({ status: "transcribing", message: "正在语音识别...", progress: "0%" });
+    // Step 3: Transcribe with whisper-cli (timestamps for natural segmentation)
+    onProgress({ status: "transcribing", message: "正在语音识别...", progress: "0%" });
     const transcriptText = await new Promise((resolve, reject) => {
-      if (aborted) return reject(new Error("aborted"));
-      const proc = spawn(whisperCmd, [
-        "-m", modelPath,
-        "-f", audioWav,
-        "-l", "auto",
-        "--print-progress",
-      ]);
+      if (aborted) return reject(abortError());
+      const proc = spawn(whisperCmd, ["-m", modelPath, "-f", audioWav, "-l", "auto", "--print-progress"]);
       childProcesses.push(proc);
       let stdout = "";
       let lastProgress = "";
       proc.stdout.on("data", (d) => { stdout += d.toString(); });
       proc.stderr.on("data", (d) => {
-        const str = d.toString();
         // Parse progress from stderr: "whisper_full_with_state: progress = XX%"
-        const match = str.match(/progress\s*=\s*(\d+)%/);
+        const match = d.toString().match(/progress\s*=\s*(\d+)%/);
         if (match && match[1] !== lastProgress) {
           lastProgress = match[1];
-          send({ status: "transcribing", message: `正在语音识别... ${match[1]}%`, progress: `${match[1]}%` });
+          onProgress({ status: "transcribing", message: `正在语音识别... ${match[1]}%`, progress: `${match[1]}%` });
         }
       });
       proc.on("close", (code) => {
-        if (aborted) return reject(new Error("aborted"));
+        if (aborted) return reject(abortError());
         if (code !== 0) return reject(new Error(`whisper-cli 转录失败 (code ${code})`));
         // Parse timestamped output: "[HH:MM:SS.mmm --> HH:MM:SS.mmm]  text"
-        const lines = stdout.split("\n");
         const segments = [];
-        for (const line of lines) {
+        for (const line of stdout.split("\n")) {
           const m = line.match(/^\[[\d:.]+\s*-->\s*[\d:.]+\]\s*(.+)/);
-          if (m && m[1].trim()) {
-            segments.push(m[1].trim());
-          }
+          if (m && m[1].trim()) segments.push(m[1].trim());
         }
         resolve(segments.length > 0 ? segments.join("\n") : stdout.trim());
       });
       proc.on("error", reject);
     });
-    if (aborted) return;
+    if (aborted) throw abortError();
+    return transcriptText;
+  } finally {
+    if (signal) { try { signal.removeEventListener("abort", onAbort); } catch {} }
+    cleanupDir(tmpDir);
+  }
+}
 
-    // Done
-    send({ status: "done", text: transcriptText });
-    res.end();
-    cleanupDir(tmpDir);
+// SSE shell (/api/youtube-transcribe) — foreground /url whisper path. Thin wrapper over
+// the core: forwards each phase object as an NDJSON line, then a final done/error line.
+async function transcribeYouTubeAudio(req, res) {
+  let body;
+  try { body = await readBody(req); } catch { sendJson(res, 400, { error: "invalid body" }); return; }
+  const { videoId } = body;
+  if (!videoId || !/^[\w-]{11}$/.test(videoId)) { sendJson(res, 400, { error: "invalid videoId" }); return; }
+  res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
+  const ctrl = new AbortController();
+  req.on("close", () => ctrl.abort());
+  const send = (obj) => { try { res.write(JSON.stringify(obj) + "\n"); } catch {} };
+  try {
+    const text = await transcribeYouTubeAudioCore(videoId, { onProgress: send, signal: ctrl.signal });
+    send({ status: "done", text });
   } catch (e) {
-    if (!aborted) {
-      send({ status: "error", message: e.message || "转录失败" });
-      res.end();
+    if (!ctrl.signal.aborted) send({ status: "error", message: (e && e.message) || "转录失败" });
+  } finally {
+    try { res.end(); } catch {}
+  }
+}
+
+// Split a raw transcript into <= limit-char chunks at line boundaries (mirrors the
+// browser splitTranscript so server formatting matches the old in-page behavior).
+const TRANSCRIPT_CHUNK_LIMIT = 3000;
+function splitTranscript(text, limit) {
+  const chunks = [];
+  let current = "";
+  for (const line of text.split("\n")) {
+    if (current.length + line.length + 1 > limit && current.length > 0) { chunks.push(current); current = line; }
+    else current += (current ? "\n" : "") + line;
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+// Server-side transcript cleanup: feed the raw transcript to Ollama chunk-by-chunk
+// (same prompts/params as the old in-page formatTranscriptChunked) and accumulate the
+// readable result. onProgress({stage:'formatting',progress:{value,max}}) per chunk;
+// signal aborts the in-flight fetch. Throws on any chunk failure (caller surfaces it).
+async function formatTranscriptServer(title, transcript, model, { onProgress = () => {}, signal } = {}) {
+  const chunks = splitTranscript(transcript, TRANSCRIPT_CHUNK_LIMIT);
+  const total = chunks.length;
+  const systemPrompt = `你是字幕整理助手。将原始字幕片段整理为易读文本：添加标点符号、连成完整句子、适当分段。不要改变原意，不要添加或省略内容。直接输出整理后的文本，不要加任何前缀说明。`;
+  let fullContent = "";
+  for (let i = 0; i < total; i++) {
+    onProgress({ stage: "formatting", progress: { value: i + 1, max: total } });
+    const chunkPrompt = i === 0
+      ? `请整理以下字幕片段（第${i + 1}/${total}段），添加标点并分段，不要省略内容：\n\n${chunks[i]}`
+      : `请继续整理下一段字幕（第${i + 1}/${total}段），保持与前面相同的格式风格，添加标点并分段，不要省略内容：\n\n${chunks[i]}`;
+    const resp = await fetch(`${config.ollamaUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: chunkPrompt }], options: { temperature: 0.3 } }),
+      signal,
+    });
+    if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error(`字幕整理失败 (${resp.status})${t ? ": " + t.slice(0, 200) : ""}`); }
+    let chunkText = "";
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let o; try { o = JSON.parse(line); } catch { continue; }
+        if (o.error) throw new Error(o.error);
+        if (o.message && o.message.content) chunkText += o.message.content;
+      }
     }
-    cleanupDir(tmpDir);
+    if (buffer.trim()) { try { const o = JSON.parse(buffer); if (o.message && o.message.content) chunkText += o.message.content; } catch {} }
+    fullContent += (fullContent ? "\n\n" : "") + chunkText.trim();
+  }
+  return "**📝 整理好的字幕**\n\n" + fullContent.trim();
+}
+
+// Streaming NDJSON endpoint for the youtube background job (POST /api/youtube-job):
+// fetch transcript (or whisper-transcribe) → server-side format → emit {type:'progress'}
+// lines throughout + a final {type:'done',result} (or {type:'error'}). Stays HTTP 200 the
+// whole time; errors travel as a line (the job runner inspects o.type, not the status).
+async function youtubeJob(req, res) {
+  let body;
+  try { body = await readBody(req); } catch { body = {}; }
+  const { url, language, model } = body || {};
+  res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
+  const ctrl = new AbortController();
+  req.on("close", () => ctrl.abort());
+  const send = (obj) => { try { res.write(JSON.stringify(obj) + "\n"); } catch {} };
+  // Normalize both progress sources to {type:'progress', stage, progress:{value,max}?}.
+  const onProgress = (p) => {
+    if (p.stage === "formatting") { send({ type: "progress", stage: "formatting", progress: p.progress }); return; }
+    const stage = p.status === "downloaded" ? "downloading" : (p.status || "transcribing");
+    let progress;
+    if (typeof p.progress === "string") { const m = p.progress.match(/(\d+)/); if (m) progress = { value: Number(m[1]), max: 100 }; }
+    send({ type: "progress", stage, progress });
+  };
+  try {
+    const ytMatch = (url || "").match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{11})/);
+    const videoId = ytMatch && ytMatch[1];
+    if (!videoId) { send({ type: "error", error: "无效的 YouTube 链接" }); res.end(); return; }
+    const meta = await fetchYouTubeTranscript(videoId, language);
+    const thumbnail = (await fetchYouTubeThumbnail(videoId)) || "";
+    const hasReal = meta && meta.text && !meta.text.startsWith("[");
+    let rawTranscript, source;
+    if (hasReal) { rawTranscript = meta.text; source = "subtitle"; }
+    else {
+      rawTranscript = await transcribeYouTubeAudioCore(videoId, { onProgress, signal: ctrl.signal });
+      source = "whisper";
+    }
+    const formattedText = await formatTranscriptServer((meta && meta.title) || "", rawTranscript, model, { onProgress, signal: ctrl.signal });
+    send({ type: "done", result: {
+      title: (meta && meta.title) || "", channel: (meta && meta.channel) || "",
+      duration: (meta && meta.duration) || "", viewCount: (meta && meta.viewCount) || "",
+      uploadDate: (meta && meta.uploadDate) || "", description: (meta && meta.description) || "",
+      thumbnail, videoId, source, rawTranscript, formattedText,
+    } });
+    res.end();
+  } catch (e) {
+    if (!ctrl.signal.aborted) send({ type: "error", error: (e && e.message) || "youtube job failed" });
+    try { res.end(); } catch {}
   }
 }
 
@@ -917,4 +998,4 @@ function findCommand(cmd) {
   });
 }
 
-module.exports = { fetchUrlContent, transcribeYouTubeAudio, extractCleanContent };
+module.exports = { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, formatTranscriptServer, extractCleanContent };

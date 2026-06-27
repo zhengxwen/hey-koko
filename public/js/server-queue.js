@@ -18,7 +18,8 @@ let _es = null;                       // the SSE connection
 const awaiters = new Map();           // serverJobId -> { resolve, reject }
 const lastJobs = new Map();           // serverJobId -> latest public job (from snapshot/update/done)
 let _persist = () => {};              // injected: persist state.bgJobs (so serverJobId survives reload)
-export function setServerQueueDeps({ persist }) { if (persist) _persist = persist; }
+let _onProgress = () => {};           // injected: mid-run progress (server job → bgJob.progress/label → drawer)
+export function setServerQueueDeps({ persist, onProgress }) { if (persist) _persist = persist; if (onProgress) _onProgress = onProgress; }
 
 // ---- shared SSE connection --------------------------------------------------
 export function connectServerQueue() {
@@ -37,7 +38,8 @@ export function connectServerQueue() {
 function ingest(job) {
   if (!job || !job.id) return;
   lastJobs.set(job.id, job);
-  if (job.status === 'done') settle(job.id, job.result, null);
+  if (job.status === 'running') _onProgress(job);   // mid-run progress/label → drawer (no settle)
+  else if (job.status === 'done') settle(job.id, job.result, null);
   else if (job.status === 'error' || job.status === 'interrupted') settle(job.id, null, new Error(job.error || 'job failed'));
 }
 function settle(jobId, result, err) {
@@ -103,6 +105,14 @@ export function ttsFetch(payload, meta) {
 // survives a page close/reload. Result is { content } (the full answer text).
 export function chatFetch(payload, meta) {
   return submitAndAwait(payload, { ...meta, kind: 'analyze', engine: 'chat' }).then(
+    (data) => ({ ok: true, json: async () => data }),
+    (err) => { if (err && err.name === 'AbortError') throw err; return { ok: false, json: async () => ({ error: (err && err.message) || 'failed' }) }; },
+  );
+}
+// /url youtube: server fetches/transcribes/formats; result is the processed transcript blob.
+// Mid-run progress (whisper %, formatting N/M) flows via the SSE `onProgress` channel.
+export function youtubeFetch(payload, meta) {
+  return submitAndAwait(payload, { ...meta, kind: 'youtube', engine: 'youtube' }).then(
     (data) => ({ ok: true, json: async () => data }),
     (err) => { if (err && err.name === 'AbortError') throw err; return { ok: false, json: async () => ({ error: (err && err.message) || 'failed' }) }; },
   );

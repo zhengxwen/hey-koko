@@ -1105,8 +1105,17 @@ button.secondary:disabled {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   flex: 0 0 auto;
+}
+
+/* Keep the three icon buttons compact so stacking three never stretches the
+   tab taller (higher specificity wins over each button's own size rule). */
+.tabActions > button {
+  width: 15px;
+  height: 15px;
+  min-height: 15px;
+  font-size: 10px;
 }
 
 .tabTagBtn {

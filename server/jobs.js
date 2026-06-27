@@ -120,6 +120,22 @@ async function runJob(job) {
     return { content };
   }
 
+  if (job.kind === "youtube") {                  // /api/youtube-job → streamed NDJSON (progress + done)
+    let result = null, errored = null;
+    await loopbackStream("/api/youtube-job", job.payload, ctrl.signal, (line) => {
+      let o; try { o = JSON.parse(line); } catch { return; }
+      if (o.type === "progress") {                // surface mid-run progress to the SSE clients
+        if (o.stage) job.label = o.stage;         // raw stage; the browser maps it to an i18n label
+        job.progress = o.progress || null;
+        emitUpdate(job);
+      } else if (o.type === "done") result = o.result;
+      else if (o.type === "error") errored = o.error;
+    });
+    if (errored) throw new Error(errored);
+    if (!result) throw new Error("youtube job: no result");
+    return result;
+  }
+
   const body = { ...job.payload, clientId: job.clientId };
   if (job.comfyUrl) body.comfyUrl = job.comfyUrl;
 
@@ -166,6 +182,36 @@ function loopbackPost(path, bodyObj, signal) {
     req.end(payload);
   });
 }
+// Like loopbackPost but STREAMS: calls onLine(line) for each complete NDJSON line as it
+// arrives (so a long job can report mid-run progress) instead of buffering the whole
+// response. Keeps a partial-line buffer across chunks. Resolves when the stream ends.
+function loopbackStream(path, bodyObj, signal, onLine) {
+  return new Promise((resolve, reject) => {
+    const payload = Buffer.from(JSON.stringify(bodyObj));
+    const req = http.request({
+      host: "127.0.0.1", port: config.PORT, path, method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": payload.length },
+    }, (res) => {
+      let buffer = "";
+      res.setEncoding("utf-8");
+      res.on("data", (chunk) => {
+        buffer += chunk;
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) if (line.trim()) { try { onLine(line); } catch {} }
+      });
+      res.on("end", () => { if (buffer.trim()) { try { onLine(buffer); } catch {} } resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode }); });
+    });
+    req.on("error", reject);
+    req.setTimeout(0);   // no idle timeout — whisper + multi-chunk formatting can be slow
+    if (signal) {
+      if (signal.aborted) { req.destroy(abortErr()); return; }
+      signal.addEventListener("abort", () => { try { req.destroy(abortErr()); } catch {} }, { once: true });
+    }
+    req.end(payload);
+  });
+}
+
 function abortErr() { const e = new Error("Aborted"); e.name = "AbortError"; return e; }
 
 // ---- cancel / remove --------------------------------------------------------

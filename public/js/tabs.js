@@ -600,7 +600,6 @@ export function renderTabs() {
         startTabRename(tab);
       });
     }
-    actionsCol.appendChild(renameButton);
 
     const tagButton = document.createElement("button");
     tagButton.className = "tabTagBtn";
@@ -617,6 +616,9 @@ export function renderTabs() {
       });
     }
     actionsCol.appendChild(tagButton);
+
+    // Rename sits below the tag button, same column.
+    actionsCol.appendChild(renameButton);
 
     tabButton.appendChild(actionsCol);
 

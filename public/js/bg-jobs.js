@@ -76,8 +76,33 @@ function persist() {
   const clean = state.bgJobs.map(({ preview, seg, ...j }) => j);
   dbSaveJobs(clean).catch((e) => console.warn('[bg-jobs] persist failed:', e));
 }
-// Let the server-queue client persist a job's serverJobId (so a reload can reconnect).
-setServerQueueDeps({ persist });
+// Let the server-queue client persist a job's serverJobId (so a reload can reconnect),
+// and feed mid-run progress for server-side jobs (e.g. /url youtube) back onto the local
+// job → drawer/placeholder repaint (the live-progress channel non-ComfyUI jobs lacked).
+setServerQueueDeps({
+  persist,
+  onProgress: (sjob) => {
+    const job = state.bgJobs.find((j) => j.serverJobId === sjob.id);
+    if (!job) return;
+    const lbl = bgProgressLabel(sjob.label, sjob.progress);
+    if (lbl) job.label = lbl;
+    job.progress = sjob.progress || null;
+    renderDrawer();
+    updatePlaceholderBar(job);
+  },
+});
+
+// Map a server job's progress STAGE → a localized drawer label (server stays i18n-free,
+// only emits the stage name + {value,max}). whisper % shows via job.progress in statusText.
+function bgProgressLabel(stage, progress) {
+  switch (stage) {
+    case 'transcribing': return t('bg_transcribing');
+    case 'downloading': return t('bg_downloadingAudio');
+    case 'converting': return t('bg_convertingAudio');
+    case 'formatting': return t('bg_formattingSubs', progress ? { i: progress.value, n: progress.max } : { i: 1, n: 1 });
+    default: return '';
+  }
+}
 
 // ---- queue helpers ---------------------------------------------------------
 
