@@ -1346,7 +1346,7 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
 // (RepeatImageBatch the DWPose output) and take the LAST decoded frame, by which point
 // the character has settled INTO the pose. Output size follows the pose image.
 const STILL_FRAMES = 9; // 4n+1; verified N=9 fully adopts the pose, N=1 does not
-function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, refImageName, width, height, seed, torchCompile = false, relightStrength = 1 }) {
+function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, refImageName, width, height, seed, torchCompile = false, relightStrength = 1, replace = false }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   const relight = (typeof relightStrength === "number" && relightStrength >= 0 && relightStrength <= 2) ? relightStrength : 1;
   const dw = (face) => ({
@@ -1391,6 +1391,22 @@ function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, re
     "23": { class_type: "SaveImage", inputs: { images: ["22", 0], filename_prefix: "heykoko_animate_still" } },
   };
   if (torchCompile) wf["25"] = { class_type: "TorchCompileModel", inputs: { model: ["3", 0], backend: "inductor" } };
+  // REPLACE still: image[0] is a SCENE (a person to swap out + a background to keep),
+  // not just a pose. Same as video Replace but the "source" is the single scene image
+  // held for STILL_FRAMES: SAM2 center-point mask → Grow(10) → Blockify(32) = character_mask;
+  // DrawMaskOnImage blacks the person out = background_video. The character is composited
+  // into the scene at the person's pose+position; take the last settled frame.
+  if (replace) {
+    const centerPt = JSON.stringify([{ x: Math.round(width / 2), y: Math.round(height / 2) }]);
+    wf["13r"] = { class_type: "RepeatImageBatch", inputs: { image: ["13", 0], amount: STILL_FRAMES } };
+    wf["30"] = { class_type: "DownloadAndLoadSAM2Model", inputs: { model: "sam2_hiera_base_plus.safetensors", segmentor: "video", device: "cuda", precision: "fp16" } };
+    wf["31"] = { class_type: "Sam2Segmentation", inputs: { sam2_model: ["30", 0], image: ["13r", 0], keep_model_loaded: false, coordinates_positive: centerPt } };
+    wf["32"] = { class_type: "GrowMask", inputs: { mask: ["31", 0], expand: 10, tapered_corners: true } };
+    wf["33"] = { class_type: "BlockifyMask", inputs: { masks: ["32", 0], block_size: 32 } };
+    wf["34"] = { class_type: "DrawMaskOnImage", inputs: { image: ["13r", 0], mask: ["33", 0], color: "0, 0, 0" } };
+    wf["18"].inputs.background_video = ["34", 0];
+    wf["18"].inputs.character_mask = ["33", 0];
+  }
   return wf;
 }
 
@@ -1797,16 +1813,17 @@ async function generateComfyImage(req, res) {
         // v2v/rv2v keep the source video's fps; i2v uses bfps (so it can show duration).
         videoDims = { width: bw, height: bh, length: bl, fps: hasVideo ? undefined : bfps };
       } else if (videoType === "animate" && !sourceVideo && !sourceVideoName) {
-        // Replace mode is meaningless without a scene to composite into.
-        if (animateReplace) {
-          sendJson(res, 400, { error: "Wan Animate（替换）需要一段源视频作为场景，并附一张人物参考图。" });
-          return;
-        }
-        // Wan Animate SINGLE-FRAME (still pose transfer): no source video, TWO images
-        // — image[0] = pose source (output size follows it), image[1] = reference
-        // character. Length 1 → one decoded frame, returned as an IMAGE.
+        // Wan Animate SINGLE-FRAME (no source video, TWO images → an IMAGE):
+        //  • MOVE still    → image[0] = pose source, image[1] = character; the character
+        //    adopts the pose on a clean background.
+        //  • REPLACE still → image[0] = a SCENE (person to swap + background to keep),
+        //    image[1] = character; the character replaces the person, scene preserved.
+        // Both hold STILL_FRAMES frames and return the last settled frame.
         if (!(Array.isArray(images) && images.length >= 2)) {
-          sendJson(res, 400, { error: "Wan Animate 单帧需要两张图：第1张姿势图、第2张角色图（或附一段源视频做多帧动作）。" });
+          const err = animateReplace
+            ? "Wan Animate（替换·单图）需要两张图：第1张场景图（含要替换的人）、第2张角色图（或附一段源视频做多帧）。"
+            : "Wan Animate 单帧需要两张图：第1张姿势图、第2张角色图（或附一段源视频做多帧动作）。";
+          sendJson(res, 400, { error: err });
           return;
         }
         const comp = await animateCompanions();
@@ -1837,7 +1854,7 @@ async function generateComfyImage(req, res) {
         const refImageName = await uploadImage(images[1], controller.signal, "heykoko_animref.png");
         imagesUsed = 2;
         stillMode = true;
-        workflow = buildWanAnimateStill({ model, prompt, negative: negative_prompt || "", comp, poseImageName, refImageName, width: aw, height: ah, seed, torchCompile: !!opts.torchCompile, relightStrength: opts.relightStrength });
+        workflow = buildWanAnimateStill({ model, prompt, negative: negative_prompt || "", comp, poseImageName, refImageName, width: aw, height: ah, seed, torchCompile: !!opts.torchCompile, relightStrength: opts.relightStrength, replace: animateReplace });
         videoDims = { width: aw, height: ah };
       } else if (videoType === "animate") {
         // Wan Animate MOVE (pose transfer): reference person image + source video
