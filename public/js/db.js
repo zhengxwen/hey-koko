@@ -99,11 +99,13 @@ export async function dbSaveTabs(tabs, activeTabId) {
   const metaStore = tx.objectStore("meta");
 
   // Clear existing tabs and write fresh (preserve order via _order field)
+  const _t0 = performance.now();
   tabStore.clear();
   for (let i = 0; i < tabs.length; i++) {
     tabStore.put({ ...tabs[i], _order: i });
   }
   metaStore.put(activeTabId, "activeTabId");
+  console.log(`[saveTabs-perf] put ${tabs.length} tabs (structured clone) = ${(performance.now()-_t0).toFixed(1)}ms`);
 
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();

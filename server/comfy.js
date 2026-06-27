@@ -1254,8 +1254,11 @@ async function animateCompanions() {
 // CreateVideo muxes the source audio+fps. `chunks` = [{offset,length}, …] (length 1 =
 // single pass). Two LoRAs (lightx2v distill 6-step turbo + relight); ModelSamplingSD3
 // shift 8; optional torch.compile.
-function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, fps, torchCompile = false, chunks, replace = false }) {
+function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, fps, torchCompile = false, chunks, replace = false, relightStrength = 1 }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
+  // Relight LoRA strength: how hard the character is re-lit to match the scene
+  // (0 = keep the reference image's own lighting, 1 = full default). Clamped 0–2.
+  const relight = (typeof relightStrength === "number" && relightStrength >= 0 && relightStrength <= 2) ? relightStrength : 1;
   const segs = (Array.isArray(chunks) && chunks.length) ? chunks : [{ offset: 0, length: 77 }];
   const dw = (face) => ({
     class_type: "DWPreprocessor",
@@ -1276,7 +1279,7 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
   const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.loraSpeed, strength_model: 1 } },
-    "3": { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraRelight, strength_model: 1 } },
+    "3": { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraRelight, strength_model: relight } },
     "4": { class_type: "ModelSamplingSD3", inputs: { model: [samplingSrc, 0], shift: 8 } },
     "5": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
     "6": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
@@ -1343,8 +1346,9 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
 // (RepeatImageBatch the DWPose output) and take the LAST decoded frame, by which point
 // the character has settled INTO the pose. Output size follows the pose image.
 const STILL_FRAMES = 9; // 4n+1; verified N=9 fully adopts the pose, N=1 does not
-function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, refImageName, width, height, seed, torchCompile = false }) {
+function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, refImageName, width, height, seed, torchCompile = false, relightStrength = 1 }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
+  const relight = (typeof relightStrength === "number" && relightStrength >= 0 && relightStrength <= 2) ? relightStrength : 1;
   const dw = (face) => ({
     class_type: "DWPreprocessor",
     inputs: {
@@ -1361,7 +1365,7 @@ function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, re
   const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.loraSpeed, strength_model: 1 } },
-    "3": { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraRelight, strength_model: 1 } },
+    "3": { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraRelight, strength_model: relight } },
     "4": { class_type: "ModelSamplingSD3", inputs: { model: [samplingSrc, 0], shift: 8 } },
     "5": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
     "6": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
@@ -1833,7 +1837,7 @@ async function generateComfyImage(req, res) {
         const refImageName = await uploadImage(images[1], controller.signal, "heykoko_animref.png");
         imagesUsed = 2;
         stillMode = true;
-        workflow = buildWanAnimateStill({ model, prompt, negative: negative_prompt || "", comp, poseImageName, refImageName, width: aw, height: ah, seed, torchCompile: !!opts.torchCompile });
+        workflow = buildWanAnimateStill({ model, prompt, negative: negative_prompt || "", comp, poseImageName, refImageName, width: aw, height: ah, seed, torchCompile: !!opts.torchCompile, relightStrength: opts.relightStrength });
         videoDims = { width: aw, height: ah };
       } else if (videoType === "animate") {
         // Wan Animate MOVE (pose transfer): reference person image + source video
@@ -1884,7 +1888,7 @@ async function generateComfyImage(req, res) {
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         const refImageName = await uploadImage(images[0], controller.signal);
         imagesUsed = 1;
-        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, fps: afps, torchCompile: !!opts.torchCompile, chunks, replace: animateReplace });
+        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, fps: afps, torchCompile: !!opts.torchCompile, chunks, replace: animateReplace, relightStrength: opts.relightStrength });
         videoDims = { width: aw, height: ah, length: totalFrames, fps: afps, segments: chunks.length };
         if (truncatedFrom) videoDims.truncatedFrom = truncatedFrom;
       } else if (videoType) {

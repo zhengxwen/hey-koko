@@ -442,6 +442,7 @@ function initComfyParamsModal() {
     dom.comfyParamDenoise,
     dom.comfyParamLength,
     dom.comfyParamFps,
+    dom.comfyParamRelight,
   ];
 
   function open() {

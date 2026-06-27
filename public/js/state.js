@@ -60,6 +60,7 @@ export const dom = {
   comfyParamLength: document.querySelector("#comfyParamLength"),
   comfyParamFps: document.querySelector("#comfyParamFps"),
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),
+  comfyParamRelight: document.querySelector("#comfyParamRelight"),
   llmUrlDisplay: document.querySelector("#llmUrlDisplay"),
   imageUrlDisplay: document.querySelector("#imageUrlDisplay"),
   modeToggle: document.querySelector("#modeToggle"),

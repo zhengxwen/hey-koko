@@ -413,6 +413,7 @@ export function renderTabs() {
     tabButton.title = tab.title;
     tabButton.draggable = true;
     tabButton.dataset.index = index;
+    tabButton.dataset.tabId = tab.id;
 
     tabButton.addEventListener("dragstart", (e) => {
       e.dataTransfer.effectAllowed = "move";
@@ -468,9 +469,17 @@ export function renderTabs() {
     title.className = "tabTitle";
     title.textContent = tab.title;
     title.addEventListener("dblclick", (event) => {
+      const _t0 = performance.now();
       event.stopPropagation();
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
       if (tab.locked) return;
+      // A late single-click timer may have already re-rendered the tab strip
+      // (e.g. when switching to a video-heavy tab), detaching this title. Rename
+      // the LIVE title for this tab so the input never lands in stale DOM.
+      const liveTitle = dom.chatTabsEl.querySelector(`.chatTab[data-tab-id="${tab.id}"] .tabTitle`);
+      const targetTitle = liveTitle && liveTitle.isConnected ? liveTitle : title;
+      const targetContent = targetTitle.parentElement;
+      if (!targetContent) return;
       const input = document.createElement("input");
       input.className = "tabRenameInput";
       input.type = "text";
@@ -484,9 +493,14 @@ export function renderTabs() {
         if (/[\r\n]/.test(input.value)) input.value = input.value.replace(/[\r\n]+/g, ' ');
       });
       input.addEventListener("click", (e) => e.stopPropagation());
-      tabContent.replaceChild(input, title);
+      const _t1 = performance.now();
+      targetContent.replaceChild(input, targetTitle);
+      const _t2 = performance.now();
       input.focus();
+      const _t3 = performance.now();
       input.select();
+      const _t4 = performance.now();
+      console.log(`[rename-perf] setup=${(_t1-_t0).toFixed(1)}ms replaceChild=${(_t2-_t1).toFixed(1)}ms focus=${(_t3-_t2).toFixed(1)}ms select=${(_t4-_t3).toFixed(1)}ms total=${(_t4-_t0).toFixed(1)}ms`);
     });
     tabContent.appendChild(title);
 
@@ -592,7 +606,15 @@ export function renderTabs() {
     tabButton.appendChild(actionsCol);
 
     let clickTimer = null;
-    tabButton.addEventListener("click", () => {
+    tabButton.addEventListener("click", (event) => {
+      // The 2nd click of a double-click (used to rename) must NOT switch tabs:
+      // switching to a video-heavy tab forces a costly chat re-render that froze
+      // the UI and rebuilt the strip out from under the rename input. Bail the
+      // moment a multi-click is detected so a double-click only ever renames.
+      if (event.detail > 1) {
+        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+        return;
+      }
       if (clickTimer) clearTimeout(clickTimer);
       clickTimer = setTimeout(() => {
         clickTimer = null;
@@ -601,7 +623,7 @@ export function renderTabs() {
           const activeEl = dom.chatTabsEl.querySelector('.chatTab[aria-selected="true"]');
           if (activeEl) activeEl.focus();
         });
-      }, 250);
+      }, 320);
     });
     tabButton.addEventListener("dblclick", () => {
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }

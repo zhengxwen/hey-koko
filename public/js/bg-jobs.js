@@ -752,8 +752,19 @@ export function renderDrawer() {
   const showHeaders = lanes.length > 1;
   for (const wid of lanes) {
     if (showHeaders) list.appendChild(buildLaneHeader(wid, byLane.get(wid)));
-    for (const job of byLane.get(wid)) list.appendChild(buildJobRow(job));
+    for (const job of sortLaneForDisplay(byLane.get(wid))) list.appendChild(buildJobRow(job));
   }
+}
+
+// Display order within a lane: running first, then waiting (queued), then paused, then
+// finished/failed. Stable sort → queued jobs keep their (drag-reorderable) FIFO order.
+// Display-only: the actual run order still follows state.bgJobs insertion order.
+const BG_STATUS_ORDER = { running: 0, queued: 1, paused: 2, interrupted: 3, error: 3, canceled: 4, done: 4 };
+function sortLaneForDisplay(jobs) {
+  return jobs
+    .map((job, i) => ({ job, i }))   // index keeps the sort stable across all engines
+    .sort((a, b) => ((BG_STATUS_ORDER[a.job.status] ?? 9) - (BG_STATUS_ORDER[b.job.status] ?? 9)) || (a.i - b.i))
+    .map((x) => x.job);
 }
 
 // The ComfyUI workers manager shown at the top of the drawer: each endpoint as a chip

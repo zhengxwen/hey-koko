@@ -40,6 +40,7 @@ export function saveCurrentSettings() {
         length: dom.comfyParamLength?.value || "",
         fps: dom.comfyParamFps?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
+        relight: dom.comfyParamRelight?.value || "",
       },
       defaultImageSize: dom.defaultImageSize.value,
       imageTimeout: dom.imageTimeoutInput.value,
@@ -152,6 +153,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamLength) dom.comfyParamLength.value = cp.length || "";
     if (dom.comfyParamFps) dom.comfyParamFps.value = cp.fps || "";
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
+    if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";
   }
   if (savedSettings.defaultImageSize) dom.defaultImageSize.value = savedSettings.defaultImageSize;
   if (savedSettings.imageTimeout) {

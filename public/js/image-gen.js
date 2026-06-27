@@ -75,6 +75,8 @@ function comfyOverrides() {
   const fps = num(dom.comfyParamFps?.value);
   if (fps !== undefined) ov.fps = fps;
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
+  const relight = num(dom.comfyParamRelight?.value);
+  if (relight !== undefined) ov.relightStrength = relight; // Wan Animate: relight LoRA strength
   return ov;
 }
 
