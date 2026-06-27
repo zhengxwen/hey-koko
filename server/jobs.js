@@ -107,6 +107,19 @@ async function runJob(job) {
     return { audio: d.audio, mime: d.mime || "audio/wav" };
   }
 
+  if (job.kind === "analyze") {                  // /api/chat (Ollama vision) → NDJSON stream
+    const r = await loopbackPost("/api/chat", job.payload, ctrl.signal);
+    if (!r.ok) { let d = {}; try { d = JSON.parse(r.text); } catch {} throw new Error(d.error || `analyze failed (${r.status})`); }
+    let content = "";
+    for (const line of r.text.split("\n")) {
+      if (!line.trim()) continue;
+      let o; try { o = JSON.parse(line); } catch { continue; }
+      if (o.error) throw new Error(o.error);
+      if (o.message && o.message.content) content += o.message.content;
+    }
+    return { content };
+  }
+
   const body = { ...job.payload, clientId: job.clientId };
   if (job.comfyUrl) body.comfyUrl = job.comfyUrl;
 

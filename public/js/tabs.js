@@ -190,6 +190,33 @@ function finishRename(tab, input) {
   renderTabs();
 }
 
+// Turn a tab's title into an inline rename input. Shared by the title dblclick
+// and the rename button. Always targets the LIVE title node so a late re-render
+// can't drop the input into detached DOM.
+function startTabRename(tab) {
+  if (tab.locked) return;
+  const liveTitle = dom.chatTabsEl.querySelector(`.chatTab[data-tab-id="${tab.id}"] .tabTitle`);
+  if (!liveTitle || !liveTitle.isConnected) return;
+  const targetContent = liveTitle.parentElement;
+  if (!targetContent) return;
+  const input = document.createElement("input");
+  input.className = "tabRenameInput";
+  input.type = "text";
+  input.value = tab.title;
+  input.addEventListener("blur", () => finishRename(tab, input));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+    if (e.key === "Escape") { input.value = tab.title; input.blur(); }
+  });
+  input.addEventListener("input", () => {
+    if (/[\r\n]/.test(input.value)) input.value = input.value.replace(/[\r\n]+/g, ' ');
+  });
+  input.addEventListener("click", (e) => e.stopPropagation());
+  targetContent.replaceChild(input, liveTitle);
+  input.focus();
+  input.select();
+}
+
 export function addChatTab() {
   const tab = createTab(`${t("tab_newChat")} ${state.tabs.length + 1}`, [], dom.personalitySelect.value);
   state.tabs.unshift(tab);
@@ -470,38 +497,9 @@ export function renderTabs() {
     title.className = "tabTitle";
     title.textContent = tab.title;
     title.addEventListener("dblclick", (event) => {
-      const _t0 = performance.now();
       event.stopPropagation();
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
-      if (tab.locked) return;
-      // A late single-click timer may have already re-rendered the tab strip
-      // (e.g. when switching to a video-heavy tab), detaching this title. Rename
-      // the LIVE title for this tab so the input never lands in stale DOM.
-      const liveTitle = dom.chatTabsEl.querySelector(`.chatTab[data-tab-id="${tab.id}"] .tabTitle`);
-      const targetTitle = liveTitle && liveTitle.isConnected ? liveTitle : title;
-      const targetContent = targetTitle.parentElement;
-      if (!targetContent) return;
-      const input = document.createElement("input");
-      input.className = "tabRenameInput";
-      input.type = "text";
-      input.value = tab.title;
-      input.addEventListener("blur", () => finishRename(tab, input));
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") { e.preventDefault(); input.blur(); }
-        if (e.key === "Escape") { input.value = tab.title; input.blur(); }
-      });
-      input.addEventListener("input", () => {
-        if (/[\r\n]/.test(input.value)) input.value = input.value.replace(/[\r\n]+/g, ' ');
-      });
-      input.addEventListener("click", (e) => e.stopPropagation());
-      const _t1 = performance.now();
-      targetContent.replaceChild(input, targetTitle);
-      const _t2 = performance.now();
-      input.focus();
-      const _t3 = performance.now();
-      input.select();
-      const _t4 = performance.now();
-      console.log(`[rename-perf] setup=${(_t1-_t0).toFixed(1)}ms replaceChild=${(_t2-_t1).toFixed(1)}ms focus=${(_t3-_t2).toFixed(1)}ms select=${(_t4-_t3).toFixed(1)}ms total=${(_t4-_t0).toFixed(1)}ms`);
+      startTabRename(tab);
     });
     tabContent.appendChild(title);
 
@@ -587,6 +585,22 @@ export function renderTabs() {
       }
       actionsCol.appendChild(closeButton);
     }
+
+    const renameButton = document.createElement("button");
+    renameButton.className = "tabRenameBtn";
+    renameButton.type = "button";
+    renameButton.title = "重命名对话";
+    renameButton.setAttribute("aria-label", "重命名对话");
+    renameButton.textContent = "✎";
+    if (tab.locked) {
+      renameButton.disabled = true;
+    } else {
+      renameButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        startTabRename(tab);
+      });
+    }
+    actionsCol.appendChild(renameButton);
 
     const tagButton = document.createElement("button");
     tagButton.className = "tabTagBtn";

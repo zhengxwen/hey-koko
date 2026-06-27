@@ -99,6 +99,14 @@ export function ttsFetch(payload, meta) {
     (err) => { if (err && err.name === 'AbortError') throw err; return { ok: false, json: async () => ({ error: (err && err.message) || 'failed' }) }; },
   );
 }
+// Vision analysis (/analyze): submit the /api/chat call to the server queue so it
+// survives a page close/reload. Result is { content } (the full answer text).
+export function chatFetch(payload, meta) {
+  return submitAndAwait(payload, { ...meta, kind: 'analyze', engine: 'chat' }).then(
+    (data) => ({ ok: true, json: async () => data }),
+    (err) => { if (err && err.name === 'AbortError') throw err; return { ok: false, json: async () => ({ error: (err && err.message) || 'failed' }) }; },
+  );
+}
 
 // ---- control (used by bg-jobs cancel/reorder + archive) ---------------------
 export function cancelServerJob(serverJobId) {

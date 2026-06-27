@@ -17,6 +17,7 @@ import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
 import { buildPendingGenBubble } from './pending-gen.js';
 import { enqueueBgJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
+import { chatFetch } from './server-queue.js';
 import { t, getPrompt, getPromptLanguage } from './i18n.js';
 import { getNumCtx, recordContextUsage, renderContextMeter } from './context-meter.js';
 import { addMemory, getMemoryPromptBlock } from './memory.js';
@@ -1918,59 +1919,70 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
       : t("analyze_workingImage");
     showPending(working);
 
-    const response = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: abortController.signal,
-      body: JSON.stringify({
-        model: dom.modelSelect.value,
-        messages,
-        options: { temperature: 0.5, num_ctx: getNumCtx() },
-        timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
-      }),
-    });
-    if (!response.ok) {
-      const d = await response.json().catch(() => ({}));
-      throw new Error(cleanErrorMessage(d.error) || "请求失败");
-    }
-
-    // 3. Stream the answer into the bubble.
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+    // 3. Run the vision model. A background (server) job submits the /api/chat call to
+    // the server-side queue so it survives a page close/reload (chatFetch reconnects by
+    // serverJobId, no re-inference); the foreground streams the answer into the bubble.
     let content = "";
-    let firstChunk = false;
-    const appendLine = (line) => {
-      if (!line.trim()) return;
-      const data = JSON.parse(line);
-      const chunk = data.message?.content || "";
-      if (!chunk) return;
-      if (!firstChunk) {
-        firstChunk = true;
-        if (!bg) setAvatarState("talking");
-        if (!bg && state.activeTabId === tabId) {
-          const bubble = dom.messagesEl.querySelector('.streaming-bubble');
-          // Clear ONLY the main body (the thinking <details> stays folded above it).
-          if (bubble) { bubble.classList.remove("thinking"); const mb = bubble.querySelector(":scope > .markdownBody"); if (mb) mb.innerHTML = ""; }
-        }
+    if (bg && bg.server) {
+      const resp = await chatFetch(
+        { model: dom.modelSelect.value, messages, options: { temperature: 0.5, num_ctx: getNumCtx() }, timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120 },
+        { bgJob: bg.server.bgJob, conversationId: bg.server.conversationId, msgId: bg.server.msgId, label: bg.server.label, signal: abortController.signal });
+      if (!resp.ok) throw new Error(cleanErrorMessage((await resp.json()).error) || "请求失败");
+      content = ((await resp.json()).content || "");
+    } else {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: abortController.signal,
+        body: JSON.stringify({
+          model: dom.modelSelect.value,
+          messages,
+          options: { temperature: 0.5, num_ctx: getNumCtx() },
+          timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+        }),
+      });
+      if (!response.ok) {
+        const d = await response.json().catch(() => ({}));
+        throw new Error(cleanErrorMessage(d.error) || "请求失败");
       }
-      content += chunk;
-      if (!bg && state.activeTabId === tabId) {
-        const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
-        if (md) { md.innerHTML = markdownToHtml(content); scrollChatToEndIfPinned(); }
-      }
-    };
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) appendLine(line);
+      // Stream the answer into the bubble.
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let firstChunk = false;
+      const appendLine = (line) => {
+        if (!line.trim()) return;
+        const data = JSON.parse(line);
+        const chunk = data.message?.content || "";
+        if (!chunk) return;
+        if (!firstChunk) {
+          firstChunk = true;
+          if (!bg) setAvatarState("talking");
+          if (!bg && state.activeTabId === tabId) {
+            const bubble = dom.messagesEl.querySelector('.streaming-bubble');
+            // Clear ONLY the main body (the thinking <details> stays folded above it).
+            if (bubble) { bubble.classList.remove("thinking"); const mb = bubble.querySelector(":scope > .markdownBody"); if (mb) mb.innerHTML = ""; }
+          }
+        }
+        content += chunk;
+        if (!bg && state.activeTabId === tabId) {
+          const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
+          if (md) { md.innerHTML = markdownToHtml(content); scrollChatToEndIfPinned(); }
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) appendLine(line);
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) appendLine(buffer);
     }
-    buffer += decoder.decode();
-    if (buffer.trim()) appendLine(buffer);
 
     cleanupPending();
     content = content.trim();
