@@ -2911,6 +2911,42 @@ button.secondary:disabled {
   white-space: nowrap;
 }
 
+/* Staged source-video chip: filename + its own × remove button. */
+.videoChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.videoChipRemove {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+  background: var(--line);
+  color: var(--ink);
+}
+
+.videoChipRemove:hover {
+  background: #d33;
+  color: #fff;
+}
+
+/* Batch-edit note shown when several source clips are staged. */
+.videoBatchHint {
+  flex-basis: 100%;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted, #888);
+  white-space: normal;
+}
+
 .iconButton {
   position: absolute;
   top: -8px;

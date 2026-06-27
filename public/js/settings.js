@@ -85,6 +85,15 @@ function saveChatMessage(message) {
   if (message.generatedVideos && message.generatedVideos.length > 0) {
     stored.generatedVideos = message.generatedVideos;
     stored.videoMime = message.videoMime || "video/mp4";
+    // Per-clip source-video metadata (batch video-edit) → resend reconstructs each
+    // clip. Legacy scalar fields kept for older single-video bubbles.
+    if (message.videoMimes) stored.videoMimes = message.videoMimes;
+    if (message.videoNames) stored.videoNames = message.videoNames;
+    if (message.videoWidths) stored.videoWidths = message.videoWidths;
+    if (message.videoHeights) stored.videoHeights = message.videoHeights;
+    if (message.videoName) stored.videoName = message.videoName;
+    if (message.videoWidth != null) stored.videoWidth = message.videoWidth;
+    if (message.videoHeight != null) stored.videoHeight = message.videoHeight;
   }
   if (message.generatedVideoThumbnails && message.generatedVideoThumbnails.length > 0) {
     stored.generatedVideoThumbnails = message.generatedVideoThumbnails;

@@ -645,7 +645,9 @@ dom.removeVideo.addEventListener("click", clearSelectedVideo);
 // else the (first) staged scene image. Clicking stores a NORMALISED {x,y} in state,
 // which comfyOverrides() forwards as opts.maskPoint → SAM2's positive seed.
 function maskPointSource() {
-  if (state.selectedVideo?.thumbnail) return state.selectedVideo.thumbnail;
+  // With several source clips staged the Replace point is pinned to the FIRST one.
+  const vids = getStagedVideos();
+  if (vids[0]?.thumbnail) return vids[0].thumbnail;
   const imgs = getStagedImages();
   return imgs.length ? (imgs[0].preview || (imgs[0].base64 ? `data:image/png;base64,${imgs[0].base64}` : null)) : null;
 }
@@ -1306,6 +1308,76 @@ function removeStagedImage(index) {
   }
 }
 
+// Normalize the staged video state into a flat array. Several source clips can be
+// staged for BATCH video-edit (each runs the same workflow once → its own output).
+function getStagedVideos() {
+  if (!state.selectedVideo) return [];
+  if (state.selectedVideo.multi) return state.selectedVideo.multi;
+  return [state.selectedVideo];
+}
+
+// Render the compose-area preview chips for the staged source video(s). Each chip
+// shows the original filename with its own × remove button.
+function renderStagedVideoPreview() {
+  const videos = getStagedVideos();
+  dom.videoPreviewName.innerHTML = "";
+  if (videos.length === 0) {
+    dom.videoPreview.hidden = true;
+    return;
+  }
+  videos.forEach((v, idx) => {
+    const chip = document.createElement("span");
+    chip.className = "fileChip videoChip";
+    const label = document.createElement("span");
+    label.textContent = `🎬 ${v.displayName || v.name}`;
+    chip.appendChild(label);
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "videoChipRemove";
+    rm.setAttribute("aria-label", "移除视频");
+    rm.textContent = "×";
+    rm.addEventListener("click", () => removeStagedVideo(idx));
+    chip.appendChild(rm);
+    dom.videoPreviewName.appendChild(chip);
+  });
+  // Batch hint: several clips → each runs the workflow once; the Replace point (if
+  // any) is pinned to the first clip.
+  if (videos.length > 1) {
+    const hint = document.createElement("span");
+    hint.className = "videoBatchHint";
+    hint.textContent = t("video_batchHint", { n: videos.length }) + " · " + t("video_batchReplaceNote");
+    dom.videoPreviewName.appendChild(hint);
+  }
+  // The global × button clears ALL staged videos; per-chip × removes just one.
+  dom.videoPreview.hidden = false;
+}
+
+// Append newly staged source videos to the existing selection (no hard count cap).
+function addStagedVideos(newVideos) {
+  if (!newVideos || newVideos.length === 0) return;
+  // A new source clip changes the scene → drop any old Replace point. The point is
+  // pinned to the FIRST staged video, so only clear it when starting from empty.
+  if (getStagedVideos().length === 0) state.animateMaskPoint = null;
+  const all = [...getStagedVideos(), ...newVideos];
+  state.selectedVideo = all.length === 1 ? all[0] : { multi: all };
+  renderStagedVideoPreview();
+}
+
+// Remove a single staged video by index, leaving the rest in place.
+function removeStagedVideo(index) {
+  const videos = getStagedVideos();
+  const wasFirst = index === 0;
+  videos.splice(index, 1);
+  if (videos.length === 0) {
+    clearSelectedVideo();
+    return;
+  }
+  state.selectedVideo = videos.length === 1 ? videos[0] : { multi: videos };
+  // The Replace point belonged to the (old) first video — drop it if that one went.
+  if (wasFirst) { state.animateMaskPoint = null; refreshMaskPointLabel(); }
+  renderStagedVideoPreview();
+}
+
 // File selection helper (images + documents)
 async function selectFile(file) {
   if (!file) return;
@@ -1338,21 +1410,19 @@ async function selectFile(file) {
     // helper the generated-clip backfill uses, so the format is consistent).
     const thumbnail = await videoThumbnail(dataUrl);
     const dims = await videoNaturalSize(dataUrl); // for Bernini source-aspect sizing
-    state.animateMaskPoint = null; // new source video → drop any old Replace point
-    state.selectedVideo = {
+    // Source clips ACCUMULATE: several can be staged for batch video-edit (each runs
+    // the chosen workflow once → its own output). A video can ride along with staged
+    // images; documents use a separate send path, so those stay mutually exclusive.
+    addStagedVideos([{
       base64: dataUrl.split(",")[1],
       mime: file.type || "video/mp4",
       name: makeUploadName(uploadStamp(), "video", file, 0, 1),
+      displayName: file.name,
       thumbnail,
       width: dims?.w,
       height: dims?.h,
-    };
-    // A video can ride along with staged images, but only one video at a time
-    // (assigning state.selectedVideo replaces any previous one). Documents use a
-    // separate send path that ignores videos, so those stay mutually exclusive.
+    }]);
     clearSelectedFile();
-    dom.videoPreviewName.textContent = `🎬 ${file.name}`;
-    dom.videoPreview.hidden = false;
     dom.messageInput.focus();
     return;
   }
@@ -1464,12 +1534,39 @@ async function selectFile(file) {
 
 // Handle multiple file selection
 async function selectMultipleFiles(files) {
-  // Videos are attached one at a time (display-only, no AI analysis).
-  if (files.some(f => f.type.startsWith("video/"))) {
-    const msgEl = document.createElement("div");
-    msgEl.className = "message system";
-    msgEl.textContent = "视频请单独上传，一次一个。";
-    dom.messagesEl.appendChild(msgEl);
+  // Videos batch together (each becomes its own source clip), but can't be mixed
+  // with images/documents in one drop — they take different send paths.
+  const hasVideo = files.some(f => f.type.startsWith("video/"));
+  if (hasVideo) {
+    if (files.some(f => !f.type.startsWith("video/"))) {
+      const msgEl = document.createElement("div");
+      msgEl.className = "message system";
+      msgEl.textContent = "视频请和图片 / 文件分开上传。";
+      dom.messagesEl.appendChild(msgEl);
+      return;
+    }
+    const videos = [];
+    const validFiles = [];
+    for (const file of files) {
+      if (file.size > 100 * 1024 * 1024) {
+        const msgEl = document.createElement("div");
+        msgEl.className = "message system";
+        msgEl.textContent = `视频 ${file.name} 太大了（超过 100MB），已跳过。`;
+        dom.messagesEl.appendChild(msgEl);
+        continue;
+      }
+      const dataUrl = await readFileAsDataUrl(file);
+      const thumbnail = await videoThumbnail(dataUrl);
+      const dims = await videoNaturalSize(dataUrl);
+      videos.push({ base64: dataUrl.split(",")[1], mime: file.type || "video/mp4", thumbnail, width: dims?.w, height: dims?.h, _file: file });
+      validFiles.push(file);
+    }
+    if (videos.length === 0) return;
+    const stamp = uploadStamp();
+    videos.forEach((v, i) => { v.name = makeUploadName(stamp, "video", validFiles[i], i, videos.length); v.displayName = validFiles[i].name; delete v._file; });
+    addStagedVideos(videos);
+    clearSelectedFile();
+    dom.messageInput.focus();
     return;
   }
   const hasImage = files.some(f => f.type.startsWith("image/"));

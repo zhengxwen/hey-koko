@@ -134,22 +134,34 @@ function bgImagineLabel(cmds, isVideo) {
 // Generation (image/video/audio) always runs through the background queue. This
 // builds the image/video job from the parsed /imagine commands — shared by a fresh
 // send and a resend so the model is snapshotted the same way in both.
-function enqueueImagineGen(validCmds, tabId, images, video, mask, insertIndex = -1) {
+function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertIndex = -1) {
   // A ComfyUI video model (no Ollama image model) routes through generateVideo —
   // capture model + kind at submit time so a later dropdown change can't redirect it.
   const isVideo = !dom.imageModelSelect.value && dom.comfyModelSelect && state.comfyVideoModels.has(dom.comfyModelSelect.value);
-  enqueueBgJob({
-    tabId,
-    kind: isVideo ? "video" : "image",
-    label: bgImagineLabel(validCmds, isVideo),
-    insertIndex,
-    payload: {
-      parsedInput: validCmds,
-      initImages: images || null,
-      initVideo: video || null,
-      maskB64: mask || null,
-      modelOverride: { imageModel: dom.imageModelSelect.value, comfyModel: dom.comfyModelSelect ? dom.comfyModelSelect.value : "" },
-    },
+  const modelOverride = { imageModel: dom.imageModelSelect.value, comfyModel: dom.comfyModelSelect ? dom.comfyModelSelect.value : "" };
+  // BATCH video-edit: one bg job per source clip (each runs the same workflow → its
+  // own output). All jobs share the reference images + mask point; the Replace point
+  // is pinned to the FIRST clip server-side. No source video (or an image model that
+  // can't consume clips) → a single job.
+  const clips = isVideo ? (Array.isArray(videos) ? videos.filter(Boolean) : (videos ? [videos] : [])) : [];
+  const multi = clips.length > 1;
+  const jobs = clips.length ? clips : [null];
+  jobs.forEach((clip, i) => {
+    enqueueBgJob({
+      tabId,
+      kind: isVideo ? "video" : "image",
+      // Tag the label with "(N/M)" so the jobs drawer distinguishes a batch's clips.
+      label: bgImagineLabel(validCmds, isVideo) + (multi ? ` (${i + 1}/${clips.length})` : ""),
+      // Keep batch order: each placeholder lands AFTER the previous one.
+      insertIndex: insertIndex >= 0 ? insertIndex + i : -1,
+      payload: {
+        parsedInput: validCmds,
+        initImages: images || null,
+        initVideo: clip || null,
+        maskB64: mask || null,
+        modelOverride,
+      },
+    });
   });
 }
 
@@ -332,16 +344,52 @@ function deleteMessageImage(msgIndex, imgIndex) {
 // Reconstruct the source-video object (for Bernini v2v/rv2v) from a stored user
 // message, so resend / edit-then-enter re-trigger the video edit with the same
 // source clip. The uploaded source rides on the message's generatedVideos field.
+// Reconstruct ALL source-video objects from a stored user bubble (batch video-edit
+// stages several clips). Per-clip metadata is stored as parallel arrays; older
+// single-video bubbles used scalar videoName/videoWidth/videoHeight — fall back to
+// those so resend still works on legacy messages.
+function messageSourceVideos(m) {
+  if (!m || !Array.isArray(m.generatedVideos) || !m.generatedVideos.length) return [];
+  const names = Array.isArray(m.videoNames) ? m.videoNames : (m.videoName ? [m.videoName] : []);
+  const mimes = Array.isArray(m.videoMimes) ? m.videoMimes : [];
+  const widths = Array.isArray(m.videoWidths) ? m.videoWidths : (m.videoWidth != null ? [m.videoWidth] : []);
+  const heights = Array.isArray(m.videoHeights) ? m.videoHeights : (m.videoHeight != null ? [m.videoHeight] : []);
+  const thumbs = Array.isArray(m.generatedVideoThumbnails) ? m.generatedVideoThumbnails : [];
+  return m.generatedVideos.map((b64, i) => ({
+    base64: b64,
+    mime: mimes[i] || m.videoMime || "video/mp4",
+    name: names[i] || undefined,
+    thumbnail: thumbs[i] || undefined,
+    width: widths[i] ?? undefined,
+    height: heights[i] ?? undefined,
+  }));
+}
+
+// Back-compat single-source helper (analyze re-runs only the first clip).
 function messageSourceVideo(m) {
-  if (!m || !Array.isArray(m.generatedVideos) || !m.generatedVideos.length) return null;
-  return {
-    base64: m.generatedVideos[0],
-    mime: m.videoMime || "video/mp4",
-    name: m.videoName,
-    thumbnail: m.generatedVideoThumbnails?.[0],
-    width: m.videoWidth,
-    height: m.videoHeight,
-  };
+  return messageSourceVideos(m)[0] || null;
+}
+
+// Normalize the staged-video send form (single object or {multi:[...]}) to an array.
+function stagedVideoList(video) {
+  if (!video) return [];
+  if (video.multi) return video.multi;
+  return [video];
+}
+
+// Stamp a user bubble with the staged source video(s). They reuse generatedVideos so
+// they render/persist like generated clips; per-clip metadata rides as parallel arrays
+// (videoNames/videoMimes/videoWidths/videoHeights) so each can be reconstructed for
+// resend / batch dispatch. videoMime stays scalar — it only drives the <video> type.
+function attachVideosToMessage(userMessage, videos) {
+  if (!videos || !videos.length) return;
+  userMessage.generatedVideos = videos.map(v => v.base64);
+  userMessage.videoMime = videos[0].mime || "video/mp4";
+  userMessage.videoMimes = videos.map(v => v.mime || "video/mp4");
+  userMessage.videoNames = videos.map(v => v.name || null);
+  if (videos.some(v => v.thumbnail)) userMessage.generatedVideoThumbnails = videos.map(v => v.thumbnail || null);
+  if (videos.some(v => v.width != null)) userMessage.videoWidths = videos.map(v => v.width ?? null);
+  if (videos.some(v => v.height != null)) userMessage.videoHeights = videos.map(v => v.height ?? null);
 }
 
 function deleteMessageVideo(msgIndex, vidIndex) {
@@ -471,8 +519,8 @@ function resendChatMessage(index) {
   const imagineCmds = parseImagineCommands(message.content);
   if (imagineCmds) {
     const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
-    const srcVid = messageSourceVideo(message);
-    const hasAttach = !!((message.images && message.images.length) || srcVid);
+    const srcVids = messageSourceVideos(message);
+    const hasAttach = !!((message.images && message.images.length) || srcVids.length);
     const validCmds = imagineCmds.filter((cmd) => cmd && !cmd.error && (cmd.prompt || hasAttach));
     if (firstError) {
       tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_commandError", { error: firstError.error }), timestamp: Date.now() });
@@ -486,7 +534,7 @@ function resendChatMessage(index) {
       // Resend of image/video gen also goes to the background queue (reached only
       // when the queue is empty — a non-empty queue is blocked above with a dialog).
       // The placeholder lands right after the resent user bubble (index + 1).
-      enqueueImagineGen(validCmds, state.activeTabId, message.images || null, srcVid, message.mask || null, index + 1);
+      enqueueImagineGen(validCmds, state.activeTabId, message.images || null, srcVids, message.mask || null, index + 1);
     }
   } else {
     // Truncate context to the resent bubble: only messages up to and including
@@ -2160,21 +2208,16 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       }
       userMessage.previewImage = userMessage.previewImages[0];
     }
-    // An attached video is the SOURCE for a video-edit model (Bernini v2v/rv2v).
-    // It rides on the user bubble for display (reusing the generatedVideos field).
-    if (video) {
-      userMessage.generatedVideos = [video.base64];
-      userMessage.videoMime = video.mime || "video/mp4";
-      if (video.name) userMessage.videoName = video.name;
-      if (video.thumbnail) userMessage.generatedVideoThumbnails = [video.thumbnail];
-      if (video.width) userMessage.videoWidth = video.width;
-      if (video.height) userMessage.videoHeight = video.height;
-    }
+    // Attached video(s) are the SOURCE for a video-edit model (Bernini / Animate).
+    // Several clips can be staged → each runs the workflow once (batch). They ride on
+    // the user bubble for display (reusing the generatedVideos field).
+    const imagineVideos = stagedVideoList(video);
+    attachVideosToMessage(userMessage, imagineVideos);
     tab.messages.push(userMessage);
     const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
     // A bare "/imagine" (no prompt) is valid only when something is attached
     // (image or video) — the gen is then attachment-driven (video edit / img2img).
-    const hasAttach = !!(image || video);
+    const hasAttach = !!(image || imagineVideos.length);
     const validCmds = imagineCmds.filter((cmd) => cmd && !cmd.error && (cmd.prompt || hasAttach));
     if (firstError) {
       tab.messages.push({ role: "assistant", content: t("msg_commandError", { error: firstError.error }), timestamp: Date.now() });
@@ -2185,10 +2228,11 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       saveChat();
       if (state.activeTabId === tabId) renderChat();
     } else {
-      // Generation ALWAYS goes to the background queue.
+      // Generation ALWAYS goes to the background queue. One source clip → one job;
+      // multiple clips fan out (cartesian with each command's count).
       saveChat();
       if (state.activeTabId === tabId) renderChat();
-      enqueueImagineGen(validCmds, tabId, userMessage.images || null, video || null, userMessage.mask || null);
+      enqueueImagineGen(validCmds, tabId, userMessage.images || null, imagineVideos, userMessage.mask || null);
     }
     return;
   }
@@ -2230,12 +2274,9 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       }
       userMessage.previewImage = userMessage.previewImages[0];
     }
-    if (video) {
-      userMessage.generatedVideos = [video.base64];
-      userMessage.videoMime = video.mime || "video/mp4";
-      if (video.name) userMessage.videoName = video.name;
-      if (video.thumbnail) userMessage.generatedVideoThumbnails = [video.thumbnail];
-    }
+    // /analyze inspects only the FIRST staged clip (vision analysis isn't batched).
+    const analyzeVideos = stagedVideoList(video);
+    attachVideosToMessage(userMessage, analyzeVideos);
     tab.messages.push(userMessage);
     // anchorIndex = the bubble just before this /analyze command, for the
     // no-attachment fallback that scans backwards for the nearest media bubble.
@@ -2244,7 +2285,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     if (state.activeTabId === tabId) renderChat();
     // Vision analysis ALWAYS goes to the background queue (it can be slow — frame
     // sampling + a multi-image vision pass).
-    enqueueAnalyzeJob(analyzeCmd, tabId, image, video, anchorIndex);
+    enqueueAnalyzeJob(analyzeCmd, tabId, image, analyzeVideos[0] || null, anchorIndex);
     return;
   }
 
@@ -2326,16 +2367,11 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     userMessage.previewImage = userMessage.previewImages[0]; // backward compat
   }
 
-  // An uploaded video rides along on the user bubble for display only. It reuses
-  // the generatedVideos field so it renders/persists like a generated clip, but
+  // Uploaded video(s) ride along on the user bubble for display only. They reuse the
+  // generatedVideos field so they render/persist like generated clips, but
   // buildMessages() never forwards videos to the model — so there's no AI analysis.
-  if (video) {
-    userMessage.generatedVideos = [video.base64];
-    userMessage.videoMime = video.mime || "video/mp4";
-    if (video.name) userMessage.videoName = video.name;
-    // Poster shown before playback (reuses the generated-clip thumbnail field).
-    if (video.thumbnail) userMessage.generatedVideoThumbnails = [video.thumbnail];
-  }
+  const plainVideos = stagedVideoList(video);
+  attachVideosToMessage(userMessage, plainVideos);
 
   tab.messages.push(userMessage);
   saveChat();
@@ -2343,7 +2379,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
 
   // A video with no accompanying text/image is purely an upload — nothing for the
   // model to respond to, so don't trigger a reply.
-  if (video && !content && !image) return;
+  if (plainVideos.length && !content && !image) return;
 
   // Tools enabled (and no image — vision + tools is unreliable on local models) → agent loop.
   if (dom.toolsToggle?.checked && !image) {
@@ -2985,10 +3021,12 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       }
       // Download button (bottom-right) — an <a download> pointing at the (data) URL.
       // Tooltip shows the filename and decoded byte size.
-      // An uploaded clip keeps its original filename; generated clips fall back to
-      // the timestamp. (videoName only exists for single uploaded videos.)
-      const uploadedName = Number.isInteger(index) ? getActiveTab().messages[index]?.videoName : null;
-      const vname = mediaFilename(generatedVideos.length === 1 ? uploadedName : null, timestamp, "video", vext, vi, generatedVideos.length);
+      // An uploaded clip keeps its own upload filename; generated clips fall back to
+      // the timestamp. Uploaded source clips store per-clip names in videoNames[]
+      // (legacy single-video bubbles used the scalar videoName).
+      const msg = Number.isInteger(index) ? getActiveTab().messages[index] : null;
+      const uploadedName = msg ? (Array.isArray(msg.videoNames) ? msg.videoNames[vi] : (generatedVideos.length === 1 ? msg.videoName : null)) : null;
+      const vname = mediaFilename(uploadedName || null, timestamp, "video", vext, vi, generatedVideos.length);
       // Lazy href: reuses the already-loaded blob URL if the video is loaded,
       // else builds one on demand (see makeDownloadButton) — avoids decoding the
       // clip at render time just to populate the link.
