@@ -253,15 +253,23 @@ function finish(result) {
 }
 
 // Export the painted mask as a black/white PNG (white = repaint). Returns null if
-// nothing was painted (caller treats that as "no mask").
+// the mask is effectively EMPTY — checked by scanning the actual painted pixels,
+// not the coarse `dirty` flag, so "cleared" is honoured however it happened:
+// the Clear button, erasing every stroke away, or never painting. An all-black
+// mask would otherwise be sent and the server would repaint nothing (wasteful).
 function exportMask() {
-  if (!dirty) return null;
+  if (!maskCanvas) return null;
+  const w = maskCanvas.width, h = maskCanvas.height;
+  const data = maskCtx.getImageData(0, 0, w, h).data;
+  let painted = false;
+  for (let p = 3; p < data.length; p += 4) { if (data[p] > 10) { painted = true; break; } } // any non-transparent (white) pixel
+  if (!painted) return null;
   const out = document.createElement("canvas");
-  out.width = maskCanvas.width;
-  out.height = maskCanvas.height;
+  out.width = w;
+  out.height = h;
   const octx = out.getContext("2d");
   octx.fillStyle = "#000000";
-  octx.fillRect(0, 0, out.width, out.height);
+  octx.fillRect(0, 0, w, h);
   octx.drawImage(maskCanvas, 0, 0); // white strokes over black
   return out.toDataURL("image/png");
 }

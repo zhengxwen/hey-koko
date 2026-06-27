@@ -12,7 +12,7 @@ import { stopSpeech, populateVoiceList, speakAdjacent } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
-import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize } from './image-gen.js';
+import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsMask } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
 import { renderChat, sendMessage, setGenerating, regenerateReply, analyzeMedia, generateProactiveReply, markStopping, showSendError } from './chat.js';
@@ -338,8 +338,8 @@ dom.modelSelect.addEventListener("change", () => {
   saveCurrentSettings();
   refreshModelMaxContext(dom.modelSelect.value);
 });
-dom.imageModelSelect.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); renderStagedImagePreview(); });
-dom.comfyModelSelect?.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); updateComfyMultiHint(); applyInputPlaceholder(); renderStagedImagePreview(); });
+dom.imageModelSelect.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); renderStagedImagePreview(); renderChat(); });
+dom.comfyModelSelect?.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); updateComfyMultiHint(); applyInputPlaceholder(); renderStagedImagePreview(); renderChat(); });
 dom.voiceSelect.addEventListener("change", saveCurrentSettings);
 if (dom.numCtxSelect) {
   dom.numCtxSelect.addEventListener("change", () => {
@@ -1199,12 +1199,9 @@ function renderStagedImagePreview() {
     btn.addEventListener("click", () => removeStagedImage(idx));
     thumb.appendChild(btn);
 
-    // Inpaint mask: only for a SINGLE staged image with a ComfyUI IMAGE model
-    // selected (the Ollama path can't use a mask; video models don't take one).
-    // Lets the user paint the region to repaint.
-    const comfyModel = dom.comfyModelSelect && dom.comfyModelSelect.value;
-    const comfyActive = !!(comfyModel && !dom.imageModelSelect.value && !(state.comfyVideoModels && state.comfyVideoModels.has(comfyModel)));
-    if (images.length === 1 && comfyActive) {
+    // Inpaint mask: only for a SINGLE staged image with a mask-capable ComfyUI
+    // model selected. Lets the user paint the region to repaint.
+    if (images.length === 1 && comfyModelSupportsMask()) {
       const maskBtn = document.createElement("button");
       maskBtn.type = "button";
       maskBtn.className = "previewThumbMask" + (img.mask ? " hasMask" : "");

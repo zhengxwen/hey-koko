@@ -230,13 +230,17 @@ async function proxyComfyModels(req, res) {
     // are not wired yet, so they're left out to avoid broken options.
     const plainCkpts = ckpts.filter((n) => !editTypeOf(n) && !videoTypeOf(n) && !/hidream/i.test(n));
     const hidreamImage = all.filter((n) => /hidream.?i1/i.test(n));
+    // HiDream-O1 (pixel-space UiT): a CheckpointLoaderSimple model that does BOTH
+    // txt2img and reference editing — surfaced in the main image list (attach an
+    // image to edit). Buildt by buildHiDreamO1, not the I1/E1 path.
+    const hidreamO1 = all.filter((n) => /hidream.?o1/i.test(n));
     // Z-Image-Turbo lives in diffusion_models/ (UNETLoader) — add it to txt2img.
     const zimage = all.filter((n) => /z.?image/i.test(n));
     // boogu (base + turbo) — UNETLoader image model, AuraFlow/SD3-latent pipeline.
     // boogu_image_edit is an instruction-edit model → excluded here (it's picked
     // up by editTypeOf into editModels instead).
     const boogu = all.filter((n) => /boogu/i.test(n) && !editTypeOf(n));
-    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...zimage, ...boogu], editModels, videoModels, hostname });
+    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu], editModels, videoModels, hostname });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [] });
   }
@@ -323,6 +327,11 @@ function familyPreset(model) {
     // follow the instruction), imageCfg = image guidance (how faithful to the
     // input — higher preserves more). More steps helps on real photos.
     return { sampler: "euler", scheduler: "normal", cfg: 7.5, imageCfg: 1.5, guidance: null, steps: 30, sd3Latent: false };
+  }
+  if (/hidream.?o1/i.test(model)) {
+    // HiDream-O1 (pixel-space UiT): SamplerCustom with dpmpp_2m_sde_gpu / normal /
+    // 40 steps / cfg 5 (official template, Full checkpoint). Not an SD3 latent.
+    return { sampler: "dpmpp_2m_sde_gpu", scheduler: "normal", cfg: 5, guidance: null, steps: 40, sd3Latent: false };
   }
   if (/hidream/i.test(model)) {
     return { sampler: "euler", scheduler: "normal", cfg: 5, guidance: null, steps: 30, sd3Latent: true };
@@ -574,6 +583,50 @@ function buildHiDreamEdit({ model, prompt, negative, imageName, maskName, seed, 
     wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
     wf["21"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["15", 0], mask: ["20", 0] } };
     wf["8"].inputs.latent_image = ["21", 0];
+  }
+  return wf;
+}
+
+// HiDream-O1-Image — a pixel-space Unified Transformer (UiT). Unlike I1/E1 it
+// loads EVERYTHING from CheckpointLoaderSimple (the CLIP + VAE are bundled) and
+// samples in pixel space via SamplerCustom, so the model is wrapped in
+// ModelNoiseScale (noise_scale 8) + an optional HiDreamO1PatchSeamSmoothing pass
+// (reduces tiled-patch seams on large images), and the canvas is the dedicated
+// EmptyHiDreamO1LatentImage — NOT a VAEEncode. It does BOTH text→image and
+// reference editing: attaching image(s) routes them through HiDreamO1ReferenceImages
+// into the CONDITIONING (1 image = instruction edit, 2–10 = multi-reference); the
+// latent stays empty either way. Mirrors the official ComfyUI O1 template
+// (dpmpp_2m_sde_gpu / normal / 40 steps / cfg 5). Dims snap to /32 (latent step).
+function buildHiDreamO1({ model, prompt, negative, imageNames, width, height, seed, cfg }) {
+  const snap32 = (v, d) => { const n = Math.round((v || d) / 32) * 32; return Math.max(64, Math.min(4096, n)); };
+  const W = snap32(width, 1024), H = snap32(height, 1024);
+  const isEdit = Array.isArray(imageNames) && imageNames.length > 0;
+  const wf = {
+    "6": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: model } },
+    "124": { class_type: "ModelNoiseScale", inputs: { model: ["6", 0], noise_scale: 8 } },
+    "232": { class_type: "HiDreamO1PatchSeamSmoothing", inputs: { model: ["124", 0], start_percent: 0.8, end_percent: 1.0, pattern: "single_shift", passes: "ramp_2_4", blend: "median", strength: 1.0 } },
+    "110": { class_type: "CLIPTextEncode", inputs: { clip: ["6", 1], text: prompt } },
+    "188": { class_type: "CLIPTextEncode", inputs: { clip: ["6", 1], text: negative || "" } },
+    "112": { class_type: "BasicScheduler", inputs: { model: ["124", 0], scheduler: cfg.scheduler, steps: cfg.steps, denoise: 1 } },
+    "230": { class_type: "KSamplerSelect", inputs: { sampler_name: cfg.sampler } },
+    "156": { class_type: "EmptyHiDreamO1LatentImage", inputs: { width: W, height: H, batch_size: 1 } },
+    "108": { class_type: "SamplerCustom", inputs: { add_noise: true, noise_seed: seed, cfg: cfg.cfg, model: ["232", 0], positive: ["110", 0], negative: ["188", 0], sampler: ["230", 0], sigmas: ["112", 0], latent_image: ["156", 0] } },
+    "105": { class_type: "VAEDecode", inputs: { samples: ["108", 0], vae: ["6", 2] } },
+    "227": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["105", 0] } },
+  };
+  if (isEdit) {
+    // Reference images feed the conditioning. This COMFY_AUTOGROW_V3 input uses
+    // DOTTED socket keys "images.image_1".."images.image_10" (verified live on the
+    // node — a plain list or bare image_N is rejected). The latent stays empty.
+    const refInputs = { positive: ["110", 0], negative: ["188", 0] };
+    imageNames.slice(0, 10).forEach((nm, i) => {
+      const id = String(40 + i);
+      wf[id] = { class_type: "LoadImage", inputs: { image: nm } };
+      refInputs["images.image_" + (i + 1)] = [id, 0];
+    });
+    wf["104"] = { class_type: "HiDreamO1ReferenceImages", inputs: refInputs };
+    wf["108"].inputs.positive = ["104", 0];
+    wf["108"].inputs.negative = ["104", 1];
   }
   return wf;
 }
@@ -1254,7 +1307,7 @@ async function animateCompanions() {
 // CreateVideo muxes the source audio+fps. `chunks` = [{offset,length}, …] (length 1 =
 // single pass). Two LoRAs (lightx2v distill 6-step turbo + relight); ModelSamplingSD3
 // shift 8; optional torch.compile.
-function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, fps, torchCompile = false, chunks, replace = false, relightStrength = 1 }) {
+function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, fps, torchCompile = false, chunks, replace = false, relightStrength = 1, maskPoint = null }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   // Relight LoRA strength: how hard the character is re-lit to match the scene
   // (0 = keep the reference image's own lighting, 1 = full default). Clamped 0–2.
@@ -1913,6 +1966,26 @@ async function generateComfyImage(req, res) {
           const maskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mask.png") : null;
           workflow = buildEditWorkflow(editType, { model, prompt, negative: negative_prompt || "", imageName, maskName, seed, cfg, comp, denoise: editDenoise, width: ew, height: eh });
         }
+      } else if (/hidream.?o1/i.test(model)) {
+        // HiDream-O1 (pixel-space UiT): text→image, or reference editing when
+        // image(s) are attached (1 = instruction edit, up to 10 = multi-reference).
+        // Everything loads from the checkpoint — no companion files. Editing sizes
+        // the canvas to the first input image; t2i uses the requested/auto size.
+        let imageNames = null, ow = width, oh = height;
+        if (isImg2Img) {
+          imageNames = [];
+          for (const im of images.slice(0, 10)) imageNames.push(await uploadImage(im, controller.signal));
+          const d = imageDims(images[0]);
+          if (d) {
+            ow = d.width; oh = d.height;
+            // Pixel-space sampling is VRAM-heavy — cap the canvas to the model's
+            // trained range (≤2048 on the long side), preserving aspect.
+            const m = Math.max(ow, oh);
+            if (m > 2048) { const k = 2048 / m; ow = Math.round(ow * k); oh = Math.round(oh * k); }
+          }
+          if (opts.width && opts.height) { ow = opts.width; oh = opts.height; } // explicit --size wins
+        }
+        workflow = buildHiDreamO1({ model, prompt, negative: negative_prompt || "", imageNames, width: ow, height: oh, seed, cfg });
       } else if (/hidream.?i1/i.test(model)) {
         // HiDream-I1 txt2img (UNET + QuadrupleCLIPLoader); ignores any attached image.
         const comp = await hidreamCompanions();

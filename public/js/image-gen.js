@@ -88,6 +88,22 @@ function comfyNegative(parsedNegative) {
   return v || undefined;
 }
 
+// Whether the currently-selected ComfyUI model can use an inpaint mask. True for
+// any image model that takes a source image (plain checkpoints + all instruction
+// editors + boogu img2img); false for the Ollama path, video models, and the
+// txt2img-only models that have no source latent to mask (HiDream-I1 / Z-Image).
+// Shared by the compose-area staged thumbnail and the sent-bubble mask button so
+// both surfaces agree on when the 🖌 control appears.
+export function comfyModelSupportsMask() {
+  const comfyModel = dom.comfyModelSelect?.value;
+  if (!comfyModel) return false;
+  if (dom.imageModelSelect?.value) return false; // Ollama image model wins → no mask
+  if (state.comfyVideoModels && state.comfyVideoModels.has(comfyModel)) return false;
+  if (/hidream.?i1|z.?image/i.test(comfyModel)) return false; // txt2img-only
+  if (/hidream.?o1/i.test(comfyModel)) return false; // O1 edits via reference conditioning on an empty latent — no source latent to mask
+  return true;
+}
+
 export function parseNoteCommand(input) {
   const match = input.match(/^\/note\s+(.+)$/s);
   if (!match) return null;
@@ -539,7 +555,14 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   setAvatarState("thinking");
 
   const vidModel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
-  const vidImgs = refImages && refImages.length > 1 ? ` · ${t("msg_inputImages", { n: refImages.length })}` : "";
+  // Wan Animate (with a source video) uses only ONE reference image (the character);
+  // any extra attached images are ignored. Say so instead of the generic "N images"
+  // count, so the user doesn't think the extras took effect.
+  const vidImgs = refImages && refImages.length > 1
+    ? (/animate/i.test(model || "")
+        ? ` · ${t("msg_animateFirstImageOnly", { n: refImages.length })}`
+        : ` · ${t("msg_inputImages", { n: refImages.length })}`)
+    : "";
   const vidSuffix = `${vidModel ? ` · ${vidModel}` : ""}${vidImgs}`;
   // When --enhance is set, show the enhancement step first, then flip to the
   // generating status once the (slow) prompt rewrite returns. The bubble lives in

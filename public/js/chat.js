@@ -10,7 +10,8 @@ import { setAvatarState, showExpression, detectExpression } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.js';
-import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractVideoFrames } from './image-gen.js';
+import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractVideoFrames, comfyModelSupportsMask } from './image-gen.js';
+import { openMaskModal } from './mask-paint.js';
 import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
@@ -2694,6 +2695,32 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
         : src;
       const fname = mediaFilename(imageNames?.[imgIdx], timestamp, "image", imageExtFromSrc(dlSrc), imgIdx, previews.length);
       wrapper.appendChild(makeDownloadButton("imageDownloadBtn", dlSrc, fname, base64ByteLength(dlSrc), t("btn_downloadImage")));
+      // Inpaint mask: on a SINGLE-image USER bubble, when a mask-capable ComfyUI
+      // model is selected, float a 🖌 button (top-right) to paint/edit the region.
+      // The mask is stored on the message; a resend then regenerates with it.
+      if (role === "user" && previews.length === 1 && Number.isInteger(index) && comfyModelSupportsMask()) {
+        const maskBtn = document.createElement("button");
+        maskBtn.type = "button";
+        maskBtn.className = "messageMaskBtn" + (msg?.mask ? " hasMask" : "");
+        maskBtn.title = msg?.mask ? "编辑修改区域蒙版（已设置，重发以应用）" : "涂抹要修改的区域（局部重绘，重发以应用）";
+        maskBtn.setAttribute("aria-label", "涂抹蒙版");
+        maskBtn.textContent = "🖌";
+        maskBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          const tab = getActiveTab();
+          const mm = tab?.messages?.[index];
+          if (!mm) return;
+          const b64 = mm.images?.[0] || "";
+          const fullSrc = b64
+            ? (b64.startsWith("data:") || b64.startsWith("http") ? b64 : `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`)
+            : src;
+          const result = await openMaskModal(fullSrc, mm.mask || null);
+          mm.mask = result || undefined; // null = cleared/cancelled → drop the mask
+          saveChat();
+          renderChat();
+        });
+        wrapper.appendChild(maskBtn);
+      }
       container.appendChild(wrapper);
     });
     if (container !== item) item.appendChild(container);

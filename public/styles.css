@@ -3712,6 +3712,48 @@ button.secondary:disabled {
   background: var(--accent);
 }
 
+/* Inpaint mask edit overlay (top-right) on a single-image user bubble. */
+.messageMaskBtn {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  /* Override the global button rule (min-height:42px / padding:0 16px) so the blue
+     background stays a 28×28 square with the icon centered. */
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  z-index: 2;
+}
+
+.imageWrapper:hover .messageMaskBtn {
+  opacity: 1;
+}
+
+.messageMaskBtn:hover {
+  background: var(--accent);
+}
+
+/* A mask is set on this message — keep the button visible and accented. */
+.messageMaskBtn.hasMask {
+  opacity: 1;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-focus);
+}
+
 /* Uploaded image previews — wrap each img so the download overlay can anchor. */
 .messageImageWrapper {
   position: relative;
