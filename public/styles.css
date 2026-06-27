@@ -4324,6 +4324,11 @@ button.secondary:disabled {
   color: var(--ink);
   padding: 0;
 }
+/* The jump button is a <button>, so the global button:hover would paint it the accent
+   colour — too loud for a whole row. Keep it flat and use a subtle accent outline on
+   the row instead (inset box-shadow → no layout shift, background unchanged). */
+.bgJobMain:hover { background: transparent; color: var(--ink); }
+.bgJobRow:hover { box-shadow: inset 0 0 0 1.5px var(--accent); }
 .bgJobTop { display: flex; align-items: center; gap: 6px; }
 .bgJobLabel {
   flex: 1;
@@ -4426,6 +4431,11 @@ button.secondary:disabled {
   right: 5px;
   z-index: 2;
   cursor: pointer;
+  /* 2/3 the size of a chat bubble's × (24px/16px → 16px/11px). */
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  font-size: 11px;
 }
 .bgJob-error .bgJobStatus, .bgJob-interrupted .bgJobStatus { color: #d9534f; }
 .bgJob-done .bgJobStatus { color: var(--accent-strong); }

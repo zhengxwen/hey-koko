@@ -154,6 +154,17 @@ async function resolveBerniniAuto() {
   return unets.find((n) => /bernini/i.test(n) && /high_noise/i.test(n)) || null;
 }
 
+// Sentinel for the "wan animate (replace)" dropdown entry. Replace mode reuses the
+// SAME Animate UNET as Move — only the workflow differs (it adds a person mask +
+// blacked-out background so the character is composited back into the source scene).
+// Resolved at generation time to the real animate UNET filename.
+const ANIMATE_REPLACE = "wan_animate_replace";
+
+async function resolveAnimateUnet() {
+  const unets = await comfyEnum("UNETLoader", "unet_name");
+  return unets.find((n) => videoTypeOf(n) === "animate") || null;
+}
+
 // List both classic checkpoints (txt2img / classic img2img) and the
 // instruction-edit models found in diffusion_models/.
 async function proxyComfyModels(req, res) {
@@ -193,9 +204,13 @@ async function proxyComfyModels(req, res) {
         if (!addedBernini) { videoModels.push({ name: BERNINI_AUTO, type: "bernini", label: "bernini (i2v / video edit)", needsVideo: true }); addedBernini = true; }
         continue;
       }
-      // Wan Animate (pose transfer) — single model; give it a clean label.
+      // Wan Animate (pose transfer) — one UNET, two modes:
+      //  • move    → character does the source video's motion (clean background)
+      //  • replace → character REPLACES the person in the source video (scene kept)
+      // Both need a source video; replace is resolved back to this UNET at gen time.
       if (vt === "animate") {
         videoModels.push({ name: n, type: "animate", label: "wan animate (move)", needsVideo: true });
+        videoModels.push({ name: ANIMATE_REPLACE, type: "animate", label: "wan animate (replace)", needsVideo: true });
         continue;
       }
       const is14b = /14b/i.test(n);
@@ -1239,7 +1254,7 @@ async function animateCompanions() {
 // CreateVideo muxes the source audio+fps. `chunks` = [{offset,length}, …] (length 1 =
 // single pass). Two LoRAs (lightx2v distill 6-step turbo + relight); ModelSamplingSD3
 // shift 8; optional torch.compile.
-function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, fps, torchCompile = false, chunks }) {
+function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, fps, torchCompile = false, chunks, replace = false }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   const segs = (Array.isArray(chunks) && chunks.length) ? chunks : [{ offset: 0, length: 77 }];
   const dw = (face) => ({
@@ -1278,6 +1293,23 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
     "17": dw(false), // pose_video (body + hands)
   };
   if (torchCompile) wf["25"] = { class_type: "TorchCompileModel", inputs: { model: ["3", 0], backend: "inductor" } };
+  // REPLACE mode: composite the new character back into the SOURCE scene instead of a
+  // clean background. Per the official Animate template:
+  //  • character_mask  = SAM2 person mask → GrowMask(10) → BlockifyMask(32) (coarse blocks)
+  //  • background_video = source frames with the person region painted BLACK (DrawMaskOnImage)
+  // SAM2 runs locally (no cloud matte → keeps the privacy guarantee). The person is
+  // auto-seeded with a single positive point at frame CENTER (the template's default —
+  // works for a roughly-centered subject; a tracked video SAM2 model propagates it).
+  // Both feed the SAME full-length nodes; WanAnimateToVideo slices them per chunk by
+  // (video_frame_offset, length), exactly like face_video / pose_video.
+  if (replace) {
+    const centerPt = JSON.stringify([{ x: Math.round(width / 2), y: Math.round(height / 2) }]);
+    wf["30"] = { class_type: "DownloadAndLoadSAM2Model", inputs: { model: "sam2_hiera_base_plus.safetensors", segmentor: "video", device: "cuda", precision: "fp16" } };
+    wf["31"] = { class_type: "Sam2Segmentation", inputs: { sam2_model: ["30", 0], image: ["13", 0], keep_model_loaded: false, coordinates_positive: centerPt } };
+    wf["32"] = { class_type: "GrowMask", inputs: { mask: ["31", 0], expand: 10, tapered_corners: true } };
+    wf["33"] = { class_type: "BlockifyMask", inputs: { masks: ["32", 0], block_size: 32 } };
+    wf["34"] = { class_type: "DrawMaskOnImage", inputs: { image: ["13", 0], mask: ["33", 0], color: "0, 0, 0" } };
+  }
   // Per-chunk: WanAnimateToVideo → KSampler → TrimVideoLatent → VAEDecode → ImageFromBatch.
   // Chunk k>0 continues from chunk k-1 (continue_motion + chained video_frame_offset).
   let accFrames = null;   // [nodeId, 0] of frames accumulated so far (ImageBatch)
@@ -1286,6 +1318,7 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
     const b = 100 + k * 10;
     const A = String(b), S = String(b + 1), T = String(b + 2), D = String(b + 3), F = String(b + 4);
     const animInputs = { positive: ["8", 0], negative: ["9", 0], vae: ["6", 0], clip_vision_output: ["11", 0], reference_image: ["10", 0], face_video: ["16", 0], pose_video: ["17", 0], width, height, length: ck.length, batch_size: 1, continue_motion_max_frames: 5, video_frame_offset: k === 0 ? 0 : [prevAnim, 5] };
+    if (replace) { animInputs.background_video = ["34", 0]; animInputs.character_mask = ["33", 0]; }
     if (k > 0) animInputs.continue_motion = [prevFrames, 0]; // prev chunk's frames (node uses last 5)
     wf[A] = { class_type: "WanAnimateToVideo", inputs: animInputs };
     wf[S] = { class_type: "KSampler", inputs: { model: ["4", 0], positive: [A, 0], negative: [A, 1], latent_image: [A, 2], seed, steps: 6, cfg: 1, sampler_name: "euler", scheduler: "simple", denoise: 1 } };
@@ -1641,6 +1674,17 @@ async function generateComfyImage(req, res) {
         return;
       }
     }
+    // Wan Animate REPLACE shares the Move UNET; resolve the sentinel back to it and
+    // flag the build so it adds the mask + blacked-background nodes.
+    let animateReplace = false;
+    if (model === ANIMATE_REPLACE) {
+      model = await resolveAnimateUnet();
+      animateReplace = true;
+      if (!model) {
+        sendJson(res, 400, { error: "未找到 Wan Animate 模型文件（diffusion_models/ 下需有 *animate* UNET）。" });
+        return;
+      }
+    }
     const isMultiImage = Array.isArray(images) && images.length >= 2;
     // Output size for img2img edits, keeping the input's aspect ratio. Only
     // OVERRIDE the builder's natural sizing when we must: a size is specified
@@ -1749,6 +1793,11 @@ async function generateComfyImage(req, res) {
         // v2v/rv2v keep the source video's fps; i2v uses bfps (so it can show duration).
         videoDims = { width: bw, height: bh, length: bl, fps: hasVideo ? undefined : bfps };
       } else if (videoType === "animate" && !sourceVideo && !sourceVideoName) {
+        // Replace mode is meaningless without a scene to composite into.
+        if (animateReplace) {
+          sendJson(res, 400, { error: "Wan Animate（替换）需要一段源视频作为场景，并附一张人物参考图。" });
+          return;
+        }
         // Wan Animate SINGLE-FRAME (still pose transfer): no source video, TWO images
         // — image[0] = pose source (output size follows it), image[1] = reference
         // character. Length 1 → one decoded frame, returned as an IMAGE.
@@ -1835,7 +1884,7 @@ async function generateComfyImage(req, res) {
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         const refImageName = await uploadImage(images[0], controller.signal);
         imagesUsed = 1;
-        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, fps: afps, torchCompile: !!opts.torchCompile, chunks });
+        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, fps: afps, torchCompile: !!opts.torchCompile, chunks, replace: animateReplace });
         videoDims = { width: aw, height: ah, length: totalFrames, fps: afps, segments: chunks.length };
         if (truncatedFrom) videoDims.truncatedFrom = truncatedFrom;
       } else if (videoType) {
