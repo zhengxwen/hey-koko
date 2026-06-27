@@ -157,6 +157,7 @@ export { updateLockedState };
 
 export function clearSelectedImage() {
   state.selectedImage = null;
+  state.animateMaskPoint = null; // the Replace target point belonged to the old source
   dom.fileInput.value = "";
   dom.previewImage.removeAttribute("src");
   dom.previewImage.hidden = true;
@@ -175,6 +176,7 @@ export function clearSelectedFile() {
 
 export function clearSelectedVideo() {
   state.selectedVideo = null;
+  state.animateMaskPoint = null; // the Replace target point belonged to the old source
   if (dom.videoPreviewName) dom.videoPreviewName.textContent = "";
   if (dom.videoPreview) dom.videoPreview.hidden = true;
 }

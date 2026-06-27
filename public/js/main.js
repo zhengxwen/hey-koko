@@ -640,6 +640,63 @@ dom.removeFile.addEventListener("click", clearSelectedFile);
 // Remove video button
 dom.removeVideo.addEventListener("click", clearSelectedVideo);
 
+// --- Wan Animate REPLACE: pick which person to swap (SAM2 seed point) ---
+// The source frame is whatever the replace job will use: the video's poster frame,
+// else the (first) staged scene image. Clicking stores a NORMALISED {x,y} in state,
+// which comfyOverrides() forwards as opts.maskPoint → SAM2's positive seed.
+function maskPointSource() {
+  if (state.selectedVideo?.thumbnail) return state.selectedVideo.thumbnail;
+  const imgs = getStagedImages();
+  return imgs.length ? (imgs[0].preview || (imgs[0].base64 ? `data:image/png;base64,${imgs[0].base64}` : null)) : null;
+}
+function refreshMaskPointLabel() {
+  if (!dom.comfyMaskPointLabel) return;
+  const p = state.animateMaskPoint;
+  dom.comfyMaskPointLabel.textContent = p
+    ? t("comfy_maskPoint_set", { x: Math.round(p.x * 100), y: Math.round(p.y * 100) })
+    : t("comfy_maskPoint");
+}
+function placeMaskMarker() {
+  const p = state.animateMaskPoint;
+  const m = dom.maskPointMarker;
+  if (!m) return;
+  if (!p) { m.hidden = true; return; }
+  m.style.left = `${p.x * 100}%`;
+  m.style.top = `${p.y * 100}%`;
+  m.hidden = false;
+}
+function openMaskPointModal() {
+  const src = maskPointSource();
+  if (!src) { alert(t("comfy_maskPoint_noSource")); return; }
+  dom.maskPointImage.src = src;
+  placeMaskMarker();
+  dom.maskPointModal.hidden = false;
+}
+function closeMaskPointModal() { if (dom.maskPointModal) dom.maskPointModal.hidden = true; }
+
+dom.comfyMaskPointBtn?.addEventListener("click", openMaskPointModal);
+dom.maskPointClose?.addEventListener("click", closeMaskPointModal);
+dom.maskPointModal?.addEventListener("click", (e) => { if (e.target === dom.maskPointModal) closeMaskPointModal(); });
+// Click on the frame → normalised point (clamped to [0,1]).
+dom.maskPointImage?.addEventListener("click", (e) => {
+  const r = dom.maskPointImage.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+  state.animateMaskPoint = { x, y };
+  placeMaskMarker();
+});
+dom.maskPointClear?.addEventListener("click", () => {
+  state.animateMaskPoint = null;
+  placeMaskMarker();
+  refreshMaskPointLabel();
+  closeMaskPointModal();
+});
+dom.maskPointConfirm?.addEventListener("click", () => {
+  refreshMaskPointLabel();
+  closeMaskPointModal();
+});
+
 // Streaming auto-scroll yields to the user: track whether they're near the
 // bottom, and offer a one-click jump back when they've scrolled up.
 dom.messagesEl.addEventListener("scroll", refreshScrollState, { passive: true });
@@ -1231,6 +1288,7 @@ function renderStagedImagePreview() {
 // Append newly staged images to the existing selection (instead of replacing).
 function addStagedImages(newImages) {
   if (!newImages || newImages.length === 0) return;
+  state.animateMaskPoint = null; // staging changes the scene → drop any old Replace point
   const all = [...getStagedImages(), ...newImages];
   state.selectedImage = all.length === 1 ? all[0] : { multi: all, preview: all[0].preview };
   renderStagedImagePreview();
@@ -1280,6 +1338,7 @@ async function selectFile(file) {
     // helper the generated-clip backfill uses, so the format is consistent).
     const thumbnail = await videoThumbnail(dataUrl);
     const dims = await videoNaturalSize(dataUrl); // for Bernini source-aspect sizing
+    state.animateMaskPoint = null; // new source video → drop any old Replace point
     state.selectedVideo = {
       base64: dataUrl.split(",")[1],
       mime: file.type || "video/mp4",

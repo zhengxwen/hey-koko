@@ -58,6 +58,16 @@ export const dom = {
   comfyParamFps: document.querySelector("#comfyParamFps"),
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),
   comfyParamRelight: document.querySelector("#comfyParamRelight"),
+  comfyMaskPointBtn: document.querySelector("#comfyMaskPointBtn"),
+  comfyMaskPointLabel: document.querySelector("#comfyMaskPointLabel"),
+  maskPointModal: document.querySelector("#maskPointModal"),
+  maskPointClose: document.querySelector("#maskPointClose"),
+  maskPointHint: document.querySelector("#maskPointHint"),
+  maskPointStage: document.querySelector("#maskPointStage"),
+  maskPointImage: document.querySelector("#maskPointImage"),
+  maskPointMarker: document.querySelector("#maskPointMarker"),
+  maskPointClear: document.querySelector("#maskPointClear"),
+  maskPointConfirm: document.querySelector("#maskPointConfirm"),
   llmUrlDisplay: document.querySelector("#llmUrlDisplay"),
   imageUrlDisplay: document.querySelector("#imageUrlDisplay"),
   modeToggle: document.querySelector("#modeToggle"),
@@ -121,6 +131,7 @@ export const state = {
   scrollPin: null,                   // when set (resend/edit in place), auto-scroll holds this scrollTop instead of jumping to the bottom
   _pinClearTimer: null,              // delayed release of scrollPin once generation fully ends
   stickToBottom: true,               // streaming auto-scroll only while the user sits near the bottom (so they can scroll up mid-generation)
+  animateMaskPoint: null,            // Wan Animate REPLACE: user's ⚙-picked {x,y} (0–1) of which person to replace; null = auto center
 };
 
 // Auto-scroll the chat. Normally jumps to the bottom (new content), but while a

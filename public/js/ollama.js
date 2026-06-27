@@ -445,8 +445,17 @@ function initComfyParamsModal() {
     dom.comfyParamRelight,
   ];
 
+  // Reflect the current Wan Animate Replace target point on the picker button.
+  function syncMaskPointLabel() {
+    if (!dom.comfyMaskPointLabel) return;
+    const p = state.animateMaskPoint;
+    dom.comfyMaskPointLabel.textContent = p
+      ? t("comfy_maskPoint_set", { x: Math.round(p.x * 100), y: Math.round(p.y * 100) })
+      : t("comfy_maskPoint");
+  }
   function open() {
     modal.hidden = false;
+    syncMaskPointLabel();
     document.addEventListener("keydown", onKeydown);
   }
   function close() {
@@ -457,9 +466,10 @@ function initComfyParamsModal() {
     if (e.key === "Escape") { e.preventDefault(); close(); }
   }
 
+  // Closes via the ✕ button or Escape — but NOT backdrop-click, so the user can
+  // freely click outside the dialog (e.g. to read the chat) without losing it.
   dom.comfyParamsBtn?.addEventListener("click", open);
   dom.comfyParamsClose?.addEventListener("click", close);
-  modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
 
   // Persist on every change so the values survive reloads. The torch.compile toggle
   // is a checkbox (.checked, not .value) so it's handled separately from `fields`.
@@ -471,6 +481,8 @@ function initComfyParamsModal() {
   dom.comfyParamsReset?.addEventListener("click", () => {
     for (const el of fields) if (el) el.value = "";
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = false;
+    state.animateMaskPoint = null; // back to auto-centre target
+    syncMaskPointLabel();
     saveCurrentSettings();
   });
 }

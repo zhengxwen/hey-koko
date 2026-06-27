@@ -748,11 +748,30 @@ export function renderDrawer() {
     if (!byLane.has(wid)) { byLane.set(wid, []); lanes.push(wid); }
     byLane.get(wid).push(job);
   }
+  const summary = buildJobsSummary();
+  if (summary) list.appendChild(summary);
   const showHeaders = lanes.length > 1;
   for (const wid of lanes) {
     if (showHeaders) list.appendChild(buildLaneHeader(wid, byLane.get(wid)));
     for (const job of sortLaneForDisplay(byLane.get(wid))) list.appendChild(buildJobRow(job));
   }
+}
+
+// One-line tally at the top of the list: "N running · M queued · K paused" (only the
+// non-zero parts). Returns null when nothing is pending (only finished/failed rows left).
+function buildJobsSummary() {
+  const running = state.bgJobs.filter((j) => j.status === 'running').length;
+  const queued = state.bgJobs.filter((j) => j.status === 'queued').length;
+  const paused = state.bgJobs.filter((j) => j.status === 'paused').length;
+  const parts = [];
+  if (running) parts.push(t('bg_sumRunning', { n: running }));
+  if (queued) parts.push(t('bg_sumQueued', { n: queued }));
+  if (paused) parts.push(t('bg_sumPaused', { n: paused }));
+  if (!parts.length) return null;
+  const el = document.createElement('div');
+  el.className = 'bgJobsSummary';
+  el.textContent = parts.join(' · ');
+  return el;
 }
 
 // Display order within a lane: running first, then waiting (queued), then paused, then
@@ -901,11 +920,21 @@ function buildJobRow(job) {
     main.addEventListener('click', () => jumpToJob(job.id));
     const icon = `<span class="bgJobIcon">${KIND_ICON[job.kind] || '⚙'}</span>`;
     const label = `<span class="bgJobLabel">${escapeText(job.label || job.kind)}</span>`;
-    const status = `<span class="bgJobStatus">${escapeText(statusText(job))}</span>`;
+    // Failed/interrupted: append WHY (job.error) after the status, with the full text on
+    // hover (it truncates with an ellipsis if long).
+    const errReason = (job.status === 'error' || job.status === 'interrupted') && job.error ? job.error : '';
+    const statusStr = errReason ? `${statusText(job)} · ${errReason}` : statusText(job);
+    const status = `<span class="bgJobStatus"${errReason ? ` title="${escapeText(errReason)}"` : ''}>${escapeText(statusStr)}</span>`;
     let bar = '';
-    if (job.status === 'running' && job.progress && job.progress.max) {
-      const pct = Math.min(100, Math.round(job.progress.value / job.progress.max * 100));
-      bar = `<div class="bgJobBar"><div class="bgJobBarFill" style="width:${pct}%"></div></div>`;
+    if (job.status === 'running') {
+      if (job.progress && job.progress.max) {
+        const pct = Math.min(100, Math.round(job.progress.value / job.progress.max * 100));
+        bar = `<div class="bgJobBar"><div class="bgJobBarFill" style="width:${pct}%"></div></div>`;
+      } else {
+        // No numeric progress yet (ComfyUI queue/startup, parse/analyze phases) → animated
+        // indeterminate bar so the row reads as "working", not frozen.
+        bar = `<div class="bgJobBar indeterminate"><div class="bgJobBarFill"></div></div>`;
+      }
     }
     // Live ComfyUI preview frame while the job renders (same stream the foreground
     // bubble uses). job.preview is a blob: URL maintained by the background sink.

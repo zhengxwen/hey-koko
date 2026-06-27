@@ -703,6 +703,7 @@ p {
   padding: 2px 6px;
   border-radius: 6px;
   line-height: 1;
+  margin-left: auto; /* pin the ✕ to the header's right edge */
 }
 
 .scanModalClose:hover {
@@ -4380,9 +4381,13 @@ button.secondary:disabled {
   white-space: nowrap;
   font-size: 13px;
 }
-.bgJobStatus { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.bgJobStatus { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bgJobBar { height: 4px; border-radius: 4px; background: var(--surface-hover); margin-top: 4px; overflow: hidden; }
 .bgJobBarFill { height: 100%; background: var(--accent); transition: width 0.2s; }
+/* Indeterminate (no % yet): a sliding sliver — reuses the placeholder's keyframes. */
+.bgJobBar.indeterminate .bgJobBarFill { width: 40%; transition: none; animation: bgPhIndet 1.1s ease-in-out infinite; }
+/* Top-of-list tally: "N running · M queued · K paused". */
+.bgJobsSummary { font-size: 11px; color: var(--muted); padding: 2px 4px 8px; }
 
 /* Queued rows can be dragged (by the ⠿ handle) to reorder the not-yet-started queue. */
 .bgJobHandle {
@@ -4510,3 +4515,36 @@ button.secondary:disabled {
 }
 .bgPhRetry { background: var(--surface-hover); color: var(--ink); }
 .message.bgPlaceholder.bgPlaceholder-error { border-color: #d9534f; }
+
+/* Wan Animate Replace — "pick the person" seed-point picker */
+.maskPointStage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  margin: 8px 0;
+  line-height: 0;
+}
+#maskPointImage {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  border-radius: 8px;
+  cursor: crosshair;
+}
+.maskPointMarker {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: rgba(217, 83, 79, 0.85);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+.maskPointActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}

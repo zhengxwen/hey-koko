@@ -98,6 +98,23 @@ async function comfyEnum(node, input) {
   }
 }
 
+// Quick reachability ping with its OWN short timeout (independent of the gen
+// deadline). When ComfyUI is offline / the IP is wrong, every `comfyEnum` comes
+// back empty and the companion resolvers then cry "missing model files" — which is
+// misleading. Preflighting lets us say "can't reach ComfyUI" instead.
+async function comfyReachable(timeoutMs = 5000) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const r = await fetch(`${currentComfyUrl()}/system_stats`, { signal: ac.signal });
+    return r.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Instruction-edit models live in diffusion_models/ (loaded via UNETLoader, not
 // CheckpointLoaderSimple) and each needs its own workflow + companion files.
 function editTypeOf(model) {
@@ -1307,6 +1324,16 @@ async function animateCompanions() {
 // CreateVideo muxes the source audio+fps. `chunks` = [{offset,length}, …] (length 1 =
 // single pass). Two LoRAs (lightx2v distill 6-step turbo + relight); ModelSamplingSD3
 // shift 8; optional torch.compile.
+// SAM2 positive-seed point for Replace mode. maskPoint = {x,y} normalized 0–1 (the
+// user's ⚙ click on the source) → pixel coords in the scaled frame; falls back to
+// the frame CENTER (works for a roughly-centered subject) when absent/out of range.
+function animateSeedPoint(maskPoint, width, height) {
+  const f = (v) => (typeof v === "number" && v >= 0 && v <= 1);
+  const x = (maskPoint && f(maskPoint.x)) ? Math.round(maskPoint.x * width) : Math.round(width / 2);
+  const y = (maskPoint && f(maskPoint.y)) ? Math.round(maskPoint.y * height) : Math.round(height / 2);
+  return JSON.stringify([{ x, y }]);
+}
+
 function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, fps, torchCompile = false, chunks, replace = false, relightStrength = 1, maskPoint = null }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   // Relight LoRA strength: how hard the character is re-lit to match the scene
@@ -1359,7 +1386,7 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
   // Both feed the SAME full-length nodes; WanAnimateToVideo slices them per chunk by
   // (video_frame_offset, length), exactly like face_video / pose_video.
   if (replace) {
-    const centerPt = JSON.stringify([{ x: Math.round(width / 2), y: Math.round(height / 2) }]);
+    const centerPt = animateSeedPoint(maskPoint, width, height);
     wf["30"] = { class_type: "DownloadAndLoadSAM2Model", inputs: { model: "sam2_hiera_base_plus.safetensors", segmentor: "video", device: "cuda", precision: "fp16" } };
     wf["31"] = { class_type: "Sam2Segmentation", inputs: { sam2_model: ["30", 0], image: ["13", 0], keep_model_loaded: false, coordinates_positive: centerPt } };
     wf["32"] = { class_type: "GrowMask", inputs: { mask: ["31", 0], expand: 10, tapered_corners: true } };
@@ -1399,7 +1426,7 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
 // (RepeatImageBatch the DWPose output) and take the LAST decoded frame, by which point
 // the character has settled INTO the pose. Output size follows the pose image.
 const STILL_FRAMES = 9; // 4n+1; verified N=9 fully adopts the pose, N=1 does not
-function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, refImageName, width, height, seed, torchCompile = false, relightStrength = 1, replace = false }) {
+function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, refImageName, width, height, seed, torchCompile = false, relightStrength = 1, replace = false, maskPoint = null }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   const relight = (typeof relightStrength === "number" && relightStrength >= 0 && relightStrength <= 2) ? relightStrength : 1;
   const dw = (face) => ({
@@ -1450,7 +1477,7 @@ function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, re
   // DrawMaskOnImage blacks the person out = background_video. The character is composited
   // into the scene at the person's pose+position; take the last settled frame.
   if (replace) {
-    const centerPt = JSON.stringify([{ x: Math.round(width / 2), y: Math.round(height / 2) }]);
+    const centerPt = animateSeedPoint(maskPoint, width, height);
     wf["13r"] = { class_type: "RepeatImageBatch", inputs: { image: ["13", 0], amount: STILL_FRAMES } };
     wf["30"] = { class_type: "DownloadAndLoadSAM2Model", inputs: { model: "sam2_hiera_base_plus.safetensors", segmentor: "video", device: "cuda", precision: "fp16" } };
     wf["31"] = { class_type: "Sam2Segmentation", inputs: { sam2_model: ["30", 0], image: ["13r", 0], keep_model_loaded: false, coordinates_positive: centerPt } };
@@ -1655,6 +1682,13 @@ async function generateComfyImage(req, res) {
       return;
     }
 
+    // Preflight: an offline / wrong-IP ComfyUI otherwise surfaces as a bogus
+    // "missing model files" error (every companion lookup comes back empty).
+    if (!(await comfyReachable())) {
+      sendJson(res, 502, { error: `无法连接到 ComfyUI（${currentComfyUrl()}）。请确认那台机器在线、ComfyUI 正在运行，且地址/IP 正确（IP 变了可在设置里更新 ComfyUI 地址）。` });
+      return;
+    }
+
     const opts = options || {};
     const width = opts.width || 1024;
     const height = opts.height || 1024;
@@ -1828,7 +1862,7 @@ async function generateComfyImage(req, res) {
         const refImageName = await uploadImage(images[1], controller.signal, "heykoko_animref.png");
         imagesUsed = 2;
         stillMode = true;
-        workflow = buildWanAnimateStill({ model, prompt, negative: negative_prompt || "", comp, poseImageName, refImageName, width: aw, height: ah, seed, torchCompile: !!opts.torchCompile, relightStrength: opts.relightStrength, replace: animateReplace });
+        workflow = buildWanAnimateStill({ model, prompt, negative: negative_prompt || "", comp, poseImageName, refImageName, width: aw, height: ah, seed, torchCompile: !!opts.torchCompile, relightStrength: opts.relightStrength, replace: animateReplace, maskPoint: opts.maskPoint });
         videoDims = { width: aw, height: ah };
       } else if (videoType === "animate") {
         // Wan Animate MOVE (pose transfer): reference person image + source video
@@ -1879,7 +1913,7 @@ async function generateComfyImage(req, res) {
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         const refImageName = await uploadImage(images[0], controller.signal);
         imagesUsed = 1;
-        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, fps: afps, torchCompile: !!opts.torchCompile, chunks, replace: animateReplace, relightStrength: opts.relightStrength });
+        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, fps: afps, torchCompile: !!opts.torchCompile, chunks, replace: animateReplace, relightStrength: opts.relightStrength, maskPoint: opts.maskPoint });
         videoDims = { width: aw, height: ah, length: totalFrames, fps: afps, segments: chunks.length };
         if (truncatedFrom) videoDims.truncatedFrom = truncatedFrom;
       } else if (videoType) {
@@ -1969,21 +2003,27 @@ async function generateComfyImage(req, res) {
       } else if (/hidream.?o1/i.test(model)) {
         // HiDream-O1 (pixel-space UiT): text→image, or reference editing when
         // image(s) are attached (1 = instruction edit, up to 10 = multi-reference).
-        // Everything loads from the checkpoint — no companion files. Editing sizes
-        // the canvas to the first input image; t2i uses the requested/auto size.
+        // Everything loads from the checkpoint — no companion files.
         let imageNames = null, ow = width, oh = height;
         if (isImg2Img) {
           imageNames = [];
-          for (const im of images.slice(0, 10)) imageNames.push(await uploadImage(im, controller.signal));
-          const d = imageDims(images[0]);
-          if (d) {
-            ow = d.width; oh = d.height;
-            // Pixel-space sampling is VRAM-heavy — cap the canvas to the model's
-            // trained range (≤2048 on the long side), preserving aspect.
-            const m = Math.max(ow, oh);
-            if (m > 2048) { const k = 2048 / m; ow = Math.round(ow * k); oh = Math.round(oh * k); }
+          // Distinct filenames per reference — uploadImage's default name + overwrite
+          // would clobber them down to the last image (breaks multi-reference).
+          const refs = images.slice(0, 10);
+          for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `heykoko_o1ref${ri}.png`));
+          // O1 reference editing ONLY converges at the model's trained resolution
+          // (~4MP / 2048²) — verified live: at ≤1024 the edit returns NOISE, at 2048
+          // it's clean. So size the canvas to a 4MP budget at the input's aspect
+          // ratio (NOT the raw input size), unless the user set an explicit --size.
+          if (opts.width && opts.height) { ow = opts.width; oh = opts.height; }
+          else {
+            let aspect = 1;
+            const d = imageDims(images[0]);
+            if (d && d.width && d.height) aspect = d.width / d.height;
+            const area = 2048 * 2048;
+            ow = Math.round(Math.sqrt(area * aspect));
+            oh = Math.round(Math.sqrt(area / aspect));
           }
-          if (opts.width && opts.height) { ow = opts.width; oh = opts.height; } // explicit --size wins
         }
         workflow = buildHiDreamO1({ model, prompt, negative: negative_prompt || "", imageNames, width: ow, height: oh, seed, cfg });
       } else if (/hidream.?i1/i.test(model)) {

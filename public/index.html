@@ -512,7 +512,29 @@
             <span id="comfyParamRelightLabel">Relight strength (Wan Animate)</span>
             <input id="comfyParamRelight" type="number" min="0" max="2" step="0.05" placeholder="Auto (1.0)" />
           </label>
+          <button id="comfyMaskPointBtn" type="button" class="secondary" title="Wan Animate Replace only: click the person in the source video / scene image you want to swap out. Default = the one nearest the centre.">🎯 <span id="comfyMaskPointLabel">Pick person to replace</span></button>
           <button id="comfyParamsReset" type="button" class="secondary comfyParamsReset">Reset to auto</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Wan Animate Replace: pick which person to swap (SAM2 seed point) -->
+    <div id="maskPointModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal" role="dialog" aria-modal="true" aria-labelledby="maskPointTitle">
+        <div class="scanModalHeader">
+          <h3 id="maskPointTitle" class="scanModalTitle">Click the person to replace</h3>
+          <button id="maskPointClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
+        </div>
+        <div class="comfyParamsBody">
+          <p class="hint" id="maskPointHint">Click on the person you want to swap out. The rest of the scene is kept.</p>
+          <div id="maskPointStage" class="maskPointStage">
+            <img id="maskPointImage" alt="Source frame" />
+            <span id="maskPointMarker" class="maskPointMarker" hidden></span>
+          </div>
+          <div class="maskPointActions">
+            <button id="maskPointClear" type="button" class="secondary">Reset to centre</button>
+            <button id="maskPointConfirm" type="button">Use this point</button>
+          </div>
         </div>
       </div>
     </div>
