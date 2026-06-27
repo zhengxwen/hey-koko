@@ -3,8 +3,8 @@
 
 // Chat rendering, message handling, and sending
 import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState } from './state.js';
-import { PERSONALITY_PRESETS, TAG_COLORS } from './constants.js';
-import { escapeHtml, formatTimestamp, formatDuration, makePreview } from './utils.js';
+import { TAG_COLORS } from './constants.js';
+import { escapeHtml, formatTimestamp, formatDuration } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
 import { setAvatarState, showExpression, detectExpression } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
@@ -13,7 +13,7 @@ import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.j
 import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractVideoFrames } from './image-gen.js';
 import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
-import { parseUrlCommand, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
+import { parseUrlCommand } from './url-fetch.js';
 import { buildPendingGenBubble } from './pending-gen.js';
 import { enqueueBgJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
 import { t, getPrompt, getPromptLanguage } from './i18n.js';
@@ -2858,13 +2858,15 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       video.controls = true;
       video.loop = true;
       video.playsInline = true;
-      // No autoplay — the user presses play. Don't force-mute so audio (LTX) plays
-      // when they do. The poster shows immediately; the heavy video bytes load
+      // No autoplay — the user presses play. Muted by default so audio (LTX) never
+      // surprises the user; they raise the volume themselves via the slider/icon or
+      // the native controls. The poster shows immediately; the heavy video bytes load
       // lazily (streamable blob URL) only once it scrolls near view — see
       // lazyLoadVideo — so a tab full of large clips doesn't stall every refresh.
       // Use the captured thumbnail as the poster so a still shows before playback.
       const vthumb = generatedVideoThumbnails && generatedVideoThumbnails[vi];
       if (vthumb) video.poster = vthumb.startsWith("data:") ? vthumb : `data:image/jpeg;base64,${vthumb}`;
+      video.muted = true;
       lazyLoadVideo(video, vData, vmime);
       // Only one video plays at a time — starting this one pauses the others.
       video.addEventListener("play", () => {
@@ -2883,7 +2885,7 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       const volIcon = document.createElement("button");
       volIcon.type = "button";
       volIcon.className = "videoVolumeIcon";
-      volIcon.textContent = "🔊";
+      volIcon.textContent = "🔇";
       volIcon.title = t("video_volume");
       volIcon.setAttribute("aria-label", t("video_volume"));
       const volSlider = document.createElement("input");
@@ -2891,7 +2893,7 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
       volSlider.min = "0";
       volSlider.max = "1";
       volSlider.step = "0.05";
-      volSlider.value = "1";
+      volSlider.value = "0";
       volSlider.className = "videoVolumeSlider";
       volSlider.setAttribute("aria-label", t("video_volume"));
       volWrap.append(volIcon, volSlider);

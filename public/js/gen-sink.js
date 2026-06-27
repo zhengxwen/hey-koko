@@ -14,7 +14,7 @@
 import { state } from './state.js';
 import {
   pendingGenStart, pendingGenSetLabel, pendingGenSetEnhanced, pendingGenAddImage,
-  pendingGenAddVideo, pendingGenSetProgress, pendingGenSetPreview, pendingGenSetEta,
+  pendingGenSetProgress, pendingGenSetPreview, pendingGenSetEta,
   pendingGenSetSeg, pendingGenSetIndeterminate, pendingGenClear,
 } from './pending-gen.js';
 
@@ -37,7 +37,6 @@ export function foregroundSink({ tabId, insertIndex, setGenerating, renderChat, 
     label(l) { pendingGenSetLabel(tabId, l); },
     enhanced(h) { pendingGenSetEnhanced(tabId, h); },
     addImage(s) { pendingGenAddImage(tabId, s); },
-    addVideo(s) { pendingGenAddVideo(tabId, s); },
     progress(v, m) { pendingGenSetProgress(tabId, v, m); },
     preview(s) { pendingGenSetPreview(tabId, s); },
     eta(x) { pendingGenSetEta(tabId, x); },

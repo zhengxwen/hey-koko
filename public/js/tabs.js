@@ -6,7 +6,6 @@ import { dom, state } from './state.js';
 import { PERSONALITY_PRESETS, TAG_COLORS } from './constants.js';
 import { saveTabs, saveChat, syncPersonaEditable } from './settings.js';
 import { stopSpeech } from './speech.js';
-import { escapeHtml } from './utils.js';
 import { dbLoadTabs, dbLoadActiveTabId, migrateFromLocalStorage, dbDeleteDatabase } from './db.js';
 import { genId } from './utils.js';
 import { t } from './i18n.js';

@@ -5,7 +5,7 @@
 import { dom, state } from './state.js';
 import { escapeHtml } from './utils.js';
 import { markdownToHtml } from './markdown.js';
-import { saveChat, saveTabs } from './settings.js';
+import { saveTabs } from './settings.js';
 import { getActiveTab, createTab, closeTab, switchTab, renderTabs } from './tabs.js';
 import { t } from './i18n.js';
 import { tabActiveJobCount, cancelTabJobs } from './bg-jobs.js';   // Option B: warn + cancel jobs on archive

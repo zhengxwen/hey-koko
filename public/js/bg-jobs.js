@@ -451,7 +451,6 @@ function makeBgSink(job, controller) {
     label(l) { job.label = l; refreshPlaceholders(); },
     enhanced() {},             // surfaced in the final message instead
     addImage() {},             // results delivered via place()
-    addVideo() {},
     // Progress ticks are frequent → update the drawer + poke the placeholder's bar
     // directly in the DOM, never a full chat re-render.
     progress(v, m) { if (m) { job.progress = { value: v, max: m }; renderDrawer(); updatePlaceholderBar(job); } },

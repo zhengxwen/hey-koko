@@ -18,7 +18,7 @@ const { sendJson, serveStatic, readBody } = require("./server/utils");
 const { proxyOllamaChat, proxyOllamaTags, proxyOllamaShow } = require("./server/chat");
 const { scanOllamaStream, scanComfyStream, hostnameFor } = require("./server/network");
 const { proxyOllamaImageModels, generateImage, enhancePrompt } = require("./server/image");
-const { proxyComfyModels, generateComfyImage, uploadComfyVideo, mergeComfyVideos } = require("./server/comfy");
+const { proxyComfyModels, generateComfyImage, uploadComfyVideo } = require("./server/comfy");
 const { fetchUrlContent, transcribeYouTubeAudio } = require("./server/url-fetch");
 const { searchWeb } = require("./server/search");
 const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
@@ -77,11 +77,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === "POST" && req.url === "/api/comfy-merge-videos") {
-    mergeComfyVideos(req, res);
-    return;
-  }
-
   // ---- Option B: server-side background job queue ----
   if (req.method === "POST" && req.url === "/api/jobs") { bgQueue.submitJob(req, res); return; }
   if (req.method === "GET" && req.url === "/api/jobs/events") { bgQueue.streamEvents(req, res); return; }
@@ -89,7 +84,6 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/jobs/reorder") { bgQueue.reorderJobs(req, res); return; }
   if (req.method === "POST" && req.url === "/api/jobs/cancel-conversation") { bgQueue.cancelConversation(req, res); return; }
   if (req.method === "POST" && /^\/api\/jobs\/[^/]+\/cancel$/.test(req.url)) { bgQueue.cancelJob(req, res, req.url.split("/")[3]); return; }
-  if (req.method === "POST" && /^\/api\/jobs\/[^/]+\/retry$/.test(req.url)) { bgQueue.retryJob(req, res, req.url.split("/")[3]); return; }
 
   if (req.method === "POST" && req.url === "/api/enhance-prompt") {
     enhancePrompt(req, res);

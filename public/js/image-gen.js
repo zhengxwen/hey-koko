@@ -8,8 +8,7 @@ import { t, getPromptLanguage } from './i18n.js';
 import { makePreview, escapeHtml } from './utils.js';
 import { setAvatarState } from './avatar.js';
 import { saveChat } from './settings.js';
-import { getTab, getActiveTab } from './tabs.js';
-import { markdownToHtml } from './markdown.js';
+import { getTab } from './tabs.js';
 import { foregroundSink } from './gen-sink.js';
 import { comfyFetch } from './server-queue.js';   // Option B: run ComfyUI gen on the server queue
 

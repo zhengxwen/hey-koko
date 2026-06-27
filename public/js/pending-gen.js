@@ -45,27 +45,6 @@ function _ensureGrid(bubble) {
   return grid;
 }
 
-// A playable <video> for a finished segment shown live in the pending bubble.
-function _videoEl(src) {
-  const v = document.createElement('video');
-  v.className = 'generatedVideo';
-  v.src = src;
-  v.controls = true;
-  v.playsInline = true;
-  v.preload = 'metadata';
-  return v;
-}
-
-function _ensureVideoGrid(bubble) {
-  let grid = bubble.querySelector('.videoGrid');
-  if (!grid) {
-    grid = document.createElement('div');
-    grid.className = 'videoGrid';
-    bubble.appendChild(grid); // BELOW the progress bar + live preview
-  }
-  return grid;
-}
-
 // Inner markup of a .comfyProgress block: a fill bar at the given percent and an
 // optional preview frame. Single source of truth for both the live patch path
 // (_ensureProgress) and the full rebuild (buildPendingGenBubble).
@@ -84,9 +63,7 @@ function _ensureProgress(bubble) {
     prog = document.createElement('div');
     prog.className = 'comfyProgress';
     prog.innerHTML = _progressHtml(0, null, null, null);
-    const vgrid = bubble.querySelector('.videoGrid');
-    if (vgrid) bubble.insertBefore(prog, vgrid); // keep progress ABOVE the segment videos
-    else bubble.appendChild(prog);
+    bubble.appendChild(prog);
   }
   return prog;
 }
@@ -117,13 +94,6 @@ export function buildPendingGenBubble(pg) {
     if (pg.indeterminate) prog.querySelector('.comfyProgressBar')?.classList.add('indeterminate');
     bubble.appendChild(prog);
   }
-  // Finished segment videos go BELOW the progress bar + live preview.
-  if (pg.videos && pg.videos.length) {
-    const grid = document.createElement('div');
-    grid.className = 'videoGrid';
-    for (const src of pg.videos) grid.appendChild(_videoEl(src));
-    bubble.appendChild(grid);
-  }
   return bubble;
 }
 
@@ -149,7 +119,6 @@ export function pendingGenStart({ tabId, kind, label, insertIndex }) {
     insertIndex: (insertIndex != null) ? insertIndex : -1,
     enhanced: '',
     images: [],
-    videos: [],
     progress: null,
     preview: null,
     eta: '',
@@ -192,20 +161,6 @@ export function pendingGenAddImage(tabId, src) {
   const bubble = _bubble();
   if (!bubble) return;
   _ensureGrid(bubble).appendChild(_imgEl(src));
-  scrollChatToEndIfPinned();
-}
-
-// Add a finished, PLAYABLE segment video to the pending bubble (multi-segment Wan
-// Animate). Transient — lives in state.pendingGen, never persisted; cleared when the
-// final merged clip replaces the bubble.
-export function pendingGenAddVideo(tabId, src) {
-  const pg = _pg(tabId);
-  if (!pg) return;
-  if (!pg.videos) pg.videos = [];
-  pg.videos.push(src);
-  const bubble = _bubble();
-  if (!bubble) return;
-  _ensureVideoGrid(bubble).appendChild(_videoEl(src));
   scrollChatToEndIfPinned();
 }
 

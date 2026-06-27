@@ -1538,85 +1538,6 @@ async function uploadComfyVideo(req, res) {
   }
 }
 
-// Concatenate the per-segment videos of a chunked Wan Animate render into one clip
-// (ffmpeg concat demuxer, re-encoded for clean joins; audio kept). The browser drives
-// the chunk loop (so it can show "segment N/M") and POSTs the finished segments here.
-// Body: { videos: [base64…], mime }. Returns { video: base64, videoMime }.
-// Spawn ffmpeg with args → resolves true on exit 0. Shared by the merge path.
-function runFfmpeg(args) {
-  return new Promise((resolve) => {
-    const p = spawn("ffmpeg", args);
-    let err = ""; p.stderr.on("data", (d) => (err += d));
-    p.on("close", (code) => resolve(code === 0));
-    p.on("error", () => resolve(false));
-  });
-}
-
-// Download an uploaded ComfyUI input file (e.g. the source video) → Buffer, or null.
-async function fetchComfyInput(filename) {
-  try {
-    const params = new URLSearchParams({ filename, subfolder: "", type: "input" });
-    const r = await fetch(`${currentComfyUrl()}/view?${params}`);
-    if (!r.ok) return null;
-    return Buffer.from(await r.arrayBuffer());
-  } catch { return null; }
-}
-
-async function mergeComfyVideos(req, res) {
-  let dir;
-  try {
-    const body = await readBody(req);
-    comfyCtx.enterWith({ comfyUrl: normComfyUrl(body.comfyUrl) || config.comfyUrl });
-    const vids = Array.isArray(body.videos) ? body.videos : [];
-    if (vids.length < 2) { sendJson(res, 400, { error: "need at least 2 segments to merge" }); return; }
-    const mime = body.mime || "video/mp4";
-    const ext = /webm/i.test(mime) ? "webm" : "mp4";
-    const sourceVideoName = typeof body.sourceVideoName === "string" ? body.sourceVideoName : "";
-    dir = await fsp.mkdtemp(path.join(os.tmpdir(), "hk_merge_"));
-    const files = [];
-    for (let i = 0; i < vids.length; i++) {
-      const b = typeof vids[i] === "string" && vids[i].startsWith("data:") ? vids[i].split(",")[1] : vids[i];
-      const f = path.join(dir, `seg${String(i).padStart(3, "0")}.${ext}`);
-      await fsp.writeFile(f, Buffer.from(b, "base64"));
-      files.push(f);
-    }
-    // concat demuxer list file (single-quoted paths, escaped per ffmpeg's rules).
-    const listFile = path.join(dir, "list.txt");
-    await fsp.writeFile(listFile, files.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join("\n") + "\n");
-    // Step A: concat the segment VIDEO streams ONLY. The per-segment audio is wrong —
-    // each chunk carries the source audio from t=0 (GetVideoComponents.audio), so a
-    // plain concat would loop the first chunk's audio. We re-attach the real audio next.
-    const mergedV = path.join(dir, `merged_v.${ext}`);
-    const concatArgs = ["-y", "-f", "concat", "-safe", "0", "-i", listFile, "-an"];
-    if (ext === "webm") concatArgs.push("-c:v", "libvpx-vp9");
-    else concatArgs.push("-c:v", "libx264", "-pix_fmt", "yuv420p");
-    concatArgs.push(mergedV);
-    if (!(await runFfmpeg(concatArgs))) { sendJson(res, 500, { error: "ffmpeg merge failed (is ffmpeg installed?)" }); return; }
-    // Step B: mux the FULL source audio (fetched from ComfyUI) over the merged video,
-    // so the whole clip carries the original soundtrack once, in sync. Falls back to
-    // the silent merge if the source can't be fetched or has no audio.
-    let finalFile = mergedV;
-    if (sourceVideoName) {
-      const srcBuf = await fetchComfyInput(sourceVideoName);
-      if (srcBuf) {
-        const srcFile = path.join(dir, "source_input");
-        await fsp.writeFile(srcFile, srcBuf);
-        const muxed = path.join(dir, `merged.${ext}`);
-        const muxArgs = ["-y", "-i", mergedV, "-i", srcFile, "-map", "0:v", "-map", "1:a?", "-c:v", "copy", "-shortest"];
-        muxArgs.push("-c:a", ext === "webm" ? "libopus" : "aac");
-        muxArgs.push(muxed);
-        if (await runFfmpeg(muxArgs)) finalFile = muxed;
-      }
-    }
-    const out = await fsp.readFile(finalFile);
-    sendJson(res, 200, { video: out.toString("base64"), videoMime: mime });
-  } catch (e) {
-    sendJson(res, 500, { error: String((e && e.message) || e) });
-  } finally {
-    if (dir) fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
 // Pull a human-readable message out of a ComfyUI history `status` whose
 // status_str is "error" — the failing node + the exception text (incl. CUDA OOM).
 function comfyExecError(status) {
@@ -1669,7 +1590,7 @@ async function generateComfyImage(req, res) {
     const body = await readBody(req);
     // Target the ComfyUI endpoint this job was routed to (parallel lanes); default global.
     comfyCtx.enterWith({ comfyUrl: normComfyUrl(body.comfyUrl) || config.comfyUrl });
-    const { prompt, negative_prompt, options, images, mask, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, segmentOffset, segmentLength, continueVideoName, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
+    const { prompt, negative_prompt, options, images, mask, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, continueVideoName, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
     let model = body.model;
 
     // A prompt is only required for pure txt2img — attachment-driven gen (img2img /
@@ -2156,4 +2077,4 @@ async function generateComfyImage(req, res) {
   }
 }
 
-module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, mergeComfyVideos };
+module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo };

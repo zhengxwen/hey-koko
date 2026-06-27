@@ -225,16 +225,8 @@ async function reorderJobs(req, res) {
   }
   sendJson(res, 200, { ok: true });
 }
-async function retryJob(req, res, id) {
-  const job = jobs.find((j) => j.id === id);
-  if (job && (job.status === "error" || job.status === "interrupted")) {
-    job.status = "queued"; job.error = ""; job.progress = null; job.startedAt = 0;
-    persist(); emitUpdate(job); pumpLanes();
-  }
-  sendJson(res, 200, { ok: true });
-}
 
 load();
 setTimeout(() => pumpLanes(), 800);   // resume queued jobs on boot
 
-module.exports = { submitJob, streamEvents, cancelJob, cancelConversation, ackJobs, reorderJobs, retryJob };
+module.exports = { submitJob, streamEvents, cancelJob, cancelConversation, ackJobs, reorderJobs };

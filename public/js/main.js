@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // Main entry point - imports and initializes all modules
-import { dom, state, scrollChatToEnd, refreshScrollState } from './state.js';
-import { SETTINGS_KEY, PERSONALITY_PRESETS, getPersonalityPreset } from './constants.js';
+import { dom, state, refreshScrollState } from './state.js';
+import { PERSONALITY_PRESETS, getPersonalityPreset } from './constants.js';
 import { readFileAsDataUrl, convertToJpeg, makePreview, escapeHtml } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
