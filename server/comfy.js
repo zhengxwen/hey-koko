@@ -1164,11 +1164,16 @@ function buildVideoEnhance({ videoName, upscaleModel, outW, outH, denoise }) {
   const wf = {
     "5": { class_type: "LoadVideo", inputs: { file: videoName } },
     "6": { class_type: "GetVideoComponents", inputs: { video: ["5", 0] } },
-    "7": { class_type: "UpscaleModelLoader", inputs: { model_name: upscaleModel } },
   };
   const clean = denoiseBeforeUpscale(wf, ["6", 0], denoise, "20", "21"); // pre-clean each frame (抗噪)
-  wf["8"] = { class_type: "ImageUpscaleWithModel", inputs: { upscale_model: ["7", 0], image: clean } };
-  let framesRef = ["8", 0];
+  // No upscale model (⚙ "放大模型" = Off) → skip the AI upscale stage: 升格-only (frames
+  // stay at source resolution; interpolation is still layered on by applyVfi).
+  let framesRef = clean;
+  if (upscaleModel) {
+    wf["7"] = { class_type: "UpscaleModelLoader", inputs: { model_name: upscaleModel } };
+    wf["8"] = { class_type: "ImageUpscaleWithModel", inputs: { upscale_model: ["7", 0], image: clean } };
+    framesRef = ["8", 0];
+  }
   if (outW > 0 && outH > 0) {
     wf["9"] = { class_type: "ImageScale", inputs: { image: framesRef, upscale_method: "lanczos", width: outW, height: outH, crop: "disabled" } };
     framesRef = ["9", 0];
@@ -1197,13 +1202,16 @@ function denoiseBeforeUpscale(wf, srcRef, strength, blurId, blendId) {
 // optionally resize the upscaled result (e.g. --size); 0 = keep the model's native
 // output (usually 4×). Output is a normal image.
 function buildImageUpscale({ imageName, upscaleModel, outW, outH, denoise }) {
-  const wf = {
-    "1": { class_type: "LoadImage", inputs: { image: imageName } },
-    "2": { class_type: "UpscaleModelLoader", inputs: { model_name: upscaleModel } },
-  };
+  const wf = { "1": { class_type: "LoadImage", inputs: { image: imageName } } };
   const clean = denoiseBeforeUpscale(wf, ["1", 0], denoise, "5", "6");
-  wf["3"] = { class_type: "ImageUpscaleWithModel", inputs: { upscale_model: ["2", 0], image: clean } };
-  let ref = ["3", 0];
+  // No upscale model (⚙ "放大模型" = Off) → passthrough (only denoise / an explicit
+  // --size resize apply). Mostly a degenerate case for the image-upscale model.
+  let ref = clean;
+  if (upscaleModel) {
+    wf["2"] = { class_type: "UpscaleModelLoader", inputs: { model_name: upscaleModel } };
+    wf["3"] = { class_type: "ImageUpscaleWithModel", inputs: { upscale_model: ["2", 0], image: clean } };
+    ref = ["3", 0];
+  }
   if (outW > 0 && outH > 0) { wf["4"] = scaleNode(ref, outW, outH); ref = ["4", 0]; }
   wf["9"] = { class_type: "SaveImage", inputs: { images: ref, filename_prefix: "heykoko_upscale" } };
   return wf;
@@ -2029,12 +2037,26 @@ async function generateComfyImage(req, res) {
         // The /imagine "prompt" is just the target fps number (empty / non-numeric →
         // HD upscale only, no interpolation).
         if (!(sourceVideo || sourceVideoName)) { sendJson(res, 400, { error: "视频升格+高清需要一段源视频：先附上视频，再用 /imagine <目标帧率>（如 /imagine 60；留空则只做高清放大）。" }); return; }
-        const comp = await upscaleCompanions(opts.upscaleModel);
+        // ⚙ "放大模型" = Off → skip upscaling: 升格-only (frames stay at source resolution).
+        const noUpscale = opts.upscaleModel === "off";
+        const srcFps = Number(sourceVideoFps) || 16;
+        const srcFrames = Number(sourceVideoFrames) || 0;
+        const tf = Math.round(parseFloat((prompt || "").trim()));
+        const willInterp = tf > 0 && tf > srcFps;       // 升格 only when target fps > source
+        const willResize = opts.width > 0 && opts.height > 0; // explicit --size
+        const willDenoise = upscaleDenoise > 0;
+        // Neither 升格 nor 高清 (nor denoise / explicit resize) → ComfyUI has nothing to do.
+        // Tell the user in the bubble instead of running a pointless re-encode.
+        if (noUpscale && !willInterp && !willResize && !willDenoise) {
+          sendJson(res, 200, { noop: true, message: `ℹ️ 无需处理：升格和高清都没开启——⚙「放大模型」设为「关闭」，且目标帧率（${tf > 0 ? tf : "未填"}）没有高于源视频帧率（${srcFps}）。这次没有调用 ComfyUI。\n\n· 想升格：\`/imagine <更高的帧率>\`（如源 ${srcFps}fps 就填 ${srcFps * 2}）\n· 想高清：把 ⚙「放大模型」从「关闭」改回「自动」或具体模型` });
+          return;
+        }
+        const comp = noUpscale ? null : await upscaleCompanions(opts.upscaleModel);
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         // Output size = 2× the source (a clean HD doubling — the 4× upscale model adds
         // detail, then we downsample for crispness), capped so the long side ≤ 2160 to
         // avoid 4K+-per-frame monsters. A ⚙ --size sets an explicit budget instead.
-        // 0/0 = keep the model's native output (source dims unknown).
+        // 0/0 = keep the source resolution (Off, or source dims unknown).
         const HD_LONG_CAP = 2160;
         const even = (n) => Math.max(2, Math.round(n / 2) * 2);
         let outW = 0, outH = 0;
@@ -2043,20 +2065,18 @@ async function generateComfyImage(req, res) {
           // Explicit --size → that pixel budget at the source aspect.
           const aspect = sw / sh, budget = opts.width * opts.height;
           outW = even(Math.sqrt(budget * aspect)); outH = even(Math.sqrt(budget / aspect));
-        } else if (sw > 0 && sh > 0) {
+        } else if (!noUpscale && sw > 0 && sh > 0) {
+          // Default 2× HD doubling — only when actually upscaling (Off keeps source size).
           let tw = sw * 2, th = sh * 2;
           const longSide = Math.max(tw, th);
           if (longSide > HD_LONG_CAP) { const s = HD_LONG_CAP / longSide; tw *= s; th *= s; }
           outW = even(tw); outH = even(th);
         }
-        workflow = buildVideoEnhance({ videoName, upscaleModel: comp.model, outW, outH, denoise: upscaleDenoise });
+        workflow = buildVideoEnhance({ videoName, upscaleModel: comp ? comp.model : null, outW, outH, denoise: upscaleDenoise });
         // Frame interpolation (升格) to the requested fps. applyVfi multiplies the
         // source fps to a NUMBER and splices RIFE/FILM before CreateVideo.
-        const srcFps = Number(sourceVideoFps) || 16;
-        const srcFrames = Number(sourceVideoFrames) || 0;
-        const tf = Math.round(parseFloat((prompt || "").trim()));
         let outFps = srcFps, mult = 1;
-        if (tf > 0 && tf > srcFps) {
+        if (willInterp) {
           mult = Math.max(2, Math.round(tf / srcFps));
           const method = /film/i.test(opts.interpMethod || "") ? "film" : "rife";
           outFps = applyVfi(workflow, mult, srcFps, method);
@@ -2251,14 +2271,22 @@ async function generateComfyImage(req, res) {
         // ⚙ --size sets an explicit target (kept at the source aspect, capped 4096),
         // otherwise the model's native output (usually 4×) is returned.
         if (!isImg2Img) { sendJson(res, 400, { error: "图片放大需要先附上一张图片，再用 /imagine（可加 --size 1920x1080 指定目标尺寸）。" }); return; }
-        const comp = await upscaleCompanions(opts.upscaleModel);
+        const noImgUpscale = opts.upscaleModel === "off"; // ⚙ "放大模型" = Off → passthrough
+        const imgWillResize = opts.width > 0 && opts.height > 0; // explicit --size
+        const imgWillDenoise = upscaleDenoise > 0;
+        // Off + no resize + no denoise → passthrough, nothing for ComfyUI to do. Tell the user.
+        if (noImgUpscale && !imgWillResize && !imgWillDenoise) {
+          sendJson(res, 200, { noop: true, message: "ℹ️ 无需处理：⚙「放大模型」设为「关闭」，图片不会有任何变化，这次没有调用 ComfyUI。\n\n· 想放大：把 ⚙「放大模型」从「关闭」改回「自动」或具体模型（默认输出 4×）" });
+          return;
+        }
+        const comp = noImgUpscale ? null : await upscaleCompanions(opts.upscaleModel);
         const imageName = await uploadImage(images[0], controller.signal);
         let outW = 0, outH = 0;
         if (opts.width && opts.height) {
           const ts = editTargetSize(images, opts, 4096);
           if (ts) { outW = snapDim(ts.width, 2); outH = snapDim(ts.height, 2); }
         }
-        workflow = buildImageUpscale({ imageName, upscaleModel: comp.model, outW, outH, denoise: upscaleDenoise });
+        workflow = buildImageUpscale({ imageName, upscaleModel: comp ? comp.model : null, outW, outH, denoise: upscaleDenoise });
         imagesUsed = 1;
       } else if (/hidream.?o1/i.test(model)) {
         // HiDream-O1 (pixel-space UiT): text→image, or reference editing when

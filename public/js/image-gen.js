@@ -843,6 +843,14 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       else if (count > 1) sink.label(`${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
       const resp = await requestVideo(perOptions, undefined, i === 0);
       let data = await resp.json();
+      // Nothing to do (e.g. 升格 off + 高清 off) → a plain notice in the bubble, NOT a
+      // "生成失败" error: the server did no ComfyUI work on purpose.
+      if (data.noop) {
+        sink.clearBubble();
+        sink.place({ role: "assistant", content: data.message || "无需处理。", timestamp: Date.now() });
+        setAvatarState("idle");
+        return;
+      }
       if (!resp.ok || !data.videos || !data.videos.length) {
         // First render failed → surface the error. A later one failing → keep
         // the videos we have and stop.
@@ -977,6 +985,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   const generatedImages = [];
   let errorCount = 0;
   let lastError = "";
+  let noopMessage = null; // server did nothing on purpose (e.g. upscale=Off) → plain notice, not an error
   // Seed actually used (random unless --seed was pinned) → surfaced on the done line
   // so a single result can be reproduced. Only meaningful for a single output.
   let usedSeed = null;
@@ -1056,7 +1065,11 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 // Ollama streams NDJSON; drive the shared bar and collect the image.
                 data = await readOllamaImageStream(r, setProgress);
               }
-              if (r.ok) {
+              if (r.ok && data.noop) {
+                // Nothing to do (e.g. image upscale with 放大模型=Off) — surface the
+                // server's notice as a plain message, not a "生成失败".
+                noopMessage = data.message || "无需处理。";
+              } else if (r.ok) {
                 const imgs = (data.images || []).filter((s) => s && s.length > 100);
                 if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
                 generatedImages.push(...imgs);
@@ -1101,6 +1114,8 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       content = lastError
         ? `图片生成失败：${lastError}`
         : "图片生成失败，请检查模型是否正确安装并支持图像生成。";
+    } else if (noopMessage && generatedImages.length === 0) {
+      content = noopMessage; // server intentionally did nothing → plain notice
     }
 
     const toSrc = (img) => (img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`);

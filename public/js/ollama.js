@@ -197,12 +197,15 @@ function applyComfyModels(data) {
       const autoOpt = document.createElement("option");
       autoOpt.value = ""; autoOpt.textContent = t("comfy_upscaleModel_auto");
       dom.comfyParamUpscaleModel.appendChild(autoOpt);
+      const offOpt = document.createElement("option");
+      offOpt.value = "off"; offOpt.textContent = t("comfy_upscaleModel_off");
+      dom.comfyParamUpscaleModel.appendChild(offOpt);
       for (const n of ups) {
         const o = document.createElement("option");
         o.value = n; o.textContent = n.replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
         dom.comfyParamUpscaleModel.appendChild(o);
       }
-      dom.comfyParamUpscaleModel.value = ups.includes(savedUp) ? savedUp : "";
+      dom.comfyParamUpscaleModel.value = (savedUp === "off" || ups.includes(savedUp)) ? savedUp : "";
     }
     const allNames = [...models, ...editModels.map((m) => m.name), ...videoModels.map((m) => m.name)];
     dom.comfyModelSelect.innerHTML = "";
