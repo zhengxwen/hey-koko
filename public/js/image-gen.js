@@ -53,6 +53,8 @@ function comfyOverrides() {
   if (length !== undefined) ov.length = length;
   const fps = num(dom.comfyParamFps?.value);
   if (fps !== undefined) ov.fps = fps;
+  const timeoutMin = num(dom.comfyParamTimeout?.value);
+  if (timeoutMin !== undefined) ov.timeoutMin = timeoutMin; // ⚙ video render deadline (min); empty/0 → unlimited
   const targetFps = num(dom.comfyParamTargetFps?.value);
   if (targetFps !== undefined) ov.targetFps = targetFps; // 升格: interpolate up to this fps
   if (dom.comfyParamInterpMethod?.value) ov.interpMethod = dom.comfyParamInterpMethod.value; // rife | film
@@ -754,10 +756,12 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     setAvatarState("idle");
   };
 
-  // A chained Wan Animate runs ALL chunks in one ComfyUI pass, so the whole render
-  // must fit one timeout — scale it with the estimated chunk count (≈15 min/chunk),
-  // clamped 30 min … 2 h (server cap). Other videos use a flat 30 min.
-  const videoTimeout = Math.min(7200, Math.max(1800, estPasses * 900));
+  // Render deadline = the ⚙ "Video timeout (min)" field. EMPTY → default 4 h cap; explicit 0 →
+  // UNLIMITED (videoTimeout 0 → the server runs with NO deadline; a long Wan Animate waits it out
+  // on the stable box, only a Stop / cancel ends it); a positive value → that many minutes, sent
+  // verbatim (no upper cap). estPasses / animBudgetEta above still drive the progress bar + badge.
+  const tMin = reqOptions.timeoutMin;
+  const videoTimeout = (tMin === undefined) ? 14400 : (tMin > 0 ? Math.round(tMin * 60) : 0); // sec; empty→4h, 0→∞
 
   // One /api/generate-comfy request. `extra` carries per-segment offset/length for
   // a chunked Wan Animate render; ignored otherwise.

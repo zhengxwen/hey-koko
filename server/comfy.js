@@ -1937,17 +1937,18 @@ async function generateComfyImage(req, res) {
     // The browser can supply its own clientId so it can subscribe to ComfyUI's
     // WebSocket for live progress / preview frames using the same id.
     const clientId = (typeof bodyClientId === "string" && bodyClientId) || crypto.randomUUID();
-    // Video renders run long; a chained multi-chunk Wan Animate runs ALL chunks in one
-    // pass, so allow up to 2h for video (the client sends a chunk-count-scaled timeout),
-    // 10 min otherwise.
+    // Video honors the client's ⚙ timeout VERBATIM: 0 = UNLIMITED (no deadline — the user waits a
+    // long Wan Animate render out on a stable box; only a Stop / client disconnect ends it), N =
+    // N seconds (the manual cap, NO upper clamp). Images keep the 10-min safety cap.
     isVideoReq = !!videoType;
-    const maxTimeout = videoType ? 7200 : 600;
-    const timeoutMs = Math.min(maxTimeout, Math.max(60, reqTimeout || 120)) * 1000;
-    const deadline = Date.now() + timeoutMs;
+    const timeoutMs = videoType
+      ? (reqTimeout === 0 ? 0 : Math.max(60, reqTimeout || 1800) * 1000)
+      : Math.min(600, Math.max(60, reqTimeout || 120)) * 1000;
+    const deadline = timeoutMs ? Date.now() + timeoutMs : Infinity;
     const controller = new AbortController();
-    // On timeout, stop waiting AND interrupt ComfyUI so the stuck render doesn't
-    // keep running on the GPU after we've returned a timeout error.
-    const timeout = setTimeout(() => { controller.abort(); interruptComfyServer(); }, timeoutMs);
+    // On timeout (if any), stop waiting AND interrupt ComfyUI so a stuck render doesn't keep
+    // running on the GPU after we return a timeout error. Unlimited (0) → no timer at all.
+    const timeout = timeoutMs ? setTimeout(() => { controller.abort(); interruptComfyServer(); }, timeoutMs) : null;
     // If the client disconnects (user hit Stop, tab closed, network drop) before
     // we respond, abort our poll/fetches and interrupt ComfyUI too — the browser
     // also POSTs /interrupt on the Stop button, but this covers the cases it can't.
@@ -2440,7 +2441,7 @@ async function generateComfyImage(req, res) {
     if (clientGone || res.writableEnded) return; // client already disconnected — nothing to send
     if (error.name === "AbortError") {
       sendJson(res, 504, { error: isVideoReq
-        ? "ComfyUI 视频生成超时。长视频会分多段一次跑完——可降低分辨率(⚙ 尺寸)、减少帧数(⚙ Length)，或把源视频剪短分次处理后重试。"
+        ? "ComfyUI 视频生成超时（超过 ⚙「超时」分钟数,默认 4 小时）。在 ⚙ 把「超时」调大、或设为 0 即可不限时长（长视频在服务端一直等到跑完）；也可降低分辨率(⚙ 尺寸)或减少帧数(⚙ Length)。"
         : "ComfyUI 图片生成超时，请重试或减少步数。" });
     } else if (error.isComfyError || (typeof error.message === "string" && error.message.startsWith("ComfyUI 执行错误"))) {
       // A real ComfyUI execution error (incl. CUDA OOM) — surface it verbatim, with

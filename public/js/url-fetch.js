@@ -242,6 +242,21 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
   }
 }
 
+// Build the YouTube "video info card" assistant bubble (title / channel / duration
+// / … + thumbnail). Shared so the immediate early placement and the final job
+// result produce an identical bubble under the same upsert id (idempotent).
+async function buildYoutubeInfoMsg(url, data) {
+  const infoParts = [`📺 **${data.title || url}**`, url, ''];
+  if (data.channel) infoParts.push(`频道：${data.channel}`);
+  if (data.duration) infoParts.push(`时长：${data.duration}`);
+  if (data.viewCount) infoParts.push(`播放：${Number(data.viewCount).toLocaleString()} 次`);
+  if (data.uploadDate) { const d = String(data.uploadDate).replace(/-/g, '').slice(0, 8); if (d.length === 8) infoParts.push(`日期：${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`); }
+  if (data.description) { const tags = data.description.match(/#[^\s#]+/g); if (tags && tags.length) infoParts.push('', tags.join(' ')); }
+  const infoMsg = { role: 'assistant', content: infoParts.join('\n'), timestamp: Date.now() };
+  if (data.thumbnail) { try { infoMsg.generatedThumbnails = [await makePreview(data.thumbnail)]; } catch {} infoMsg.ytVideoId = data.videoId; }
+  return infoMsg;
+}
+
 // /url youtube via the server-side queue: the server does fetch → (whisper) transcribe →
 // format (all the slow work; survives reload), with progress streaming to the drawer via
 // the onProgress channel. Here we only place the result bubbles, using stable ids derived
@@ -261,10 +276,41 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
   const commit = () => { saveChat(); if (state.activeTabId === tabId && _renderChat) _renderChat(); };
 
   bg.label(t('bg_fetchingContent'));
+
+  // Zero-waste fast path: fetch the metadata (+ subtitles, if any) ONCE on the
+  // client so the info card shows immediately, then hand that same data to the
+  // server job via `prefetch` so the server skips its own fetch — only the slow
+  // transcribe(if needed)+format runs server-side. If this fails (or returns
+  // nothing usable) we fall back to letting the job fetch everything itself.
+  let prefetch = null;
+  try {
+    const r0 = await fetch('/api/fetch-url', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, language: getPromptLanguage() }), signal: bg.signal,
+    });
+    if (r0.ok) {
+      const d0 = await r0.json();
+      if (d0 && d0.type === 'youtube' && (d0.title || d0.thumbnail)) {
+        upsertById(base + ':info', await buildYoutubeInfoMsg(url, d0));   // first bubble, now
+        commit();
+        const hasRealTranscript = !!(d0.content && !d0.content.startsWith('['));
+        prefetch = {
+          title: d0.title || '', channel: d0.channel || '', duration: d0.duration || '',
+          viewCount: d0.viewCount || '', uploadDate: d0.uploadDate || '', description: d0.description || '',
+          thumbnail: d0.thumbnail || '', videoId: d0.videoId,
+          rawTranscript: hasRealTranscript ? d0.content : null,   // null → server whisper-transcribes
+        };
+      }
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw e;   // canceled mid-fetch — let the queue handle it
+    // otherwise non-fatal: prefetch stays null → the job fetches everything itself
+  }
+
   let data, ok;
   try {
     const r = await youtubeFetch(
-      { url, language: getPromptLanguage(), model: dom.modelSelect.value },
+      { url, language: getPromptLanguage(), model: dom.modelSelect.value, prefetch },
       { bgJob: bg.server.bgJob, conversationId: bg.server.conversationId, msgId: bg.server.msgId, label: bg.server.label, signal: bg.signal });
     ok = r.ok; data = await r.json();
   } catch (e) {
@@ -274,15 +320,8 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
   data = data || {};
 
   // 1. video info card — stable id, NEVER the placeholder msgId (that's reserved for the reply).
-  const infoParts = [`📺 **${data.title || url}**`, url, ''];
-  if (data.channel) infoParts.push(`频道：${data.channel}`);
-  if (data.duration) infoParts.push(`时长：${data.duration}`);
-  if (data.viewCount) infoParts.push(`播放：${Number(data.viewCount).toLocaleString()} 次`);
-  if (data.uploadDate) { const d = String(data.uploadDate).replace(/-/g, '').slice(0, 8); if (d.length === 8) infoParts.push(`日期：${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`); }
-  if (data.description) { const tags = data.description.match(/#[^\s#]+/g); if (tags && tags.length) infoParts.push('', tags.join(' ')); }
-  const infoMsg = { role: 'assistant', content: infoParts.join('\n'), timestamp: Date.now() };
-  if (data.thumbnail) { try { infoMsg.generatedThumbnails = [await makePreview(data.thumbnail)]; } catch {} infoMsg.ytVideoId = data.videoId; }
-  upsertById(base + ':info', infoMsg);
+  // Same id as the early placement above, so this refreshes it rather than duplicating.
+  upsertById(base + ':info', await buildYoutubeInfoMsg(url, data));
 
   if (ok && data.formattedText) {
     // 2a. success → only the cleaned transcript (no raw-subtitle user bubble)

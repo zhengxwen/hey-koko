@@ -949,7 +949,7 @@ async function formatTranscriptServer(title, transcript, model, { onProgress = (
 async function youtubeJob(req, res) {
   let body;
   try { body = await readBody(req); } catch { body = {}; }
-  const { url, language, model } = body || {};
+  const { url, language, model, prefetch } = body || {};
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
   const ctrl = new AbortController();
   req.on("close", () => ctrl.abort());
@@ -966,12 +966,24 @@ async function youtubeJob(req, res) {
     const ytMatch = (url || "").match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{11})/);
     const videoId = ytMatch && ytMatch[1];
     if (!videoId) { send({ type: "error", error: "无效的 YouTube 链接" }); res.end(); return; }
-    const meta = await fetchYouTubeTranscript(videoId, language);
-    const thumbnail = (await fetchYouTubeThumbnail(videoId)) || "";
-    const hasReal = meta && meta.text && !meta.text.startsWith("[");
-    let rawTranscript, source;
-    if (hasReal) { rawTranscript = meta.text; source = "subtitle"; }
-    else {
+    // The client may have already fetched the metadata (+ subtitles) to render the
+    // info card; if so it passes them in `prefetch` so we DON'T fetch twice. We
+    // still whisper-transcribe here when no subtitle transcript was provided.
+    let meta, thumbnail, rawTranscript, source;
+    if (prefetch && (prefetch.title || prefetch.thumbnail || prefetch.rawTranscript)) {
+      meta = {
+        title: prefetch.title || "", channel: prefetch.channel || "", duration: prefetch.duration || "",
+        viewCount: prefetch.viewCount || "", uploadDate: prefetch.uploadDate || "", description: prefetch.description || "",
+      };
+      thumbnail = prefetch.thumbnail || "";
+      if (prefetch.rawTranscript) { rawTranscript = prefetch.rawTranscript; source = "subtitle"; }
+    } else {
+      meta = await fetchYouTubeTranscript(videoId, language);
+      thumbnail = (await fetchYouTubeThumbnail(videoId)) || "";
+      const hasReal = meta && meta.text && !meta.text.startsWith("[");
+      if (hasReal) { rawTranscript = meta.text; source = "subtitle"; }
+    }
+    if (!rawTranscript) {
       rawTranscript = await transcribeYouTubeAudioCore(videoId, { onProgress, signal: ctrl.signal });
       source = "whisper";
     }

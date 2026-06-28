@@ -56,6 +56,7 @@ export const dom = {
   comfyParamDenoise: document.querySelector("#comfyParamDenoise"),
   comfyParamLength: document.querySelector("#comfyParamLength"),
   comfyParamFps: document.querySelector("#comfyParamFps"),
+  comfyParamTimeout: document.querySelector("#comfyParamTimeout"),
   comfyParamTargetFps: document.querySelector("#comfyParamTargetFps"),
   comfyParamInterpMethod: document.querySelector("#comfyParamInterpMethod"),
   comfyParamUpscaleDenoise: document.querySelector("#comfyParamUpscaleDenoise"),
