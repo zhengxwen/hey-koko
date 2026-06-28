@@ -307,6 +307,32 @@ export function updateComfyMultiHint() {
     dom.comfyModelInfo.textContent = comps;
     dom.comfyModelInfo.hidden = !comps;
   }
+  updateComfyParamVisibility();
+}
+
+// Show only the ⚙ params that apply to the selected ComfyUI model: hide the video-only block
+// (length / fps / timeout / 升格) for image models, the Wan-Animate-only knobs (torch.compile /
+// relight / pick-person) for non-animate, the upscale knob for non-upscale, and Image-CFG for
+// non-image. A pure upscale model shows only its own knob (no sampler / steps / prompt). No comfy
+// model selected (Ollama image path) → leave the modal untouched.
+export function updateComfyParamVisibility() {
+  const m = dom.comfyModelSelect?.value || "";
+  if (!m) return;
+  const video = !!(state.comfyVideoModels && state.comfyVideoModels.has(m));
+  const animate = /animate/i.test(m);
+  const upscale = /upscale/i.test(m);
+  const image = !video && !upscale;           // txt2img or image-edit
+  // Hide a field by its <label> (or, for the 升格 pair, the shared .comfyParamRow; the
+  // pick-person button has no label, so fall back to the element itself).
+  const setVis = (el, on, sel) => { if (!el) return; const box = sel ? el.closest(sel) : (el.closest("label") || el); if (box) box.hidden = !on; };
+  for (const el of [dom.comfyParamLength, dom.comfyParamFps, dom.comfyParamTimeout]) setVis(el, video);
+  setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // 升格 + interpolation-engine row
+  for (const el of [dom.comfyParamTorchCompile, dom.comfyParamRelight, dom.comfyMaskPointBtn]) setVis(el, animate);
+  setVis(dom.comfyParamUpscaleDenoise, upscale);
+  setVis(dom.comfyParamImageCfg, image);
+  // Sampling + prompt knobs apply to every model EXCEPT a pure upscale (which just runs an
+  // upscale-model node — no sampler / steps / cfg / prompt).
+  for (const el of [dom.comfyParamPositive, dom.comfyParamNegative, dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps, dom.comfyParamCfg, dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, !upscale);
 }
 
 export async function loadEmbedModels() {
@@ -434,6 +460,7 @@ function initComfyParamsModal() {
   const modal = dom.comfyParamsModal;
   if (!modal) return;
   const fields = [
+    dom.comfyParamPositive,
     dom.comfyParamNegative,
     dom.comfyParamSampler,
     dom.comfyParamScheduler,
@@ -444,6 +471,7 @@ function initComfyParamsModal() {
     dom.comfyParamDenoise,
     dom.comfyParamLength,
     dom.comfyParamFps,
+    dom.comfyParamTimeout,
     dom.comfyParamTargetFps,
     dom.comfyParamUpscaleDenoise,
     dom.comfyParamRelight,
@@ -460,6 +488,7 @@ function initComfyParamsModal() {
   function open() {
     modal.hidden = false;
     syncMaskPointLabel();
+    updateComfyParamVisibility();   // show only the params the selected model actually uses
     document.addEventListener("keydown", onKeydown);
   }
   function close() {

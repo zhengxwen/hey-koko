@@ -443,6 +443,10 @@
           <p class="hint" id="comfyParamsHint">Leave empty = auto-pick the optimal params for the selected model</p>
           <div class="comfyModelInfo" id="comfyModelInfo" hidden></div>
           <label>
+            <span id="comfyParamPositiveLabel" title="A persistent positive prompt APPENDED to every image &amp; video prompt (e.g. a fixed style / quality booster). Like the negative below, but it adds to your prompt rather than replacing it. Empty = off.">Positive add-on (appended to every prompt)</span>
+            <textarea id="comfyParamPositive" rows="2" placeholder="e.g. cinematic, high detail, 8k" title="Appended to every prompt. Empty = off."></textarea>
+          </label>
+          <label>
             <span id="comfyParamNegativeLabel">Negative prompt</span>
             <textarea id="comfyParamNegative" rows="2" placeholder="e.g. blurry, low quality, extra fingers (overridden by --no)"></textarea>
           </label>

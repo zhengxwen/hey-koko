@@ -76,6 +76,18 @@ function comfyNegative(parsedNegative) {
   return v || undefined;
 }
 
+// The persistent POSITIVE add-on from the ⚙ ComfyUI params modal — APPENDED to every image AND
+// video prompt (the symmetric counterpart of comfyNegative: a fixed style / quality booster that's
+// always added, e.g. "cinematic, high detail"). Content first, add-on after; silent (not shown in
+// the bubble). Empty → the prompt is returned unchanged. An empty prompt (attachment-driven gen)
+// becomes just the add-on.
+function comfyPositive(promptText) {
+  const add = dom.comfyParamPositive?.value?.trim();
+  if (!add) return promptText;
+  const base = (promptText || "").trim();
+  return base ? `${base}, ${add}` : add;
+}
+
 // Whether the currently-selected ComfyUI model can use an inpaint mask. True for
 // any image model that takes a source image (plain checkpoints + all instruction
 // editors + boogu img2img); false for the Ollama path, video models, and the
@@ -768,7 +780,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   const requestVideo = (perOptions, extra, isFirstSubRun) => {
     const vbody = {
       model,
-      prompt: videoPrompt,
+      prompt: comfyPositive(videoPrompt),
       negative_prompt: comfyNegative(parsed.negativePrompt),
       options: perOptions,
       images: refImages || undefined,
@@ -1007,7 +1019,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
 
         const reqBody = {
           model: activeModel,
-          prompt,
+          prompt: comfyPositive(prompt),
           negative_prompt: comfyNegative(parsed.negativePrompt),
           options: reqOptions,
           images: refImages || undefined,

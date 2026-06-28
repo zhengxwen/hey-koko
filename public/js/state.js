@@ -46,6 +46,7 @@ export const dom = {
   comfyParamsClose: document.querySelector("#comfyParamsClose"),
   comfyParamsReset: document.querySelector("#comfyParamsReset"),
   comfyModelInfo: document.querySelector("#comfyModelInfo"),
+  comfyParamPositive: document.querySelector("#comfyParamPositive"),
   comfyParamNegative: document.querySelector("#comfyParamNegative"),
   comfyParamSampler: document.querySelector("#comfyParamSampler"),
   comfyParamScheduler: document.querySelector("#comfyParamScheduler"),

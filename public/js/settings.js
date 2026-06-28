@@ -29,6 +29,7 @@ export function saveCurrentSettings() {
       imageModel: dom.imageModelSelect.value,
       comfyModel: dom.comfyModelSelect?.value || "",
       comfyParams: {
+        positive: dom.comfyParamPositive?.value || "",
         negative: dom.comfyParamNegative?.value || "",
         sampler: dom.comfyParamSampler?.value || "",
         scheduler: dom.comfyParamScheduler?.value || "",
@@ -39,6 +40,7 @@ export function saveCurrentSettings() {
         denoise: dom.comfyParamDenoise?.value || "",
         length: dom.comfyParamLength?.value || "",
         fps: dom.comfyParamFps?.value || "",
+        timeout: dom.comfyParamTimeout?.value || "",
         targetFps: dom.comfyParamTargetFps?.value || "",
         interpMethod: dom.comfyParamInterpMethod?.value || "rife",
         upscaleDenoise: dom.comfyParamUpscaleDenoise?.value || "",
@@ -154,6 +156,7 @@ export function loadSavedSettings() {
   if (savedSettings.comfyModel && dom.comfyModelSelect) dom.comfyModelSelect.value = savedSettings.comfyModel;
   if (savedSettings.comfyParams) {
     const cp = savedSettings.comfyParams;
+    if (dom.comfyParamPositive) dom.comfyParamPositive.value = cp.positive || "";
     if (dom.comfyParamNegative) dom.comfyParamNegative.value = cp.negative || "";
     if (dom.comfyParamSampler) dom.comfyParamSampler.value = cp.sampler || "";
     if (dom.comfyParamScheduler) dom.comfyParamScheduler.value = cp.scheduler || "";
@@ -164,6 +167,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamDenoise) dom.comfyParamDenoise.value = cp.denoise || "";
     if (dom.comfyParamLength) dom.comfyParamLength.value = cp.length || "";
     if (dom.comfyParamFps) dom.comfyParamFps.value = cp.fps || "";
+    if (dom.comfyParamTimeout) dom.comfyParamTimeout.value = cp.timeout || "";
     if (dom.comfyParamTargetFps) dom.comfyParamTargetFps.value = cp.targetFps || "";
     if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = cp.interpMethod || "rife";
     if (dom.comfyParamUpscaleDenoise) dom.comfyParamUpscaleDenoise.value = cp.upscaleDenoise || "";
