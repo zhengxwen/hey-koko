@@ -82,9 +82,8 @@ export function initArchive() {
       }
       m.content = msg.content;
       if (msg.folded) m.folded = true;
-      if (msg.previewImage) m.previewImage = msg.previewImage;
-      if (msg.previewImages) m.previewImages = msg.previewImages;
-      if (msg.images) m.images = msg.images;
+      if (msg.displayImages) m.displayImages = msg.displayImages;
+      if (msg.contextImages) m.contextImages = msg.contextImages;
       if (msg.generatedImages) m.generatedImages = msg.generatedImages;
       if (msg.generatedThumbnails) m.generatedThumbnails = msg.generatedThumbnails;
       // Archive the video poster thumbnails, not the (heavy) videos themselves.
@@ -513,11 +512,15 @@ export function initArchive() {
         div.className = `archivePreviewMsg ${msg.role}${msg.folded ? " folded" : ""}`;
 
         let imageHtml = "";
-        const previews = (msg.previewImages && msg.previewImages.length > 0)
-          ? msg.previewImages
-          : msg.previewImage
-            ? [msg.previewImage]
-            : (msg.images && msg.images.length > 0 ? msg.images : null);
+        // New archives store displayImages/contextImages; the legacy fallbacks
+        // (previewImages/previewImage/images) keep older archives rendering.
+        const previews = (msg.displayImages && msg.displayImages.length > 0)
+          ? msg.displayImages
+          : (msg.previewImages && msg.previewImages.length > 0)
+            ? msg.previewImages
+            : msg.previewImage
+              ? [msg.previewImage]
+              : ((msg.contextImages || msg.images)?.length ? (msg.contextImages || msg.images) : null);
         if (previews) {
           const imgs = previews.map(p => {
             const src = p.startsWith("data:") ? p : `data:image/jpeg;base64,${p}`;
@@ -533,8 +536,8 @@ export function initArchive() {
             ? msg.generatedThumbnails
             : msg.generatedVideoThumbnails && msg.generatedVideoThumbnails.length > 0
               ? msg.generatedVideoThumbnails.filter(Boolean)
-              : (msg.isFilePreview && msg.images?.length)
-                ? msg.images.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
+              : (msg.isFilePreview && (msg.contextImages || msg.images)?.length)
+                ? (msg.contextImages || msg.images).map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
                 : null;
         let genImageHtml = "";
         if (genImgs && genImgs.length > 0) {

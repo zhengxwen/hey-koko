@@ -10,7 +10,7 @@ import { initTheme } from './theme.js';
 import { initAvatar } from './avatar.js';
 import { stopSpeech, populateVoiceList, speakAdjacent } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
-import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
+import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
 import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsMask } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
@@ -1015,10 +1015,9 @@ function exportImgSrc(img) {
 
 function exportImages(m) {
   const out = [];
-  if (m.previewImages?.length) out.push(...m.previewImages);
-  else if (m.previewImage) out.push(m.previewImage);
+  if (m.displayImages?.length) out.push(...m.displayImages);
   if (m.generatedImages?.length) out.push(...m.generatedImages);
-  else if (m.isFilePreview && m.images?.length) out.push(...m.images);
+  else if (m.isFilePreview && m.contextImages?.length) out.push(...m.contextImages);
   // Generated videos are represented by their poster thumbnails in exports.
   if (m.generatedVideoThumbnails?.length) out.push(...m.generatedVideoThumbnails.filter(Boolean));
   return out.map(exportImgSrc).filter(Boolean);
@@ -1140,6 +1139,9 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
         if (typeof m.timestamp === "string") {
           m.timestamp = new Date(m.timestamp.replace(" ", "T")).getTime();
         }
+        // Map legacy image field names (images/previewImage[s]) onto the current
+        // contextImages/displayImages so older exported JSON still imports correctly.
+        migrateImageFields(m);
         return m;
       });
       const tab = createTab(data.title || "导入的对话", messages, data.personality || null);

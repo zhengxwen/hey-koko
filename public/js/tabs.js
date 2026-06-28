@@ -14,11 +14,30 @@ import { tabActiveJobCount, cancelTabJobs } from './bg-jobs.js';   // Option B: 
 // Give every persisted message a stable `id` so the background-jobs queue can
 // re-locate a placeholder after inserts/deletes shift array indices. Cheap,
 // idempotent, and harmless to messages that already have one.
+// Migrate a single stored message from the legacy image field names to the two
+// semantic fields used throughout the app:
+//   images            → contextImages  (full-res, sent to the model)
+//   previewImages /   → displayImages  (thumbnails, shown in the bubble only)
+//   previewImage
+// Idempotent: messages already using the new names are left untouched.
+export function migrateImageFields(m) {
+  if (!m) return;
+  if (m.images && !m.contextImages) m.contextImages = m.images;
+  delete m.images;
+  if (!m.displayImages) {
+    if (m.previewImages?.length) m.displayImages = m.previewImages;
+    else if (m.previewImage) m.displayImages = [m.previewImage];
+  }
+  delete m.previewImages;
+  delete m.previewImage;
+}
+
 function backfillMessageIds(tabs) {
   for (const tab of tabs) {
     if (!Array.isArray(tab.messages)) continue;
     for (const m of tab.messages) {
       if (m && !m.id) m.id = genId();
+      migrateImageFields(m);
     }
   }
   return tabs;
@@ -67,11 +86,11 @@ export async function loadTabs() {
     const migrated = await migrateFromLocalStorage();
     if (migrated) {
       if (migrated.tabs) {
-        return { tabs: migrated.tabs, activeTabId: migrated.activeTabId || migrated.tabs[0].id };
+        return { tabs: backfillMessageIds(migrated.tabs), activeTabId: migrated.activeTabId || migrated.tabs[0].id };
       }
       if (migrated.legacyMessages) {
         const tab = createTab("聊天 1", migrated.legacyMessages);
-        return { tabs: [tab], activeTabId: tab.id };
+        return { tabs: backfillMessageIds([tab]), activeTabId: tab.id };
       }
     }
   } catch (e) {

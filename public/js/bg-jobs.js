@@ -459,7 +459,7 @@ async function runDocFull(job, sink) {
     content: `📄 **FILE: ${p.name}**${tool ? ` (via ${tool})` : ''}\n\n${text}`,
     timestamp: Date.now(), isFilePreview: true,
   };
-  if (images.length) previewMsg.images = images.map((img) => img.base64);
+  if (images.length) previewMsg.contextImages = images.map((img) => img.base64);
   if (displayThumbnails && displayThumbnails.length) previewMsg.generatedThumbnails = displayThumbnails;
   const promptMsg = { id: genId(), role: 'user', content: autoPrompt, timestamp: Date.now() };
 
@@ -1167,7 +1167,7 @@ export async function restoreBgJobsOnLoad() {
   const jobMsgIds = new Set(jobs.map((j) => j.msgId));
   const isEmptyJunk = (m) => !m.bgPlaceholder && m.role === 'assistant' && (!m.content || !m.content.trim())
     && !m.generatedImages && !m.generatedVideos && !m.generatedAudio && !m.generatedThumbnails
-    && !m.generatedVideoThumbnails && !m.images && !m.thinking && !m.toolSteps
+    && !m.generatedVideoThumbnails && !m.contextImages && !m.thinking && !m.toolSteps
     && !m.isFilePreview && !m.isCompactSummary && !m.translation;
   let removed = false;
   for (const tab of state.tabs) {

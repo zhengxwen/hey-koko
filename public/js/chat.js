@@ -389,8 +389,11 @@ function deleteMessageImage(msgIndex, imgIndex) {
   if (message.generatedThumbnails && message.generatedThumbnails.length > imgIndex) {
     message.generatedThumbnails.splice(imgIndex, 1);
   }
-  if (message.images && message.images.length > imgIndex) {
-    message.images.splice(imgIndex, 1);
+  if (message.contextImages && message.contextImages.length > imgIndex) {
+    message.contextImages.splice(imgIndex, 1);
+  }
+  if (message.displayImages && message.displayImages.length > imgIndex) {
+    message.displayImages.splice(imgIndex, 1);
   }
   saveChat();
   const scrollY = dom.messagesEl.scrollTop;
@@ -447,6 +450,20 @@ function attachVideosToMessage(userMessage, videos) {
   if (videos.some(v => v.thumbnail)) userMessage.generatedVideoThumbnails = videos.map(v => v.thumbnail || null);
   if (videos.some(v => v.width != null)) userMessage.videoWidths = videos.map(v => v.width ?? null);
   if (videos.some(v => v.height != null)) userMessage.videoHeights = videos.map(v => v.height ?? null);
+}
+
+// Stamp a user bubble with a staged image upload (single staged object, or a
+// { multi:[...] } selection). Two parallel arrays carry the two distinct roles:
+//   contextImages — full-res base64, the ONLY images forwarded to the model
+//   displayImages — 360px JPEG thumbnails (makePreview), shown in the bubble only
+// imageNames keeps the original filenames; a single-image inpaint mask rides along.
+function attachUploadedImages(userMessage, image) {
+  if (!image) return;
+  const list = image.multi || [image];
+  userMessage.contextImages = list.map((img) => img.base64);
+  userMessage.displayImages = list.map((img) => img.preview);
+  userMessage.imageNames = list.map((img) => img.name || null);
+  if (!image.multi && image.mask) userMessage.mask = image.mask;
 }
 
 function deleteMessageVideo(msgIndex, vidIndex) {
@@ -549,8 +566,8 @@ function resendChatMessage(index) {
   // the bubble carried none, the fallback scans the bubbles before it (anchor=index-1).
   const analyzeResend = parseAnalyzeCommand(message.content);
   if (analyzeResend) {
-    const imageObj = message.images?.length
-      ? { multi: message.images.map((b) => ({ base64: b })) }
+    const imageObj = message.contextImages?.length
+      ? { multi: message.contextImages.map((b) => ({ base64: b })) }
       : null;
     // Resend of vision analysis also goes to the queue (reached only when empty — a
     // non-empty queue is blocked above). Placeholder lands right after this bubble.
@@ -577,7 +594,7 @@ function resendChatMessage(index) {
   if (imagineCmds) {
     const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
     const srcVids = messageSourceVideos(message);
-    const hasAttach = !!((message.images && message.images.length) || srcVids.length);
+    const hasAttach = !!((message.contextImages && message.contextImages.length) || srcVids.length);
     const validCmds = imagineCmds.filter((cmd) => cmd && !cmd.error && (cmd.prompt || hasAttach));
     if (firstError) {
       tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_commandError", { error: firstError.error }), timestamp: Date.now() });
@@ -591,7 +608,7 @@ function resendChatMessage(index) {
       // Resend of image/video gen also goes to the background queue (reached only
       // when the queue is empty — a non-empty queue is blocked above with a dialog).
       // The placeholder lands right after the resent user bubble (index + 1).
-      enqueueImagineGen(validCmds, state.activeTabId, message.images || null, srcVids, message.mask || null, index + 1);
+      enqueueImagineGen(validCmds, state.activeTabId, message.contextImages || null, srcVids, message.mask || null, index + 1);
     }
   } else {
     // Truncate context to the resent bubble: only messages up to and including
@@ -991,12 +1008,14 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
     // File preview bubbles: send to LLM as user-role (contains the parsed file content)
     if (msg.isFilePreview) {
       const message = { role: "user", content: msg.content };
-      if (msg.images?.length) message.images = msg.images;
+      // `images` here is Ollama's chat-API field name — keep it; the source is our
+      // stored contextImages.
+      if (msg.contextImages?.length) message.images = msg.contextImages;
       mapped.push(message);
       continue;
     }
     const message = { role: msg.role, content: msg.content };
-    if (msg.images?.length) message.images = msg.images;
+    if (msg.contextImages?.length) message.images = msg.contextImages;
     mapped.push(message);
   }
 
@@ -1972,9 +1991,9 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
       for (let i = start; i >= 0; i--) {
         const m = tab.messages[i];
         if (m.role !== "user") continue;
-        const hasImg = m.images?.length, hasVid = m.generatedVideos?.length;
+        const hasImg = m.contextImages?.length, hasVid = m.generatedVideos?.length;
         if (!hasImg && !hasVid) continue;
-        const imgs = hasImg ? m.images.map(rawBase64) : [];
+        const imgs = hasImg ? m.contextImages.map(rawBase64) : [];
         videoFrames = hasVid ? await framesFromVideo(m.generatedVideos[0], m.videoMime) : [];
         imageCount = imgs.length;
         frameCount = videoFrames.length;
@@ -2254,21 +2273,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   if (imagineCmds) {
     const userMessage = { role: "user", content, timestamp: Date.now() };
     // An attached image turns /imagine into image-to-image (instruction editing).
-    if (image) {
-      if (image.multi) {
-        userMessage.images = image.multi.map(img => img.base64);
-        userMessage.previewImages = image.multi.map(img => img.preview);
-        userMessage.imageNames = image.multi.map(img => img.name || null);
-      } else {
-        userMessage.images = [image.base64];
-        userMessage.previewImages = [image.preview];
-        userMessage.imageNames = [image.name || null];
-        // Inpaint mask painted on a single staged image (white = repaint region).
-        // Persisted on the message so a resend reproduces the same masked edit.
-        if (image.mask) userMessage.mask = image.mask;
-      }
-      userMessage.previewImage = userMessage.previewImages[0];
-    }
+    attachUploadedImages(userMessage, image);
     // Attached video(s) are the SOURCE for a video-edit model (Bernini / Animate).
     // Several clips can be staged → each runs the workflow once (batch). They ride on
     // the user bubble for display (reusing the generatedVideos field).
@@ -2293,7 +2298,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       // multiple clips fan out (cartesian with each command's count).
       saveChat();
       if (state.activeTabId === tabId) renderChat();
-      enqueueImagineGen(validCmds, tabId, userMessage.images || null, imagineVideos, userMessage.mask || null);
+      enqueueImagineGen(validCmds, tabId, userMessage.contextImages || null, imagineVideos, userMessage.mask || null);
     }
     return;
   }
@@ -2320,21 +2325,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   const analyzeCmd = content ? parseAnalyzeCommand(content) : null;
   if (analyzeCmd) {
     const userMessage = { role: "user", content, timestamp: Date.now() };
-    if (image) {
-      if (image.multi) {
-        userMessage.images = image.multi.map(img => img.base64);
-        userMessage.previewImages = image.multi.map(img => img.preview);
-        userMessage.imageNames = image.multi.map(img => img.name || null);
-      } else {
-        userMessage.images = [image.base64];
-        userMessage.previewImages = [image.preview];
-        userMessage.imageNames = [image.name || null];
-        // Inpaint mask painted on a single staged image (white = repaint region).
-        // Persisted on the message so a resend reproduces the same masked edit.
-        if (image.mask) userMessage.mask = image.mask;
-      }
-      userMessage.previewImage = userMessage.previewImages[0];
-    }
+    attachUploadedImages(userMessage, image);
     // /analyze inspects only the FIRST staged clip (vision analysis isn't batched).
     const analyzeVideos = stagedVideoList(video);
     attachVideosToMessage(userMessage, analyzeVideos);
@@ -2380,7 +2371,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       isFilePreview: true,
     };
     if (file.images && file.images.length > 0) {
-      assistantPreview.images = file.images.map((img) => img.base64);
+      assistantPreview.contextImages = file.images.map((img) => img.base64);
     }
     // Display-only thumbnails (e.g. images downloaded from email HTML): shown in
     // the bubble but kept out of `images` so they never enter the model context.
@@ -2415,18 +2406,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     timestamp: Date.now(),
   };
 
-  if (image) {
-    if (image.multi) {
-      userMessage.images = image.multi.map(img => img.base64);
-      userMessage.previewImages = image.multi.map(img => img.preview);
-      userMessage.imageNames = image.multi.map(img => img.name || null);
-    } else {
-      userMessage.images = [image.base64];
-      userMessage.previewImages = [image.preview];
-      userMessage.imageNames = [image.name || null];
-    }
-    userMessage.previewImage = userMessage.previewImages[0]; // backward compat
-  }
+  attachUploadedImages(userMessage, image);
 
   // Uploaded video(s) ride along on the user bubble for display only. They reuse the
   // generatedVideos field so they render/persist like generated clips, but
@@ -2617,7 +2597,7 @@ function lazyLoadVideo(video, base64, mime) {
   videoLazyObserver.observe(video);
 }
 
-function renderMessage(role, content, previewImage, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMime, generatedAudio, audioMime, generatedVideoThumbnails) {
+function renderMessage(role, content, displayImages, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMime, generatedAudio, audioMime, generatedVideoThumbnails) {
   const item = document.createElement("div");
   item.className = `message ${role}`;
 
@@ -2769,13 +2749,13 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
   let mediaRow = null;
   let textEl = null;
 
-  if (previewImage) {
-    const previews = Array.isArray(previewImage) ? previewImage : [previewImage];
+  if (displayImages) {
+    const previews = Array.isArray(displayImages) ? displayImages : [displayImages];
     // Original upload filenames + full-res bytes, when kept, so the download uses
     // the real name and the original image (falling back to the thumbnail).
     const msg = Number.isInteger(index) ? getActiveTab().messages[index] : null;
     const imageNames = msg?.imageNames;
-    const fullImages = msg?.images;
+    const fullImages = msg?.contextImages;
     // User bubbles: one shared media row (images + video on the same line).
     // Otherwise multiple images render in a compact grid; a single image stays inline.
     const container = mediaRowEnabled
@@ -2819,7 +2799,7 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
           const tab = getActiveTab();
           const mm = tab?.messages?.[index];
           if (!mm) return;
-          const b64 = mm.images?.[0] || "";
+          const b64 = mm.contextImages?.[0] || "";
           const fullSrc = b64
             ? (b64.startsWith("data:") || b64.startsWith("http") ? b64 : `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`)
             : src;
@@ -2913,9 +2893,9 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
     textEl = text;
   }
 
-  const displayImages = generatedImages && generatedImages.length > 0 ? generatedImages : generatedThumbnails;
-  if (displayImages && displayImages.length > 0) {
-    const validImages = displayImages.filter((img) => img && (img.startsWith("http") || img.length > 100));
+  const gridImages = generatedImages && generatedImages.length > 0 ? generatedImages : generatedThumbnails;
+  if (gridImages && gridImages.length > 0) {
+    const validImages = gridImages.filter((img) => img && (img.startsWith("http") || img.length > 100));
     const fullImages = generatedImages && generatedImages.length > 0 ? generatedImages : null;
     const ytId = Number.isInteger(index) && getActiveTab().messages[index]?.ytVideoId;
 
@@ -3230,11 +3210,11 @@ export function renderChat() {
     }
 
     // For file previews, prefer display-only thumbnails (which already bundle any
-    // inline images as previews); otherwise derive the grid from `images`.
-    const genImages = message.generatedImages || (message.isFilePreview && !message.generatedThumbnails?.length && message.images?.length
-      ? message.images.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
+    // inline images as previews); otherwise derive the grid from contextImages.
+    const genImages = message.generatedImages || (message.isFilePreview && !message.generatedThumbnails?.length && message.contextImages?.length
+      ? message.contextImages.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
       : undefined);
-    const previews = message.previewImages || (message.previewImage ? [message.previewImage] : undefined);
+    const previews = message.displayImages;
     const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails, message.generatedVideos, message.videoMime, message.generatedAudio, message.audioMime, message.generatedVideoThumbnails);
     // Tag with the stable id so the jobs drawer can scroll a finished job into view.
     if (el && message.id) el.dataset.msgId = message.id;
