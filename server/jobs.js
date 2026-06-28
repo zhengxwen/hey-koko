@@ -47,15 +47,48 @@ function persist() {
     } catch (e) { console.warn("[jobs] persist failed:", e.message); }
   }, 200);
 }
+
+// Undelivered-result durability: a finished job's (heavy) result is written to a per-job
+// side file so it survives a SERVER restart, not just a browser close. jobs.json stays
+// metadata-only. The file exists only from "done" until the client acks (delivers) it,
+// then it's dropped — so disk usage is bounded by what's pending delivery.
+const RESULTS_DIR = path.join(config.JOBS_DIR, "results");
+function resultPath(id) { return path.join(RESULTS_DIR, `${id}.json`); }
+function saveResult(job) {
+  if (!job || !job.result) return;
+  try { fs.mkdirSync(RESULTS_DIR, { recursive: true }); fs.writeFileSync(resultPath(job.id), JSON.stringify(job.result)); }
+  catch (e) { console.warn("[jobs] saveResult failed:", e.message); }
+}
+function loadResult(id) {
+  try { return JSON.parse(fs.readFileSync(resultPath(id), "utf-8")); } catch { return null; }
+}
+function dropResult(id) {
+  try { fs.unlinkSync(resultPath(id)); } catch { /* not there → fine */ }
+}
 function load() {
   try {
     const arr = JSON.parse(fs.readFileSync(JOBS_FILE, "utf-8"));
     if (Array.isArray(arr)) {
-      // running → interrupted (its in-flight work was lost on restart); done jobs
-      // lost their result on disk → drop them (nothing to deliver). queued resume.
-      jobs = arr.filter((j) => j.status !== "done").map((j) => j.status === "running" ? { ...j, status: "interrupted", progress: null } : j);
+      jobs = arr
+        // running → interrupted (its in-flight work was lost on restart). queued/paused resume.
+        .map((j) => j.status === "running" ? { ...j, status: "interrupted", progress: null } : j)
+        // A 'done' job kept its result in a side file → re-attach so the SSE snapshot can
+        // still deliver it after a restart; drop done jobs whose result file is gone.
+        .map((j) => {
+          if (j.status !== "done") return j;
+          const r = loadResult(j.id);
+          return r ? { ...j, result: r } : null;
+        })
+        .filter(Boolean);
     }
   } catch { jobs = []; }
+  // Clean orphan result files (no matching undelivered 'done' job → already delivered / stale).
+  try {
+    const live = new Set(jobs.filter((j) => j.status === "done").map((j) => j.id));
+    for (const f of fs.readdirSync(RESULTS_DIR)) {
+      if (!live.has(f.replace(/\.json$/, ""))) dropResult(f.replace(/\.json$/, ""));
+    }
+  } catch { /* no results dir yet → nothing to clean */ }
 }
 
 // ---- SSE broadcast ----------------------------------------------------------
@@ -116,6 +149,7 @@ async function pumpLane(laneId) {
       }
       controllers.delete(job.id);
       if (!jobs.includes(job)) continue;        // canceled mid-run (already removed + broadcast)
+      if (job.status === "done") saveResult(job);   // durable until the client acks
       persist();
       broadcast(job.status === "done" ? { type: "done", job: publicJob(job) } : { type: "update", job: publicJob(job) });
     }
@@ -245,7 +279,7 @@ function loopbackStream(path, bodyObj, signal, onLine) {
 function abortErr() { const e = new Error("Aborted"); e.name = "AbortError"; return e; }
 
 // ---- cancel / remove --------------------------------------------------------
-function removeJob(job) { const i = jobs.indexOf(job); if (i >= 0) jobs.splice(i, 1); }
+function removeJob(job) { const i = jobs.indexOf(job); if (i >= 0) jobs.splice(i, 1); dropResult(job.id); }
 function doCancel(job) {
   const ctrl = controllers.get(job.id);
   if (ctrl) { try { ctrl.abort(); } catch {} controllers.delete(job.id); }
@@ -316,7 +350,21 @@ async function reorderJobs(req, res) {
   sendJson(res, 200, { ok: true });
 }
 
+// Pause a not-yet-started job (pumpLane only ever picks 'queued', so a 'paused' job is
+// simply skipped) / resume it. Groundwork for the future "client submits the whole queue
+// up front" model where pause/resume must live on the server, not just in the browser.
+async function pauseJob(req, res, id) {
+  const job = jobs.find((j) => j.id === id);
+  if (job && job.status === "queued") { job.status = "paused"; persist(); emitUpdate(job); }
+  sendJson(res, 200, { ok: true });
+}
+async function resumeJob(req, res, id) {
+  const job = jobs.find((j) => j.id === id);
+  if (job && job.status === "paused") { job.status = "queued"; persist(); emitUpdate(job); pumpLanes(); }
+  sendJson(res, 200, { ok: true });
+}
+
 load();
 setTimeout(() => pumpLanes(), 800);   // resume queued jobs on boot
 
-module.exports = { submitJob, streamEvents, cancelJob, cancelConversation, ackJobs, reorderJobs };
+module.exports = { submitJob, streamEvents, cancelJob, cancelConversation, ackJobs, reorderJobs, pauseJob, resumeJob };

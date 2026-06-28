@@ -124,6 +124,14 @@ export function cancelServerJob(serverJobId) {
   awaiters.delete(serverJobId);
   fetch(`/api/jobs/${serverJobId}/cancel`, { method: 'POST' }).catch(() => {});
 }
+export function pauseServerJob(serverJobId) {
+  if (!serverJobId) return;
+  fetch(`/api/jobs/${serverJobId}/pause`, { method: 'POST' }).catch(() => {});
+}
+export function resumeServerJob(serverJobId) {
+  if (!serverJobId) return;
+  fetch(`/api/jobs/${serverJobId}/resume`, { method: 'POST' }).catch(() => {});
+}
 export function ackServerJob(serverJobId) {
   if (!serverJobId) return;
   fetch('/api/jobs/ack', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [serverJobId] }) }).catch(() => {});

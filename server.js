@@ -84,6 +84,8 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/jobs/reorder") { bgQueue.reorderJobs(req, res); return; }
   if (req.method === "POST" && req.url === "/api/jobs/cancel-conversation") { bgQueue.cancelConversation(req, res); return; }
   if (req.method === "POST" && /^\/api\/jobs\/[^/]+\/cancel$/.test(req.url)) { bgQueue.cancelJob(req, res, req.url.split("/")[3]); return; }
+  if (req.method === "POST" && /^\/api\/jobs\/[^/]+\/pause$/.test(req.url)) { bgQueue.pauseJob(req, res, req.url.split("/")[3]); return; }
+  if (req.method === "POST" && /^\/api\/jobs\/[^/]+\/resume$/.test(req.url)) { bgQueue.resumeJob(req, res, req.url.split("/")[3]); return; }
 
   if (req.method === "POST" && req.url === "/api/enhance-prompt") {
     enhancePrompt(req, res);

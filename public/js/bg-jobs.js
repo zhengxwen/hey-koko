@@ -18,7 +18,7 @@ import { getTab, switchTab } from './tabs.js';
 import { t } from './i18n.js';
 import { generateImage } from './image-gen.js';
 import { generateSpeech } from './voice-gen.js';
-import { setServerQueueDeps, cancelServerJob, ackServerJob, cancelConversationServerJobs } from './server-queue.js';   // Option B
+import { setServerQueueDeps, cancelServerJob, ackServerJob, pauseServerJob, resumeServerJob, cancelConversationServerJobs } from './server-queue.js';   // Option B
 
 // renderChat + the analysis generators are injected (chat.js imports this module, so
 // importing it back would be circular). Set from main.js via setBgDeps.
@@ -54,7 +54,7 @@ const jobControllers = new Map();
 // Strip runtime-only fields before persisting (controllers live in the Map; the
 // preview is a transient blob: URL that's meaningless after a reload).
 function persist() {
-  const clean = state.bgJobs.map(({ preview, seg, ...j }) => j);
+  const clean = state.bgJobs.map(({ preview, seg, _fired, _runLabel, ...j }) => j);
   dbSaveJobs(clean).catch((e) => console.warn('[bg-jobs] persist failed:', e));
 }
 // Let the server-queue client persist a job's serverJobId (so a reload can reconnect),
@@ -65,11 +65,16 @@ setServerQueueDeps({
   onProgress: (sjob) => {
     const job = state.bgJobs.find((j) => j.serverJobId === sjob.id);
     if (!job) return;
+    // The SERVER decides what's actually running (jobs are submitted up front but run
+    // one-at-a-time per lane). First time the server reports this job running → flip the
+    // bg status 'queued'→'running' so the drawer shows the real progression.
+    const becameRunning = job.status === 'queued';
+    if (becameRunning) { job.status = 'running'; if (job._runLabel) job.label = job._runLabel; if (!job.startedAt) job.startedAt = Date.now(); }
     const lbl = bgProgressLabel(sjob.label, sjob.progress);
     if (lbl) job.label = lbl;
     job.progress = sjob.progress || null;
-    renderDrawer();
-    updatePlaceholderBar(job);
+    if (becameRunning) { persist(); refreshPlaceholders(); }
+    else { renderDrawer(); updatePlaceholderBar(job); }
   },
 });
 
@@ -282,61 +287,54 @@ export function releaseEnhancingJob(job, enhancedPrompt) {
 
 // ---- the serial runner -----------------------------------------------------
 
-// Start a serial runner for every lane that has queued work and isn't already
-// draining. Lanes run in PARALLEL (each ComfyUI machine + the 'local' lane), so a
-// video on box A renders while an image renders on box B and an analysis runs locally.
+// FIRE EVERY queued job UP FRONT. Each job's generator submits it to the SERVER queue
+// (jobs.js) in this call's first async chunk — which runs at Send time, FOREGROUND — and
+// the SERVER serializes execution per ComfyUI lane (+ persists results to disk). So once
+// the jobs are submitted, the whole queue drains server-side EVEN IF this tab is later
+// frozen/closed; the browser just renders results as they arrive (live, or via the SSE
+// snapshot on return). Execution order/status is the SERVER's truth — reflected here via
+// onProgress (server 'running' → bg 'running'), so we never fake-'running' a job that's
+// actually still queued behind others on the GPU.
 export function pumpQueue() {
-  const lanes = new Set(state.bgJobs.filter((j) => j.status === 'queued').map(laneOf));
-  for (const wid of lanes) { if (!state.bgLanes.has(wid)) pumpLane(wid); }  // not awaited → concurrent
+  const lanes = new Set(state.bgJobs.filter((j) => j.status === 'queued' && !j._fired).map(laneOf));
+  for (const wid of lanes) pumpLane(wid);
+}
+function pumpLane(workerId) {
+  let job;
+  while ((job = state.bgJobs.find((j) => j.status === 'queued' && !j._fired && laneOf(j) === workerId))) {
+    fireJob(job);   // not awaited — concurrent submit; the server serializes the actual runs
+  }
 }
 
-// Drain ONE lane serially (FIFO within a worker protects its GPU).
-async function pumpLane(workerId) {
-  if (state.bgLanes.has(workerId)) return;
-  state.bgLanes.add(workerId);
+// Run ONE job: its generator submits to the server + awaits + renders the result; we then
+// finalize (ack / auto-remove). NOTE: status stays 'queued' until the SERVER starts it
+// (onProgress flips it to 'running') — we don't set 'running' here, since many jobs are
+// fired at once but only one runs on the GPU at a time.
+async function fireJob(job) {
+  job._fired = true;                                  // runtime-only guard (stripped from persist)
+  if (!job.startedAt) job.startedAt = Date.now();
+  startElapsedTicker();
   try {
-    let job;
-    while ((job = state.bgJobs.find((j) => j.status === 'queued' && laneOf(j) === workerId))) {
-      job.status = 'running';
-      job.progress = null;
-      job.seg = null;
-      // Keep the original start time across a reload (a reconnected server job was
-      // already running) so the elapsed clock continues instead of resetting to 0.
-      if (!job.startedAt) job.startedAt = Date.now();   // for the live elapsed-time display
-      persist();
-      refreshPlaceholders();
-      startElapsedTicker();
-      try {
-        await runJob(job);
-        if (job.status === 'running') job.status = 'done';
-      } catch (e) {
-        if (e && e.bgCanceled) {
-          job.status = 'canceled';
-        } else {
-          job.status = 'error';
-          job.error = (e && e.message) || String(e);
-        }
-      }
-      jobControllers.delete(job.id);
-      // Option B: server-side gen job finished → ack it (server drops the delivered
-      // result). On error/interrupted clear serverJobId so a retry submits a fresh job
-      // instead of reconnecting to a removed one.
-      if (job.serverJobId) {
-        ackServerJob(job.serverJobId);
-        if (job.status !== 'done') job.serverJobId = null;
-      }
-      // Auto-remove a successfully-finished job — its result is already in the chat,
-      // so the drawer entry is just clutter. Errors/interrupted stay (retryable).
-      if (job.status === 'done') {
-        const i = state.bgJobs.indexOf(job);
-        if (i >= 0) state.bgJobs.splice(i, 1);
-      }
-      persist();
-      refreshPlaceholders();
-    }
-  } finally {
-    state.bgLanes.delete(workerId);
+    await runJob(job);
+    if (job.status !== 'canceled') job.status = 'done';
+  } catch (e) {
+    if (e && e.bgCanceled) job.status = 'canceled';
+    else { job.status = 'error'; job.error = (e && e.message) || String(e); }
   }
+  jobControllers.delete(job.id);
+  // Option B: server-side gen job finished → ack it (server drops the delivered result).
+  // On error/interrupted clear serverJobId so a retry submits a fresh job.
+  if (job.serverJobId) {
+    ackServerJob(job.serverJobId);
+    if (job.status !== 'done') job.serverJobId = null;
+  }
+  // Auto-remove a successfully-finished job — its result is already in the chat.
+  if (job.status === 'done') {
+    const i = state.bgJobs.indexOf(job);
+    if (i >= 0) state.bgJobs.splice(i, 1);
+  }
+  persist();
+  refreshPlaceholders();
 }
 
 // Dispatch a job to the matching generator, headless, via a background sink.
@@ -473,6 +471,18 @@ function makeBgSink(job, controller) {
     job.comfyClientId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `hk-${job.id}`;
     persist();
   }
+  // Jobs are submitted to the server up front but run one-at-a-time per lane, so a job
+  // stays 'queued' until it's ACTUALLY rendering. The first real render signal (ComfyUI
+  // progress / preview / segment) flips it → 'running'. This is the reliable signal for a
+  // count>1 job too (whose N server jobs aren't tracked by a single serverJobId, so
+  // onProgress can't flip it).
+  const markRunning = () => {
+    if (job.status !== 'queued') return;
+    job.status = 'running';
+    if (job._runLabel) job.label = job._runLabel;   // now show the generator's "正在生成…" label
+    persist();
+    refreshPlaceholders();
+  };
   return {
     background: true,
     signal: controller.signal,
@@ -482,15 +492,19 @@ function makeBgSink(job, controller) {
     server: { bgJob: job, conversationId: job.tabId, msgId: job.msgId, label: job.label, comfyUrl: job.workerUrl || '', comfyClientId: job.comfyClientId },
     lock() {},                 // never lock the send button for a background run
     started() { return true; }, // placeholder already exists
-    start(kind, label) { if (label) job.label = label; refreshPlaceholders(); },
-    label(l) { job.label = l; refreshPlaceholders(); },
+    // While the job is still QUEUED on the server (fired up front but not yet its turn on
+    // the GPU), keep the queued label — stash the generator's "正在生成…" label and only
+    // apply it once the job actually starts (markRunning / onProgress).
+    start(kind, label) { if (label) { if (job.status === 'running') job.label = label; else job._runLabel = label; } refreshPlaceholders(); },
+    label(l) { if (job.status === 'running') job.label = l; else job._runLabel = l; refreshPlaceholders(); },
     enhanced() {},             // surfaced in the final message instead
     addImage() {},             // results delivered via place()
     // Progress ticks are frequent → update the drawer + poke the placeholder's bar
     // directly in the DOM, never a full chat re-render.
-    progress(v, m) { if (m) { job.progress = { value: v, max: m }; renderDrawer(); updatePlaceholderBar(job); } },
+    progress(v, m) { if (m) { markRunning(); job.progress = { value: v, max: m }; renderDrawer(); updatePlaceholderBar(job); } },
     // Live preview frame → shown in the drawer row. Revoke the prior blob URL.
     preview(url) {
+      markRunning();
       if (job.preview && job.preview !== url && job.preview.startsWith('blob:')) { try { URL.revokeObjectURL(job.preview); } catch {} }
       job.preview = url;
       renderDrawer();
@@ -498,7 +512,7 @@ function makeBgSink(job, controller) {
     eta() {},
     // Multi-segment video: "第 N/M 段" — surface which chunk is rendering. Changes only
     // at chunk boundaries; refresh the drawer/placeholder then (progress() also redraws).
-    seg(x) { if (job.seg !== x) { job.seg = x; renderDrawer(); updatePlaceholderBar(job); } },
+    seg(x) { markRunning(); if (job.seg !== x) { job.seg = x; renderDrawer(); updatePlaceholderBar(job); } },
     indeterminate() {},
     clearBubble() {},          // placeholder persists until place() swaps it
     // Swap the placeholder message for the real result (keeping its id/position).
@@ -597,6 +611,7 @@ export function retryBgJob(jobId) {
   job.progress = null;
   job.comfyClientId = null; // brand-new server run → fresh ComfyUI progress stream
   job.startedAt = null;   // fresh elapsed clock — this is a brand-new run, not a resume
+  job._fired = false;     // allow the fire-all runner to pick it up again
   assignWorker(job);   // re-route on retry — may land on a different online machine (failover)
   persist();
   refreshPlaceholders();
@@ -606,12 +621,29 @@ export function retryBgJob(jobId) {
 // Pause a not-yet-started job so the runner skips it (status 'paused' ≠ 'queued').
 export function pauseBgJob(jobId) {
   const job = state.bgJobs.find((j) => j.id === jobId);
-  if (job && job.status === 'queued') { job.status = 'paused'; persist(); refreshPlaceholders(); }
+  if (!job || job.status !== 'queued') return;
+  // Fire-all submits jobs to the server up front, so pausing must happen THERE: the
+  // server skips a 'paused' job (only while it's still waiting — a job already rendering
+  // ignores it). The job's generator keeps awaiting, so resume just lets it run.
+  if (job.serverJobId) pauseServerJob(job.serverJobId);
+  job.status = 'paused';
+  persist();
+  refreshPlaceholders();
 }
 // Resume a paused job → back into the queue (and kick the runner).
 export function resumeBgJob(jobId) {
   const job = state.bgJobs.find((j) => j.id === jobId);
-  if (job && job.status === 'paused') { job.status = 'queued'; persist(); refreshPlaceholders(); pumpQueue(); }
+  if (!job || job.status !== 'paused') return;
+  job.status = 'queued';
+  if (job.serverJobId) {
+    resumeServerJob(job.serverJobId);   // server re-queues it; the ALREADY-awaiting generator renders the result
+    // do NOT reset _fired here — re-firing would start a second generator for this job
+  } else {
+    job._fired = false;                 // never actually submitted → let pumpQueue fire it
+  }
+  persist();
+  refreshPlaceholders();
+  pumpQueue();
 }
 
 // ---- navigation ------------------------------------------------------------

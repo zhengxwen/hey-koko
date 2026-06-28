@@ -341,6 +341,8 @@ dom.modelSelect.addEventListener("change", () => {
 dom.imageModelSelect.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); renderStagedImagePreview(); renderChat(); });
 dom.comfyModelSelect?.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); updateComfyMultiHint(); applyInputPlaceholder(); renderStagedImagePreview(); renderChat(); });
 dom.voiceSelect.addEventListener("change", saveCurrentSettings);
+// Persist the default image size as soon as it's picked (not only on send/Save).
+dom.defaultImageSize?.addEventListener("change", saveCurrentSettings);
 if (dom.numCtxSelect) {
   dom.numCtxSelect.addEventListener("change", () => {
     saveCurrentSettings();

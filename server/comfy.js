@@ -69,6 +69,54 @@ async function resampleVideo(buf, targetFps) {
   finally { for (const f of [inP, outP]) if (f) fsp.unlink(f).catch(() => {}); }
 }
 
+// ffprobe the FIRST audio stream's codec name ("" if no audio / ffprobe missing).
+async function audioCodecOf(buf) {
+  let tmp;
+  try {
+    tmp = path.join(os.tmpdir(), `hk_ac_${crypto.randomUUID()}.bin`);
+    await fsp.writeFile(tmp, buf);
+    return await new Promise((resolve) => {
+      let out = "";
+      const p = spawn("ffprobe", ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", tmp]);
+      p.stdout.on("data", (d) => { out += d; });
+      p.on("close", () => resolve(out.trim()));
+      p.on("error", () => resolve(""));
+    });
+  } catch { return ""; }
+  finally { if (tmp) fsp.unlink(tmp).catch(() => {}); }
+}
+
+// ComfyUI's video reader (GetVideoComponents/LoadVideo) chokes on some audio codecs —
+// notably Opus ("avcodec_send_packet(): Invalid data … [opus] Error parsing the packet
+// header") — which FAILS the whole Animate/Bernini run, since the source audio is muxed
+// into the output. If the source's audio isn't a safe codec, re-mux to AAC (video copied
+// → fast); fall back to a full transcode, then to stripping audio. Safe/aac/no-audio →
+// returned unchanged (just one cheap ffprobe).
+const SAFE_SOURCE_AUDIO = new Set(["", "aac", "mp3", "ac3"]);
+async function makeSourceDecodable(buf) {
+  let codec;
+  try { codec = await audioCodecOf(buf); } catch { return buf; }
+  if (SAFE_SOURCE_AUDIO.has(codec)) return buf;
+  let inP, outP;
+  try {
+    const id = crypto.randomUUID();
+    inP = path.join(os.tmpdir(), `hk_au_in_${id}.bin`);
+    outP = path.join(os.tmpdir(), `hk_au_out_${id}.mp4`);
+    await fsp.writeFile(inP, buf);
+    const run = (args) => new Promise((resolve) => {
+      const p = spawn("ffmpeg", ["-y", "-i", inP, ...args, outP]);
+      p.on("close", (code) => resolve(code === 0)); p.on("error", () => resolve(false));
+    });
+    let ok = await run(["-c:v", "copy", "-c:a", "aac"]);                                  // fast: copy video, transcode audio
+    if (!ok) ok = await run(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"]);   // full transcode
+    if (!ok) ok = await run(["-c:v", "copy", "-an"]);                                     // last resort: drop audio
+    if (!ok) return buf;
+    console.log(`[comfy] sanitized source audio (${codec} → aac/none) so ComfyUI can decode it`);
+    return await fsp.readFile(outP);
+  } catch { return buf; }
+  finally { for (const f of [inP, outP]) if (f) fsp.unlink(f).catch(() => {}); }
+}
+
 // Frames Wan Animate can generate in one pass, by OUTPUT pixel budget (width×height).
 // 3D-attention VRAM/compute grows with (spatial tokens × frames), so higher
 // resolution needs a shorter segment to stay within a 32GB budget. Mirrors
@@ -1586,7 +1634,10 @@ async function uploadVideoBuffer(buf, mime, signal) {
 
 async function uploadVideo(b64, signal, mime = "video/mp4") {
   const clean = typeof b64 === "string" && b64.startsWith("data:") ? b64.split(",")[1] : b64;
-  return uploadVideoBuffer(Buffer.from(clean, "base64"), mime, signal);
+  let buf = Buffer.from(clean, "base64");
+  const fixed = await makeSourceDecodable(buf);   // Opus etc. → AAC so ComfyUI can decode it
+  if (fixed !== buf) { buf = fixed; mime = "video/mp4"; }
+  return uploadVideoBuffer(buf, mime, signal);
 }
 
 // POST /api/comfy-upload-video — the browser sends the source video as the RAW
@@ -1608,6 +1659,10 @@ async function uploadComfyVideo(req, res) {
       const rs = await resampleVideo(buf, targetFps);
       if (rs) { buf = rs; mime = "video/mp4"; }
     }
+    // Ensure ComfyUI can decode the source audio (Opus etc. break GetVideoComponents).
+    // No-op for safe/aac/no-audio clips; only re-encodes a problematic soundtrack.
+    const fixed = await makeSourceDecodable(buf);
+    if (fixed !== buf) { buf = fixed; mime = "video/mp4"; }
     const [name, probe] = await Promise.all([
       uploadVideoBuffer(buf, mime),
       probeVideo(buf),
