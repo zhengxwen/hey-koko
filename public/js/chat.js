@@ -963,6 +963,11 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
 
   const mapped = [];
   for (const msg of relevantMessages) {
+    // Folded bubbles are excluded from the model context entirely — this runs
+    // before the compact-summary/file-preview branches so folding ANY bubble
+    // (including those) keeps it out of what's sent. The fold button's tooltip
+    // tells the user this.
+    if (msg.folded) continue;
     // Background-job placeholders carry no content — never send them to the model.
     if (msg.bgPlaceholder) continue;
     // Include compact summary as system context
@@ -990,7 +995,6 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
       mapped.push(message);
       continue;
     }
-    if (msg.folded) continue;
     const message = { role: msg.role, content: msg.content };
     if (msg.images?.length) message.images = msg.images;
     mapped.push(message);
@@ -3133,29 +3137,33 @@ function renderMessage(role, content, previewImage, index, timestamp, generatedI
     const foldToggle = document.createElement("button");
     foldToggle.className = "messageFoldToggle";
     foldToggle.type = "button";
-    foldToggle.title = t("archive_collapse");
-    foldToggle.innerHTML = "&#x25B2;"; // ▲
-    foldToggle.addEventListener("click", () => {
-      const isFolded = item.classList.toggle("isFolded");
+    // Reflect the toggle's arrow + tooltip for a given state. Folded shows ▼ with
+    // a preview and the "not sent to the model" note; unfolded shows ▲ and the
+    // collapse hint (which also states the not-sent behaviour).
+    const setFoldUI = (isFolded) => {
       foldToggle.innerHTML = isFolded ? "&#x25BC;" : "&#x25B2;"; // ▼ or ▲
       if (isFolded) {
         const ts = timestamp ? formatTimestamp(timestamp) : "";
         const preview = content.length > 80 ? content.substring(0, 80) + "..." : content;
         const tooltipText = ts ? `${ts}\n${preview}` : preview;
-        foldToggle.title = tooltipText;
+        foldToggle.title = `${tooltipText}\n${t("fold_notSent")}`;
       } else {
-        foldToggle.title = t("archive_collapse");
+        foldToggle.title = t("fold_collapseHint");
       }
-      if (Number.isInteger(index)) {
-        const tab = getActiveTab();
-        if (tab.messages[index]) {
-          if (isFolded) {
-            tab.messages[index].folded = true;
-          } else {
-            delete tab.messages[index].folded;
-          }
-          saveChat();
+    };
+    // Initial state: a message persisted as folded loads collapsed, so show ▼.
+    setFoldUI(!!getActiveTab().messages[index]?.folded);
+    foldToggle.addEventListener("click", () => {
+      const isFolded = item.classList.toggle("isFolded");
+      setFoldUI(isFolded);
+      const tab = getActiveTab();
+      if (tab.messages[index]) {
+        if (isFolded) {
+          tab.messages[index].folded = true;
+        } else {
+          delete tab.messages[index].folded;
         }
+        saveChat();
       }
     });
     item.appendChild(foldToggle);

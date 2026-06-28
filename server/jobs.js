@@ -301,10 +301,21 @@ async function submitJob(req, res) {
     kind, engine: engine || "comfy", label: label || "",
     payload, comfyUrl: normUrl(comfyUrl || ""),
     clientId: body.clientId || crypto.randomUUID(),   // honor the browser's clientId (its ComfyUI progress WS)
+    seq: (typeof body.seq === "number") ? body.seq : undefined,   // client batch-enqueue order
     status: "queued", progress: null, result: null, error: "",
     createdAt: Date.now(), startedAt: 0, finishedAt: 0, deliveredAt: 0,
   };
-  jobs.push(job);
+  // Insert keeping QUEUED jobs in the client's batch-enqueue (seq) order. Fire-all submits the
+  // whole batch up front and each job races through its own source-video upload first, so POST
+  // arrival order ≠ the order the user enqueued them. Drop the new job just before the first
+  // queued job with a higher seq (so pumpLane's first-queued pick runs them 1→2→3); without a
+  // seq (e.g. count>1 image sub-runs) just append.
+  if (typeof job.seq === "number") {
+    const idx = jobs.findIndex((j) => j.status === "queued" && typeof j.seq === "number" && j.seq > job.seq);
+    if (idx >= 0) jobs.splice(idx, 0, job); else jobs.push(job);
+  } else {
+    jobs.push(job);
+  }
   persist(); emitUpdate(job); pumpLanes();
   sendJson(res, 200, { jobId: job.id, clientId: job.clientId });
 }

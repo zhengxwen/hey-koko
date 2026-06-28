@@ -628,6 +628,14 @@ p {
   gap: 5px;
 }
 
+/* Two params side by side (e.g. 升格 target fps + interpolation engine). */
+.comfyParamRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: end;
+}
+
 .comfyParamsBody .hint {
   margin: 0 0 2px;
   font-size: 12px;

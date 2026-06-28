@@ -53,6 +53,11 @@ function comfyOverrides() {
   if (length !== undefined) ov.length = length;
   const fps = num(dom.comfyParamFps?.value);
   if (fps !== undefined) ov.fps = fps;
+  const targetFps = num(dom.comfyParamTargetFps?.value);
+  if (targetFps !== undefined) ov.targetFps = targetFps; // 升格: interpolate up to this fps
+  if (dom.comfyParamInterpMethod?.value) ov.interpMethod = dom.comfyParamInterpMethod.value; // rife | film
+  const upDenoise = num(dom.comfyParamUpscaleDenoise?.value);
+  if (upDenoise !== undefined && upDenoise > 0) ov.upscaleDenoise = Math.min(1, upDenoise / 100); // 放大抗噪 % → 0–1
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
   const relight = num(dom.comfyParamRelight?.value);
   if (relight !== undefined) ov.relightStrength = relight; // Wan Animate: relight LoRA strength
@@ -82,6 +87,7 @@ export function comfyModelSupportsMask() {
   if (state.comfyVideoModels && state.comfyVideoModels.has(comfyModel)) return false;
   if (/hidream.?i1|z.?image/i.test(comfyModel)) return false; // txt2img-only
   if (/hidream.?o1/i.test(comfyModel)) return false; // O1 edits via reference conditioning on an empty latent — no source latent to mask
+  if (comfyModel === "image-upscale") return false; // pure upscale — nothing to mask
   return true;
 }
 
@@ -687,6 +693,13 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       const list = videoSeeds.map((s, i) => `#${i + 1} ${s !== null ? s : "?"}`).join(" · ");
       doneLine += `\n${t("msg_seedsBatch", { list }, plang)}`;
     }
+    // 升格 (frame interpolation): either it ran (note the new fps + multiplier) or it
+    // was skipped because the source was already at/above the requested target fps.
+    if (lastData.interpolated >= 2 && lastData.fps) {
+      doneLine += `\n${t("msg_interpDone", { fps: lastData.fps, mult: lastData.interpolated, method: (lastData.interpMethod || "rife").toUpperCase() }, plang)}`;
+    } else if (lastData.interpWarning) {
+      doneLine += `\n${t("msg_interpSkipped", { base: lastData.interpWarning.baseFps, target: lastData.interpWarning.targetFps }, plang)}`;
+    }
     // If more images were attached than the model can use, tell the user how many
     // were actually consumed (2 = first-last-frame, 1 = plain image-to-video).
     const nInput = refImages ? refImages.length : 0;
@@ -748,7 +761,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
 
   // One /api/generate-comfy request. `extra` carries per-segment offset/length for
   // a chunked Wan Animate render; ignored otherwise.
-  const requestVideo = (perOptions, extra) => {
+  const requestVideo = (perOptions, extra, isFirstSubRun) => {
     const vbody = {
       model,
       prompt: videoPrompt,
@@ -775,8 +788,12 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     };
     // Option B: a background video job runs on the SERVER queue (survives reload);
     // comfyFetch returns a Response-like {ok,json} so the handling below is unchanged.
+    // Only the FIRST sub-run of an "Nx" batch carries the bgJob → it owns the placeholder's
+    // serverJobId (status flip + the lane submit-gate). Later sub-runs pass bgJob:null so each
+    // POSTs a FRESH server job and gets a DISTINCT clip — otherwise they'd reuse sub-run 0's
+    // serverJobId, skip the POST, and re-resolve the SAME video N times.
     return sink.server
-      ? comfyFetch(vbody, { bgJob: sink.server.bgJob, kind: "video", comfyUrl: comfyHost, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, clientId, signal: abortController.signal })
+      ? comfyFetch(vbody, { bgJob: isFirstSubRun ? sink.server.bgJob : null, kind: "video", comfyUrl: comfyHost, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, clientId, signal: abortController.signal })
       : fetch("/api/generate-comfy", { method: "POST", headers: { "Content-Type": "application/json" }, signal: abortController.signal, body: JSON.stringify(vbody) });
   };
 
@@ -793,7 +810,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   try {
     for (let i = 0; i < count; i++) {
       if (abortController.signal.aborted) break;
-      sink.progress(0, 1); // reset the bar for each render
+      // Reset the bar BETWEEN renders only (i>0). On the first render there's no bar yet, and
+      // crucially this runs BEFORE comfyFetch assigns serverJobId — so an i=0 reset would slip
+      // past markRunning's `if (job.serverJobId) return` gate and falsely flip a still-queued
+      // server job to "running 0%". The server's SSE is what flips it to running.
+      if (i > 0) sink.progress(0, 1);
       // Vary the seed per video so the N outputs differ (only when the user
       // pinned a --seed; otherwise the server randomizes each call already).
       const perOptions = { ...reqOptions };
@@ -803,7 +824,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       // graph (chained continue_motion) → a single request returns one merged clip.
       if (willChunk) sink.label(`${t("msg_generatingVideoSeamless", { n: estPasses, sec: fullSec || "?" })}${vidSuffix}`);
       else if (count > 1) sink.label(`${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
-      const resp = await requestVideo(perOptions);
+      const resp = await requestVideo(perOptions, undefined, i === 0);
       let data = await resp.json();
       if (!resp.ok || !data.videos || !data.videos.length) {
         // First render failed → surface the error. A later one failing → keep

@@ -208,7 +208,7 @@ function applyComfyModels(data) {
       if (models.length) {
         const group = document.createElement("optgroup");
         group.label = t("comfy_image_group");
-        for (const name of models) addOption(group, name);
+        for (const name of models) addOption(group, name, name === "image-upscale" ? t("comfy_imageUpscale_label") : undefined);
         dom.comfyModelSelect.appendChild(group);
       }
       if (editModels.length) {
@@ -260,6 +260,8 @@ function videoAutoDefaults(modelName) {
 function comfyModelComponents(name) {
   const n = (name || "").toLowerCase();
   // Video
+  if (/image-upscale/.test(n)) return "图片高清 / 放大 · LoadImage · UpscaleModelLoader + ImageUpscaleWithModel(AI 放大模型) · SaveImage · 命令：附一张图 + /imagine（--size 指定目标尺寸，否则模型原生 4× 输出）";
+  if (/video-enhance/.test(n)) return "视频升格 + 高清 · LoadVideo→GetVideoComponents · UpscaleModelLoader + ImageUpscaleWithModel(放大) · RIFE/FILM VFI(插帧到 /imagine <fps>) · CreateVideo(保留源音频) · 命令：附源视频 + /imagine <目标帧率>（留空=只放大）";
   if (/animate/.test(n)) return "Wan Animate (pose transfer) · UNETLoader + lightx2v + relight LoRA · ModelSamplingSD3 · LoadVideo→DWPose(pose+face) · WanAnimateToVideo · segment length adapts to resolution (≤640: 241f · 720p: 161f · 1080p: 65f) — a longer source is generated in chunks with continue_motion for seamless joins, then merged";
   if (/bernini/.test(n)) return "WAN2.2 MoE · UNETLoader ×2 · CLIP umt5(wan) · VAE wan_2.1 · BerniniConditioning · SamplerCustom ×2 · v2v: LoadVideo→GetVideoComponents · turbo: LightX2V distill LoRA";
   if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b"
@@ -442,6 +444,8 @@ function initComfyParamsModal() {
     dom.comfyParamDenoise,
     dom.comfyParamLength,
     dom.comfyParamFps,
+    dom.comfyParamTargetFps,
+    dom.comfyParamUpscaleDenoise,
     dom.comfyParamRelight,
   ];
 
@@ -477,10 +481,14 @@ function initComfyParamsModal() {
     el?.addEventListener("change", () => saveCurrentSettings());
   }
   dom.comfyParamTorchCompile?.addEventListener("change", () => saveCurrentSettings());
+  // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset
+  // restores that rather than an empty value.
+  dom.comfyParamInterpMethod?.addEventListener("change", () => saveCurrentSettings());
 
   dom.comfyParamsReset?.addEventListener("click", () => {
     for (const el of fields) if (el) el.value = "";
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = false;
+    if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = "rife";
     state.animateMaskPoint = null; // back to auto-centre target
     syncMaskPointLabel();
     saveCurrentSettings();

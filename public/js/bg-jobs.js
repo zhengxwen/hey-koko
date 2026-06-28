@@ -18,7 +18,7 @@ import { getTab, switchTab } from './tabs.js';
 import { t } from './i18n.js';
 import { generateImage } from './image-gen.js';
 import { generateSpeech } from './voice-gen.js';
-import { setServerQueueDeps, cancelServerJob, ackServerJob, pauseServerJob, resumeServerJob, cancelConversationServerJobs } from './server-queue.js';   // Option B
+import { setServerQueueDeps, cancelServerJob, ackServerJob, pauseServerJob, resumeServerJob, reorderServerJobs, cancelConversationServerJobs } from './server-queue.js';   // Option B
 
 // renderChat + the analysis generators are injected (chat.js imports this module, so
 // importing it back would be circular). Set from main.js via setBgDeps.
@@ -44,6 +44,19 @@ function rerender() { if (_renderChat) _renderChat(); }
 // (which get structured-cloned into IndexedDB and can't hold a controller).
 const jobControllers = new Map();
 
+// Monotonic batch-enqueue counter. Each bg job gets an increasing `seq` at enqueue, so the
+// SERVER can run a fire-all batch in the ORDER THE USER ENQUEUED IT — not the order the jobs
+// happened to win the race through their (concurrent) source-video uploads. Seeded past the
+// max persisted seq on reload so it stays monotonic across sessions.
+let _enqueueSeq = 0;
+
+// Per-lane SUBMISSION gate. Video jobs each upload their source clip to ComfyUI before they can
+// submit, and those uploads finish in a RACE — so without coordination the server receives (and
+// immediately starts) them out of enqueue order. fireJob runs in enqueue order, so we chain each
+// video job's POST /api/jobs behind the previous one's: uploads still run concurrently, but the
+// submissions go out 1→2→3. Keyed by lane (laneOf), value = the tail promise of the chain.
+const laneSubmitChain = new Map();
+
 // ---- keep-awake -------------------------------------------------------------
 // Sleep prevention is owned by the SERVER (server/jobs.js holds a `caffeinate` while
 // its job queue is non-empty), so the host Mac stays awake regardless of whether this
@@ -54,7 +67,7 @@ const jobControllers = new Map();
 // Strip runtime-only fields before persisting (controllers live in the Map; the
 // preview is a transient blob: URL that's meaningless after a reload).
 function persist() {
-  const clean = state.bgJobs.map(({ preview, seg, _fired, _runLabel, ...j }) => j);
+  const clean = state.bgJobs.map(({ preview, seg, _fired, _inflight, _runLabel, _submitWait, _submitRelease, ...j }) => j);
   dbSaveJobs(clean).catch((e) => console.warn('[bg-jobs] persist failed:', e));
 }
 // Let the server-queue client persist a job's serverJobId (so a reload can reconnect),
@@ -69,7 +82,7 @@ setServerQueueDeps({
     // one-at-a-time per lane). First time the server reports this job running → flip the
     // bg status 'queued'→'running' so the drawer shows the real progression.
     const becameRunning = job.status === 'queued';
-    if (becameRunning) { job.status = 'running'; if (job._runLabel) job.label = job._runLabel; if (!job.startedAt) job.startedAt = Date.now(); }
+    if (becameRunning) { job.status = 'running'; if (job._runLabel) job.label = job._runLabel; if (!job.startedAt) job.startedAt = Date.now(); startElapsedTicker(); }
     const lbl = bgProgressLabel(sjob.label, sjob.progress);
     if (lbl) job.label = lbl;
     job.progress = sjob.progress || null;
@@ -243,6 +256,7 @@ export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1, st
     enhancedPrompt,        // shown in the placeholder bubble (set at enqueue)
     error: '',
     createdAt: Date.now(),
+    seq: _enqueueSeq++,   // batch-enqueue order → server runs the batch in THIS order (not upload-race order)
   };
   state.bgJobs.push(job);
   assignWorker(job);   // pick which backend/lane runs it (snapshot, like modelOverride)
@@ -312,7 +326,27 @@ function pumpLane(workerId) {
 // fired at once but only one runs on the GPU at a time.
 async function fireJob(job) {
   job._fired = true;                                  // runtime-only guard (stripped from persist)
-  if (!job.startedAt) job.startedAt = Date.now();
+  job._inflight = true;                               // a generator is actively running for this job (vs merely _fired)
+  // Chain this VIDEO job's server submission behind the previous one in its lane (fireJob runs
+  // in enqueue order), so a fire-all batch reaches the queue 1→2→3 despite the concurrent
+  // source-video upload race. submitAndAwait awaits _submitWait before POSTing, then calls
+  // _submitRelease the instant the job is on the server (not when it finishes rendering).
+  // Guards: only enroll a job that will actually POST — NOT a reconnecting job (serverJobId
+  // already set, won't re-POST) and NOT one that already holds a slot (a pause→resume re-fire
+  // must reuse the in-flight slot, never orphan it — that would deadlock the whole lane).
+  if (job.kind === 'video' && !job.serverJobId && !job._submitRelease) {
+    const lane = laneOf(job);
+    const prev = laneSubmitChain.get(lane) || Promise.resolve();
+    let release;
+    const mine = new Promise((r) => { release = r; });
+    laneSubmitChain.set(lane, prev.then(() => mine));
+    job._submitWait = prev;
+    job._submitRelease = release;
+  }
+  // startedAt (the elapsed clock) is stamped when the job ACTUALLY starts running on the GPU
+  // — in onProgress (server SSE) / markRunning — NOT here. Fire-all submits every job up front
+  // but the server runs them one at a time, so stamping it here would make a job that waited
+  // in the queue show its whole wait as "elapsed" the instant it finally starts.
   startElapsedTicker();
   try {
     await runJob(job);
@@ -321,6 +355,10 @@ async function fireJob(job) {
     if (e && e.bgCanceled) job.status = 'canceled';
     else { job.status = 'error'; job.error = (e && e.message) || String(e); }
   }
+  job._inflight = false;
+  // Belt-and-suspenders: never leave the lane chain stalled if this job died before submitting
+  // (submitAndAwait already releases on a normal submit/reconnect; releasing twice is a no-op).
+  if (job._submitRelease) { job._submitRelease(); job._submitRelease = null; }
   jobControllers.delete(job.id);
   // Option B: server-side gen job finished → ack it (server drops the delivered result).
   // On error/interrupted clear serverJobId so a retry submits a fresh job.
@@ -478,8 +516,18 @@ function makeBgSink(job, controller) {
   // onProgress can't flip it).
   const markRunning = () => {
     if (job.status !== 'queued') return;
+    // A server-queued job (single serverJobId) is flipped to 'running' ONLY by the
+    // server's SSE (setServerQueueDeps.onProgress). The server serializes each lane, so
+    // it alone knows which job is actually on the GPU. We must NOT flip from the ComfyUI
+    // progress WS here: ComfyUI broadcasts the running prompt's progress/preview frames to
+    // EVERY open client socket, so a sibling still queued behind it would otherwise be
+    // fooled into showing 'running' too (the "三个一起运行" bug). markRunning stays the flip
+    // path only for a count>1 job, whose N sub-runs share no single serverJobId to track.
+    if (job.serverJobId) return;
     job.status = 'running';
     if (job._runLabel) job.label = job._runLabel;   // now show the generator's "正在生成…" label
+    if (!job.startedAt) job.startedAt = Date.now();  // elapsed clock starts NOW (actual run), not at fire time
+    startElapsedTicker();
     persist();
     refreshPlaceholders();
   };
@@ -501,10 +549,19 @@ function makeBgSink(job, controller) {
     addImage() {},             // results delivered via place()
     // Progress ticks are frequent → update the drawer + poke the placeholder's bar
     // directly in the DOM, never a full chat re-render.
-    progress(v, m) { if (m) { markRunning(); job.progress = { value: v, max: m }; renderDrawer(); updatePlaceholderBar(job); } },
+    progress(v, m) {
+      if (!m) return;
+      markRunning();
+      // Still 'queued' → this frame is CROSS-TALK from the sibling that's actually on the
+      // GPU (ComfyUI broadcasts progress to every open socket). Ignore it so a waiting job
+      // never shows a bar / "running" %.
+      if (job.status !== 'running') return;
+      job.progress = { value: v, max: m }; renderDrawer(); updatePlaceholderBar(job);
+    },
     // Live preview frame → shown in the drawer row. Revoke the prior blob URL.
     preview(url) {
       markRunning();
+      if (job.status !== 'running') { try { URL.revokeObjectURL(url); } catch {} return; }   // cross-talk frame for a still-queued job → drop it (free the blob)
       if (job.preview && job.preview !== url && job.preview.startsWith('blob:')) { try { URL.revokeObjectURL(job.preview); } catch {} }
       job.preview = url;
       renderDrawer();
@@ -512,7 +569,7 @@ function makeBgSink(job, controller) {
     eta() {},
     // Multi-segment video: "第 N/M 段" — surface which chunk is rendering. Changes only
     // at chunk boundaries; refresh the drawer/placeholder then (progress() also redraws).
-    seg(x) { markRunning(); if (job.seg !== x) { job.seg = x; renderDrawer(); updatePlaceholderBar(job); } },
+    seg(x) { markRunning(); if (job.status !== 'running') return; if (job.seg !== x) { job.seg = x; renderDrawer(); updatePlaceholderBar(job); } },
     indeterminate() {},
     clearBubble() {},          // placeholder persists until place() swaps it
     // Swap the placeholder message for the real result (keeping its id/position).
@@ -592,6 +649,9 @@ export function cancelBgJob(jobId) {
   if (!job) return;
   const ctrl = jobControllers.get(jobId);
   if (ctrl) { try { ctrl.abort(); } catch {} jobControllers.delete(jobId); }
+  // If it was parked at the lane submit-gate, free the slot so later video jobs aren't blocked
+  // behind a job that's now gone.
+  if (job._submitRelease) { job._submitRelease(); job._submitRelease = null; }
   if (job.serverJobId) cancelServerJob(job.serverJobId);   // Option B: cancel it on the server too
   // Remove the bubble (placeholder or already-finished result) from its tab.
   const found = findMsg(job.msgId);
@@ -638,9 +698,12 @@ export function resumeBgJob(jobId) {
   if (job.serverJobId) {
     resumeServerJob(job.serverJobId);   // server re-queues it; the ALREADY-awaiting generator renders the result
     // do NOT reset _fired here — re-firing would start a second generator for this job
-  } else {
-    job._fired = false;                 // never actually submitted → let pumpQueue fire it
+  } else if (!job._inflight) {
+    job._fired = false;                 // never actually fired → let pumpQueue fire it
   }
+  // else: a generator is already running for this job (parked at the submit gate). Leave _fired
+  // set — it proceeds when the gate opens. Re-firing would start a 2nd generator AND orphan the
+  // lane's chain slot (the new fireJob would overwrite _submitRelease), deadlocking the lane.
   persist();
   refreshPlaceholders();
   pumpQueue();
@@ -788,6 +851,14 @@ function reorderQueued(srcId, tgtId, after) {
   const to = state.bgJobs.indexOf(tgt) + (after ? 1 : 0);
   state.bgJobs.splice(to, 0, src);
   persist();
+  // Mirror the new order to the SERVER queue so it actually RUNS in this order — not just
+  // displays it. Only already-submitted jobs (serverJobId set) can be reordered server-side; a
+  // job still parked at the submit gate takes its place when it lands (enqueue order).
+  const lane = laneOf(src);
+  const orderedIds = state.bgJobs
+    .filter((j) => j.status === 'queued' && laneOf(j) === lane && j.serverJobId)
+    .map((j) => j.serverJobId);
+  if (orderedIds.length) reorderServerJobs(orderedIds);
   refreshPlaceholders();    // updates queue positions (排队第 N 位) + redraws the drawer
 }
 
@@ -1086,6 +1157,8 @@ export async function restoreBgJobsOnLoad() {
     if (j.status === 'enhancing') j.status = 'queued';
   }
   state.bgJobs = jobs;
+  // Keep the batch-order counter monotonic across reloads (persisted jobs carry their seq).
+  for (const j of jobs) if (typeof j.seq === 'number' && j.seq >= _enqueueSeq) _enqueueSeq = j.seq + 1;
   persist();
   // Drop ORPHAN placeholder bubbles — a bgPlaceholder message whose job is gone (it
   // finished/was canceled before the page died, or is stale data). Otherwise it sticks

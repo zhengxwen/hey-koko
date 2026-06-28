@@ -39,6 +39,9 @@ export function saveCurrentSettings() {
         denoise: dom.comfyParamDenoise?.value || "",
         length: dom.comfyParamLength?.value || "",
         fps: dom.comfyParamFps?.value || "",
+        targetFps: dom.comfyParamTargetFps?.value || "",
+        interpMethod: dom.comfyParamInterpMethod?.value || "rife",
+        upscaleDenoise: dom.comfyParamUpscaleDenoise?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
         relight: dom.comfyParamRelight?.value || "",
       },
@@ -161,6 +164,9 @@ export function loadSavedSettings() {
     if (dom.comfyParamDenoise) dom.comfyParamDenoise.value = cp.denoise || "";
     if (dom.comfyParamLength) dom.comfyParamLength.value = cp.length || "";
     if (dom.comfyParamFps) dom.comfyParamFps.value = cp.fps || "";
+    if (dom.comfyParamTargetFps) dom.comfyParamTargetFps.value = cp.targetFps || "";
+    if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = cp.interpMethod || "rife";
+    if (dom.comfyParamUpscaleDenoise) dom.comfyParamUpscaleDenoise.value = cp.upscaleDenoise || "";
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
     if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";
   }

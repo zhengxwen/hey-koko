@@ -185,6 +185,9 @@ function editIsCheckpoint(editType) {
 // Video models (text→video / image→video). Detected by filename.
 function videoTypeOf(model) {
   if (!model) return null;
+  // Video enhance (升格 + 高清): a model-free post-process (frame interpolation +
+  // AI upscale) on a source video. A fixed sentinel, not a checkpoint filename.
+  if (/^video-enhance$/i.test(model)) return "enhance";
   // Bernini (video-edit) and Animate (pose-transfer) are WAN-2.2 variants whose
   // filenames contain "wan" — check them BEFORE the generic /wan/ branch.
   if (/bernini/i.test(model)) return "bernini";
@@ -224,6 +227,16 @@ async function resolveBerniniAuto() {
 // blacked-out background so the character is composited back into the source scene).
 // Resolved at generation time to the real animate UNET filename.
 const ANIMATE_REPLACE = "wan_animate_replace";
+
+// Sentinel for the "video enhance" (升格 + 高清) dropdown entry — a source video is
+// AI-upscaled and frame-interpolated to a target fps. Has no diffusion model, so it
+// resolves to nothing on disk; the pipeline is built directly at generation time.
+const VIDEO_ENHANCE = "video-enhance";
+
+// Sentinel for the "image upscale" (图片高清 / 放大) dropdown entry — an attached
+// image is run through the AI upscale model. Lives in the image `models` list; the
+// dispatch matches it by exact name (no diffusion model, no companion files).
+const IMAGE_UPSCALE = "image-upscale";
 
 async function resolveAnimateUnet() {
   const unets = await comfyEnum("UNETLoader", "unet_name");
@@ -290,6 +303,10 @@ async function proxyComfyModels(req, res) {
         videoModels.push({ name: n, type: vt });
       }
     }
+    // Video enhance (升格 + 高清): always offered — it needs no diffusion model, just
+    // an upscale model + the Frame-Interpolation nodes (both checked at gen time). The
+    // source video is interpolated to the target fps (/imagine <fps>) AND AI-upscaled.
+    videoModels.push({ name: VIDEO_ENHANCE, type: "enhance", label: "视频升格 + 高清 (interpolate + upscale)", needsVideo: true });
     // txt2img list: plain checkpoints (excluding edit/video/HiDream) + HiDream-I1
     // (a diffusion model loaded specially with QuadrupleCLIPLoader). HiDream E1/O1
     // are not wired yet, so they're left out to avoid broken options.
@@ -305,7 +322,9 @@ async function proxyComfyModels(req, res) {
     // boogu_image_edit is an instruction-edit model → excluded here (it's picked
     // up by editTypeOf into editModels instead).
     const boogu = all.filter((n) => /boogu/i.test(n) && !editTypeOf(n));
-    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu], editModels, videoModels, hostname });
+    // Image upscale (图片高清): always offered — needs only an upscale model (checked
+    // at gen time) + an attached image. Sits in the image model list as a sentinel.
+    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, IMAGE_UPSCALE], editModels, videoModels, hostname });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [] });
   }
@@ -1071,6 +1090,112 @@ function resolveVideoConfig(videoType, opts, model, turbo) {
   };
 }
 
+// Frame interpolation (升格 / smooth slow-mo). Splices a VFI node between the
+// workflow's decoded frames and its CreateVideo, multiplying the frame count by
+// `mult`. For SMOOTH SAME-SPEED playback the muxed fps is multiplied to match, so
+// the duration is unchanged — the motion is just resampled to a higher frame rate.
+// `method` picks the node: "rife" (RIFE VFI, default — fast) or "film" (FILM VFI,
+// slower/smoother). Both are from ComfyUI-Frame-Interpolation. Works for every
+// video builder (each has exactly one CreateVideo). The new fps is written as a
+// NUMBER, which also replaces any source-fps node link (Bernini v2v / Wan Animate
+// read fps from GetVideoComponents) — so `baseFps` MUST be that source fps for
+// those models. Mutates `wf` in place; returns the new numeric fps (or `baseFps`
+// unchanged when not applied).
+function applyVfi(wf, mult, baseFps, method) {
+  const m = Math.round(Number(mult) || 0);
+  if (!wf || m < 2) return baseFps;
+  let cvId = null;
+  for (const id in wf) if (wf[id].class_type === "CreateVideo") { cvId = id; break; }
+  if (!cvId) return baseFps;
+  const cv = wf[cvId];
+  // clear_cache_after_n_frames keeps VRAM bounded on long clips; multiplier inserts
+  // (m−1) interpolated frames between each pair → (N−1)·m + 1 frames out.
+  wf["vfi"] = /film/i.test(method || "")
+    ? { class_type: "FILM VFI", inputs: { ckpt_name: "film_net_fp32.pt", frames: cv.inputs.images, clear_cache_after_n_frames: 10, multiplier: m } }
+    : { class_type: "RIFE VFI", inputs: { ckpt_name: "rife47.pth", frames: cv.inputs.images, clear_cache_after_n_frames: 10, multiplier: m, fast_mode: true, ensemble: true, scale_factor: 1 } };
+  cv.inputs.images = ["vfi", 0];
+  const newFps = Math.round((Number(baseFps) || 0) * m);
+  if (newFps > 0) cv.inputs.fps = newFps;
+  return newFps > 0 ? newFps : baseFps;
+}
+
+// AI upscale model for the video-enhance (高清) pipeline. Auto-picks a sensible
+// default from models/upscale_models/ (prefer a 4× general model), erroring with a
+// download hint if the folder is empty.
+async function upscaleCompanions() {
+  const models = await comfyEnum("UpscaleModelLoader", "model_name");
+  const find = (re) => models.find((x) => re.test(x));
+  // RealESRGAN first — it cleans compression artifacts and is temporally steadier on
+  // video; UltraSharp (sharper but amplifies noise frame-to-frame) is the next choice.
+  const model =
+    find(/realesrgan.*x4plus(?!.*anime)/i) ||
+    find(/realesrgan(?!.*anime)/i) ||
+    find(/4x.?ultrasharp/i) ||
+    find(/4x.?foolhardy|remacri|nmkd/i) ||
+    find(/realesrgan/i) ||
+    find(/(^|[^0-9])4x/i) ||
+    find(/x4|x2|2x/i) ||
+    models[0];
+  if (!model) throw new Error("缺少放大模型：请把一个放大模型（如 RealESRGAN_x4plus.safetensors 或 4x-UltraSharp.pth）放到 ComfyUI/models/upscale_models/ 后重试。");
+  return { model };
+}
+
+// Video enhance (升格 + 高清). Source video → GetVideoComponents → AI-upscale every
+// frame (UpscaleModelLoader + ImageUpscaleWithModel) → optionally downscale to a
+// bounded HD target (outW/outH, already even; 0 = keep the model's native output) →
+// CreateVideo, keeping the SOURCE audio + fps. Frame interpolation to the target fps
+// is layered ON TOP by applyVfi (called from the dispatch) — it splices a RIFE/FILM
+// node before CreateVideo and rewrites the (numeric) fps. Single pass over the whole
+// clip (no diffusion); keep clips modest so the upscaled frame batch fits VRAM.
+function buildVideoEnhance({ videoName, upscaleModel, outW, outH, denoise }) {
+  const wf = {
+    "5": { class_type: "LoadVideo", inputs: { file: videoName } },
+    "6": { class_type: "GetVideoComponents", inputs: { video: ["5", 0] } },
+    "7": { class_type: "UpscaleModelLoader", inputs: { model_name: upscaleModel } },
+  };
+  const clean = denoiseBeforeUpscale(wf, ["6", 0], denoise, "20", "21"); // pre-clean each frame (抗噪)
+  wf["8"] = { class_type: "ImageUpscaleWithModel", inputs: { upscale_model: ["7", 0], image: clean } };
+  let framesRef = ["8", 0];
+  if (outW > 0 && outH > 0) {
+    wf["9"] = { class_type: "ImageScale", inputs: { image: framesRef, upscale_method: "lanczos", width: outW, height: outH, crop: "disabled" } };
+    framesRef = ["9", 0];
+  }
+  wf["18"] = { class_type: "CreateVideo", inputs: { images: framesRef, audio: ["6", 1], fps: ["6", 2] } };
+  wf["19"] = { class_type: "SaveVideo", inputs: { video: ["18", 0], filename_prefix: "heykoko_enhance", format: "auto", codec: "auto" } };
+  return wf;
+}
+
+// Pre-upscale denoise (抗噪 / 降伪影). Upscale models AMPLIFY whatever's in the input —
+// including compression noise / grain / JPEG artifacts. Blending the input toward a
+// mildly Gaussian-blurred copy (by `strength` 0–1) cleans that grain BEFORE the model
+// sees it, so it isn't sharpened up. 0 → untouched (sharpest); 1 → full blur (cleanest
+// but softest). Works with ANY upscale model (core nodes only). Adds ImageBlur+ImageBlend
+// under blurId/blendId; returns the cleaned image ref to feed ImageUpscaleWithModel.
+function denoiseBeforeUpscale(wf, srcRef, strength, blurId, blendId) {
+  const s = Math.max(0, Math.min(1, Number(strength) || 0));
+  if (s <= 0) return srcRef;
+  wf[blurId] = { class_type: "ImageBlur", inputs: { image: srcRef, blur_radius: 2, sigma: 1.5 } };
+  wf[blendId] = { class_type: "ImageBlend", inputs: { image1: srcRef, image2: [blurId, 0], blend_factor: s, blend_mode: "normal" } };
+  return [blendId, 0];
+}
+
+// Image upscale (图片高清 / 放大): attached image → AI upscale model → bigger, sharper
+// image. `denoise` (0–1) pre-cleans the input (抗噪). `outW/outH` (already even)
+// optionally resize the upscaled result (e.g. --size); 0 = keep the model's native
+// output (usually 4×). Output is a normal image.
+function buildImageUpscale({ imageName, upscaleModel, outW, outH, denoise }) {
+  const wf = {
+    "1": { class_type: "LoadImage", inputs: { image: imageName } },
+    "2": { class_type: "UpscaleModelLoader", inputs: { model_name: upscaleModel } },
+  };
+  const clean = denoiseBeforeUpscale(wf, ["1", 0], denoise, "5", "6");
+  wf["3"] = { class_type: "ImageUpscaleWithModel", inputs: { upscale_model: ["2", 0], image: clean } };
+  let ref = ["3", 0];
+  if (outW > 0 && outH > 0) { wf["4"] = scaleNode(ref, outW, outH); ref = ["4", 0]; }
+  wf["9"] = { class_type: "SaveImage", inputs: { images: ref, filename_prefix: "heykoko_upscale" } };
+  return wf;
+}
+
 // WAN's standard negative prompt. WAN is tuned to be sampled WITH this — without
 // it you get the artifacts it suppresses (oversaturated / weird / grayish color,
 // overexposure, static frames). Used whenever the user didn't supply their own.
@@ -1623,8 +1748,15 @@ async function uploadImage(b64, signal, filename = "heykoko_input.png") {
 async function uploadVideoBuffer(buf, mime, signal) {
   const m = mime || "video/mp4";
   const ext = /webm/i.test(m) ? "webm" : /quicktime|mov/i.test(m) ? "mov" : "mp4";
+  // Per-CONTENT filename. A multi-video batch fires its source-video uploads CONCURRENTLY; a
+  // shared name ("heykoko_source.mp4") + overwrite=true makes them clobber each other's bytes
+  // mid-write → a corrupt file that GetVideoComponents can't decode ("avcodec_send_packet /
+  // [aac] channel element not allocated"). Hashing the content gives DISTINCT clips DISTINCT
+  // files (no collision), while the SAME clip maps to one shared file — so ComfyUI's input dir
+  // stays bounded by distinct content instead of growing per-upload.
+  const hash = crypto.createHash("sha256").update(buf).digest("hex").slice(0, 16);
   const form = new FormData();
-  form.append("image", new Blob([buf], { type: m }), `heykoko_source.${ext}`);
+  form.append("image", new Blob([buf], { type: m }), `heykoko_source_${hash}.${ext}`);
   form.append("overwrite", "true");
   const r = await fetch(`${currentComfyUrl()}/upload/image`, { method: "POST", body: form, signal });
   if (!r.ok) throw new Error(`video upload failed (${r.status})`);
@@ -1826,6 +1958,9 @@ async function generateComfyImage(req, res) {
       let videoDims = null; // actual resolved output size (for the client's caption)
       let imagesUsed = 0;   // how many input images the video path actually consumed
       let stillMode = false; // single-frame Wan Animate → return an IMAGE, not a video
+      let interpWarning = null; // 升格 skipped (source fps already ≥ target) → tell the client
+      // 抗噪/降伪影 strength for the upscale paths. Accepts 0–1 or 0–100 (% from the ⚙).
+      const upscaleDenoise = (() => { const d = Number(opts.upscaleDenoise) || 0; return d > 1 ? d / 100 : Math.max(0, d); })();
       if (videoType === "bernini") {
         // Bernini-R video EDIT: a SOURCE VIDEO (required) + instruction → edited
         // video (v2v); + a reference image → rv2v. Resolve the merged entry to the
@@ -1875,6 +2010,48 @@ async function generateComfyImage(req, res) {
         workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: bw, height: bh, length: bl, seed, turbo, fps: bfps, refMaxSize: refMax });
         // v2v/rv2v keep the source video's fps; i2v uses bfps (so it can show duration).
         videoDims = { width: bw, height: bh, length: bl, fps: hasVideo ? undefined : bfps };
+      } else if (videoType === "enhance") {
+        // 升格 + 高清: source video → AI-upscaled AND frame-interpolated to a target fps.
+        // The /imagine "prompt" is just the target fps number (empty / non-numeric →
+        // HD upscale only, no interpolation).
+        if (!(sourceVideo || sourceVideoName)) { sendJson(res, 400, { error: "视频升格+高清需要一段源视频：先附上视频，再用 /imagine <目标帧率>（如 /imagine 60；留空则只做高清放大）。" }); return; }
+        const comp = await upscaleCompanions();
+        const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+        // Output size = 2× the source (a clean HD doubling — the 4× upscale model adds
+        // detail, then we downsample for crispness), capped so the long side ≤ 2160 to
+        // avoid 4K+-per-frame monsters. A ⚙ --size sets an explicit budget instead.
+        // 0/0 = keep the model's native output (source dims unknown).
+        const HD_LONG_CAP = 2160;
+        const even = (n) => Math.max(2, Math.round(n / 2) * 2);
+        let outW = 0, outH = 0;
+        const sw = Number(sourceVideoWidth), sh = Number(sourceVideoHeight);
+        if (opts.width > 0 && opts.height > 0 && sw > 0 && sh > 0) {
+          // Explicit --size → that pixel budget at the source aspect.
+          const aspect = sw / sh, budget = opts.width * opts.height;
+          outW = even(Math.sqrt(budget * aspect)); outH = even(Math.sqrt(budget / aspect));
+        } else if (sw > 0 && sh > 0) {
+          let tw = sw * 2, th = sh * 2;
+          const longSide = Math.max(tw, th);
+          if (longSide > HD_LONG_CAP) { const s = HD_LONG_CAP / longSide; tw *= s; th *= s; }
+          outW = even(tw); outH = even(th);
+        }
+        workflow = buildVideoEnhance({ videoName, upscaleModel: comp.model, outW, outH, denoise: upscaleDenoise });
+        // Frame interpolation (升格) to the requested fps. applyVfi multiplies the
+        // source fps to a NUMBER and splices RIFE/FILM before CreateVideo.
+        const srcFps = Number(sourceVideoFps) || 16;
+        const srcFrames = Number(sourceVideoFrames) || 0;
+        const tf = Math.round(parseFloat((prompt || "").trim()));
+        let outFps = srcFps, mult = 1;
+        if (tf > 0 && tf > srcFps) {
+          mult = Math.max(2, Math.round(tf / srcFps));
+          const method = /film/i.test(opts.interpMethod || "") ? "film" : "rife";
+          outFps = applyVfi(workflow, mult, srcFps, method);
+          videoDims = { width: outW || undefined, height: outH || undefined, fps: outFps, interpolated: mult, interpMethod: method };
+        } else {
+          if (tf > 0 && tf <= srcFps) interpWarning = { baseFps: srcFps, targetFps: tf }; // already ≥ target
+          videoDims = { width: outW || undefined, height: outH || undefined, fps: outFps };
+        }
+        if (srcFrames > 0) videoDims.length = (srcFrames - 1) * mult + 1; // for the done-line duration
       } else if (videoType === "animate" && !sourceVideo && !sourceVideoName) {
         // Wan Animate SINGLE-FRAME (no source video, TWO images → an IMAGE):
         //  • MOVE still    → image[0] = pose source, image[1] = character; the character
@@ -2055,6 +2232,20 @@ async function generateComfyImage(req, res) {
           const maskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mask.png") : null;
           workflow = buildEditWorkflow(editType, { model, prompt, negative: negative_prompt || "", imageName, maskName, seed, cfg, comp, denoise: editDenoise, width: ew, height: eh });
         }
+      } else if (model === IMAGE_UPSCALE) {
+        // 图片高清 / 放大: attached image → AI upscale model. No prompt needed; a
+        // ⚙ --size sets an explicit target (kept at the source aspect, capped 4096),
+        // otherwise the model's native output (usually 4×) is returned.
+        if (!isImg2Img) { sendJson(res, 400, { error: "图片放大需要先附上一张图片，再用 /imagine（可加 --size 1920x1080 指定目标尺寸）。" }); return; }
+        const comp = await upscaleCompanions();
+        const imageName = await uploadImage(images[0], controller.signal);
+        let outW = 0, outH = 0;
+        if (opts.width && opts.height) {
+          const ts = editTargetSize(images, opts, 4096);
+          if (ts) { outW = snapDim(ts.width, 2); outH = snapDim(ts.height, 2); }
+        }
+        workflow = buildImageUpscale({ imageName, upscaleModel: comp.model, outW, outH, denoise: upscaleDenoise });
+        imagesUsed = 1;
       } else if (/hidream.?o1/i.test(model)) {
         // HiDream-O1 (pixel-space UiT): text→image, or reference editing when
         // image(s) are attached (1 = instruction edit, up to 10 = multi-reference).
@@ -2140,6 +2331,32 @@ async function generateComfyImage(req, res) {
         });
       }
 
+      // Frame interpolation (升格): resample the decoded frames up to a TARGET fps via
+      // RIFE (default) or FILM VFI, keeping the same duration. Applies to every real
+      // video model (not stills/images). ⚙ `targetFps` is the desired output fps; the
+      // integer multiplier is derived from the model's own (or source) fps. If the base
+      // fps already meets/exceeds the target, interpolation is skipped and the client is
+      // told (interpWarning) so the user knows nothing was up-converted.
+      const targetFps = Math.round(Number(opts.targetFps) || 0);
+      if (videoType && videoType !== "enhance" && !stillMode && workflow && targetFps > 0) {
+        // Base fps. Source-fps models (Bernini v2v/rv2v, Wan Animate) leave
+        // videoDims.fps unset → fall back to the probed source fps, then 16.
+        const baseFps = (videoDims && videoDims.fps) || Number(sourceVideoFps) || 16;
+        if (baseFps >= targetFps) {
+          interpWarning = { baseFps, targetFps }; // already at/above target → skipped
+        } else {
+          const mult = Math.max(2, Math.round(targetFps / baseFps));
+          const method = /film/i.test(opts.interpMethod || "") ? "film" : "rife";
+          const newFps = applyVfi(workflow, mult, baseFps, method);
+          if (videoDims) {
+            if (videoDims.length) videoDims.length = (videoDims.length - 1) * mult + 1;
+            videoDims.fps = newFps;
+            videoDims.interpolated = mult;
+            videoDims.interpMethod = method;
+          }
+        }
+      }
+
       // Queue the prompt.
       const queueResp = await fetch(`${currentComfyUrl()}/prompt`, {
         method: "POST",
@@ -2210,7 +2427,7 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI 完成了但未产出视频文件（输出节点：${nodeIds}）。请确认工作流包含 SaveVideo 节点，或重试。` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);
