@@ -1119,7 +1119,7 @@ function applyVfi(wf, mult, baseFps, method) {
   // (m−1) interpolated frames between each pair → (N−1)·m + 1 frames out.
   wf["vfi"] = /film/i.test(method || "")
     ? { class_type: "FILM VFI", inputs: { ckpt_name: "film_net_fp32.pt", frames: cv.inputs.images, clear_cache_after_n_frames: 10, multiplier: m } }
-    : { class_type: "RIFE VFI", inputs: { ckpt_name: "rife47.pth", frames: cv.inputs.images, clear_cache_after_n_frames: 10, multiplier: m, fast_mode: true, ensemble: true, scale_factor: 1 } };
+    : { class_type: "RIFE VFI", inputs: { ckpt_name: "rife47.pth", frames: cv.inputs.images, clear_cache_after_n_frames: 10, multiplier: m, fast_mode: true, ensemble: true, scale_factor: 1, dtype: "float32", torch_compile: false, batch_size: 1 } };
   cv.inputs.images = ["vfi", 0];
   const newFps = Math.round((Number(baseFps) || 0) * m);
   if (newFps > 0) cv.inputs.fps = newFps;
@@ -1981,6 +1981,8 @@ async function generateComfyImage(req, res) {
       let imagesUsed = 0;   // how many input images the video path actually consumed
       let stillMode = false; // single-frame Wan Animate → return an IMAGE, not a video
       let interpWarning = null; // 升格 skipped (source fps already ≥ target) → tell the client
+      let upscaleInfo = null;   // { model, denoise } actually used → shown in the result bubble
+      let exactTargetFps = 0;   // 升格: interpolated to ≥ this (ceil mult) → drop frames to EXACTLY this fps
       // 抗噪/降伪影 strength for the upscale paths. Accepts 0–1 or 0–100 (% from the ⚙).
       const upscaleDenoise = (() => { const d = Number(opts.upscaleDenoise) || 0; return d > 1 ? d / 100 : Math.max(0, d); })();
       if (videoType === "bernini") {
@@ -2041,7 +2043,10 @@ async function generateComfyImage(req, res) {
         const noUpscale = opts.upscaleModel === "off";
         const srcFps = Number(sourceVideoFps) || 16;
         const srcFrames = Number(sourceVideoFrames) || 0;
-        const tf = Math.round(parseFloat((prompt || "").trim()));
+        // Target fps for 升格: the `/imagine <number>` prompt wins; if it has no number,
+        // fall back to the ⚙ "升格到帧率 FPS" field (same control the other video models use).
+        const promptFps = Math.round(parseFloat((prompt || "").trim()));
+        const tf = promptFps > 0 ? promptFps : Math.round(Number(opts.targetFps) || 0);
         const willInterp = tf > 0 && tf > srcFps;       // 升格 only when target fps > source
         const willResize = opts.width > 0 && opts.height > 0; // explicit --size
         const willDenoise = upscaleDenoise > 0;
@@ -2073,14 +2078,17 @@ async function generateComfyImage(req, res) {
           outW = even(tw); outH = even(th);
         }
         workflow = buildVideoEnhance({ videoName, upscaleModel: comp ? comp.model : null, outW, outH, denoise: upscaleDenoise });
+        upscaleInfo = { model: comp ? comp.model : null, denoise: upscaleDenoise };
         // Frame interpolation (升格) to the requested fps. applyVfi multiplies the
         // source fps to a NUMBER and splices RIFE/FILM before CreateVideo.
         let outFps = srcFps, mult = 1;
         if (willInterp) {
-          mult = Math.max(2, Math.round(tf / srcFps));
+          // CEIL → interpolated fps ≥ target; a post-pass drops frames to EXACTLY tf.
+          mult = Math.max(2, Math.ceil(tf / srcFps));
           const method = /film/i.test(opts.interpMethod || "") ? "film" : "rife";
           outFps = applyVfi(workflow, mult, srcFps, method);
           videoDims = { width: outW || undefined, height: outH || undefined, fps: outFps, interpolated: mult, interpMethod: method };
+          exactTargetFps = tf; // resample the output down to this exact fps
         } else {
           if (tf > 0 && tf <= srcFps) interpWarning = { baseFps: srcFps, targetFps: tf }; // already ≥ target
           videoDims = { width: outW || undefined, height: outH || undefined, fps: outFps };
@@ -2287,6 +2295,7 @@ async function generateComfyImage(req, res) {
           if (ts) { outW = snapDim(ts.width, 2); outH = snapDim(ts.height, 2); }
         }
         workflow = buildImageUpscale({ imageName, upscaleModel: comp ? comp.model : null, outW, outH, denoise: upscaleDenoise });
+        upscaleInfo = { model: comp ? comp.model : null, denoise: upscaleDenoise };
         imagesUsed = 1;
       } else if (/hidream.?o1/i.test(model)) {
         // HiDream-O1 (pixel-space UiT): text→image, or reference editing when
@@ -2387,7 +2396,9 @@ async function generateComfyImage(req, res) {
         if (baseFps >= targetFps) {
           interpWarning = { baseFps, targetFps }; // already at/above target → skipped
         } else {
-          const mult = Math.max(2, Math.round(targetFps / baseFps));
+          // CEIL so the interpolated fps is ≥ the target (RIFE/FILM only do integer
+          // multiples); a post-pass then drops frames down to EXACTLY targetFps.
+          const mult = Math.max(2, Math.ceil(targetFps / baseFps));
           const method = /film/i.test(opts.interpMethod || "") ? "film" : "rife";
           const newFps = applyVfi(workflow, mult, baseFps, method);
           if (videoDims) {
@@ -2396,6 +2407,7 @@ async function generateComfyImage(req, res) {
             videoDims.interpolated = mult;
             videoDims.interpMethod = method;
           }
+          exactTargetFps = targetFps; // resample the output down to this exact fps
         }
       }
 
@@ -2453,6 +2465,24 @@ async function generateComfyImage(req, res) {
         }
       }
 
+      // 升格 exact-fps pass: RIFE/FILM only multiply by an integer, so the interpolated
+      // fps (videoDims.fps) overshoots the user's target. ffmpeg-resample the output DOWN
+      // to EXACTLY exactTargetFps (drops frames evenly, keeps duration + audio) — smoother
+      // than no interpolation, but at the precise frame rate the user asked for.
+      if (exactTargetFps > 0 && outVideos.length && videoDims && videoDims.fps > exactTargetFps) {
+        let anyResampled = false;
+        for (let vi = 0; vi < outVideos.length; vi++) {
+          const rs = await resampleVideo(Buffer.from(outVideos[vi], "base64"), exactTargetFps);
+          if (rs) { outVideos[vi] = rs.toString("base64"); anyResampled = true; }
+        }
+        // Report the exact fps + matching frame count (duration unchanged) — but only if
+        // ffmpeg actually ran; on failure keep the (overshot) interpolated video + its fps.
+        if (anyResampled) {
+          if (videoDims.length) videoDims.length = Math.max(1, Math.round((videoDims.length / videoDims.fps) * exactTargetFps));
+          videoDims.fps = exactTargetFps;
+        }
+      }
+
       const now = new Date();
       const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
       if (stillMode) {
@@ -2469,11 +2499,11 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI 完成了但未产出视频文件（输出节点：${nodeIds}）。请确认工作流包含 SaveVideo 节点，或重试。` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);
-        sendJson(res, 200, { images: outImages, model, seed });
+        sendJson(res, 200, { images: outImages, model, seed, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined });
       }
     } finally {
       clearTimeout(timeout);

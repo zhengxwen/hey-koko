@@ -12,6 +12,9 @@ import { getTab } from './tabs.js';
 import { foregroundSink } from './gen-sink.js';
 import { comfyFetch } from './server-queue.js';   // Option B: run ComfyUI gen on the server queue
 
+// Drop a model file's extension for display (e.g. "RealESRGAN_x4plus.pth" → "RealESRGAN_x4plus").
+const stripModelExt = (n) => (n || "").replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
+
 // Compact "time remaining" → "m:ss" or "h:mm:ss" (language-neutral).
 function formatEta(sec) {
   sec = Math.max(0, Math.round(sec));
@@ -715,6 +718,13 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     } else if (lastData.interpWarning) {
       doneLine += `\n${t("msg_interpSkipped", { base: lastData.interpWarning.baseFps, target: lastData.interpWarning.targetFps }, plang)}`;
     }
+    // 高清 (upscale) — name the model + denoise algorithm actually used (video-enhance).
+    if (lastData.upscaleModel) {
+      doneLine += `\n${t("msg_upscaleUsed", { model: stripModelExt(lastData.upscaleModel) }, plang)}`;
+    }
+    if (lastData.upscaleDenoise > 0) {
+      doneLine += `\n${t("msg_denoiseUsed", { pct: Math.round(lastData.upscaleDenoise * 100) }, plang)}`;
+    }
     // If more images were attached than the model can use, tell the user how many
     // were actually consumed (2 = first-last-frame, 1 = plain image-to-video).
     const nInput = refImages ? refImages.length : 0;
@@ -986,6 +996,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   let errorCount = 0;
   let lastError = "";
   let noopMessage = null; // server did nothing on purpose (e.g. upscale=Off) → plain notice, not an error
+  let upscaleModelUsed = null, upscaleDenoiseUsed = 0; // 高清放大算法 used → shown in the done line
   // Seed actually used (random unless --seed was pinned) → surfaced on the done line
   // so a single result can be reproduced. Only meaningful for a single output.
   let usedSeed = null;
@@ -1071,6 +1082,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 noopMessage = data.message || "无需处理。";
               } else if (r.ok) {
                 const imgs = (data.images || []).filter((s) => s && s.length > 100);
+                if (data.upscaleModel) { upscaleModelUsed = data.upscaleModel; upscaleDenoiseUsed = data.upscaleDenoise || 0; }
                 if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
                 generatedImages.push(...imgs);
                 for (let k = 0; k < imgs.length; k++) seeds.push(typeof data.seed === "number" ? data.seed : null);
@@ -1140,6 +1152,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         const list = seeds.map((s, i) => `#${i + 1} ${s !== null ? s : "?"}`).join(" · ");
         doneLine += `\n${t("msg_seedsBatch", { list }, plang)}`;
       }
+      // 高清放大 (image-upscale) — name the model + denoise algorithm actually used.
+      if (upscaleModelUsed) doneLine += `\n${t("msg_upscaleUsed", { model: stripModelExt(upscaleModelUsed) }, plang)}`;
+      if (upscaleDenoiseUsed > 0) doneLine += `\n${t("msg_denoiseUsed", { pct: Math.round(upscaleDenoiseUsed * 100) }, plang)}`;
     }
 
     const replyMsg = {
