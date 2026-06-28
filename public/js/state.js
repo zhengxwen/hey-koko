@@ -61,6 +61,7 @@ export const dom = {
   comfyParamTargetFps: document.querySelector("#comfyParamTargetFps"),
   comfyParamInterpMethod: document.querySelector("#comfyParamInterpMethod"),
   comfyParamUpscaleDenoise: document.querySelector("#comfyParamUpscaleDenoise"),
+  comfyParamUpscaleModel: document.querySelector("#comfyParamUpscaleModel"),
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),
   comfyParamRelight: document.querySelector("#comfyParamRelight"),
   comfyMaskPointBtn: document.querySelector("#comfyMaskPointBtn"),

@@ -60,6 +60,7 @@ function comfyOverrides() {
   if (dom.comfyParamInterpMethod?.value) ov.interpMethod = dom.comfyParamInterpMethod.value; // rife | film
   const upDenoise = num(dom.comfyParamUpscaleDenoise?.value);
   if (upDenoise !== undefined && upDenoise > 0) ov.upscaleDenoise = Math.min(1, upDenoise / 100); // 放大抗噪 % → 0–1
+  if (dom.comfyParamUpscaleModel?.value) ov.upscaleModel = dom.comfyParamUpscaleModel.value; // manual upscale model (empty = auto)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
   const relight = num(dom.comfyParamRelight?.value);
   if (relight !== undefined) ov.relightStrength = relight; // Wan Animate: relight LoRA strength
@@ -178,8 +179,8 @@ function parseImagineCommand(input) {
         }
         w = parseInt(sizeParsed[1], 10);
         h = parseInt(sizeParsed[2], 10);
-        if (w < 256 || w > 2048 || h < 256 || h > 2048) {
-          return { error: `--size 尺寸超出范围：${w}x${h}。宽高需在 256~2048 之间` };
+        if (w < 256 || w > 4096 || h < 256 || h > 4096) {
+          return { error: `--size 尺寸超出范围：${w}x${h}。宽高需在 256~4096 之间（注意：扩散模型直接出大图易爆显存，4K 通常用于放大模型）` };
         }
       }
       result.options.width = w;
@@ -992,6 +993,13 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       const prompt = prompts[ci];
       for (let i = 0; i < parsed.count; i++) {
         const reqOptions = { ...parsed.options };
+        // Image upscale always outputs the model's native ~4×. Drop the default image
+        // size (parseImagineCommand fills width/height from the "默认尺寸" setting) so it
+        // doesn't downscale the result — only an explicit --size still resizes.
+        if (comfyModel === "image-upscale" && !parsed.sizeExplicit) {
+          delete reqOptions.width;
+          delete reqOptions.height;
+        }
         if (parsed.count > 1) {
           // Batch: every image needs a DISTINCT seed, else the grid is N identical
           // copies. No --seed → a fresh random per image. Pinned --seed N → N, N+1,

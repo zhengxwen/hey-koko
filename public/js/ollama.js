@@ -150,11 +150,12 @@ export async function refreshBgWorkers() {
     ? workers.map((w) => w.url)
     : [urlFromDisplay(dom.comfyUrlDisplay)].filter(Boolean);
   if (!targets.length) { loadComfyModels(); return; }
-  const uModels = new Map(), uEdit = new Map(), uVideo = new Map();
+  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uUpscale = new Map();
   await Promise.all(targets.map(async (url) => {
     try {
       const d = await (await fetch(`/api/comfy-models?comfyUrl=${encodeURIComponent(url)}`)).json();
       const models = d.models || [], editModels = d.editModels || [], videoModels = d.videoModels || [];
+      for (const n of (d.upscaleModels || [])) if (!uUpscale.has(n)) uUpscale.set(n, n);
       const sets = {
         image: new Set(models),
         edit: new Set(editModels.map((m) => m.name)),
@@ -169,7 +170,7 @@ export async function refreshBgWorkers() {
       for (const m of videoModels) if (!uVideo.has(m.name)) uVideo.set(m.name, m);
     } catch { setBgWorkerStatus(url, { online: false }); }
   }));
-  applyComfyModels({ models: [...uModels.values()], editModels: [...uEdit.values()], videoModels: [...uVideo.values()] });
+  applyComfyModels({ models: [...uModels.values()], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], upscaleModels: [...uUpscale.values()] });
 }
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
@@ -187,6 +188,22 @@ function applyComfyModels(data) {
     state.comfyMultiImageModels = new Set(editModels.filter((m) => m.type === "qwen").map((m) => m.name));
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
     const current = saved.comfyModel || dom.comfyModelSelect.value;
+    // ⚙ "放大模型" manual picker: Auto + each model installed in upscale_models/.
+    // Restore the saved choice if it's still present (else fall back to Auto).
+    if (dom.comfyParamUpscaleModel) {
+      const ups = data.upscaleModels || [];
+      const savedUp = (saved.comfyParams && saved.comfyParams.upscaleModel) || "";
+      dom.comfyParamUpscaleModel.innerHTML = "";
+      const autoOpt = document.createElement("option");
+      autoOpt.value = ""; autoOpt.textContent = t("comfy_upscaleModel_auto");
+      dom.comfyParamUpscaleModel.appendChild(autoOpt);
+      for (const n of ups) {
+        const o = document.createElement("option");
+        o.value = n; o.textContent = n.replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
+        dom.comfyParamUpscaleModel.appendChild(o);
+      }
+      dom.comfyParamUpscaleModel.value = ups.includes(savedUp) ? savedUp : "";
+    }
     const allNames = [...models, ...editModels.map((m) => m.name), ...videoModels.map((m) => m.name)];
     dom.comfyModelSelect.innerHTML = "";
 
@@ -318,21 +335,25 @@ export function updateComfyMultiHint() {
 export function updateComfyParamVisibility() {
   const m = dom.comfyModelSelect?.value || "";
   if (!m) return;
-  const video = !!(state.comfyVideoModels && state.comfyVideoModels.has(m));
+  const upscale = /upscale|video-enhance/i.test(m);   // image-upscale / video-enhance → an upscale-model pipeline (no sampler/prompt)
+  const video = !!(state.comfyVideoModels && state.comfyVideoModels.has(m)) || /video-enhance/i.test(m);
   const animate = /animate/i.test(m);
-  const upscale = /upscale/i.test(m);
-  const image = !video && !upscale;           // txt2img or image-edit
+  const diffusion = !upscale;                          // samples + takes a prompt (everything except the upscale pipelines)
   // Hide a field by its <label> (or, for the 升格 pair, the shared .comfyParamRow; the
   // pick-person button has no label, so fall back to the element itself).
   const setVis = (el, on, sel) => { if (!el) return; const box = sel ? el.closest(sel) : (el.closest("label") || el); if (box) box.hidden = !on; };
-  for (const el of [dom.comfyParamLength, dom.comfyParamFps, dom.comfyParamTimeout]) setVis(el, video);
+  // Video timing — gen length is diffusion-only (an upscale / VFI keeps the source's own length).
+  setVis(dom.comfyParamLength, video && diffusion);
+  for (const el of [dom.comfyParamFps, dom.comfyParamTimeout]) setVis(el, video);
   setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // 升格 + interpolation-engine row
+  // Wan Animate only.
   for (const el of [dom.comfyParamTorchCompile, dom.comfyParamRelight, dom.comfyMaskPointBtn]) setVis(el, animate);
-  setVis(dom.comfyParamUpscaleDenoise, upscale);
-  setVis(dom.comfyParamImageCfg, image);
-  // Sampling + prompt knobs apply to every model EXCEPT a pure upscale (which just runs an
-  // upscale-model node — no sampler / steps / cfg / prompt).
-  for (const el of [dom.comfyParamPositive, dom.comfyParamNegative, dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps, dom.comfyParamCfg, dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, !upscale);
+  // Upscale-model pipelines only (image-upscale / video-enhance) — the 放大抗噪 % + the 放大模型 picker.
+  for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel]) setVis(el, upscale);
+  // Image-edit / txt2img only.
+  setVis(dom.comfyParamImageCfg, diffusion && !video);
+  // Sampler + prompt knobs — diffusion models only (an upscale pipeline runs no sampler / steps / prompt).
+  for (const el of [dom.comfyParamPositive, dom.comfyParamNegative, dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps, dom.comfyParamCfg, dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion);
 }
 
 export async function loadEmbedModels() {
@@ -474,6 +495,7 @@ function initComfyParamsModal() {
     dom.comfyParamTimeout,
     dom.comfyParamTargetFps,
     dom.comfyParamUpscaleDenoise,
+    dom.comfyParamUpscaleModel,
     dom.comfyParamRelight,
   ];
 

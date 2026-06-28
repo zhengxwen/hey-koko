@@ -140,7 +140,13 @@ async function comfyEnum(node, input) {
     if (!r.ok) return [];
     const data = await r.json();
     const spec = data?.[node]?.input?.required?.[input] || data?.[node]?.input?.optional?.[input];
-    return Array.isArray(spec) && Array.isArray(spec[0]) ? spec[0] : [];
+    if (!Array.isArray(spec)) return [];
+    // Old object_info shape: [[...options...], {...}]. Newer (ComfyUI V3) shape:
+    // ["COMBO", { options: [...], multiselect, ... }]. Support both, else the list comes
+    // back empty (e.g. UpscaleModelLoader, which uses the new shape → "放大模型" only showed Auto).
+    if (Array.isArray(spec[0])) return spec[0];
+    if (spec[1] && Array.isArray(spec[1].options)) return spec[1].options;
+    return [];
   } catch {
     return [];
   }
@@ -251,9 +257,10 @@ async function proxyComfyModels(req, res) {
     const q = new URL(req.url, "http://x").searchParams.get("comfyUrl");
     const scanUrl = normComfyUrl(q) || config.comfyUrl;
     comfyCtx.enterWith({ comfyUrl: scanUrl });
-    const [ckpts, unets, hostname] = await Promise.all([
+    const [ckpts, unets, upscaleModels, hostname] = await Promise.all([
       comfyEnum("CheckpointLoaderSimple", "ckpt_name"),
       comfyEnum("UNETLoader", "unet_name"),
+      comfyEnum("UpscaleModelLoader", "model_name").catch(() => []),
       hostnameFor(scanUrl).catch(() => ""),
     ]);
     // Edit/video models can be either diffusion models (UNETLoader) or full
@@ -324,9 +331,9 @@ async function proxyComfyModels(req, res) {
     const boogu = all.filter((n) => /boogu/i.test(n) && !editTypeOf(n));
     // Image upscale (图片高清): always offered — needs only an upscale model (checked
     // at gen time) + an attached image. Sits in the image model list as a sentinel.
-    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, IMAGE_UPSCALE], editModels, videoModels, hostname });
+    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, IMAGE_UPSCALE], editModels, videoModels, upscaleModels, hostname });
   } catch {
-    sendJson(res, 200, { models: [], editModels: [], videoModels: [] });
+    sendJson(res, 200, { models: [], editModels: [], videoModels: [], upscaleModels: [] });
   }
 }
 
@@ -1122,8 +1129,14 @@ function applyVfi(wf, mult, baseFps, method) {
 // AI upscale model for the video-enhance (高清) pipeline. Auto-picks a sensible
 // default from models/upscale_models/ (prefer a 4× general model), erroring with a
 // download hint if the folder is empty.
-async function upscaleCompanions() {
+async function upscaleCompanions(preferred) {
   const models = await comfyEnum("UpscaleModelLoader", "model_name");
+  // A user-picked model (⚙ "放大模型") wins when it's actually installed; otherwise
+  // fall through to the auto-pick. Match exact name first, then case-insensitively.
+  if (preferred) {
+    const exact = models.find((x) => x === preferred) || models.find((x) => x.toLowerCase() === String(preferred).toLowerCase());
+    if (exact) return { model: exact };
+  }
   const find = (re) => models.find((x) => re.test(x));
   // RealESRGAN first — it cleans compression artifacts and is temporally steadier on
   // video; UltraSharp (sharper but amplifies noise frame-to-frame) is the next choice.
@@ -2016,7 +2029,7 @@ async function generateComfyImage(req, res) {
         // The /imagine "prompt" is just the target fps number (empty / non-numeric →
         // HD upscale only, no interpolation).
         if (!(sourceVideo || sourceVideoName)) { sendJson(res, 400, { error: "视频升格+高清需要一段源视频：先附上视频，再用 /imagine <目标帧率>（如 /imagine 60；留空则只做高清放大）。" }); return; }
-        const comp = await upscaleCompanions();
+        const comp = await upscaleCompanions(opts.upscaleModel);
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         // Output size = 2× the source (a clean HD doubling — the 4× upscale model adds
         // detail, then we downsample for crispness), capped so the long side ≤ 2160 to
@@ -2238,7 +2251,7 @@ async function generateComfyImage(req, res) {
         // ⚙ --size sets an explicit target (kept at the source aspect, capped 4096),
         // otherwise the model's native output (usually 4×) is returned.
         if (!isImg2Img) { sendJson(res, 400, { error: "图片放大需要先附上一张图片，再用 /imagine（可加 --size 1920x1080 指定目标尺寸）。" }); return; }
-        const comp = await upscaleCompanions();
+        const comp = await upscaleCompanions(opts.upscaleModel);
         const imageName = await uploadImage(images[0], controller.signal);
         let outW = 0, outH = 0;
         if (opts.width && opts.height) {

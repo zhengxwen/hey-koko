@@ -537,6 +537,12 @@
             <span id="comfyParamUpscaleDenoiseLabel" title="Upscale models only (图片高清 / 视频升格+高清) — pre-clean the input so compression noise / grain / JPEG artifacts aren't amplified by the upscaler. 0% = off, sharpest (default). 30–50% = removes fine noise while keeping most detail (good for compressed video / old photos). 100% = cleanest but softest. A trade-off between noise and detail. Ignored by all other models.">Denoise / de-artifact (放大抗噪 %)</span>
             <input id="comfyParamUpscaleDenoise" type="number" min="0" max="100" step="5" placeholder="Off (0)" title="Upscale models only (图片高清 / 视频升格+高清) — pre-clean the input so compression noise / grain / JPEG artifacts aren't amplified by the upscaler. 0% = off, sharpest (default). 30–50% = removes fine noise while keeping most detail (good for compressed video / old photos). 100% = cleanest but softest. A trade-off between noise and detail. Ignored by all other models." />
           </label>
+          <label title="Upscale models only (图片高清 / 视频升格+高清): which upscale model to use. Auto picks RealESRGAN first (steadier on video), then UltraSharp. Options are the models installed in ComfyUI/models/upscale_models/.">
+            <span id="comfyParamUpscaleModelLabel">Upscale model (放大模型)</span>
+            <select id="comfyParamUpscaleModel">
+              <option value="">Auto (RealESRGAN first)</option>
+            </select>
+          </label>
           <label class="comfyParamCheck" title="Wan Animate only: compile the model (inductor) for ~20–30% faster sampling. First run at each resolution pays a one-time compile (tens of seconds); best for fixed-resolution batches. Uses extra VRAM — when on, segments are auto-shortened to avoid OOM; at 720p+ it may still OOM, then turn this off or lower the size.">
             <input id="comfyParamTorchCompile" type="checkbox" />
             <span id="comfyParamTorchCompileLabel">torch.compile speedup (Wan Animate)</span>

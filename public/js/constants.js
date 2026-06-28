@@ -45,6 +45,10 @@ export const SIZE_PRESETS = {
   "720p-portrait": "720x1280",
   "1080p": "1920x1080",
   "1080p-portrait": "1080x1920",
+  "2k": "2560x1440",
+  "2k-portrait": "1440x2560",
+  "4k": "3840x2160",
+  "4k-portrait": "2160x3840",
 };
 
 // Command list for autocomplete

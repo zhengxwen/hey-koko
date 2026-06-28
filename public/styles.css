@@ -636,6 +636,13 @@ p {
   align-items: end;
 }
 
+/* The global `label { display:grid }` + `.comfyParamRow { display:grid }` author rules otherwise
+   BEAT the UA `[hidden]{display:none}`, so a label/row/button that updateComfyParamVisibility()
+   hides for the selected model would still show. Restore the hidden behaviour inside the ⚙ panel. */
+.comfyParamsBody label[hidden],
+.comfyParamRow[hidden],
+.comfyParamsBody button[hidden] { display: none; }
+
 .comfyParamsBody .hint {
   margin: 0 0 2px;
   font-size: 12px;

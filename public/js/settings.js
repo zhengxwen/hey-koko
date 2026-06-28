@@ -44,6 +44,7 @@ export function saveCurrentSettings() {
         targetFps: dom.comfyParamTargetFps?.value || "",
         interpMethod: dom.comfyParamInterpMethod?.value || "rife",
         upscaleDenoise: dom.comfyParamUpscaleDenoise?.value || "",
+        upscaleModel: dom.comfyParamUpscaleModel?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
         relight: dom.comfyParamRelight?.value || "",
       },
@@ -78,9 +79,10 @@ function saveChatMessage(message) {
   stored.content = message.content;
   if (message.folded) stored.folded = true;
   if (message.locked) stored.locked = true;
-  if (message.previewImage) stored.previewImage = message.previewImage;
-  if (message.previewImages) stored.previewImages = message.previewImages;
-  if (message.images) stored.images = message.images;
+  // Uploaded-image fields: displayImages (thumbnails, shown in the bubble) and
+  // contextImages (full-res, what's actually sent to the model). See migrateImageFields.
+  if (message.displayImages) stored.displayImages = message.displayImages;
+  if (message.contextImages) stored.contextImages = message.contextImages;
   if (message.generatedThumbnails && message.generatedThumbnails.length > 0) {
     stored.generatedThumbnails = message.generatedThumbnails;
   }
@@ -171,6 +173,8 @@ export function loadSavedSettings() {
     if (dom.comfyParamTargetFps) dom.comfyParamTargetFps.value = cp.targetFps || "";
     if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = cp.interpMethod || "rife";
     if (dom.comfyParamUpscaleDenoise) dom.comfyParamUpscaleDenoise.value = cp.upscaleDenoise || "";
+    // Best-effort — applyComfyModels re-applies this once the option list has loaded.
+    if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
     if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";
   }
