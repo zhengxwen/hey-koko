@@ -27,29 +27,9 @@ export function setDeps({ setGenerating, renderChat }) {
   _renderChat = renderChat;
 }
 
-// Screen Wake Lock — keep the display awake during a long (minutes-to-30min) video
-// render so the OS doesn't sleep and drop the connection mid-generation. The lock
-// auto-releases when the tab is hidden, so re-acquire it when the tab returns AND a
-// generation is still running (state.imageGenAbortController is the "busy" signal).
-let _wakeLock = null, _wakeLockWanted = false;
-async function acquireWakeLock() {
-  _wakeLockWanted = true;
-  try {
-    if ("wakeLock" in navigator && !_wakeLock && document.visibilityState === "visible") {
-      _wakeLock = await navigator.wakeLock.request("screen");
-      _wakeLock.addEventListener("release", () => { _wakeLock = null; });
-    }
-  } catch { /* unsupported / denied — best-effort */ }
-}
-function releaseWakeLock() {
-  _wakeLockWanted = false;
-  try { _wakeLock && _wakeLock.release(); } catch { /* already gone */ }
-  _wakeLock = null;
-}
-// The lock auto-releases when the tab hides — re-acquire on return if still wanted.
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && _wakeLockWanted) acquireWakeLock();
-});
+// Note: sleep prevention is owned by the SERVER (server/jobs.js holds a
+// `caffeinate` while the job queue is non-empty) — it doesn't depend on the
+// browser being open/visible, so there is no client-side Screen Wake Lock here.
 
 // Read the ComfyUI advanced-params modal into an options overlay. Only fields
 // the user explicitly set are included — empty fields fall back to the server's
@@ -552,7 +532,6 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
 
   const abortController = { signal: sink.signal }; // sink owns the real controller
   sink.lock(true);
-  acquireWakeLock(); // keep the display awake for the (long) render
   setAvatarState("thinking");
 
   const vidModel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
@@ -886,7 +865,6 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     sink.clearBubble();
     sink.done();
     unsubscribe();
-    releaseWakeLock();
     sink.cleanup();
   }
 }
@@ -952,7 +930,6 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // sink owns the real AbortController; this shim keeps existing .signal refs working.
   const abortController = { signal: sink.signal };
   sink.lock(true);
-  acquireWakeLock(); // keep the display awake for a long (batch / img2img) render
 
   if (anyEnhance) {
     setAvatarState("thinking");
@@ -987,7 +964,6 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   } catch (e) {
     // Enhancement cancelled by the user — clean up the status bubble and bail.
     sink.clearBubble();
-    releaseWakeLock();
     setAvatarState("idle");
     sink.done();
     sink.cleanup();
@@ -1243,7 +1219,6 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     sink.clearBubble();
     sink.done();
     imgUnsub();
-    releaseWakeLock();
     sink.cleanup();
   }
 }

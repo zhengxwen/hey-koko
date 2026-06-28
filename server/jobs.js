@@ -18,6 +18,7 @@ const crypto = require("crypto");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { spawn } = require("child_process");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 
@@ -65,8 +66,36 @@ function broadcast(event) {
 }
 const emitUpdate = (job) => broadcast({ type: "update", job: publicJob(job) });
 
+// ---- keep the host awake while the queue has work ---------------------------
+// The runner lives on THIS machine's server (ComfyUI is remote, but the queue,
+// the loopback POST and the result delivery are all local). So a SYSTEM sleep
+// would suspend the runner even though the GPU box keeps rendering. While any job
+// is queued or running we hold one `caffeinate -i` child; it's released the moment
+// the queue drains. Only `-i` (prevent system IDLE sleep) is needed — we just need
+// the server PROCESS to keep running; the display may sleep (no -d), the disk may
+// sleep (no -m). `-w <pid>` makes it self-exit if the server dies, so a crash can
+// never leave the Mac pinned awake. macOS-only (caffeinate is built in); a no-op
+// elsewhere — independent of whether any browser tab is open/visible.
+let _caffeine = null;
+function updateSleepGuard() {
+  if (process.platform !== "darwin") return;
+  const busy = jobs.some((j) => j.status === "queued" || j.status === "running");
+  if (busy && !_caffeine) {
+    try {
+      _caffeine = spawn("caffeinate", ["-i", "-w", String(process.pid)], { stdio: "ignore" });
+      _caffeine.on("error", () => { _caffeine = null; }); // caffeinate missing → ignore
+      _caffeine.on("exit", () => { _caffeine = null; });
+    } catch { _caffeine = null; }
+  } else if (!busy && _caffeine) {
+    try { _caffeine.kill(); } catch {}
+    _caffeine = null;
+  }
+}
+process.on("exit", () => { try { _caffeine && _caffeine.kill(); } catch {} });
+
 // ---- the per-lane runner (parallel across lanes) ----------------------------
 function pumpLanes() {
+  updateSleepGuard();
   const lanes = new Set(jobs.filter((j) => j.status === "queued").map(laneOf));
   for (const lane of lanes) if (!activeLanes.has(lane)) pumpLane(lane);   // not awaited → concurrent
 }
@@ -92,6 +121,7 @@ async function pumpLane(laneId) {
     }
   } finally {
     activeLanes.delete(laneId);
+    updateSleepGuard(); // lane drained → release the wake guard if nothing's left
   }
 }
 
@@ -222,6 +252,7 @@ function doCancel(job) {
   if (job.status === "running" && job.comfyUrl) { try { fetch(`${normUrl(job.comfyUrl)}/interrupt`, { method: "POST" }).catch(() => {}); } catch {} }
   removeJob(job);
   persist();
+  updateSleepGuard(); // canceling the last job → drop the wake guard
   broadcast({ type: "removed", id: job.id });
 }
 

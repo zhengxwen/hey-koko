@@ -45,28 +45,9 @@ function rerender() { if (_renderChat) _renderChat(); }
 const jobControllers = new Map();
 
 // ---- keep-awake -------------------------------------------------------------
-// While the queue is draining, hold a screen wake lock. When the display sleeps or
-// the system goes idle, browsers/macOS throttle (or suspend) timers AND fetch/promise
-// callbacks — so a finished job's continuation doesn't fire and the NEXT job won't
-// start until the user moves the mouse. The wake lock keeps the page running so the
-// queue advances on its own. Auto-releases when the tab hides → re-acquire on return.
-let _qWakeLock = null, _qWakeWanted = false;
-async function acquireQueueWake() {
-  if (!_qWakeWanted) return;
-  try {
-    if ('wakeLock' in navigator && !_qWakeLock && document.visibilityState === 'visible') {
-      _qWakeLock = await navigator.wakeLock.request('screen');
-      _qWakeLock.addEventListener('release', () => { _qWakeLock = null; });
-    }
-  } catch { /* unsupported / denied — best-effort (native app also disables App Nap) */ }
-}
-// Acquire while any job is running, release when the queue goes idle.
-function updateQueueWake() {
-  const active = state.bgJobs.some((j) => j.status === 'running');
-  if (active && !_qWakeWanted) { _qWakeWanted = true; acquireQueueWake(); }
-  else if (!active && _qWakeWanted) { _qWakeWanted = false; try { _qWakeLock && _qWakeLock.release(); } catch {} _qWakeLock = null; }
-}
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && _qWakeWanted) acquireQueueWake(); });
+// Sleep prevention is owned by the SERVER (server/jobs.js holds a `caffeinate` while
+// its job queue is non-empty), so the host Mac stays awake regardless of whether this
+// tab is visible — no client-side Screen Wake Lock here.
 
 // ---- persistence -----------------------------------------------------------
 
@@ -563,7 +544,6 @@ function updatePlaceholderBar(job) {
 // cancel / label) — never per progress tick (those call renderDrawer() alone).
 function refreshPlaceholders() {
   cancelActiveDrag();   // a job started/finished/was added → abort any in-flight reorder
-  updateQueueWake();    // hold/release the screen wake lock based on running jobs
   for (const job of state.bgJobs) syncPlaceholder(job);
   rerender();
   renderDrawer();

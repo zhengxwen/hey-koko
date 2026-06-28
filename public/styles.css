@@ -2921,12 +2921,16 @@ button.secondary:disabled {
 .videoChipRemove {
   display: inline-grid;
   place-items: center;
-  width: 16px;
-  height: 16px;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;     /* override the global button min-height/padding that */
+  min-height: 18px;    /* would otherwise stretch this into an oval */
   border: none;
   border-radius: 50%;
   padding: 0;
-  font-size: 0.8rem;
+  font-size: 0.85rem;
+  font-weight: 700;
   line-height: 1;
   cursor: pointer;
   background: var(--line);
@@ -4586,6 +4590,18 @@ button.secondary:disabled {
   cursor: pointer;
 }
 .bgPhRetry { background: var(--surface-hover); color: var(--ink); }
+/* "前往后台任务" reads as a quiet link until hovered — ghost at rest, blue fill on hover. */
+.bgPhGoto {
+  background: transparent;
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.bgPhGoto:hover {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: none;
+}
 .message.bgPlaceholder.bgPlaceholder-error { border-color: #d9534f; }
 
 /* Wan Animate Replace — "pick the person" seed-point picker */
