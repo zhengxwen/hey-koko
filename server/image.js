@@ -175,48 +175,52 @@ function getPromptByLang(templates, lang) {
   return templates[lang] || templates.zh || templates.en;
 }
 
+// Core prompt-enhancement: rewrite `prompt` via the Ollama chat `model`, picking
+// the template by target (video → motion, edit → preservation-locked delta, else
+// generative still). Returns the enhanced text (falls back to the original if the
+// model returns nothing); THROWS on a bad request / Ollama error. Reused by both the
+// standalone /api/enhance-prompt endpoint AND server-side generation (so an enqueued
+// job can be enhanced at RUN time, not in the browser — survives a frozen tab).
+async function enhancePromptText({ model, prompt, language, edit, video }) {
+  if (!model || !prompt) throw new Error("model and prompt are required");
+  // Video wins over edit (i2v still needs motion described).
+  const template = video ? VIDEO_ENHANCE_PROMPTS : edit ? EDIT_ENHANCE_PROMPTS : ENHANCE_PROMPTS;
+  const systemPrompt = getPromptByLang(template, language || "en");
+
+  const response = await fetch(`${config.ollamaUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: prompt },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || response.statusText);
+  }
+  const data = await response.json();
+  return data.message?.content?.trim() || prompt;
+}
+
 async function enhancePrompt(req, res) {
   try {
     const body = await readBody(req);
     const { model, prompt, language, edit, video } = body;
-
     if (!model || !prompt) {
       sendJson(res, 400, { error: "model and prompt are required" });
       return;
     }
-
-    // Pick the template by target: video models want motion described, edit
-    // (img2img) wants a preservation-locked delta, everything else gets the
-    // generative still-image expansion. Video wins over edit (i2v still needs
-    // motion described).
-    const template = video ? VIDEO_ENHANCE_PROMPTS : edit ? EDIT_ENHANCE_PROMPTS : ENHANCE_PROMPTS;
-    const systemPrompt = getPromptByLang(template, language || "en");
-
-    const response = await fetch(`${config.ollamaUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        stream: false,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: prompt },
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      sendJson(res, response.status, { error: text || response.statusText });
-      return;
-    }
-
-    const data = await response.json();
-    const enhanced = data.message?.content?.trim() || prompt;
+    const enhanced = await enhancePromptText({ model, prompt, language, edit, video });
     sendJson(res, 200, { enhanced, original: prompt });
   } catch (error) {
     sendJson(res, 500, { error: "提示词增强失败", detail: error.message });
   }
 }
 
-module.exports = { proxyOllamaImageModels, generateImage, enhancePrompt };
+module.exports = { proxyOllamaImageModels, generateImage, enhancePrompt, enhancePromptText };

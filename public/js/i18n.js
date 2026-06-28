@@ -218,6 +218,7 @@ const UI = {
     // Background jobs
     bg_statusQueued: "Queued (#${n})",
     bg_statusQueuedPlain: "Queued",
+    bg_statusEnhancing: "Enhancing prompt…",
     bg_statusRunning: "Running…",
     bg_statusPaused: "Paused",
     bg_pause: "Pause",
@@ -559,6 +560,7 @@ const UI = {
     // 后台任务
     bg_statusQueued: "排队中（第 ${n} 位）",
     bg_statusQueuedPlain: "排队中",
+    bg_statusEnhancing: "正在增强提示词…",
     bg_statusRunning: "运行中…",
     bg_statusPaused: "已暂停",
     bg_pause: "暂停",
@@ -899,6 +901,7 @@ const UI = {
     // 後台任務
     bg_statusQueued: "排隊中（第 ${n} 位）",
     bg_statusQueuedPlain: "排隊中",
+    bg_statusEnhancing: "正在增強提示詞…",
     bg_statusRunning: "運行中…",
     bg_statusPaused: "已暫停",
     bg_pause: "暫停",

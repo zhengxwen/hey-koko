@@ -16,7 +16,7 @@ import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
 import { buildPendingGenBubble } from './pending-gen.js';
-import { enqueueBgJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
+import { enqueueBgJob, releaseEnhancingJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
 import { chatFetch } from './server-queue.js';
 import { t, getPrompt, getPromptLanguage } from './i18n.js';
 import { getNumCtx, recordContextUsage, renderContextMeter } from './context-meter.js';
@@ -134,7 +134,7 @@ function bgImagineLabel(cmds, isVideo) {
 // Generation (image/video/audio) always runs through the background queue. This
 // builds the image/video job from the parsed /imagine commands — shared by a fresh
 // send and a resend so the model is snapshotted the same way in both.
-function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertIndex = -1) {
+async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertIndex = -1) {
   // A ComfyUI video model (no Ollama image model) routes through generateVideo —
   // capture model + kind at submit time so a later dropdown change can't redirect it.
   const isVideo = !dom.imageModelSelect.value && dom.comfyModelSelect && state.comfyVideoModels.has(dom.comfyModelSelect.value);
@@ -146,23 +146,71 @@ function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertIndex =
   const clips = isVideo ? (Array.isArray(videos) ? videos.filter(Boolean) : (videos ? [videos] : [])) : [];
   const multi = clips.length > 1;
   const jobs = clips.length ? clips : [null];
-  jobs.forEach((clip, i) => {
-    enqueueBgJob({
-      tabId,
-      kind: isVideo ? "video" : "image",
-      // Tag the label with "(N/M)" so the jobs drawer distinguishes a batch's clips.
-      label: bgImagineLabel(validCmds, isVideo) + (multi ? ` (${i + 1}/${clips.length})` : ""),
-      // Keep batch order: each placeholder lands AFTER the previous one.
-      insertIndex: insertIndex >= 0 ? insertIndex + i : -1,
-      payload: {
-        parsedInput: validCmds,
-        initImages: images || null,
-        initVideo: clip || null,
-        maskB64: mask || null,
-        modelOverride,
-      },
-    });
-  });
+  // --enhance is run UP-FRONT here (foreground — the tab is active right after Send, so
+  // it can never hit the background-tab freeze that stalls queue advancement). Jobs are
+  // created in the 'enhancing' state (bubble shows "正在增强提示词"); pumpLane skips them
+  // until releaseEnhancingJob flips them to 'queued' with the rewritten prompt in tow.
+  const needsEnhance = validCmds.some((c) => c.enhance && c.prompt && c.prompt.trim());
+  const created = jobs.map((clip, i) => enqueueBgJob({
+    tabId,
+    kind: isVideo ? "video" : "image",
+    // Tag the label with "(N/M)" so the jobs drawer distinguishes a batch's clips.
+    label: bgImagineLabel(validCmds, isVideo) + (multi ? ` (${i + 1}/${clips.length})` : ""),
+    // Keep batch order: each placeholder lands AFTER the previous one.
+    insertIndex: insertIndex >= 0 ? insertIndex + i : -1,
+    status: needsEnhance ? "enhancing" : "queued",
+    payload: {
+      parsedInput: validCmds,
+      initImages: images || null,
+      initVideo: clip || null,
+      maskB64: mask || null,
+      modelOverride,
+    },
+  }));
+  if (!needsEnhance) return;
+
+  // During enhancement, behave like a normal chat turn: the Send button becomes Stop
+  // (setGenerating + currentAbortController, which the form-submit handler aborts). Stop
+  // FULLY cancels these jobs — they never reach the queue. After enhancement the button
+  // returns to Send and the actual generation runs non-blocking in the background.
+  const enhanceAbort = new AbortController();
+  state.currentAbortController = enhanceAbort;
+  setGenerating(true);
+  let stopped = false;
+  enhanceAbort.signal.addEventListener("abort", () => {
+    stopped = true;
+    for (const job of created) if (job) cancelBgJob(job.id);
+  }, { once: true });
+
+  // Rewrite each --enhance command ONCE (shared across this send's jobs since they share
+  // the validCmds array → payload). Store the result on the command (read at run time as
+  // enhancedPrompt||prompt; raw prompt kept for the record/resend) and clear the flag.
+  const mode = isVideo ? "video" : (images ? "edit" : "plain");
+  try {
+    for (const cmd of validCmds) {
+      if (!(cmd.enhance && cmd.prompt && cmd.prompt.trim())) continue;
+      try {
+        const r = await fetch("/api/enhance-prompt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: enhanceAbort.signal,
+          body: JSON.stringify({ model: dom.modelSelect.value, prompt: cmd.prompt, language: getPromptLanguage(), edit: mode === "edit", video: mode === "video" }),
+        });
+        const d = await r.json();
+        if (r.ok && d.enhanced && d.enhanced.trim()) cmd.enhancedPrompt = d.enhanced.trim();
+      } catch (e) {
+        if (e.name === "AbortError") break;   // user hit Stop → bail (jobs already canceled)
+        // other failures are non-fatal: fall back to the raw prompt
+      }
+      cmd.enhance = false;
+    }
+  } finally {
+    if (state.currentAbortController === enhanceAbort) setGenerating(false); // clears currentAbortController too
+  }
+  if (stopped) return;   // canceled mid-enhancement → do NOT enqueue
+
+  const enhancedText = [...new Set(validCmds.map((c) => c.enhancedPrompt).filter(Boolean))].join("\n");
+  for (const job of created) releaseEnhancingJob(job, enhancedText || null);
 }
 
 // /analyze (image/video vision) also runs through the background queue. Builds a
@@ -226,6 +274,7 @@ function renderBgPlaceholder(message) {
   switch (message.status) {
     case 'running': statusTxt = [message.seg, message.elapsed].filter(Boolean).join(' · '); break;   // "第 N/M 段 · 1:23"
     case 'paused': statusTxt = t('bg_statusPaused'); break;
+    case 'enhancing': statusTxt = t('bg_statusEnhancing'); break;
     case 'done': statusTxt = t('bg_statusDone'); break;
     case 'error': statusTxt = t('bg_statusError'); break;
     case 'interrupted': statusTxt = t('bg_statusInterrupted'); break;
@@ -242,6 +291,14 @@ function renderBgPlaceholder(message) {
     + (detail ? `<span class="bgPhModel">${escapeHtml(detail)}</span>` : '')
     // Always render the status span while running so the live chunk-badge poke has a target.
     + ((statusTxt || message.status === 'running') ? `<span class="bgPhStatus">${escapeHtml(statusTxt)}</span>` : '');
+  // Server-side --enhance: the rewritten prompt arrives mid-run (before the render) and
+  // is shown here so the user sees it up-front, not only with the final result.
+  if (message.enhancedPrompt) {
+    const enh = document.createElement('div');
+    enh.className = 'bgPhEnhanced';
+    enh.innerHTML = `<div class="enhancedLabel">${t('msg_enhancedPrompt')}</div><blockquote>${escapeHtml(message.enhancedPrompt)}</blockquote>`;
+    body.appendChild(enh);
+  }
   // Running jobs get a progress bar: determinate (width %) once numeric progress
   // arrives (generation), indeterminate animated otherwise (parse/url/analyze phases).
   if (message.status === 'running') {

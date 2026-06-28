@@ -220,7 +220,7 @@ export function setBgWorkerStatus(url, { online, models, hostname }) {
 // Add a job to the FIFO queue and drop a placeholder message into its source tab.
 // payload carries everything needed to (re)run the generator headlessly. insertIndex
 // places the placeholder bubble (e.g. right after the resent user bubble); -1 appends.
-export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1 }) {
+export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1, status = 'queued', enhancedPrompt = null }) {
   const tab = getTab(tabId);
   if (!tab) return null;
   const msgId = genId();
@@ -230,9 +230,12 @@ export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1 }) 
     msgId,
     kind,
     label: label || '',
-    status: 'queued',
+    // 'enhancing' = prompt is being rewritten up-front (foreground); pumpLane only
+    // picks 'queued', so the job stays parked until releaseEnhancingJob flips it.
+    status,
     progress: null,
     payload,
+    enhancedPrompt,        // shown in the placeholder bubble (set at enqueue)
     error: '',
     createdAt: Date.now(),
   };
@@ -248,7 +251,8 @@ export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1 }) 
     jobId: job.id,
     kind,
     label: job.label,
-    status: 'queued',
+    status,
+    enhancedPrompt,
     timestamp: Date.now(),
   };
   if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, placeholder);
@@ -258,6 +262,22 @@ export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1 }) 
   refreshPlaceholders();
   pumpQueue();
   return job;
+}
+
+// Flip a job created in the 'enhancing' state to 'queued' once its prompt rewrite is
+// done — stamping the enhanced text (shown in the placeholder + carried in the payload)
+// and kicking the lane runner. Called from enqueueImagineGen after /api/enhance-prompt.
+export function releaseEnhancingJob(job, enhancedPrompt) {
+  // Canceled DURING enhancement (cancelBgJob spliced it out of state.bgJobs while the
+  // /api/enhance-prompt call was still in flight) → must NOT enter the queue. The
+  // membership check is the real guard; status alone isn't enough (cancel doesn't
+  // change job.status, it removes the job).
+  if (!job || job.status !== 'enhancing' || !state.bgJobs.includes(job)) return;
+  if (enhancedPrompt) job.enhancedPrompt = enhancedPrompt;
+  job.status = 'queued';
+  persist();
+  refreshPlaceholders();
+  pumpQueue();
 }
 
 // ---- the serial runner -----------------------------------------------------
@@ -517,6 +537,7 @@ function syncPlaceholder(job) {
   found.msg.seg = job.seg;             // "第 N/M 段" for multi-segment video
   found.msg.elapsed = runningElapsed(job);   // "1:23" elapsed since the job started
   found.msg.queuePos = queuePosition(job);
+  found.msg.enhancedPrompt = job.enhancedPrompt;   // server-side --enhance preview (before render)
   return true;
 }
 
@@ -1028,6 +1049,9 @@ export async function restoreBgJobsOnLoad() {
       if (j.serverJobId) { j.status = 'queued'; }
       else { j.status = 'interrupted'; j.progress = null; j.seg = null; }
     }
+    // Reload landed mid-enhancement (the foreground rewrite never finished) → just run
+    // it: the payload still holds the raw prompt, so generation proceeds un-enhanced.
+    if (j.status === 'enhancing') j.status = 'queued';
   }
   state.bgJobs = jobs;
   persist();

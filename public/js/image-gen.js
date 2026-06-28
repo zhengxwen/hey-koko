@@ -544,11 +544,9 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
         : ` · ${t("msg_inputImages", { n: refImages.length })}`)
     : "";
   const vidSuffix = `${vidModel ? ` · ${vidModel}` : ""}${vidImgs}`;
-  // When --enhance is set, show the enhancement step first, then flip to the
-  // generating status once the (slow) prompt rewrite returns. The bubble lives in
-  // state.pendingGen so it survives a tab switch (see pending-gen.js).
-  const firstStatus = parsed.enhance ? t("msg_enhancing") : t("msg_generatingVideo");
-  sink.start("video", `${firstStatus}${vidSuffix}`);
+  // Enhancement already ran at enqueue time (the bg placeholder showed "正在增强提示词"),
+  // so by here we go straight to the generating status.
+  sink.start("video", `${t("msg_generatingVideo")}${vidSuffix}`);
   // Let the browser PAINT the just-mounted bubble before the heavy synchronous
   // work would otherwise block the main thread → the bubble appears to never show.
   await new Promise((r) => setTimeout(r, 0));
@@ -577,38 +575,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     }
   }
 
-  // Enhance the prompt for the video model (motion / camera oriented) when asked.
-  let videoPrompt = parsed.prompt;
-  let promptWasEnhanced = false;
-  if (parsed.enhance) {
-    try {
-      const enhanceRes = await fetch("/api/enhance-prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: abortController.signal,
-        body: JSON.stringify({ model: dom.modelSelect.value, prompt: parsed.prompt, language: getPromptLanguage(), video: true }),
-      });
-      const enhanceData = await enhanceRes.json();
-      if (enhanceRes.ok && enhanceData.enhanced) {
-        videoPrompt = enhanceData.enhanced;
-        promptWasEnhanced = videoPrompt !== parsed.prompt;
-      }
-    } catch (e) {
-      if (e.name === "AbortError") {
-        sink.clearBubble();
-        setAvatarState("idle");
-        sink.done(); sink.cleanup();
-        return;
-      }
-      // non-fatal: fall back to the original prompt
-    }
-    // Flip the status bubble to the generating state and surface the improved
-    // prompt above it, so the user sees it BEFORE the (slow) video render.
-    if (promptWasEnhanced) {
-      sink.enhanced(`<div class="enhancedLabel">${t("msg_enhancedPrompt")}</div><blockquote>${escapeHtml(videoPrompt)}</blockquote>`);
-    }
-    sink.label(`${t("msg_generatingVideo")}${vidSuffix}`);
-  }
+  // Prompt enhancement is done at ENQUEUE time (client-side, foreground — see
+  // enqueueImagineGen). parsed.enhancedPrompt holds the rewrite (raw parsed.prompt kept
+  // for the record); send the enhanced text when present.
+  const videoPrompt = parsed.enhancedPrompt || parsed.prompt;
+  const promptWasEnhanced = !!parsed.enhancedPrompt;
 
   // Estimated chunk count for a chained Wan Animate (each chunk = one KSampler pass).
   // Drives both the scaled timeout (below) and the overall progress / ETA. The server
@@ -914,67 +885,15 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   }
 
   const totalCount = parsedList.reduce((sum, p) => sum + p.count, 0);
-  const anyEnhance = parsedList.some((p) => p.enhance);
 
-  // Status bubble. When --enhance is used we show it up-front (with an
-  // "enhancing prompt" status) so the user sees activity during the slow
-  // enhancement step, then flip it to the "generating" status below. The bubble
-  // lives in state.pendingGen so it survives a tab switch (see pending-gen.js).
-  // Build the enhanced-prompt preview block's inner HTML from a list of prompts.
-  const enhancedHtml = (promptTexts) =>
-    `<div class="enhancedLabel">${t("msg_enhancedPrompt")}</div>` +
-    promptTexts.map((p) => `<blockquote>${escapeHtml(p)}</blockquote>`).join("");
-
-  // Set up cancellation before enhancement so the stop button can interrupt the
-  // (potentially slow) prompt-enhancement step, not just image generation. The
-  // sink owns the real AbortController; this shim keeps existing .signal refs working.
+  // The sink owns the real AbortController; this shim keeps existing .signal refs working.
   const abortController = { signal: sink.signal };
   sink.lock(true);
 
-  if (anyEnhance) {
-    setAvatarState("thinking");
-    sink.start("image", t("msg_enhancing"));
-  }
-
-  // Enhance prompts if requested
-  const prompts = [];
-  try {
-    for (const parsed of parsedList) {
-      let prompt = parsed.prompt;
-      if (parsed.enhance) {
-        setAvatarState("thinking");
-        try {
-          const enhanceRes = await fetch("/api/enhance-prompt", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            signal: abortController.signal,
-            body: JSON.stringify({ model: dom.modelSelect.value, prompt, language: getPromptLanguage(), edit: !!refImages }),
-          });
-          const enhanceData = await enhanceRes.json();
-          if (enhanceRes.ok && enhanceData.enhanced) {
-            prompt = enhanceData.enhanced;
-          }
-        } catch (e) {
-          if (e.name === "AbortError") throw e; // user stopped → cancel the whole run
-          // other enhancement failures are non-fatal: fall back to the original prompt
-        }
-      }
-      prompts.push(prompt);
-    }
-  } catch (e) {
-    // Enhancement cancelled by the user — clean up the status bubble and bail.
-    sink.clearBubble();
-    setAvatarState("idle");
-    sink.done();
-    sink.cleanup();
-    return;
-  }
-
-  // Surface the improved prompt(s) in the pending bubble before generation runs.
-  const enhancedShown = parsedList
-    .map((p, i) => (p.enhance && prompts[i] !== p.prompt) ? prompts[i] : null)
-    .filter(Boolean);
-  if (enhancedShown.length) sink.enhanced(enhancedHtml(enhancedShown));
+  // Prompt enhancement is done at ENQUEUE time (client-side, foreground — see
+  // enqueueImagineGen). parsed.enhancedPrompt holds the rewrite (raw parsed.prompt is
+  // kept untouched for the record / resend); send the enhanced text when present.
+  const prompts = parsedList.map((p) => p.enhancedPrompt || p.prompt);
 
   setAvatarState("thinking");
 
@@ -1015,17 +934,21 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     abortController.signal.addEventListener("abort", () => interruptComfy(comfyHost), { once: true });
   }
 
-  try {
-    const generatedImages = [];
-    let errorCount = 0;
-    let lastError = "";
-    // Seed actually used (random unless --seed was pinned) → surfaced on the done line
-    // so a single result can be reproduced. Only meaningful for a single output.
-    let usedSeed = null;
-    // Per-image seeds for a batch (aligned with generatedImages → grid order), so any
-    // one image can be reproduced via --seed.
-    const seeds = [];
+  // Declared OUTSIDE the try so the catch block can read them (partial-success +
+  // later error → the catch still shows the images/prompts produced so far).
+  const generatedImages = [];
+  let errorCount = 0;
+  let lastError = "";
+  // Seed actually used (random unless --seed was pinned) → surfaced on the done line
+  // so a single result can be reproduced. Only meaningful for a single output.
+  let usedSeed = null;
+  // Per-image seeds for a batch (aligned with generatedImages → grid order), so any
+  // one image can be reproduced via --seed.
+  const seeds = [];
+  // Enhanced prompt(s) to show in the done message (set at enqueue time, client-side).
+  const enhancedPromptsShown = [...new Set(parsedList.map((p) => p.enhancedPrompt).filter(Boolean))];
 
+  try {
     const promises = [];
     for (let ci = 0; ci < parsedList.length; ci++) {
       const parsed = parsedList[ci];
@@ -1124,11 +1047,8 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     if (refImages && !useComfy && !/flux2/i.test(imageModel)) {
       content += t("msg_imgEditModelWarn", { model: imageModel }) + "\n\n";
     }
-    const enhancedPrompts = parsedList
-      .map((p, i) => (p.enhance && prompts[i] !== p.prompt) ? prompts[i] : null)
-      .filter(Boolean);
-    if (enhancedPrompts.length > 0) {
-      content += `**${t("msg_enhancedPrompt")}**\n${enhancedPrompts.map((p) => `> ${p}`).join("\n")}\n\n`;
+    if (enhancedPromptsShown.length > 0) {
+      content += `**${t("msg_enhancedPrompt")}**\n${enhancedPromptsShown.map((p) => `> ${p}`).join("\n")}\n\n`;
     }
     if (errorCount > 0 && generatedImages.length > 0) {
       content += `⚠️ ${errorCount} 张图片生成失败\n\n`;
@@ -1186,11 +1106,8 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     } else if (generatedImages.length > 0) {
       // Preserve already-generated images even when an error occurs
       let content = `⚠️ 图片生成出错：${error.message}\n\n`;
-      const enhancedPrompts = parsedList
-        .map((p, i) => (p.enhance && prompts[i] !== p.prompt) ? prompts[i] : null)
-        .filter(Boolean);
-      if (enhancedPrompts.length > 0) {
-        content = `**${t("msg_enhancedPrompt")}**\n${enhancedPrompts.map((p) => `> ${p}`).join("\n")}\n\n` + content;
+      if (enhancedPromptsShown.length > 0) {
+        content = `**${t("msg_enhancedPrompt")}**\n${enhancedPromptsShown.map((p) => `> ${p}`).join("\n")}\n\n` + content;
       }
       const generatedThumbnails = await Promise.all(
         generatedImages.map((img) => {

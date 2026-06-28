@@ -4575,6 +4575,10 @@ button.secondary:disabled {
 .message.bgPlaceholder .bgPhLabel { font-weight: 600; margin-right: 8px; }
 .message.bgPlaceholder .bgPhModel { font-size: 11px; color: var(--muted); margin-right: 8px; word-break: break-all; }
 .message.bgPlaceholder .bgPhStatus { color: var(--muted); font-size: 12px; }
+/* Server-side --enhance preview shown in the pending bubble (before the render). */
+.message.bgPlaceholder .bgPhEnhanced { margin-top: 8px; }
+.message.bgPlaceholder .bgPhEnhanced .enhancedLabel { font-size: 0.78rem; font-weight: 600; color: var(--accent-strong); margin-bottom: 4px; }
+.message.bgPlaceholder .bgPhEnhanced blockquote { margin: 0; font-size: 0.85rem; color: var(--muted); border-left: 2px solid var(--border); padding-left: 8px; }
 .bgPhActions { margin-top: 6px; display: flex; gap: 8px; }
 .bgPhGoto, .bgPhRetry {
   display: inline-flex;
