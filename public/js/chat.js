@@ -30,17 +30,45 @@ import { TOOL_SCHEMAS, executeTool, getToolLabel } from './tools.js';
 // the moment the response begins streaming (sendSucceeded), NOT when the reply finishes.
 let _sendStatusTimer = null;
 let _sendStatusKind = null; // 'sending' | 'stopping' | 'error' | null
+let _sendStatusImageCount = 0; // images carried by the in-flight request (annotates the pill)
+// "Sending/Receiving…", upgraded to "…（包括 N 张图片）" when the outgoing request
+// carries images. Computed live so setSendingImageCount can refresh the visible pill.
+function sendingStatusText() {
+  return _sendStatusImageCount > 0
+    ? t("status_sendingImages", { n: _sendStatusImageCount })
+    : t("status_sending");
+}
 function scheduleStatus(kind, key) {
   clearTimeout(_sendStatusTimer);
   _sendStatusKind = kind;
+  // Each fresh send resets the image annotation; the count is filled in once the
+  // outgoing payload is built (setSendingImageCount), before the response returns.
+  if (kind === 'sending') _sendStatusImageCount = 0;
   const el = dom.sendStatus;
   if (!el) return;
   // Show the pill IMMEDIATELY (no 2s delay) so send/resend/edit get instant feedback;
   // the CSS fades+pulses it in. It's still dropped on first response chunk (fast case).
   // Starting a new request also clears any lingering red error pill.
   el.classList.remove('isError');
-  el.textContent = t(key);
+  el.textContent = kind === 'sending' ? sendingStatusText() : t(key);
   el.hidden = false;
+}
+
+// Total images in an outgoing Ollama messages array (`images` is Ollama's field name).
+function countOutgoingImages(messages) {
+  let n = 0;
+  for (const m of (messages || [])) n += m.images?.length || 0;
+  return n;
+}
+
+// Annotate the live "sending" pill with how many images the request carries. Called
+// once the payload is built; a no-op if the pill is no longer the sending pill (e.g.
+// the response already started, or the user pressed stop).
+function setSendingImageCount(n) {
+  _sendStatusImageCount = n || 0;
+  if (_sendStatusKind === 'sending' && dom.sendStatus && !dom.sendStatus.hidden) {
+    dom.sendStatus.textContent = sendingStatusText();
+  }
 }
 function clearSendStatus() {
   // A red error pill is sticky — keep it (it auto-dismisses, or a new send clears it),
@@ -1276,9 +1304,13 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
   const showThinking = dom.showThinkingCheckbox?.checked || false;
 
   try {
+    const messages = buildMessages(tabId, contextEndIndex);
+    // Surface how many images this request carries on the "sending" pill (foreground only —
+    // bg jobs run headless without it).
+    if (!bg) setSendingImageCount(countOutgoingImages(messages));
     const fetchBody = {
       model: dom.modelSelect.value,
-      messages: buildMessages(tabId, contextEndIndex),
+      messages,
       options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
       timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
     };
@@ -1517,6 +1549,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
   let content = "";
   try {
     const messages = [...buildMessages(tabId, contextEndIndex), { role: "user", content: instruction }];
+    setSendingImageCount(countOutgoingImages(messages));
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1762,6 +1795,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
 
   const genStart = Date.now();
   const messages = buildMessages(tabId, contextEndIndex);
+  setSendingImageCount(countOutgoingImages(messages));
   const toolSteps = [];
   const seen = new Map(); // tool-call signature -> cached result (kills repeat loops)
   const showThinking = dom.showThinkingCheckbox?.checked || false;
@@ -2009,6 +2043,9 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
       commit();
       return;
     }
+    // Annotate the foreground "sending" pill with the image count (video frames aren't
+    // counted as images; pure-video analysis leaves the pill unannotated).
+    if (!bg) setSendingImageCount(imageCount);
 
 
     // 2. Build the analysis request as a self-contained turn: a dedicated

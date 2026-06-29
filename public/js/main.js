@@ -1046,6 +1046,9 @@ function exportJson(tab) {
     if (m.timestamp) m.timestamp = exportTimeStr(m.timestamp, true);
     // Don't export the heavy video data — keep only the poster thumbnail.
     if (m.generatedVideos) { delete m.generatedVideos; delete m.videoMime; }
+    // displayImages is just a 360px thumbnail of contextImages — redundant in the
+    // export. Drop it; import regenerates the thumbnail from contextImages.
+    if (m.contextImages?.length) delete m.displayImages;
     return m;
   });
   const payload = { title: tab.title, userName: dom.userName.value, personality: tab.personality };
@@ -1135,7 +1138,7 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
       const text = await file.text();
       const data = JSON.parse(text);
       if (!Array.isArray(data.messages)) throw new Error("无效的对话文件");
-      const messages = data.messages.map((msg) => {
+      const messages = await Promise.all(data.messages.map(async (msg) => {
         const m = { ...msg };
         if (typeof m.timestamp === "string") {
           m.timestamp = new Date(m.timestamp.replace(" ", "T")).getTime();
@@ -1143,8 +1146,20 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
         // Map legacy image field names (images/previewImage[s]) onto the current
         // contextImages/displayImages so older exported JSON still imports correctly.
         migrateImageFields(m);
+        // Exports drop displayImages (a 360px thumbnail derivable from contextImages).
+        // Regenerate it for uploaded-image bubbles so they render an inline thumbnail —
+        // but NOT for file/bg previews, which legitimately have contextImages and no
+        // displayImages (they render via generatedThumbnails / the file-preview path).
+        if (!m.isFilePreview && m.contextImages?.length && !m.displayImages?.length) {
+          m.displayImages = await Promise.all(m.contextImages.map((b64) => {
+            const src = b64.startsWith("data:")
+              ? b64
+              : `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`;
+            return makePreview(src);
+          }));
+        }
         return m;
-      });
+      }));
       const tab = createTab(data.title || "导入的对话", messages, data.personality || null);
       if (data.persona) tab.persona = data.persona;
       state.tabs.unshift(tab);
