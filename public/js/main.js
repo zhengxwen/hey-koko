@@ -10,7 +10,7 @@ import { initTheme } from './theme.js';
 import { initAvatar } from './avatar.js';
 import { stopSpeech, populateVoiceList, speakAdjacent } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
-import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, updateLockedState } from './tabs.js';
+import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
 import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsMask } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
@@ -31,6 +31,7 @@ import { connectServerQueue } from './server-queue.js';   // Option B: SSE strea
 
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
+tabsSetRenderAttachments(renderStagedAttachments);
 translateSetRenderChat(renderChat);
 imageGenSetDeps({ setGenerating, renderChat });
 voiceGenSetDeps({ setGenerating, renderChat });
@@ -1382,6 +1383,35 @@ function removeStagedVideo(index) {
   renderStagedVideoPreview();
 }
 
+// Render the compose-area preview chips for the staged document file(s).
+function renderStagedFilePreview() {
+  if (!dom.filePreviewName) return;
+  const files = state.selectedFile
+    ? (state.selectedFile.multi || [state.selectedFile])
+    : [];
+  dom.filePreviewName.innerHTML = "";
+  if (files.length === 0) {
+    dom.filePreview.hidden = true;
+    return;
+  }
+  for (const f of files) {
+    const chip = document.createElement("span");
+    chip.className = "fileChip";
+    chip.textContent = `📄 ${f.name}`;
+    dom.filePreviewName.appendChild(chip);
+  }
+  dom.filePreview.hidden = false;
+}
+
+// Repaint every compose-area attachment preview from the current state. Used when
+// switching tabs restores a tab's previously-staged attachments.
+export function renderStagedAttachments() {
+  renderStagedImagePreview();
+  renderStagedVideoPreview();
+  renderStagedFilePreview();
+  refreshMaskPointLabel();
+}
+
 // File selection helper (images + documents)
 async function selectFile(file) {
   if (!file) return;
@@ -1485,16 +1515,7 @@ async function selectFile(file) {
       }
       clearSelectedImage();
       clearSelectedVideo();
-      // Show all file names
-      const allFiles = state.selectedFile.multi || [state.selectedFile];
-      dom.filePreviewName.innerHTML = "";
-      for (const f of allFiles) {
-        const chip = document.createElement("span");
-        chip.className = "fileChip";
-        chip.textContent = `📄 ${f.name}`;
-        dom.filePreviewName.appendChild(chip);
-      }
-      dom.filePreview.hidden = false;
+      renderStagedFilePreview();
       dom.messageInput.focus();
       return;
     }
@@ -1518,15 +1539,7 @@ async function selectFile(file) {
     }
     clearSelectedImage();
     clearSelectedVideo();
-    const allFiles = state.selectedFile.multi || [state.selectedFile];
-    dom.filePreviewName.innerHTML = "";
-    for (const f of allFiles) {
-      const chip = document.createElement("span");
-      chip.className = "fileChip";
-      chip.textContent = `📄 ${f.name}`;
-      dom.filePreviewName.appendChild(chip);
-    }
-    dom.filePreview.hidden = false;
+    renderStagedFilePreview();
     dom.messageInput.focus();
   } catch (e) {
     const msgEl = document.createElement("div");

@@ -47,6 +47,16 @@ function backfillMessageIds(tabs) {
 let _renderChat = null;
 export function setRenderChat(fn) { _renderChat = fn; }
 
+let _renderAttachments = null;
+export function setRenderAttachments(fn) { _renderAttachments = fn; }
+
+// Staged compose-area attachments (image/file/video) are global in `state`, not
+// per-tab, so switching tabs would otherwise wipe them. Keep a session-only,
+// per-tab snapshot here so each tab carries its own pending attachments while you
+// switch around. Deliberately NOT persisted to IndexedDB — these hold File
+// objects and heavy base64, and should not survive a reload.
+const tabAttachments = new Map();
+
 export function createTab(title, messages = [], personality = null) {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -121,12 +131,26 @@ export function switchTab(tabId) {
     currentTab._scrollY = dom.messagesEl.scrollTop;
     // Stash the in-progress input draft so it follows this tab.
     currentTab.draft = dom.messageInput.value;
+    // Stash this tab's staged attachments (session-only) so they survive the switch.
+    tabAttachments.set(currentTab.id, {
+      selectedImage: state.selectedImage,
+      selectedFile: state.selectedFile,
+      selectedVideo: state.selectedVideo,
+      animateMaskPoint: state.animateMaskPoint,
+    });
   }
   state.activeTabId = tabId;
   clearSelectedImage();
   clearSelectedFile();
   clearSelectedVideo();
   const newTab = getActiveTab();
+  // Restore the new tab's staged attachments (empty if it had none).
+  const att = tabAttachments.get(tabId);
+  state.selectedImage = (att && att.selectedImage) || null;
+  state.selectedFile = (att && att.selectedFile) || null;
+  state.selectedVideo = (att && att.selectedVideo) || null;
+  state.animateMaskPoint = (att && att.animateMaskPoint) || null;
+  if (_renderAttachments) _renderAttachments();
   if (newTab && newTab.personality) {
     dom.personalitySelect.value = newTab.personality;
     dom.persona.value = newTab.persona || PERSONALITY_PRESETS[newTab.personality] || PERSONALITY_PRESETS.sweet;
@@ -248,8 +272,20 @@ function closeTab(tabId) {
   if (index < 0) return;
   if (state.tabs[index].locked) return;
   state.tabs.splice(index, 1);
+  tabAttachments.delete(tabId);
   if (state.activeTabId === tabId) {
     state.activeTabId = state.tabs[Math.max(0, index - 1)].id;
+    // The closed tab's attachments were live in the global state — swap in the
+    // newly-active tab's stashed attachments so they don't bleed across.
+    clearSelectedImage();
+    clearSelectedFile();
+    clearSelectedVideo();
+    const att = tabAttachments.get(state.activeTabId);
+    state.selectedImage = (att && att.selectedImage) || null;
+    state.selectedFile = (att && att.selectedFile) || null;
+    state.selectedVideo = (att && att.selectedVideo) || null;
+    state.animateMaskPoint = (att && att.animateMaskPoint) || null;
+    if (_renderAttachments) _renderAttachments();
   }
   saveTabs();
   renderTabs();
