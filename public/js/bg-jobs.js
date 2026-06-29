@@ -82,7 +82,13 @@ setServerQueueDeps({
     // one-at-a-time per lane). First time the server reports this job running → flip the
     // bg status 'queued'→'running' so the drawer shows the real progression.
     const becameRunning = job.status === 'queued';
-    if (becameRunning) { job.status = 'running'; if (job._runLabel) job.label = job._runLabel; if (!job.startedAt) job.startedAt = Date.now(); startElapsedTicker(); }
+    if (becameRunning) { job.status = 'running'; if (job._runLabel) job.label = job._runLabel; startElapsedTicker(); }
+    // Elapsed clock follows the SERVER's authoritative start time (the queue server shares
+    // this machine's wall clock). This is what makes elapsed correct across a page reload:
+    // a job that ran for minutes on the server while the page was gone shows that real
+    // elapsed instead of restarting from 0 the moment the SSE re-reports it running.
+    if (sjob.startedAt) job.startedAt = sjob.startedAt;
+    else if (becameRunning && !job.startedAt) job.startedAt = Date.now();
     const lbl = bgProgressLabel(sjob.label, sjob.progress);
     if (lbl) job.label = lbl;
     job.progress = sjob.progress || null;

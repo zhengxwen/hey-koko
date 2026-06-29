@@ -26,24 +26,26 @@ function normComfyUrl(u) {
   return s.replace(/\/+$/, "");
 }
 
-// Best-effort ffprobe of a video buffer → { frames, fps }. frames = r_frame_rate ×
-// duration; used to let Wan Animate generate the FULL clip at the SOURCE fps (so
-// timing is preserved). Returns { frames: 0, fps: 0 } if ffprobe is absent/fails.
+// Best-effort ffprobe of a video buffer → { frames, fps, width, height }. frames =
+// r_frame_rate × duration; used to let Wan Animate generate the FULL clip at the SOURCE
+// fps. width/height let the caption report the REAL output size (some paths can't compute
+// it ahead of time). Key-based parse (order-independent). Zeroes if ffprobe absent/fails.
 async function probeVideo(buf) {
   let tmp;
   try {
     tmp = path.join(os.tmpdir(), `hk_probe_${crypto.randomUUID()}.bin`);
     await fsp.writeFile(tmp, buf);
     const out = await new Promise((resolve) => {
-      const p = spawn("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate,duration", "-of", "default=noprint_wrappers=1:nokey=1", tmp]);
+      const p = spawn("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate,duration", "-of", "default=noprint_wrappers=1", tmp]);
       let s = ""; p.stdout.on("data", (d) => (s += d)); p.on("close", () => resolve(s)); p.on("error", () => resolve(""));
     });
-    const lines = out.trim().split("\n");
-    const [num, den] = (lines[0] || "").split("/").map(Number);
+    const kv = {};
+    for (const line of out.trim().split("\n")) { const i = line.indexOf("="); if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1); }
+    const [num, den] = (kv.r_frame_rate || "").split("/").map(Number);
     const fps = (num && den) ? num / den : (num || 0);
-    const dur = parseFloat(lines[1] || "0");
-    return { frames: (fps > 0 && dur > 0) ? Math.round(fps * dur) : 0, fps: fps || 0 };
-  } catch { return { frames: 0, fps: 0 }; }
+    const dur = parseFloat(kv.duration || "0");
+    return { frames: (fps > 0 && dur > 0) ? Math.round(fps * dur) : 0, fps: fps || 0, width: parseInt(kv.width, 10) || 0, height: parseInt(kv.height, 10) || 0 };
+  } catch { return { frames: 0, fps: 0, width: 0, height: 0 }; }
   finally { if (tmp) fsp.unlink(tmp).catch(() => {}); }
 }
 
@@ -2480,6 +2482,18 @@ async function generateComfyImage(req, res) {
         if (anyResampled) {
           if (videoDims.length) videoDims.length = Math.max(1, Math.round((videoDims.length / videoDims.fps) * exactTargetFps));
           videoDims.fps = exactTargetFps;
+        }
+      }
+
+      // Backfill the output size from the ACTUAL rendered video when a path couldn't resolve
+      // it ahead of time (e.g. video-enhance/upscale, or an "auto"-sized model) — otherwise the
+      // caption shows "?×?". width/height are resample-invariant, so probing firstVideoBuf is safe.
+      if (firstVideoBuf && (!videoDims || !videoDims.width || !videoDims.height)) {
+        const meta = await probeVideo(firstVideoBuf);
+        if (meta.width && meta.height) {
+          videoDims = videoDims || {};
+          videoDims.width = videoDims.width || meta.width;
+          videoDims.height = videoDims.height || meta.height;
         }
       }
 

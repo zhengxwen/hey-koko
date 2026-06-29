@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // Image lightbox
-import { dom } from './state.js';
+import { dom, state } from './state.js';
 import { getActiveTab } from './tabs.js';
 
 export function initLightbox() {
@@ -238,4 +238,126 @@ export function initLightbox() {
   });
 
   return { openLightbox, getAllImageSrcs };
+}
+
+// Full-window video viewer — a fixed overlay (like the image lightbox), NOT OS
+// fullscreen. It exists to gain ‹ › prev/next across all the conversation's clips,
+// which native video fullscreen lacks. Keeping it a windowed overlay means the inner
+// <video>'s own native fullscreen + Picture-in-Picture buttons keep working (click
+// native fullscreen → true OS fullscreen of the clip, exit → back to the overlay).
+// Opened via the ⛶ button on each video wrapper (see renderMessage).
+export function initVideoLightbox() {
+  const overlay = document.createElement("div");
+  overlay.className = "videoLightbox";
+  overlay.innerHTML = `<button class="videoLightboxClose" aria-label="关闭">×</button><button class="videoLightboxNav videoLightboxPrev" aria-label="上一个">‹</button><button class="videoLightboxNav videoLightboxNext" aria-label="下一个">›</button>`;
+  const video = document.createElement("video");
+  video.className = "videoLightboxVideo";
+  video.controls = true;
+  video.loop = true;        // keep looping in the viewer, like the inline player
+  video.playsInline = true;
+  // The viewer is a full-window overlay (not OS fullscreen), so the inner video's
+  // own native fullscreen + Picture-in-Picture buttons stay fully functional.
+  overlay.appendChild(video);
+  document.body.appendChild(overlay);
+
+  const vClose = overlay.querySelector(".videoLightboxClose");
+  const vPrev = overlay.querySelector(".videoLightboxPrev");
+  const vNext = overlay.querySelector(".videoLightboxNext");
+
+  let videos = [];       // the conversation's <video.generatedVideo> elements, in order
+  let currentIndex = -1;
+  // Default muted; first unmute restores 50%. The choice is then remembered across
+  // prev/next within a viewing session, but every fresh open starts muted again.
+  let prefMuted = true;
+  let prefVolume = 0.5;
+  let applying = false;  // guards the programmatic volume set below from the listener
+
+  function applyVolume() {
+    applying = true;
+    video.muted = prefMuted;
+    video.volume = prefVolume;
+    applying = false;
+  }
+
+  function loadIndex(i, autoplay) {
+    const srcVideo = videos[i];
+    if (!srcVideo) return;
+    currentIndex = i;
+    // The source clip may still be lazy (off-screen) — force its blob src in.
+    if (state.loadVideoNow) state.loadVideoNow(srcVideo);
+    video.poster = srcVideo.poster || "";
+    video.src = srcVideo.currentSrc || srcVideo.src || "";
+    applyVolume();
+    if (autoplay) video.play().catch(() => {});
+    const showNav = videos.length > 1;
+    vPrev.style.display = showNav ? "" : "none";
+    vNext.style.display = showNav ? "" : "none";
+  }
+
+  function navigate(dir) {
+    if (videos.length === 0) return;
+    loadIndex((currentIndex + dir + videos.length) % videos.length, true);
+  }
+
+  function openVideoLightbox(sourceVideo) {
+    videos = Array.from(dom.messagesEl.querySelectorAll("video.generatedVideo"));
+    const idx = videos.indexOf(sourceVideo);
+    videos.forEach((v) => { if (!v.paused) v.pause(); }); // no double audio with the inline player
+    prefMuted = true;       // every fresh open defaults to muted
+    prefVolume = 0.5;
+    video.controls = true;  // reset (a prior keyboard-nav may have hidden them)
+    overlay.classList.add("isOpen");
+    loadIndex(idx >= 0 ? idx : 0, true);
+  }
+
+  function closeVideoLightbox() {
+    if (!overlay.classList.contains("isOpen")) return;
+    overlay.classList.remove("isOpen");
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  }
+
+  // Track the user's mute/volume choice so it carries across prev/next; the first
+  // unmute (or a drag to 0 then unmute) snaps to 50%.
+  video.addEventListener("volumechange", () => {
+    if (applying) return;
+    if (!video.muted && video.volume === 0) { video.volume = 0.5; return; }
+    prefMuted = video.muted;
+    prefVolume = video.volume === 0 ? 0.5 : video.volume;
+  });
+
+  vClose.addEventListener("click", (e) => { e.stopPropagation(); closeVideoLightbox(); });
+  vPrev.addEventListener("click", (e) => { e.stopPropagation(); navigate(-1); });
+  vNext.addEventListener("click", (e) => { e.stopPropagation(); navigate(1); });
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeVideoLightbox(); });
+
+  // Keep keyboard focus on the nav buttons, never the <video>: a focused video flashes
+  // its gray native-controls scrim on every arrow keypress. The user browses clips with
+  // ← →, so the buttons are the right focus target. Clicking the video (e.g. to pause)
+  // would otherwise focus it — bounce focus straight back to a button.
+  video.addEventListener("focus", () => {
+    if (overlay.classList.contains("isOpen") && videos.length > 1) vNext.focus();
+  });
+
+  // Keyboard nav hides the native controls (above); a mouse move restores them so the
+  // play/seek/fullscreen/PiP bar is one mouse twitch away when the user wants it.
+  overlay.addEventListener("mousemove", () => { if (!video.controls) video.controls = true; });
+
+  document.addEventListener("keydown", (e) => {
+    if (!overlay.classList.contains("isOpen")) return;
+    if (e.key === "Escape") {
+      // If the inner video is in its own native fullscreen, let Esc just exit that
+      // (the browser handles it) and keep the viewer open.
+      if (document.fullscreenElement) return;
+      closeVideoLightbox();
+    }
+    // Focus the matching nav button so the keypress lands on it, not the video, then
+    // drop the native controls outright — reloading the clip otherwise re-shows them
+    // (with the gray scrim) for the ~3s auto-hide timeout. A mousemove brings them back.
+    else if (e.key === "ArrowLeft") { e.preventDefault(); vPrev.focus(); navigate(-1); video.controls = false; }
+    else if (e.key === "ArrowRight") { e.preventDefault(); vNext.focus(); navigate(1); video.controls = false; }
+  });
+
+  return { openVideoLightbox };
 }

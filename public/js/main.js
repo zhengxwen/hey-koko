@@ -18,7 +18,7 @@ import { setRenderChat as translateSetRenderChat, stopTranslation } from './tran
 import { renderChat, sendMessage, setGenerating, regenerateReply, analyzeMedia, generateProactiveReply, markStopping, showSendError } from './chat.js';
 import { setDeps as urlFetchSetDeps, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
-import { initLightbox } from './lightbox.js';
+import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
 import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
@@ -2294,6 +2294,8 @@ initOllama();
 // Initialize lightbox
 const lightboxApi = initLightbox();
 state.openLightbox = lightboxApi.openLightbox;
+const videoLightboxApi = initVideoLightbox();
+state.openVideoLightbox = videoLightboxApi.openVideoLightbox;
 
 // Initialize archive
 initArchive();

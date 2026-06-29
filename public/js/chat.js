@@ -2581,6 +2581,9 @@ function loadVideoNow(video) {
   video.preload = "metadata"; // header only — the full clip decodes on play
   video.src = base64ToBlobUrl(stash.data, stash.mime);
 }
+// The fullscreen video viewer (lightbox.js) navigates across clips that may still
+// be lazy — let it force any source video's blob src in.
+state.loadVideoNow = loadVideoNow;
 
 function lazyLoadVideo(video, base64, mime) {
   video.preload = "none"; // nothing loads until it nears the viewport
@@ -2983,6 +2986,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       const vthumb = generatedVideoThumbnails && generatedVideoThumbnails[vi];
       if (vthumb) video.poster = vthumb.startsWith("data:") ? vthumb : `data:image/jpeg;base64,${vthumb}`;
       video.muted = true;
+      video.volume = 0.5; // unmuting (native control or our icon) restores to 50%, not 100%
       lazyLoadVideo(video, vData, vmime);
       // Only one video plays at a time — starting this one pauses the others.
       video.addEventListener("play", () => {
@@ -3020,7 +3024,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       });
       volIcon.addEventListener("click", () => {
         video.muted = !video.muted;
-        if (!video.muted && video.volume === 0) { video.volume = 1; }
+        if (!video.muted && video.volume === 0) { video.volume = 0.5; }
       });
       // Keep the slider/icon in sync whether the user uses this or the native bar.
       video.addEventListener("volumechange", () => {
@@ -3042,6 +3046,50 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       video.addEventListener("loadeddata", revealIfAudio);
       video.addEventListener("play", revealIfAudio);
       video.addEventListener("timeupdate", revealIfAudio);
+
+      // Fullscreen button (top-left) — opens the custom viewer with ‹ › prev/next
+      // across all the conversation's clips (native video fullscreen has no such nav).
+      const fsBtn = document.createElement("button");
+      fsBtn.className = "videoFullscreenBtn";
+      fsBtn.type = "button";
+      fsBtn.title = t("btn_fullscreenVideo");
+      fsBtn.setAttribute("aria-label", t("btn_fullscreenVideo"));
+      fsBtn.textContent = "⛶";
+      fsBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (state.openVideoLightbox) state.openVideoLightbox(video);
+      });
+      wrapper.appendChild(fsBtn);
+
+      // Picture-in-Picture button. WKWebView/Safari don't implement the standard
+      // requestPictureInPicture; they use the older webkitSetPresentationMode. We only
+      // show the button when WebKit actually reports PiP support, so a button that
+      // appears is a button that works (the native control's PiP can be flaky here).
+      const pipNative = typeof video.webkitSupportsPresentationMode === "function"
+        && video.webkitSupportsPresentationMode("picture-in-picture");
+      const pipStd = !!document.pictureInPictureEnabled;
+      if (pipNative || pipStd) {
+        const pipBtn = document.createElement("button");
+        pipBtn.className = "videoPipBtn";
+        pipBtn.type = "button";
+        pipBtn.title = t("btn_pipVideo");
+        pipBtn.setAttribute("aria-label", t("btn_pipVideo"));
+        pipBtn.textContent = "⧉";
+        pipBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          try {
+            if (pipNative && typeof video.webkitSetPresentationMode === "function") {
+              const inPip = video.webkitPresentationMode === "picture-in-picture";
+              video.webkitSetPresentationMode(inPip ? "inline" : "picture-in-picture");
+            } else if (document.pictureInPictureElement === video) {
+              await document.exitPictureInPicture();
+            } else {
+              await video.requestPictureInPicture();
+            }
+          } catch { /* user gesture / state issues — ignore */ }
+        });
+        wrapper.appendChild(pipBtn);
+      }
 
       // Delete button (top-right) — removes just this video from the message.
       // User-bubble videos are uploads the message depends on, so they're not
