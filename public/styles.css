@@ -3598,6 +3598,26 @@ button.secondary:disabled {
   pointer-events: auto;
 }
 
+/* Filename caption at the top of the image/video lightboxes. */
+.imageLightboxCaption,
+.videoLightboxCaption {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(70vw, 640px);
+  padding: 6px 14px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none; /* never intercept clicks meant for close/backdrop */
+  z-index: 2;
+}
+
 .imageLightbox img {
   max-width: 90vw;
   max-height: 90vh;
@@ -4851,14 +4871,17 @@ button.secondary:disabled {
    (same idiom as .archivePreviewMsg.user) — margin-left:auto is unreliable here. */
 .libDocBlockUser { align-self: flex-end; max-width: 82%; background: var(--user-bubble); border: 1px solid var(--user-bubble-border); padding: 6px 12px; border-radius: 12px; margin-top: 6px; margin-bottom: 6px; }
 .libDocBlockUser .markdownBody:hover { background: transparent; }
-.libraryScopeLabel { display: flex; align-items: center; gap: 4px; font-size: 0.82em; white-space: nowrap; opacity: 0.85; cursor: pointer; }
+.libraryScopeLabel { display: inline-flex; align-self: flex-start; align-items: center; gap: 4px; font-size: 0.82em; white-space: nowrap; opacity: 0.85; cursor: pointer; }
+/* the global `input{width:100%}` rule (≈L843) otherwise stretches the checkbox and
+   shoves the label text to the far right — pin it to its natural size, like .checkboxLabel */
+.libraryScopeLabel input[type="checkbox"] { width: auto; flex: none; margin: 0; accent-color: var(--accent); }
 .libraryScopeLabel input[disabled] { opacity: 0.4; cursor: not-allowed; }
 .libraryDocToolbar { display: flex; gap: 8px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .libraryDocToolbar button { font-size: 0.82em; padding: 4px 10px; }
 .libraryMetaPopup { flex-direction: column; padding: 12px; min-width: 300px; max-height: none; }
 .libMetaRow { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
 .libMetaRow span { font-size: 0.76em; opacity: 0.7; }
-.libMetaRow input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; width: 100%; box-sizing: border-box; }
+.libMetaRow input, .libMetaRow select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; width: 100%; box-sizing: border-box; background: var(--card, #fff); cursor: pointer; }
 .libMetaSave { align-self: flex-end; padding: 6px 16px; border: none; border-radius: 8px; background: var(--accent, #6c8ebf); color: #fff; cursor: pointer; }
 .libraryMarkdownEditor { width: 100%; min-height: 60vh; padding: 12px; border: 1px solid var(--line); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; line-height: 1.55; box-sizing: border-box; resize: vertical; }
 .librarySources { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }

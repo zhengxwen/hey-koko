@@ -3,7 +3,7 @@
 
 // Archive and retrieve functionality
 import { dom, state } from './state.js';
-import { escapeHtml } from './utils.js';
+import { escapeHtml, mediaFilename } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { saveTabs } from './settings.js';
 import { getActiveTab, createTab, closeTab, switchTab, renderTabs } from './tabs.js';
@@ -40,9 +40,8 @@ export function initArchive() {
     const img = e.target.closest(".messageImage, .generatedImage");
     if (!img || !state.openLightbox) return;
     e.stopPropagation();
-    const allImgs = archivePreviewContent.querySelectorAll(".messageImage, .generatedImage");
-    const srcs = Array.from(allImgs).map(i => i.src);
-    state.openLightbox(img.src, srcs);
+    const allImgs = Array.from(archivePreviewContent.querySelectorAll(".messageImage, .generatedImage"));
+    state.openLightbox(img.src, allImgs.map(i => i.src), allImgs.map(i => i.dataset.filename || ""));
   });
 
   let archivesData = [];
@@ -534,9 +533,10 @@ export function initArchive() {
               ? [msg.previewImage]
               : ((msg.contextImages || msg.images)?.length ? (msg.contextImages || msg.images) : null);
         if (previews) {
-          const imgs = previews.map(p => {
+          const imgs = previews.map((p, i) => {
             const src = p.startsWith("data:") ? p : `data:image/jpeg;base64,${p}`;
-            return `<img class="messageImage" src="${src}" alt="图片" />`;
+            const fn = mediaFilename(null, msg.timestamp, "image", "jpg", i, previews.length);
+            return `<img class="messageImage" data-filename="${escapeHtml(fn)}" src="${src}" alt="图片" />`;
           }).join("");
           // Multiple images share the equal-height flex row (same as live chat).
           imageHtml = previews.length > 1 ? `<div class="messageImages">${imgs}</div>` : imgs;
@@ -553,16 +553,18 @@ export function initArchive() {
                 : null;
         let genImageHtml = "";
         if (genImgs && genImgs.length > 0) {
-          const items = genImgs.map(img => {
+          const items = genImgs.map((img, i) => {
             if (!img || img.length < 100) return "";
-            let src;
-            if (img.startsWith("data:")) src = img;
+            let src, ext = "png";
+            if (img.startsWith("data:")) { src = img; ext = /jpe?g/.test(img.slice(0, 20)) ? "jpg" : "png"; }
             else if (img.startsWith("http")) src = img;
             else {
-              const mime = img.startsWith("/9j/") ? "image/jpeg" : "image/png";
-              src = `data:${mime};base64,${img}`;
+              const isJpg = img.startsWith("/9j/");
+              src = `data:${isJpg ? "image/jpeg" : "image/png"};base64,${img}`;
+              ext = isJpg ? "jpg" : "png";
             }
-            return `<img class="generatedImage" src="${src}" alt="AI 生成的图片" />`;
+            const fn = mediaFilename(null, msg.timestamp, "image", ext, i, genImgs.length);
+            return `<img class="generatedImage" data-filename="${escapeHtml(fn)}" src="${src}" alt="AI 生成的图片" />`;
           }).join("");
           if (items) genImageHtml = `<div class="imageGrid">${items}</div>`;
         }

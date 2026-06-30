@@ -122,7 +122,11 @@ function docToBlockMessages(doc) {
       msg.libraryKind = b.kind || "text";
       if (b.section) msg.librarySection = b.section;
     }
-    if (b.image) { msg.generatedImages = [b.image]; msg.imageMime = b.imageMime || "image/png"; }
+    if (b.image) {
+      msg.generatedImages = [b.image];
+      msg.imageMime = b.imageMime || "image/png";
+      if (b.imageName) msg.generatedImageNames = [b.imageName];   // original filename → download/lightbox
+    }
     return msg;
   });
 }
@@ -168,7 +172,7 @@ export async function writeTabToLibrary(tab) {
     .filter((m) => (m.content && m.content.trim()) || (m.generatedImages && m.generatedImages.length))
     .map((m, i) => {
       const b = { id: `b${i}`, role: m.role, section: m.librarySection || "", content: m.content || "" };
-      const addImg = () => { if (m.generatedImages && m.generatedImages[0]) { b.image = m.generatedImages[0]; b.imageMime = m.imageMime || "image/png"; } };
+      const addImg = () => { if (m.generatedImages && m.generatedImages[0]) { b.image = m.generatedImages[0]; b.imageMime = m.imageMime || "image/png"; if (m.generatedImageNames && m.generatedImageNames[0]) b.imageName = m.generatedImageNames[0]; } };
       if (m.isLibraryBlock) {
         b.kind = m.libraryKind || "text"; b.embed = true; addImg();
       } else if (m.role === "user" && /^\/note\s/.test(m.content || "")) {
@@ -291,13 +295,21 @@ export function initLibrary() {
 
   const setStatus = (s) => { statusEl.textContent = s || ""; };
 
-  // ---- open / close ----
-  openBtn.addEventListener("click", () => {
-    overlay.classList.add("isOpen");
-    preview.classList.remove("isOpen");   // reset right pane to empty state
+  // Reset the right pane to its empty state (on panel open, and after the shown doc is deleted).
+  const clearPreview = () => {
+    currentDoc = null;
+    previewContent.innerHTML = "";
+    previewTitle.textContent = "";
+    preview.classList.remove("isOpen");
     previewEmpty.style.display = "";
     askScoped.checked = false;
     askScoped.disabled = true;
+  };
+
+  // ---- open / close ----
+  openBtn.addEventListener("click", () => {
+    overlay.classList.add("isOpen");
+    clearPreview();   // reset right pane to empty state
     refreshList();
   });
   closeBtn.addEventListener("click", () => overlay.classList.remove("isOpen"));
@@ -500,6 +512,7 @@ export function initLibrary() {
     // heading appears once when it changes; each block stays individually
     // double-click-editable and scroll-targetable for source citations.
     let lastSection = null;
+    let figNo = 0; // sequential figure number → image_NN.ext when no original name
     doc.blocks.forEach((b, idx) => {
       if (b.section && b.section !== lastSection) {
         const h = document.createElement("h3");
@@ -514,8 +527,13 @@ export function initLibrary() {
       div.className = "libDocBlock" + (b.role === "user" ? " libDocBlockUser" : "");
       div.id = `lib-block-${b.id}`;
       if (b.kind === "figure" && b.image) {
+        // Filename-style label for the lightbox/download: the original image name when
+        // known, else a sequential figure_NN.ext.
+        figNo++;
+        const ext = (b.imageMime || "image/png").includes("jpeg") ? "jpg" : "png";
+        const figName = b.imageName || `figure_${String(figNo).padStart(2, "0")}.${ext}`;
         div.innerHTML =
-          `<img class="generatedImage" src="data:${b.imageMime || "image/png"};base64,${b.image}" alt="figure" />` +
+          `<img class="generatedImage" data-filename="${escapeHtml(figName)}" src="data:${b.imageMime || "image/png"};base64,${b.image}" alt="figure" />` +
           (b.content ? `<div class="libraryFigCaption">${escapeHtml(b.content)}</div>` : "");
       } else {
         div.innerHTML = `<div class="markdownBody">${markdownToHtml(b.content || "")}</div>`;
@@ -628,7 +646,28 @@ export function initLibrary() {
       popup.appendChild(r);
       return inp;
     };
+    // docKind is an enum → a <select> (so a mis-classified type, e.g. slides read as
+    // paper, can be corrected; the preview/list icon follows it via kindIcon).
+    const mkSelectRow = (labelText, value, options) => {
+      const r = document.createElement("div");
+      r.className = "libMetaRow";
+      const span = document.createElement("span");
+      span.textContent = labelText;
+      const sel = document.createElement("select");
+      options.forEach(([val, label]) => {
+        const opt = document.createElement("option");
+        opt.value = val; opt.textContent = label;
+        if ((value || "doc") === val) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      r.appendChild(span); r.appendChild(sel); popup.appendChild(r);
+      return sel;
+    };
     const titleInp = mkRow(t("lib_metaTitle"), doc.title);
+    const kindSel = mkSelectRow(t("lib_metaKind"), doc.docKind, [
+      ["paper", t("lib_kindPaper")], ["slides", t("lib_kindSlides")],
+      ["blog", t("lib_kindBlog")], ["doc", t("lib_kindDoc")], ["other", t("lib_kindOther")],
+    ]);
     const authorsInp = mkRow(t("lib_metaAuthors"), doc.authors);
     const yearInp = mkRow(t("lib_metaYear"), doc.year);
     const tagsInp = mkRow(t("lib_metaTags"), (doc.tags || []).map((tg) => tg.name).join(", "));
@@ -649,6 +688,7 @@ export function initLibrary() {
 
     saveBtn.addEventListener("click", async () => {
       doc.title = titleInp.value.trim() || doc.title;
+      doc.docKind = kindSel.value;
       doc.authors = authorsInp.value.trim();
       doc.year = yearInp.value.trim();
       doc.tags = tagsInp.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean).map((name) => ({ name, color: tagColor(name) }));
@@ -757,10 +797,13 @@ export function initLibrary() {
   deleteBtn.addEventListener("click", async () => {
     if (!selected.size) return;
     if (!confirm(t("lib_confirmDelete", { n: selected.size }))) return;
+    const deletedIds = new Set(selected);
     await postJson("/api/library/delete", { docIds: [...selected] });
     selected.clear();
     deleteBtn.disabled = true;
     setStatus("");
+    // If the doc shown in the preview was just deleted, clear the right pane.
+    if (currentDoc && deletedIds.has(currentDoc.docId)) clearPreview();
     await refreshList();
   });
 
@@ -769,8 +812,8 @@ export function initLibrary() {
     const img = e.target.closest(".generatedImage");
     if (!img || !state.openLightbox) return;
     e.stopPropagation();
-    const all = previewContent.querySelectorAll(".generatedImage");
-    state.openLightbox(img.src, Array.from(all).map((i) => i.src));
+    const all = Array.from(previewContent.querySelectorAll(".generatedImage"));
+    state.openLightbox(img.src, all.map((i) => i.src), all.map((i) => i.dataset.filename || ""));
   });
 
   // ---- draggable divider between list and preview (same as archive panel) ----

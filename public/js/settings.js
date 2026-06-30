@@ -89,6 +89,9 @@ function saveChatMessage(message) {
   if (message.generatedImages && message.generatedImages.length > 0) {
     stored.generatedImages = message.generatedImages;
   }
+  if (message.generatedImageNames && message.generatedImageNames.length > 0) {
+    stored.generatedImageNames = message.generatedImageNames;
+  }
   if (message.generatedVideos && message.generatedVideos.length > 0) {
     stored.generatedVideos = message.generatedVideos;
     stored.videoMime = message.videoMime || "video/mp4";

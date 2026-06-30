@@ -17,7 +17,8 @@ const { embedBatch, cosine, hashText, DEFAULT_MODEL } = require("./embed");
 const HAS_ZSTD = typeof zlib.zstdCompressSync === "function";
 const LIBRARY_DIR = path.join(os.homedir(), "ai_library");
 const DOC_EXT = HAS_ZSTD ? ".json.zst" : ".json.gz";
-const MAX_BLOCK_CHARS = 4000;     // one section = one block; only split a genuinely huge section
+const MAX_BLOCK_CHARS = 32000;    // one section = one block; only split a genuinely huge section
+                                  // (qwen3-embedding handles ~32k tokens; 32k chars ≈ 8k tokens, still within)
 const MIN_BLOCK_CHARS = 16;       // drop noise blocks (stray tags, page numbers) below this
 const EMBED_BATCH = 8;
 
@@ -124,29 +125,44 @@ function splitIntoBlocks(text, images) {
   const imgByName = new Map((images || []).map(im => [im.name, im]));
   const lines = (text || "").split(/\r?\n/);
   const blocks = [];
-  let section = "", para = [], bid = 0;
+  let section = "", para = [], bid = 0, sectionFigs = [];
 
-  // One section = one text block (paragraphs, lists, tables all accumulate);
-  // only a genuinely huge section gets split (splitLong) to avoid embed truncation.
+  // Figures found inside a section are deferred and flushed right AFTER its text,
+  // so an interspersed figure never breaks the section's prose into separate chunks.
+  const flushFigs = () => {
+    for (const fig of sectionFigs) { fig.id = `b${bid++}`; blocks.push(fig); }
+    sectionFigs = [];
+  };
+  // One section = one text block: all paragraphs/lists/tables accumulate (across any
+  // figures), and only a genuinely huge section gets split (splitLong) to avoid embed
+  // truncation. Then the section's figures follow as their own blocks.
   const emit = () => {
     const content = para.join("\n").trim();
     para = [];
-    if (!content || isNoiseBlock(content)) return;
-    for (const piece of splitLong(content)) blocks.push({ id: `b${bid++}`, kind: "text", section, content: piece, hash: hashText(piece) });
+    if (content && !isNoiseBlock(content)) {
+      for (const piece of splitLong(content)) blocks.push({ id: `b${bid++}`, kind: "text", section, content: piece, hash: hashText(piece) });
+    }
+    flushFigs();
   };
 
   for (const raw of lines) {
     const line = stripNoiseTags(raw);
     const h = line.match(/^(#{1,6})\s+(.*)/);
-    if (h) { emit(); section = h[2].trim(); continue; }   // section boundary → flush the block
+    if (h) {
+      const name = h[2].trim();
+      if (name === section) continue;        // duplicate heading (MinerU repeats it across columns/pages) → stay in one block
+      emit(); section = name; continue;      // real section boundary → flush text + its figures
+    }
     const img = raw.match(/!\[[^\]]*\]\((image_\d+\.\w+)\)/);
     if (img) {
-      emit();   // figure is its own block (carries the inline image)
+      // figure is its own block (carries the inline image) but is DEFERRED, not emitted
+      // inline — so it doesn't split the surrounding prose.
       const im = imgByName.get(img[1]);
       const caption = raw.replace(/!\[[^\]]*\]\([^)]*\)/, "").trim();
-      const block = { id: `b${bid++}`, kind: "figure", section, content: caption || img[1], hash: hashText(img[1] + caption) };
-      if (im) { block.image = im.base64; block.imageMime = im.mime; }
-      blocks.push(block);
+      // keep the original image filename (e.g. image_01.jpg) so downloads/lightbox use it
+      const fig = { kind: "figure", section, content: caption || img[1], imageName: img[1], hash: hashText(img[1] + caption) };
+      if (im) { fig.image = im.base64; fig.imageMime = im.mime; }
+      sectionFigs.push(fig);
       continue;
     }
     para.push(line.trim() === "" ? "" : line);   // accumulate everything else into the section block

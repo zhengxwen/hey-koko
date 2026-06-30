@@ -4,7 +4,7 @@
 // Chat rendering, message handling, and sending
 import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState } from './state.js';
 import { TAG_COLORS } from './constants.js';
-import { escapeHtml, formatTimestamp, formatDuration } from './utils.js';
+import { escapeHtml, formatTimestamp, formatDuration, mediaFilename } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
 import { setAvatarState, showExpression, detectExpression } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
@@ -2525,20 +2525,8 @@ function imageExtFromSrc(src) {
 }
 
 // "YYYYMMDD-HHMMSS" from a timestamp (ms; now if absent) for default filenames.
-function timestampStamp(ts) {
-  const d = ts ? new Date(ts) : new Date();
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-}
-
-// Default download filename when the media has no name of its own: the owning
-// message's timestamp + kind (+ index when the message holds several), e.g.
-// "20260620-130910-image.png". `name`, if given, wins (kept with its extension).
-function mediaFilename(name, ts, kind, ext, idx, count) {
-  if (name) return /\.[a-z0-9]+$/i.test(name) ? name : `${name}.${ext}`;
-  const suffix = count > 1 ? `-${idx + 1}` : "";
-  return `${timestampStamp(ts)}-${kind}${suffix}.${ext}`;
-}
+// timestampStamp + mediaFilename now live in utils.js (shared with archive/library
+// so their lightbox captions use the same names).
 
 // The small bottom-right "download" overlay shared by image/video previews.
 // The tooltip (title + aria-label) carries the filename and, when known, size.
@@ -2860,6 +2848,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
             : `data:${full.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${full}`)
         : src;
       const fname = mediaFilename(imageNames?.[imgIdx], timestamp, "image", imageExtFromSrc(dlSrc), imgIdx, previews.length);
+      image.dataset.filename = fname; // shown as the lightbox caption
       wrapper.appendChild(makeDownloadButton("imageDownloadBtn", dlSrc, fname, base64ByteLength(dlSrc), t("btn_downloadImage")));
       // Inpaint mask: on a SINGLE-image USER bubble, when a mask-capable ComfyUI
       // model is selected, float a 🖌 button (top-right) to paint/edit the region.
@@ -3028,7 +3017,11 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         }
         // Download button (bottom-right) — full-res src when available.
         const dlSrc = img.dataset.fullSrc || img.src;
-        const iname = mediaFilename(null, timestamp, "image", imageExtFromSrc(dlSrc), i, validImages.length);
+        // Library figure bubbles carry the original image filename (image_01.jpg);
+        // use it for the download/lightbox name, else fall back to a timestamp default.
+        const gimgName = Number.isInteger(index) ? getActiveTab().messages[index]?.generatedImageNames?.[i] : null;
+        const iname = mediaFilename(gimgName || null, timestamp, "image", imageExtFromSrc(dlSrc), i, validImages.length);
+        img.dataset.filename = iname; // shown as the lightbox caption
         wrapper.appendChild(makeDownloadButton("imageDownloadBtn", dlSrc, iname, base64ByteLength(dlSrc), t("btn_downloadImage")));
         grid.appendChild(wrapper);
       }
@@ -3193,6 +3186,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       const msg = Number.isInteger(index) ? getActiveTab().messages[index] : null;
       const uploadedName = msg ? (Array.isArray(msg.videoNames) ? msg.videoNames[vi] : (generatedVideos.length === 1 ? msg.videoName : null)) : null;
       const vname = mediaFilename(uploadedName || null, timestamp, "video", vext, vi, generatedVideos.length);
+      video.dataset.filename = vname; // shown as the lightbox caption
       // Lazy href: reuses the already-loaded blob URL if the video is loaded,
       // else builds one on demand (see makeDownloadButton) — avoids decoding the
       // clip at render time just to populate the link.

@@ -8,13 +8,43 @@ import { getActiveTab } from './tabs.js';
 export function initLightbox() {
   const lightbox = document.createElement("div");
   lightbox.className = "imageLightbox";
-  lightbox.innerHTML = `<button class="imageLightboxClose" aria-label="关闭">×</button><button class="imageLightboxNav imageLightboxPrev" aria-label="上一张">‹</button><button class="imageLightboxNav imageLightboxNext" aria-label="下一张">›</button><img />`;
+  lightbox.innerHTML = `<div class="imageLightboxCaption"></div><button class="imageLightboxClose" aria-label="关闭">×</button><button class="imageLightboxNav imageLightboxPrev" aria-label="上一张">‹</button><button class="imageLightboxNav imageLightboxNext" aria-label="下一张">›</button><img />`;
   document.body.appendChild(lightbox);
 
   const lbImg = lightbox.querySelector("img");
+  const lbCaption = lightbox.querySelector(".imageLightboxCaption");
   const lbClose = lightbox.querySelector(".imageLightboxClose");
   const lbPrev = lightbox.querySelector(".imageLightboxPrev");
   const lbNext = lightbox.querySelector(".imageLightboxNext");
+
+  // The filename shown at the top. Chat media carries it in data-filename (the same
+  // name the download button uses); archive/library pass real srcs, so fall back to
+  // the URL basename. Data/blob URLs have no meaningful name → no caption.
+  function basenameFromUrl(src) {
+    if (!src || src.startsWith("data:") || src.startsWith("blob:")) return "";
+    try { return decodeURIComponent(src.split(/[?#]/)[0].split("/").pop() || ""); } catch { return ""; }
+  }
+  function updateCaption() {
+    let name = "", total = 0;
+    if (externalSrcs) {
+      total = externalSrcs.length;
+      // Archive/library pass their own names aligned with the srcs — use those
+      // directly (a document-wide src search can mis-hit the same image elsewhere).
+      // Fall back to the URL basename when no name was supplied.
+      name = (externalNames && externalNames[currentImageIndex])
+        || basenameFromUrl(externalSrcs[currentImageIndex]);
+    } else {
+      const els = dom.messagesEl.querySelectorAll(".messageImage, .generatedImage");
+      total = els.length;
+      name = els[currentImageIndex]?.dataset.filename || "";
+    }
+    // The position always changes on navigation — useful on its own, and it makes a
+    // colliding/identical filename obviously not "frozen".
+    const pos = total > 1 ? `${currentImageIndex + 1}/${total}` : "";
+    const label = [name, pos].filter(Boolean).join("　·　");
+    lbCaption.textContent = label;
+    lbCaption.style.display = label ? "" : "none";
+  }
 
   let scale = 1;
   let translateX = 0;
@@ -40,6 +70,7 @@ export function initLightbox() {
 
   let currentImageIndex = -1;
   let externalSrcs = null;
+  let externalNames = null; // filenames aligned with externalSrcs (archive/library)
 
   function getAllImageSrcs() {
     if (externalSrcs) return externalSrcs;
@@ -67,8 +98,9 @@ export function initLightbox() {
     return srcs;
   }
 
-  function openLightbox(src, srcs) {
+  function openLightbox(src, srcs, names) {
     externalSrcs = srcs || null;
+    externalNames = names || null;
     lbImg.src = src;
     resetView();
     const allSrcs = getAllImageSrcs();
@@ -90,6 +122,7 @@ export function initLightbox() {
     const showNav = allSrcs.length > 1;
     lbPrev.style.display = showNav ? "" : "none";
     lbNext.style.display = showNav ? "" : "none";
+    updateCaption();
     lightbox.classList.add("isOpen");
   }
 
@@ -100,12 +133,14 @@ export function initLightbox() {
     currentImageIndex = (currentImageIndex + direction + allSrcs.length) % allSrcs.length;
     lbImg.src = allSrcs[currentImageIndex];
     resetView();
+    updateCaption();
   }
 
   function closeLightbox() {
     lightbox.classList.remove("isOpen");
     resetView();
     externalSrcs = null;
+    externalNames = null;
   }
 
   lbClose.addEventListener("click", (e) => { e.stopPropagation(); closeLightbox(); });
@@ -249,7 +284,7 @@ export function initLightbox() {
 export function initVideoLightbox() {
   const overlay = document.createElement("div");
   overlay.className = "videoLightbox";
-  overlay.innerHTML = `<button class="videoLightboxClose" aria-label="关闭">×</button><button class="videoLightboxNav videoLightboxPrev" aria-label="上一个">‹</button><button class="videoLightboxNav videoLightboxNext" aria-label="下一个">›</button>`;
+  overlay.innerHTML = `<div class="videoLightboxCaption"></div><button class="videoLightboxClose" aria-label="关闭">×</button><button class="videoLightboxNav videoLightboxPrev" aria-label="上一个">‹</button><button class="videoLightboxNav videoLightboxNext" aria-label="下一个">›</button>`;
   const video = document.createElement("video");
   video.className = "videoLightboxVideo";
   video.controls = true;
@@ -260,6 +295,7 @@ export function initVideoLightbox() {
   overlay.appendChild(video);
   document.body.appendChild(overlay);
 
+  const vCaption = overlay.querySelector(".videoLightboxCaption");
   const vClose = overlay.querySelector(".videoLightboxClose");
   const vPrev = overlay.querySelector(".videoLightboxPrev");
   const vNext = overlay.querySelector(".videoLightboxNext");
@@ -285,6 +321,11 @@ export function initVideoLightbox() {
     currentIndex = i;
     // The source clip may still be lazy (off-screen) — force its blob src in.
     if (state.loadVideoNow) state.loadVideoNow(srcVideo);
+    const name = srcVideo.dataset.filename || "";
+    const pos = videos.length > 1 ? `${i + 1}/${videos.length}` : "";
+    const label = [name, pos].filter(Boolean).join("　·　");
+    vCaption.textContent = label;
+    vCaption.style.display = label ? "" : "none";
     video.poster = srcVideo.poster || "";
     video.src = srcVideo.currentSrc || srcVideo.src || "";
     applyVolume();

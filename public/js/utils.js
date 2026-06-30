@@ -29,6 +29,21 @@ export function formatTimestamp(ts) {
   return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+// Download/caption filename for a piece of media: the owning message's timestamp +
+// kind (+ index when the message holds several), e.g. "20260620-130910-image.png".
+// A given `name` (e.g. an uploaded file's own name) wins, kept with its extension.
+export function timestampStamp(ts) {
+  const d = ts ? new Date(ts) : new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+export function mediaFilename(name, ts, kind, ext, idx, count) {
+  if (name) return /\.[a-z0-9]+$/i.test(name) ? name : `${name}.${ext}`;
+  const suffix = count > 1 ? `-${idx + 1}` : "";
+  return `${timestampStamp(ts)}-${kind}${suffix}.${ext}`;
+}
+
 export function formatDuration(ms) {
   if (!ms || ms < 0) return "";
   if (ms < 1000) return `${ms}ms`;
