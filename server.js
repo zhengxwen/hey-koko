@@ -25,7 +25,7 @@ const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
 const { listSystemVoices, speak, stopSay } = require("./server/speech");
 const { listTtsVoices, synthesize } = require("./server/tts");
 const { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives } = require("./server/archive");
-const { importLibrary, listLibrary, searchLibrary, getLibraryDoc, saveLibraryDoc, deleteLibraryDocs, retrieveLibrary } = require("./server/library");
+const { importLibrary, listLibrary, searchLibrary, getLibraryDoc, saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary } = require("./server/library");
 const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file");
 const bgQueue = require("./server/jobs");   // Option B: server-side background job queue
 
@@ -269,6 +269,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/library/retrieve") {
     retrieveLibrary(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/library/reparse") {
+    reparseLibrary(req, res);
     return;
   }
 

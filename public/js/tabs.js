@@ -246,6 +246,9 @@ function startTabRename(tab) {
   input.className = "tabRenameInput";
   input.type = "text";
   input.value = tab.title;
+  // Size the field to the name's length so the tab grows to fit it instead of
+  // collapsing to the input's default ~20-char width (which shrinks long tabs).
+  input.size = Math.min(Math.max((tab.title || "").length + 1, 12), 60);
   input.addEventListener("blur", () => finishRename(tab, input));
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); input.blur(); }
@@ -253,6 +256,7 @@ function startTabRename(tab) {
   });
   input.addEventListener("input", () => {
     if (/[\r\n]/.test(input.value)) input.value = input.value.replace(/[\r\n]+/g, ' ');
+    input.size = Math.min(Math.max(input.value.length + 1, 12), 60);
   });
   input.addEventListener("click", (e) => e.stopPropagation());
   targetContent.replaceChild(input, liveTitle);

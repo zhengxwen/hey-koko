@@ -10,6 +10,7 @@ import { dom, state } from './state.js';
 import { escapeHtml } from './utils.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './markdown.js';
 import { saveTabs } from './settings.js';
+import { createTab, switchTab } from './tabs.js';
 import { t } from './i18n.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", doc: "📝", other: "📎" };
@@ -53,7 +54,7 @@ async function postJson(url, body) {
 // per line, {message:{content},done}) — same format chat.js consumes.
 async function runLibraryQuery(query, { docId = null, onToken = null } = {}) {
   const { hits, images } = await postJson("/api/library/retrieve", {
-    query, model: embedModel(), docId, topK: 8, attachImages: true, maxImages: 3,
+    query, model: embedModel(), docId, topK: 6, attachImages: true, maxImages: 3,
   });
   if (!hits || !hits.length) return { answer: t("lib_noResults"), hits: [] };
 
@@ -100,6 +101,94 @@ function sourcesMarkdown(hits) {
   if (!hits || !hits.length) return "";
   return `\n\n---\n**${t("lib_sources")}**\n` + hits.map((h, i) =>
     `${i + 1}. ${kindIcon(h.docKind)} ${h.title}${h.section ? " · " + h.section : ""}`).join("\n");
+}
+
+// Turn each library block into its OWN assistant chat bubble: text → content,
+// figure → caption in content + image in generatedImages. Block metadata rides
+// along (isLibraryBlock/libraryKind/librarySection) so the tab can be written
+// back to the library later. Reuses normal-tab edit/delete/reorder as-is.
+function docToBlockMessages(doc) {
+  return (doc.blocks || []).map((b) => {
+    const msg = { id: genId(), role: b.role || "assistant", content: b.content || "", timestamp: Date.now() };
+    if (b.kind === "note") {
+      // restore as a /note user bubble so it stays a (vectorized) note on write-back
+      msg.role = "user";
+      msg.content = `/note ${b.content || ""}`;
+    } else if (b.kind === "user" || b.kind === "reply") {
+      // plain conversation bubble — kept in the doc but not vectorized; role/content as-is
+    } else {
+      // original document chunk (text/figure/table) → re-marked for chunk write-back
+      msg.isLibraryBlock = true;
+      msg.libraryKind = b.kind || "text";
+      if (b.section) msg.librarySection = b.section;
+    }
+    if (b.image) { msg.generatedImages = [b.image]; msg.imageMime = b.imageMime || "image/png"; }
+    return msg;
+  });
+}
+
+// A block is a "conversation/annotation" turn (question, reply, or /note),
+// NOT part of the document body. These must never be flattened into the markdown
+// editor or re-chunked — they carry a role and render as chat bubbles.
+function isConversationBlock(b) {
+  return b && (b.kind === "user" || b.kind === "reply" || b.kind === "note");
+}
+
+// Rebuild the full markdown of a doc (for the markdown editor) and collect its
+// images so the edited markdown can be re-chunked server-side. ONLY the document
+// body is rebuilt — conversation bubbles are excluded so editing/re-chunking the
+// article never destroys the conversation (server re-appends it on reparse).
+function docToMarkdown(doc) {
+  let md = "", lastSec = null, ic = 0;
+  const images = [];
+  for (const b of (doc.blocks || [])) {
+    if (isConversationBlock(b)) continue;   // keep Q&A/notes out of the markdown editor
+    if (b.section && b.section !== lastSec) { md += `\n# ${b.section}\n\n`; lastSec = b.section; }
+    if (b.kind === "figure") {
+      ic++;
+      const ext = (b.imageMime || "image/png").includes("jpeg") ? "jpg" : "png";
+      const name = `image_${String(ic).padStart(2, "0")}.${ext}`;
+      md += `![](${name})\n\n`;
+      if (b.image) images.push({ name, base64: b.image, mime: b.imageMime || "image/png" });
+    } else {
+      md += (b.content || "") + "\n\n";
+    }
+  }
+  return { md: md.trim(), images };
+}
+
+// Rebuild a library doc from a special tab's chunk bubbles (current bubble order
+// = new block order; deleted bubbles drop out; edited content/images carry over)
+// and save. Non-chunk bubbles (user questions, plain AI replies) are ignored.
+export async function writeTabToLibrary(tab) {
+  // ALL bubbles are written back (chunks + questions + replies + notes), preserving
+  // role and order. Only original chunks (isLibraryBlock) and /note user bubbles are
+  // vectorized (embed:true); plain conversation bubbles are stored but not retrievable.
+  const blocks = tab.messages
+    .filter((m) => (m.content && m.content.trim()) || (m.generatedImages && m.generatedImages.length))
+    .map((m, i) => {
+      const b = { id: `b${i}`, role: m.role, section: m.librarySection || "", content: m.content || "" };
+      const addImg = () => { if (m.generatedImages && m.generatedImages[0]) { b.image = m.generatedImages[0]; b.imageMime = m.imageMime || "image/png"; } };
+      if (m.isLibraryBlock) {
+        b.kind = m.libraryKind || "text"; b.embed = true; addImg();
+      } else if (m.role === "user" && /^\/note\s/.test(m.content || "")) {
+        b.kind = "note"; b.embed = true;
+        b.content = m.content.replace(/^\/note\s+/, "").trim();
+      } else {
+        b.kind = m.role === "user" ? "user" : "reply"; b.embed = false; addImg();
+      }
+      return b;
+    });
+  let meta = tab.libraryMeta || {};
+  try { const r = await postJson("/api/library/get", { docId: tab.libraryDocId }); if (r && r.doc) meta = r.doc; } catch {}
+  const doc = {
+    type: "libdoc", schemaVersion: 1,
+    docKind: meta.docKind || "doc", docId: tab.libraryDocId,
+    source: meta.source || "", title: meta.title || tab.libraryDocId,
+    authors: meta.authors || "", year: meta.year || "", tags: meta.tags || [],
+    blocks,
+  };
+  return postJson("/api/library/save", { doc, model: embedModel() });
 }
 
 // Extract the first JSON object from loose LLM output (may be fenced/prefixed).
@@ -388,6 +477,24 @@ export function initLibrary() {
       openDoc(doc.docId);
     });
     bar.appendChild(reBtn);
+    const toChatBtn = document.createElement("button");
+    toChatBtn.type = "button";
+    toChatBtn.className = "secondary";
+    toChatBtn.textContent = t("lib_importToChat");
+    toChatBtn.addEventListener("click", () => importDocAsTab(doc));
+    bar.appendChild(toChatBtn);
+    const metaBtn = document.createElement("button");
+    metaBtn.type = "button";
+    metaBtn.className = "secondary";
+    metaBtn.textContent = t("lib_editMeta");
+    metaBtn.addEventListener("click", () => editDocMeta(doc, metaBtn));
+    bar.appendChild(metaBtn);
+    const editMdBtn = document.createElement("button");
+    editMdBtn.type = "button";
+    editMdBtn.className = "secondary";
+    editMdBtn.textContent = t("lib_editMarkdown");
+    editMdBtn.addEventListener("click", () => editDocMarkdown(doc));
+    bar.appendChild(editMdBtn);
     previewContent.appendChild(bar);
     // Render as one continuous markdown article (NOT chat bubbles): a section
     // heading appears once when it changes; each block stays individually
@@ -404,7 +511,7 @@ export function initLibrary() {
         lastSection = b.section;
       }
       const div = document.createElement("div");
-      div.className = "libDocBlock";
+      div.className = "libDocBlock" + (b.role === "user" ? " libDocBlockUser" : "");
       div.id = `lib-block-${b.id}`;
       if (b.kind === "figure" && b.image) {
         div.innerHTML =
@@ -482,6 +589,114 @@ export function initLibrary() {
         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); finish(true); }
       });
     });
+  }
+
+  // ---- import the current doc as a special editable tab (one bubble per chunk) ----
+  function importDocAsTab(doc) {
+    const messages = docToBlockMessages(doc);
+    const tab = createTab(`📄 ${doc.title}`, messages);
+    tab.libraryDocId = doc.docId;   // marks this tab as a library doc → archive writes it back
+    tab.libraryMeta = {
+      type: doc.type, schemaVersion: doc.schemaVersion, docKind: doc.docKind,
+      source: doc.source, title: doc.title, authors: doc.authors, year: doc.year, tags: doc.tags,
+    };
+    state.tabs.unshift(tab);
+    saveTabs();
+    switchTab(tab.id);
+    overlay.classList.remove("isOpen");
+  }
+
+  // ---- edit doc metadata via a small form popup; blocks unchanged → 0 re-embed ----
+  function editDocMeta(doc, anchorEl) {
+    document.querySelectorAll(".libraryMetaPopup").forEach((e) => e.remove());
+    const popup = document.createElement("div");
+    popup.className = "archiveMovePopup libraryMetaPopup";
+    const titleEl = document.createElement("div");
+    titleEl.className = "archiveMovePopupTitle";
+    titleEl.textContent = t("lib_editMeta");
+    popup.appendChild(titleEl);
+    const mkRow = (labelText, val) => {
+      const r = document.createElement("div");
+      r.className = "libMetaRow";
+      const span = document.createElement("span");
+      span.textContent = labelText;
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.value = val || "";
+      r.appendChild(span);
+      r.appendChild(inp);
+      popup.appendChild(r);
+      return inp;
+    };
+    const titleInp = mkRow(t("lib_metaTitle"), doc.title);
+    const authorsInp = mkRow(t("lib_metaAuthors"), doc.authors);
+    const yearInp = mkRow(t("lib_metaYear"), doc.year);
+    const tagsInp = mkRow(t("lib_metaTags"), (doc.tags || []).map((tg) => tg.name).join(", "));
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "libMetaSave";
+    saveBtn.textContent = t("lib_metaSave");
+    popup.appendChild(saveBtn);
+
+    const rect = anchorEl.getBoundingClientRect();
+    popup.style.position = "fixed";
+    popup.style.top = `${rect.bottom + 4}px`;
+    popup.style.left = `${rect.left}px`;
+    popup.style.bottom = "auto";
+    popup.style.zIndex = "1000";
+    document.body.appendChild(popup);
+    titleInp.focus();
+
+    saveBtn.addEventListener("click", async () => {
+      doc.title = titleInp.value.trim() || doc.title;
+      doc.authors = authorsInp.value.trim();
+      doc.year = yearInp.value.trim();
+      doc.tags = tagsInp.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean).map((name) => ({ name, color: tagColor(name) }));
+      popup.remove();
+      setStatus(t("lib_saving"));
+      try {
+        await postJson("/api/library/save", { doc, model: embedModel() });
+        setStatus("");
+        previewTitle.textContent = `${kindIcon(doc.docKind)} ${doc.title}`;
+        await refreshList();
+      } catch (e) { setStatus(t("lib_saveFailed") + " " + e.message); }
+    });
+    setTimeout(() => {
+      const close = (e) => { if (!popup.contains(e.target) && e.target !== anchorEl) { popup.remove(); document.removeEventListener("mousedown", close); } };
+      document.addEventListener("mousedown", close);
+    }, 0);
+  }
+
+  // ---- edit the whole doc as raw markdown; server re-chunks into fresh blocks ----
+  function editDocMarkdown(doc) {
+    const { md, images } = docToMarkdown(doc);
+    previewTitle.textContent = `✏️ ${doc.title}`;
+    previewEmpty.style.display = "none";
+    preview.classList.add("isOpen");
+    previewContent.innerHTML = "";
+    const bar = document.createElement("div");
+    bar.className = "libraryDocToolbar";
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button"; saveBtn.className = "secondary"; saveBtn.textContent = t("lib_mdSave");
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button"; cancelBtn.className = "secondary"; cancelBtn.textContent = t("lib_mdCancel");
+    bar.append(saveBtn, cancelBtn);
+    const ta = document.createElement("textarea");
+    ta.className = "libraryMarkdownEditor";
+    ta.value = md;
+    previewContent.append(bar, ta);
+    ta.focus();
+    saveBtn.addEventListener("click", async () => {
+      setStatus(t("lib_saving"));
+      try {
+        const r = await postJson("/api/library/reparse", { docId: doc.docId, text: ta.value, images, model: embedModel() });
+        if (r.error) { setStatus(t("lib_saveFailed") + " " + r.error); return; }
+        setStatus("");
+        await refreshList();
+        openDoc(doc.docId);   // reload the freshly re-chunked doc
+      } catch (e) { setStatus(t("lib_saveFailed") + " " + e.message); }
+    });
+    cancelBtn.addEventListener("click", () => openDoc(doc.docId));
   }
 
   // ---- jump from a clicked source citation to its block in the doc ----

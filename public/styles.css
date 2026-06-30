@@ -1231,14 +1231,12 @@ button.secondary:disabled {
 }
 
 .tabTitle {
+  /* min-width:0 lets this flex child shrink below its text width so the ellipsis
+     actually kicks in (flex items default to min-width:auto = full content width). */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.chatTab.isActive .tabTitle {
-  overflow: visible;
-  text-overflow: unset;
 }
 
 .tabTags {
@@ -4808,12 +4806,17 @@ button.secondary:disabled {
 #libraryImportMenu { top: calc(100% + 6px); bottom: auto; right: auto; left: 0; }
 .libraryAskBar {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px;
   border-top: 1px solid var(--border, #e0e0e0);
 }
-.libraryAskBar input[type="text"] {
+.libraryAskRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.libraryAskRow input[type="text"] {
   flex: 1;
   min-width: 0;
   padding: 8px 10px;
@@ -4821,13 +4824,14 @@ button.secondary:disabled {
   border-radius: 8px;
   font: inherit;
 }
-.libraryAskBar button {
+.libraryAskRow button {
   padding: 8px 16px;
   border: none;
   border-radius: 8px;
   background: var(--accent, #6c8ebf);
   color: #fff;
   cursor: pointer;
+  white-space: nowrap;
 }
 .libraryFigCaption { font-size: 0.85em; opacity: 0.7; margin-top: 4px; text-align: center; }
 /* Continuous-article reading view (not chat bubbles) */
@@ -4836,12 +4840,27 @@ button.secondary:disabled {
 .libDocBlock .markdownBody:hover { background: rgba(108, 142, 191, 0.06); }
 .libDocSection { margin: 18px 0 6px; padding-bottom: 3px; font-size: 1.05em; font-weight: 600; border-bottom: 1px solid var(--line); cursor: text; }
 .libDocSection:hover { background: rgba(108, 142, 191, 0.06); }
+/* Source filename header shown on the FIRST library chunk bubble in a chat tab */
+.libraryFileNameTag { font-size: 1.02em; font-weight: 700; margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1px solid var(--line); opacity: 0.9; word-break: break-all; }
+/* Section-name tag shown above a library chunk bubble in a chat tab */
+.librarySectionTag { font-size: 0.95em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.72; margin-bottom: 4px; }
 .libSectionEdit { font-size: 1.05em; font-weight: 600; width: 100%; box-sizing: border-box; }
 .libDocBlock img.generatedImage { display: block; max-width: 100%; margin: 8px auto; }
+/* User (question) bubbles written back into the doc: right-aligned, tinted.
+   Container is a flex column (.archivePreviewContent) so use align-self: flex-end
+   (same idiom as .archivePreviewMsg.user) — margin-left:auto is unreliable here. */
+.libDocBlockUser { align-self: flex-end; max-width: 82%; background: var(--user-bubble); border: 1px solid var(--user-bubble-border); padding: 6px 12px; border-radius: 12px; margin-top: 6px; margin-bottom: 6px; }
+.libDocBlockUser .markdownBody:hover { background: transparent; }
 .libraryScopeLabel { display: flex; align-items: center; gap: 4px; font-size: 0.82em; white-space: nowrap; opacity: 0.85; cursor: pointer; }
 .libraryScopeLabel input[disabled] { opacity: 0.4; cursor: not-allowed; }
 .libraryDocToolbar { display: flex; gap: 8px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .libraryDocToolbar button { font-size: 0.82em; padding: 4px 10px; }
+.libraryMetaPopup { flex-direction: column; padding: 12px; min-width: 300px; max-height: none; }
+.libMetaRow { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+.libMetaRow span { font-size: 0.76em; opacity: 0.7; }
+.libMetaRow input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; width: 100%; box-sizing: border-box; }
+.libMetaSave { align-self: flex-end; padding: 6px 16px; border: none; border-radius: 8px; background: var(--accent, #6c8ebf); color: #fff; cursor: pointer; }
+.libraryMarkdownEditor { width: 100%; min-height: 60vh; padding: 12px; border: 1px solid var(--line); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; line-height: 1.55; box-sizing: border-box; resize: vertical; }
 .librarySources { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
 .librarySourcesTitle { font-weight: 600; font-size: 0.85em; opacity: 0.7; margin-bottom: 4px; }
 .librarySourceItem { font-size: 0.85em; padding: 3px 6px; border-radius: 6px; cursor: pointer; color: var(--accent, #6c8ebf); }

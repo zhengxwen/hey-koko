@@ -17,8 +17,7 @@ const { embedBatch, cosine, hashText, DEFAULT_MODEL } = require("./embed");
 const HAS_ZSTD = typeof zlib.zstdCompressSync === "function";
 const LIBRARY_DIR = path.join(os.homedir(), "ai_library");
 const DOC_EXT = HAS_ZSTD ? ".json.zst" : ".json.gz";
-const MAX_BLOCK_CHARS = 1200;     // hard cap: a single block is split beyond this
-const TARGET_BLOCK_CHARS = 900;   // pack paragraphs up to ~this before emitting a block
+const MAX_BLOCK_CHARS = 4000;     // one section = one block; only split a genuinely huge section
 const MIN_BLOCK_CHARS = 16;       // drop noise blocks (stray tags, page numbers) below this
 const EMBED_BATCH = 8;
 
@@ -125,35 +124,24 @@ function splitIntoBlocks(text, images) {
   const imgByName = new Map((images || []).map(im => [im.name, im]));
   const lines = (text || "").split(/\r?\n/);
   const blocks = [];
-  let section = "", para = [], tableRows = [], bid = 0;
+  let section = "", para = [], bid = 0;
 
-  const emit = (content) => {
-    const c = content.trim();
-    if (!c || isNoiseBlock(c)) return;
-    for (const piece of splitLong(c)) blocks.push({ id: `b${bid++}`, kind: "text", section, content: piece, hash: hashText(piece) });
-  };
-  // force=true flushes the buffer (section/figure/table boundary);
-  // force=false only emits once the buffer reaches the target size (paragraph packing).
-  const pushText = (force) => {
+  // One section = one text block (paragraphs, lists, tables all accumulate);
+  // only a genuinely huge section gets split (splitLong) to avoid embed truncation.
+  const emit = () => {
     const content = para.join("\n").trim();
-    if (!content) { para = []; return; }
-    if (!force && content.length < TARGET_BLOCK_CHARS) return;
     para = [];
-    emit(content);
-  };
-  const pushTable = () => {
-    const content = tableRows.join("\n").trim();
-    tableRows = [];
-    if (content && !isNoiseBlock(content)) blocks.push({ id: `b${bid++}`, kind: "table", section, content, hash: hashText(content) });
+    if (!content || isNoiseBlock(content)) return;
+    for (const piece of splitLong(content)) blocks.push({ id: `b${bid++}`, kind: "text", section, content: piece, hash: hashText(piece) });
   };
 
   for (const raw of lines) {
     const line = stripNoiseTags(raw);
     const h = line.match(/^(#{1,6})\s+(.*)/);
-    if (h) { pushText(true); pushTable(); section = h[2].trim(); continue; }
+    if (h) { emit(); section = h[2].trim(); continue; }   // section boundary → flush the block
     const img = raw.match(/!\[[^\]]*\]\((image_\d+\.\w+)\)/);
     if (img) {
-      pushText(true); pushTable();
+      emit();   // figure is its own block (carries the inline image)
       const im = imgByName.get(img[1]);
       const caption = raw.replace(/!\[[^\]]*\]\([^)]*\)/, "").trim();
       const block = { id: `b${bid++}`, kind: "figure", section, content: caption || img[1], hash: hashText(img[1] + caption) };
@@ -161,12 +149,9 @@ function splitIntoBlocks(text, images) {
       blocks.push(block);
       continue;
     }
-    if (/^\s*\|.*\|\s*$/.test(line)) { pushText(true); tableRows.push(line); continue; }
-    if (tableRows.length && line.trim() === "") { pushTable(); continue; }
-    if (line.trim() === "") { para.push(""); pushText(false); continue; }  // paragraph break: emit only if big enough
-    if (line.trim()) para.push(line);
+    para.push(line.trim() === "" ? "" : line);   // accumulate everything else into the section block
   }
-  pushText(true); pushTable();
+  emit();
   return blocks;
 }
 
@@ -198,6 +183,7 @@ function buildCache() {
     let vecs;
     try { vecs = readVectors(meta.docId, doc.blocks.length); } catch { continue; }
     doc.blocks.forEach((b, i) => {
+      if (b.embed === false) return;   // stored for the conversation but not retrievable
       items.push({
         docId: meta.docId, title: doc.title, docKind: doc.docKind,
         blockId: b.id, idx: i, section: b.section, kind: b.kind,
@@ -334,6 +320,7 @@ async function saveLibraryDoc(req, res) {
     const toEmbed = [], toEmbedIdx = [];
     doc.blocks.forEach((b, i) => {
       b.hash = hashText(blockEmbedText(b));
+      if (b.embed === false) return;   // not vectorized → leave a zero-vector slot
       const prev = oldMap.get(b.id);
       if (prev && prev.hash === b.hash && prev.vec) newVecs[i] = prev.vec;
       else { toEmbed.push(blockEmbedText(b)); toEmbedIdx.push(i); }
@@ -388,8 +375,49 @@ async function retrieveLibrary(req, res) {
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
+// A conversation/annotation block (question, reply, or /note) — carries a role and
+// renders as a chat bubble. NOT part of the document body, so it must survive a
+// reparse intact instead of being re-chunked into role-less text.
+const isConvBlock = (b) => b && (b.kind === "user" || b.kind === "reply" || b.kind === "note");
+
+// POST /api/library/reparse  { docId, text, images?, model? }
+// Re-chunk an edited full-markdown into fresh DOCUMENT blocks (keeps metadata),
+// then re-append the doc's existing conversation bubbles (Q&A/notes) unchanged so
+// editing the article never destroys the conversation. Document chunks + note
+// blocks are (re)embedded; plain user/reply bubbles keep a zero-vector slot.
+async function reparseLibrary(req, res) {
+  try {
+    const body = await readBody(req);
+    const model = body.model || DEFAULT_MODEL;
+    const old = readDoc(body.docId);
+    if (!old) { sendJson(res, 404, { error: "文档不存在" }); return; }
+    const convBlocks = (old.blocks || []).filter(isConvBlock);   // preserve the conversation
+    const newChunks = splitIntoBlocks(body.text || "", body.images || []);
+    if (!newChunks.length && !convBlocks.length) { sendJson(res, 400, { error: "内容为空，无法重新分块" }); return; }
+    // re-id sequentially so freshly-chunked ids can't collide with preserved conv ids
+    const blocks = [...newChunks, ...convBlocks].map((b, i) => ({ ...b, id: `b${i}` }));
+    const vectors = new Array(blocks.length).fill(null);
+    const toEmbed = [], toEmbedIdx = [];
+    blocks.forEach((b, i) => {
+      b.hash = hashText(blockEmbedText(b));
+      if (b.embed === false) return;   // plain Q/A bubble → not retrievable, zero slot
+      toEmbed.push(blockEmbedText(b)); toEmbedIdx.push(i);
+    });
+    if (toEmbed.length) {
+      const embs = await embedMany(toEmbed, model);
+      toEmbedIdx.forEach((di, k) => { vectors[di] = embs[k]; });
+    }
+    const doc = { ...old, blocks };
+    writeDoc(doc);
+    writeVectors(doc.docId, vectors);
+    upsertIndex(doc);
+    invalidateCache();
+    sendJson(res, 200, { ok: true, blockCount: blocks.length, conversationKept: convBlocks.length });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
 module.exports = {
   importLibrary, listLibrary, searchLibrary, getLibraryDoc,
-  saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, LIBRARY_DIR,
+  saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, LIBRARY_DIR,
   splitIntoBlocks,   // exported for reuse/testing of the chunker
 };

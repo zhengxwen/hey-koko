@@ -112,6 +112,14 @@ function saveChatMessage(message) {
   if (message.isCompactSummary) stored.isCompactSummary = true;
   if (message.isFilePreview) stored.isFilePreview = true;
   if (message.translation) stored.translation = message.translation;
+  // Library-doc chunk bubbles ("import to chat" special tab) carry block metadata
+  // so the tab can be written back to the library on archive.
+  if (message.isLibraryBlock) {
+    stored.isLibraryBlock = true;
+    stored.libraryKind = message.libraryKind || "text";
+    if (message.librarySection) stored.librarySection = message.librarySection;
+    if (message.imageMime) stored.imageMime = message.imageMime;
+  }
   if (message.thinking) stored.thinking = message.thinking;
   if (message.toolSteps && message.toolSteps.length) stored.toolSteps = message.toolSteps;
   // A background-job placeholder must survive a reload as a placeholder (not a blank

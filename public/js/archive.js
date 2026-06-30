@@ -66,6 +66,16 @@ export function initArchive() {
       alert(t("archive_empty"));
       return;
     }
+    // Special library tab: "archive" writes the (edited) chunk bubbles back to the
+    // library doc instead of archiving the conversation. Tab is kept open.
+    if (tab.libraryDocId) {
+      const { writeTabToLibrary } = await import('./library.js');
+      try {
+        const r = await writeTabToLibrary(tab);
+        alert(r && r.ok ? t("lib_writtenBack") : t("lib_writeBackFail"));
+      } catch (e) { alert(t("lib_writeBackFail") + " " + e.message); }
+      return;
+    }
     // Active background tasks would be lost (archive doesn't keep videos) → confirm + cancel.
     const nActive = tabActiveJobCount(tab.id);
     if (nActive > 0) {

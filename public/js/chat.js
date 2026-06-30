@@ -2663,6 +2663,28 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     item.appendChild(ts);
   }
 
+  // Library chunk bubbles: the FIRST chunk shows the source filename as a header;
+  // every chunk shows its section name as a small tag above the content.
+  const _libTab = Number.isInteger(index) ? getActiveTab() : null;
+  const _libMsg = _libTab ? _libTab.messages[index] : null;
+  if (_libMsg && _libMsg.isLibraryBlock && _libTab.libraryDocId &&
+      _libTab.messages.findIndex((m) => m.isLibraryBlock) === index) {
+    const meta = _libTab.libraryMeta || {};
+    const fname = (meta.source || "").replace(/^(file|url):/, "") || meta.title || _libTab.libraryDocId || "";
+    if (fname) {
+      const fileTag = document.createElement("div");
+      fileTag.className = "libraryFileNameTag";
+      fileTag.textContent = `📄 ${fname}`;
+      item.appendChild(fileTag);
+    }
+  }
+  if (_libMsg && _libMsg.isLibraryBlock && _libMsg.librarySection) {
+    const secTag = document.createElement("div");
+    secTag.className = "librarySectionTag";
+    secTag.textContent = _libMsg.librarySection;
+    item.appendChild(secTag);
+  }
+
   if (Number.isInteger(index)) {
     item.dataset.msgIndex = index;
     item.addEventListener("mousedown", (e) => {
