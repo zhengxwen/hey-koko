@@ -68,11 +68,23 @@ export function initArchive() {
     // Special library tab: "archive" writes the (edited) chunk bubbles back to the
     // library doc instead of archiving the conversation. Tab is kept open.
     if (tab.libraryDocId) {
-      const { writeTabToLibrary } = await import('./library.js');
+      // Write-back can be slow (re-embedding edited chunks, esp. a cold 8b model),
+      // so always show progress + a guaranteed result alert. The import is INSIDE
+      // the try so a module-load failure surfaces instead of failing silently.
+      const prevLabel = archiveChatBtn.textContent;
+      archiveChatBtn.disabled = true;
+      archiveChatBtn.textContent = t("lib_saving");
       try {
+        const { writeTabToLibrary } = await import('./library.js');
         const r = await writeTabToLibrary(tab);
-        alert(r && r.ok ? t("lib_writtenBack") : t("lib_writeBackFail"));
-      } catch (e) { alert(t("lib_writeBackFail") + " " + e.message); }
+        if (r && r.ok) alert(t("lib_writtenBack"));
+        else alert(t("lib_writeBackFail") + (r && r.error ? "：" + r.error : ""));
+      } catch (e) {
+        alert(t("lib_writeBackFail") + "：" + (e && e.message ? e.message : e));
+      } finally {
+        archiveChatBtn.disabled = false;
+        archiveChatBtn.textContent = prevLabel;
+      }
       return;
     }
     // Active background tasks would be lost (archive doesn't keep videos) → confirm + cancel.
