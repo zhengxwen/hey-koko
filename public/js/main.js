@@ -20,6 +20,7 @@ import { setDeps as urlFetchSetDeps, handleUrlCommand, handleMultiUrlCommand } f
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
 import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
+import { initLibrary, setLibraryDeps } from './library.js';
 import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
 import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
@@ -2331,6 +2332,10 @@ state.openVideoLightbox = videoLightboxApi.openVideoLightbox;
 
 // Initialize archive
 initArchive();
+
+// Initialize knowledge library (reuses parseDocumentHeadless for local-doc import)
+setLibraryDeps({ parseDocumentHeadless });
+initLibrary();
 
 // Enable drag-to-resize / auto-collapse for the settings panel.
 initPanelResize();

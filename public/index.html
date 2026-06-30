@@ -109,6 +109,7 @@
           <div class="actions">
             <button id="archiveChat" type="button" class="secondary">Archive</button>
             <button id="retrieveChat" type="button" class="secondary">Browse archives</button>
+            <button id="libraryBtn" type="button" class="secondary">📚 Knowledge Library</button>
           </div>
         </div>
 
@@ -370,6 +371,50 @@
             </label>
             <span id="archiveSelectedCount" class="archiveSelectedCount"></span>
             <button id="archiveDeleteBtn" type="button" class="secondary" disabled>Delete Selected</button>
+          </div>
+        </div>
+
+        <!-- Knowledge Library Overlay (reuses archive* classes for styling) -->
+        <div id="libraryOverlay" class="archiveOverlay">
+          <div class="archiveHeader">
+            <button id="libraryCloseBtn" type="button" class="archiveBackBtn" aria-label="Back">←</button>
+            <h2 id="libraryTitle" class="archiveTitle">📚 Knowledge Library</h2>
+            <div class="archiveToolbar">
+              <input id="librarySearch" type="text" class="archiveSearchInput" placeholder="Semantic search the library..." />
+              <div class="libraryImportWrapper">
+                <button id="libraryImportBtn" type="button" class="secondary archiveSortBtn">+ Import ▾</button>
+                <div id="libraryImportMenu" class="exportMenu" hidden>
+                  <button id="libraryImportFiles" type="button">Local docs (PDF/PPTX/DOCX)</button>
+                  <button id="libraryImportText" type="button">Text / Markdown files</button>
+                  <button id="libraryImportUrl" type="button">Web URL / blog</button>
+                </div>
+              </div>
+              <input id="libraryFileInput" type="file" accept=".pdf,.pptx,.docx" multiple hidden />
+              <input id="libraryTextInput" type="file" accept=".txt,.md,.markdown" multiple hidden />
+            </div>
+          </div>
+          <div id="libraryTagBar" class="archiveTagBar"></div>
+          <div class="archiveBody">
+            <div class="archiveLeftPanel">
+              <div id="libraryList" class="archiveList"></div>
+            </div>
+            <div class="archiveDivider" id="libraryDivider"></div>
+            <div class="archiveRightPanel">
+              <div id="libraryPreview" class="archivePreview">
+                <div id="libraryPreviewTitle" class="archivePreviewTitle"></div>
+                <div id="libraryPreviewContent" class="archivePreviewContent"></div>
+              </div>
+              <div class="archivePreviewEmpty" id="libraryPreviewEmpty">Select a document on the left, or import to start.</div>
+              <div id="libraryAskBar" class="libraryAskBar">
+                <label class="libraryScopeLabel"><input id="libraryAskScoped" type="checkbox" disabled /><span id="libraryScopeText">This doc only</span></label>
+                <input id="libraryAskInput" type="text" placeholder="Ask the whole library…" />
+                <button id="libraryAskSend" type="button">Ask</button>
+              </div>
+            </div>
+          </div>
+          <div class="archiveFooter">
+            <span id="libraryStatus" class="archiveSelectedCount"></span>
+            <button id="libraryDeleteBtn" type="button" class="secondary" disabled>Delete Selected</button>
           </div>
         </div>
 

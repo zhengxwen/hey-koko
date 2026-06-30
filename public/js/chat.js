@@ -15,6 +15,7 @@ import { openMaskModal } from './mask-paint.js';
 import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
+import { parseAskCommand, handleAskCommand } from './library.js';
 import { buildPendingGenBubble } from './pending-gen.js';
 import { enqueueBgJob, releaseEnhancingJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
 import { chatFetch } from './server-queue.js';
@@ -2231,6 +2232,20 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   if (content && /^\/search(\s|$)/.test(content)) {
     const raw = content.replace(/^\/search\s*/, "").trim();
     await handleSearchCommand(raw, tab, tabId, content);
+    return;
+  }
+
+  // Handle /ask command — query the knowledge library (retrieve + cited answer)
+  const askQuery = parseAskCommand(content);
+  if (askQuery !== null) {
+    if (!askQuery) {
+      tab.messages.push({ role: "user", content, timestamp: Date.now() });
+      tab.messages.push({ role: "assistant", content: t("library_askUsage"), timestamp: Date.now() });
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+      return;
+    }
+    await handleAskCommand(askQuery, tab);
     return;
   }
 
