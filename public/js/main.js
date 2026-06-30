@@ -18,6 +18,7 @@ import { setRenderChat as translateSetRenderChat, stopTranslation } from './tran
 import { renderChat, sendMessage, setGenerating, regenerateReply, analyzeMedia, generateProactiveReply, markStopping, showSendError } from './chat.js';
 import { setDeps as urlFetchSetDeps, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
+import { loadMentionDocs, mentionContext, showMentionPopup, hideMentionPopup, moveMentionSelection, selectActiveMention, isMentionPopupOpen } from './mentions.js';
 import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
 import { initLibrary, setLibraryDeps } from './library.js';
@@ -269,6 +270,13 @@ dom.chatForm.addEventListener("submit", async (event) => {
 // Message input keyboard
 dom.messageInput.addEventListener("keydown", (event) => {
   const qPopup = document.querySelector("#quickPromptPopup");
+  // /ask @mention popup takes priority: navigate/select/close it before anything else.
+  if (isMentionPopupOpen()) {
+    if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); selectActiveMention(); return; }
+    if (event.key === "ArrowDown") { event.preventDefault(); moveMentionSelection(1); return; }
+    if (event.key === "ArrowUp") { event.preventDefault(); moveMentionSelection(-1); return; }
+    if (event.key === "Escape") { event.preventDefault(); hideMentionPopup(); return; }
+  }
   if (event.key === "Enter" && !event.shiftKey) {
     if (!dom.commandPopup.hidden) {
       event.preventDefault();
@@ -334,6 +342,14 @@ dom.messageInput.addEventListener("input", () => {
     hideCommandPopup();
   }
 });
+
+// /ask @mention autocomplete: pop the library-doc list while typing "@" inside "/ask …".
+dom.messageInput.addEventListener("input", () => {
+  const ctx = mentionContext(dom.messageInput);
+  if (ctx) showMentionPopup(ctx.partial);
+  else hideMentionPopup();
+});
+dom.messageInput.addEventListener("blur", () => setTimeout(hideMentionPopup, 150));
 
 // Auto-save when model selections change
 dom.modelSelect.addEventListener("change", () => {
@@ -1509,7 +1525,7 @@ async function selectFile(file) {
     const needsConvert = !/^image\/(jpeg|png|gif|webp)$/i.test(file.type);
     const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : dataUrl;
     const preview = await makePreview(dataUrl);
-    addStagedImages([{ base64: sendDataUrl.split(",")[1], preview, name: makeUploadName(uploadStamp(), "image", file, 0, 1) }]);
+    addStagedImages([{ base64: sendDataUrl.split(",")[1], preview, name: makeUploadName(uploadStamp(), "image", file, 0, 1), displayName: file.name }]);
     clearSelectedFile();
     dom.messageInput.focus();
     return;
@@ -1653,7 +1669,7 @@ async function selectMultipleFiles(files) {
     if (images.length === 0) return;
     // Stamp the whole batch with one time; -1/-2 distinguishes them.
     const stamp = uploadStamp();
-    images.forEach((img, i) => { img.name = makeUploadName(stamp, "image", validFiles[i], i, images.length); });
+    images.forEach((img, i) => { img.name = makeUploadName(stamp, "image", validFiles[i], i, images.length); img.displayName = validFiles[i].name; });
     // Append to any already-staged images (don't replace)
     addStagedImages(images);
     clearSelectedFile();
@@ -2336,6 +2352,7 @@ initArchive();
 // Initialize knowledge library (reuses parseDocumentHeadless for local-doc import)
 setLibraryDeps({ parseDocumentHeadless });
 initLibrary();
+loadMentionDocs();   // prime the /ask @mention doc list
 
 // Enable drag-to-resize / auto-collapse for the settings panel.
 initPanelResize();

@@ -12,6 +12,7 @@ import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './ma
 import { saveTabs } from './settings.js';
 import { createTab, switchTab } from './tabs.js';
 import { t } from './i18n.js';
+import { setMentionDocs } from './mentions.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", doc: "📝", other: "📎" };
 const genId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -52,15 +53,54 @@ async function postJson(url, body) {
 // Streams the answer token-by-token through onToken(accumulatedText) if given;
 // resolves to the final { answer, hits }. /api/chat returns ndjson (one JSON
 // per line, {message:{content},done}) — same format chat.js consumes.
-async function runLibraryQuery(query, { docId = null, onToken = null } = {}) {
-  const { hits, images } = await postJson("/api/library/retrieve", {
-    query, model: embedModel(), docId, topK: 6, attachImages: true, maxImages: 3,
-  });
-  if (!hits || !hits.length) return { answer: t("lib_noResults"), hits: [] };
+// For "/ask @doc …" (scoped): pull the WHOLE text of the chosen docs (document body
+// only, skipping conversation bubbles) up to a char budget, plus a few figures. The
+// model then reads the entire article(s) instead of a handful of retrieved snippets —
+// so instructions like "帮我理解，生成表格" work on the full paper.
+const FULL_DOC_BUDGET = 100000;   // ~25k tokens; needs the chat model's num_ctx to be large enough
+async function fullDocsContext(docIds, budget = FULL_DOC_BUDGET) {
+  let text = "", truncated = false;
+  const docs = [], images = [];
+  for (const id of docIds) {
+    if (text.length >= budget) { truncated = true; break; }
+    let doc;
+    try { const r = await postJson("/api/library/get", { docId: id }); doc = r && r.doc; } catch { /* skip */ }
+    if (!doc) continue;
+    docs.push({ docId: doc.docId, title: doc.title, docKind: doc.docKind });
+    let body = `# ${doc.title}\n\n`, lastSec = null;
+    for (const b of (doc.blocks || [])) {
+      if (b.kind === "user" || b.kind === "reply" || b.kind === "note") continue;   // skip conversation
+      if (b.kind === "figure") { if (images.length < 3 && b.image) images.push({ image: b.image }); continue; }
+      if (b.section && b.section !== lastSec) { body += `## ${b.section}\n\n`; lastSec = b.section; }
+      body += (b.content || "") + "\n\n";
+    }
+    if (text.length + body.length > budget) { body = body.slice(0, budget - text.length); truncated = true; }
+    text += body;
+  }
+  return { text: text.trim(), truncated, docs, images };
+}
 
-  const context = hits.map((h, i) => `[${i + 1}] (${h.title}${h.section ? " · " + h.section : ""}):\n${h.content}`).join("\n\n");
-  // System prompt stays Chinese (it's an instruction to the LLM, not a visible UI string).
-  const sys = `你是知识库助手。请仅依据下列资料片段回答问题，并用 [n] 标注引用来源；若资料中找不到依据，请直接说明未找到。\n\n资料片段：\n${context}`;
+async function runLibraryQuery(query, { docId = null, docIds = null, onToken = null } = {}) {
+  const scoped = !!(docIds && docIds.length);
+  let sys, sourceHits, images;
+  if (scoped) {
+    // Scoped to specific docs → READ THE WHOLE document(s), don't retrieve snippets.
+    const full = await fullDocsContext(docIds);
+    if (!full.text) return { answer: t("lib_noResults"), hits: [] };
+    sourceHits = full.docs;
+    images = full.images;
+    sys = `你是知识库助手。下面是用户指定的文档全文${full.truncated ? "（文档较长，已截断部分内容）" : ""}，请通读全文后完成用户的要求（如理解、总结、生成表格等）。\n\n文档全文：\n${full.text}`;
+  } else {
+    // Whole-library → semantic retrieval of the most relevant chunks, cite [n].
+    const r = await postJson("/api/library/retrieve", {
+      query, model: embedModel(), docId, topK: 6, attachImages: true, maxImages: 3,
+    });
+    if (!r.hits || !r.hits.length) return { answer: t("lib_noResults"), hits: [] };
+    sourceHits = r.hits;
+    images = r.images;
+    const context = r.hits.map((h, i) => `[${i + 1}] (${h.title}${h.section ? " · " + h.section : ""}):\n${h.content}`).join("\n\n");
+    sys = `你是知识库助手。请仅依据下列资料片段回答问题，并用 [n] 标注引用来源；若资料中找不到依据，请直接说明未找到。\n\n资料片段：\n${context}`;
+  }
   const userMsg = { role: "user", content: query };
   if (images && images.length) userMsg.images = images.map((im) => im.image);
 
@@ -74,7 +114,7 @@ async function runLibraryQuery(query, { docId = null, onToken = null } = {}) {
       options: { temperature: 0.3 },
     }),
   });
-  if (!res.ok || !res.body) return { answer: t("lib_noAnswer"), hits };
+  if (!res.ok || !res.body) return { answer: t("lib_noAnswer"), hits: sourceHits };
 
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -94,7 +134,7 @@ async function runLibraryQuery(query, { docId = null, onToken = null } = {}) {
       } catch { /* ignore partial / non-JSON lines */ }
     }
   }
-  return { answer: answer || t("lib_noAnswer"), hits };
+  return { answer: answer || t("lib_noAnswer"), hits: sourceHits };
 }
 
 function sourcesMarkdown(hits) {
@@ -235,29 +275,42 @@ async function enrichDoc(docId) {
 }
 
 // ---- /ask command (chat-side): inserts Q + A(+sources) into the conversation ----
+// "/ask [@docId …] question" → { docIds:[…], query:"…" } (or null if not an /ask).
+// Leading @mentions (docIds have no spaces) scope the search to those docs; the rest
+// is the question. No mentions → whole-library search.
 export function parseAskCommand(content) {
   if (!/^\/ask(\s|$)/.test(content || "")) return null;
-  return content.replace(/^\/ask\s*/, "").trim();
+  let rest = content.replace(/^\/ask\s*/, "");
+  const docIds = [];
+  let m;
+  while ((m = rest.match(/^@(\S+)\s*/))) { docIds.push(m[1]); rest = rest.slice(m[0].length); }
+  return { docIds, query: rest.trim() };
 }
 
-export async function handleAskCommand(query, tab) {
+export async function handleAskCommand(query, tab, docIds = null) {
   const rerender = async () => { saveTabs(); const { renderChat } = await import('./chat.js'); renderChat(); };
   const now = Date.now();
-  tab.messages.push({ id: genId(), role: "user", content: `/ask ${query}`, timestamp: now });
-  const amsg = { id: genId(), role: "assistant", content: t("lib_searching"), timestamp: now + 1 };
+  const mentionStr = (docIds && docIds.length) ? docIds.map((d) => `@${d}`).join(" ") + " " : "";
+  tab.messages.push({ id: genId(), role: "user", content: `/ask ${mentionStr}${query}`, timestamp: now });
+  // `searching:true` makes renderMessage animate this bubble (pulsing) while we wait.
+  const amsg = { id: genId(), role: "assistant", content: t("lib_searching"), searching: true, timestamp: now + 1 };
   tab.messages.push(amsg);
   await rerender();
   try {
     let last = 0;
     const { answer, hits } = await runLibraryQuery(query, {
+      docIds: (docIds && docIds.length) ? docIds : null,
       onToken: (acc) => {
+        amsg.searching = false;   // first token in → stop the animation
         amsg.content = acc;
         const now2 = Date.now();
         if (now2 - last > 120) { last = now2; rerender(); }   // throttle full re-render
       },
     });
+    amsg.searching = false;       // also covers the no-token (no-results) path
     amsg.content = answer + sourcesMarkdown(hits);
   } catch (e) {
+    amsg.searching = false;
     amsg.content = t("lib_askFailed") + e.message;
   }
   await rerender();
@@ -385,6 +438,7 @@ export function initLibrary() {
   async function refreshList() {
     try { const d = await postJson("/api/library/list", {}); docs = d.docs || []; }
     catch { docs = []; }
+    setMentionDocs(docs);   // keep the /ask @mention list in sync with the library
     renderTagBar();
     renderList();
   }

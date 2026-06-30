@@ -83,6 +83,9 @@ function saveChatMessage(message) {
   // contextImages (full-res, what's actually sent to the model). See migrateImageFields.
   if (message.displayImages) stored.displayImages = message.displayImages;
   if (message.contextImages) stored.contextImages = message.contextImages;
+  // Original upload filenames — injected into the model prompt so the user can refer to
+  // an image by name (buildMessages). Persist so it survives reload / resend.
+  if (message.imageNames) stored.imageNames = message.imageNames;
   if (message.generatedThumbnails && message.generatedThumbnails.length > 0) {
     stored.generatedThumbnails = message.generatedThumbnails;
   }

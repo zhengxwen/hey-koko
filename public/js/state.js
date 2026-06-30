@@ -86,6 +86,7 @@ export const dom = {
   bgJobsBtn: document.querySelector("#bgJobsBtn"),
   stopTranslateBtn: document.querySelector("#stopTranslateBtn"),
   commandPopup: document.querySelector("#commandPopup"),
+  mentionPopup: document.querySelector("#mentionPopup"),
   aiName: document.querySelector("#aiName"),
   uiLanguageSelect: document.querySelector("#uiLanguageSelect"),
   promptLanguageSelect: document.querySelector("#promptLanguageSelect"),

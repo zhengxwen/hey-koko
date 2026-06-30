@@ -16,9 +16,10 @@ import { tabActiveJobCount, cancelTabJobs } from './bg-jobs.js';   // Option B: 
 // idempotent, and harmless to messages that already have one.
 // Migrate a single stored message from the legacy image field names to the two
 // semantic fields used throughout the app:
-//   images            → contextImages  (full-res, sent to the model)
-//   previewImages /   → displayImages  (thumbnails, shown in the bubble only)
+//   images            → contextImages     (full-res, sent to the model)
+//   previewImages /   → displayImages     (thumbnails, shown in the bubble only)
 //   previewImage
+//   imageDisplayNames → imageNames        (per-image original filenames)
 // Idempotent: messages already using the new names are left untouched.
 export function migrateImageFields(m) {
   if (!m) return;
@@ -30,6 +31,8 @@ export function migrateImageFields(m) {
   }
   delete m.previewImages;
   delete m.previewImage;
+  if (m.imageDisplayNames && !m.imageNames) m.imageNames = m.imageDisplayNames;
+  delete m.imageDisplayNames;
 }
 
 function backfillMessageIds(tabs) {

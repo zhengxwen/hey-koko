@@ -105,6 +105,7 @@ export function initArchive() {
       if (msg.folded) m.folded = true;
       if (msg.displayImages) m.displayImages = msg.displayImages;
       if (msg.contextImages) m.contextImages = msg.contextImages;
+      if (msg.imageNames) m.imageNames = msg.imageNames;
       if (msg.generatedImages) m.generatedImages = msg.generatedImages;
       if (msg.generatedThumbnails) m.generatedThumbnails = msg.generatedThumbnails;
       // Archive the video poster thumbnails, not the (heavy) videos themselves.

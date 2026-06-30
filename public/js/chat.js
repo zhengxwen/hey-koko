@@ -482,17 +482,40 @@ function attachVideosToMessage(userMessage, videos) {
 }
 
 // Stamp a user bubble with a staged image upload (single staged object, or a
-// { multi:[...] } selection). Two parallel arrays carry the two distinct roles:
-//   contextImages — full-res base64, the ONLY images forwarded to the model
-//   displayImages — 360px JPEG thumbnails (makePreview), shown in the bubble only
-// imageNames keeps the original filenames; a single-image inpaint mask rides along.
+// { multi:[...] } selection). Parallel arrays carry the distinct roles:
+//   contextImages     — full-res base64, the ONLY images forwarded to the model
+//   displayImages     — 360px JPEG thumbnails (makePreview), shown in the bubble only
+//   imageNames — the user's ORIGINAL filenames. Used BOTH as the download/caption
+//                       name and injected into the model prompt so the user can refer to
+//                       an image by name (see buildMessages). Only set when at least one
+//                       original name is known (drag/select have it; pasted images don't —
+//                       those fall back to a timestamp download name). A single-image
+//                       inpaint mask rides along too.
 function attachUploadedImages(userMessage, image) {
   if (!image) return;
   const list = image.multi || [image];
   userMessage.contextImages = list.map((img) => img.base64);
   userMessage.displayImages = list.map((img) => img.preview);
-  userMessage.imageNames = list.map((img) => img.name || null);
+  const displayNames = list.map((img) => img.displayName || null);
+  if (displayNames.some(Boolean)) userMessage.imageNames = displayNames;
   if (!image.multi && image.mask) userMessage.mask = image.mask;
+}
+
+// Disambiguate repeated filenames by suffixing -1, -2 (before the extension) so each
+// image gets a UNIQUE label for the model; unique names are left untouched. Empty slots
+// fall back to "image-N" (e.g. pasted images carry no filename).
+//   ["a.png","a.png","b.png"] -> ["a-1.png","a-2.png","b.png"]
+function dedupeImageNames(names) {
+  const filled = names.map((n, i) => n || `image-${i + 1}`);
+  const total = new Map();
+  for (const n of filled) total.set(n, (total.get(n) || 0) + 1);
+  const seen = new Map();
+  return filled.map((n) => {
+    if (total.get(n) <= 1) return n;
+    const k = (seen.get(n) || 0) + 1; seen.set(n, k);
+    const dot = n.lastIndexOf(".");
+    return dot > 0 ? `${n.slice(0, dot)}-${k}${n.slice(dot)}` : `${n}-${k}`;
+  });
 }
 
 function deleteMessageVideo(msgIndex, vidIndex) {
@@ -1044,7 +1067,19 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
       continue;
     }
     const message = { role: msg.role, content: msg.content };
-    if (msg.contextImages?.length) message.images = msg.contextImages;
+    if (msg.contextImages?.length) {
+      message.images = msg.contextImages;
+      // When the upload kept original filenames, prepend a deduped name→order list so the
+      // user can refer to an image by filename ("describe chart.png"). The model receives
+      // images as a bare ordered array (no labels), so this mapping lives in the text. The
+      // annotation is ephemeral — only on the outgoing payload, never on the stored bubble.
+      if (msg.imageNames?.some(Boolean)) {
+        const labeled = dedupeImageNames(msg.imageNames.slice(0, msg.contextImages.length));
+        const list = labeled.map((nm, i) => `${i + 1}. ${nm}`).join("  ");
+        const hint = getPrompt("imageNamesContext", labeled.length, list);
+        message.content = msg.content ? `${hint}\n\n${msg.content}` : hint;
+      }
+    }
     mapped.push(message);
   }
 
@@ -2235,17 +2270,18 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     return;
   }
 
-  // Handle /ask command — query the knowledge library (retrieve + cited answer)
-  const askQuery = parseAskCommand(content);
-  if (askQuery !== null) {
-    if (!askQuery) {
+  // Handle /ask command — query the knowledge library (retrieve + cited answer).
+  // Supports "/ask @docId1 @docId2 question" to scope the search to specific docs.
+  const ask = parseAskCommand(content);
+  if (ask !== null) {
+    if (!ask.query) {
       tab.messages.push({ role: "user", content, timestamp: Date.now() });
       tab.messages.push({ role: "assistant", content: t("library_askUsage"), timestamp: Date.now() });
       saveChat();
       if (state.activeTabId === tabId) renderChat();
       return;
     }
-    await handleAskCommand(askQuery, tab);
+    await handleAskCommand(ask.query, tab, ask.docIds);
     return;
   }
 
@@ -2424,6 +2460,10 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     };
     if (file.images && file.images.length > 0) {
       assistantPreview.contextImages = file.images.map((img) => img.base64);
+      // Keep each embedded image's own filename (e.g. from a PDF/DOCX) for its download name.
+      if (file.images.some((img) => img.name)) {
+        assistantPreview.imageNames = file.images.map((img) => img.name || null);
+      }
     }
     // Display-only thumbnails (e.g. images downloaded from email HTML): shown in
     // the bubble but kept out of `images` so they never enter the model context.
@@ -2655,6 +2695,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
   // every chunk shows its section name as a small tag above the content.
   const _libTab = Number.isInteger(index) ? getActiveTab() : null;
   const _libMsg = _libTab ? _libTab.messages[index] : null;
+  if (_libMsg && _libMsg.searching) item.classList.add("librarySearching");   // /ask "searching…" pulse
   if (_libMsg && _libMsg.isLibraryBlock && _libTab.libraryDocId &&
       _libTab.messages.findIndex((m) => m.isLibraryBlock) === index) {
     const meta = _libTab.libraryMeta || {};
@@ -2819,7 +2860,9 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     // Original upload filenames + full-res bytes, when kept, so the download uses
     // the real name and the original image (falling back to the thumbnail).
     const msg = Number.isInteger(index) ? getActiveTab().messages[index] : null;
-    const imageNames = msg?.imageNames;
+    // Download/caption name = the image's ORIGINAL filename (imageNames); falls
+    // back to a timestamp name in mediaFilename when there's none (e.g. pasted images).
+    const dlNames = msg?.imageNames;
     const fullImages = msg?.contextImages;
     // User bubbles: one shared media row (images + video on the same line).
     // Otherwise multiple images render in a compact grid; a single image stays inline.
@@ -2847,7 +2890,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
             ? full
             : `data:${full.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${full}`)
         : src;
-      const fname = mediaFilename(imageNames?.[imgIdx], timestamp, "image", imageExtFromSrc(dlSrc), imgIdx, previews.length);
+      const fname = mediaFilename(dlNames?.[imgIdx], timestamp, "image", imageExtFromSrc(dlSrc), imgIdx, previews.length);
       image.dataset.filename = fname; // shown as the lightbox caption
       wrapper.appendChild(makeDownloadButton("imageDownloadBtn", dlSrc, fname, base64ByteLength(dlSrc), t("btn_downloadImage")));
       // Inpaint mask: on a SINGLE-image USER bubble, when a mask-capable ComfyUI
@@ -3017,9 +3060,14 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         }
         // Download button (bottom-right) — full-res src when available.
         const dlSrc = img.dataset.fullSrc || img.src;
-        // Library figure bubbles carry the original image filename (image_01.jpg);
-        // use it for the download/lightbox name, else fall back to a timestamp default.
-        const gimgName = Number.isInteger(index) ? getActiveTab().messages[index]?.generatedImageNames?.[i] : null;
+        // Per-image download/lightbox filename: library figure bubbles carry
+        // generatedImageNames (image_01.jpg); a file preview's embedded images (PDF/DOCX)
+        // carry imageNames — used only when the grid is showing those embedded
+        // images (no separate display thumbnails), so the index stays aligned. Else a
+        // timestamp default (mediaFilename's fallback).
+        const gmsg = Number.isInteger(index) ? getActiveTab().messages[index] : null;
+        const gimgName = gmsg?.generatedImageNames?.[i]
+          || (gmsg?.isFilePreview && !(generatedThumbnails && generatedThumbnails.length) ? gmsg?.imageNames?.[i] : null);
         const iname = mediaFilename(gimgName || null, timestamp, "image", imageExtFromSrc(dlSrc), i, validImages.length);
         img.dataset.filename = iname; // shown as the lightbox caption
         wrapper.appendChild(makeDownloadButton("imageDownloadBtn", dlSrc, iname, base64ByteLength(dlSrc), t("btn_downloadImage")));

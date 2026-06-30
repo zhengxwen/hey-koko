@@ -2639,6 +2639,16 @@ button.secondary:disabled {
   font-size: 0.88em;
 }
 
+/* /ask @mention popup: smaller + tighter than the slash-command popup */
+.mentionPopup { padding: 3px; }
+.mentionPopup .commandItem { padding: 2px 8px; gap: 6px; font-size: 14px; line-height: 1.2; border-radius: 5px; }
+.mentionPopup .commandItem-name { font-weight: 500; }
+.mentionPopup .commandItem-desc { font-size: 0.82em; }
+
+/* "📚 检索知识库中…" pulses while /ask retrieves */
+.message.librarySearching .markdownBody { animation: libSearchPulse 1.3s ease-in-out infinite; }
+@keyframes libSearchPulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+
 .composer textarea {
   min-height: 48px;
   max-height: 150px;

@@ -219,8 +219,10 @@ async function embedQuery(query, model) {
   return qvec;
 }
 
-async function retrieve(query, model, { docId = null, topK = 8 } = {}) {
-  const pool = getCache().items.filter(it => it.vec && (!docId || it.docId === docId));
+async function retrieve(query, model, { docId = null, docIds = null, topK = 8 } = {}) {
+  // docIds (array) scopes to several docs; docId (string) scopes to one; neither → whole library.
+  const set = (docIds && docIds.length) ? new Set(docIds) : null;
+  const pool = getCache().items.filter(it => it.vec && (set ? set.has(it.docId) : (!docId || it.docId === docId)));
   if (!pool.length) return [];
   const qvec = await embedQuery(query, model);
   if (!qvec) return [];
@@ -379,7 +381,11 @@ async function retrieveLibrary(req, res) {
     const query = (body.query || "").trim();
     const model = body.model || DEFAULT_MODEL;
     if (!query) { sendJson(res, 400, { error: "query required" }); return; }
-    const hits = await retrieve(query, model, { docId: body.docId || null, topK: body.topK || 8 });
+    const hits = await retrieve(query, model, {
+      docId: body.docId || null,
+      docIds: Array.isArray(body.docIds) ? body.docIds : null,
+      topK: body.topK || 8,
+    });
     const images = body.attachImages ? attachImages(hits, body.maxImages || 3) : [];
     sendJson(res, 200, {
       hits: hits.map(h => ({

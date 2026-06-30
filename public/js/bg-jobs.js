@@ -465,7 +465,11 @@ async function runDocFull(job, sink) {
     content: `📄 **FILE: ${p.name}**${tool ? ` (via ${tool})` : ''}\n\n${text}`,
     timestamp: Date.now(), isFilePreview: true,
   };
-  if (images.length) previewMsg.contextImages = images.map((img) => img.base64);
+  if (images.length) {
+    previewMsg.contextImages = images.map((img) => img.base64);
+    // Keep each embedded image's own filename (e.g. from a PDF/DOCX) for its download name.
+    if (images.some((img) => img.name)) previewMsg.imageNames = images.map((img) => img.name || null);
+  }
   if (displayThumbnails && displayThumbnails.length) previewMsg.generatedThumbnails = displayThumbnails;
   const promptMsg = { id: genId(), role: 'user', content: autoPrompt, timestamp: Date.now() };
 
