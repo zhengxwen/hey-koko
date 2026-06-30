@@ -80,7 +80,7 @@ async function fullDocsContext(docIds, budget = FULL_DOC_BUDGET) {
   return { text: text.trim(), truncated, docs, images };
 }
 
-async function runLibraryQuery(query, { docId = null, docIds = null, onToken = null } = {}) {
+async function runLibraryQuery(query, { docId = null, docIds = null, folder = null, onToken = null } = {}) {
   const scoped = !!(docIds && docIds.length);
   let sys, sourceHits, images;
   if (scoped) {
@@ -93,7 +93,7 @@ async function runLibraryQuery(query, { docId = null, docIds = null, onToken = n
   } else {
     // Whole-library → semantic retrieval of the most relevant chunks, cite [n].
     const r = await postJson("/api/library/retrieve", {
-      query, model: embedModel(), docId, topK: 6, attachImages: true, maxImages: 3,
+      query, model: embedModel(), docId, folder, topK: 6, attachImages: true, maxImages: 3,
     });
     if (!r.hits || !r.hits.length) return { answer: t("lib_noResults"), hits: [] };
     sourceHits = r.hits;
@@ -281,26 +281,40 @@ async function enrichDoc(docId) {
 export function parseAskCommand(content) {
   if (!/^\/ask(\s|$)/.test(content || "")) return null;
   let rest = content.replace(/^\/ask\s*/, "");
-  const docIds = [];
+  const docIds = [], folders = [];
   let m;
-  while ((m = rest.match(/^@(\S+)\s*/))) { docIds.push(m[1]); rest = rest.slice(m[0].length); }
-  return { docIds, query: rest.trim() };
+  while ((m = rest.match(/^@(\S+)\s*/))) {
+    const tok = m[1];
+    if (tok.endsWith("/")) folders.push(tok.slice(0, -1));   // "@folder/" → scope to a sub-folder (+ nested)
+    else docIds.push(tok);                                    // "@docId"   → scope to one doc (read whole)
+    rest = rest.slice(m[0].length);
+  }
+  return { docIds, folders, query: rest.trim() };
 }
 
+// scope: { docIds:[], folders:[] }. A folder mention (@folder/) scopes RETRIEVAL to
+// that sub-folder (+ nested); doc mentions (@docId) READ the whole doc(s). Folder wins
+// if both are present (a folder can hold many docs, so full-read isn't appropriate).
 // insertAt: null → fresh send (append the "/ask …" user bubble + answer at the end).
 // A number → resend/edit: the user bubble already exists; insert the answer there.
-export async function handleAskCommand(query, tab, docIds = null, insertAt = null) {
+export async function handleAskCommand(query, tab, scope = {}, insertAt = null) {
+  const docIds = (scope && scope.docIds) || [];
+  const folders = (scope && scope.folders) || [];
+  const folder = folders.length ? folders[0] : null;      // one sub-folder, retrieval-scoped
+  const fullReadIds = (!folder && docIds.length) ? docIds : null;   // docs → read whole (only when no folder)
   const rerender = async () => { saveTabs(); const { renderChat } = await import('./chat.js'); renderChat(); };
   const now = Date.now();
-  // When scoped to docs, name them in the "searching…" bubble (full filename) so the
-  // user sees which paper is being read while it loads.
-  const scopedNames = (docIds && docIds.length)
-    ? "\n\n" + docIds.map((d) => `📄 ${mentionDocName(d)}`).join("\n\n")
-    : "";
+  // Name the scope in the "searching…" bubble: folders by path, docs by full filename.
+  const nameLines = [
+    ...folders.map((f) => `📁 ${f}/`),
+    ...(fullReadIds ? fullReadIds.map((d) => `📄 ${mentionDocName(d)}`) : []),
+  ];
+  const scopedNames = nameLines.length ? "\n\n" + nameLines.join("\n\n") : "";
   // `searching:true` makes renderMessage animate this bubble (pulsing) while we wait.
   const amsg = { id: genId(), role: "assistant", content: t("lib_searching") + scopedNames, searching: true, timestamp: now + 1 };
   if (insertAt == null) {
-    const mentionStr = (docIds && docIds.length) ? docIds.map((d) => `@${d}`).join(" ") + " " : "";
+    const toks = [...folders.map((f) => `@${f}/`), ...docIds.map((d) => `@${d}`)];
+    const mentionStr = toks.length ? toks.join(" ") + " " : "";
     tab.messages.push({ id: genId(), role: "user", content: `/ask ${mentionStr}${query}`, timestamp: now });
     tab.messages.push(amsg);
   } else {
@@ -310,7 +324,8 @@ export async function handleAskCommand(query, tab, docIds = null, insertAt = nul
   try {
     let last = 0;
     const { answer, hits } = await runLibraryQuery(query, {
-      docIds: (docIds && docIds.length) ? docIds : null,
+      docIds: fullReadIds,
+      folder,
       onToken: (acc) => {
         amsg.searching = false;   // first token in → stop the animation
         amsg.content = acc;
@@ -340,6 +355,8 @@ export function initLibrary() {
   const previewEmpty = document.querySelector("#libraryPreviewEmpty");
   const statusEl = document.querySelector("#libraryStatus");
   const deleteBtn = document.querySelector("#libraryDeleteBtn");
+  const moveBtn = document.querySelector("#libraryMoveBtn");
+  const askFolderSel = document.querySelector("#libraryAskFolder");
   const importBtn = document.querySelector("#libraryImportBtn");
   const importMenu = document.querySelector("#libraryImportMenu");
   const importFilesItem = document.querySelector("#libraryImportFiles");
@@ -356,8 +373,13 @@ export function initLibrary() {
   let scores = null;          // Map<docId, score> when a semantic search is active
   let activeTagFilter = null;
   let currentDoc = null;
+  let allDirs = [""];         // every folder under the library (for move popup + ask scope)
 
   const setStatus = (s) => { statusEl.textContent = s || ""; };
+  const updateSelectionUI = () => {
+    deleteBtn.disabled = selected.size === 0;
+    moveBtn.disabled = selected.size === 0;
+  };
 
   // Reset the right pane to its empty state (on panel open, and after the shown doc is deleted).
   const clearPreview = () => {
@@ -450,8 +472,25 @@ export function initLibrary() {
     try { const d = await postJson("/api/library/list", {}); docs = d.docs || []; }
     catch { docs = []; }
     setMentionDocs(docs);   // keep the /ask @mention list in sync with the library
+    await refreshFolders();
     renderTagBar();
     renderList();
+  }
+
+  // Pull every folder under the library → fill the ask-scope <select> (keeps the
+  // current selection if it still exists) and cache for the move popup.
+  async function refreshFolders() {
+    try { const r = await postJson("/api/library/dirs", {}); allDirs = r.dirs || [""]; }
+    catch { allDirs = [""]; }
+    const prev = askFolderSel.value;
+    askFolderSel.innerHTML = "";
+    for (const dir of allDirs) {
+      const opt = document.createElement("option");
+      opt.value = dir;
+      opt.textContent = dir === "" ? t("lib_scopeWholeLibrary") : "📁 " + dir;
+      askFolderSel.appendChild(opt);
+    }
+    askFolderSel.value = allDirs.includes(prev) ? prev : "";
   }
 
   function renderTagBar() {
@@ -472,6 +511,31 @@ export function initLibrary() {
     });
   }
 
+  // One doc card (depth indents it under its folder in the tree view).
+  function createCard(d, depth) {
+    const card = document.createElement("div");
+    card.className = "archiveCard" + (selected.has(d.docId) ? " isSelected" : "");
+    if (depth) card.style.paddingLeft = (depth * 16 + 8) + "px";
+    const sc = scores && scores.has(d.docId) ? `<span class="archiveCardScore">${Math.round(scores.get(d.docId) * 100)}%</span>` : "";
+    const tagsHtml = (d.tags || []).map((tg) => `<span class="archiveCardTag" style="background:${tg.color || "#e0e0e0"}">${escapeHtml(tg.name)}</span>`).join("");
+    const meta = [d.docKind, shortAuthors(d.authors), d.year].filter(Boolean).join(" · ");
+    card.innerHTML = `
+      <input type="checkbox" class="archiveCardCheckbox" ${selected.has(d.docId) ? "checked" : ""} />
+      <div class="archiveCardInfo">
+        <div class="archiveCardTitle">${sc}${kindIcon(d.docKind)} ${escapeHtml(d.title)}</div>
+        <div class="archiveCardMeta"><span>${escapeHtml(meta)}</span><span>${t("lib_blocks", { n: d.blockCount })}</span>${tagsHtml}</div>
+      </div>`;
+    const cb = card.querySelector(".archiveCardCheckbox");
+    cb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (cb.checked) selected.add(d.docId); else selected.delete(d.docId);
+      card.classList.toggle("isSelected", cb.checked);
+      updateSelectionUI();
+    });
+    card.addEventListener("click", (e) => { if (e.target !== cb) openDoc(d.docId); });
+    return card;
+  }
+
   function renderList() {
     listEl.innerHTML = "";
     let list = [...docs];
@@ -483,28 +547,43 @@ export function initLibrary() {
       listEl.innerHTML = `<div class="archiveEmpty">${docs.length ? t("lib_noMatch") : t("lib_emptyList")}</div>`;
       return;
     }
-    for (const d of list) {
-      const card = document.createElement("div");
-      card.className = "archiveCard" + (selected.has(d.docId) ? " isSelected" : "");
-      const sc = scores && scores.has(d.docId) ? `<span class="archiveCardScore">${Math.round(scores.get(d.docId) * 100)}%</span>` : "";
-      const tagsHtml = (d.tags || []).map((tg) => `<span class="archiveCardTag" style="background:${tg.color || "#e0e0e0"}">${escapeHtml(tg.name)}</span>`).join("");
-      const meta = [d.docKind, shortAuthors(d.authors), d.year].filter(Boolean).join(" · ");
-      card.innerHTML = `
-        <input type="checkbox" class="archiveCardCheckbox" ${selected.has(d.docId) ? "checked" : ""} />
-        <div class="archiveCardInfo">
-          <div class="archiveCardTitle">${sc}${kindIcon(d.docKind)} ${escapeHtml(d.title)}</div>
-          <div class="archiveCardMeta"><span>${escapeHtml(meta)}</span><span>${t("lib_blocks", { n: d.blockCount })}</span>${tagsHtml}</div>
-        </div>`;
-      const cb = card.querySelector(".archiveCardCheckbox");
-      cb.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (cb.checked) selected.add(d.docId); else selected.delete(d.docId);
-        card.classList.toggle("isSelected", cb.checked);
-        deleteBtn.disabled = selected.size === 0;
-      });
-      card.addEventListener("click", (e) => { if (e.target !== cb) openDoc(d.docId); });
-      listEl.appendChild(card);
+    // Semantic results / tag filter → flat list in relevance order (skip the tree).
+    if (scores || activeTagFilter) {
+      list.forEach((d) => listEl.appendChild(createCard(d, 0)));
+      return;
     }
+    // Otherwise group docs into a collapsible folder tree (same look as archives).
+    const root = { dirs: {}, files: [] };
+    for (const d of list) {
+      const parts = (d.folder || "").split("/").filter(Boolean);
+      let node = root;
+      for (const part of parts) {
+        if (!node.dirs[part]) node.dirs[part] = { dirs: {}, files: [] };
+        node = node.dirs[part];
+      }
+      node.files.push(d);
+    }
+    const renderNode = (node, container, depth) => {
+      Object.keys(node.dirs).sort().forEach((name) => {
+        const dirEl = document.createElement("div");
+        dirEl.className = "archiveTreeDir isCollapsed";
+        const header = document.createElement("div");
+        header.className = "archiveTreeDirHeader";
+        header.style.paddingLeft = (depth * 16 + 8) + "px";
+        header.innerHTML = `<span class="archiveTreeDirArrow">▶</span><span class="archiveTreeDirIcon">📁</span><span class="archiveTreeDirName">${escapeHtml(name)}</span>`;
+        const content = document.createElement("div");
+        content.className = "archiveTreeDirContent";
+        header.addEventListener("click", () => {
+          const collapsed = dirEl.classList.toggle("isCollapsed");
+          header.querySelector(".archiveTreeDirArrow").textContent = collapsed ? "▶" : "▼";
+        });
+        dirEl.append(header, content);
+        container.appendChild(dirEl);
+        renderNode(node.dirs[name], content, depth + 1);
+      });
+      node.files.forEach((d) => container.appendChild(createCard(d, depth)));
+    };
+    renderNode(root, listEl, 0);
   }
 
   // ---- semantic search ----
@@ -836,6 +915,8 @@ export function initLibrary() {
   async function askInPanel(query) {
     if (!query.trim()) return;
     const scopedId = (askScoped.checked && currentDoc) ? currentDoc.docId : null;
+    // "this doc only" wins; otherwise scope to the chosen folder ("" = whole library).
+    const scopedFolder = scopedId ? null : (askFolderSel.value || null);
     previewTitle.textContent = scopedId && currentDoc ? `🔎 ${currentDoc.title}` : t("lib_askResult");
     previewEmpty.style.display = "none";
     preview.classList.add("isOpen");
@@ -844,7 +925,7 @@ export function initLibrary() {
       `<div class="archivePreviewMsg assistant"><div class="markdownBody libraryAnswerBody">${t("lib_searchingDots")}</div></div>`;
     try {
       const { answer, hits } = await runLibraryQuery(query, {
-        docId: scopedId,
+        docId: scopedId, folder: scopedFolder,
         onToken: (acc) => { const el = previewContent.querySelector(".libraryAnswerBody"); if (el) el.innerHTML = markdownToHtml(acc); },
       });
       const el = previewContent.querySelector(".libraryAnswerBody");
@@ -865,11 +946,66 @@ export function initLibrary() {
     const deletedIds = new Set(selected);
     await postJson("/api/library/delete", { docIds: [...selected] });
     selected.clear();
-    deleteBtn.disabled = true;
+    updateSelectionUI();
     setStatus("");
     // If the doc shown in the preview was just deleted, clear the right pane.
     if (currentDoc && deletedIds.has(currentDoc.docId)) clearPreview();
     await refreshList();
+  });
+
+  // ---- move selected docs to a folder ----
+  async function doMove(targetDir) {
+    try {
+      const r = await postJson("/api/library/move", { docIds: [...selected], targetDir });
+      if (r.errors && r.errors.length) alert(t("lib_partialMoveFailed", { items: r.errors.map((e) => e.docId).join(", ") }));
+      selected.clear();
+      updateSelectionUI();
+      await refreshList();
+    } catch (e) { alert(t("lib_moveFailed", { error: e.message })); }
+  }
+
+  moveBtn.addEventListener("click", () => {
+    if (!selected.size) return;
+    document.querySelectorAll(".archiveMovePopup").forEach((el) => el.remove());
+    const popup = document.createElement("div");
+    popup.className = "archiveMovePopup";
+    const title = document.createElement("div");
+    title.className = "archiveMovePopupTitle";
+    title.textContent = t("lib_selectTargetDir");
+    popup.appendChild(title);
+    const list = document.createElement("div");
+    list.className = "archiveMovePopupList";
+    // "+ new folder"
+    const newItem = document.createElement("div");
+    newItem.className = "archiveMovePopupItem archiveMovePopupNewDir";
+    newItem.textContent = t("lib_newDir");
+    newItem.addEventListener("click", () => {
+      const name = prompt(t("lib_newDirPrompt"));
+      if (!name || !name.trim()) return;
+      const trimmed = name.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      if (!trimmed) return;
+      popup.remove();
+      doMove(trimmed);
+    });
+    list.appendChild(newItem);
+    allDirs.forEach((dir) => {
+      const item = document.createElement("div");
+      item.className = "archiveMovePopupItem";
+      item.textContent = dir === "" ? t("lib_rootDir") : dir;
+      item.addEventListener("click", () => { popup.remove(); doMove(dir); });
+      list.appendChild(item);
+    });
+    popup.appendChild(list);
+    const rect = moveBtn.getBoundingClientRect();
+    popup.style.position = "fixed";
+    popup.style.left = `${rect.left}px`;
+    popup.style.bottom = `${window.innerHeight - rect.top + 4}px`;
+    popup.style.zIndex = "1000";
+    document.body.appendChild(popup);
+    setTimeout(() => {
+      const close = (e) => { if (!popup.contains(e.target) && e.target !== moveBtn) { popup.remove(); document.removeEventListener("mousedown", close); } };
+      document.addEventListener("mousedown", close);
+    }, 0);
   });
 
   // ---- figure lightbox (double-click a figure image to zoom) ----

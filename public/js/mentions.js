@@ -53,25 +53,47 @@ function setMentionActive(index) {
   state.mentionActiveIndex = index;
 }
 
+// Distinct sub-folders (with every ancestor) any doc lives in — for "@folder/" scope.
+function mentionFolders() {
+  const set = new Set();
+  for (const d of _docs) {
+    const f = d.folder || "";
+    if (!f) continue;
+    const parts = f.split("/");
+    for (let i = 1; i <= parts.length; i++) set.add(parts.slice(0, i).join("/"));
+  }
+  return [...set].sort();
+}
+function folderDocCount(folder) {
+  return _docs.filter((d) => { const df = d.folder || ""; return df === folder || df.startsWith(folder + "/"); }).length;
+}
+
 export function showMentionPopup(filter) {
   const f = (filter || "").toLowerCase();
-  const matches = _docs
+  // Folders (📁, insert "@folder/") first, then docs (📄, insert "@docId").
+  const folders = mentionFolders()
+    .filter((fl) => !f || fl.toLowerCase().includes(f))
+    .slice(0, 6)
+    .map((fl) => ({ token: fl + "/", icon: "📁", name: fl + "/", desc: `📄 ${folderDocCount(fl)}` }));
+  const docs = _docs
     .filter((d) => !f || (d.docId || "").toLowerCase().includes(f) || (d.title || "").toLowerCase().includes(f))
-    .slice(0, 8);
-  if (!matches.length) { hideMentionPopup(); return; }
+    .slice(0, 8)
+    .map((d) => ({ token: d.docId, icon: kindIcon(d.docKind), name: d.title || d.docId, desc: `@${d.docId}` }));
+  const items = [...folders, ...docs];
+  if (!items.length) { hideMentionPopup(); return; }
   dom.mentionPopup.innerHTML = "";
   state.mentionActiveIndex = 0;
-  matches.forEach((d, i) => {
-    const item = document.createElement("div");
-    item.className = "commandItem" + (i === 0 ? " isActive" : "");
-    item.dataset.index = i;
-    item.dataset.docId = d.docId;
-    item.innerHTML =
-      `<span class="commandItem-name">${kindIcon(d.docKind)} ${escapeHtml(d.title || d.docId)}</span>` +
-      `<span class="commandItem-desc">@${escapeHtml(d.docId)}</span>`;
-    item.addEventListener("click", () => { state.mentionActiveIndex = i; selectActiveMention(); });
-    item.addEventListener("mouseenter", () => setMentionActive(i));
-    dom.mentionPopup.appendChild(item);
+  items.forEach((it, i) => {
+    const el = document.createElement("div");
+    el.className = "commandItem" + (i === 0 ? " isActive" : "");
+    el.dataset.index = i;
+    el.dataset.token = it.token;
+    el.innerHTML =
+      `<span class="commandItem-name">${it.icon} ${escapeHtml(it.name)}</span>` +
+      `<span class="commandItem-desc">${escapeHtml(it.desc)}</span>`;
+    el.addEventListener("click", () => { state.mentionActiveIndex = i; selectActiveMention(); });
+    el.addEventListener("mouseenter", () => setMentionActive(i));
+    dom.mentionPopup.appendChild(el);
   });
   dom.mentionPopup.hidden = false;
 }
@@ -90,18 +112,18 @@ export function moveMentionSelection(dir) {
   setMentionActive(next);
 }
 
-// Replace the "@partial" at the cursor with "@<docId> " and keep typing.
+// Replace the "@partial" at the cursor with "@<token> " (token = docId or "folder/").
 export function selectActiveMention() {
   const items = dom.mentionPopup.querySelectorAll(".commandItem");
   const active = items[state.mentionActiveIndex || 0];
   const input = dom.messageInput;
   const ctx = mentionContext(input);
   if (!active || !ctx) { hideMentionPopup(); return; }
-  const docId = active.dataset.docId;
+  const token = active.dataset.token;
   const val = input.value;
   const cursor = input.selectionStart;
-  input.value = val.slice(0, ctx.start) + `@${docId} ` + val.slice(cursor);
-  const pos = ctx.start + docId.length + 2;   // just past "@docId "
+  input.value = val.slice(0, ctx.start) + `@${token} ` + val.slice(cursor);
+  const pos = ctx.start + token.length + 2;   // just past "@token "
   input.setSelectionRange(pos, pos);
   hideMentionPopup();
   input.focus();

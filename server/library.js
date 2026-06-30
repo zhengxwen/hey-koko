@@ -15,7 +15,7 @@ const { sendJson, readBody } = require("./utils");
 const { embedBatch, cosine, hashText, DEFAULT_MODEL } = require("./embed");
 
 const HAS_ZSTD = typeof zlib.zstdCompressSync === "function";
-const LIBRARY_DIR = path.join(os.homedir(), "ai_library");
+const LIBRARY_DIR = path.join(os.homedir(), ".hey-koko", "library");
 const DOC_EXT = HAS_ZSTD ? ".json.zst" : ".json.gz";
 const MAX_BLOCK_CHARS = 32000;    // one section = one block; only split a genuinely huge section
                                   // (qwen3-embedding handles ~32k tokens; 32k chars ≈ 8k tokens, still within)
@@ -26,20 +26,70 @@ function ensureDir() {
   if (!fs.existsSync(LIBRARY_DIR)) fs.mkdirSync(LIBRARY_DIR, { recursive: true });
 }
 
-// ---- paths ----------------------------------------------------------------
-function docPath(id) { return path.join(LIBRARY_DIR, id + DOC_EXT); }
-function vecPath(id) { return path.join(LIBRARY_DIR, id + ".vec"); }
+// Normalize a user-supplied sub-folder to a safe relative path ("" = root).
+// Returns null if it would escape LIBRARY_DIR (path traversal).
+function sanitizeFolder(dir) {
+  const n = path.normalize(String(dir || "")).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  if (n === "" || n === ".") return "";
+  if (n === ".." || n.startsWith("../")) return null;
+  return n;
+}
+
+// ---- folder-aware paths ---------------------------------------------------
+// Docs may live in sub-folders under LIBRARY_DIR for organization; a doc's two
+// files (<id>.json.zst + <id>.vec) always sit together in the SAME folder.
+// docId stays a bare key — we resolve it to its on-disk folder by scanning the
+// tree and taking the FIRST match, so a duplicate id across folders never
+// conflicts (docId never needs a path). The scan is cached, rebuilt on writes.
+let LOC = null;   // Map docId -> folder ("" = library root)
+function buildLoc() {
+  ensureDir();
+  const map = new Map();
+  const walk = (dir, rel) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.name.startsWith(".")) continue;
+      if (e.isDirectory()) { walk(path.join(dir, e.name), rel ? `${rel}/${e.name}` : e.name); continue; }
+      const ext = e.name.endsWith(".json.zst") ? ".json.zst" : e.name.endsWith(".json.gz") ? ".json.gz" : null;
+      if (!ext) continue;
+      const id = e.name.slice(0, -ext.length);
+      if (!map.has(id)) map.set(id, rel);   // 取第一个：忽略其它同名副本，docId 不冲突
+    }
+  };
+  walk(LIBRARY_DIR, "");
+  LOC = map;
+  return map;
+}
+function locOf(id) { return (LOC || buildLoc()).get(id) || ""; }
+function invalidateLoc() { LOC = null; }
+
+function folderDir(folder) { return folder ? path.join(LIBRARY_DIR, folder) : LIBRARY_DIR; }
+function docPath(id, folder) {
+  const dir = folderDir(folder == null ? locOf(id) : folder);
+  const zst = path.join(dir, id + ".json.zst");
+  const gz = path.join(dir, id + ".json.gz");
+  if (fs.existsSync(zst)) return zst;
+  if (fs.existsSync(gz)) return gz;
+  return path.join(dir, id + DOC_EXT);   // not yet on disk → canonical ext for a new write
+}
+function vecPath(id, folder) { return path.join(folderDir(folder == null ? locOf(id) : folder), id + ".vec"); }
 function indexFile() { return path.join(LIBRARY_DIR, "index.json"); }
 
 // ---- compressed doc JSON read/write (same zstd scheme as archives) --------
-function writeDoc(doc) {
-  ensureDir();
+// folder defaults to the doc's current on-disk folder (save/reparse stay in
+// place), or "" for a brand-new doc (import lands at root; user moves later).
+function writeDoc(doc, folder) {
+  const f = folder == null ? locOf(doc.docId) : folder;
+  const dir = folderDir(f);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const buf = Buffer.from(JSON.stringify(doc), "utf-8");
   const out = HAS_ZSTD ? zlib.zstdCompressSync(buf) : zlib.gzipSync(buf);
-  fs.writeFileSync(docPath(doc.docId), out);
+  fs.writeFileSync(path.join(dir, doc.docId + DOC_EXT), out);
+  invalidateLoc();
 }
-function readDoc(id) {
-  const p = docPath(id);
+function readDoc(id, folder) {
+  const p = docPath(id, folder);
   if (!fs.existsSync(p)) return null;
   try {
     const raw = fs.readFileSync(p);
@@ -51,17 +101,20 @@ function readDoc(id) {
 }
 
 // ---- binary vectors: Float32 little-endian, blockCount * dim --------------
-function writeVectors(id, vectors) {
+function writeVectors(id, vectors, folder) {
+  const f = folder == null ? locOf(id) : folder;
+  const dir = folderDir(f);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const dim = vectors.find(Boolean)?.length || 0;
   const flat = new Float32Array(vectors.length * dim);
   vectors.forEach((v, b) => {
     if (!v) return; // missing → leave zeros
     for (let i = 0; i < dim; i++) flat[b * dim + i] = v[i];
   });
-  fs.writeFileSync(vecPath(id), Buffer.from(flat.buffer));
+  fs.writeFileSync(path.join(dir, id + ".vec"), Buffer.from(flat.buffer));
 }
-function readVectors(id, blockCount) {
-  const buf = fs.readFileSync(vecPath(id));
+function readVectors(id, blockCount, folder) {
+  const buf = fs.readFileSync(vecPath(id, folder));
   const flat = new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.length / 4));
   const dim = blockCount ? flat.length / blockCount : 0;
   const out = [];
@@ -194,14 +247,15 @@ function invalidateCache() { CACHE = null; }
 function buildCache() {
   const items = [];
   for (const meta of loadIndex()) {
-    const doc = readDoc(meta.docId);
+    const folder = locOf(meta.docId);
+    const doc = readDoc(meta.docId, folder);
     if (!doc || !doc.blocks) continue;
     let vecs;
-    try { vecs = readVectors(meta.docId, doc.blocks.length); } catch { continue; }
+    try { vecs = readVectors(meta.docId, doc.blocks.length, folder); } catch { continue; }
     doc.blocks.forEach((b, i) => {
       if (b.embed === false) return;   // stored for the conversation but not retrievable
       items.push({
-        docId: meta.docId, title: doc.title, docKind: doc.docKind,
+        docId: meta.docId, title: doc.title, docKind: doc.docKind, folder,
         blockId: b.id, idx: i, section: b.section, kind: b.kind,
         content: b.content, hasImage: !!b.image, vec: vecs[i],
       });
@@ -219,10 +273,13 @@ async function embedQuery(query, model) {
   return qvec;
 }
 
-async function retrieve(query, model, { docId = null, docIds = null, topK = 8 } = {}) {
-  // docIds (array) scopes to several docs; docId (string) scopes to one; neither → whole library.
+async function retrieve(query, model, { docId = null, docIds = null, folder = null, topK = 8 } = {}) {
+  // docIds (array) scopes to several docs; docId (string) scopes to one;
+  // folder (string) scopes to a sub-folder and everything nested under it;
+  // none of them → whole library.
   const set = (docIds && docIds.length) ? new Set(docIds) : null;
-  const pool = getCache().items.filter(it => it.vec && (set ? set.has(it.docId) : (!docId || it.docId === docId)));
+  const inFolder = (it) => folder == null ? true : (it.folder === folder || it.folder.startsWith(folder + "/"));
+  const pool = getCache().items.filter(it => it.vec && inFolder(it) && (set ? set.has(it.docId) : (!docId || it.docId === docId)));
   if (!pool.length) return [];
   const qvec = await embedQuery(query, model);
   if (!qvec) return [];
@@ -287,8 +344,58 @@ async function importLibrary(req, res) {
 
 // POST /api/library/list  → { docs:[index entries] }
 async function listLibrary(_req, res) {
-  try { sendJson(res, 200, { docs: loadIndex() }); }
+  try { sendJson(res, 200, { docs: loadIndex().map(d => ({ ...d, folder: locOf(d.docId) })) }); }
   catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+// POST /api/library/dirs → { dirs:[""(root), "papers", "papers/ml", …] }
+async function listLibraryDirs(_req, res) {
+  try {
+    ensureDir();
+    const dirs = [""];   // root represented as ""
+    const walk = (dir, rel) => {
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (e.isDirectory() && !e.name.startsWith(".")) {
+          const r = rel ? `${rel}/${e.name}` : e.name;
+          dirs.push(r);
+          walk(path.join(dir, e.name), r);
+        }
+      }
+    };
+    walk(LIBRARY_DIR, "");
+    sendJson(res, 200, { dirs: dirs.sort() });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+// POST /api/library/move  { docIds:[], targetDir } → move each doc's .json + .vec
+// into targetDir (created if needed). docId is unchanged; if a same-id file is
+// already in the target it is overwritten (move wins).
+async function moveLibraryDocs(req, res) {
+  try {
+    const body = await readBody(req);
+    const targetDir = sanitizeFolder(body.targetDir || "");
+    if (targetDir === null) { sendJson(res, 400, { error: "Invalid target directory" }); return; }
+    const destDir = folderDir(targetDir);
+    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+    const moved = [], errors = [];
+    for (const id of (body.docIds || [])) {
+      if (typeof id !== "string" || id.includes("/") || id.includes("..")) { errors.push({ docId: id, error: "Invalid id" }); continue; }
+      const cur = locOf(id);
+      if (cur === targetDir) continue;   // already there
+      try {
+        const srcDoc = docPath(id, cur);
+        if (fs.existsSync(srcDoc)) fs.renameSync(srcDoc, path.join(destDir, path.basename(srcDoc)));
+        const srcVec = vecPath(id, cur);
+        if (fs.existsSync(srcVec)) fs.renameSync(srcVec, path.join(destDir, id + ".vec"));
+        moved.push(id);
+      } catch (e) { errors.push({ docId: id, error: e.message }); }
+    }
+    invalidateLoc();
+    invalidateCache();
+    sendJson(res, 200, { moved, errors });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
 // POST /api/library/search { query, model? } → doc-level results by best block score
@@ -362,11 +469,13 @@ async function deleteLibraryDocs(req, res) {
     const deleted = [];
     for (const id of (body.docIds || [])) {
       if (typeof id !== "string" || id.includes("/") || id.includes("..")) continue;
-      try { fs.existsSync(docPath(id)) && fs.unlinkSync(docPath(id)); } catch {}
-      try { fs.existsSync(vecPath(id)) && fs.unlinkSync(vecPath(id)); } catch {}
+      const folder = locOf(id);
+      try { fs.existsSync(docPath(id, folder)) && fs.unlinkSync(docPath(id, folder)); } catch {}
+      try { fs.existsSync(vecPath(id, folder)) && fs.unlinkSync(vecPath(id, folder)); } catch {}
       removeFromIndex(id);
       deleted.push(id);
     }
+    invalidateLoc();
     invalidateCache();
     sendJson(res, 200, { ok: true, deleted });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
@@ -384,6 +493,7 @@ async function retrieveLibrary(req, res) {
     const hits = await retrieve(query, model, {
       docId: body.docId || null,
       docIds: Array.isArray(body.docIds) ? body.docIds : null,
+      folder: (typeof body.folder === "string" && body.folder.trim()) ? sanitizeFolder(body.folder) : null,
       topK: body.topK || 8,
     });
     const images = body.attachImages ? attachImages(hits, body.maxImages || 3) : [];
@@ -441,5 +551,6 @@ async function reparseLibrary(req, res) {
 module.exports = {
   importLibrary, listLibrary, searchLibrary, getLibraryDoc,
   saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, LIBRARY_DIR,
+  listLibraryDirs, moveLibraryDocs,
   splitIntoBlocks,   // exported for reuse/testing of the chunker
 };

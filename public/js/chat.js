@@ -572,7 +572,7 @@ function resendChatMessage(index) {
   // answer at index+1 was already removed above). The user bubble stays at `index`.
   const askResend = parseAskCommand(message.content);
   if (askResend && askResend.query) {
-    handleAskCommand(askResend.query, tab, askResend.docIds, index + 1);
+    handleAskCommand(askResend.query, tab, { docIds: askResend.docIds, folders: askResend.folders }, index + 1);
     return;
   }
   const rememberResend = message.content.match(/^\/memory\s+([\s\S]+)/);
@@ -2288,7 +2288,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       if (state.activeTabId === tabId) renderChat();
       return;
     }
-    await handleAskCommand(ask.query, tab, ask.docIds);
+    await handleAskCommand(ask.query, tab, { docIds: ask.docIds, folders: ask.folders });
     return;
   }
 

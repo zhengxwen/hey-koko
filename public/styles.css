@@ -4841,6 +4841,21 @@ button.secondary:disabled {
   padding: 8px;
   border-top: 1px solid var(--border, #e0e0e0);
 }
+.libraryScopeRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.libraryAskFolder {
+  font-size: 0.82em;
+  max-width: 220px;
+  padding: 2px 6px;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: inherit;
+}
 .libraryAskRow {
   display: flex;
   align-items: center;

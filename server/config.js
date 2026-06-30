@@ -21,8 +21,8 @@ const config = {
   imageOllamaUrl: process.env.IMAGE_OLLAMA_URL || (process.env.OLLAMA_URL || "http://127.0.0.1:11434"),
   comfyUrl: process.env.COMFY_URL || "http://127.0.0.1:8188",
   PUBLIC_DIR: path.join(__dirname, "..", "public"),
-  ARCHIVES_DIR: path.join(os.homedir(), "ai_archives"),
-  JOBS_DIR: path.join(os.homedir(), "ai_archives", "jobs"),  // Option B: server-side background job queue store
+  ARCHIVES_DIR: path.join(os.homedir(), ".hey-koko", "chat"),
+  JOBS_DIR: path.join(os.homedir(), ".hey-koko", "jobs"),  // Option B: server-side background job queue store
   whisperModel: process.env.WHISPER_MODEL || "",
   // Local text-to-speech (/voice command). TTS_PYTHON should point at a venv
   // python (3.10/3.11) with kokoro installed — the system python may be too
