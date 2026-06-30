@@ -1049,6 +1049,11 @@ function exportJson(tab) {
     // displayImages is just a 360px thumbnail of contextImages — redundant in the
     // export. Drop it; import regenerates the thumbnail from contextImages.
     if (m.contextImages?.length) delete m.displayImages;
+    // generatedThumbnails is only rendered when generatedImages is ABSENT (URL/file
+    // previews). When the full generatedImages exist, the grid uses them directly and
+    // the thumbnails are never read — so drop them. No import-side regen needed (unlike
+    // displayImages, nothing reads generatedThumbnails while generatedImages is present).
+    if (m.generatedImages?.length) delete m.generatedThumbnails;
     return m;
   });
   const payload = { title: tab.title, userName: dom.userName.value, personality: tab.personality };
@@ -1156,6 +1161,18 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
               ? b64
               : `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`;
             return makePreview(src);
+          }));
+        }
+        // Likewise, exports drop generatedThumbnails when generatedImages exist — the grid
+        // now displays the light 480px thumbnail, so regenerate it from the full-res images.
+        // Remote (http) full-res can't be canvas-downscaled (CORS), so keep the URL as-is.
+        if (m.generatedImages?.length && !m.generatedThumbnails?.length) {
+          m.generatedThumbnails = await Promise.all(m.generatedImages.map((img) => {
+            if (img.startsWith("http")) return img;
+            const src = img.startsWith("data:")
+              ? img
+              : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`;
+            return makePreview(src, 480);
           }));
         }
         return m;
@@ -1788,7 +1805,7 @@ async function parseAndSendFile(content, fileInfo) {
             if (data.images && data.images.length) {
               const cidUrls = images.map((img) => `data:${img.mime || "image/png"};base64,${img.base64}`);
               const htmlUrls = data.images.map((img) => `data:${img.mime || "image/jpeg"};base64,${img.base64}`);
-              displayThumbnails = await Promise.all([...cidUrls, ...htmlUrls].map(makePreview));
+              displayThumbnails = await Promise.all([...cidUrls, ...htmlUrls].map((u) => makePreview(u, 480)));
             }
             tool = "eml+pandoc";
           } else {

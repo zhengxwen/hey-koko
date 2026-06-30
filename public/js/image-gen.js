@@ -1131,7 +1131,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     }
 
     const toSrc = (img) => (img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`);
-    const generatedThumbnails = await Promise.all(generatedImages.map((img) => makePreview(toSrc(img))));
+    const generatedThumbnails = await Promise.all(generatedImages.map((img) => makePreview(toSrc(img), 480)));
 
     // "Image generated (W×H)" in the prompt language, with the real output size
     // (decoded from the first image — covers txt2img, img2img and Ollama alike).
@@ -1186,9 +1186,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       }
       const generatedThumbnails = await Promise.all(
         generatedImages.map((img) => {
-          if (img.startsWith("data:")) return makePreview(img);
+          if (img.startsWith("data:")) return makePreview(img, 480);
           const mime = img.startsWith("/9j/") ? "image/jpeg" : "image/png";
-          return makePreview(`data:${mime};base64,${img}`);
+          return makePreview(`data:${mime};base64,${img}`, 480);
         })
       );
       const replyMsg = {

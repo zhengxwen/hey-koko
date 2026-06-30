@@ -102,6 +102,8 @@ export function initArchive() {
       tags: tab.tags || [],
       messages: exportMessages,
     };
+    // 取档而来的对话：归档时更新原存档文件，避免堆积重复副本。
+    if (tab.sourceArchive) data.sourceArchive = tab.sourceArchive;
 
     try {
       const res = await fetch("/api/archive", {
@@ -630,14 +632,13 @@ export function initArchive() {
         const tab = createTab(conv.title || "恢复的对话", messages, conv.personality || null);
         if (conv.persona) tab.persona = conv.persona;
         if (conv.tags) tab.tags = conv.tags;
+        // 方案3：记下来源存档，再次归档时更新原文件而非新建（saveTabs 会持久化此字段）。
+        tab.sourceArchive = result.filename;
         state.tabs.unshift(tab);
       });
 
-      await fetch("/api/archives", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filenames }),
-      });
+      // 取档只复制一份到标签页，存档文件始终保留（不再删除）。
+      // 如需删除存档，请使用"删除"按钮。
 
       switchTab(state.tabs[0].id);
       archiveOverlay.classList.remove("isOpen");

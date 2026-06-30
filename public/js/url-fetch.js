@@ -188,10 +188,10 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
     // Show content as assistant message
     const msgObj = { role: "assistant", content: displayContent, timestamp: Date.now() };
     if (data.type === "youtube" && data.thumbnail) {
-      msgObj.generatedThumbnails = [await makePreview(data.thumbnail)];
+      msgObj.generatedThumbnails = [await makePreview(data.thumbnail, 480)];
       msgObj.ytVideoId = data.videoId;
     } else if (data.type === "webpage" && Array.isArray(data.images) && data.images.length) {
-      msgObj.generatedThumbnails = await Promise.all(data.images.map((img) => makePreview(img)));
+      msgObj.generatedThumbnails = await Promise.all(data.images.map((img) => makePreview(img, 480)));
     }
     placeMsg(tab, msgObj, cursor);
     saveChat();
@@ -253,7 +253,7 @@ async function buildYoutubeInfoMsg(url, data) {
   if (data.uploadDate) { const d = String(data.uploadDate).replace(/-/g, '').slice(0, 8); if (d.length === 8) infoParts.push(`日期：${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`); }
   if (data.description) { const tags = data.description.match(/#[^\s#]+/g); if (tags && tags.length) infoParts.push('', tags.join(' ')); }
   const infoMsg = { role: 'assistant', content: infoParts.join('\n'), timestamp: Date.now() };
-  if (data.thumbnail) { try { infoMsg.generatedThumbnails = [await makePreview(data.thumbnail)]; } catch {} infoMsg.ytVideoId = data.videoId; }
+  if (data.thumbnail) { try { infoMsg.generatedThumbnails = [await makePreview(data.thumbnail, 480)]; } catch {} infoMsg.ytVideoId = data.videoId; }
   return infoMsg;
 }
 

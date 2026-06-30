@@ -48,12 +48,15 @@ export function readFileAsDataUrl(file) {
   });
 }
 
-export function makePreview(dataUrl) {
+// Downscale an image to a JPEG thumbnail capped at `maxSize` px on its long edge.
+// Uploaded-image previews (displayImages) use the 360 default; grid thumbnails for
+// generated/fetched images (generatedThumbnails) pass 480 so they stay crisp at the
+// ~240px display slot on retina (@2x) displays.
+export function makePreview(dataUrl, maxSize = 360) {
   return new Promise((resolve) => {
     const image = new Image();
     image.addEventListener("load", () => {
       const canvas = document.createElement("canvas");
-      const maxSize = 360;
       const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
       canvas.width = Math.max(1, Math.round(image.width * scale));
       canvas.height = Math.max(1, Math.round(image.height * scale));

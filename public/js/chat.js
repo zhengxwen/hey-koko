@@ -2933,7 +2933,10 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     textEl = text;
   }
 
-  const gridImages = generatedImages && generatedImages.length > 0 ? generatedImages : generatedThumbnails;
+  // Inline grid shows the light 480px generatedThumbnails; the full-res generatedImages
+  // ride along as dataset.fullSrc for the lightbox/download (set below). Fall back to the
+  // full-res for display only when no thumbnail exists (legacy data / URL-only previews).
+  const gridImages = generatedThumbnails && generatedThumbnails.length > 0 ? generatedThumbnails : generatedImages;
   if (gridImages && gridImages.length > 0) {
     const validImages = gridImages.filter((img) => img && (img.startsWith("http") || img.length > 100));
     const fullImages = generatedImages && generatedImages.length > 0 ? generatedImages : null;

@@ -25,6 +25,34 @@ async function archiveConversation(req, res) {
 
     ensureArchivesDir();
 
+    // 按目标文件的扩展名选择压缩方式（覆盖旧存档时沿用其后缀，避免 .gz 里写 zstd）。
+    const writeArchive = (filePath) => {
+      const buf = Buffer.from(JSON.stringify(body, null, 2), "utf-8");
+      let compressed;
+      if (filePath.endsWith(".zst")) compressed = zlib.zstdCompressSync(buf);
+      else if (filePath.endsWith(".gz")) compressed = zlib.gzipSync(buf);
+      else compressed = buf;
+      fs.writeFileSync(filePath, compressed);
+    };
+
+    // 方案3：取档时标签页记下了来源存档文件名（sourceArchive）。再次归档时，
+    // 若来源文件仍在，就更新原存档而非新建一份，避免反复归档/取档堆积重复副本。
+    // sourceArchive 是内部字段，不写进存档内容本身。
+    const sourceArchive = body.sourceArchive;
+    delete body.sourceArchive;
+    if (sourceArchive) {
+      const normalized = path.normalize(sourceArchive).replace(/\\/g, "/");
+      if (!normalized.startsWith("/") && !normalized.startsWith("..")) {
+        const srcPath = path.join(config.ARCHIVES_DIR, normalized);
+        if (srcPath.startsWith(config.ARCHIVES_DIR) && fs.existsSync(srcPath)) {
+          writeArchive(srcPath);
+          sendJson(res, 200, { ok: true, filename: normalized, updated: true });
+          return;
+        }
+      }
+      // 来源文件已被删除或路径非法 → 落到下面的新建逻辑。
+    }
+
     // Find the first user message timestamp for filename
     const firstUserMsg = body.messages.find(m => m.role === "user");
     let timestamp;
@@ -53,10 +81,7 @@ async function archiveConversation(req, res) {
       finalPath = path.join(config.ARCHIVES_DIR, finalName);
     }
 
-    const jsonData = JSON.stringify(body, null, 2);
-    const buf = Buffer.from(jsonData, "utf-8");
-    const compressed = HAS_ZSTD ? zlib.zstdCompressSync(buf) : zlib.gzipSync(buf);
-    fs.writeFileSync(finalPath, compressed);
+    writeArchive(finalPath);
     sendJson(res, 200, { ok: true, filename: finalName });
   } catch (e) {
     sendJson(res, 500, { error: e.message });
