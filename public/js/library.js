@@ -12,7 +12,7 @@ import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './ma
 import { saveTabs } from './settings.js';
 import { createTab, switchTab } from './tabs.js';
 import { t } from './i18n.js';
-import { setMentionDocs } from './mentions.js';
+import { setMentionDocs, mentionDocName } from './mentions.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", doc: "📝", other: "📎" };
 const genId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -287,14 +287,25 @@ export function parseAskCommand(content) {
   return { docIds, query: rest.trim() };
 }
 
-export async function handleAskCommand(query, tab, docIds = null) {
+// insertAt: null → fresh send (append the "/ask …" user bubble + answer at the end).
+// A number → resend/edit: the user bubble already exists; insert the answer there.
+export async function handleAskCommand(query, tab, docIds = null, insertAt = null) {
   const rerender = async () => { saveTabs(); const { renderChat } = await import('./chat.js'); renderChat(); };
   const now = Date.now();
-  const mentionStr = (docIds && docIds.length) ? docIds.map((d) => `@${d}`).join(" ") + " " : "";
-  tab.messages.push({ id: genId(), role: "user", content: `/ask ${mentionStr}${query}`, timestamp: now });
+  // When scoped to docs, name them in the "searching…" bubble (full filename) so the
+  // user sees which paper is being read while it loads.
+  const scopedNames = (docIds && docIds.length)
+    ? "\n\n" + docIds.map((d) => `📄 ${mentionDocName(d)}`).join("\n\n")
+    : "";
   // `searching:true` makes renderMessage animate this bubble (pulsing) while we wait.
-  const amsg = { id: genId(), role: "assistant", content: t("lib_searching"), searching: true, timestamp: now + 1 };
-  tab.messages.push(amsg);
+  const amsg = { id: genId(), role: "assistant", content: t("lib_searching") + scopedNames, searching: true, timestamp: now + 1 };
+  if (insertAt == null) {
+    const mentionStr = (docIds && docIds.length) ? docIds.map((d) => `@${d}`).join(" ") + " " : "";
+    tab.messages.push({ id: genId(), role: "user", content: `/ask ${mentionStr}${query}`, timestamp: now });
+    tab.messages.push(amsg);
+  } else {
+    tab.messages.splice(insertAt, 0, amsg);   // user "/ask …" bubble already sits at insertAt-1
+  }
   await rerender();
   try {
     let last = 0;

@@ -568,6 +568,13 @@ function resendChatMessage(index) {
     handleSearchCommand(searchResend[1].trim(), tab, state.activeTabId, message.content, index + 1, index);
     return;
   }
+  // /ask on resend / edit-then-enter: regenerate the library answer in place (the old
+  // answer at index+1 was already removed above). The user bubble stays at `index`.
+  const askResend = parseAskCommand(message.content);
+  if (askResend && askResend.query) {
+    handleAskCommand(askResend.query, tab, askResend.docIds, index + 1);
+    return;
+  }
   const rememberResend = message.content.match(/^\/memory\s+([\s\S]+)/);
   if (rememberResend) {
     const fact = rememberResend[1].trim();

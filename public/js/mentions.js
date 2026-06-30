@@ -15,6 +15,14 @@ let _docs = [];   // cached library index entries {docId,title,docKind,…}
 // Feed the cache directly (e.g. from the library panel's own list fetch, no extra round-trip).
 export function setMentionDocs(docs) { if (Array.isArray(docs)) _docs = docs; }
 
+// Human-readable full name for a docId: the source filename (file:/url: stripped),
+// else the title, else the docId itself. Used to label the /ask "searching…" bubble.
+export function mentionDocName(docId) {
+  const d = _docs.find((x) => x.docId === docId);
+  if (!d) return docId;
+  return (d.source || "").replace(/^(file|url):/, "") || d.title || docId;
+}
+
 // Refresh the doc list (cheap local POST). Called on init and after library changes.
 export async function loadMentionDocs() {
   try {
