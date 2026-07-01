@@ -71,6 +71,15 @@ async function postJson(url, body, signal = null) {
 // chat /url: cover + whisper + subtitle formatting). Every branch produces {source,
 // docKind, title, text, images}, then one shared save → enrich → list-refresh. Progress
 // streams to the drawer via sink.label / the youtube SSE; throws so failures show an error.
+// Map a YouTube language code (en / zh-Hans / ja …) to its English display name
+// ("English", "Chinese (Simplified)", "Japanese"). Intl handles the code→name table;
+// fall back to the raw code if the runtime lacks it or the code is unknown.
+function langName(code) {
+  if (!code) return "";
+  try { return new Intl.DisplayNames(["en"], { type: "language" }).of(code) || code; }
+  catch { return code; }
+}
+
 export async function runLibraryImport(payload, sink) {
   const type = payload.type;
   let source, docKind, title, text, images = [];
@@ -88,19 +97,27 @@ export async function runLibraryImport(payload, sink) {
     // normalize YouTube's "20260701" → "2026-07-01" (same as the chat info card)
     const rawDate = String(data.uploadDate || "").replace(/-/g, "").slice(0, 8);
     const uploadDate = rawDate.length === 8 ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}` : "";
-    // metadata folded onto ONE line so it can ride as the cover figure's caption
-    const metaLine = [payload.url,
+    // Metadata, one field per line. Without a thumbnail it rides as a plain multi-line
+    // text block using real newlines. With a thumbnail it must share the image's single
+    // line (the chunker only keeps same-line text as the figure caption), so the fields
+    // are joined with <br> there — the server converts that back to \n when it extracts
+    // the caption, so the STORED block content always uses real newlines (never <br>).
+    const metaParts = [payload.url,
       data.channel ? `频道：${data.channel}` : "",
       data.duration ? `时长：${data.duration}` : "",
-      uploadDate ? `日期：${uploadDate}` : ""].filter(Boolean).join("　·　");
+      uploadDate ? `日期：${uploadDate}` : "",
+      data.category ? `分类：${data.category}` : "",
+      // tags are creator-filled and often long → cap at 15 to keep the cover readable
+      (data.tags && data.tags.length) ? `标签：${data.tags.slice(0, 15).join("、")}` : "",
+      data.language ? `语言：${langName(data.language)}` : ""].filter(Boolean);
     // First "bubble" = title-tagged cover figure (image + metadata caption). A cover is
-    // optional; without one the metadata rides as a plain text line under the title.
-    let infoLine = metaLine;
+    // optional; without one the metadata rides as a plain multi-line block under the title.
+    let infoLine = metaParts.join("\n");
     if (data.thumbnail) {
       try {
         const dataUrl = await makePreview(data.thumbnail, 720);   // server returns a base64 data URL → no CORS taint
         const raw = (dataUrl.split(",")[1]) || "";
-        if (raw) { images.push({ name: "image_01.jpg", base64: raw, mime: "image/jpeg" }); infoLine = `![](image_01.jpg) ${metaLine}`; }
+        if (raw) { images.push({ name: "image_01.jpg", base64: raw, mime: "image/jpeg" }); infoLine = `![](image_01.jpg) ${metaParts.join("<br>")}`; }
       } catch { /* cover is optional */ }
     }
     source = `url:${payload.url}`; docKind = "video";
@@ -538,6 +555,7 @@ export function initLibrary() {
   const ytErrors = document.querySelector("#libraryYtErrors");
   const ytCount = document.querySelector("#libraryYtCount");
   const ytSelectAll = document.querySelector("#libraryYtSelectAll");
+  const ytReverse = document.querySelector("#libraryYtReverse");
   const ytClose = document.querySelector("#libraryYtClose");
   const ytCancel = document.querySelector("#libraryYtCancel");
   const ytConfirm = document.querySelector("#libraryYtConfirm");
@@ -694,6 +712,7 @@ export function initLibrary() {
     ytRows = [];
     ytErrors.hidden = true; ytErrors.textContent = "";
     ytSelectAll.checked = false; ytSelectAll.disabled = true;
+    ytReverse.disabled = true;
     ytCount.textContent = "";
     ytList.innerHTML = `<div class="libraryYtLoading">${t("lib_ytResolving")}</div>`;
     ytModal.hidden = false;
@@ -715,7 +734,9 @@ export function initLibrary() {
       return;
     }
     const imported = importedYoutubeIds();
-    ytRows = videos.map((v) => ({ ...v, imported: imported.has(v.id) }));
+    // `checked` is the source of truth (survives reverse/re-render); channel videos arrive
+    // newest-first, so list order = publish order (newest → oldest) until the user reverses.
+    ytRows = videos.map((v) => ({ ...v, imported: imported.has(v.id), checked: !imported.has(v.id) }));
     // Not-yet-imported first (checked by default); already-imported after (unchecked).
     ytRows.sort((a, b) => (a.imported === b.imported ? 0 : a.imported ? 1 : -1));
     renderYtList();
@@ -730,9 +751,9 @@ export function initLibrary() {
       row.className = "checkboxLabel isMultiline libraryYtRow" + (r.imported ? " isImported" : "");
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.checked = !r.imported;   // new videos default-on, already-imported default-off
+      cb.checked = r.checked;
       cb.dataset.i = String(i);
-      cb.addEventListener("change", updateYtCount);
+      cb.addEventListener("change", () => { r.checked = cb.checked; updateYtCount(); });
       const meta = document.createElement("div");
       meta.className = "libraryYtMeta";
       const title = document.createElement("div");
@@ -746,23 +767,24 @@ export function initLibrary() {
       ytList.appendChild(row);
     });
     ytSelectAll.disabled = false;
+    ytReverse.disabled = false;
     updateYtCount();
   }
 
-  function ytCheckboxes() { return [...ytList.querySelectorAll('input[type="checkbox"]')]; }
   function updateYtCount() {
-    const boxes = ytCheckboxes();
-    const n = boxes.filter((b) => b.checked).length;
-    ytCount.textContent = t("lib_ytSelectedCount", { n, total: boxes.length });
-    ytSelectAll.checked = n > 0 && n === boxes.length;
+    const n = ytRows.filter((r) => r.checked).length;
+    ytCount.textContent = t("lib_ytSelectedCount", { n, total: ytRows.length });
+    ytSelectAll.checked = n > 0 && n === ytRows.length;
   }
 
   ytSelectAll.addEventListener("change", () => {
-    ytCheckboxes().forEach((b) => { b.checked = ytSelectAll.checked; });
-    updateYtCount();
+    ytRows.forEach((r) => { r.checked = ytSelectAll.checked; });
+    renderYtList();
   });
+  // Reverse the list order → flips the import sequence (e.g. oldest-first for a channel).
+  ytReverse.addEventListener("click", () => { ytRows.reverse(); renderYtList(); });
   function confirmYtModal() {
-    const picked = ytCheckboxes().filter((b) => b.checked).map((b) => ytRows[+b.dataset.i].url);
+    const picked = ytRows.filter((r) => r.checked).map((r) => r.url);
     closeYtModal();
     if (picked.length) enqueueUrlImports(picked);
   }

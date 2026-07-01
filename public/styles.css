@@ -4912,7 +4912,7 @@ button.secondary:disabled {
   overflow: hidden;          /* clip content to the rounded corners */
   transform: translateX(105%);
   transition: transform 0.22s ease;
-  z-index: 40;
+  z-index: 50;   /* above the floating ✏️ opener (z-index 40) so it covers it when open */
   display: flex;
   flex-direction: column;
 }
@@ -4977,6 +4977,10 @@ button.secondary:disabled {
 .bgJobBar.indeterminate .bgJobBarFill { width: 40%; transition: none; animation: bgPhIndet 1.1s ease-in-out infinite; }
 /* Top-of-list tally: "N running · M queued · K paused". */
 .bgJobsSummary { font-size: 11px; color: var(--muted); padding: 2px 4px 8px; }
+.bgJobsActions { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 4px 10px; }
+.bgJobsActionBtn { min-height: 0; padding: 3px 10px; border-radius: 12px; background: transparent; border: 1px solid var(--muted); color: var(--ink); font-size: 11px; cursor: pointer; }
+.bgJobsActionBtn:hover { border-color: var(--accent); color: var(--accent); }
+.bgJobsActionBtn.danger:hover { border-color: #e5484d; color: #e5484d; }
 
 /* Queued rows can be dragged (by the ⠿ handle) to reorder the not-yet-started queue. */
 .bgJobHandle {
@@ -5273,6 +5277,9 @@ button.secondary:disabled {
 .libraryYtModal { width: min(620px, 92vw); }
 .libraryYtToolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 6px; }
 .libraryYtSelectAll { font-size: 0.9em; font-weight: 400; white-space: nowrap; }
+.libraryYtToolbarRight { display: inline-flex; align-items: center; gap: 12px; }
+.libraryYtReverseBtn { font-size: 0.82em; padding: 3px 10px; min-height: 0; white-space: nowrap; }
+.libraryYtReverseBtn:disabled { opacity: 0.45; cursor: default; }
 .libraryYtCount { font-size: 0.85em; color: var(--muted); white-space: nowrap; }
 .libraryYtList { max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
 .libraryYtLoading { padding: 18px 12px; text-align: center; color: var(--muted); font-size: 0.9em; }

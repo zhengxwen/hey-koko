@@ -237,7 +237,9 @@ function splitIntoBlocks(text, images) {
       // figure is its own block (carries the inline image) but is DEFERRED, not emitted
       // inline — so it doesn't split the surrounding prose.
       const im = imgByName.get(img[1]);
-      const caption = raw.replace(/!\[[^\]]*\]\([^)]*\)/, "").trim();
+      // <br> in a caption (e.g. the YouTube cover's metadata, which must ride the image's
+      // single line) becomes a real newline so the stored block content uses \n, not <br>.
+      const caption = raw.replace(/!\[[^\]]*\]\([^)]*\)/, "").replace(/<br\s*\/?>/gi, "\n").trim();
       // keep the original image filename (e.g. image_01.jpg) so downloads/lightbox use it
       const fig = { kind: "figure", section, content: caption || img[1], imageName: img[1], hash: hashText(img[1] + caption) };
       if (im) { fig.image = im.base64; fig.imageMime = im.mime; }

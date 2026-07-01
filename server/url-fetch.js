@@ -540,11 +540,18 @@ async function fetchYouTubeTranscript(videoId, language) {
       if (metaDate2) uploadDate = metaDate2[1].replace(/-/g, "");
     }
     const description = vd.shortDescription || "";
+    const category = mf.category || "";
+    const tags = Array.isArray(vd.keywords) ? vd.keywords : [];
+    // The scrape path has no clean audio-language field. The single ASR (auto-generated)
+    // track is always in the video's ORIGINAL spoken language, whereas manual tracks are
+    // translations (any language) — so prefer the ASR track, else fall back to the first.
+    let language = "";
 
     const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
     if (!captionTracks || captionTracks.length === 0) {
-      return { title, channel, duration, viewCount, uploadDate, description, text: "[该视频无原始字幕]" };
+      return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: "[该视频无原始字幕]" };
     }
+    language = (captionTracks.find(t => t.kind === "asr") || captionTracks[0]).languageCode || "";
 
     // Select subtitle track based on prompt language preference
     const zhTrack = captionTracks.find(t => /zh/.test(t.languageCode));
@@ -585,12 +592,12 @@ async function fetchYouTubeTranscript(videoId, language) {
           .trim();
         if (text) segments.push(text);
       }
-      if (segments.length > 0) return { title, channel, duration, viewCount, uploadDate, description, text: segments.join(" ") };
+      if (segments.length > 0) return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: segments.join(" ") };
     }
 
     // Caption fetch failed
     const langInfo = captionTracks.map(t => t.languageCode).join(", ");
-    return { title, channel, duration, viewCount, uploadDate, description, text: `[字幕获取失败，可用语言: ${langInfo}]` };
+    return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: `[字幕获取失败，可用语言: ${langInfo}]` };
   } catch (e) {
     console.error("[yt-transcript] error:", e.message);
     return null;
@@ -685,23 +692,33 @@ function fetchTranscriptViaYtdlp(videoId) {
               const plainText = segments.map(s => s.text).join("\n");
 
               // Get video metadata
+              // %(...)j fields (categories/tags) print JSON arrays; description stays LAST
+              // because its .500s value may contain newlines (parsed via slice-and-join).
               execFile("yt-dlp", [
                 "--print", "%(title)s",
                 "--print", "%(channel)s",
                 "--print", "%(duration_string)s",
                 "--print", "%(view_count)s",
                 "--print", "%(upload_date)s",
+                "--print", "%(categories)j",
+                "--print", "%(tags)j",
+                "--print", "%(language)s",
                 "--print", "%(description).500s",
                 "--skip-download", url,
               ], { timeout: 15000 }, (e, metaOut) => {
                   const metaLines = (metaOut || "").split("\n");
+                  const parseArr = (s) => { try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } };
                   const title = metaLines[0]?.trim() || "";
                   const channel = metaLines[1]?.trim() || "";
                   const duration = metaLines[2]?.trim() || "";
                   const viewCount = metaLines[3]?.trim() || "";
                   const uploadDate = metaLines[4]?.trim() || "";
-                  const description = metaLines.slice(5).join("\n").trim() || "";
-                  resolve({ title, channel, duration, viewCount, uploadDate, description, text: plainText });
+                  const category = parseArr(metaLines[5])[0] || "";
+                  const tags = parseArr(metaLines[6]);
+                  let language = (metaLines[7] || "").trim();
+                  if (language === "NA") language = "";   // yt-dlp prints NA for a missing field
+                  const description = metaLines.slice(8).join("\n").trim() || "";
+                  resolve({ title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: plainText });
                 }
               );
             } catch (e) {
@@ -995,6 +1012,7 @@ async function youtubeJob(req, res) {
       meta = {
         title: prefetch.title || "", channel: prefetch.channel || "", duration: prefetch.duration || "",
         viewCount: prefetch.viewCount || "", uploadDate: prefetch.uploadDate || "", description: prefetch.description || "",
+        category: prefetch.category || "", tags: Array.isArray(prefetch.tags) ? prefetch.tags : [], language: prefetch.language || "",
       };
       thumbnail = prefetch.thumbnail || "";
       if (prefetch.rawTranscript) { rawTranscript = prefetch.rawTranscript; source = "subtitle"; }
@@ -1013,6 +1031,7 @@ async function youtubeJob(req, res) {
       title: (meta && meta.title) || "", channel: (meta && meta.channel) || "",
       duration: (meta && meta.duration) || "", viewCount: (meta && meta.viewCount) || "",
       uploadDate: (meta && meta.uploadDate) || "", description: (meta && meta.description) || "",
+      category: (meta && meta.category) || "", tags: (meta && meta.tags) || [], language: (meta && meta.language) || "",
       thumbnail, videoId, source, rawTranscript, formattedText,
     } });
     res.end();

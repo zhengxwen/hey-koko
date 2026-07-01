@@ -261,6 +261,10 @@ export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1, st
     kind,
     noPlaceholder,        // drawer-only job (e.g. library imports): no in-chat placeholder bubble
     label: label || '',
+    // The queued/enqueue-time label (persisted, never overwritten by a running-phase
+    // label). A running job's label is swapped to an "in progress" text (e.g. "正在获取内容")
+    // — on reload a re-queued job restores baseLabel so a NOT-yet-started row never shows it.
+    baseLabel: label || '',
     // 'enhancing' = prompt is being rewritten up-front (foreground); pumpLane only
     // picks 'queued', so the job stays parked until releaseEnhancingJob flips it.
     status,
@@ -756,6 +760,61 @@ export function resumeBgJob(jobId) {
   pumpQueue();
 }
 
+// Pause EVERY not-yet-started (queued) job at once — batches the server-pause calls and
+// does a single re-render (vs. pauseBgJob's per-job persist/refresh). Running/paused jobs
+// are untouched.
+export function pauseAllQueued() {
+  let changed = false;
+  for (const job of state.bgJobs) {
+    if (job.status !== 'queued') continue;
+    if (job.serverJobId) pauseServerJob(job.serverJobId);
+    job.status = 'paused';
+    changed = true;
+  }
+  if (!changed) return;
+  persist();
+  refreshPlaceholders();
+}
+
+// Turn a failed job's live error placeholder into a PERMANENT chat bubble (strip the
+// bgPlaceholder flag + bake the error text into content), so it survives clearing the task
+// list and a reload instead of being pruned as an orphan placeholder. No-op if the bubble
+// is already gone.
+function finalizeErrorBubble(job) {
+  const found = findMsg(job.msgId);
+  if (!found || !found.msg.bgPlaceholder) return;
+  const m = found.msg;
+  const mainLabel = (job.label || '').split(' · ')[0] || t('bg_statusError');
+  m.content = `⚠️ ${mainLabel}${job.error ? '：' + job.error : ''}`;
+  m.role = 'assistant';
+  if (!m.timestamp) m.timestamp = Date.now();
+  delete m.bgPlaceholder;
+  delete m.jobId; delete m.status; delete m.label; delete m.error;
+  m.progress = null; m.seg = null; m.enhancedPrompt = null;
+}
+
+// Delete ALL tasks in the drawer (after user confirmation). Failed jobs (error/interrupted)
+// KEEP their bubble in the chat — the placeholder is finalized into a permanent error note;
+// only the drawer entry is removed. Everything else (running/queued/paused) is canceled via
+// cancelBgJob, which drops its placeholder. (Done jobs already auto-removed.)
+export function clearAllJobs() {
+  if (!state.bgJobs.length) return;
+  const n = state.bgJobs.length;
+  if (!confirm(t('bg_clearAllConfirm', { n }))) return;
+  for (const job of [...state.bgJobs]) {
+    if (job.status === 'error' || job.status === 'interrupted') {
+      finalizeErrorBubble(job);
+      const idx = state.bgJobs.indexOf(job);
+      if (idx >= 0) state.bgJobs.splice(idx, 1);
+    } else {
+      cancelBgJob(job.id);   // aborts runner + cancels server job + removes placeholder
+    }
+  }
+  saveChat();
+  persist();
+  refreshPlaceholders();
+}
+
 // ---- navigation ------------------------------------------------------------
 
 // Jump to a job's bubble: switch to its tab and scroll the placeholder into view.
@@ -939,6 +998,7 @@ export function renderDrawer() {
   }
   const summary = buildJobsSummary();
   if (summary) list.appendChild(summary);
+  list.appendChild(buildJobsActions());
   const showHeaders = lanes.length > 1;
   for (const wid of lanes) {
     if (showHeaders) list.appendChild(buildLaneHeader(wid, byLane.get(wid)));
@@ -961,6 +1021,29 @@ function buildJobsSummary() {
   el.className = 'bgJobsSummary';
   el.textContent = parts.join(' · ');
   return el;
+}
+
+// Bulk-action row under the summary: "pause all waiting" (only when some are queued) +
+// "delete all" (always, since the list is non-empty when this renders).
+function buildJobsActions() {
+  const bar = document.createElement('div');
+  bar.className = 'bgJobsActions';
+  const queued = state.bgJobs.filter((j) => j.status === 'queued').length;
+  if (queued) {
+    const pauseAll = document.createElement('button');
+    pauseAll.type = 'button';
+    pauseAll.className = 'bgJobsActionBtn';
+    pauseAll.textContent = t('bg_pauseAll', { n: queued });
+    pauseAll.addEventListener('click', pauseAllQueued);
+    bar.appendChild(pauseAll);
+  }
+  const clearAll = document.createElement('button');
+  clearAll.type = 'button';
+  clearAll.className = 'bgJobsActionBtn danger';
+  clearAll.textContent = t('bg_clearAll');
+  clearAll.addEventListener('click', clearAllJobs);
+  bar.appendChild(clearAll);
+  return bar;
 }
 
 // Display order within a lane: running first, then waiting (queued), then paused, then
@@ -1199,7 +1282,9 @@ export async function restoreBgJobsOnLoad() {
       // last-known % (e.g. "运行中 47%") right away, then live updates resume once the
       // re-run re-subscribes to ComfyUI with the job's stable comfyClientId — instead
       // of snapping back to 0%. In-page jobs can't resume → interrupted (clear progress).
-      if (j.serverJobId) { j.status = 'queued'; }
+      // Re-queued but NOT yet re-started → drop the "in progress" label (e.g. "正在获取内容")
+      // back to the queued label; the re-run re-applies the running label once it starts.
+      if (j.serverJobId) { j.status = 'queued'; if (j.baseLabel) j.label = j.baseLabel; }
       else { j.status = 'interrupted'; j.progress = null; j.seg = null; }
     }
     // Reload landed mid-enhancement (the foreground rewrite never finished) → just run
