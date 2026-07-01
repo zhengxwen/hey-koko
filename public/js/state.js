@@ -17,7 +17,6 @@ export const dom = {
   userNameDropdown: document.querySelector("#userNameDropdown"),
   persona: document.querySelector("#persona"),
   personalitySelect: document.querySelector("#personalitySelect"),
-  saveSettings: document.querySelector("#saveSettings"),
   clearChat: document.querySelector("#clearChat"),
   fileInput: document.querySelector("#fileInput"),
   imagePreview: document.querySelector("#imagePreview"),

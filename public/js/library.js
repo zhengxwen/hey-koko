@@ -12,9 +12,9 @@ import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './ma
 import { saveTabs } from './settings.js';
 import { createTab, switchTab } from './tabs.js';
 import { t } from './i18n.js';
-import { setMentionDocs, mentionDocName } from './mentions.js';
+import { setMentionDocs, mentionDocName, mentionArchiveName } from './mentions.js';
 
-const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", doc: "📝", other: "📎" };
+const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", doc: "📝", chat: "💬", other: "📎" };
 const genId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const embedModel = () => (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:0.6b";
 const kindIcon = (k) => KIND_ICON[k] || "📎";
@@ -40,11 +40,12 @@ function fileToB64(file) {
   });
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, signal = null) {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {}),
+    signal,
   });
   return res.json();
 }
@@ -58,13 +59,14 @@ async function postJson(url, body) {
 // model then reads the entire article(s) instead of a handful of retrieved snippets —
 // so instructions like "帮我理解，生成表格" work on the full paper.
 const FULL_DOC_BUDGET = 100000;   // ~25k tokens; needs the chat model's num_ctx to be large enough
-async function fullDocsContext(docIds, budget = FULL_DOC_BUDGET) {
+async function fullDocsContext(docIds, budget = FULL_DOC_BUDGET, signal = null) {
   let text = "", truncated = false;
   const docs = [], images = [];
   for (const id of docIds) {
     if (text.length >= budget) { truncated = true; break; }
     let doc;
-    try { const r = await postJson("/api/library/get", { docId: id }); doc = r && r.doc; } catch { /* skip */ }
+    try { const r = await postJson("/api/library/get", { docId: id }, signal); doc = r && r.doc; }
+    catch (e) { if (e && e.name === "AbortError") throw e; /* else skip this doc */ }
     if (!doc) continue;
     docs.push({ docId: doc.docId, title: doc.title, docKind: doc.docKind });
     let body = `# ${doc.title}\n\n`, lastSec = null;
@@ -80,21 +82,52 @@ async function fullDocsContext(docIds, budget = FULL_DOC_BUDGET) {
   return { text: text.trim(), truncated, docs, images };
 }
 
-async function runLibraryQuery(query, { docId = null, docIds = null, folder = null, onToken = null } = {}) {
-  const scoped = !!(docIds && docIds.length);
+// Like fullDocsContext but for conversation archives ("/ask #archive …"): load the
+// whole archived conversation(s) and render as a plain 用户/助手 transcript so the
+// model can answer questions about that discussion. Text-only (archive images skipped).
+async function fullArchivesContext(archiveNames, budget = FULL_DOC_BUDGET, signal = null) {
+  if (!archiveNames || !archiveNames.length) return { text: "", truncated: false, sources: [] };
+  let text = "", truncated = false;
+  const sources = [];
+  let results = null;
+  try { const r = await postJson("/api/archives/load", { filenames: archiveNames }, signal); results = r && r.results; }
+  catch (e) { if (e && e.name === "AbortError") throw e; /* else skip */ }
+  for (const item of (results || [])) {
+    if (!item || !item.data) continue;
+    if (text.length >= budget) { truncated = true; break; }
+    const conv = item.data;
+    const title = conv.title || item.filename;
+    sources.push({ archive: item.filename, title, docKind: "chat" });
+    let body = `# ${title}\n\n`;
+    for (const m of (conv.messages || [])) {
+      const content = (m && m.content || "").trim();
+      if (!content) continue;
+      body += `**${m.role === "user" ? "用户" : "助手"}**：${content}\n\n`;
+    }
+    if (text.length + body.length > budget) { body = body.slice(0, budget - text.length); truncated = true; }
+    text += body;
+  }
+  return { text: text.trim(), truncated, sources };
+}
+
+async function runLibraryQuery(query, { docId = null, docIds = null, archives = null, folder = null, onToken = null, signal = null } = {}) {
+  const scoped = !!((docIds && docIds.length) || (archives && archives.length));
   let sys, sourceHits, images;
   if (scoped) {
-    // Scoped to specific docs → READ THE WHOLE document(s), don't retrieve snippets.
-    const full = await fullDocsContext(docIds);
-    if (!full.text) return { answer: t("lib_noResults"), hits: [] };
-    sourceHits = full.docs;
+    // Scoped to specific docs / archives → READ THE WHOLE source(s), don't retrieve snippets.
+    const full = await fullDocsContext(docIds || [], FULL_DOC_BUDGET, signal);
+    const arch = await fullArchivesContext(archives || [], FULL_DOC_BUDGET, signal);
+    const combined = [full.text, arch.text].filter(Boolean).join("\n\n---\n\n");
+    if (!combined) return { answer: t("lib_noResults"), hits: [] };
+    sourceHits = [...full.docs, ...arch.sources];
     images = full.images;
-    sys = `你是知识库助手。下面是用户指定的文档全文${full.truncated ? "（文档较长，已截断部分内容）" : ""}，请通读全文后完成用户的要求（如理解、总结、生成表格等）。\n\n文档全文：\n${full.text}`;
+    const truncated = full.truncated || arch.truncated;
+    sys = `你是知识库助手。下面是用户指定的文档/对话全文${truncated ? "（内容较长，已截断部分）" : ""}，请通读全文后完成用户的要求（如理解、总结、生成表格等）。\n\n全文：\n${combined}`;
   } else {
     // Whole-library → semantic retrieval of the most relevant chunks, cite [n].
     const r = await postJson("/api/library/retrieve", {
       query, model: embedModel(), docId, folder, topK: 6, attachImages: true, maxImages: 3,
-    });
+    }, signal);
     if (!r.hits || !r.hits.length) return { answer: t("lib_noResults"), hits: [] };
     sourceHits = r.hits;
     images = r.images;
@@ -113,6 +146,7 @@ async function runLibraryQuery(query, { docId = null, docIds = null, folder = nu
       stream: true,
       options: { temperature: 0.3 },
     }),
+    signal,
   });
   if (!res.ok || !res.body) return { answer: t("lib_noAnswer"), hits: sourceHits };
 
@@ -275,58 +309,81 @@ async function enrichDoc(docId) {
 }
 
 // ---- /ask command (chat-side): inserts Q + A(+sources) into the conversation ----
-// "/ask [@docId …] question" → { docIds:[…], query:"…" } (or null if not an /ask).
-// Leading @mentions (docIds have no spaces) scope the search to those docs; the rest
-// is the question. No mentions → whole-library search.
+// "/ask [@doc | @folder/ | #archive …] question" → { docIds, folders, archives, query }
+// (or null if not an /ask). Leading mentions (no spaces) scope the query: @docId reads
+// a whole library doc, @folder/ scopes retrieval to a sub-folder, #archive reads a whole
+// conversation archive. The rest is the question. No mentions → whole-library search.
 export function parseAskCommand(content) {
   if (!/^\/ask(\s|$)/.test(content || "")) return null;
   let rest = content.replace(/^\/ask\s*/, "");
-  const docIds = [], folders = [];
+  const docIds = [], folders = [], archives = [];
   let m;
-  while ((m = rest.match(/^@(\S+)\s*/))) {
-    const tok = m[1];
-    if (tok.endsWith("/")) folders.push(tok.slice(0, -1));   // "@folder/" → scope to a sub-folder (+ nested)
+  while ((m = rest.match(/^([@#])(\S+)\s*/))) {
+    const sig = m[1], tok = m[2];
+    if (sig === "#") archives.push(tok);                     // "#archive" → scope to a conversation archive (read whole)
+    else if (tok.endsWith("/")) folders.push(tok.slice(0, -1));   // "@folder/" → scope to a sub-folder (+ nested)
     else docIds.push(tok);                                    // "@docId"   → scope to one doc (read whole)
     rest = rest.slice(m[0].length);
   }
-  return { docIds, folders, query: rest.trim() };
+  return { docIds, folders, archives, query: rest.trim() };
 }
 
-// scope: { docIds:[], folders:[] }. A folder mention (@folder/) scopes RETRIEVAL to
-// that sub-folder (+ nested); doc mentions (@docId) READ the whole doc(s). Folder wins
-// if both are present (a folder can hold many docs, so full-read isn't appropriate).
+// scope: { docIds:[], folders:[], archives:[] }. A folder mention (@folder/) scopes
+// RETRIEVAL to that sub-folder (+ nested); doc mentions (@docId) READ the whole doc(s);
+// archive mentions (#archive) READ the whole conversation archive(s). Folder wins over
+// full-read if both are present (a folder can hold many docs, so full-read isn't apt).
 // insertAt: null → fresh send (append the "/ask …" user bubble + answer at the end).
 // A number → resend/edit: the user bubble already exists; insert the answer there.
 export async function handleAskCommand(query, tab, scope = {}, insertAt = null) {
   const docIds = (scope && scope.docIds) || [];
   const folders = (scope && scope.folders) || [];
+  const archives = (scope && scope.archives) || [];
   const folder = folders.length ? folders[0] : null;      // one sub-folder, retrieval-scoped
-  const fullReadIds = (!folder && docIds.length) ? docIds : null;   // docs → read whole (only when no folder)
-  const rerender = async () => { saveTabs(); const { renderChat } = await import('./chat.js'); renderChat(); };
+  const fullReadIds = (!folder && docIds.length) ? docIds : null;        // docs → read whole (only when no folder)
+  const fullReadArchives = (!folder && archives.length) ? archives : null;  // archives → read whole (only when no folder)
+  // Loaded up front (async) so the abort/button plumbing below is synchronous. Dynamic
+  // import avoids a top-level chat.js⇄library.js cycle.
+  const { renderChat, setGenerating } = await import('./chat.js');
+  const rerender = async () => { saveTabs(); renderChat(); };
   const now = Date.now();
-  // Name the scope in the "searching…" bubble: folders by path, docs by full filename.
+  // Name the scope in the "searching…" bubble: folders by path, docs/archives by full name.
   const nameLines = [
     ...folders.map((f) => `📁 ${f}/`),
     ...(fullReadIds ? fullReadIds.map((d) => `📄 ${mentionDocName(d)}`) : []),
+    ...(fullReadArchives ? fullReadArchives.map((a) => `💬 ${mentionArchiveName(a)}`) : []),
   ];
   const scopedNames = nameLines.length ? "\n\n" + nameLines.join("\n\n") : "";
+  // Label reflects WHAT we're doing: full-reading a saved conversation (#archive) or a
+  // document (@doc) reads the whole thing, not the library-retrieval "searching" path.
+  let label = t("lib_searching");
+  if (fullReadArchives && !fullReadIds) label = t("lib_readingArchive");
+  else if (fullReadIds) label = t("lib_readingDoc");   // docs (or docs + archives)
   // `searching:true` makes renderMessage animate this bubble (pulsing) while we wait.
-  const amsg = { id: genId(), role: "assistant", content: t("lib_searching") + scopedNames, searching: true, timestamp: now + 1 };
+  const amsg = { id: genId(), role: "assistant", content: label + scopedNames, searching: true, timestamp: now + 1 };
   if (insertAt == null) {
-    const toks = [...folders.map((f) => `@${f}/`), ...docIds.map((d) => `@${d}`)];
+    const toks = [...folders.map((f) => `@${f}/`), ...docIds.map((d) => `@${d}`), ...archives.map((a) => `#${a}`)];
     const mentionStr = toks.length ? toks.join(" ") + " " : "";
     tab.messages.push({ id: genId(), role: "user", content: `/ask ${mentionStr}${query}`, timestamp: now });
     tab.messages.push(amsg);
   } else {
     tab.messages.splice(insertAt, 0, amsg);   // user "/ask …" bubble already sits at insertAt-1
   }
+  // Wire into the chat send/stop button: while the ask runs, the button reads "stop"
+  // and the form-submit handler aborts this controller (state.currentAbortController).
+  const abort = new AbortController();
+  state.currentAbortController = abort;
+  setGenerating(true);
   await rerender();
+  let streamed = false;
   try {
     let last = 0;
     const { answer, hits } = await runLibraryQuery(query, {
       docIds: fullReadIds,
+      archives: fullReadArchives,
       folder,
+      signal: abort.signal,
       onToken: (acc) => {
+        streamed = true;
         amsg.searching = false;   // first token in → stop the animation
         amsg.content = acc;
         const now2 = Date.now();
@@ -337,7 +394,15 @@ export async function handleAskCommand(query, tab, scope = {}, insertAt = null) 
     amsg.content = answer + sourcesMarkdown(hits);
   } catch (e) {
     amsg.searching = false;
-    amsg.content = t("lib_askFailed") + e.message;
+    if (e && e.name === "AbortError") {
+      // User hit "stop": keep whatever streamed so far, mark it interrupted.
+      amsg.content = (streamed && amsg.content ? amsg.content + "\n\n" : "") + t("lib_askStopped");
+    } else {
+      amsg.content = t("lib_askFailed") + e.message;
+    }
+  } finally {
+    // Only clear if still ours — a newer generation may have taken over the button.
+    if (state.currentAbortController === abort) setGenerating(false);
   }
   await rerender();
 }

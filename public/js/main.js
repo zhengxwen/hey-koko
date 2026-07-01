@@ -18,7 +18,7 @@ import { setRenderChat as translateSetRenderChat, stopTranslation } from './tran
 import { renderChat, sendMessage, setGenerating, regenerateReply, analyzeMedia, generateProactiveReply, markStopping, showSendError } from './chat.js';
 import { setDeps as urlFetchSetDeps, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
-import { loadMentionDocs, mentionContext, showMentionPopup, hideMentionPopup, moveMentionSelection, selectActiveMention, isMentionPopupOpen } from './mentions.js';
+import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup, hideMentionPopup, moveMentionSelection, selectActiveMention, isMentionPopupOpen } from './mentions.js';
 import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
 import { initLibrary, setLibraryDeps } from './library.js';
@@ -343,10 +343,10 @@ dom.messageInput.addEventListener("input", () => {
   }
 });
 
-// /ask @mention autocomplete: pop the library-doc list while typing "@" inside "/ask …".
+// /ask autocomplete: pop the library-doc list on "@" (or the archive list on "#") inside "/ask …".
 dom.messageInput.addEventListener("input", () => {
   const ctx = mentionContext(dom.messageInput);
-  if (ctx) showMentionPopup(ctx.partial);
+  if (ctx) showMentionPopup(ctx.partial, ctx.sigil);
   else hideMentionPopup();
 });
 dom.messageInput.addEventListener("blur", () => setTimeout(hideMentionPopup, 150));
@@ -607,15 +607,17 @@ for (const el of [dom.dailyGreetingToggle, dom.dailyGreetingTime, dom.idleNudgeT
 
 startScheduler();
 
-// Save settings button
-dom.saveSettings.addEventListener("click", () => {
+// The persona textarea has no per-field auto-save (unlike the selects/toggles), so it
+// saves itself: debounced while typing + immediately on blur. This is what the old
+// "Save settings" button existed for — now removed as redundant.
+let personaSaveTimer = null;
+dom.persona.addEventListener("input", () => {
+  clearTimeout(personaSaveTimer);
+  personaSaveTimer = setTimeout(saveCurrentSettings, 500);
+});
+dom.persona.addEventListener("blur", () => {
+  clearTimeout(personaSaveTimer);
   saveCurrentSettings();
-  // Show confirmation in chat
-  const msgEl = document.createElement("div");
-  msgEl.className = "message system";
-  msgEl.textContent = "设定已保存。";
-  dom.messagesEl.appendChild(msgEl);
-  dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
 });
 
 // userName history dropdown
@@ -2352,7 +2354,8 @@ initArchive();
 // Initialize knowledge library (reuses parseDocumentHeadless for local-doc import)
 setLibraryDeps({ parseDocumentHeadless });
 initLibrary();
-loadMentionDocs();   // prime the /ask @mention doc list
+loadMentionDocs();       // prime the /ask @mention doc list
+loadMentionArchives();   // prime the /ask #mention conversation-archive list
 
 // Enable drag-to-resize / auto-collapse for the settings panel.
 initPanelResize();

@@ -6,19 +6,46 @@ const path = require("path");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const { readArchiveFile, scanArchiveFilenames } = require("./archive");
+const { encodeVectors, decodeVectors } = require("./vecfile");
 
 const DEFAULT_MODEL = "qwen3-embedding:0.6b";
 const MAX_TEXT = 2000;   // chars per archive fed to the embedder
 const BATCH = 4;         // keep batches small — long diverse text can crash the runner
 
-function indexPath() { return path.join(config.ARCHIVES_DIR, ".hk-embeddings.json"); }
+// The index is split like the library: a small JSON of metadata (model, per-archive
+// hash/title/snippet + the vector ORDER) beside a compact binary .vec (HKV1: header +
+// model name + fp32, zstd-compressed) holding the vectors. In-memory shape is unchanged
+// ({ model, items:{ file:{hash,title,snippet,vector} } }) so the build/search code below
+// doesn't care how it's persisted.
+function metaPath() { return path.join(config.ARCHIVES_DIR, ".hk-embeddings.json"); }
+function vecPath() { return path.join(config.ARCHIVES_DIR, ".hk-embeddings.vec"); }
 
 function loadIndex() {
-  try { return JSON.parse(fs.readFileSync(indexPath(), "utf-8")); }
+  let meta;
+  try { meta = JSON.parse(fs.readFileSync(metaPath(), "utf-8")); }
   catch { return { model: null, items: {} }; }
+  const items = meta.items || {};
+  if (Array.isArray(meta.order)) {
+    // New format: vectors live in the sibling .vec, aligned to `order`.
+    let vecs = [];
+    try { vecs = decodeVectors(fs.readFileSync(vecPath())).vectors; } catch { /* missing/corrupt → treat as un-embedded */ }
+    meta.order.forEach((f, i) => { if (items[f] && vecs[i]) items[f].vector = vecs[i]; });
+  }
+  // Old format (inline `vector` arrays on each item) is read as-is; it migrates to the
+  // split format automatically on the next saveIndex — no re-embedding needed.
+  return { model: meta.model || null, items };
 }
+
 function saveIndex(idx) {
-  try { fs.writeFileSync(indexPath(), JSON.stringify(idx)); } catch {}
+  try {
+    const model = idx.model || DEFAULT_MODEL;
+    // Persist only items that actually have a vector; keep meta/order/.vec aligned.
+    const order = Object.keys(idx.items).filter((f) => idx.items[f] && idx.items[f].vector);
+    fs.writeFileSync(vecPath(), encodeVectors(order.map((f) => idx.items[f].vector), model));
+    const items = {};
+    for (const f of order) { const it = idx.items[f]; items[f] = { hash: it.hash, title: it.title, snippet: it.snippet }; }
+    fs.writeFileSync(metaPath(), JSON.stringify({ model: idx.model, order, items }));
+  } catch {}
 }
 
 // Representative text + metadata for one archive.

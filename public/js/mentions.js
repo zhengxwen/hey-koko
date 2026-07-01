@@ -10,10 +10,12 @@ import { escapeHtml } from './utils.js';
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", doc: "📝", other: "📎" };
 const kindIcon = (k) => KIND_ICON[k] || "📎";
 
-let _docs = [];   // cached library index entries {docId,title,docKind,…}
+let _docs = [];       // cached library index entries {docId,title,docKind,…}  (for "@")
+let _archives = [];   // cached archive index entries {filename,title,firstTimestamp,…} (for "#")
 
 // Feed the cache directly (e.g. from the library panel's own list fetch, no extra round-trip).
 export function setMentionDocs(docs) { if (Array.isArray(docs)) _docs = docs; }
+export function setMentionArchives(archives) { if (Array.isArray(archives)) _archives = archives; }
 
 // Human-readable full name for a docId: the source filename (file:/url: stripped),
 // else the title, else the docId itself. Used to label the /ask "searching…" bubble.
@@ -21,6 +23,13 @@ export function mentionDocName(docId) {
   const d = _docs.find((x) => x.docId === docId);
   if (!d) return docId;
   return (d.source || "").replace(/^(file|url):/, "") || d.title || docId;
+}
+
+// Human-readable name for an archive filename: its conversation title, else the
+// bare filename. Used to label the "/ask #archive …" searching bubble.
+export function mentionArchiveName(filename) {
+  const a = _archives.find((x) => x.filename === filename);
+  return (a && a.title) || filename;
 }
 
 // Refresh the doc list (cheap local POST). Called on init and after library changes.
@@ -34,17 +43,28 @@ export async function loadMentionDocs() {
   } catch { /* keep the previous list */ }
 }
 
-// If the cursor sits inside an "@partial" token within an "/ask …" line, return
-// { partial, start } (start = index of the '@'); otherwise null.
+// Refresh the conversation-archive list (for "#" mentions). Called on init and
+// lazily when a "#" popup first opens; cheap GET returning per-archive metadata.
+export async function loadMentionArchives() {
+  try {
+    const r = await fetch("/api/archives");
+    const j = await r.json();
+    if (Array.isArray(j.archives)) _archives = j.archives;
+  } catch { /* keep the previous list */ }
+}
+
+// If the cursor sits inside an "@partial" (library docs) or "#partial" (conversation
+// archives) token within an "/ask …" line, return { sigil, partial, start }
+// (start = index of the sigil char); otherwise null.
 export function mentionContext(input) {
   if (!input) return null;
   const val = input.value;
   if (!/^\/ask(\s|$)/.test(val) || val.includes("\n")) return null;
   const cursor = input.selectionStart;
   const before = val.slice(0, cursor);
-  const m = before.match(/(?:^|\s)@(\S*)$/);   // '@' preceded by start/space, no space to cursor
+  const m = before.match(/(?:^|\s)([@#])(\S*)$/);   // '@'/'#' preceded by start/space, no space to cursor
   if (!m) return null;
-  return { partial: m[1], start: cursor - m[1].length - 1 };
+  return { sigil: m[1], partial: m[2], start: cursor - m[2].length - 1 };
 }
 
 function setMentionActive(index) {
@@ -68,18 +88,34 @@ function folderDocCount(folder) {
   return _docs.filter((d) => { const df = d.folder || ""; return df === folder || df.startsWith(folder + "/"); }).length;
 }
 
-export function showMentionPopup(filter) {
+// Strip an archive filename down to a compact label (drop leading dirs' extension):
+// "sub/nt_20260630_120000.json.zst" → "nt_20260630_120000".
+function archiveShort(filename) {
+  return String(filename).replace(/\.json(\.gz|\.zst)?$/, "");
+}
+
+export function showMentionPopup(filter, sigil = "@") {
   const f = (filter || "").toLowerCase();
-  // Folders (📁, insert "@folder/") first, then docs (📄, insert "@docId").
-  const folders = mentionFolders()
-    .filter((fl) => !f || fl.toLowerCase().includes(f))
-    .slice(0, 6)
-    .map((fl) => ({ token: fl + "/", icon: "📁", name: fl + "/", desc: `📄 ${folderDocCount(fl)}` }));
-  const docs = _docs
-    .filter((d) => !f || (d.docId || "").toLowerCase().includes(f) || (d.title || "").toLowerCase().includes(f))
-    .slice(0, 8)
-    .map((d) => ({ token: d.docId, icon: kindIcon(d.docKind), name: d.title || d.docId, desc: `@${d.docId}` }));
-  const items = [...folders, ...docs];
+  let items;
+  if (sigil === "#") {
+    // "#archive" → scope /ask to whole conversation archives (💬, insert "#filename").
+    if (!_archives.length) loadMentionArchives();   // lazy prime; ready by next keystroke
+    items = _archives
+      .filter((a) => !f || (a.filename || "").toLowerCase().includes(f) || (a.title || "").toLowerCase().includes(f))
+      .slice(0, 10)
+      .map((a) => ({ sigil: "#", token: a.filename, icon: "💬", name: a.title || a.filename, desc: archiveShort(a.filename) }));
+  } else {
+    // "@…": folders (📁, insert "@folder/") first, then docs (📄, insert "@docId").
+    const folders = mentionFolders()
+      .filter((fl) => !f || fl.toLowerCase().includes(f))
+      .slice(0, 6)
+      .map((fl) => ({ sigil: "@", token: fl + "/", icon: "📁", name: fl + "/", desc: `📄 ${folderDocCount(fl)}` }));
+    const docs = _docs
+      .filter((d) => !f || (d.docId || "").toLowerCase().includes(f) || (d.title || "").toLowerCase().includes(f))
+      .slice(0, 8)
+      .map((d) => ({ sigil: "@", token: d.docId, icon: kindIcon(d.docKind), name: d.title || d.docId, desc: `@${d.docId}` }));
+    items = [...folders, ...docs];
+  }
   if (!items.length) { hideMentionPopup(); return; }
   dom.mentionPopup.innerHTML = "";
   state.mentionActiveIndex = 0;
@@ -88,6 +124,7 @@ export function showMentionPopup(filter) {
     el.className = "commandItem" + (i === 0 ? " isActive" : "");
     el.dataset.index = i;
     el.dataset.token = it.token;
+    el.dataset.sigil = it.sigil;
     el.innerHTML =
       `<span class="commandItem-name">${it.icon} ${escapeHtml(it.name)}</span>` +
       `<span class="commandItem-desc">${escapeHtml(it.desc)}</span>`;
@@ -112,7 +149,8 @@ export function moveMentionSelection(dir) {
   setMentionActive(next);
 }
 
-// Replace the "@partial" at the cursor with "@<token> " (token = docId or "folder/").
+// Replace the "@partial"/"#partial" at the cursor with "<sigil><token> "
+// (token = docId / "folder/" for @, or an archive filename for #).
 export function selectActiveMention() {
   const items = dom.mentionPopup.querySelectorAll(".commandItem");
   const active = items[state.mentionActiveIndex || 0];
@@ -120,10 +158,11 @@ export function selectActiveMention() {
   const ctx = mentionContext(input);
   if (!active || !ctx) { hideMentionPopup(); return; }
   const token = active.dataset.token;
+  const sigil = active.dataset.sigil || "@";
   const val = input.value;
   const cursor = input.selectionStart;
-  input.value = val.slice(0, ctx.start) + `@${token} ` + val.slice(cursor);
-  const pos = ctx.start + token.length + 2;   // just past "@token "
+  input.value = val.slice(0, ctx.start) + `${sigil}${token} ` + val.slice(cursor);
+  const pos = ctx.start + token.length + 2;   // just past "<sigil>token " (sigil is 1 char)
   input.setSelectionRange(pos, pos);
   hideMentionPopup();
   input.focus();
