@@ -624,7 +624,7 @@
               <option value="off">Off (no upscale)</option>
             </select>
           </label>
-          <label class="comfyParamCheck" title="Wan Animate only: compile the model (inductor) for ~20–30% faster sampling. First run at each resolution pays a one-time compile (tens of seconds); best for fixed-resolution batches. Uses extra VRAM — when on, segments are auto-shortened to avoid OOM; at 720p+ it may still OOM, then turn this off or lower the size.">
+          <label class="checkboxLabel comfyParamCheck" title="Wan Animate only: compile the model (inductor) for ~20–30% faster sampling. First run at each resolution pays a one-time compile (tens of seconds); best for fixed-resolution batches. Uses extra VRAM — when on, segments are auto-shortened to avoid OOM; at 720p+ it may still OOM, then turn this off or lower the size.">
             <input id="comfyParamTorchCompile" type="checkbox" />
             <span id="comfyParamTorchCompileLabel">torch.compile speedup (Wan Animate)</span>
           </label>
@@ -654,6 +654,47 @@
           <div class="maskPointActions">
             <button id="maskPointClear" type="button" class="secondary">Reset to centre</button>
             <button id="maskPointConfirm" type="button">Use this point</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Library: multi-URL import -->
+    <div id="libraryUrlModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal" role="dialog" aria-modal="true" aria-labelledby="libraryUrlTitle">
+        <div class="scanModalHeader">
+          <h3 id="libraryUrlTitle" class="scanModalTitle">导入网址</h3>
+          <button id="libraryUrlClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
+        </div>
+        <div class="comfyParamsBody">
+          <p class="hint" id="libraryUrlHint">每行一个网址（博客 / 网页 / YouTube）。</p>
+          <textarea id="libraryUrlTextarea" class="libraryUrlTextarea" rows="6" spellcheck="false" placeholder="https://example.com/post-1&#10;https://example.com/post-2"></textarea>
+          <div class="maskPointActions">
+            <button id="libraryUrlCancel" type="button" class="secondary">取消</button>
+            <button id="libraryUrlConfirm" type="button">导入</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Library: YouTube video selection (channels/playlists expanded, multi-select) -->
+    <div id="libraryYtModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal libraryYtModal" role="dialog" aria-modal="true" aria-labelledby="libraryYtTitle">
+        <div class="scanModalHeader">
+          <h3 id="libraryYtTitle" class="scanModalTitle">选择要导入的视频</h3>
+          <button id="libraryYtClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
+        </div>
+        <div class="comfyParamsBody">
+          <p class="hint" id="libraryYtHint">已导入的视频默认不勾选。</p>
+          <div class="libraryYtToolbar">
+            <label class="checkboxLabel libraryYtSelectAll"><input type="checkbox" id="libraryYtSelectAll" /> <span id="libraryYtSelectAllText">全选</span></label>
+            <span id="libraryYtCount" class="libraryYtCount"></span>
+          </div>
+          <div id="libraryYtList" class="libraryYtList"></div>
+          <div id="libraryYtErrors" class="libraryYtErrors" hidden></div>
+          <div class="maskPointActions">
+            <button id="libraryYtCancel" type="button" class="secondary">取消</button>
+            <button id="libraryYtConfirm" type="button">导入所选</button>
           </div>
         </div>
       </div>

@@ -526,6 +526,21 @@ export function initLibrary() {
   const askInput = document.querySelector("#libraryAskInput");
   const askSend = document.querySelector("#libraryAskSend");
   const askScoped = document.querySelector("#libraryAskScoped");
+  const urlModal = document.querySelector("#libraryUrlModal");
+  const urlTextarea = document.querySelector("#libraryUrlTextarea");
+  const urlHint = document.querySelector("#libraryUrlHint");
+  const urlClose = document.querySelector("#libraryUrlClose");
+  const urlCancel = document.querySelector("#libraryUrlCancel");
+  const urlConfirm = document.querySelector("#libraryUrlConfirm");
+  const ytModal = document.querySelector("#libraryYtModal");
+  const ytHint = document.querySelector("#libraryYtHint");
+  const ytList = document.querySelector("#libraryYtList");
+  const ytErrors = document.querySelector("#libraryYtErrors");
+  const ytCount = document.querySelector("#libraryYtCount");
+  const ytSelectAll = document.querySelector("#libraryYtSelectAll");
+  const ytClose = document.querySelector("#libraryYtClose");
+  const ytCancel = document.querySelector("#libraryYtCancel");
+  const ytConfirm = document.querySelector("#libraryYtConfirm");
 
   let docs = [];
   let selected = new Set();
@@ -600,21 +615,161 @@ export function initLibrary() {
     setStatus(t("lib_importQueued"));
   }
 
-  async function importUrl() {
-    const url = prompt(t("lib_urlPrompt"));
-    if (!url || !url.trim()) return;
-    const u = url.trim();
-    // Webpage OR YouTube → a background job (fetch/parse/whisper/format + import + enrich
-    // run headless, shown in the task list). YouTube gets the full /url pipeline (cover +
-    // whisper + subtitle formatting); other URLs just fetch the page text.
-    enqueueBgJob({
-      tabId: state.activeTabId, kind: "libimport",
-      label: isYoutubeUrl(u) ? t("bg_fetchingContent") : u,
-      payload: { type: isYoutubeUrl(u) ? "youtube" : "url", url: u },
-      noPlaceholder: true,
-    });
+  // Enqueue one import job per URL. Webpage OR YouTube → a background job
+  // (fetch/parse/whisper/format + import + enrich run headless, shown in the task list).
+  // YouTube gets the full /url pipeline (cover + whisper + subtitle formatting); other
+  // URLs just fetch the page text.
+  function enqueueUrlImports(urls) {
+    for (const u of urls) {
+      enqueueBgJob({
+        tabId: state.activeTabId, kind: "libimport",
+        label: isYoutubeUrl(u) ? t("bg_fetchingContent") : u,
+        payload: { type: isYoutubeUrl(u) ? "youtube" : "url", url: u },
+        noPlaceholder: true,
+      });
+    }
     setStatus(t("lib_importQueued"));
   }
+
+  // Multi-line URL import: a textarea modal so the user can type/paste one URL per line.
+  function importUrl() {
+    urlHint.textContent = t("lib_urlPrompt");
+    urlTextarea.value = "";
+    urlModal.hidden = false;
+    urlTextarea.focus();
+  }
+  function closeUrlModal() { urlModal.hidden = true; urlTextarea.value = ""; }
+  function confirmUrlModal() {
+    // One URL per line; also tolerate whitespace-separated paste.
+    const urls = urlTextarea.value.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+    closeUrlModal();
+    if (!urls.length) return;
+    // Plain web pages import straight away; YouTube URLs (incl. channels/playlists) go
+    // through a second modal that expands them into individual videos to pick from.
+    const yt = urls.filter(isYoutubeUrl);
+    const plain = urls.filter((u) => !isYoutubeUrl(u));
+    if (plain.length) enqueueUrlImports(plain);
+    if (yt.length) openYoutubeSelection(yt);
+  }
+  urlClose.addEventListener("click", closeUrlModal);
+  urlCancel.addEventListener("click", closeUrlModal);
+  urlConfirm.addEventListener("click", confirmUrlModal);
+  urlModal.addEventListener("click", (e) => { if (e.target === urlModal) closeUrlModal(); });
+  urlTextarea.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeUrlModal(); }
+    // Enter inserts a newline (multi-line input); Cmd/Ctrl+Enter submits.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); confirmUrlModal(); }
+  });
+
+  // ---- YouTube video selection (expand channels/playlists → pick videos) ----
+  // Extract the 11-char video id from any YouTube URL shape (watch / youtu.be / shorts / embed).
+  function youtubeIdOf(u) {
+    try {
+      const url = new URL(u);
+      const host = url.hostname.replace(/^www\./, "").toLowerCase();
+      if (host === "youtu.be") { const id = url.pathname.slice(1).split("/")[0]; return /^[\w-]{11}$/.test(id) ? id : null; }
+      const v = url.searchParams.get("v");
+      if (v && /^[\w-]{11}$/.test(v)) return v;
+      const m = url.pathname.match(/\/(?:shorts|embed|live)\/([\w-]{11})/);
+      return m ? m[1] : null;
+    } catch { return null; }
+  }
+  // Video ids already in the library (from each doc's `url:` source) → "already imported".
+  function importedYoutubeIds() {
+    const set = new Set();
+    for (const d of docs) {
+      const s = d.source || "";
+      if (!s.startsWith("url:")) continue;
+      const id = youtubeIdOf(s.slice(4));
+      if (id) set.add(id);
+    }
+    return set;
+  }
+
+  let ytRows = [];   // [{id, url, title, imported}] currently shown in the selection modal
+
+  function closeYtModal() { ytModal.hidden = true; ytList.innerHTML = ""; ytRows = []; }
+
+  async function openYoutubeSelection(ytUrls) {
+    ytRows = [];
+    ytErrors.hidden = true; ytErrors.textContent = "";
+    ytSelectAll.checked = false; ytSelectAll.disabled = true;
+    ytCount.textContent = "";
+    ytList.innerHTML = `<div class="libraryYtLoading">${t("lib_ytResolving")}</div>`;
+    ytModal.hidden = false;
+    let data;
+    try {
+      data = await postJson("/api/youtube-expand", { urls: ytUrls });
+    } catch (e) {
+      ytList.innerHTML = `<div class="libraryYtLoading">${escapeHtml(t("lib_ytExpandFailed", { error: e.message }))}</div>`;
+      return;
+    }
+    const videos = data.videos || [];
+    const errs = data.errors || [];
+    if (errs.length) {
+      ytErrors.hidden = false;
+      ytErrors.textContent = t("lib_ytSomeErrors", { list: errs.map((e) => (e.url || "?") + "：" + e.error).join("；") });
+    }
+    if (!videos.length) {
+      ytList.innerHTML = `<div class="libraryYtLoading">${escapeHtml(t("lib_ytNone"))}</div>`;
+      return;
+    }
+    const imported = importedYoutubeIds();
+    ytRows = videos.map((v) => ({ ...v, imported: imported.has(v.id) }));
+    // Not-yet-imported first (checked by default); already-imported after (unchecked).
+    ytRows.sort((a, b) => (a.imported === b.imported ? 0 : a.imported ? 1 : -1));
+    renderYtList();
+  }
+
+  function renderYtList() {
+    ytList.innerHTML = "";
+    ytRows.forEach((r, i) => {
+      // Canonical checkbox row: .checkboxLabel gives the 2-col (checkbox | text) grid;
+      // .isMultiline top-aligns the box and styles the .checkboxRowSub url line.
+      const row = document.createElement("label");
+      row.className = "checkboxLabel isMultiline libraryYtRow" + (r.imported ? " isImported" : "");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !r.imported;   // new videos default-on, already-imported default-off
+      cb.dataset.i = String(i);
+      cb.addEventListener("change", updateYtCount);
+      const meta = document.createElement("div");
+      meta.className = "libraryYtMeta";
+      const title = document.createElement("div");
+      title.className = "libraryYtTitle";
+      title.textContent = r.title || r.id;
+      const sub = document.createElement("div");
+      sub.className = "checkboxRowSub";
+      sub.textContent = r.url + (r.imported ? "　·　" + t("lib_ytImported") : "");
+      meta.append(title, sub);
+      row.append(cb, meta);
+      ytList.appendChild(row);
+    });
+    ytSelectAll.disabled = false;
+    updateYtCount();
+  }
+
+  function ytCheckboxes() { return [...ytList.querySelectorAll('input[type="checkbox"]')]; }
+  function updateYtCount() {
+    const boxes = ytCheckboxes();
+    const n = boxes.filter((b) => b.checked).length;
+    ytCount.textContent = t("lib_ytSelectedCount", { n, total: boxes.length });
+    ytSelectAll.checked = n > 0 && n === boxes.length;
+  }
+
+  ytSelectAll.addEventListener("change", () => {
+    ytCheckboxes().forEach((b) => { b.checked = ytSelectAll.checked; });
+    updateYtCount();
+  });
+  function confirmYtModal() {
+    const picked = ytCheckboxes().filter((b) => b.checked).map((b) => ytRows[+b.dataset.i].url);
+    closeYtModal();
+    if (picked.length) enqueueUrlImports(picked);
+  }
+  ytClose.addEventListener("click", closeYtModal);
+  ytCancel.addEventListener("click", closeYtModal);
+  ytConfirm.addEventListener("click", confirmYtModal);
+  ytModal.addEventListener("click", (e) => { if (e.target === ytModal) closeYtModal(); });
 
   // ---- list ----
   async function refreshList() {

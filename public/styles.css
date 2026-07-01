@@ -833,6 +833,11 @@ label {
   font-weight: 650;
 }
 
+/* Canonical checkbox row. Put `.checkboxLabel` on any <label> that wraps a checkbox +
+   text: it overrides the global `label{display:grid}` single column with a 2-col grid
+   (checkbox auto, text 1fr). The checkbox itself is already sane via the global
+   input[type=checkbox] reset above, so no per-row input override is needed.
+   Add `.isMultiline` when the text has a second line (title + subtitle). */
 .checkboxLabel {
   grid-template-columns: auto 1fr;
   align-items: center;
@@ -840,10 +845,15 @@ label {
   cursor: pointer;
 }
 
-.checkboxLabel input[type="checkbox"] {
-  width: auto;
-  margin: 0;
-  accent-color: var(--accent);
+.checkboxLabel.isMultiline {
+  align-items: start;
+}
+.checkboxLabel.isMultiline .checkboxRowSub {
+  font-size: 0.78em;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+  margin-top: 2px;
 }
 
 .voiceRow {
@@ -880,6 +890,22 @@ textarea {
   padding: 10px 12px;
   outline: none;
   font-weight: 400;
+}
+
+/* Checkboxes/radios must opt OUT of the form-field defaults above (width:100%,
+   padding, border) — otherwise they stretch to fill their row and crush the label
+   text into a 1-char vertical column. `:where()` keeps this at the SAME specificity
+   as the `input` rule above (0,0,1) so it wins only by source order over that base
+   rule, while LOSING to every per-component checkbox rule (`.archiveCardCheckbox`,
+   `.thinkingSetting input`, etc.) — their sizing/margins stay exactly as before.
+   Net effect: only the accidental width:100% is neutralized, nothing else changes. */
+input:where([type="checkbox"], [type="radio"]) {
+  width: auto;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  accent-color: var(--accent);
 }
 
 textarea {
@@ -5241,6 +5267,22 @@ button.secondary:disabled {
 .libMetaRow input, .libMetaRow select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; width: 100%; box-sizing: border-box; background: var(--card, #fff); cursor: pointer; }
 .libMetaSave { align-self: flex-end; padding: 6px 16px; border: none; border-radius: 8px; background: var(--accent, #6c8ebf); color: #fff; cursor: pointer; }
 .libraryMarkdownEditor { width: 100%; min-height: 60vh; padding: 12px; border: 1px solid var(--line); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; line-height: 1.55; box-sizing: border-box; resize: vertical; }
+.libraryUrlTextarea { width: 100%; min-height: 8em; padding: 10px; border: 1px solid var(--line); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; line-height: 1.5; box-sizing: border-box; resize: vertical; }
+/* YouTube import selection modal. Rows + select-all use the canonical `.checkboxLabel`
+   for layout (checkbox + text); only modal-specific chrome lives here. */
+.libraryYtModal { width: min(620px, 92vw); }
+.libraryYtToolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 6px; }
+.libraryYtSelectAll { font-size: 0.9em; font-weight: 400; white-space: nowrap; }
+.libraryYtCount { font-size: 0.85em; color: var(--muted); white-space: nowrap; }
+.libraryYtList { max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.libraryYtLoading { padding: 18px 12px; text-align: center; color: var(--muted); font-size: 0.9em; }
+.libraryYtRow { padding: 8px 10px; border-bottom: 1px solid var(--line); font-weight: 400; }
+.libraryYtRow:last-child { border-bottom: none; }
+.libraryYtRow:hover { background: var(--hover, rgba(127,127,127,0.08)); }
+.libraryYtRow.isImported { opacity: 0.62; }
+.libraryYtMeta { min-width: 0; }
+.libraryYtTitle { font-size: 0.92em; line-height: 1.35; overflow-wrap: anywhere; }
+.libraryYtErrors { margin-top: 8px; font-size: 0.82em; color: var(--danger, #c0392b); overflow-wrap: anywhere; }
 .librarySources { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
 .librarySourcesTitle { font-weight: 600; font-size: 0.85em; opacity: 0.7; margin-bottom: 4px; }
 .librarySourceItem { font-size: 0.85em; padding: 3px 6px; border-radius: 6px; cursor: pointer; color: var(--accent, #6c8ebf); }

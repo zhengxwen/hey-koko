@@ -33,11 +33,11 @@ import { applyHighlights, captureAnchor, highlightsInSelection } from './highlig
 // trailing render so the final content always lands. Only one reply streams into
 // the active tab at a time, so a single module-level throttle is enough.
 //
-// 500ms coalesces aggressively (kills the per-character flicker at the cost of a
+// 1000ms coalesces aggressively (kills the per-character flicker at the cost of a
 // chunkier feel). Lower it (~120ms ≈ 8 repaints/sec) for a smoother token-by-
 // token streaming look — with the tradeoff that fast models, which finish inside
-// one or two windows, appear to pop the whole bubble out at once at 500ms.
-const STREAM_RENDER_MS = 500;
+// one or two windows, appear to pop the whole bubble out at once at higher values.
+const STREAM_RENDER_MS = 1000;
 let _streamRenderTimer = null;
 let _streamRenderLast = 0;
 let _streamRenderPending = null;

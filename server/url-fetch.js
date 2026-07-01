@@ -1031,4 +1031,95 @@ function findCommand(cmd) {
   });
 }
 
-module.exports = { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, formatTranscriptServer, extractCleanContent };
+// ---- YouTube channel/playlist expansion (for bulk library import) ------------
+// Classify one YouTube URL and return the URL to hand to yt-dlp for a flat listing:
+//   - single video (watch?v= / youtu.be/ / shorts/ / embed/) → canonical watch?v=ID,
+//     listed as itself (one entry, no playlist expansion);
+//   - playlist (list=) → the playlist page (all its videos);
+//   - channel (/@handle, /channel/ID, /c/name, /user/name) → that channel's /videos tab.
+// Returns null for anything that isn't a recognizable YouTube URL.
+function ytFeedUrl(raw) {
+  let url;
+  try { url = new URL(/^https?:\/\//i.test(raw) ? raw : "https://" + raw); } catch { return null; }
+  const host = url.hostname.replace(/^www\./, "").toLowerCase();
+  const isYt = host === "youtube.com" || host === "m.youtube.com" || host === "youtu.be";
+  if (!isYt) return null;
+
+  // Single video forms → canonical watch?v=ID (drops every extra param, incl. &list=).
+  let vid = null;
+  if (host === "youtu.be") vid = url.pathname.slice(1).split("/")[0];
+  else if (url.searchParams.get("v")) vid = url.searchParams.get("v");
+  else { const m = url.pathname.match(/^\/(?:shorts|embed|live)\/([\w-]{11})/); if (m) vid = m[1]; }
+  if (vid && /^[\w-]{11}$/.test(vid)) return { kind: "video", feed: `https://www.youtube.com/watch?v=${vid}` };
+
+  // Explicit playlist page or any URL carrying a playlist id.
+  const list = url.searchParams.get("list");
+  if (list) return { kind: "playlist", feed: `https://www.youtube.com/playlist?list=${list}` };
+
+  // Channel forms → normalize to the "/videos" tab so flat-playlist enumerates uploads
+  // (a bare channel root lists tab-playlists instead of videos).
+  if (/^\/(@[^/]+|channel\/[^/]+|c\/[^/]+|user\/[^/]+)/.test(url.pathname)) {
+    const base = url.pathname.replace(/\/(videos|shorts|streams|featured|playlists|community|about)\/?$/, "").replace(/\/$/, "");
+    return { kind: "channel", feed: `https://www.youtube.com${base}/videos` };
+  }
+  return null;
+}
+
+// Run `yt-dlp --flat-playlist` and return [{id, title}] for a feed URL. Fast: no
+// per-video extraction. yt-dlp may exit non-zero on partial errors yet still print
+// good entries, so we only reject when nothing usable came back.
+function ytFlatList(ytdlpCmd, feedUrl) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ytdlpCmd, [
+      "--flat-playlist", "--no-warnings", "--ignore-errors",
+      "--print", "%(id)s\t%(title)s",
+      feedUrl,
+    ], { timeout: 120000 });
+    let out = "", err = "";
+    proc.stdout.on("data", (d) => { out += d.toString(); });
+    proc.stderr.on("data", (d) => { err += d.toString(); });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      const entries = out.split("\n").map((l) => l.replace(/\r$/, "")).filter(Boolean).map((line) => {
+        const tab = line.indexOf("\t");
+        const id = tab === -1 ? line : line.slice(0, tab);
+        const title = tab === -1 ? "" : line.slice(tab + 1);
+        return { id: id.trim(), title: title.trim() };
+      }).filter((e) => /^[\w-]{11}$/.test(e.id));
+      if (!entries.length && code !== 0) return reject(new Error((err.trim().split("\n").pop() || `yt-dlp code ${code}`).slice(-200)));
+      resolve(entries);
+    });
+  });
+}
+
+// POST /api/youtube-expand  { urls:[...] }
+//   → { videos:[{id, url(canonical watch?v=), title}], errors:[{url, error}] }
+// Expands channels/playlists into their videos, canonicalizes single videos, and
+// dedupes by video id across all inputs (order preserved).
+async function expandYoutubeUrls(req, res) {
+  try {
+    const body = await readBody(req);
+    const urls = Array.isArray(body.urls) ? body.urls : [];
+    const ytdlpCmd = await findCommand("yt-dlp");
+    if (!ytdlpCmd) { sendJson(res, 200, { videos: [], errors: [{ url: "", error: "yt-dlp 未安装。请运行: brew install yt-dlp" }] }); return; }
+
+    const seen = new Set();
+    const videos = [];
+    const errors = [];
+    for (const raw of urls) {
+      const cls = ytFeedUrl(raw);
+      if (!cls) { errors.push({ url: raw, error: "无法识别的 YouTube 链接" }); continue; }
+      try {
+        const entries = await ytFlatList(ytdlpCmd, cls.feed);
+        for (const e of entries) {
+          if (seen.has(e.id)) continue;
+          seen.add(e.id);
+          videos.push({ id: e.id, url: `https://www.youtube.com/watch?v=${e.id}`, title: e.title || e.id });
+        }
+      } catch (e) { errors.push({ url: raw, error: (e && e.message) || "expand failed" }); }
+    }
+    sendJson(res, 200, { videos, errors });
+  } catch (e) { sendJson(res, 500, { error: (e && e.message) || "youtube-expand failed" }); }
+}
+
+module.exports = { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, formatTranscriptServer, extractCleanContent, expandYoutubeUrls };

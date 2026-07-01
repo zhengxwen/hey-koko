@@ -159,7 +159,14 @@ function removeFromIndex(id) { saveIndex(loadIndex().filter(d => d.docId !== id)
 function deriveDocId(source) {
   let base;
   if (source && source.startsWith("url:")) {
-    try { const u = new URL(source.slice(4)); base = (u.hostname + u.pathname).replace(/\/+$/, ""); }
+    try {
+      const u = new URL(source.slice(4));
+      base = (u.hostname + u.pathname).replace(/\/+$/, "");
+      // YouTube watch URLs all share the "/watch" path — fold the video id in so each
+      // video is a distinct doc (otherwise every YouTube import overwrites the last).
+      const vid = u.searchParams.get("v");
+      if (vid) base += "_" + vid;
+    }
     catch { base = source.slice(4); }
   } else if (source && source.startsWith("file:")) {
     base = source.slice(5).replace(/\.[^.]+$/, "");
