@@ -336,6 +336,33 @@ switch. The config file is re-read per request, so editing it needs no restart
 (but a page reload is needed to refresh the dropdown). `ANTHROPIC_BASE_URL` /
 `ANTHROPIC_API_KEY` environment variables override the file.
 
+### Cloud models via the OpenAI API (optional)
+
+The same mechanism works for the **OpenAI API** (or any OpenAI-compatible
+endpoint). It's independent of the Claude config — you can enable either, both,
+or neither. Create `~/.hey-koko/openai.json`:
+
+```json
+{
+  "baseUrl": "https://api.openai.com",
+  "apiKey": "sk-..."
+}
+```
+
+- `baseUrl` — the API origin. A trailing `/v1` is tolerated (handy for relays,
+  OpenRouter, local OpenAI-compatible servers). Use `https://api.openai.com` for
+  the official API.
+- `apiKey` — your key. **No key → the whole feature stays invisible.**
+- `models` *(optional)* — omit it and Hey-Koko **auto-lists** the chat models
+  your key can access (via `/v1/models`, filtered to text chat models and
+  collapsed to one entry per model). Set it to pin a curated list, e.g.
+  `"models": ["gpt-5", "gpt-4o"]`.
+
+Cloud models appear badged **☁️** in the dropdown alongside Claude and local
+models. `OPENAI_BASE_URL` / `OPENAI_API_KEY` environment variables override the
+file. Note: reasoning models (`o1`/`o3`/`o4`/`gpt-5`) drop `temperature` and use
+the model's own output cap, per the OpenAI API.
+
 
 ## Environment Variables
 
@@ -352,6 +379,8 @@ OLLAMA_URL=http://127.0.0.1:11434 PORT=1314 node server.js
 | `TTS_PYTHON` | `python3` | Python (venv) with kokoro for `/voice` |
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Claude API origin (overrides `claude.json`) |
 | `ANTHROPIC_API_KEY` | — | Claude API key (overrides `claude.json`; enables cloud models) |
+| `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI API origin (overrides `openai.json`) |
+| `OPENAI_API_KEY` | — | OpenAI API key (overrides `openai.json`; enables cloud models) |
 
 
 ## Tech Stack

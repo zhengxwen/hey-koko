@@ -17,6 +17,7 @@ const config = require("./server/config");
 const { sendJson, serveStatic, readBody } = require("./server/utils");
 const { proxyOllamaChat, proxyOllamaTags, proxyOllamaShow } = require("./server/chat");
 const claude = require("./server/claude");
+const openai = require("./server/openai");
 const { scanOllamaStream, scanComfyStream, hostnameFor } = require("./server/network");
 const { proxyOllamaImageModels, generateImage, enhancePrompt } = require("./server/image");
 const { proxyComfyModels, generateComfyImage, uploadComfyVideo } = require("./server/comfy");
@@ -45,6 +46,7 @@ const server = http.createServer((req, res) => {
     readBody(req)
       .then((body) => {
         if (claude.isClaudeModel(body.model)) claude.proxyChat(res, body);
+        else if (openai.isOpenAIModel(body.model)) openai.proxyChat(res, body);
         else proxyOllamaChat(req, res, body);
       })
       .catch(() => sendJson(res, 400, { error: "invalid body" }));
@@ -61,6 +63,8 @@ const server = http.createServer((req, res) => {
       .then((body) => {
         if (claude.isClaudeModel(body.model)) {
           sendJson(res, 200, { contextLength: claude.contextLengthFor(body.model) });
+        } else if (openai.isOpenAIModel(body.model)) {
+          sendJson(res, 200, { contextLength: openai.contextLengthFor(body.model) });
         } else {
           proxyOllamaShow(req, res, body);
         }

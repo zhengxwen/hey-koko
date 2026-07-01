@@ -171,6 +171,9 @@ async function listModels(res) {
       if (!existing.has(name)) models.push({ name, model: name, cloud: true });
     }
   }
+  // Sibling cloud provider: append any configured OpenAI models too, so a single
+  // /api/models poll carries both clouds (no-op if OpenAI isn't configured).
+  try { await require("./openai").injectModels(models); } catch { /* openai optional */ }
   sendJson(res, 200, { models });
 }
 
@@ -232,6 +235,10 @@ function toAnthropicMessages(ollamaMessages) {
       out.push({ role: "user", content: blocks });
     } else if (role === "assistant") {
       const blocks = [];
+      // Reinject preserved Claude thinking blocks FIRST, verbatim — Anthropic
+      // requires thinking before text/tool_use and rejects a tool_use turn whose
+      // thinking block is missing or modified. (Only present on replayed tool turns.)
+      if (Array.isArray(m.thinking_blocks)) for (const tb of m.thinking_blocks) blocks.push(tb);
       if (m.content) blocks.push({ type: "text", text: m.content });
       pendingToolUseIds = [];
       if (Array.isArray(m.tool_calls)) {
@@ -285,9 +292,18 @@ async function proxyChat(res, body) {
   const { system, messages } = toAnthropicMessages(body.messages);
   const tools = toAnthropicTools(body.tools);
   const wantStream = body.stream !== false;
-  // Adaptive thinking only when there are no tools: the frontend drops thinking
-  // blocks when it replays the tool-call turn, which would otherwise 400.
-  const think = !!body.think && !tools;
+  // Adaptive thinking is ALWAYS on. Rationale: Opus 4.8 with thinking OFF tends to
+  // leak analytical reasoning into the visible reply, which reads cold and verbose
+  // for a companion chat — turning it on keeps replies direct and in-character.
+  // Tool turns are safe now too: the non-streaming path returns the raw thinking
+  // blocks as `message.thinking_blocks`, the frontend tool loop echoes them back on
+  // the replayed assistant turn, and toAnthropicMessages reinjects them verbatim
+  // before the tool_use (Anthropic 400s if a tool_use turn is replayed without its
+  // thinking block, and rejects modified blocks).
+  const think = true;
+  // Reveal the (summarized) reasoning only when the user enabled "show thinking";
+  // otherwise the model still thinks but the reasoning is omitted from the stream.
+  const thinkingDisplay = body.think ? "summarized" : "omitted";
   const numPredict = body.options && body.options.num_predict;
   const maxTokens = numPredict && numPredict > 0 ? numPredict : (wantStream ? 32000 : 16000);
 
@@ -300,7 +316,7 @@ async function proxyChat(res, body) {
     stream: wantStream,
     ...(system ? { system } : {}),
     ...(tools ? { tools } : {}),
-    ...(think ? { thinking: { type: "adaptive", display: "summarized" } } : {}),
+    ...(think ? { thinking: { type: "adaptive", display: thinkingDisplay } } : {}),
   };
 
   const controller = new AbortController();
@@ -353,14 +369,19 @@ async function proxyChat(res, body) {
     let content = "";
     let thinking = "";
     const toolCalls = [];
+    const thinkingBlocks = []; // RAW Anthropic thinking blocks (incl. signature) for replay
     for (const block of data.content || []) {
       if (block.type === "text") content += block.text || "";
-      else if (block.type === "thinking") thinking += block.thinking || "";
+      else if (block.type === "thinking") { thinking += block.thinking || ""; thinkingBlocks.push(block); }
+      else if (block.type === "redacted_thinking") { thinkingBlocks.push(block); }
       else if (block.type === "tool_use") toolCalls.push({ function: { name: block.name, arguments: block.input || {} } });
     }
     const message = { role: "assistant", content };
     if (thinking) message.thinking = thinking;
     if (toolCalls.length) message.tool_calls = toolCalls;
+    // Only matters on tool turns: the frontend echoes this back so we can reinject
+    // the thinking blocks verbatim before the tool_use on the next iteration.
+    if (thinkingBlocks.length && toolCalls.length) message.thinking_blocks = thinkingBlocks;
     sendJson(res, 200, {
       model: body.model,
       message,
