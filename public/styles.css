@@ -3249,11 +3249,6 @@ button.secondary:disabled {
   width: 14px;
   text-align: center;
   color: var(--accent);
-  transition: transform 120ms;
-}
-
-.archiveTreeDir.isCollapsed .archiveTreeDirArrow {
-  transform: rotate(-90deg);
 }
 
 .archiveTreeDirIcon {
@@ -4834,6 +4829,18 @@ button.secondary:disabled {
 /* ---- Knowledge Library panel (reuses .archive* classes; only deltas here) ---- */
 .libraryImportWrapper { position: relative; display: inline-block; }
 #libraryImportMenu { top: calc(100% + 6px); bottom: auto; right: auto; left: 0; }
+/* Header badge: count of in-flight (drawer-only) library imports. */
+.libraryTaskCount {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
 .libraryAskBar {
   display: flex;
   flex-direction: column;

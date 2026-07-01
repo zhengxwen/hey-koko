@@ -338,15 +338,17 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
     urlError(errMsg);
     return;
   }
+  // Render the finished transcript now, so "📝 整理好的字幕" lands on its own first.
+  commit();
 
   // 3. optional prompt → reply (front-end; needs conversation context). The reply swaps the
   // placeholder msgId via bg.place() → idempotent on reconnect, no extra stable id needed.
+  // Pop the user's question bubble FIRST (its own render) BEFORE generating the reply — so the
+  // job's continued "running" after the transcript is clearly the reply to that question.
   if (prompt) {
     upsertById(base + ':prompt', { role: 'user', content: prompt, timestamp: Date.now() });
     commit();
     if (_regenerateReply) await _regenerateReply(tabId, cursor.pos, cursor.pos - 1, { urlPart: true }, bg);
-  } else {
-    commit();
   }
 }
 

@@ -908,7 +908,10 @@ async function formatTranscriptServer(title, transcript, model, { onProgress = (
   const systemPrompt = `你是字幕整理助手。将原始字幕片段整理为易读文本：添加标点符号、连成完整句子、适当分段。不要改变原意，不要添加或省略内容。直接输出整理后的文本，不要加任何前缀说明。`;
   let fullContent = "";
   for (let i = 0; i < total; i++) {
-    onProgress({ stage: "formatting", progress: { value: i + 1, max: total } });
+    // value = chunks ALREADY DONE (0 while working on the 1st) so the progress bar shows
+    // real completion (0% on 1/2, 50% on 2/2) instead of jumping to 100% mid-work. The
+    // drawer label adds +1 to show the chunk currently being processed (i/n).
+    onProgress({ stage: "formatting", progress: { value: i, max: total } });
     const chunkPrompt = i === 0
       ? `请整理以下字幕片段（第${i + 1}/${total}段），添加标点并分段，不要省略内容：\n\n${chunks[i]}`
       : `请继续整理下一段字幕（第${i + 1}/${total}段），保持与前面相同的格式风格，添加标点并分段，不要省略内容：\n\n${chunks[i]}`;

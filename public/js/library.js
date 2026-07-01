@@ -7,15 +7,25 @@
 // chat-side /ask command). Retrieval is server-side; generation reuses /api/chat.
 
 import { dom, state } from './state.js';
-import { escapeHtml } from './utils.js';
+import { escapeHtml, makePreview } from './utils.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './markdown.js';
 import { saveTabs } from './settings.js';
 import { createTab, switchTab } from './tabs.js';
-import { t } from './i18n.js';
+import { t, getPromptLanguage } from './i18n.js';
 import { setMentionDocs, mentionDocName, mentionArchiveName } from './mentions.js';
+import { enqueueBgJob } from './bg-jobs.js';
+import { youtubeFetch } from './server-queue.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", doc: "📝", chat: "💬", other: "📎" };
 const genId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+const isYoutubeUrl = (u) => /youtube\.com|youtu\.be/.test(u || "");
+// Set by initLibrary so the background import jobs can refresh the list / task count.
+let _refreshLibraryList = null;
+let _updateTaskCount = null;
+
+// Called by bg-jobs (via setBgDeps onJobsChanged) whenever the job list/status changes,
+// so the library header shows how many imports are still queued/running.
+export function notifyLibraryJobsChanged() { if (_updateTaskCount) _updateTaskCount(); }
 const embedModel = () => (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:0.6b";
 const kindIcon = (k) => KIND_ICON[k] || "📎";
 // Papers can have dozens of authors — show at most the first 3 in the list view.
@@ -48,6 +58,67 @@ async function postJson(url, body, signal = null) {
     signal,
   });
   return res.json();
+}
+
+// Run ANY library import as a background job (see bg-jobs.js runLibImport). Dispatches on
+// payload.type — 'file' (parse a doc: PDF/DOCX/… via _parseDocumentHeadless), 'text'
+// (already-read .txt/.md), 'url' (fetch a webpage), 'youtube' (same server pipeline as
+// chat /url: cover + whisper + subtitle formatting). Every branch produces {source,
+// docKind, title, text, images}, then one shared save → enrich → list-refresh. Progress
+// streams to the drawer via sink.label / the youtube SSE; throws so failures show an error.
+export async function runLibraryImport(payload, sink) {
+  const type = payload.type;
+  let source, docKind, title, text, images = [];
+  const folder = payload.folder || undefined;
+
+  if (type === "youtube") {
+    sink.label(t("bg_fetchingContent"));
+    const r = await youtubeFetch(
+      { url: payload.url, language: getPromptLanguage(), model: dom.modelSelect.value },
+      { bgJob: sink.server.bgJob, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, signal: sink.signal },
+    );
+    const data = await r.json();
+    if (!r.ok || !data || data.error) throw new Error((data && data.error) || t("lib_fetchFailed", { error: "?" }));
+    title = data.title || payload.url;
+    const head = [`# ${title}`, "", payload.url];   // title heading + metadata
+    if (data.channel) head.push(`频道：${data.channel}`);
+    if (data.duration) head.push(`时长：${data.duration}`);
+    if (data.uploadDate) head.push(`日期：${data.uploadDate}`);
+    let figureMd = "";
+    if (data.thumbnail) {
+      try {
+        const dataUrl = await makePreview(data.thumbnail, 720);   // server returns a base64 data URL → no CORS taint
+        const raw = (dataUrl.split(",")[1]) || "";
+        if (raw) { images.push({ name: "image_01.jpg", base64: raw, mime: "image/jpeg" }); figureMd = "\n\n![](image_01.jpg)"; }
+      } catch { /* cover is optional */ }
+    }
+    source = `url:${payload.url}`; docKind = "blog";
+    text = head.join("\n") + figureMd + "\n\n" + (data.formattedText || data.rawTranscript || "");
+  } else if (type === "url") {
+    sink.label(t("bg_fetchingContent"));
+    const data = await postJson("/api/fetch-url", { url: payload.url }, sink.signal);
+    if (data.type === "error" || data.type === "unsupported" || !data.content) throw new Error(data.content || t("lib_fetchFailed", { error: "?" }));
+    source = `url:${payload.url}`; docKind = "blog"; title = data.title || payload.url; text = data.content;
+  } else if (type === "text") {
+    source = `file:${payload.name}`; docKind = payload.docKind || "other"; title = payload.title; text = payload.text;
+  } else if (type === "file") {
+    sink.label(t("bg_parsing"));
+    if (!_parseDocumentHeadless) throw new Error(t("lib_parserNotReady"));
+    const parsed = await _parseDocumentHeadless(payload.fileB64, payload.name, payload.ext, "", (p) => { if (p) sink.label(p); });
+    if (!parsed || !(parsed.text || "").trim()) throw new Error(t("lib_parseEmpty", { name: payload.name }));
+    source = `file:${payload.name}`; docKind = payload.docKind || "other";
+    title = payload.name.replace(/\.[^.]+$/, ""); text = parsed.text; images = parsed.images || [];
+  } else {
+    throw new Error("unknown import type");
+  }
+
+  sink.label(t("lib_importing"));
+  const res = await postJson("/api/library/import", { source, docKind, folder, title, text, images, model: embedModel() }, sink.signal);
+  if (res.error) throw new Error(res.error);
+  // Enrich metadata (title/authors/year/tags) for docs/webpages; skip YouTube — it already
+  // has an accurate title (the LLM would only risk overwriting it with transcript guesses).
+  if (res.docId && type !== "youtube") { sink.label(t("lib_enriching", { name: title })); await enrichDoc(res.docId); }
+  if (_refreshLibraryList) { try { await _refreshLibraryList(); } catch { /* panel maybe closed */ } }
 }
 
 // Shared by the panel ask-box and the chat /ask command: retrieve → generate.
@@ -424,9 +495,12 @@ export function initLibrary() {
   const askFolderSel = document.querySelector("#libraryAskFolder");
   const importBtn = document.querySelector("#libraryImportBtn");
   const importMenu = document.querySelector("#libraryImportMenu");
+  const taskCountEl = document.querySelector("#libraryTaskCount");
+  const importPaperItem = document.querySelector("#libraryImportPaper");
   const importFilesItem = document.querySelector("#libraryImportFiles");
   const importTextItem = document.querySelector("#libraryImportText");
   const importUrlItem = document.querySelector("#libraryImportUrl");
+  const paperInput = document.querySelector("#libraryPaperInput");
   const fileInput = document.querySelector("#libraryFileInput");
   const textInput = document.querySelector("#libraryTextInput");
   const askInput = document.querySelector("#libraryAskInput");
@@ -468,9 +542,12 @@ export function initLibrary() {
   // ---- import menu ----
   importBtn.addEventListener("click", (e) => { e.stopPropagation(); importMenu.hidden = !importMenu.hidden; });
   document.addEventListener("click", (e) => { if (!importMenu.contains(e.target) && e.target !== importBtn) importMenu.hidden = true; });
+  importPaperItem.addEventListener("click", () => { importMenu.hidden = true; paperInput.click(); });
   importFilesItem.addEventListener("click", () => { importMenu.hidden = true; fileInput.click(); });
   importTextItem.addEventListener("click", () => { importMenu.hidden = true; textInput.click(); });
   importUrlItem.addEventListener("click", () => { importMenu.hidden = true; importUrl(); });
+  // "本地论文" → always docKind:paper, stored in the paper/ folder.
+  paperInput.addEventListener("change", () => { importFiles([...paperInput.files], { folder: "paper", docKind: "paper" }); paperInput.value = ""; });
   fileInput.addEventListener("change", () => { importFiles([...fileInput.files]); fileInput.value = ""; });
   textInput.addEventListener("change", () => { importFiles([...textInput.files]); textInput.value = ""; });
 
@@ -480,56 +557,41 @@ export function initLibrary() {
     return "doc";
   }
 
-  async function importFiles(files) {
+  // opts.folder → store all these imports in that sub-folder (overrides auto-classify);
+  // opts.docKind → force the doc kind (e.g. the "本地论文" importer forces "paper").
+  async function importFiles(files, { folder = null, docKind = null } = {}) {
     if (!files.length) return;
-    let done = 0;
+    // Each file becomes its OWN background job (parse + import + enrich runs headless,
+    // survives reload, shows in the task list). .txt/.md are read up front (no parser);
+    // everything else rides as base64 so the bg runner can parse it later.
     for (const file of files) {
       const ext = "." + file.name.split(".").pop().toLowerCase();
-      done++;
-      setStatus(t("lib_parsing", { name: file.name, done, total: files.length }));
-      try {
-        let parsed;
-        if (ext === ".txt" || ext === ".md" || ext === ".markdown") {
-          parsed = { text: await file.text(), images: [] };
-        } else {
-          if (!_parseDocumentHeadless) { alert(t("lib_parserNotReady")); return; }
-          const b64 = await fileToB64(file);
-          parsed = await _parseDocumentHeadless(b64, file.name, ext, "", (p) => setStatus(p));
-        }
-        if (!parsed || !(parsed.text || "").trim()) { setStatus(t("lib_parseEmpty", { name: file.name })); continue; }
-        const r = await postJson("/api/library/import", {
-          source: `file:${file.name}`,
-          docKind: docKindForExt(ext),
-          title: file.name.replace(/\.[^.]+$/, ""),
-          text: parsed.text, images: parsed.images || [], model: embedModel(),
-        });
-        if (r.error) setStatus(t("lib_importFailed", { name: file.name, error: r.error }));
-        else if (r.docId) { setStatus(t("lib_enriching", { name: file.name })); await enrichDoc(r.docId); }
-      } catch (e) { setStatus(t("lib_importFailed", { name: file.name, error: e.message })); }
+      const dk = docKind || docKindForExt(ext);
+      let payload;
+      if (ext === ".txt" || ext === ".md" || ext === ".markdown") {
+        payload = { type: "text", name: file.name, title: file.name.replace(/\.[^.]+$/, ""), text: await file.text(), folder, docKind: dk };
+      } else {
+        payload = { type: "file", name: file.name, ext, fileB64: await fileToB64(file), folder, docKind: dk };
+      }
+      enqueueBgJob({ tabId: state.activeTabId, kind: "libimport", label: file.name, payload, noPlaceholder: true });
     }
-    setStatus(t("lib_imported", { n: files.length }));
-    await refreshList();
+    setStatus(t("lib_importQueued"));
   }
 
   async function importUrl() {
     const url = prompt(t("lib_urlPrompt"));
     if (!url || !url.trim()) return;
-    setStatus(t("lib_fetching"));
-    try {
-      const data = await postJson("/api/fetch-url", { url: url.trim() });
-      if (data.type === "error" || data.type === "unsupported" || !data.content) {
-        alert(t("lib_fetchFailed", { error: data.content || "?" })); setStatus(""); return;
-      }
-      const r = await postJson("/api/library/import", {
-        source: `url:${url.trim()}`, docKind: "blog",
-        title: data.title || url.trim(),
-        text: data.content, images: [], model: embedModel(),
-      });
-      if (r.error) { setStatus(t("lib_importFailed", { name: url.trim(), error: r.error })); return; }
-      if (r.docId) { setStatus(t("lib_enriching", { name: data.title || url.trim() })); await enrichDoc(r.docId); }
-      setStatus(t("lib_importedUrl"));
-      await refreshList();
-    } catch (e) { setStatus(t("lib_fetchFailed", { error: e.message })); }
+    const u = url.trim();
+    // Webpage OR YouTube → a background job (fetch/parse/whisper/format + import + enrich
+    // run headless, shown in the task list). YouTube gets the full /url pipeline (cover +
+    // whisper + subtitle formatting); other URLs just fetch the page text.
+    enqueueBgJob({
+      tabId: state.activeTabId, kind: "libimport",
+      label: isYoutubeUrl(u) ? t("bg_fetchingContent") : u,
+      payload: { type: isYoutubeUrl(u) ? "youtube" : "url", url: u },
+      noPlaceholder: true,
+    });
+    setStatus(t("lib_importQueued"));
   }
 
   // ---- list ----
@@ -541,6 +603,17 @@ export function initLibrary() {
     renderTagBar();
     renderList();
   }
+  _refreshLibraryList = refreshList;   // let the bg import jobs refresh the list on finish
+
+  // Header badge: how many library imports are still queued/running (drawer-only jobs).
+  function updateTaskCount() {
+    if (!taskCountEl) return;
+    const n = (state.bgJobs || []).filter((j) => j.kind === "libimport" && (j.status === "queued" || j.status === "running")).length;
+    taskCountEl.textContent = n ? t("lib_taskCount", { n }) : "";
+    taskCountEl.hidden = !n;
+  }
+  _updateTaskCount = updateTaskCount;
+  updateTaskCount();
 
   // Pull every folder under the library → fill the ask-scope <select> (keeps the
   // current selection if it still exists) and cache for the move popup.

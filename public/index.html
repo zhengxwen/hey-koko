@@ -383,11 +383,14 @@
               <div class="libraryImportWrapper">
                 <button id="libraryImportBtn" type="button" class="secondary archiveSortBtn">+ Import ▾</button>
                 <div id="libraryImportMenu" class="exportMenu" hidden>
+                  <button id="libraryImportPaper" type="button">Local papers (PDF/DOCX)</button>
                   <button id="libraryImportFiles" type="button">Local docs (PDF/PPTX/DOCX)</button>
                   <button id="libraryImportText" type="button">Text / Markdown files</button>
                   <button id="libraryImportUrl" type="button">Web URL / blog</button>
                 </div>
               </div>
+              <span id="libraryTaskCount" class="libraryTaskCount" hidden></span>
+              <input id="libraryPaperInput" type="file" accept=".pdf,.docx" multiple hidden />
               <input id="libraryFileInput" type="file" accept=".pdf,.pptx,.docx" multiple hidden />
               <input id="libraryTextInput" type="file" accept=".txt,.md,.markdown" multiple hidden />
             </div>

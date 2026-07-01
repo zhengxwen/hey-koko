@@ -27,6 +27,29 @@ function ensureDir() {
   if (!fs.existsSync(LIBRARY_DIR)) fs.mkdirSync(LIBRARY_DIR, { recursive: true });
 }
 
+// Standard top-level folders new imports are auto-sorted into (see classifyFolder).
+// Pre-created so the move popup / ask-scope menus always list them, even empty.
+const CATEGORY_DIRS = ["paper", "youtube", "pdf", "url", "doc"];
+function ensureCategoryDirs() {
+  ensureDir();
+  for (const d of CATEGORY_DIRS) {
+    const p = path.join(LIBRARY_DIR, d);
+    if (!fs.existsSync(p)) { try { fs.mkdirSync(p, { recursive: true }); } catch {} }
+  }
+}
+
+// Auto-classify a NEW import into a top-level folder by its source type:
+// YouTube links → youtube, other web URLs → url, PDFs → pdf, everything else → doc.
+function classifyFolder(source) {
+  const s = String(source || "");
+  if (s.startsWith("url:")) {
+    const u = s.slice(4);
+    return /(?:\/\/|\.)(?:youtube\.com|youtu\.be|youtube-nocookie\.com)(?:\/|$)/i.test(u) ? "youtube" : "url";
+  }
+  if (s.startsWith("file:")) return /\.pdf$/i.test(s.slice(5)) ? "pdf" : "doc";
+  return "doc";
+}
+
 // Normalize a user-supplied sub-folder to a safe relative path ("" = root).
 // Returns null if it would escape LIBRARY_DIR (path traversal).
 function sanitizeFolder(dir) {
@@ -335,11 +358,17 @@ async function importLibrary(req, res) {
       tags: body.tags || [], embedModel: model,
       blocks,
     };
-    writeDoc(doc);
-    writeVectors(docId, vectors, null, model);
+    // Folder precedence: an explicit body.folder (e.g. the "本地论文" importer → paper)
+    // always wins; otherwise a re-import keeps its current folder (never undo a manual
+    // move); otherwise a new doc is auto-classified by source (youtube/pdf/url/doc).
+    const requested = (typeof body.folder === "string" && body.folder.trim()) ? sanitizeFolder(body.folder) : null;
+    const known = (LOC || buildLoc()).has(docId);
+    const folder = requested != null ? requested : (known ? locOf(docId) : classifyFolder(body.source));
+    writeDoc(doc, folder);
+    writeVectors(docId, vectors, folder, model);
     upsertIndex(doc);
     invalidateCache();
-    sendJson(res, 200, { ok: true, docId, blockCount: blocks.length });
+    sendJson(res, 200, { ok: true, docId, blockCount: blocks.length, folder });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
@@ -352,7 +381,7 @@ async function listLibrary(_req, res) {
 // POST /api/library/dirs → { dirs:[""(root), "papers", "papers/ml", …] }
 async function listLibraryDirs(_req, res) {
   try {
-    ensureDir();
+    ensureCategoryDirs();
     const dirs = [""];   // root represented as ""
     const walk = (dir, rel) => {
       let entries;

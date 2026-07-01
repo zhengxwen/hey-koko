@@ -29,7 +29,9 @@ let _parseDocumentHeadless = null;
 let _handleUrlCommand = null;
 let _handleMultiUrlCommand = null;
 let _refreshWorkers = null;   // re-scan worker endpoints (ollama.refreshBgWorkers), injected
-export function setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand, refreshWorkers }) {
+let _libraryImport = null;    // library.runLibraryImport — any import → library doc, injected
+let _onJobsChanged = null;    // library.notifyLibraryJobsChanged — refresh the import-task count
+export function setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand, refreshWorkers, libraryImport, onJobsChanged }) {
   if (renderChat) _renderChat = renderChat;
   if (analyzeMedia) _analyzeMedia = analyzeMedia;
   if (regenerateReply) _regenerateReply = regenerateReply;
@@ -37,6 +39,8 @@ export function setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocu
   if (handleUrlCommand) _handleUrlCommand = handleUrlCommand;
   if (handleMultiUrlCommand) _handleMultiUrlCommand = handleMultiUrlCommand;
   if (refreshWorkers) _refreshWorkers = refreshWorkers;
+  if (libraryImport) _libraryImport = libraryImport;
+  if (onJobsChanged) _onJobsChanged = onJobsChanged;
 }
 function rerender() { if (_renderChat) _renderChat(); }
 
@@ -104,7 +108,7 @@ function bgProgressLabel(stage, progress) {
     case 'transcribing': return t('bg_transcribing');
     case 'downloading': return t('bg_downloadingAudio');
     case 'converting': return t('bg_convertingAudio');
-    case 'formatting': return t('bg_formattingSubs', progress ? { i: progress.value, n: progress.max } : { i: 1, n: 1 });
+    case 'formatting': return t('bg_formattingSubs', progress ? { i: progress.value + 1, n: progress.max } : { i: 1, n: 1 });
     default: return '';
   }
 }
@@ -244,7 +248,7 @@ export function setBgWorkerStatus(url, { online, models, hostname }) {
 // Add a job to the FIFO queue and drop a placeholder message into its source tab.
 // payload carries everything needed to (re)run the generator headlessly. insertIndex
 // places the placeholder bubble (e.g. right after the resent user bubble); -1 appends.
-export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1, status = 'queued', enhancedPrompt = null }) {
+export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1, status = 'queued', enhancedPrompt = null, noPlaceholder = false }) {
   const tab = getTab(tabId);
   if (!tab) return null;
   const msgId = genId();
@@ -253,6 +257,7 @@ export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1, st
     tabId,
     msgId,
     kind,
+    noPlaceholder,        // drawer-only job (e.g. library imports): no in-chat placeholder bubble
     label: label || '',
     // 'enhancing' = prompt is being rewritten up-front (foreground); pumpLane only
     // picks 'queued', so the job stays parked until releaseEnhancingJob flips it.
@@ -268,20 +273,23 @@ export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1, st
   assignWorker(job);   // pick which backend/lane runs it (snapshot, like modelOverride)
   // Persisted placeholder bubble — at insertIndex (resend/edit: just after the user
   // bubble) or appended (fresh sends). Reattach is by msgId, so position is free.
-  const placeholder = {
-    id: msgId,
-    role: 'assistant',
-    content: '',          // keep .content access safe; never sent to the model
-    bgPlaceholder: true,
-    jobId: job.id,
-    kind,
-    label: job.label,
-    status,
-    enhancedPrompt,
-    timestamp: Date.now(),
-  };
-  if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, placeholder);
-  else tab.messages.push(placeholder);
+  // noPlaceholder jobs (library imports) run drawer-only: no in-chat bubble at all.
+  if (!noPlaceholder) {
+    const placeholder = {
+      id: msgId,
+      role: 'assistant',
+      content: '',          // keep .content access safe; never sent to the model
+      bgPlaceholder: true,
+      jobId: job.id,
+      kind,
+      label: job.label,
+      status,
+      enhancedPrompt,
+      timestamp: Date.now(),
+    };
+    if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, placeholder);
+    else tab.messages.push(placeholder);
+  }
   saveChat();
   persist();
   refreshPlaceholders();
@@ -401,6 +409,8 @@ async function runJob(job) {
     await runDocFull(job, sink);
   } else if (job.kind === 'url') {
     await runUrl(job, sink);
+  } else if (job.kind === 'libimport') {
+    await runLibImport(job, sink);
   } else {
     // image OR video — generateImage routes to generateVideo for a video model.
     // modelOverride pins the model captured at submit time, so switching the model
@@ -504,6 +514,14 @@ async function runUrl(job, sink) {
   } else {
     await _handleMultiUrlCommand(entries, tab, job.tabId, p.fullContent, cursor, sink);
   }
+  removePlaceholder(job);
+}
+
+// libimport: import anything (file/text/url/youtube) into the Knowledge Library HEADLESS
+// (parse/fetch/whisper/format + embed + enrich, with progress in the drawer). No chat
+// output — the result is a library doc; the placeholder is dropped when it finishes.
+async function runLibImport(job, sink) {
+  if (_libraryImport) await _libraryImport(job.payload || {}, sink);
   removePlaceholder(job);
 }
 
@@ -627,10 +645,18 @@ function syncPlaceholder(job) {
 // its tab is visible—pokes the bar's width directly, flipping it determinate.
 function updatePlaceholderBar(job) {
   const found = findMsg(job.msgId);
-  if (found && found.msg.bgPlaceholder) { found.msg.progress = job.progress; found.msg.seg = job.seg; found.msg.elapsed = runningElapsed(job); }
+  if (found && found.msg.bgPlaceholder) { found.msg.label = job.label; found.msg.progress = job.progress; found.msg.seg = job.seg; found.msg.elapsed = runningElapsed(job); }
   if (state.activeTabId !== job.tabId) return;
   const el = document.querySelector(`[data-msg-id="${job.msgId}"]`);
   if (!el) return;
+  // Follow the job's label in place so the in-chat placeholder tracks phase changes
+  // (e.g. a /url youtube job going 正在获取内容… → 正在整理字幕（i/n）…), matching the
+  // drawer. Same " · " split as the bubble's initial render (main label + detail).
+  const parts = (job.label || '').split(' · ');
+  const labelEl = el.querySelector('.bgPhLabel');
+  if (labelEl) labelEl.textContent = parts[0] || '';
+  const modelEl = el.querySelector('.bgPhModel');
+  if (modelEl) modelEl.textContent = parts.slice(1).join(' · ');
   const segEl = el.querySelector('.bgPhStatus');   // live "第 N/M 段 · 1:23"
   if (segEl) segEl.textContent = phStatusText(job);
   const bar = el.querySelector('.bgPhBar');
@@ -874,6 +900,7 @@ function reorderQueued(srcId, tgtId, after) {
 
 export function renderDrawer() {
   updateBadge();
+  if (_onJobsChanged) _onJobsChanged();   // let the library panel refresh its import-task count
   const list = document.querySelector('#bgJobsList');
   if (!list) return;
   // Don't rebuild the list mid-drag — replacing the dragged row breaks the gesture.

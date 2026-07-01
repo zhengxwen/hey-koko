@@ -293,7 +293,7 @@ function bgBlockResend(index) {
 // Build a placeholder bubble for a background job sitting in the chat at its
 // original position. Mirrors the jobs-drawer status text; offers jump + cancel.
 function renderBgPlaceholder(message) {
-  const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄' };
+  const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄', libimport: '📚' };
   const el = document.createElement('div');
   el.className = `message assistant bgPlaceholder bgPlaceholder-${message.status || 'queued'}`;
   el.dataset.msgId = message.id;
@@ -1023,9 +1023,12 @@ function buildMessages(tabId = state.activeTabId, contextEndIndex = -1) {
       : getPrompt("nameInstructionSingle", names[0]);
   }
   const memoryBlock = getMemoryPromptBlock(getPrompt("memoryHeader"));
+  // (A) Give the model an absolute clock so it can be time-aware (e.g. "this late?").
   const system = `${dom.persona.value}
 
-${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
+${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}
+
+${getPrompt("currentTimeContext", new Date())}`;
 
   // Find the last compact boundary - only include messages after it
   let startIndex = 0;
@@ -1036,6 +1039,12 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
     }
   }
   const relevantMessages = sourceMessages.slice(startIndex).slice(-24);
+
+  // (B) Time-away awareness: when a user turn lands >4h after the previous included
+  // turn, prepend a "the user replied N hours/days/weeks later" note (ephemeral —
+  // outgoing payload only). lastTs tracks the previous included message's timestamp.
+  const GAP_MS = 4 * 60 * 60 * 1000;
+  let lastTs = null;
 
   const mapped = [];
   for (const msg of relevantMessages) {
@@ -1049,6 +1058,7 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
     // Include compact summary as system context
     if (msg.isCompactSummary) {
       mapped.push({ role: "system", content: `${getPrompt("summaryContext")}${msg.content}` });
+      if (msg.timestamp) lastTs = msg.timestamp;
       continue;
     }
     // Skip the /compact command itself
@@ -1071,23 +1081,30 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}`;
       // stored contextImages.
       if (msg.contextImages?.length) message.images = msg.contextImages;
       mapped.push(message);
+      if (msg.timestamp) lastTs = msg.timestamp;
       continue;
     }
     const message = { role: msg.role, content: msg.content };
+    // Ephemeral context prefixes (prepended to the OUTGOING content only, never stored):
+    // the time-away note first, then the attached-image name map.
+    let prefix = "";
+    if (msg.role === "user" && lastTs && msg.timestamp && (msg.timestamp - lastTs) > GAP_MS) {
+      prefix += `${getPrompt("timeGapContext", (msg.timestamp - lastTs) / 3600000)}\n\n`;
+    }
     if (msg.contextImages?.length) {
       message.images = msg.contextImages;
       // When the upload kept original filenames, prepend a deduped name→order list so the
       // user can refer to an image by filename ("describe chart.png"). The model receives
-      // images as a bare ordered array (no labels), so this mapping lives in the text. The
-      // annotation is ephemeral — only on the outgoing payload, never on the stored bubble.
+      // images as a bare ordered array (no labels), so this mapping lives in the text.
       if (msg.imageNames?.some(Boolean)) {
         const labeled = dedupeImageNames(msg.imageNames.slice(0, msg.contextImages.length));
         const list = labeled.map((nm, i) => `${i + 1}. ${nm}`).join("  ");
-        const hint = getPrompt("imageNamesContext", labeled.length, list);
-        message.content = msg.content ? `${hint}\n\n${msg.content}` : hint;
+        prefix += `${getPrompt("imageNamesContext", labeled.length, list)}\n\n`;
       }
     }
+    if (prefix) message.content = `${prefix}${msg.content || ""}`.trimEnd();
     mapped.push(message);
+    if (msg.timestamp) lastTs = msg.timestamp;
   }
 
   return [{ role: "system", content: system }, ...mapped];
