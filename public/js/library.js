@@ -16,7 +16,7 @@ import { setMentionDocs, mentionDocName, mentionArchiveName } from './mentions.j
 import { enqueueBgJob, openBgDrawer } from './bg-jobs.js';
 import { youtubeFetch } from './server-queue.js';
 
-const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", doc: "📝", chat: "💬", other: "📎" };
+const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", video: "📺", doc: "📝", chat: "💬", other: "📎" };
 const genId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const isYoutubeUrl = (u) => /youtube\.com|youtu\.be/.test(u || "");
 // Set by initLibrary so the background import jobs can refresh the list / task count.
@@ -84,20 +84,29 @@ export async function runLibraryImport(payload, sink) {
     const data = await r.json();
     if (!r.ok || !data || data.error) throw new Error((data && data.error) || t("lib_fetchFailed", { error: "?" }));
     title = data.title || payload.url;
-    const head = [`# ${title}`, "", payload.url];   // title heading + metadata
-    if (data.channel) head.push(`频道：${data.channel}`);
-    if (data.duration) head.push(`时长：${data.duration}`);
-    if (data.uploadDate) head.push(`日期：${data.uploadDate}`);
-    let figureMd = "";
+    // normalize YouTube's "20260701" → "2026-07-01" (same as the chat info card)
+    const rawDate = String(data.uploadDate || "").replace(/-/g, "").slice(0, 8);
+    const uploadDate = rawDate.length === 8 ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}` : "";
+    // metadata folded onto ONE line so it can ride as the cover figure's caption
+    const metaLine = [payload.url,
+      data.channel ? `频道：${data.channel}` : "",
+      data.duration ? `时长：${data.duration}` : "",
+      uploadDate ? `日期：${uploadDate}` : ""].filter(Boolean).join("　·　");
+    // First "bubble" = title-tagged cover figure (image + metadata caption). A cover is
+    // optional; without one the metadata rides as a plain text line under the title.
+    let infoLine = metaLine;
     if (data.thumbnail) {
       try {
         const dataUrl = await makePreview(data.thumbnail, 720);   // server returns a base64 data URL → no CORS taint
         const raw = (dataUrl.split(",")[1]) || "";
-        if (raw) { images.push({ name: "image_01.jpg", base64: raw, mime: "image/jpeg" }); figureMd = "\n\n![](image_01.jpg)"; }
+        if (raw) { images.push({ name: "image_01.jpg", base64: raw, mime: "image/jpeg" }); infoLine = `![](image_01.jpg) ${metaLine}`; }
       } catch { /* cover is optional */ }
     }
-    source = `url:${payload.url}`; docKind = "blog";
-    text = head.join("\n") + figureMd + "\n\n" + (data.formattedText || data.rawTranscript || "");
+    source = `url:${payload.url}`; docKind = "video";
+    // A heading between the cover and the transcript forces them into SEPARATE blocks
+    // (§title = cover, §字幕整理 = transcript) → two bubbles, cover first, subs second.
+    text = [`# ${title}`, "", infoLine, "", "# 字幕整理", "",
+      (data.formattedText || data.rawTranscript || "")].join("\n");
   } else if (type === "url") {
     sink.label(t("bg_fetchingContent"));
     const data = await postJson("/api/fetch-url", { url: payload.url }, sink.signal);
@@ -960,7 +969,7 @@ export function initLibrary() {
     const titleInp = mkRow(t("lib_metaTitle"), doc.title);
     const kindSel = mkSelectRow(t("lib_metaKind"), doc.docKind, [
       ["paper", t("lib_kindPaper")], ["slides", t("lib_kindSlides")],
-      ["blog", t("lib_kindBlog")], ["doc", t("lib_kindDoc")], ["other", t("lib_kindOther")],
+      ["blog", t("lib_kindBlog")], ["video", t("lib_kindVideo")], ["doc", t("lib_kindDoc")], ["other", t("lib_kindOther")],
     ]);
     const authorsInp = mkRow(t("lib_metaAuthors"), doc.authors);
     const yearInp = mkRow(t("lib_metaYear"), doc.year);

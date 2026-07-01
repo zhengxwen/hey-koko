@@ -4850,6 +4850,7 @@ button.secondary:disabled {
   background: color-mix(in srgb, var(--accent) 24%, transparent);
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
+.libraryTaskCount[hidden] { display: none; }
 @keyframes libTaskPulse {
   0%, 100% {
     box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent);
