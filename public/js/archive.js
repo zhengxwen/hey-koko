@@ -5,6 +5,7 @@
 import { dom, state } from './state.js';
 import { escapeHtml, mediaFilename } from './utils.js';
 import { markdownToHtml } from './markdown.js';
+import { applyHighlights } from './highlight.js';
 import { saveTabs } from './settings.js';
 import { getActiveTab, createTab, closeTab, switchTab, renderTabs } from './tabs.js';
 import { t } from './i18n.js';
@@ -113,6 +114,8 @@ export function initArchive() {
       if (msg.isCompactSummary) m.isCompactSummary = true;
       if (msg.isFilePreview) m.isFilePreview = true;
       if (msg.translation) m.translation = msg.translation;
+      // User text highlights / annotations — round-trip so retrieval restores them.
+      if (msg.highlights && msg.highlights.length) m.highlights = msg.highlights;
       return m;
     });
 
@@ -584,9 +587,9 @@ export function initArchive() {
 
         let contentHtml;
         if (msg.role === "assistant") {
-          contentHtml = `<div class="markdownBody">${markdownToHtml(msg.content || "")}</div>`;
+          contentHtml = `<div class="markdownBody archiveMsgBody">${markdownToHtml(msg.content || "")}</div>`;
         } else {
-          contentHtml = `<div>${escapeHtml(msg.content || "")}</div>`;
+          contentHtml = `<div class="archiveMsgBody">${escapeHtml(msg.content || "")}</div>`;
         }
 
         let tsHtml = "";
@@ -595,6 +598,12 @@ export function initArchive() {
         }
 
         div.innerHTML = tsHtml + imageHtml + contentHtml + genImageHtml;
+
+        // Re-apply the message's highlights/notes to the read-only preview.
+        if (msg.highlights && msg.highlights.length) {
+          const bodyEl = div.querySelector(".archiveMsgBody");
+          if (bodyEl) applyHighlights(bodyEl, msg.highlights);
+        }
 
         if (msg.translation) {
           const row = document.createElement("div");

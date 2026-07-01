@@ -127,6 +127,8 @@ function saveChatMessage(message) {
     if (message.librarySection) stored.librarySection = message.librarySection;
     if (message.imageMime) stored.imageMime = message.imageMime;
   }
+  // User text highlights / annotations (content-anchored display decorations).
+  if (message.highlights && message.highlights.length) stored.highlights = message.highlights;
   if (message.thinking) stored.thinking = message.thinking;
   if (message.toolSteps && message.toolSteps.length) stored.toolSteps = message.toolSteps;
   // A background-job placeholder must survive a reload as a placeholder (not a blank

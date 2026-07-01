@@ -340,6 +340,8 @@
             <span class="chatLoadingDots"><span></span><span></span><span></span></span>
           </div>
           <button id="scrollToBottomBtn" type="button" class="scrollToBottomBtn" hidden aria-label="回到底部"><span class="scrollToBottomIcon">↓</span><span class="scrollToBottomText">回到底部</span></button>
+          <!-- Floating opener for the highlights/notes browser (right-docked panel). -->
+          <button id="highlightsPanelBtn" type="button" class="highlightsPanelBtn" hidden aria-label="高亮与批注" title="高亮与批注"><span class="highlightsPanelIcon">✏️</span><span id="highlightsPanelBadge" class="highlightsPanelBadge" hidden></span></button>
         </div>
 
         <!-- Archive Workspace Overlay -->
@@ -480,6 +482,21 @@
           <button id="stopTranslateBtn" type="button" class="stopTranslateBtn" hidden>Stop Translation</button>
         </form>
       </section>
+
+      <!-- Highlights & notes browser — a right-docked panel that squeezes the
+           chat column (grid col 4) instead of overlaying it. -->
+      <aside id="highlightsPanel" class="highlightsPanel" aria-label="高亮与批注">
+        <div class="highlightsHeader">
+          <span class="highlightsTitle" id="highlightsTitle">高亮与批注</span>
+          <span class="highlightsCount" id="highlightsCount"></span>
+          <button id="highlightsCloseBtn" type="button" class="highlightsCloseBtn" aria-label="关闭">×</button>
+        </div>
+        <div class="highlightsFilters">
+          <div class="highlightsChips" id="highlightsChips"></div>
+          <input type="search" id="highlightsSearch" class="highlightsSearch" placeholder="搜索高亮或批注…" />
+        </div>
+        <div id="highlightsList" class="highlightsList"></div>
+      </aside>
     </main>
 
     <!-- Ollama Scan Modal -->

@@ -316,6 +316,8 @@ function skipMode(el) {
   if (tag === "PRE" || tag === "SVG") return "break";
   if (el.classList.contains("katex-block") || el.classList.contains("mermaid")) return "break";
   if (el.classList.contains("katex")) return "nobreak";
+  // Injected 💬 highlight-note marker: not part of the spoken message text.
+  if (el.classList.contains("hlNoteMark")) return "nobreak";
   return null;
 }
 

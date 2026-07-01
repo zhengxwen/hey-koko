@@ -8,6 +8,7 @@ const { execFile, spawn } = require("child_process");
 const { sendJson, readBody } = require("./utils");
 const config = require("./config");
 const claude = require("./claude");
+const openai = require("./openai");
 
 async function fetchUrlContent(req, res) {
   try {
@@ -921,6 +922,12 @@ async function formatTranscriptServer(title, transcript, model, { onProgress = (
       // Cloud model: the /api/chat router doesn't sit in this server-side path,
       // so call Claude directly (non-streaming) instead of local Ollama.
       chunkText = await claude.complete(
+        model,
+        [{ role: "system", content: systemPrompt }, { role: "user", content: chunkPrompt }],
+        { signal },
+      );
+    } else if (openai.isOpenAIModel(model)) {
+      chunkText = await openai.complete(
         model,
         [{ role: "system", content: systemPrompt }, { role: "user", content: chunkPrompt }],
         { signal },

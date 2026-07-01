@@ -15,7 +15,7 @@ import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWork
 import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsMask } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
-import { renderChat, sendMessage, setGenerating, regenerateReply, analyzeMedia, generateProactiveReply, markStopping, showSendError } from './chat.js';
+import { renderChat, sendMessage, setGenerating, regenerateReply, analyzeMedia, generateProactiveReply, markStopping, showSendError, initHighlightUI } from './chat.js';
 import { setDeps as urlFetchSetDeps, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
 import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup, hideMentionPopup, moveMentionSelection, selectActiveMention, isMentionPopupOpen } from './mentions.js';
@@ -2363,6 +2363,9 @@ loadMentionArchives();   // prime the /ask #mention conversation-archive list
 
 // Enable drag-to-resize / auto-collapse for the settings panel.
 initPanelResize();
+
+// Selection toolbar for highlighting / annotating message text.
+initHighlightUI();
 
 // Initial render
 saveTabs();

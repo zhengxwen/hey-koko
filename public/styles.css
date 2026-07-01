@@ -235,6 +235,18 @@ textarea {
   grid-column: 3;
 }
 
+/* Highlights browser docked as grid column 4 — squeezes the chat, never overlays. */
+#highlightsPanel { display: none; }
+.shell.hlOpen { grid-template-columns: var(--panel-w, 320px) 10px minmax(0, 1fr) var(--hl-w, 340px); }
+.shell.hlOpen.panelCollapsed { grid-template-columns: 0 10px minmax(0, 1fr) var(--hl-w, 340px); }
+.shell.hlOpen #highlightsPanel {
+  display: flex;
+  flex-direction: column;
+  grid-column: 4;
+  grid-row: 1;
+  min-height: 0;
+}
+
 /* Draggable gutter between the settings panel and the chat area. */
 .panelResizer {
   align-self: stretch;
@@ -2073,18 +2085,278 @@ button.secondary:disabled {
   background: #d93025;
 }
 
-/* 朗读时高亮当前句子（句子级锚点，朗读时切换 .tts-active） */
+/* 朗读时高亮当前句子（句子级锚点，朗读时切换 .tts-active）。
+   反相显示（reverse video）：背景=文字色、文字=背景色 —— 浅色主题黑底白字、
+   深色主题白底黑字，即"黑点白点互换"，和任何加亮色都截然不同。 */
 .tts-seg.tts-active {
-  background-color: rgba(255, 236, 153, 0.6);
-  color: inherit;
+  background-color: var(--ink);
+  color: var(--panel);
   border-radius: 3px;
   padding: 1px 2px;
-  transition: background-color 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .message.isDragging {
   opacity: 0.4;
 }
+
+/* ── Text highlighting / annotation ─────────────────────────────────────── */
+/* Display-only decorations re-applied on every render (see highlight.js). */
+.hlmark {
+  border-radius: 2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.hl-yellow { background-color: rgba(242, 201, 76, 0.45); }
+.hl-green  { background-color: rgba(111, 207, 118, 0.40); }
+.hl-blue   { background-color: rgba(106, 169, 244, 0.40); }
+.hl-pink   { background-color: rgba(235, 95, 122, 0.38); }
+.hl-purple { background-color: rgba(176, 124, 232, 0.40); }
+.hl-underline { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
+.hl-strike { text-decoration: line-through; text-decoration-thickness: 2px; }
+/* The read-aloud cursor must stay visible over any highlight. */
+.tts-seg.tts-active { position: relative; z-index: 1; }
+
+/* 💬 note marker */
+.hlNoteMark {
+  cursor: pointer;
+  font-size: 0.72em;
+  vertical-align: super;
+  margin-left: 1px;
+  user-select: none;
+  opacity: 0.85;
+}
+.hlNoteMark:hover { opacity: 1; }
+
+/* Selection toolbar: a translucent pen that expands on hover into a compact
+   horizontal row of icon-only buttons. Draggable by the pen. */
+.hlToolbar {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.75;
+  transition: opacity 0.12s ease;
+}
+/* Collapsed = just the floating pen (no frame). The panel chrome appears only
+   when expanded. */
+.hlToolbar.expanded {
+  padding: 3px;
+  background: var(--panel);
+  border: 1px solid var(--surface-hover);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+/* `display: flex` above beats the UA `[hidden] { display: none }`, so hiding
+   needs an explicit override — otherwise hideHlToolbar() leaves it on screen. */
+.hlToolbar[hidden] { display: none; }
+.hlToolbar:hover, .hlToolbar.expanded { opacity: 1; }
+.hlPen {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  min-height: 26px;         /* override global button min-height:42 */
+  box-sizing: border-box;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;         /* a wide emoji glyph can't stretch the square box */
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  cursor: grab;
+  border-radius: 6px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  user-select: none;
+}
+.hlPen:hover { background: var(--surface-hover); }
+.hlPen:active { cursor: grabbing; }
+
+/* Hidden until the toolbar is hovered. */
+.hlTools {
+  display: none;
+  align-items: center;
+  gap: 2px;
+}
+.hlToolbar.expanded .hlTools { display: flex; }
+.hlBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  min-height: 26px;   /* override global button min-height:42 */
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+.hlBtn:hover { background: var(--surface-hover); }
+.hlDot {
+  width: 15px; height: 15px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) inset;
+}
+.hlDiv { width: 1px; height: 18px; background: var(--surface-hover); margin: 0 3px; flex: 0 0 auto; }
+
+/* Note editor popover */
+.hlNotePopover {
+  position: fixed;
+  z-index: 1200;
+  width: 240px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--surface-hover);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.hlNoteColors {
+  display: flex;
+  align-items: center;   /* don't stretch swatches vertically */
+  gap: 6px;
+  margin-bottom: 7px;
+}
+.hlNoteSwatch {
+  flex: 0 0 auto;        /* don't grow/shrink → stays a perfect circle */
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+  box-sizing: border-box;
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) inset;
+}
+.hlNoteSwatch.active {
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent);
+}
+.hlNoteInput {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid var(--surface-hover);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--ink);
+  padding: 6px;
+  font: inherit;
+  font-size: 13px;
+}
+.hlNoteActions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+.hlNoteActions button {
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.hlNoteSave { background: var(--accent); color: #fff; }
+.hlNoteSave:hover { background: var(--accent-strong); }
+.hlNoteDelete { background: transparent; color: var(--muted); }
+.hlNoteDelete:hover { color: var(--ink); background: var(--surface-hover); }
+
+/* ── Highlights & notes browser panel ─────────────────────────────────── */
+.highlightsPanel {
+  background: var(--panel);
+  border: 1px solid var(--surface-hover);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.highlightsHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--surface-hover);
+}
+.highlightsTitle { font-weight: 600; }
+.highlightsCount { color: var(--muted); font-size: 13px; margin-right: auto; }
+.highlightsCloseBtn {
+  border: none; background: transparent; color: var(--muted);
+  font-size: 20px; line-height: 1; cursor: pointer; border-radius: 6px; padding: 2px 8px;
+  min-height: 0;   /* override global button min-height:42 */
+}
+.highlightsCloseBtn:hover { background: var(--surface-hover); color: var(--ink); }
+.highlightsFilters {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 14px; border-bottom: 1px solid var(--surface-hover);
+}
+.highlightsChips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.highlightsChip {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--surface-hover); background: transparent; color: var(--ink);
+  border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer;
+  min-height: 0;   /* override global button min-height:42 */
+}
+.highlightsChip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.highlightsChip .hlDot { width: 12px; height: 12px; border-radius: 50%; }
+.highlightsSearch {
+  width: 100%; box-sizing: border-box; border: 1px solid var(--surface-hover);
+  border-radius: 8px; background: var(--input-bg); color: var(--ink); padding: 6px 10px; font-size: 13px;
+}
+.highlightsList { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.highlightsEmpty { color: var(--muted); text-align: center; padding: 24px 12px; font-size: 13px; }
+.hlCard {
+  border: 1px solid var(--surface-hover); border-radius: 10px; padding: 9px 10px;
+  cursor: pointer; background: var(--surface);
+}
+.hlCard:hover { background: var(--surface-hover); }
+.hlCardTop { display: flex; align-items: flex-start; gap: 8px; }
+.hlCardChip { flex: 0 0 auto; width: 14px; height: 14px; border-radius: 50%; margin-top: 2px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) inset; }
+.hlCardChip.deco { box-shadow: none; font-size: 12px; text-align: center; line-height: 14px; }
+.hlCardQuote {
+  flex: 1; font-size: 13px; line-height: 1.4; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+}
+.hlCardNote { margin-top: 5px; padding-left: 22px; color: var(--muted); font-size: 12px; }
+.hlCardActions { display: flex; gap: 2px; margin-top: 6px; justify-content: flex-end; }
+.hlCardBtn { border: none; background: transparent; color: var(--muted); cursor: pointer; border-radius: 6px; padding: 3px 6px; font-size: 13px; min-height: 0; }
+.hlCardBtn:hover { background: var(--panel); color: var(--ink); }
+
+/* Floating opener button (inside the messages area, top-right). Translucent
+   circle; black fill on hover; nudges left to dodge user bubbles (see JS). */
+.highlightsPanelBtn {
+  position: absolute; top: 10px; right: 12px; z-index: 40;
+  width: 34px; height: 34px;
+  min-width: 34px; min-height: 34px;   /* override global button min-height:42 → keep it a circle */
+  padding: 0;                          /* override global button padding */
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 1px solid var(--surface-hover); background: var(--panel); color: var(--ink);
+  cursor: pointer; box-shadow: var(--shadow); font-size: 16px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  opacity: 0.7;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease, transform 0.15s ease;
+}
+.highlightsPanelBtn:hover { opacity: 1; background: #000; color: #fff; border-color: #000; }
+.highlightsPanelBadge {
+  position: absolute; top: -4px; right: -4px; min-width: 16px; height: 16px;
+  padding: 0 4px; border-radius: 8px; background: var(--accent); color: #fff;
+  font-size: 10px; line-height: 16px; text-align: center; box-sizing: border-box;
+}
+
+/* Jump-to flash pulse when a card is clicked. */
+@keyframes hlFlashPulse { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 30% { box-shadow: 0 0 0 3px var(--accent); } }
+.hlFlash { border-radius: 3px; animation: hlFlashPulse 1.4s ease; }
 
 .message.dragOver {
   box-shadow: 0 -2px 0 0 var(--accent);

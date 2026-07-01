@@ -4,6 +4,7 @@
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const claude = require("./claude");
+const openai = require("./openai");
 
 const IMAGE_MODEL_PATTERNS = [/flux/i, /z-image/i, /sdxl/i, /stable-diffusion/i, /imagen/i];
 
@@ -192,6 +193,13 @@ async function enhancePromptText({ model, prompt, language, edit, video }) {
   // /api/chat router that would otherwise route by model name).
   if (claude.isClaudeModel(model)) {
     const text = await claude.complete(model, [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: prompt },
+    ]);
+    return text.trim() || prompt;
+  }
+  if (openai.isOpenAIModel(model)) {
+    const text = await openai.complete(model, [
       { role: "system", content: systemPrompt },
       { role: "user", content: prompt },
     ]);

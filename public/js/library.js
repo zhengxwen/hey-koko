@@ -9,6 +9,7 @@
 import { dom, state } from './state.js';
 import { escapeHtml, makePreview } from './utils.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './markdown.js';
+import { applyHighlights } from './highlight.js';
 import { saveTabs } from './settings.js';
 import { createTab, switchTab } from './tabs.js';
 import { t, getPromptLanguage } from './i18n.js';
@@ -268,6 +269,7 @@ function sourcesMarkdown(hits) {
 function docToBlockMessages(doc) {
   return (doc.blocks || []).map((b) => {
     const msg = { id: genId(), role: b.role || "assistant", content: b.content || "", timestamp: Date.now() };
+    if (b.highlights && b.highlights.length) msg.highlights = b.highlights;   // carry highlights into chat
     if (b.kind === "note") {
       // restore as a /note user bubble so it stays a (vectorized) note on write-back
       msg.role = "user";
@@ -330,6 +332,7 @@ export async function writeTabToLibrary(tab) {
     .filter((m) => (m.content && m.content.trim()) || (m.generatedImages && m.generatedImages.length))
     .map((m, i) => {
       const b = { id: `b${i}`, role: m.role, section: m.librarySection || "", content: m.content || "" };
+      if (m.highlights && m.highlights.length) b.highlights = m.highlights;   // carry highlights back to library
       const addImg = () => { if (m.generatedImages && m.generatedImages[0]) { b.image = m.generatedImages[0]; b.imageMime = m.imageMime || "image/png"; if (m.generatedImageNames && m.generatedImageNames[0]) b.imageName = m.generatedImageNames[0]; } };
       if (m.isLibraryBlock) {
         b.kind = m.libraryKind || "text"; b.embed = true; addImg();
@@ -844,6 +847,10 @@ export function initLibrary() {
           (b.content ? `<div class="libraryFigCaption">${escapeHtml(b.content)}</div>` : "");
       } else {
         div.innerHTML = `<div class="markdownBody">${markdownToHtml(b.content || "")}</div>`;
+        if (b.highlights && b.highlights.length) {
+          const bodyEl = div.querySelector(".markdownBody");
+          if (bodyEl) applyHighlights(bodyEl, b.highlights);
+        }
         attachEdit(div, doc, idx);
       }
       previewContent.appendChild(div);

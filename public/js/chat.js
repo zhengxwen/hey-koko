@@ -24,6 +24,51 @@ import { getNumCtx, recordContextUsage, renderContextMeter } from './context-met
 import { addMemory, getMemoryPromptBlock } from './memory.js';
 import { parseRemind, addReminder, describeReminder, markActivity } from './proactive.js';
 import { TOOL_SCHEMAS, executeTool, getToolLabel } from './tools.js';
+import { applyHighlights, captureAnchor, highlightsInSelection } from './highlight.js';
+
+// Streaming markdown re-render throttle. Ollama streams a chunk (often a single
+// token/character) at a time; re-parsing the whole message and swapping the
+// bubble's innerHTML on every chunk makes the bubble flicker. We coalesce those
+// updates so the DOM is rebuilt at most once per STREAM_RENDER_MS, with a
+// trailing render so the final content always lands. Only one reply streams into
+// the active tab at a time, so a single module-level throttle is enough.
+//
+// 500ms coalesces aggressively (kills the per-character flicker at the cost of a
+// chunkier feel). Lower it (~120ms ≈ 8 repaints/sec) for a smoother token-by-
+// token streaming look — with the tradeoff that fast models, which finish inside
+// one or two windows, appear to pop the whole bubble out at once at 500ms.
+const STREAM_RENDER_MS = 500;
+let _streamRenderTimer = null;
+let _streamRenderLast = 0;
+let _streamRenderPending = null;
+// Schedule a render. `fn` should read the latest content live (it may run later),
+// so re-querying the element / reading the content variable inside fn is correct.
+function scheduleStreamRender(fn) {
+  _streamRenderPending = fn;
+  const now = performance.now();
+  const wait = STREAM_RENDER_MS - (now - _streamRenderLast);
+  if (wait <= 0) {
+    _streamRenderLast = now;
+    _streamRenderPending = null;
+    fn();
+  } else if (!_streamRenderTimer) {
+    _streamRenderTimer = setTimeout(() => {
+      _streamRenderTimer = null;
+      _streamRenderLast = performance.now();
+      const pending = _streamRenderPending;
+      _streamRenderPending = null;
+      if (pending) pending();
+    }, wait);
+  }
+}
+// Cancel any pending trailing render. Callers paint the authoritative final
+// content synchronously (settle render / renderChat) right after this, so we
+// just drop the queued timer rather than firing it against a stale/detached node.
+function cancelStreamRender() {
+  if (_streamRenderTimer) { clearTimeout(_streamRenderTimer); _streamRenderTimer = null; }
+  _streamRenderPending = null;
+  _streamRenderLast = 0;
+}
 
 // "正在发送/接收中 / 正在停止中" status pill (bottom-right, blue). Shown IMMEDIATELY on
 // send/resend/edit (no delay) and animated via CSS (fade-in + pulse). The "sending"
@@ -803,11 +848,10 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
       content += chunk;
       if (state.streamingInfo) state.streamingInfo.content = content;
       if (state.activeTabId === tabId) {
-        const t = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
-        if (t) {
-          t.innerHTML = markdownToHtml(content);
-          scrollChatToEndIfPinned();
-        }
+        scheduleStreamRender(() => {
+          const t = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
+          if (t) { t.innerHTML = markdownToHtml(content); scrollChatToEndIfPinned(); }
+        });
       }
     }
 
@@ -822,6 +866,7 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
     buffer += decoder.decode();
     if (buffer.trim()) appendStreamLine(buffer);
 
+    cancelStreamRender();
     content = content.trim();
     if (!content) {
       state.streamingInfo = null;
@@ -845,6 +890,7 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
     saveChat();
     if (state.activeTabId === tabId) renderChat();
   } catch (error) {
+    cancelStreamRender();
     state.streamingInfo = null;
     const bubble = dom.messagesEl.querySelector('.streaming-bubble');
     if (bubble) bubble.remove();
@@ -1219,11 +1265,10 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
           }
         }
         if (state.activeTabId === tabId) {
-          const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
-          if (thinkEl) {
-            thinkEl.innerHTML = markdownToHtml(thinkingContent);
-            scrollChatToEndIfPinned();
-          }
+          scheduleStreamRender(() => {
+            const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
+            if (thinkEl) { thinkEl.innerHTML = markdownToHtml(thinkingContent); scrollChatToEndIfPinned(); }
+          });
         }
         return;
       }
@@ -1231,7 +1276,10 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
       if (chunk) {
         if (!thinkingDone && thinkingContent && showThinking) {
           thinkingDone = true;
+          cancelStreamRender();
           if (state.activeTabId === tabId) {
+            const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
+            if (thinkEl) thinkEl.innerHTML = markdownToHtml(thinkingContent);
             const details = dom.messagesEl.querySelector('.streaming-bubble .thinking-details');
             if (details) {
               details.open = false;
@@ -1260,11 +1308,10 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
         content += chunk;
         if (state.streamingInfo) state.streamingInfo.content = content;
         if (state.activeTabId === tabId) {
-          const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
-          if (md) {
-            md.innerHTML = markdownToHtml(content);
-            scrollChatToEndIfPinned();
-          }
+          scheduleStreamRender(() => {
+            const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
+            if (md) { md.innerHTML = markdownToHtml(content); scrollChatToEndIfPinned(); }
+          });
         }
       }
     }
@@ -1280,6 +1327,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     buffer += decoder.decode();
     if (buffer.trim()) appendStreamLine(buffer);
 
+    cancelStreamRender();
     content = content.trim() || "我刚才有点走神了，你再说一次好吗？";
     state.streamingInfo = null;
     const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart };
@@ -1293,6 +1341,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     if (state.activeTabId === tabId) renderChat();
     showExpression(detectExpression(content));
   } catch (error) {
+    cancelStreamRender();
     state.streamingInfo = null;
     if (error.name === "AbortError") {
       aborted = true;
@@ -1439,11 +1488,10 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
           }
         }
         if (state.activeTabId === tabId) {
-          const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
-          if (thinkEl) {
-            thinkEl.innerHTML = markdownToHtml(thinkingContent);
-            scrollChatToEndIfPinned();
-          }
+          scheduleStreamRender(() => {
+            const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
+            if (thinkEl) { thinkEl.innerHTML = markdownToHtml(thinkingContent); scrollChatToEndIfPinned(); }
+          });
         }
         return;
       }
@@ -1452,7 +1500,10 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       if (chunk) {
         if (!thinkingDone && thinkingContent && showThinking) {
           thinkingDone = true;
+          cancelStreamRender();
           if (state.activeTabId === tabId) {
+            const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
+            if (thinkEl) thinkEl.innerHTML = markdownToHtml(thinkingContent);
             const details = dom.messagesEl.querySelector('.streaming-bubble .thinking-details');
             if (details) {
               details.open = false;
@@ -1481,11 +1532,10 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
         content += chunk;
         if (state.streamingInfo) state.streamingInfo.content = content;
         if (state.activeTabId === tabId) {
-          const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
-          if (md) {
-            md.innerHTML = markdownToHtml(content);
-            scrollChatToEndIfPinned();
-          }
+          scheduleStreamRender(() => {
+            const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
+            if (md) { md.innerHTML = markdownToHtml(content); scrollChatToEndIfPinned(); }
+          });
         }
       }
     }
@@ -1502,6 +1552,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     buffer += decoder.decode();
     if (buffer.trim()) appendStreamLine(buffer);
 
+    cancelStreamRender();
     content = content.trim() || "我刚才有点走神了，你再说一次好吗？";
     if (!bg) state.streamingInfo = null;
     if (!bg && state.activeTabId === tabId) {
@@ -1535,6 +1586,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       }
     }
   } catch (error) {
+    cancelStreamRender();
     if (bg) {
       if (error.name === "AbortError") return;  // canceled — the job is already removed
       throw error;                               // let the queue mark it errored + retryable
@@ -1657,11 +1709,10 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
       content += chunk;
       if (state.streamingInfo) state.streamingInfo.content = content;
       if (state.activeTabId === tabId) {
-        const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
-        if (md) {
-          md.innerHTML = markdownToHtml(content);
-          scrollChatToEndIfPinned();
-        }
+        scheduleStreamRender(() => {
+          const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
+          if (md) { md.innerHTML = markdownToHtml(content); scrollChatToEndIfPinned(); }
+        });
       }
     }
 
@@ -1676,6 +1727,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
     buffer += decoder.decode();
     if (buffer.trim()) appendLine(buffer);
 
+    cancelStreamRender();
     content = content.trim();
     state.streamingInfo = null;
     const bubble = dom.messagesEl.querySelector('.streaming-bubble');
@@ -1694,6 +1746,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
     }
   } catch (error) {
     // Proactive failures are silent — just clean up the pending bubble.
+    cancelStreamRender();
     state.streamingInfo = null;
     const bubble = dom.messagesEl.querySelector('.streaming-bubble');
     if (bubble) bubble.remove();
@@ -1889,7 +1942,10 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
       const toolCalls = msg.tool_calls || [];
 
       if (toolCalls.length && useTools) {
-        messages.push({ role: "assistant", content: msg.content || "", tool_calls: toolCalls });
+        // Echo back any Claude thinking blocks (opaque; server-provided) so the
+        // cloud backend can replay them verbatim before the tool_use — required
+        // when thinking is on. Undefined for local Ollama, so it's dropped there.
+        messages.push({ role: "assistant", content: msg.content || "", tool_calls: toolCalls, thinking_blocks: msg.thinking_blocks });
         let anyNew = false;
         for (const call of toolCalls) {
           const fn = call.function || {};
@@ -2196,8 +2252,10 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
         }
         content += chunk;
         if (!bg && state.activeTabId === tabId) {
-          const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
-          if (md) { md.innerHTML = markdownToHtml(content); scrollChatToEndIfPinned(); }
+          scheduleStreamRender(() => {
+            const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
+            if (md) { md.innerHTML = markdownToHtml(content); scrollChatToEndIfPinned(); }
+          });
         }
       };
 
@@ -2213,6 +2271,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
       if (buffer.trim()) appendLine(buffer);
     }
 
+    cancelStreamRender();
     cleanupPending();
     content = content.trim();
     if (content) {
@@ -2230,6 +2289,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
       throw new Error(t("bg_analyzeEmpty"));
     }
   } catch (error) {
+    cancelStreamRender();
     cleanupPending();
     if (error.name === "AbortError") {
       // Canceled (foreground stop or a bg job cancel) — nothing to place.
@@ -2956,6 +3016,9 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     const text = document.createElement("div");
     text.className = role === "assistant" ? "markdownBody" : "plainBody";
     text.innerHTML = markdownToHtml(content);
+    // Re-apply persisted highlights/notes (content-anchored, so they survive
+    // re-renders and markdown edits that don't touch the highlighted phrase).
+    if (_libMsg?.highlights?.length) applyHighlights(text, _libMsg.highlights);
     if ((role === "user" || role === "assistant") && Number.isInteger(index)) {
       text.addEventListener("dblclick", () => {
         if (getActiveTab().locked) return;
@@ -3603,4 +3666,572 @@ export function renderChat() {
   if (state.scrollPin != null) dom.messagesEl.scrollTop = state.scrollPin;
   else if (keepPosition) dom.messagesEl.scrollTop = prevScrollTop;
   refreshScrollState();
+  updateHighlightsUI();   // keep the highlights browser badge/list in sync
+}
+
+// ── Text highlighting / annotation ────────────────────────────────────────
+// A floating toolbar appears when the user selects text inside a message bubble:
+// a highlighter pen (applies the last-used style) + a dropdown of colors,
+// underline, strikethrough, a comment action, and an eraser. Highlights are
+// stored on the message (content-anchored, see highlight.js) and re-applied on
+// every render, so they persist and don't touch the underlying markdown.
+const HL_COLORS = [
+  { style: "yellow", dot: "#f2c94c" },
+  { style: "green",  dot: "#6fcf76" },
+  { style: "blue",   dot: "#6aa9f4" },
+  { style: "pink",   dot: "#eb5f7a" },
+  { style: "purple", dot: "#b07ce8" },
+];
+let hlLastStyle = "yellow";
+let hlTarget = null;   // { bodyEl, msgIndex } — the bubble the selection is in
+let hlBar = null, hlPopover = null, hlPopoverTextarea = null;
+let hlPopoverTarget = null;  // { msgIndex, hlIdx }
+// Drag state for the pen handle. hlManualPos = the user dragged the toolbar, so a
+// still-active selection must NOT snap it back to the selection rect.
+let hlDragging = false, hlDragMoved = false, hlDragDX = 0, hlDragDY = 0, hlManualPos = false;
+// Snapshot of the selection taken on tool-button press. On touch, tapping a
+// button collapses the live selection before the click fires, so we fall back to
+// this cloned range. See getHlRange().
+let hlCapturedRange = null;
+// True briefly while a tool button is being pressed — so the selectionchange that
+// a touch tap triggers (collapsing the selection) doesn't hide the toolbar and
+// wipe hlTarget before the button's click handler runs.
+let hlButtonPressing = false;
+
+function hideHlToolbar() {
+  if (hlBar) { hlBar.hidden = true; hlBar.classList.remove("expanded"); }
+  hlTarget = null;
+  hlManualPos = false;
+  hlCapturedRange = null;
+}
+// The range a highlight action should operate on: the live selection if it's
+// still there, else the snapshot captured on button-press (touch).
+function getHlRange() {
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount && !sel.isCollapsed) return sel.getRangeAt(0);
+  return hlCapturedRange;
+}
+// ── Drag the floating toolbar by its pen handle (mouse + touch) ──
+function hlDragBegin(x, y) {
+  const rect = hlBar.getBoundingClientRect();
+  hlDragDX = x - rect.left;
+  hlDragDY = y - rect.top;
+  hlDragging = true;
+  hlDragMoved = false;
+}
+function hlDragTo(x, y) {
+  if (!hlDragging) return;
+  hlDragMoved = true;
+  hlBar.style.left = Math.round(x - hlDragDX) + "px";
+  hlBar.style.top = Math.round(y - hlDragDY) + "px";
+}
+function hlDragFinish() {
+  if (!hlDragging) return;
+  hlDragging = false;
+  if (hlDragMoved) hlManualPos = true;    // keep dragged position
+  else hlBar.classList.add("expanded");   // a tap (no drag) expands — needed on touch (no hover)
+}
+function onHlMouseMove(e) { hlDragTo(e.clientX, e.clientY); }
+function onHlMouseUp() {
+  document.removeEventListener("mousemove", onHlMouseMove);
+  document.removeEventListener("mouseup", onHlMouseUp);
+  hlDragFinish();
+}
+function onHlTouchMove(e) {
+  if (!hlDragging || !e.touches[0]) return;
+  e.preventDefault();   // block page scroll while dragging
+  hlDragTo(e.touches[0].clientX, e.touches[0].clientY);
+}
+function onHlTouchEnd() {
+  document.removeEventListener("touchmove", onHlTouchMove);
+  document.removeEventListener("touchend", onHlTouchEnd);
+  document.removeEventListener("touchcancel", onHlTouchEnd);
+  hlDragFinish();
+}
+function hideHlPopover() {
+  if (hlPopover) hlPopover.hidden = true;
+  hlPopoverTarget = null;
+}
+
+// Place a fixed-position element above `rect` (or below if there's no room),
+// clamped into the viewport.
+function positionHlFloat(el, rect) {
+  el.hidden = false;
+  const w = el.offsetWidth, h = el.offsetHeight;
+  let top = rect.top - h - 8;
+  if (top < 8) top = rect.bottom + 8;
+  let left = rect.left + rect.width / 2 - w / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+  el.style.top = Math.round(top) + "px";
+  el.style.left = Math.round(left) + "px";
+}
+
+function hlActiveMessage() {
+  if (!hlTarget) return null;
+  const tab = getActiveTab();
+  return tab?.messages?.[hlTarget.msgIndex] || null;
+}
+
+// Apply `style` to the current selection. If `withNote`, open the note editor on
+// the freshly-created highlight afterwards.
+function applyHlStyle(style, withNote = false) {
+  const range = getHlRange();
+  if (!hlTarget || !range) { hideHlToolbar(); return; }
+  const anchor = captureAnchor(hlTarget.bodyEl, range);
+  const msg = hlActiveMessage();
+  const msgIndex = hlTarget.msgIndex;
+  hideHlToolbar();
+  if (!anchor || !msg) return;
+  if (!STYLE_IS_DECORATION(style)) hlLastStyle = style;
+  (msg.highlights = msg.highlights || []).push({ style, quote: anchor.quote, prefix: anchor.prefix });
+  const newIdx = msg.highlights.length - 1;
+  saveChat();
+  window.getSelection()?.removeAllRanges();
+  renderChat();
+  if (withNote) openHlNote(msgIndex, newIdx, true);
+}
+// Colors are the "primary" styles the pen remembers; underline/strike don't
+// change the pen's default.
+function STYLE_IS_DECORATION(style) { return style === "underline" || style === "strike"; }
+
+// Remove any highlights overlapping the current selection.
+function clearHlSelection() {
+  const range = getHlRange();
+  const msg = hlActiveMessage();
+  if (!hlTarget || !msg || !range) { hideHlToolbar(); return; }
+  const idxs = highlightsInSelection(hlTarget.bodyEl, range, msg.highlights || []);
+  hideHlToolbar();
+  if (!idxs.length) return;
+  const drop = new Set(idxs);
+  msg.highlights = msg.highlights.filter((_, i) => !drop.has(i));
+  if (!msg.highlights.length) delete msg.highlights;
+  saveChat();
+  window.getSelection()?.removeAllRanges();
+  renderChat();
+}
+
+// Copy the currently selected text to the clipboard.
+function copyHlSelection() {
+  const range = getHlRange();
+  const text = range ? range.toString() : "";
+  hideHlToolbar();
+  if (text) navigator.clipboard?.writeText(text).catch(() => {});
+}
+
+// Open the note editor for highlight `hlIdx` of message `msgIndex`, anchored to
+// its rendered span. `focusNew` selects-all so an empty note is ready to type.
+function openHlNote(msgIndex, hlIdx, focusNew = false) {
+  const tab = getActiveTab();
+  const msg = tab?.messages?.[msgIndex];
+  if (!msg || !msg.highlights?.[hlIdx]) return;
+  const msgEl = dom.messagesEl.querySelector(`.message[data-msg-index="${msgIndex}"]`);
+  const span = msgEl?.querySelector(`.hlmark[data-hl-idx="${hlIdx}"]`);
+  hlPopoverTarget = { msgIndex, hlIdx };
+  hlPopoverTextarea.value = msg.highlights[hlIdx].note || "";
+  // Mark the swatch matching this highlight's current color.
+  hlPopover.querySelectorAll(".hlNoteSwatch").forEach((sw) =>
+    sw.classList.toggle("active", sw.dataset.style === msg.highlights[hlIdx].style));
+  positionHlFloat(hlPopover, (span || msgEl || document.body).getBoundingClientRect());
+  hlPopoverTextarea.focus();
+  if (focusNew) hlPopoverTextarea.select();
+}
+
+// Recolor the highlight the note editor is open on (keeps the note text).
+function setHlNoteColor(style) {
+  if (!hlPopoverTarget) return;
+  const { msgIndex, hlIdx } = hlPopoverTarget;
+  const hl = getActiveTab()?.messages?.[msgIndex]?.highlights?.[hlIdx];
+  if (!hl) return;
+  hl.style = style;
+  hlLastStyle = style;   // remember for the next comment
+  const note = hlPopoverTextarea.value.trim();
+  if (note) hl.note = note; else delete hl.note;
+  saveChat();
+  renderChat();
+  openHlNote(msgIndex, hlIdx, false);   // reopen on the recolored highlight
+}
+
+function saveHlNote() {
+  if (!hlPopoverTarget) return;
+  const { msgIndex, hlIdx } = hlPopoverTarget;
+  const tab = getActiveTab();
+  const hl = tab?.messages?.[msgIndex]?.highlights?.[hlIdx];
+  hideHlPopover();
+  if (!hl) return;
+  const note = hlPopoverTextarea.value.trim();
+  if (note) hl.note = note; else delete hl.note;
+  saveChat();
+  renderChat();
+}
+
+// Delete the highlight the note editor is open on (removes highlight + note).
+function deleteHlFromNote() {
+  if (!hlPopoverTarget) return;
+  const { msgIndex, hlIdx } = hlPopoverTarget;
+  const tab = getActiveTab();
+  const msg = tab?.messages?.[msgIndex];
+  hideHlPopover();
+  if (!msg?.highlights) return;
+  msg.highlights.splice(hlIdx, 1);
+  if (!msg.highlights.length) delete msg.highlights;
+  saveChat();
+  renderChat();
+}
+
+// Icon-only toolbar button; its label lives in the tooltip (title).
+function buildHlBtn(label, onClick, opts = {}) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "hlBtn";
+  b.title = label;
+  b.setAttribute("aria-label", label);
+  if (opts.dot) {
+    const dot = document.createElement("span");
+    dot.className = "hlDot";
+    dot.style.background = opts.dot;
+    b.appendChild(dot);
+  } else if (opts.glyph) {
+    b.textContent = opts.glyph;
+  }
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+export function initHighlightUI() {
+  // Collapsed = a translucent pen (also the drag handle). Hovering reveals a
+  // compact horizontal row of icon-only buttons (labels are tooltips).
+  hlBar = document.createElement("div");
+  hlBar.className = "hlToolbar";
+  hlBar.hidden = true;
+
+  const pen = document.createElement("button");
+  pen.type = "button";
+  pen.className = "hlPen";
+  pen.textContent = "✏️";
+  pen.title = t("hl_drag");
+  pen.addEventListener("mousedown", (e) => {
+    e.preventDefault();                       // keep the text selection alive
+    hlDragBegin(e.clientX, e.clientY);
+    document.addEventListener("mousemove", onHlMouseMove);
+    document.addEventListener("mouseup", onHlMouseUp);
+  });
+  pen.addEventListener("touchstart", (e) => {
+    if (!e.touches[0]) return;
+    e.preventDefault();                       // keep selection + suppress scroll/synthetic click
+    hlDragBegin(e.touches[0].clientX, e.touches[0].clientY);
+    document.addEventListener("touchmove", onHlTouchMove, { passive: false });
+    document.addEventListener("touchend", onHlTouchEnd);
+    document.addEventListener("touchcancel", onHlTouchEnd);
+  }, { passive: false });
+  hlBar.appendChild(pen);
+
+  const tools = document.createElement("div");
+  tools.className = "hlTools";
+  for (const c of HL_COLORS) {
+    tools.appendChild(buildHlBtn(t("hl_" + c.style), () => applyHlStyle(c.style), { dot: c.dot }));
+  }
+  const div = document.createElement("div"); div.className = "hlDiv"; tools.appendChild(div);
+  tools.appendChild(buildHlBtn(t("hl_underline"), () => applyHlStyle("underline"), { glyph: "U̲" }));
+  tools.appendChild(buildHlBtn(t("hl_strike"), () => applyHlStyle("strike"), { glyph: "S̶" }));
+  tools.appendChild(buildHlBtn(t("hl_comment"), () => applyHlStyle(hlLastStyle, true), { glyph: "💬" }));
+  tools.appendChild(buildHlBtn(t("hl_clear"), () => clearHlSelection(), { glyph: "✕" }));
+  tools.appendChild(buildHlBtn(t("btn_copy"), () => copyHlSelection(), { glyph: "📋" }));
+  hlBar.appendChild(tools);
+
+  // Keep the text selection alive when pressing the tool buttons (mousedown would
+  // otherwise collapse it before the click fires). The pen handles its own.
+  tools.addEventListener("mousedown", (e) => e.preventDefault());
+  // On touch, a tap collapses the selection before the click fires, so snapshot
+  // it on press (pointerdown fires for both mouse and touch, before collapse).
+  tools.addEventListener("pointerdown", () => {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount && !sel.isCollapsed) hlCapturedRange = sel.getRangeAt(0).cloneRange();
+    hlButtonPressing = true;                       // survive the tap-induced selectionchange
+    setTimeout(() => { hlButtonPressing = false; }, 700);
+  });
+  // Expand only when the pointer actively moves over the bar — so it always
+  // spawns as the small collapsed square, even if it appears under the cursor
+  // (CSS :hover would expand it immediately in that case).
+  hlBar.addEventListener("mouseover", () => hlBar.classList.add("expanded"));
+  hlBar.addEventListener("mouseleave", () => hlBar.classList.remove("expanded"));
+  document.body.appendChild(hlBar);
+
+  // Note editor popover.
+  hlPopover = document.createElement("div");
+  hlPopover.className = "hlNotePopover";
+  hlPopover.hidden = true;
+  hlPopoverTextarea = document.createElement("textarea");
+  hlPopoverTextarea.className = "hlNoteInput";
+  hlPopoverTextarea.rows = 3;
+  hlPopoverTextarea.placeholder = t("hl_notePlaceholder");
+  // Color swatches — recolor the annotated highlight without leaving the editor.
+  const noteColors = document.createElement("div");
+  noteColors.className = "hlNoteColors";
+  for (const c of HL_COLORS) {
+    const sw = document.createElement("button");
+    sw.type = "button";
+    sw.className = "hlNoteSwatch";
+    sw.dataset.style = c.style;
+    sw.title = t("hl_" + c.style);
+    sw.style.background = c.dot;
+    sw.addEventListener("click", () => setHlNoteColor(c.style));
+    noteColors.appendChild(sw);
+  }
+  const noteActions = document.createElement("div");
+  noteActions.className = "hlNoteActions";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button"; saveBtn.className = "hlNoteSave"; saveBtn.textContent = t("hl_noteSave");
+  saveBtn.addEventListener("click", saveHlNote);
+  const delBtn = document.createElement("button");
+  delBtn.type = "button"; delBtn.className = "hlNoteDelete"; delBtn.textContent = t("hl_noteDelete");
+  delBtn.addEventListener("click", deleteHlFromNote);
+  noteActions.append(delBtn, saveBtn);
+  hlPopover.append(noteColors, hlPopoverTextarea, noteActions);
+  hlPopoverTextarea.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveHlNote(); }
+    if (e.key === "Escape") { e.preventDefault(); hideHlPopover(); }
+  });
+  document.body.appendChild(hlPopover);
+
+  // Selection finished (mouse or touch) → show the toolbar. Deferred so the
+  // selection is final by the time we read it.
+  const onSelectionEnd = (e) => {
+    if (hlDragging || hlBar.contains(e.target) || hlPopover.contains(e.target)) return;
+    setTimeout(() => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) { hideHlToolbar(); return; }
+      const range = sel.getRangeAt(0);
+      const bodyOf = (node) => {
+        const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+        return el?.closest(".markdownBody, .plainBody") || null;
+      };
+      const startBody = bodyOf(range.startContainer);
+      const endBody = bodyOf(range.endContainer);
+      // Only the bubble's own top-level body (not thinking blocks / nested bodies),
+      // and the selection must stay within that one body.
+      if (!startBody || startBody !== endBody || startBody.parentElement?.classList.contains("message") !== true) {
+        hideHlToolbar(); return;
+      }
+      const msgEl = startBody.closest(".message");
+      const idxAttr = msgEl?.dataset.msgIndex;
+      if (idxAttr == null) { hideHlToolbar(); return; }
+      hlTarget = { bodyEl: startBody, msgIndex: Number(idxAttr) };
+      hlBar.classList.remove("expanded");   // always spawn collapsed
+      // Keep a dragged position; otherwise anchor to the selection.
+      if (hlManualPos) hlBar.hidden = false;
+      else positionHlFloat(hlBar, range.getBoundingClientRect());
+    }, 0);
+  };
+  document.addEventListener("mouseup", onSelectionEnd);
+  document.addEventListener("touchend", onSelectionEnd);
+
+  // Selection cleared → toolbar disappears (but not when the collapse was caused
+  // by pressing a tool button on touch).
+  document.addEventListener("selectionchange", () => {
+    if (hlDragging || hlButtonPressing) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) hideHlToolbar();
+  });
+
+  // Click a 💬 marker → open its note editor.
+  dom.messagesEl.addEventListener("click", (e) => {
+    const mk = e.target.closest(".hlNoteMark");
+    if (!mk) return;
+    const msgEl = mk.closest(".message");
+    const idxAttr = msgEl?.dataset.msgIndex;
+    if (idxAttr == null) return;
+    openHlNote(Number(idxAttr), Number(mk.dataset.hlIdx));
+  });
+
+  // Dismiss on outside interaction / scroll. A press outside the toolbar starts a
+  // new selection (or clicks away), so drop any dragged position.
+  const onOutsidePress = (e) => {
+    if (hlBar.contains(e.target)) return;
+    hlManualPos = false;
+    if (!hlBar.hidden) hideHlToolbar();
+    if (!hlPopover.hidden && !hlPopover.contains(e.target) && !e.target.closest(".hlNoteMark")) hideHlPopover();
+  };
+  document.addEventListener("mousedown", onOutsidePress);
+  document.addEventListener("touchstart", onOutsidePress, { passive: true });
+  dom.messagesEl.addEventListener("scroll", () => { hideHlToolbar(); hideHlPopover(); }, true);
+
+  initHighlightsPanel();
+}
+
+// ── Highlights & notes browser (right-docked panel) ────────────────────────
+let hlPanel = null, hlPanelBtn = null, hlPanelBadge = null, hlCountEl = null,
+    hlListEl = null, hlChipsEl = null, hlSearchEl = null;
+let hlPanelFilter = "all";   // "all" | "notes" | a color style
+let hlPanelQuery = "";
+let hlAvoidRaf = 0;
+const HL_DECO_GLYPH = { underline: "U̲", strike: "S̶" };
+
+// Nudge the floating opener left so it never covers a user message bubble
+// (bubbles are right-aligned, where the button sits). rAF-throttled.
+function avoidUserBubbles() {
+  if (!hlPanelBtn || hlPanelBtn.hidden) return;
+  hlPanelBtn.style.transform = "";                 // reset to measure home position
+  const r = hlPanelBtn.getBoundingClientRect();
+  const wrap = dom.messagesEl.getBoundingClientRect();
+  let overlap = null;
+  for (const b of dom.messagesEl.querySelectorAll(".message.user")) {
+    const br = b.getBoundingClientRect();
+    if (br.bottom <= r.top || br.top >= r.bottom) continue;   // no vertical overlap
+    if (br.right <= r.left || br.left >= r.right) continue;    // no horizontal overlap
+    overlap = br; break;
+  }
+  if (overlap) {
+    const maxShift = Math.max(0, r.left - (wrap.left + 8));    // don't run off the left edge
+    const shift = Math.min(r.right - overlap.left + 8, maxShift);
+    if (shift > 0) hlPanelBtn.style.transform = `translateX(${-shift}px)`;
+  }
+}
+function scheduleAvoid() {
+  if (hlAvoidRaf) return;
+  hlAvoidRaf = requestAnimationFrame(() => { hlAvoidRaf = 0; avoidUserBubbles(); });
+}
+function hlColorDot(style) { return (HL_COLORS.find((x) => x.style === style) || {}).dot || null; }
+
+// Every highlight in the active tab, in document order.
+function gatherHighlights() {
+  const tab = getActiveTab();
+  const out = [];
+  tab?.messages?.forEach((m, msgIndex) => {
+    (m.highlights || []).forEach((hl, hlIdx) => {
+      out.push({ msgIndex, hlIdx, style: hl.style, quote: hl.quote || "", note: hl.note || "" });
+    });
+  });
+  return out;
+}
+
+// Scroll the chat to a highlight and flash it.
+function jumpToHighlight(msgIndex, hlIdx) {
+  const el = dom.messagesEl.querySelector(`.message[data-msg-index="${msgIndex}"] .hlmark[data-hl-idx="${hlIdx}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("hlFlash");
+  setTimeout(() => el.classList.remove("hlFlash"), 1500);
+}
+
+function deleteHighlightFromPanel(msgIndex, hlIdx) {
+  const msg = getActiveTab()?.messages?.[msgIndex];
+  if (!msg?.highlights) return;
+  msg.highlights.splice(hlIdx, 1);
+  if (!msg.highlights.length) delete msg.highlights;
+  saveChat();
+  renderChat();   // re-renders chat + (via updateHighlightsUI) the panel
+}
+
+function renderHighlightsPanel(items = gatherHighlights()) {
+  if (!hlListEl) return;
+  const q = hlPanelQuery.trim().toLowerCase();
+  const filtered = items.filter((it) => {
+    if (hlPanelFilter === "notes") { if (!it.note) return false; }
+    else if (hlPanelFilter !== "all" && it.style !== hlPanelFilter) return false;
+    if (q && !(it.quote.toLowerCase().includes(q) || it.note.toLowerCase().includes(q))) return false;
+    return true;
+  });
+  hlListEl.innerHTML = "";
+  if (!filtered.length) {
+    const empty = document.createElement("div");
+    empty.className = "highlightsEmpty";
+    empty.textContent = t("hl_panelEmpty");
+    hlListEl.appendChild(empty);
+    return;
+  }
+  for (const it of filtered) {
+    const card = document.createElement("div");
+    card.className = "hlCard";
+    const top = document.createElement("div");
+    top.className = "hlCardTop";
+    const chip = document.createElement("span");
+    const dot = hlColorDot(it.style);
+    if (dot) { chip.className = "hlCardChip"; chip.style.background = dot; }
+    else { chip.className = "hlCardChip deco"; chip.textContent = HL_DECO_GLYPH[it.style] || ""; }
+    const quote = document.createElement("div");
+    quote.className = "hlCardQuote";
+    quote.textContent = it.quote;
+    top.append(chip, quote);
+    card.appendChild(top);
+    if (it.note) {
+      const note = document.createElement("div");
+      note.className = "hlCardNote";
+      note.textContent = "💬 " + it.note;
+      card.appendChild(note);
+    }
+    const actions = document.createElement("div");
+    actions.className = "hlCardActions";
+    const mkBtn = (label, glyph, fn) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "hlCardBtn"; b.title = label; b.textContent = glyph;
+      b.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
+      return b;
+    };
+    actions.appendChild(mkBtn(t("hl_comment"), "✎", () => { jumpToHighlight(it.msgIndex, it.hlIdx); openHlNote(it.msgIndex, it.hlIdx); }));
+    actions.appendChild(mkBtn(t("btn_copy"), "📋", () => { if (it.quote) navigator.clipboard?.writeText(it.quote).catch(() => {}); }));
+    actions.appendChild(mkBtn(t("hl_noteDelete"), "🗑", () => deleteHighlightFromPanel(it.msgIndex, it.hlIdx)));
+    card.appendChild(actions);
+    card.addEventListener("click", () => jumpToHighlight(it.msgIndex, it.hlIdx));
+    hlListEl.appendChild(card);
+  }
+}
+
+function openHighlightsPanel() { document.querySelector(".shell")?.classList.add("hlOpen"); renderHighlightsPanel(); }
+function closeHighlightsPanel() { document.querySelector(".shell")?.classList.remove("hlOpen"); }
+function toggleHighlightsPanel() {
+  const shell = document.querySelector(".shell");
+  if (shell?.classList.contains("hlOpen")) closeHighlightsPanel(); else openHighlightsPanel();
+}
+
+// Keep the opener badge + open panel in sync with the data. Called from renderChat.
+function updateHighlightsUI() {
+  if (!hlPanelBtn) return;
+  const items = gatherHighlights();
+  const n = items.length;
+  hlPanelBtn.hidden = n === 0;
+  hlPanelBadge.hidden = n === 0;
+  hlPanelBadge.textContent = String(n);
+  if (hlCountEl) hlCountEl.textContent = n ? `(${n})` : "";
+  if (n === 0) closeHighlightsPanel();
+  else if (document.querySelector(".shell")?.classList.contains("hlOpen")) renderHighlightsPanel(items);
+  scheduleAvoid();
+}
+
+function initHighlightsPanel() {
+  hlPanel = document.getElementById("highlightsPanel");
+  hlPanelBtn = document.getElementById("highlightsPanelBtn");
+  hlPanelBadge = document.getElementById("highlightsPanelBadge");
+  hlCountEl = document.getElementById("highlightsCount");
+  hlListEl = document.getElementById("highlightsList");
+  hlChipsEl = document.getElementById("highlightsChips");
+  hlSearchEl = document.getElementById("highlightsSearch");
+  if (!hlPanel) return;
+  document.getElementById("highlightsTitle").textContent = t("hl_panelTitle");
+  hlSearchEl.placeholder = t("hl_searchPlaceholder");
+  hlPanelBtn.title = t("hl_panelTitle");
+  const addChip = (key, label, dot) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "highlightsChip" + (key === hlPanelFilter ? " active" : "");
+    chip.dataset.filter = key;
+    if (dot) { const d = document.createElement("span"); d.className = "hlDot"; d.style.background = dot; chip.appendChild(d); }
+    if (label) chip.appendChild(document.createTextNode(label));
+    chip.title = label || t("hl_" + key);
+    chip.addEventListener("click", () => {
+      hlPanelFilter = key;
+      hlChipsEl.querySelectorAll(".highlightsChip").forEach((c) => c.classList.toggle("active", c.dataset.filter === key));
+      renderHighlightsPanel();
+    });
+    hlChipsEl.appendChild(chip);
+  };
+  addChip("all", t("hl_filterAll"));
+  addChip("notes", t("hl_filterNotes"));
+  for (const c of HL_COLORS) addChip(c.style, "", c.dot);
+  hlSearchEl.addEventListener("input", () => { hlPanelQuery = hlSearchEl.value; renderHighlightsPanel(); });
+  hlPanelBtn.addEventListener("click", toggleHighlightsPanel);
+  document.getElementById("highlightsCloseBtn")?.addEventListener("click", closeHighlightsPanel);
+  // Re-check bubble collisions as the chat scrolls or the window resizes.
+  dom.messagesEl.addEventListener("scroll", scheduleAvoid, { passive: true });
+  window.addEventListener("resize", scheduleAvoid);
+  updateHighlightsUI();
 }
