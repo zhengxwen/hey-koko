@@ -16,6 +16,7 @@ const http = require("http");
 const config = require("./server/config");
 const { sendJson, serveStatic, readBody } = require("./server/utils");
 const { proxyOllamaChat, proxyOllamaTags, proxyOllamaShow } = require("./server/chat");
+const claude = require("./server/claude");
 const { scanOllamaStream, scanComfyStream, hostnameFor } = require("./server/network");
 const { proxyOllamaImageModels, generateImage, enhancePrompt } = require("./server/image");
 const { proxyComfyModels, generateComfyImage, uploadComfyVideo } = require("./server/comfy");
@@ -39,17 +40,32 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "POST" && req.url === "/api/chat") {
-    proxyOllamaChat(req, res);
+    // Route by model name: a configured Claude model goes to the cloud proxy,
+    // everything else stays on local Ollama. The model dropdown is the switch.
+    readBody(req)
+      .then((body) => {
+        if (claude.isClaudeModel(body.model)) claude.proxyChat(res, body);
+        else proxyOllamaChat(req, res, body);
+      })
+      .catch(() => sendJson(res, 400, { error: "invalid body" }));
     return;
   }
 
   if (req.method === "GET" && req.url === "/api/models") {
-    proxyOllamaTags(res);
+    claude.listModels(res);
     return;
   }
 
   if (req.method === "POST" && req.url === "/api/model-info") {
-    proxyOllamaShow(req, res);
+    readBody(req)
+      .then((body) => {
+        if (claude.isClaudeModel(body.model)) {
+          sendJson(res, 200, { contextLength: claude.contextLengthFor(body.model) });
+        } else {
+          proxyOllamaShow(req, res, body);
+        }
+      })
+      .catch(() => sendJson(res, 200, { contextLength: null }));
     return;
   }
 

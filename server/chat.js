@@ -4,9 +4,9 @@
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 
-async function proxyOllamaChat(req, res) {
+async function proxyOllamaChat(req, res, preBody) {
   try {
-    const body = await readBody(req);
+    const body = preBody || await readBody(req);
     const now = new Date();
     const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
     console.log(`${ts} [chat] model=${body.model || '?'}, messages=${(body.messages || []).length}`);
@@ -62,9 +62,9 @@ async function proxyOllamaChat(req, res) {
   }
 }
 
-async function proxyOllamaShow(req, res) {
+async function proxyOllamaShow(req, res, preBody) {
   try {
-    const body = await readBody(req);
+    const body = preBody || await readBody(req);
     if (!body.model) {
       sendJson(res, 400, { error: "model required" });
       return;

@@ -13,7 +13,7 @@ import { saveTabs } from './settings.js';
 import { createTab, switchTab } from './tabs.js';
 import { t, getPromptLanguage } from './i18n.js';
 import { setMentionDocs, mentionDocName, mentionArchiveName } from './mentions.js';
-import { enqueueBgJob } from './bg-jobs.js';
+import { enqueueBgJob, openBgDrawer } from './bg-jobs.js';
 import { youtubeFetch } from './server-queue.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", doc: "📝", chat: "💬", other: "📎" };
@@ -22,10 +22,14 @@ const isYoutubeUrl = (u) => /youtube\.com|youtu\.be/.test(u || "");
 // Set by initLibrary so the background import jobs can refresh the list / task count.
 let _refreshLibraryList = null;
 let _updateTaskCount = null;
+let _openLibrary = null;
 
 // Called by bg-jobs (via setBgDeps onJobsChanged) whenever the job list/status changes,
 // so the library header shows how many imports are still queued/running.
 export function notifyLibraryJobsChanged() { if (_updateTaskCount) _updateTaskCount(); }
+// Open the library panel — used by bg-jobs to return here when a library import task
+// (which has no chat bubble) is clicked in the task drawer.
+export function openLibraryPanel() { if (_openLibrary) _openLibrary(); }
 const embedModel = () => (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:0.6b";
 const kindIcon = (k) => KIND_ICON[k] || "📎";
 // Papers can have dozens of authors — show at most the first 3 in the list view.
@@ -532,11 +536,13 @@ export function initLibrary() {
   };
 
   // ---- open / close ----
-  openBtn.addEventListener("click", () => {
+  function open() {
     overlay.classList.add("isOpen");
     clearPreview();   // reset right pane to empty state
     refreshList();
-  });
+  }
+  _openLibrary = open;
+  openBtn.addEventListener("click", open);
   closeBtn.addEventListener("click", () => overlay.classList.remove("isOpen"));
 
   // ---- import menu ----
@@ -614,6 +620,12 @@ export function initLibrary() {
   }
   _updateTaskCount = updateTaskCount;
   updateTaskCount();
+  // Clicking the badge closes the library and opens the background-task drawer (the
+  // drawer sits below the library overlay, so it must close first to be visible).
+  if (taskCountEl) {
+    taskCountEl.title = t("lib_taskCountHint");
+    taskCountEl.addEventListener("click", () => { overlay.classList.remove("isOpen"); openBgDrawer(); });
+  }
 
   // Pull every folder under the library → fill the ask-scope <select> (keeps the
   // current selection if it still exists) and cache for the move popup.

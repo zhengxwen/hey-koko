@@ -21,7 +21,7 @@ import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveC
 import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup, hideMentionPopup, moveMentionSelection, selectActiveMention, isMentionPopupOpen } from './mentions.js';
 import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
-import { initLibrary, setLibraryDeps, runLibraryImport, notifyLibraryJobsChanged } from './library.js';
+import { initLibrary, setLibraryDeps, runLibraryImport, notifyLibraryJobsChanged, openLibraryPanel } from './library.js';
 import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
 import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
@@ -38,7 +38,7 @@ translateSetRenderChat(renderChat);
 imageGenSetDeps({ setGenerating, renderChat });
 voiceGenSetDeps({ setGenerating, renderChat });
 urlFetchSetDeps({ setGenerating, renderChat, regenerateReply, showSendError });
-setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand, refreshWorkers: refreshBgWorkers, libraryImport: runLibraryImport, onJobsChanged: notifyLibraryJobsChanged });
+setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand, refreshWorkers: refreshBgWorkers, libraryImport: runLibraryImport, onJobsChanged: notifyLibraryJobsChanged, openLibrary: openLibraryPanel });
 
 // Background Jobs drawer toggle + close.
 if (dom.bgJobsBtn) dom.bgJobsBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleBgDrawer(); });

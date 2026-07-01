@@ -31,7 +31,8 @@ let _handleMultiUrlCommand = null;
 let _refreshWorkers = null;   // re-scan worker endpoints (ollama.refreshBgWorkers), injected
 let _libraryImport = null;    // library.runLibraryImport — any import → library doc, injected
 let _onJobsChanged = null;    // library.notifyLibraryJobsChanged — refresh the import-task count
-export function setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand, refreshWorkers, libraryImport, onJobsChanged }) {
+let _openLibrary = null;      // library.openLibraryPanel — clicking a library job returns there
+export function setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand, refreshWorkers, libraryImport, onJobsChanged, openLibrary }) {
   if (renderChat) _renderChat = renderChat;
   if (analyzeMedia) _analyzeMedia = analyzeMedia;
   if (regenerateReply) _regenerateReply = regenerateReply;
@@ -41,6 +42,7 @@ export function setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocu
   if (refreshWorkers) _refreshWorkers = refreshWorkers;
   if (libraryImport) _libraryImport = libraryImport;
   if (onJobsChanged) _onJobsChanged = onJobsChanged;
+  if (openLibrary) _openLibrary = openLibrary;
 }
 function rerender() { if (_renderChat) _renderChat(); }
 
@@ -752,6 +754,8 @@ export function jumpToJob(jobId) {
   const job = state.bgJobs.find((j) => j.id === jobId);
   if (!job) return;
   closeBgDrawer();
+  // Library-import jobs have no chat bubble — clicking one returns to the library panel.
+  if (job.kind === 'libimport') { if (_openLibrary) _openLibrary(); return; }
   if (state.activeTabId !== job.tabId) switchTab(job.tabId);
   setTimeout(() => {
     const el = document.querySelector(`[data-msg-id="${job.msgId}"]`);
