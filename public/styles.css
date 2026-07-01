@@ -430,11 +430,11 @@ body.isResizingPanel {
   position: absolute;
   top: 6px;
   right: 6px;
-  font-size: 30px;
+  font-size: 32px;
   line-height: 1;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
-  pointer-events: none;
   user-select: none;
+  cursor: default;
 }
 .avatar-cloud-badge[hidden] {
   display: none;
