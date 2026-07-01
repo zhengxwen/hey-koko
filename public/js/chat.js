@@ -1023,12 +1023,14 @@ function buildMessages(tabId = state.activeTabId, contextEndIndex = -1) {
       : getPrompt("nameInstructionSingle", names[0]);
   }
   const memoryBlock = getMemoryPromptBlock(getPrompt("memoryHeader"));
+  // "Send time info" toggle (⚙ More options; default on) gates BOTH the absolute clock
+  // (A) and the reply-gap note (B).
+  const sendTime = dom.sendTimeToggle?.checked !== false;
   // (A) Give the model an absolute clock so it can be time-aware (e.g. "this late?").
+  const timeBlock = sendTime ? `\n\n${getPrompt("currentTimeContext", new Date())}` : "";
   const system = `${dom.persona.value}
 
-${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}
-
-${getPrompt("currentTimeContext", new Date())}`;
+${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
 
   // Find the last compact boundary - only include messages after it
   let startIndex = 0;
@@ -1088,7 +1090,7 @@ ${getPrompt("currentTimeContext", new Date())}`;
     // Ephemeral context prefixes (prepended to the OUTGOING content only, never stored):
     // the time-away note first, then the attached-image name map.
     let prefix = "";
-    if (msg.role === "user" && lastTs && msg.timestamp && (msg.timestamp - lastTs) > GAP_MS) {
+    if (sendTime && msg.role === "user" && lastTs && msg.timestamp && (msg.timestamp - lastTs) > GAP_MS) {
       prefix += `${getPrompt("timeGapContext", (msg.timestamp - lastTs) / 3600000)}\n\n`;
     }
     if (msg.contextImages?.length) {

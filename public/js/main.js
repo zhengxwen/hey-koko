@@ -7,7 +7,7 @@ import { PERSONALITY_PRESETS, getPersonalityPreset } from './constants.js';
 import { readFileAsDataUrl, convertToJpeg, makePreview, escapeHtml } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
-import { initAvatar } from './avatar.js';
+import { initAvatar, updateCloudBadge } from './avatar.js';
 import { stopSpeech, populateVoiceList, speakAdjacent } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
@@ -171,6 +171,9 @@ dom.promptLanguageSelect.addEventListener("change", () => {
 dom.showThinkingCheckbox.addEventListener("change", () => {
   saveCurrentSettings();
 });
+if (dom.sendTimeToggle) {
+  dom.sendTimeToggle.addEventListener("change", saveCurrentSettings);
+}
 if (dom.toolsToggle) {
   dom.toolsToggle.addEventListener("change", saveCurrentSettings);
 }
@@ -355,6 +358,7 @@ dom.messageInput.addEventListener("blur", () => setTimeout(hideMentionPopup, 150
 dom.modelSelect.addEventListener("change", () => {
   saveCurrentSettings();
   refreshModelMaxContext(dom.modelSelect.value);
+  updateCloudBadge();
 });
 dom.imageModelSelect.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); renderStagedImagePreview(); renderChat(); });
 dom.comfyModelSelect?.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); updateComfyMultiHint(); applyInputPlaceholder(); renderStagedImagePreview(); renderChat(); });

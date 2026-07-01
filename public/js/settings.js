@@ -61,6 +61,7 @@ export function saveCurrentSettings() {
       uiLanguage: dom.uiLanguageSelect?.value || "en",
       promptLanguage: dom.promptLanguageSelect?.value || "en",
       showThinking: dom.showThinkingCheckbox?.checked || false,
+      sendTime: dom.sendTimeToggle?.checked ?? true,
       tools: dom.toolsToggle?.checked || false,
       numCtx: dom.numCtxSelect?.value || "32768",
       embedModel: dom.embedModelSelect?.value || "qwen3-embedding:0.6b",
@@ -219,6 +220,8 @@ export function loadSavedSettings() {
   if (savedSettings.promptLanguage && dom.promptLanguageSelect) dom.promptLanguageSelect.value = savedSettings.promptLanguage;
   // Thinking
   if (savedSettings.showThinking && dom.showThinkingCheckbox) dom.showThinkingCheckbox.checked = true;
+  // Sending time info defaults to ON; respect an explicit saved off-choice.
+  if (dom.sendTimeToggle) dom.sendTimeToggle.checked = savedSettings.sendTime !== undefined ? !!savedSettings.sendTime : true;
   // Tool calling defaults to ON; respect an explicit saved off-choice.
   if (dom.toolsToggle) dom.toolsToggle.checked = savedSettings.tools !== undefined ? !!savedSettings.tools : true;
   // Context window

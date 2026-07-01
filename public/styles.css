@@ -421,6 +421,23 @@ body.isResizingPanel {
   width: 160px;
   height: 160px;
   flex-shrink: 0;
+  position: relative;
+}
+
+/* Persistent ☁️ badge on the avatar when the selected model is a cloud (Claude)
+   model — a standing "this leaves your machine" cue. Toggled by updateCloudBadge(). */
+.avatar-cloud-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 22px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+  pointer-events: none;
+  user-select: none;
+}
+.avatar-cloud-badge[hidden] {
+  display: none;
 }
 
 .avatar-svg {

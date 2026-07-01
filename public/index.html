@@ -47,6 +47,7 @@
         <div class="profile">
           <div class="avatar-container" id="avatarContainer" aria-hidden="true">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" class="avatar-svg" id="avatarSvg"></svg>
+            <div class="avatar-cloud-badge" id="avatarCloudBadge" title="云端模型（Claude）" hidden>☁️</div>
           </div>
           <div class="profile-side">
             <div class="profile-text">
@@ -258,6 +259,14 @@
               <input type="checkbox" id="showThinking" checked>
               <span id="showThinkingLabel">Show Thinking Process</span>
             </label>
+          </div>
+
+          <div class="thinkingSetting">
+            <label>
+              <input type="checkbox" id="sendTime" checked>
+              <span id="sendTimeLabel">Send time info</span>
+            </label>
+            <p class="hint" id="sendTimeHint">Tell the AI the current time and how long you took to reply (over 4h).</p>
           </div>
 
           <div class="thinkingSetting">

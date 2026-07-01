@@ -37,6 +37,16 @@ function renderAvatarPicker() {
   }
 }
 
+// Show/hide the persistent ☁️ avatar badge based on whether the currently
+// selected model is a cloud (Claude) model. The dropdown tags cloud options with
+// data-cloud="1" (see ollama.js loadModels). Call on model change and after the
+// model list (re)loads.
+export function updateCloudBadge() {
+  if (!dom.avatarCloudBadge) return;
+  const cloud = dom.modelSelect?.selectedOptions?.[0]?.dataset.cloud === "1";
+  dom.avatarCloudBadge.hidden = !cloud;
+}
+
 // Avatar state machine
 export function setAvatarState(newState) {
   state.avatarState = newState;

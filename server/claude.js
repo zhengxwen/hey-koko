@@ -54,22 +54,65 @@ function loadConfig() {
   let baseUrl = (process.env.ANTHROPIC_BASE_URL || file.baseUrl || DEFAULT_BASE_URL).trim();
   baseUrl = baseUrl.replace(/\/+$/, "");
   if (!/^https?:\/\//i.test(baseUrl)) baseUrl = "https://" + baseUrl;
-  const models = Array.isArray(file.models) && file.models.length ? file.models : DEFAULT_MODELS;
+  // models[] is OPTIONAL: present → manual allowlist; empty/absent → auto-discover
+  // via the Models API (see discoverModels).
+  const models = Array.isArray(file.models) ? file.models : [];
   return { apiKey, baseUrl, models };
 }
 
-// Is this model name one of the configured Claude models? Drives routing.
+// Cache of auto-discovered Claude model ids + their real context windows, so we
+// don't hit /v1/models on every /api/models poll. 5-minute TTL.
+let _discovered = { ts: 0, ids: null, ctx: {} };
+const DISCOVER_TTL_MS = 5 * 60 * 1000;
+
+// GET <baseUrl>/v1/models → claude-* ids + max_input_tokens. Returns null on any
+// failure (relay doesn't implement it, network error, empty) so callers fall back.
+async function discoverModels(cfg) {
+  const now = Date.now();
+  if (_discovered.ids && now - _discovered.ts < DISCOVER_TTL_MS) return _discovered;
+  const controller = new AbortController();
+  const to = setTimeout(() => controller.abort(), 8000);
+  try {
+    const r = await fetch(`${cfg.baseUrl}/v1/models?limit=1000`, {
+      headers: { "x-api-key": cfg.apiKey, "anthropic-version": ANTHROPIC_VERSION },
+      signal: controller.signal,
+    });
+    clearTimeout(to);
+    if (!r.ok) return null;
+    const data = await r.json();
+    const ids = [];
+    const ctx = {};
+    for (const m of data.data || []) {
+      if (!m.id || !/^claude/i.test(m.id)) continue;
+      ids.push(m.id);
+      if (m.max_input_tokens) ctx[m.id] = m.max_input_tokens;
+    }
+    if (!ids.length) return null;
+    _discovered = { ts: now, ids, ctx };
+    return _discovered;
+  } catch {
+    clearTimeout(to);
+    return null;
+  }
+}
+
+// Is this model name a Claude model? Drives /api/chat routing — must be fast and
+// network-free (called per message). Manual allowlist wins; in auto mode any
+// claude-* id routes to the cloud (we only ever surface claude-* names).
 function isClaudeModel(model) {
   if (!model) return false;
   const cfg = loadConfig();
-  return !!cfg && cfg.models.includes(model);
+  if (!cfg) return false;
+  if (cfg.models.length) return cfg.models.includes(model);
+  return /^claude/i.test(model);
 }
 
 function contextLengthFor(model) {
+  if (_discovered.ctx && _discovered.ctx[model]) return _discovered.ctx[model];
   return CONTEXT_LENGTHS[model] || 200000;
 }
 
-// GET /api/models — Ollama tags plus any configured Claude models appended.
+// GET /api/models — Ollama tags plus configured/discovered Claude models appended.
 async function listModels(res) {
   let models = [];
   try {
@@ -80,9 +123,17 @@ async function listModels(res) {
   }
   const cfg = loadConfig();
   if (cfg) {
+    let claudeIds;
+    if (cfg.models.length) {
+      claudeIds = cfg.models;                       // manual allowlist
+    } else {
+      const disc = await discoverModels(cfg);       // auto-discover
+      claudeIds = disc ? disc.ids : DEFAULT_MODELS; // fallback if /v1/models unavailable
+    }
     const existing = new Set(models.map((m) => m.name));
-    for (const name of cfg.models) {
-      if (!existing.has(name)) models.push({ name, model: name });
+    for (const name of claudeIds) {
+      // cloud:true lets the frontend badge these (☁️) apart from local models.
+      if (!existing.has(name)) models.push({ name, model: name, cloud: true });
     }
   }
   sendJson(res, 200, { models });

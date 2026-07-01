@@ -7,6 +7,7 @@ import { SETTINGS_KEY } from './constants.js';
 import { t } from './i18n.js';
 import { saveCurrentSettings } from './settings.js';
 import { getBgWorkers, setBgWorkerStatus } from './bg-jobs.js';
+import { updateCloudBadge } from './avatar.js';
 
 // "http://127.0.0.1:11434" + "localhost" -> "127.0.0.1:11434 (localhost)".
 // The hostname (reverse-DNS, from the server) is only appended when present.
@@ -61,28 +62,33 @@ const NON_LLM_RE = /embed|z-image|flux/i;
 export async function loadModels() {
   const response = await fetch("/api/models");
   const data = await response.json();
-  const models = (data.models || [])
-    .map((model) => model.name)
-    .filter((name) => name && !NON_LLM_RE.test(name));
+  // Keep the objects (not just names) so we can badge cloud vs local models.
+  const entries = (data.models || [])
+    .filter((m) => m.name && !NON_LLM_RE.test(m.name));
 
-  if (models.length === 0) return;
+  if (entries.length === 0) return;
 
+  const names = entries.map((m) => m.name);
   const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
   const current = saved.model || dom.modelSelect.value;
   dom.modelSelect.innerHTML = "";
-  for (const name of models) {
+  for (const m of entries) {
     const option = document.createElement("option");
-    option.value = name;
-    option.textContent = name;
+    option.value = m.name;  // raw name — this is what /api/chat receives
+    // Symbol prefix only in the label: ☁️ cloud (Claude) vs 💻 local (Ollama).
+    option.textContent = (m.cloud ? "☁️ " : "💻 ") + m.name;
+    if (m.cloud) option.dataset.cloud = "1";  // lets the send-status pill badge cloud requests
     dom.modelSelect.appendChild(option);
   }
 
-  if (current && models.includes(current)) {
+  if (current && names.includes(current)) {
     dom.modelSelect.value = current;
   } else {
-    const preferred = models.find((m) => /gemma|qwen/i.test(m));
-    dom.modelSelect.value = preferred || models[0];
+    const preferred = names.find((n) => /gemma|qwen/i.test(n));
+    dom.modelSelect.value = preferred || names[0];
   }
+
+  updateCloudBadge();  // reflect whether the (re)selected model is cloud
 }
 
 // Show the image generation options (size/timeout) whenever EITHER an Ollama

@@ -306,6 +306,37 @@ Sampler, scheduler, CFG, guidance, image-CFG, denoise, video length, and FPS can
 While ComfyUI generates, Hey-Koko shows a progress bar and, when ComfyUI is launched with a preview method (`--preview-method auto`), live preview frames decoded during sampling — both in the chat and the [background jobs](#background-jobs) drawer. Generated videos are click-to-play (with audio) and each has a download button.
 
 
+### Cloud models via the Claude API (optional)
+
+Hey-Koko is local-first, but you can optionally add cloud models from the
+**Claude API** (or any Anthropic-compatible relay). This is off by default and
+stays completely hidden until you configure it — messages you send to a cloud
+model **leave your machine**, unlike the local Ollama models.
+
+Create `~/.hey-koko/claude.json`:
+
+```json
+{
+  "baseUrl": "https://api.anthropic.com",
+  "apiKey": "sk-ant-..."
+}
+```
+
+- `baseUrl` — the API origin only (no `/v1/messages` suffix). Use
+  `https://api.anthropic.com` for the official API, or your own relay URL.
+- `apiKey` — your key. **No key → the whole feature stays invisible.**
+- `models` *(optional)* — omit it and Hey-Koko **auto-lists** every `claude-*`
+  model your key can access (via the Models API). Set it to pin a curated list,
+  e.g. `"models": ["claude-opus-4-8", "claude-sonnet-4-6"]` — useful for relays
+  that don't expose `/v1/models`, or to keep the dropdown short.
+
+After configuring, **restart the server** and reload the page. Cloud models show
+up in the model dropdown badged **☁️**, local Ollama models **💻** — pick one to
+switch. The config file is re-read per request, so editing it needs no restart
+(but a page reload is needed to refresh the dropdown). `ANTHROPIC_BASE_URL` /
+`ANTHROPIC_API_KEY` environment variables override the file.
+
+
 ## Environment Variables
 
 ```bash
@@ -319,6 +350,8 @@ OLLAMA_URL=http://127.0.0.1:11434 PORT=1314 node server.js
 | `PORT` | `1314` | Server port |
 | `WHISPER_MODEL` | auto-detect | Path to whisper.cpp model file |
 | `TTS_PYTHON` | `python3` | Python (venv) with kokoro for `/voice` |
+| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Claude API origin (overrides `claude.json`) |
+| `ANTHROPIC_API_KEY` | — | Claude API key (overrides `claude.json`; enables cloud models) |
 
 
 ## Tech Stack
