@@ -18,7 +18,7 @@ import { getTab, switchTab } from './tabs.js';
 import { t } from './i18n.js';
 import { generateImage } from './image-gen.js';
 import { generateSpeech } from './voice-gen.js';
-import { setServerQueueDeps, cancelServerJob, ackServerJob, pauseServerJob, resumeServerJob, reorderServerJobs, cancelConversationServerJobs } from './server-queue.js';   // Option B
+import { setServerQueueDeps, cancelServerJob, ackServerJob, pauseServerJob, resumeServerJob, reorderServerJobs, cancelConversationServerJobs, serverJobTiming } from './server-queue.js';   // Option B
 
 // renderChat + the analysis generators are injected (chat.js imports this module, so
 // importing it back would be circular). Set from main.js via setBgDeps.
@@ -607,6 +607,15 @@ function makeBgSink(job, controller) {
       const found = findMsg(job.msgId);
       if (!found) return; // canceled / deleted mid-run — drop the result
       msg.id = job.msgId;
+      // Generation bubbles (image/video/audio): record the SERVER-authoritative generation
+      // time + duration, so the bubble shows when it was actually produced (and the ⏱ how
+      // long it took) — correct even if the page was closed for the whole render. Scoped to
+      // pure generation kinds so it never touches the youtube-reply / analyze place() paths.
+      if (job.kind === 'image' || job.kind === 'video' || job.kind === 'audio') {
+        const timing = serverJobTiming(job.serverJobId);
+        if (timing && timing.finishedAt) msg.timestamp = timing.finishedAt;
+        if (timing && timing.startedAt && timing.finishedAt && msg.genMs == null) msg.genMs = timing.finishedAt - timing.startedAt;
+      }
       found.tab.messages[found.index] = msg;
       saveChat();
       if (state.activeTabId === job.tabId) rerender();

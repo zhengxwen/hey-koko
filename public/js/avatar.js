@@ -4,6 +4,7 @@
 // Avatar styles, picker, and state machine
 import { dom, state } from './state.js';
 import { AVATAR_KEY, AVATAR_STYLES } from './constants.js';
+import { t } from './i18n.js';
 
 function parseSvgContent(svgInner) {
   const wrapped = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">${svgInner}</svg>`;
@@ -44,11 +45,14 @@ export function isCloudModel() {
   return dom.modelSelect?.selectedOptions?.[0]?.dataset.cloud === "1";
 }
 
-// Show/hide the persistent ☁️ avatar badge based on the selected model. Call on
-// model change and after the model list (re)loads.
+// Show/hide the persistent ☁️ avatar badge based on the selected model, and set
+// its tooltip to the specific cloud model name. Call on model change and after
+// the model list (re)loads.
 export function updateCloudBadge() {
   if (!dom.avatarCloudBadge) return;
-  dom.avatarCloudBadge.hidden = !isCloudModel();
+  const cloud = isCloudModel();
+  dom.avatarCloudBadge.hidden = !cloud;
+  if (cloud) dom.avatarCloudBadge.title = t("cloud_badge_tooltip", { model: dom.modelSelect.value });
 }
 
 // Avatar state machine

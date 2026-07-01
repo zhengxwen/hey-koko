@@ -8,7 +8,7 @@ import { markdownToHtml } from './markdown.js';
 import { saveChat } from './settings.js';
 import { makePreview } from './utils.js';
 import { getPromptLanguage, t } from './i18n.js';
-import { youtubeFetch } from './server-queue.js';
+import { youtubeFetch, serverJobTiming } from './server-queue.js';
 
 const CHUNK_CHAR_LIMIT = 3000; // Split transcripts longer than this
 
@@ -268,7 +268,14 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
     for (const tb of state.tabs) {
       if (!Array.isArray(tb.messages)) continue;
       const i = tb.messages.findIndex((m) => m && m.id === id);
-      if (i >= 0) { tb.messages[i] = msg; return; }
+      if (i >= 0) {
+        // Reconnect re-run (reload) upserts over an already-placed bubble — keep the
+        // ORIGINAL generation time/duration so a refresh never re-stamps it to "now".
+        const prev = tb.messages[i];
+        if (prev.timestamp) msg.timestamp = prev.timestamp;
+        if (prev.genMs && msg.genMs == null) msg.genMs = prev.genMs;
+        tb.messages[i] = msg; return;
+      }
     }
     if (cursor && cursor.pos >= 0 && cursor.pos <= tab.messages.length) tab.messages.splice(cursor.pos++, 0, msg);
     else tab.messages.push(msg);
@@ -291,7 +298,11 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
     if (r0.ok) {
       const d0 = await r0.json();
       if (d0 && d0.type === 'youtube' && (d0.title || d0.thumbnail)) {
-        upsertById(base + ':info', await buildYoutubeInfoMsg(url, d0));   // first bubble, now
+        // Immediate info card while the job runs — no timestamp yet (the job hasn't
+        // finished). The final upsert stamps the server-authoritative genTs; upsertById's
+        // preservation then keeps that across a reload instead of re-stamping "now".
+        const infoNow = await buildYoutubeInfoMsg(url, d0); infoNow.timestamp = 0;
+        upsertById(base + ':info', infoNow);   // first bubble, now
         commit();
         const hasRealTranscript = !!(d0.content && !d0.content.startsWith('['));
         prefetch = {
@@ -319,21 +330,32 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
   }
   data = data || {};
 
+  // Server-authoritative generation time/duration (same wall clock as us) — correct even
+  // if the page was closed for the whole job: finishedAt = when the server actually produced
+  // the result, genMs = how long the background work (whisper + format) took. Falls back to
+  // now / null if the timing snapshot isn't available (e.g. inline-fetch path).
+  const timing = serverJobTiming(bg.server.bgJob && bg.server.bgJob.serverJobId);
+  const genTs = timing && timing.finishedAt ? timing.finishedAt : Date.now();
+  const genMs = timing && timing.startedAt && timing.finishedAt ? (timing.finishedAt - timing.startedAt) : null;
+
   // 1. video info card — stable id, NEVER the placeholder msgId (that's reserved for the reply).
   // Same id as the early placement above, so this refreshes it rather than duplicating.
-  upsertById(base + ':info', await buildYoutubeInfoMsg(url, data));
+  const infoMsg = await buildYoutubeInfoMsg(url, data);
+  infoMsg.timestamp = genTs;
+  upsertById(base + ':info', infoMsg);
 
   if (ok && data.formattedText) {
-    // 2a. success → only the cleaned transcript (no raw-subtitle user bubble)
-    upsertById(base + ':fmt', { role: 'assistant', content: data.formattedText, timestamp: Date.now() });
+    // 2a. success → only the cleaned transcript (no raw-subtitle user bubble). Record when it
+    // was generated (genTs) + how long it took (genMs → renderChat shows the ⏱ on the bubble).
+    upsertById(base + ':fmt', { role: 'assistant', content: data.formattedText, timestamp: genTs, genMs });
   } else {
     // 2b. failure → raw transcript as a fallback user bubble (if any) + the error
     const errMsg = data.error || '字幕整理失败';
     if (data.rawTranscript) {
       const label = data.source === 'whisper' ? '**[语音识别结果]**' : '**[原始字幕]**';
-      upsertById(base + ':raw', { role: 'user', content: `${label}\n\n${data.rawTranscript}`, timestamp: Date.now() });
+      upsertById(base + ':raw', { role: 'user', content: `${label}\n\n${data.rawTranscript}`, timestamp: genTs });
     }
-    upsertById(base + ':fmt', { role: 'assistant', content: `⚠️ ${errMsg}`, timestamp: Date.now() });
+    upsertById(base + ':fmt', { role: 'assistant', content: `⚠️ ${errMsg}`, timestamp: genTs });
     commit();
     urlError(errMsg);
     return;

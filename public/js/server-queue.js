@@ -140,6 +140,17 @@ export function youtubeFetch(payload, meta) {
   );
 }
 
+// Server-authoritative timing for a settled (or running) job — used to stamp a
+// generated bubble with the REAL generation time/duration (server's startedAt/finishedAt,
+// same wall clock as us). Correct even if the page was closed during the job: the value
+// comes from the SSE snapshot/done, not from when the client happened to reattach.
+export function serverJobTiming(serverJobId) {
+  if (!serverJobId) return null;
+  const j = lastJobs.get(serverJobId);
+  if (!j) return null;
+  return { startedAt: j.startedAt || 0, finishedAt: j.finishedAt || 0 };
+}
+
 // ---- control (used by bg-jobs cancel/reorder + archive) ---------------------
 export function cancelServerJob(serverJobId) {
   if (!serverJobId) return;

@@ -458,6 +458,7 @@ export async function handleAskCommand(query, tab, scope = {}, insertAt = null) 
   state.currentAbortController = abort;
   setGenerating(true);
   await rerender();
+  const started = Date.now();   // run-time clock → shown as "⏱ 用时 …" on the answer bubble
   let streamed = false;
   try {
     let last = 0;
@@ -485,6 +486,9 @@ export async function handleAskCommand(query, tab, scope = {}, insertAt = null) 
       amsg.content = t("lib_askFailed") + e.message;
     }
   } finally {
+    // Record how long the ask ran (success, stop, or error) — renderMessage shows it as
+    // "⏱ 用时 …" next to the bubble's timestamp, same as normal assistant replies.
+    amsg.genMs = Date.now() - started;
     // Only clear if still ours — a newer generation may have taken over the button.
     if (state.currentAbortController === abort) setGenerating(false);
   }
