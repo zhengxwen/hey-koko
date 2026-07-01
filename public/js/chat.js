@@ -4066,25 +4066,40 @@ let hlPanelQuery = "";
 let hlAvoidRaf = 0;
 const HL_DECO_GLYPH = { underline: "U̲", strike: "S̶" };
 
-// Nudge the floating opener left so it never covers a user message bubble
-// (bubbles are right-aligned, where the button sits). rAF-throttled.
+// Keep the floating opener pinned to the right edge, but if its home spot covers
+// a user bubble, drop it DOWN to the first visible assistant bubble's row (whose
+// right side is empty, since assistant bubbles are left-aligned). rAF-throttled.
+const HL_BTN_HOME_TOP = 10;
 function avoidUserBubbles() {
   if (!hlPanelBtn || hlPanelBtn.hidden) return;
-  hlPanelBtn.style.transform = "";                 // reset to measure home position
-  const r = hlPanelBtn.getBoundingClientRect();
-  const wrap = dom.messagesEl.getBoundingClientRect();
-  let overlap = null;
-  for (const b of dom.messagesEl.querySelectorAll(".message.user")) {
-    const br = b.getBoundingClientRect();
-    if (br.bottom <= r.top || br.top >= r.bottom) continue;   // no vertical overlap
-    if (br.right <= r.left || br.left >= r.right) continue;    // no horizontal overlap
-    overlap = br; break;
+  const op = (hlPanelBtn.offsetParent || dom.messagesEl).getBoundingClientRect();
+  const view = dom.messagesEl.getBoundingClientRect();
+  const btnH = hlPanelBtn.offsetHeight || 34;
+  const setTop = (px) => { hlPanelBtn.style.top = px + "px"; };
+  const overlapsUser = () => {
+    const rr = hlPanelBtn.getBoundingClientRect();
+    for (const b of dom.messagesEl.querySelectorAll(".message.user")) {
+      const br = b.getBoundingClientRect();
+      if (br.bottom <= rr.top || br.top >= rr.bottom) continue;   // no vertical overlap
+      if (br.right <= rr.left || br.left >= rr.right) continue;    // no horizontal overlap
+      return true;
+    }
+    return false;
+  };
+  setTop(HL_BTN_HOME_TOP);
+  if (!overlapsUser()) return;                       // home spot is clear
+  // Blocked → try each visible assistant bubble from the top, park beside the
+  // first one where the button no longer covers a user bubble.
+  for (const a of dom.messagesEl.querySelectorAll(".message.assistant")) {
+    const ar = a.getBoundingClientRect();
+    if (ar.bottom <= view.top) continue;             // above the viewport
+    if (ar.top >= view.bottom) break;                // below the viewport
+    let top = ar.top - op.top + 6;
+    top = Math.max(HL_BTN_HOME_TOP, Math.min(top, view.bottom - op.top - btnH - 8));
+    setTop(top);
+    if (!overlapsUser()) return;
   }
-  if (overlap) {
-    const maxShift = Math.max(0, r.left - (wrap.left + 8));    // don't run off the left edge
-    const shift = Math.min(r.right - overlap.left + 8, maxShift);
-    if (shift > 0) hlPanelBtn.style.transform = `translateX(${-shift}px)`;
-  }
+  setTop(HL_BTN_HOME_TOP);                            // no clear spot → back home
 }
 function scheduleAvoid() {
   if (hlAvoidRaf) return;
@@ -4212,11 +4227,18 @@ function initHighlightsPanel() {
   const addChip = (key, label, dot) => {
     const chip = document.createElement("button");
     chip.type = "button";
-    chip.className = "highlightsChip" + (key === hlPanelFilter ? " active" : "");
     chip.dataset.filter = key;
-    if (dot) { const d = document.createElement("span"); d.className = "hlDot"; d.style.background = dot; chip.appendChild(d); }
-    if (label) chip.appendChild(document.createTextNode(label));
-    chip.title = label || t("hl_" + key);
+    const active = key === hlPanelFilter;
+    if (dot) {
+      // Color filter → a round color swatch (not a text pill).
+      chip.className = "highlightsChip colorChip" + (active ? " active" : "");
+      chip.style.background = dot;
+      chip.title = label || t("hl_" + key);
+    } else {
+      chip.className = "highlightsChip" + (active ? " active" : "");
+      chip.textContent = label;
+      chip.title = label || key;
+    }
     chip.addEventListener("click", () => {
       hlPanelFilter = key;
       hlChipsEl.querySelectorAll(".highlightsChip").forEach((c) => c.classList.toggle("active", c.dataset.filter === key));

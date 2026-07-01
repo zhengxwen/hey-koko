@@ -2308,7 +2308,18 @@ button.secondary:disabled {
   min-height: 0;   /* override global button min-height:42 */
 }
 .highlightsChip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-.highlightsChip .hlDot { width: 12px; height: 12px; border-radius: 50%; }
+/* Color filters are round swatches, not text pills. */
+.colorChip {
+  flex: 0 0 auto;
+  width: 16px; height: 16px;
+  min-width: 16px; min-height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  aspect-ratio: 1 / 1;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.14) inset;
+}
+.colorChip.active { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
 .highlightsSearch {
   width: 100%; box-sizing: border-box; border: 1px solid var(--surface-hover);
   border-radius: 8px; background: var(--input-bg); color: var(--ink); padding: 6px 10px; font-size: 13px;
@@ -2345,9 +2356,11 @@ button.secondary:disabled {
   cursor: pointer; box-shadow: var(--shadow); font-size: 16px; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center;
   opacity: 0.7;
-  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease, transform 0.15s ease;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
 }
 .highlightsPanelBtn:hover { opacity: 1; background: #000; color: #fff; border-color: #000; }
+/* `display: inline-flex` beats the UA `[hidden] { display: none }` — restore it. */
+.highlightsPanelBtn[hidden] { display: none; }
 .highlightsPanelBadge {
   position: absolute; top: -4px; right: -4px; min-width: 16px; height: 16px;
   padding: 0 4px; border-radius: 8px; background: var(--accent); color: #fff;
