@@ -3,6 +3,7 @@
 
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
+const claude = require("./claude");
 
 const IMAGE_MODEL_PATTERNS = [/flux/i, /z-image/i, /sdxl/i, /stable-diffusion/i, /imagen/i];
 
@@ -186,6 +187,16 @@ async function enhancePromptText({ model, prompt, language, edit, video }) {
   // Video wins over edit (i2v still needs motion described).
   const template = video ? VIDEO_ENHANCE_PROMPTS : edit ? EDIT_ENHANCE_PROMPTS : ENHANCE_PROMPTS;
   const systemPrompt = getPromptByLang(template, language || "en");
+
+  // Cloud model: call Claude directly (this server-side path bypasses the
+  // /api/chat router that would otherwise route by model name).
+  if (claude.isClaudeModel(model)) {
+    const text = await claude.complete(model, [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: prompt },
+    ]);
+    return text.trim() || prompt;
+  }
 
   const response = await fetch(`${config.ollamaUrl}/api/chat`, {
     method: "POST",

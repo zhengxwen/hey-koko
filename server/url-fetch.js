@@ -7,6 +7,7 @@ const os = require("os");
 const { execFile, spawn } = require("child_process");
 const { sendJson, readBody } = require("./utils");
 const config = require("./config");
+const claude = require("./claude");
 
 async function fetchUrlContent(req, res) {
   try {
@@ -915,31 +916,41 @@ async function formatTranscriptServer(title, transcript, model, { onProgress = (
     const chunkPrompt = i === 0
       ? `请整理以下字幕片段（第${i + 1}/${total}段），添加标点并分段，不要省略内容：\n\n${chunks[i]}`
       : `请继续整理下一段字幕（第${i + 1}/${total}段），保持与前面相同的格式风格，添加标点并分段，不要省略内容：\n\n${chunks[i]}`;
-    const resp = await fetch(`${config.ollamaUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: chunkPrompt }], options: { temperature: 0.3 } }),
-      signal,
-    });
-    if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error(`字幕整理失败 (${resp.status})${t ? ": " + t.slice(0, 200) : ""}`); }
     let chunkText = "";
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        let o; try { o = JSON.parse(line); } catch { continue; }
-        if (o.error) throw new Error(o.error);
-        if (o.message && o.message.content) chunkText += o.message.content;
+    if (claude.isClaudeModel(model)) {
+      // Cloud model: the /api/chat router doesn't sit in this server-side path,
+      // so call Claude directly (non-streaming) instead of local Ollama.
+      chunkText = await claude.complete(
+        model,
+        [{ role: "system", content: systemPrompt }, { role: "user", content: chunkPrompt }],
+        { signal },
+      );
+    } else {
+      const resp = await fetch(`${config.ollamaUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: chunkPrompt }], options: { temperature: 0.3 } }),
+        signal,
+      });
+      if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error(`字幕整理失败 (${resp.status})${t ? ": " + t.slice(0, 200) : ""}`); }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let o; try { o = JSON.parse(line); } catch { continue; }
+          if (o.error) throw new Error(o.error);
+          if (o.message && o.message.content) chunkText += o.message.content;
+        }
       }
+      if (buffer.trim()) { try { const o = JSON.parse(buffer); if (o.message && o.message.content) chunkText += o.message.content; } catch {} }
     }
-    if (buffer.trim()) { try { const o = JSON.parse(buffer); if (o.message && o.message.content) chunkText += o.message.content; } catch {} }
     fullContent += (fullContent ? "\n\n" : "") + chunkText.trim();
   }
   return "**📝 整理好的字幕**\n\n" + fullContent.trim();

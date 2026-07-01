@@ -65,6 +65,40 @@ function loadConfig() {
 let _discovered = { ts: 0, ids: null, ctx: {} };
 const DISCOVER_TTL_MS = 5 * 60 * 1000;
 
+// Compare two version tuples (e.g. [4,8] vs [4,6]) numerically, left to right.
+function cmpVer(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] || 0) - (b[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+// Built-in denoise for AUTO mode (manual models[] bypasses this): keep only the
+// newest version PER FAMILY (opus/sonnet/haiku/fable/mythos), preferring the
+// undated alias over a dated snapshot. A flat "min version" floor can't work —
+// families sit at different current versions (opus 4.8, sonnet 4.6, haiku 4.5) —
+// so newest-per-family is what keeps each family's current model and drops the
+// rest. Unrecognized families are kept as-is (fail open). Never fabricates an id:
+// the date is stripped only to COMPARE versions; the original id string is emitted.
+function denoiseModelIds(ids) {
+  const passthrough = [];
+  const best = new Map(); // family -> { id, ver, dated }
+  for (const id of ids) {
+    const fam = (id.match(/opus|sonnet|haiku|fable|mythos/i) || [null])[0];
+    if (!fam) { passthrough.push(id); continue; }
+    const stripped = id.replace(/-\d{8}\b/, "").replace(/@.*$/, ""); // drop date for comparison only
+    const ver = (stripped.match(/\d+/g) || []).map(Number);
+    const dated = id !== stripped;
+    const key = fam.toLowerCase();
+    const cur = best.get(key);
+    const c = cur ? cmpVer(ver, cur.ver) : 1;
+    // Higher version wins; on a tie prefer the undated alias.
+    if (!cur || c > 0 || (c === 0 && cur.dated && !dated)) best.set(key, { id, ver, dated });
+  }
+  return [...passthrough, ...[...best.values()].map((v) => v.id)];
+}
+
 // GET <baseUrl>/v1/models → claude-* ids + max_input_tokens. Returns null on any
 // failure (relay doesn't implement it, network error, empty) so callers fall back.
 async function discoverModels(cfg) {
@@ -80,14 +114,15 @@ async function discoverModels(cfg) {
     clearTimeout(to);
     if (!r.ok) return null;
     const data = await r.json();
-    const ids = [];
+    const rawIds = [];
     const ctx = {};
     for (const m of data.data || []) {
       if (!m.id || !/^claude/i.test(m.id)) continue;
-      ids.push(m.id);
+      rawIds.push(m.id);
       if (m.max_input_tokens) ctx[m.id] = m.max_input_tokens;
     }
-    if (!ids.length) return null;
+    if (!rawIds.length) return null;
+    const ids = denoiseModelIds(rawIds); // newest-per-family; manual models[] never reaches here
     _discovered = { ts: now, ids, ctx };
     return _discovered;
   } catch {
@@ -391,4 +426,40 @@ async function proxyChat(res, body) {
   }
 }
 
-module.exports = { isClaudeModel, contextLengthFor, listModels, proxyChat };
+// Non-streaming text completion for INTERNAL server callers (subtitle tidying,
+// prompt enhancement) that talk to the chat backend directly and bypass the
+// /api/chat router. Takes Ollama-shaped messages, returns the assistant text.
+// Throws on error. temperature is intentionally dropped (Opus 4.8/4.7 reject it).
+async function complete(model, messages, { signal } = {}) {
+  const cfg = loadConfig();
+  if (!cfg) throw new Error("Claude 未配置");
+  const { system, messages: anthMessages } = toAnthropicMessages(messages);
+  const payload = {
+    model,
+    max_tokens: 16000,
+    messages: anthMessages,
+    ...(system ? { system } : {}),
+  };
+  const r = await fetch(`${cfg.baseUrl}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": cfg.apiKey,
+      "anthropic-version": ANTHROPIC_VERSION,
+    },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!r.ok) {
+    const txt = await r.text().catch(() => "");
+    let msg = txt;
+    try { msg = JSON.parse(txt).error?.message || txt; } catch { /* keep raw */ }
+    throw new Error(`Claude ${r.status}${msg ? ": " + String(msg).slice(0, 200) : ""}`);
+  }
+  const data = await r.json();
+  let text = "";
+  for (const b of data.content || []) if (b.type === "text") text += b.text || "";
+  return text;
+}
+
+module.exports = { isClaudeModel, contextLengthFor, listModels, proxyChat, complete };
