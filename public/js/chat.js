@@ -6,7 +6,7 @@ import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollStat
 import { TAG_COLORS } from './constants.js';
 import { escapeHtml, formatTimestamp, formatDuration, mediaFilename } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
-import { setAvatarState, showExpression, detectExpression } from './avatar.js';
+import { setAvatarState, showExpression, detectExpression, isCloudModel } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.js';
@@ -35,9 +35,11 @@ let _sendStatusImageCount = 0; // images carried by the in-flight request (annot
 // "Sending/Receiving…", upgraded to "…（包括 N 张图片）" when the outgoing request
 // carries images. Computed live so setSendingImageCount can refresh the visible pill.
 function sendingStatusText() {
-  return _sendStatusImageCount > 0
+  const base = _sendStatusImageCount > 0
     ? t("status_sendingImages", { n: _sendStatusImageCount })
     : t("status_sending");
+  // Cloud requests leave the machine — prefix the pill with ☁️ (mirrors the avatar badge).
+  return isCloudModel() ? "☁️ " + base : base;
 }
 function scheduleStatus(kind, key) {
   clearTimeout(_sendStatusTimer);
