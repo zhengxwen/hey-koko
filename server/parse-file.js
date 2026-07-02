@@ -116,7 +116,9 @@ async function parseFile(req, res) {
   let tmpDir = null;
   try {
     const { filename, data } = await parseMultipart(req);
-    const ext = path.extname(filename).toLowerCase();
+    // basename only — a crafted multipart filename ("../../x.pdf") must not escape tmpDir
+    const safeName = path.basename(String(filename).replace(/\\/g, "/")) || "upload";
+    const ext = path.extname(safeName).toLowerCase();
 
     if (ext !== ".pdf" && ext !== ".docx" && ext !== ".pptx") {
       sendJson(res, 400, { error: "Server parsing only supports .pdf, .docx and .pptx" });
@@ -125,7 +127,7 @@ async function parseFile(req, res) {
 
     // Create temp directory
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "parse-file-"));
-    const inputPath = path.join(tmpDir, filename);
+    const inputPath = path.join(tmpDir, safeName);
     fs.writeFileSync(inputPath, data);
 
     if (ext === ".docx" || ext === ".pptx") {

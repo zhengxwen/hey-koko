@@ -95,11 +95,13 @@ function load() {
       if (!live.has(f.replace(/\.json$/, ""))) dropResult(f.replace(/\.json$/, ""));
     }
   } catch { /* no results dir yet → nothing to clean */ }
-  // Clean orphan spool files (their job is gone → the raw upload is unreachable).
+  // Clean orphan spool files (no surviving job references them → the raw upload is
+  // unreachable). Jobs reference their spool by PATH in payload.spool — a pre-uploaded
+  // spool's name is a random uuid, NOT the job id, so never key this on job ids.
   try {
-    const liveIds = new Set(jobs.map((j) => j.id));
+    const live = new Set(jobs.map((j) => (j.payload && j.payload.spool) ? path.basename(j.payload.spool) : ""));
     for (const f of fs.readdirSync(SPOOL_DIR)) {
-      if (!liveIds.has(f.replace(/\.bin$/, ""))) { try { fs.unlinkSync(path.join(SPOOL_DIR, f)); } catch {} }
+      if (!live.has(f)) { try { fs.unlinkSync(path.join(SPOOL_DIR, f)); } catch {} }
     }
   } catch { /* no spool dir yet → nothing to clean */ }
 }
@@ -143,7 +145,7 @@ function spawnSleepGuard() {
       "[Win.Power]::SetThreadExecutionState([uint32]2147483649) | Out-Null; " +
       `Wait-Process -Id ${process.pid} -ErrorAction SilentlyContinue`;
     const encoded = Buffer.from(script, "utf16le").toString("base64");
-    return spawn("powershell", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], { stdio: "ignore" });
+    return spawn("powershell", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], { stdio: "ignore", windowsHide: true });
   }
   return null;
 }
@@ -372,7 +374,10 @@ async function runLibImportJob(job, signal) {
 
   if (!text || !String(text).trim()) throw new Error("empty document");
   stage("importing");
-  const imp = await library.importDocInternal({ source, docKind, folder: p.folder, title, authors, year, text, images, model: p.embedModel });
+  // dedupe only for file imports: their docId comes from the file BASENAME, so two
+  // different papers both named main.pdf would otherwise silently overwrite each other
+  // (URL/YouTube docIds derive from the URL — same id really is the same doc there).
+  const imp = await library.importDocInternal({ source, docKind, folder: p.folder, title, authors, year, text, images, model: p.embedModel, dedupe: p.type === "file" });
   let distilled = false;
   if (p.distill !== false && p.chatModel) {
     stage("distilling");
@@ -387,7 +392,7 @@ async function runLibImportJob(job, signal) {
     }
   }
   dropSpool(job);
-  return { docId: imp.docId, blockCount: imp.blockCount, folder: imp.folder, distilled };
+  return { docId: imp.docId, blockCount: imp.blockCount, folder: imp.folder, distilled, dedupedFrom: imp.dedupedFrom || undefined };
 }
 
 // Loopback multipart POST to our own /api/parse-file. The response is EITHER one JSON
@@ -472,6 +477,13 @@ async function submitJob(req, res) {
       job.payload = { ...payload, fileB64: undefined, spool: sp };
     } catch { /* spool failed → keep the inline base64 */ }
   }
+  // Pre-uploaded file (POST /api/jobs/upload): the payload references the spool by NAME
+  // only — resolve it inside SPOOL_DIR (basename, so a crafted name can't escape).
+  else if (kind === "libimport" && payload.type === "file" && payload.spoolName) {
+    const sp = path.join(SPOOL_DIR, path.basename(String(payload.spoolName)));
+    if (!fs.existsSync(sp)) { sendJson(res, 400, { error: "uploaded file not found（服务器可能已重启，请重新导入）" }); return; }
+    job.payload = { ...payload, spoolName: undefined, spool: sp };
+  }
   // Insert keeping QUEUED jobs in the client's batch-enqueue (seq) order. Fire-all submits the
   // whole batch up front and each job races through its own source-video upload first, so POST
   // arrival order ≠ the order the user enqueued them. Drop the new job just before the first
@@ -485,6 +497,27 @@ async function submitJob(req, res) {
   }
   persist(); emitUpdate(job); pumpLanes();
   sendJson(res, 200, { jobId: job.id, clientId: job.clientId });
+}
+
+// POST /api/jobs/upload — raw binary body streamed straight into a spool file; returns
+// { spoolName } for the subsequent /api/jobs submit. This keeps big files (a 50MB PDF)
+// out of the JSON job body: base64 inside JSON.stringify freezes the browser main
+// thread and bloats readBody — the exact trap source-video upload hit before it got
+// its own raw-binary endpoint. Orphans (uploaded but never submitted) are swept by
+// load() on the next server start.
+async function uploadSpool(req, res) {
+  try {
+    fs.mkdirSync(SPOOL_DIR, { recursive: true });
+    const name = crypto.randomUUID() + ".bin";
+    const ws = fs.createWriteStream(path.join(SPOOL_DIR, name));
+    await new Promise((resolve, reject) => {
+      req.pipe(ws);
+      ws.on("finish", resolve);
+      ws.on("error", reject);
+      req.on("error", reject);
+    });
+    sendJson(res, 200, { spoolName: name });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
 function streamEvents(req, res) {
@@ -545,4 +578,4 @@ async function resumeJob(req, res, id) {
 load();
 setTimeout(() => pumpLanes(), 800);   // resume queued jobs on boot
 
-module.exports = { submitJob, streamEvents, cancelJob, cancelConversation, ackJobs, reorderJobs, pauseJob, resumeJob };
+module.exports = { submitJob, uploadSpool, streamEvents, cancelJob, cancelConversation, ackJobs, reorderJobs, pauseJob, resumeJob };

@@ -51,6 +51,21 @@ function fileToB64(file) {
   });
 }
 
+// Upload an import file as RAW BINARY into the server's job spool → { spoolName }.
+// Base64 inside the JSON job body freezes the main thread on big PDFs (JSON.stringify
+// of a ~70MB string — the same trap source-video upload hit); the payload then carries
+// just the tiny spoolName. Throws on failure — the caller falls back to inline base64.
+async function uploadImportFile(file) {
+  const r = await fetch("/api/jobs/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: file,
+  });
+  const d = await r.json();
+  if (!r.ok || !d.spoolName) throw new Error(d.error || "upload failed");
+  return d.spoolName;
+}
+
 async function postJson(url, body, signal = null) {
   const res = await fetch(url, {
     method: "POST",
@@ -555,7 +570,13 @@ export function initLibrary() {
       if (ext === ".txt" || ext === ".md" || ext === ".markdown") {
         payload = { type: "text", name: file.name, title: file.name.replace(/\.[^.]+$/, ""), text: await file.text(), folder, docKind: dk, ...importJobCommon() };
       } else {
-        payload = { type: "file", name: file.name, ext, fileB64: await fileToB64(file), folder, docKind: dk, ...importJobCommon() };
+        // Raw-binary upload into the server spool first (keeps big PDFs out of the JSON
+        // job body); inline base64 only as the fallback if the upload fails.
+        let spoolName = null;
+        try { spoolName = await uploadImportFile(file); } catch { /* fall back to base64 */ }
+        payload = spoolName
+          ? { type: "file", name: file.name, ext, spoolName, folder, docKind: dk, ...importJobCommon() }
+          : { type: "file", name: file.name, ext, fileB64: await fileToB64(file), folder, docKind: dk, ...importJobCommon() };
       }
       enqueueBgJob({ tabId: state.activeTabId, kind: "libimport", label: file.name, payload, noPlaceholder: true });
     }
