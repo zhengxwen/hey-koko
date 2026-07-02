@@ -540,6 +540,8 @@ export function initLibrary() {
   let scores = null;          // Map<docId, score> when a semantic search is active
   let activeTagFilter = null;
   let currentDoc = null;
+  const expandedDirs = new Set();   // folder paths the user expanded — survives re-renders
+                                    // (the list refreshes on every panel open)
   let allDirs = [""];         // every folder under the library (for move popup + ask scope)
 
   const setStatus = (s) => { statusEl.textContent = s || ""; };
@@ -562,8 +564,11 @@ export function initLibrary() {
   // ---- open / close ----
   function open() {
     overlay.classList.add("isOpen");
-    clearPreview();   // reset right pane to empty state
-    refreshList();
+    if (!currentDoc) clearPreview();   // keep the doc being read across close/reopen
+    refreshList().then(() => {
+      // The shown doc may have been deleted while the panel was closed.
+      if (currentDoc && !docs.some((d) => d.docId === currentDoc.docId)) clearPreview();
+    });
   }
   _openLibrary = open;
   openBtn.addEventListener("click", open);
@@ -1019,27 +1024,30 @@ export function initLibrary() {
       }
       node.files.push(d);
     }
-    const renderNode = (node, container, depth) => {
+    const renderNode = (node, container, depth, parentPath) => {
       Object.keys(node.dirs).sort().forEach((name) => {
+        const path = parentPath ? parentPath + "/" + name : name;
+        const expanded = expandedDirs.has(path);
         const dirEl = document.createElement("div");
-        dirEl.className = "archiveTreeDir isCollapsed";
+        dirEl.className = "archiveTreeDir" + (expanded ? "" : " isCollapsed");
         const header = document.createElement("div");
         header.className = "archiveTreeDirHeader";
         header.style.paddingLeft = (depth * 16 + 8) + "px";
-        header.innerHTML = `<span class="archiveTreeDirArrow">▶</span><span class="archiveTreeDirIcon">📁</span><span class="archiveTreeDirName">${escapeHtml(name)}</span>`;
+        header.innerHTML = `<span class="archiveTreeDirArrow">${expanded ? "▼" : "▶"}</span><span class="archiveTreeDirIcon">📁</span><span class="archiveTreeDirName">${escapeHtml(name)}</span>`;
         const content = document.createElement("div");
         content.className = "archiveTreeDirContent";
         header.addEventListener("click", () => {
           const collapsed = dirEl.classList.toggle("isCollapsed");
           header.querySelector(".archiveTreeDirArrow").textContent = collapsed ? "▶" : "▼";
+          if (collapsed) expandedDirs.delete(path); else expandedDirs.add(path);
         });
         dirEl.append(header, content);
         container.appendChild(dirEl);
-        renderNode(node.dirs[name], content, depth + 1);
+        renderNode(node.dirs[name], content, depth + 1, path);
       });
       node.files.forEach((d) => container.appendChild(createCard(d, depth)));
     };
-    renderNode(root, listEl, 0);
+    renderNode(root, listEl, 0, "");
   }
 
   // ---- semantic search ----
