@@ -24,7 +24,7 @@ const { proxyComfyModels, generateComfyImage, uploadComfyVideo } = require("./se
 const { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, expandYoutubeUrls } = require("./server/url-fetch");
 const { searchWeb } = require("./server/search");
 const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
-const { listSystemVoices, speak, stopSay } = require("./server/speech");
+const { listSystemVoices, speakAudio } = require("./server/speech");
 const { listTtsVoices, synthesize } = require("./server/tts");
 const { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives } = require("./server/archive");
 const { importLibrary, listLibrary, searchLibrary, getLibraryDoc, saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, listLibraryDirs, moveLibraryDocs, rescanLibrary, distillLibraryDoc, relatedLibraryDocs } = require("./server/library");
@@ -198,13 +198,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === "POST" && req.url === "/api/speak") {
-    speak(req, res);
-    return;
-  }
-
-  if (req.method === "POST" && req.url === "/api/stop-speak") {
-    stopSay(res);
+  if (req.method === "POST" && req.url === "/api/speak-audio") {
+    speakAudio(req, res);
     return;
   }
 

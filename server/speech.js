@@ -3,12 +3,12 @@
 
 const { execFile, spawn } = require("child_process");
 const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { sendJson, readBody, cleanSpeechText } = require("./utils");
 const { synthToWav } = require("./tts");
 
-let sayProcess = null;   // active macOS `say` child
-let playProcess = null;  // active afplay child (for neural-engine playback)
-let sayStopped = false;
+let nextSpeakId = 1; // temp-file uniqueness across concurrent (prefetched) requests
 
 function listSystemVoices(res) {
   execFile("say", ["-v", "?"], { encoding: "utf-8" }, (err, stdout) => {
@@ -25,109 +25,64 @@ function listSystemVoices(res) {
   });
 }
 
-function killProcs() {
-  if (sayProcess) { try { sayProcess.kill(); } catch { /* gone */ } sayProcess = null; }
-  if (playProcess) { try { playProcess.kill(); } catch { /* gone */ } playProcess = null; }
-}
-
-// Play an audio file on the server's speakers. Used for neural engines,
-// mirroring how `say` plays directly — keeps the reader server-side. Per platform:
-//   macOS   → afplay
-//   Windows → PowerShell's built-in Media.SoundPlayer (plays 16-bit PCM WAV
-//             synchronously; no extra dependency — the neural engines emit WAV)
-//   Linux   → ffplay if present (error handler resolves silently otherwise)
-// Kept as a child process so killProcs() (stop button) can interrupt playback.
-function playFile(p) {
-  return new Promise((resolve) => {
-    if (process.platform === "win32") {
-      playProcess = spawn("powershell", [
-        "-NoProfile", "-NonInteractive", "-Command",
-        `(New-Object Media.SoundPlayer '${p.replace(/'/g, "''")}').PlaySync()`,
-      ]);
-    } else if (process.platform === "darwin") {
-      playProcess = spawn("afplay", [p]);
-    } else {
-      playProcess = spawn("ffplay", ["-nodisp", "-autoexit", "-loglevel", "quiet", p]);
-    }
-    playProcess.on("close", () => { playProcess = null; resolve(); });
-    playProcess.on("error", () => { playProcess = null; resolve(); });
+// Synthesize via macOS `say` to a temp WAV (LEI16 — browsers can't play the
+// default AIFF). The child is killed if the client disconnects mid-synthesis.
+function sayToWavFile(voice, text, rate, req) {
+  return new Promise((resolve, reject) => {
+    const out = path.join(os.tmpdir(), `hk_speak_${process.pid}_${nextSpeakId++}.wav`);
+    const args = ["--data-format=LEI16@22050", "-o", out];
+    if (voice) args.push("-v", voice);
+    if (rate) args.push("-r", String(Math.round(Number(rate) * 175)));
+    const proc = spawn("say", args);
+    const onClose = () => { try { proc.kill(); } catch { /* gone */ } };
+    req.on("close", onClose);
+    proc.on("error", (e) => { req.off("close", onClose); reject(e); });
+    proc.stdin.write(text);
+    proc.stdin.end();
+    proc.on("close", (code) => {
+      req.off("close", onClose);
+      if (code === 0) resolve(out);
+      else { fs.unlink(out, () => {}); reject(new Error(`say exited ${code}`)); }
+    });
   });
 }
 
-// POST /api/speak — read a message aloud on the server, sentence by sentence,
-// streaming NDJSON {index,speaking|done} so the client can highlight along.
-// Routes by the selected voice's engine prefix: "say:"/none → macOS say (plays
-// directly); "kokoro:" → synthesize each sentence then afplay it.
-async function speak(req, res) {
+// POST /api/speak-audio { text, voice, rate } → one sentence's audio as a raw
+// WAV response (204 if nothing speakable). The reader plays IN THE BROWSER:
+// the client fetches sentences through here in a prefetch pipeline (synthesize
+// i+1 while i plays), so the server never touches its own speakers — works
+// when frontend and backend run on different machines. Routes by the voice's
+// engine prefix: "say:"/none → macOS say, otherwise the neural daemon (kokoro).
+async function speakAudio(req, res) {
   try {
     const body = await readBody(req);
-    const { sentences, voice, rate } = body;
-    if (!sentences || !sentences.length) {
-      sendJson(res, 400, { error: "sentences is required" });
+    const text = cleanSpeechText(body.text || "");
+    if (!text) {
+      res.writeHead(204);
+      res.end();
       return;
     }
-    killProcs();
+    const voiceVal = body.voice || "";
+    const rate = Number(body.rate) || 1;
+    const sep = voiceVal.indexOf(":");
+    const engine = sep > 0 ? voiceVal.slice(0, sep) : "say";
+    const voiceId = sep > 0 ? voiceVal.slice(sep + 1) : voiceVal;
 
-    const sep = (voice || "").indexOf(":");
-    const engine = sep > 0 ? voice.slice(0, sep) : "say";
-    const voiceId = sep > 0 ? voice.slice(sep + 1) : (voice || "");
-
+    const wav = engine === "say"
+      ? await sayToWavFile(voiceId, text, rate, req)
+      : await synthToWav({ engine, voice: voiceId, text, speed: rate });
+    const buf = fs.readFileSync(wav);
+    fs.unlink(wav, () => {});
     res.writeHead(200, {
-      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Content-Type": "audio/wav",
+      "Content-Length": buf.length,
       "Cache-Control": "no-store",
     });
-
-    sayStopped = false;
-    req.on("close", () => { sayStopped = true; killProcs(); });
-
-    for (let i = 0; i < sentences.length; i++) {
-      if (sayStopped) break;
-      const clean = cleanSpeechText(sentences[i]);
-      if (!clean) {
-        res.write(JSON.stringify({ index: i, done: true }) + "\n");
-        continue;
-      }
-
-      res.write(JSON.stringify({ index: i, speaking: true }) + "\n");
-
-      if (engine === "say") {
-        await new Promise((resolve) => {
-          const args = [];
-          if (voiceId) args.push("-v", voiceId);
-          if (rate) args.push("-r", String(Math.round(Number(rate) * 175)));
-          sayProcess = spawn("say", args);
-          sayProcess.stdin.write(clean);
-          sayProcess.stdin.end();
-          sayProcess.on("close", () => { sayProcess = null; resolve(); });
-          sayProcess.on("error", () => { sayProcess = null; resolve(); });
-        });
-      } else {
-        // Neural engine: synthesize this sentence to a wav, then play it.
-        try {
-          const wav = await synthToWav({ engine, voice: voiceId, text: clean, speed: Number(rate) || 1 });
-          if (!sayStopped) await playFile(wav);
-          fs.unlink(wav, () => {});
-        } catch {
-          // Engine unavailable / failed — skip this sentence (keeps highlighting going).
-        }
-      }
-
-      if (sayStopped) break;
-      res.write(JSON.stringify({ index: i, done: true }) + "\n");
-    }
-
-    res.write(JSON.stringify({ finished: true }) + "\n");
-    res.end();
+    res.end(buf);
   } catch (e) {
     if (!res.headersSent) sendJson(res, 500, { error: e.message });
     else res.end();
   }
 }
 
-function stopSay(res) {
-  sayStopped = true;
-  killProcs();
-  sendJson(res, 200, { ok: true });
-}
-
-module.exports = { listSystemVoices, speak, stopSay };
+module.exports = { listSystemVoices, speakAudio };

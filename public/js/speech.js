@@ -167,9 +167,11 @@ function getChineseVoice() {
 }
 
 export function stopSpeech() {
+  // Aborting cancels in-flight synthesis fetches AND pauses the playing
+  // <audio> (playUrl listens on the same signal). No server call needed —
+  // playback is browser-side.
   state.speechAbortController?.abort();
   state.speechAbortController = null;
-  fetch("/api/stop-speak", { method: "POST" }).catch(() => {});
   const bodyEl = document.querySelector(".markdownBody[data-original-html]");
   if (bodyEl) {
     bodyEl.innerHTML = bodyEl.dataset.originalHtml;
@@ -426,6 +428,31 @@ function segmentBody(bodyEl) {
   return ranges.map((r) => flat.slice(r.start, r.end));
 }
 
+// Play one synthesized sentence (blob URL) to completion. Resolves on ended /
+// error / abort — never rejects, so the reading loop always advances. The
+// abort listener pauses playback, which is how stopSpeech interrupts audio.
+function playUrl(url, signal) {
+  return new Promise((resolve) => {
+    const audio = new Audio(url);
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const onAbort = () => {
+      audio.pause();
+      audio.src = "";
+      done();
+    };
+    signal.addEventListener("abort", onAbort);
+    audio.addEventListener("ended", done);
+    audio.addEventListener("error", done);
+    audio.play().catch(done);
+  });
+}
+
 function highlightSegment(bodyEl, segIndex) {
   bodyEl.querySelectorAll(".tts-seg.tts-active").forEach((el) => el.classList.remove("tts-active"));
   const spans = bodyEl.querySelectorAll(`.tts-seg[data-seg="${segIndex}"]`);
@@ -469,54 +496,46 @@ export async function speakMessage(content, button) {
   state.activeSpeechButton.classList.add("isSpeaking");
 
   state.speechAbortController = new AbortController();
-  try {
-    const response = await fetch("/api/speak", {
+  const signal = state.speechAbortController.signal;
+
+  // Fetch one sentence's audio from the server. null on failure / nothing
+  // speakable (204) — the loop skips that sentence but keeps highlighting.
+  const fetchAudio = (text) =>
+    fetch("/api/speak-audio", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sentences, voice, rate }),
-      signal: state.speechAbortController.signal,
-    });
+      body: JSON.stringify({ text, voice, rate }),
+      signal,
+    })
+      .then((r) => (r.ok && r.status !== 204 ? r.blob() : null))
+      .then((blob) => (blob && blob.size ? URL.createObjectURL(blob) : null))
+      .catch(() => null);
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const event = JSON.parse(line);
-        if (event.speaking !== undefined && bodyEl) {
-          highlightSegment(bodyEl, Math.min(event.index, sentences.length - 1));
-        }
-        if (event.finished) {
-          if (bodyEl && bodyEl.dataset.originalHtml) {
-            bodyEl.innerHTML = bodyEl.dataset.originalHtml;
-            delete bodyEl.dataset.originalHtml;
-          }
-          stopSpeech();
-        }
-      }
+  // Prefetch pipeline: while sentence i plays in the browser, sentence i+1 is
+  // already synthesizing on the server — no per-sentence gap, and audio comes
+  // to THIS machine (frontend and backend may be different hosts).
+  let next = fetchAudio(sentences[0]);
+  for (let i = 0; i < sentences.length; i++) {
+    const url = await next;
+    if (signal.aborted) {
+      if (url) URL.revokeObjectURL(url);
+      return;
     }
-  } catch (e) {
-    if (e.name !== "AbortError") {
-      if (bodyEl && bodyEl.dataset.originalHtml) {
-        bodyEl.innerHTML = bodyEl.dataset.originalHtml;
-        delete bodyEl.dataset.originalHtml;
-      }
-      stopSpeech();
+    next = i + 1 < sentences.length ? fetchAudio(sentences[i + 1]) : null;
+    if (bodyEl) highlightSegment(bodyEl, i);
+    if (url) {
+      await playUrl(url, signal);
+      URL.revokeObjectURL(url);
+      if (signal.aborted) return;
     }
   }
+  stopSpeech(); // natural finish: restores the un-segmented DOM + button label
 }
 
 // One unified voice selector drives BOTH reading (朗读 button) and /voice
-// generation. Values are engine-prefixed: "say:<name>" (macOS, plays on the
-// server + reads aloud) or "kokoro:" (local neural, also
-// downloadable). The chosen engine determines how each feature synthesizes.
+// generation. Values are engine-prefixed: "say:<name>" (macOS system voice) or
+// "kokoro:" (local neural, also downloadable). The chosen engine determines
+// how the server synthesizes; playback always happens in the browser.
 export function populateVoiceList() {
   Promise.all([
     fetch("/api/voices").then(r => r.json()).catch(() => ({ voices: [] })),
