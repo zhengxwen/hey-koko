@@ -924,7 +924,7 @@ const DISTILL_I18N = {
       "只输出 JSON，不要任何解释或代码块标记：\n" +
       "{\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
       "摘要和要点用中文写（专有名词保留原文）。",
-    cardSection: "蒸馏卡", summaryHead: "**摘要**", claimsHead: "**要点**", toc: "目录：", transcriptHeading: "字幕整理",
+    cardSection: "«蒸馏卡»", summaryHead: "**摘要**", claimsHead: "**要点**", toc: "目录：", transcriptHeading: "«字幕整理»",
     vTitle: "视频标题：", vChannel: "频道：", vSample: "字幕抽样：",
     rerank: "你是检索精排助手。给定一个查询和编号片段列表，按与查询的相关度从高到低输出片段编号。只输出 JSON，不要任何解释或代码块标记：{\"order\":[编号,…]}。明显不相关的编号可以省略。",
     rerankQuery: "查询：", rerankSnippets: "片段：",
@@ -954,7 +954,7 @@ const DISTILL_I18N = {
       "只輸出 JSON，不要任何解釋或代碼塊標記：\n" +
       "{\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
       "摘要和要點用繁體中文寫（專有名詞保留原文）。",
-    cardSection: "蒸餾卡", summaryHead: "**摘要**", claimsHead: "**要點**", toc: "目錄：", transcriptHeading: "字幕整理",
+    cardSection: "«蒸餾卡»", summaryHead: "**摘要**", claimsHead: "**要點**", toc: "目錄：", transcriptHeading: "«字幕整理»",
     vTitle: "影片標題：", vChannel: "頻道：", vSample: "字幕抽樣：",
     rerank: "你是檢索精排助手。給定一個查詢和編號片段列表，按與查詢的相關度從高到低輸出片段編號。只輸出 JSON，不要任何解釋或代碼塊標記：{\"order\":[編號,…]}。明顯不相關的編號可以省略。",
     rerankQuery: "查詢：", rerankSnippets: "片段：",
@@ -984,7 +984,7 @@ const DISTILL_I18N = {
       "Output ONLY JSON, no explanation or code fences:\n" +
       "{\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
       "Write in English (keep proper nouns as-is).",
-    cardSection: "Distill Card", summaryHead: "**Summary**", claimsHead: "**Key points**", toc: "TOC: ", transcriptHeading: "Transcript",
+    cardSection: "«Distill Card»", summaryHead: "**Summary**", claimsHead: "**Key points**", toc: "TOC: ", transcriptHeading: "«Transcript»",
     vTitle: "Video title: ", vChannel: "Channel: ", vSample: "Transcript sample:",
     rerank: "You are a retrieval reranker. Given a query and a numbered list of snippets, output the snippet indices ordered from most to least relevant to the query. Output ONLY JSON, no explanation or code fences: {\"order\":[index,…]}. Clearly irrelevant indices may be omitted.",
     rerankQuery: "Query: ", rerankSnippets: "Snippets:",
@@ -1054,7 +1054,7 @@ async function distillLibraryDoc(req, res) {
 
 // ---- YouTube doc assembly (server-side twin of the old frontend youtube branch) ----
 // Turns a /api/youtube-job result into the import body: cover figure (thumbnail +
-// metadata caption) under "# title", transcript under "# 字幕整理" — the exact block
+// metadata caption) under "# title", transcript under "# «字幕整理»" — the exact block
 // structure the chunker expects. Thumbnail is fetched here (best-effort, stored as-is).
 function ytLangName(code) {
   if (!code) return "";

@@ -38,7 +38,7 @@ const kindIcon = (k) => KIND_ICON[k] || "📎";
 // The transcript-section names the server importer writes (DISTILL_I18N transcriptHeading,
 // server/library.js) — a video doc's section with one of these names is ASR-transcribed
 // AND LLM-reformatted text, not a verbatim record; displays add a ✏️ badge to say so.
-const TRANSCRIPT_SECTIONS = new Set(["字幕整理", "Transcript"]);
+const TRANSCRIPT_SECTIONS = new Set(["«字幕整理»", "«Transcript»"]);
 export const isTranscriptSection = (s) => TRANSCRIPT_SECTIONS.has(String(s || "").trim());
 // Small badge element marking a SPECIAL generated section (display-only — never stored
 // in the doc). Hover shows the native title; CLICK pops the explanation immediately as
