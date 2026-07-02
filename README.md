@@ -78,6 +78,51 @@ service also make the modified source available to its users.
    http://127.0.0.1:1314
    ```
 
+### Linux
+
+1. Install [Node.js](https://nodejs.org) ≥18 (if not already installed). Ubuntu/Debian ship a recent-enough version via apt:
+
+   ```bash
+   sudo apt update && sudo apt install -y nodejs npm
+   ```
+
+   No `sudo`, or want a newer Node? Use [nvm](https://github.com/nvm-sh/nvm) instead:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+   # open a new shell, then:
+   nvm install --lts
+   ```
+
+2. Install and launch [Ollama](https://ollama.com):
+
+   ```bash
+   curl -fsSL https://ollama.com/install.sh | sh
+   ```
+
+   Ollama runs as a background service and serves on `127.0.0.1:11434` automatically.
+
+3. Pull a model:
+
+   ```bash
+   ollama pull gemma4:12b-it-qat   # chat model
+   ollama pull x/flux2-klein:9b    # image generation model (optional)
+   ```
+
+4. Start the server:
+
+   ```bash
+   node server.js
+   ```
+
+5. Open your browser at:
+
+   ```
+   http://127.0.0.1:1314
+   ```
+
+Everything beyond a chat model is optional — image generation, file parsers, YouTube, and text-to-speech each light up as you install their helper (see [Optional Enhancements](#optional-enhancements); each one lists a Linux command alongside macOS/Windows).
+
 ### Windows
 
 Windows uses [winget](https://learn.microsoft.com/windows/package-manager/winget/) in place of Homebrew. PowerShell examples below; run them in a normal (non-admin) PowerShell.
@@ -206,6 +251,7 @@ Hey-Koko works with just Ollama. Each helper below unlocks an extra capability w
 
 ```bash
 brew install pandoc               # macOS
+sudo apt install -y pandoc        # Linux (Debian/Ubuntu)
 winget install JohnMacFarlane.Pandoc   # Windows
 ```
 
@@ -213,7 +259,7 @@ winget install JohnMacFarlane.Pandoc   # Windows
 
 ```bash
 pip install uv
-uv pip install -U "mineru[all]"          # macOS
+uv pip install -U "mineru[all]"          # macOS / Linux
 uv pip install --system -U "mineru[all]" # Windows (or drop --system inside a venv)
 ```
 
@@ -238,6 +284,8 @@ export TRANSFORMERS_OFFLINE=1
 
 ```bash
 brew install yt-dlp ffmpeg        # macOS
+sudo apt install -y ffmpeg        # Linux (Debian/Ubuntu) — ffmpeg
+pipx install yt-dlp               # Linux — yt-dlp (apt's version is often stale; pipx keeps it isolated & on PATH)
 winget install yt-dlp.yt-dlp      # Windows (bundles ffmpeg; or: winget install Gyan.FFmpeg)
 ```
 
@@ -250,6 +298,16 @@ Enables `/url https://youtube.com/watch?v=xxx` to extract subtitles and summariz
 ```bash
 brew install whisper-cpp
 ```
+
+**Linux** — no distro package; build from source into `~/whisper.cpp` (auto-detected there):
+
+```bash
+git clone https://github.com/ggml-org/whisper.cpp ~/whisper.cpp
+cmake -B ~/whisper.cpp/build -S ~/whisper.cpp
+cmake --build ~/whisper.cpp/build -j --config Release
+```
+
+This produces `~/whisper.cpp/build/bin/whisper-cli`, which the server finds automatically — no PATH changes needed. (Alternatively put `whisper-cli` on PATH yourself, e.g. under `/usr/local/bin`.)
 
 **Windows** — there's no winget package, so use the prebuilt binary:
 
@@ -278,6 +336,7 @@ Installing OpenCC upgrades this automatically to **phrase-accurate** conversion,
 
 ```bash
 brew install opencc                # macOS
+sudo apt install -y opencc         # Linux (Debian/Ubuntu)
 winget install BYVoid.OpenCC       # Windows (official package; adds opencc to PATH)
 ```
 
@@ -316,6 +375,22 @@ uv pip install --python ~/venv/tts/bin/python \
 brew install espeak-ng
 ```
 
+**Linux** (install [uv](https://github.com/astral-sh/uv) first if you don't have it: `curl -LsSf https://astral.sh/uv/install.sh | sh`):
+
+```bash
+# Kokoro (light & fast) — recommended
+uv venv --python 3.11 ~/venv/tts
+uv pip install --python ~/venv/tts/bin/python kokoro "misaki[zh]" numpy soundfile
+
+# English voices (af_*/am_* US, bf_*/bm_* UK) also need the spaCy English model
+# + espeak-ng (otherwise misaki tries to auto-download the model and fails):
+uv pip install --python ~/venv/tts/bin/python \
+  "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+sudo apt install -y espeak-ng
+```
+
+Verified working on Linux aarch64 (e.g. NVIDIA DGX Spark / Grace) — `uv` picks CUDA-enabled PyTorch wheels automatically when a GPU is present.
+
 **Windows** — use a **standard `venv`** from an installed Python 3.10–3.12
 (the venv interpreter is `Scripts\python.exe`, not `bin/python`). Prefer
 `python -m venv` over `uv venv` here: a uv-managed interpreter uses a launcher
@@ -338,6 +413,11 @@ winget install eSpeak-NG.eSpeak-NG
 On first synthesis Kokoro downloads its ~330 MB model from Hugging Face (cached
 under `~/.cache/huggingface`), so the very first `/voice` call is slow; later
 calls are fast.
+
+> **Troubleshooting:** if you have `HF_HOME` set globally (e.g. pointing at a
+> shared or read-only model cache used by other tools), the download can fail
+> with a `PermissionError` on that cache's lock files. Either `unset HF_HOME`
+> before starting the server, or point it at a directory your user can write to.
 
 The server **auto-detects the venv** at `~/venv/tts` (using `bin/python` on
 macOS, `Scripts\python.exe` on Windows), so you can just run `node server.js` —
