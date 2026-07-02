@@ -380,9 +380,20 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
 
   // 1. video info card — stable id, NEVER the placeholder msgId (that's reserved for the reply).
   // Same id as the early placement above, so this refreshes it rather than duplicating.
-  const infoMsg = await buildYoutubeInfoMsg(url, data);
-  infoMsg.timestamp = genTs;
-  upsertById(base + ':info', infoMsg);
+  // Only rebuild when the result actually carries video info: a bare error result (e.g.
+  // "whisper-cli 未安装" fails before any metadata) has no title/thumbnail, and rebuilding
+  // from it would clobber the good prefetch-placed card with a bare-URL one.
+  if (data.title || data.thumbnail || data.videoId) {
+    const infoMsg = await buildYoutubeInfoMsg(url, data);
+    infoMsg.timestamp = genTs;
+    upsertById(base + ':info', infoMsg);
+  } else {
+    // Keep the existing card; just give the "pending" card (timestamp 0) its final time.
+    for (const tb of state.tabs) {
+      const m = Array.isArray(tb.messages) && tb.messages.find((x) => x && x.id === base + ':info');
+      if (m) { if (!m.timestamp) m.timestamp = genTs; break; }
+    }
+  }
 
   if (ok && data.formattedText) {
     // 2a. success → only the cleaned transcript (no raw-subtitle user bubble). Record when it
