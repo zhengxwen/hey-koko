@@ -648,7 +648,7 @@ export function initLibrary() {
     ytModal.hidden = false;
     let data;
     try {
-      data = await postJson("/api/youtube-expand", { urls: ytUrls });
+      data = await postJson("/api/youtube-expand", { urls: ytUrls, language: getPromptLanguage() });
     } catch (e) {
       ytList.innerHTML = `<div class="libraryYtLoading">${escapeHtml(t("lib_ytExpandFailed", { error: e.message }))}</div>`;
       return;

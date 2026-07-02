@@ -482,7 +482,7 @@ async function fetchYouTubeThumbnail(videoId) {
 
 async function fetchYouTubeTranscript(videoId, language) {
   // Method 1: Try yt-dlp if available (most reliable)
-  const ytdlpResult = await fetchTranscriptViaYtdlp(videoId);
+  const ytdlpResult = await fetchTranscriptViaYtdlp(videoId, language);
   if (ytdlpResult) return ytdlpResult;
 
   // Method 2: Scrape from page HTML
@@ -606,15 +606,17 @@ async function fetchYouTubeTranscript(videoId, language) {
   }
 }
 
-function fetchTranscriptViaYtdlp(videoId) {
+function fetchTranscriptViaYtdlp(videoId, language) {
   const url = `https://www.youtube.com/watch?v=${videoId}`;
   return new Promise((resolve) => {
     // Check if yt-dlp is available
     findCommand("yt-dlp").then((ytdlp) => {
       if (!ytdlp) { resolve(null); return; }
 
-      // Step 1: list available subtitles to pick the best language
-      execFile("yt-dlp", ["--list-subs", "--skip-download", url],
+      // Step 1: list available subtitles to pick the best language. `--encoding UTF-8`
+      // keeps yt-dlp's stdout UTF-8 on Windows (the frozen exe otherwise emits the ANSI
+      // code page and mangles any non-ASCII).
+      execFile("yt-dlp", ["--encoding", "UTF-8", "--list-subs", "--skip-download", url],
         { timeout: 30000 }, (err2, stdout) => {
           if (err2 || !stdout) { resolve(null); return; }
 
@@ -707,10 +709,15 @@ function fetchTranscriptViaYtdlp(videoId) {
 
               const plainText = segments.map(s => s.text).join("\n");
 
-              // Get video metadata
-              // %(...)j fields (categories/tags) print JSON arrays; description stays LAST
-              // because its .500s value may contain newlines (parsed via slice-and-join).
-              execFile("yt-dlp", [
+              // Get video metadata. `--encoding UTF-8` forces UTF-8 stdout (else the frozen
+              // yt-dlp.exe on Windows drops every CJK char from the title/description);
+              // `youtube:lang` picks the localized-title language so a zh video isn't served
+              // its English title. %(...)j fields (categories/tags) print JSON arrays;
+              // description stays LAST because its .500s value may contain newlines.
+              const metaLang = ytdlpLangArg(language);
+              const metaArgs = ["--encoding", "UTF-8"];
+              if (metaLang) metaArgs.push("--extractor-args", `youtube:lang=${metaLang}`);
+              metaArgs.push(
                 "--print", "%(title)s",
                 "--print", "%(channel)s",
                 "--print", "%(duration_string)s",
@@ -721,7 +728,8 @@ function fetchTranscriptViaYtdlp(videoId) {
                 "--print", "%(language)s",
                 "--print", "%(description).500s",
                 "--skip-download", url,
-              ], { timeout: 15000 }, (e, metaOut) => {
+              );
+              execFile("yt-dlp", metaArgs, { timeout: 15000 }, (e, metaOut) => {
                   const metaLines = (metaOut || "").split("\n");
                   const parseArr = (s) => { try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } };
                   const title = metaLines[0]?.trim() || "";
@@ -888,9 +896,9 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
       if (aborted) return reject(abortError());
       const proc = spawn(whisperCmd, ["-m", modelPath, "-f", audioWav, "-l", lang || "auto", "--print-progress"]);
       childProcesses.push(proc);
-      let stdout = "";
+      const outChunks = [];
       let lastProgress = "";
-      proc.stdout.on("data", (d) => { stdout += d.toString(); });
+      proc.stdout.on("data", (d) => { outChunks.push(d); });
       proc.stderr.on("data", (d) => {
         // Parse progress from stderr: "whisper_full_with_state: progress = XX%"
         const match = d.toString().match(/progress\s*=\s*(\d+)%/);
@@ -902,6 +910,9 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
       proc.on("close", (code) => {
         if (aborted) return reject(abortError());
         if (code !== 0) return reject(new Error(`whisper-cli 转录失败 (code ${code})`));
+        // Decode the full stdout once (concat first): per-chunk toString() can split a
+        // multi-byte UTF-8 char across chunk boundaries and corrupt CJK transcripts.
+        const stdout = Buffer.concat(outChunks).toString("utf-8");
         // Parse timestamped output: "[HH:MM:SS.mmm --> HH:MM:SS.mmm]  text"
         const segments = [];
         for (const line of stdout.split("\n")) {
@@ -1179,24 +1190,45 @@ function ytFeedUrl(raw) {
   return null;
 }
 
+// Map hey-koko's UI/prompt language code to a yt-dlp `youtube:lang` value, which
+// selects WHICH localized title YouTube returns (a zh channel serves English
+// titles to an en client and vice-versa). YouTube wants region codes here, not
+// zh-Hans/zh-Hant. Empty → let yt-dlp use its default locale.
+function ytdlpLangArg(language) {
+  if (language === "zh" || language === "zh-Hans" || language === "zh-CN") return "zh-CN";
+  if (language === "zh-Hant" || language === "zh-TW") return "zh-TW";
+  if (language === "en") return "en";
+  return "";
+}
+
 // Run `yt-dlp --flat-playlist` and return [{id, date, title}] for a feed URL. Fast: no
 // per-video extraction. `youtubetab:approximate_date` fills upload_date on flat channel/
 // playlist entries (derived from "3 weeks ago" — month-level precision, better than
-// nothing); missing dates print as NA → "". yt-dlp may exit non-zero on partial errors
-// yet still print good entries, so we only reject when nothing usable came back.
-function ytFlatList(ytdlpCmd, feedUrl) {
+// nothing); missing dates print as NA → "". `youtube:lang` picks the localized title
+// language. `--encoding UTF-8` forces UTF-8 stdout: the frozen yt-dlp.exe on Windows
+// otherwise emits titles in the ANSI code page and drops every CJK char (PYTHONIOENCODING
+// is ignored). yt-dlp may exit non-zero on partial errors yet still print good entries,
+// so we only reject when nothing usable came back.
+function ytFlatList(ytdlpCmd, feedUrl, lang) {
   return new Promise((resolve, reject) => {
+    const extractorArgs = ["--extractor-args", "youtubetab:approximate_date"];
+    if (lang) extractorArgs.push("--extractor-args", `youtube:lang=${lang}`);
     const proc = spawn(ytdlpCmd, [
       "--flat-playlist", "--no-warnings", "--ignore-errors",
-      "--extractor-args", "youtubetab:approximate_date",
+      "--encoding", "UTF-8",
+      ...extractorArgs,
       "--print", "%(id)s\t%(upload_date)s\t%(title)s",
       feedUrl,
     ], { timeout: 120000 });
-    let out = "", err = "";
-    proc.stdout.on("data", (d) => { out += d.toString(); });
+    // Collect stdout as raw Buffers and decode once at the end — decoding per-chunk
+    // (out += d.toString()) can split a multi-byte UTF-8 char across chunk boundaries.
+    const outBufs = [];
+    let err = "";
+    proc.stdout.on("data", (d) => { outBufs.push(d); });
     proc.stderr.on("data", (d) => { err += d.toString(); });
     proc.on("error", reject);
     proc.on("close", (code) => {
+      const out = Buffer.concat(outBufs).toString("utf-8");
       const entries = out.split("\n").map((l) => l.replace(/\r$/, "")).filter(Boolean).map((line) => {
         const [id = "", rawDate = "", ...rest] = line.split("\t");
         const dm = rawDate.trim().match(/^(\d{4})(\d{2})(\d{2})$/);
@@ -1220,6 +1252,7 @@ async function expandYoutubeUrls(req, res) {
   try {
     const body = await readBody(req);
     const urls = Array.isArray(body.urls) ? body.urls : [];
+    const lang = ytdlpLangArg(body.language);  // localized-title language (follows the UI)
     const ytdlpCmd = await findCommand("yt-dlp");
     if (!ytdlpCmd) { sendJson(res, 200, { videos: [], errors: [{ url: "", error: "yt-dlp 未安装。请运行: brew install yt-dlp" }] }); return; }
 
@@ -1230,7 +1263,7 @@ async function expandYoutubeUrls(req, res) {
       const cls = ytFeedUrl(raw);
       if (!cls) { errors.push({ url: raw, error: "无法识别的 YouTube 链接" }); continue; }
       try {
-        const entries = await ytFlatList(ytdlpCmd, cls.feed);
+        const entries = await ytFlatList(ytdlpCmd, cls.feed, lang);
         for (const e of entries) {
           if (seen.has(e.id)) continue;
           seen.add(e.id);
