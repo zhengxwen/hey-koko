@@ -100,6 +100,7 @@ const server = http.createServer((req, res) => {
 
   // ---- Option B: server-side background job queue ----
   if (req.method === "POST" && req.url === "/api/jobs") { bgQueue.submitJob(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/jobs/upload") { bgQueue.uploadSpool(req, res); return; }
   if (req.method === "GET" && req.url === "/api/jobs/events") { bgQueue.streamEvents(req, res); return; }
   if (req.method === "POST" && req.url === "/api/jobs/ack") { bgQueue.ackJobs(req, res); return; }
   if (req.method === "POST" && req.url === "/api/jobs/reorder") { bgQueue.reorderJobs(req, res); return; }

@@ -210,6 +210,18 @@ function isNoiseBlock(s) {
   return s.replace(/<[^>]+>/g, "").replace(/[\s#>*|_~`-]+/g, "").length < MIN_BLOCK_CHARS;
 }
 
+// A paper's references/bibliography section is a dense list of cited TITLES — a strong
+// (false) cosine match for many queries while carrying no substance of its own, so it
+// crowds retrieval top-k. Such sections stay in the doc for display but are excluded
+// from retrieval (embed:false → zero-vector slot, skipped by the cache). Optional
+// leading numbering ("7. References", "VII References") is tolerated; anchored to the
+// full heading so e.g. "Reference Architecture" is NOT excluded.
+const NO_EMBED_SECTION = /^(?:[0-9ivxlc]+[.):：]?\s*)?(references?|bibliography|参考文献|參考文獻)$/i;
+
+// A figure caption on its OWN line right below the image (MinerU's usual layout for
+// papers): "Figure 1: …" / "Fig. 2." / "Table 3 …" / "图 1：…" / "表2…", optionally bold.
+const FIG_CAPTION_RE = /^[*_]{0,2}(?:figure|fig\.?|table|图|表|圖)[\s*_]*\.?\s*\d/i;
+
 function splitIntoBlocks(text, images) {
   const imgByName = new Map((images || []).map(im => [im.name, im]));
   const lines = (text || "").split(/\r?\n/);
@@ -229,17 +241,24 @@ function splitIntoBlocks(text, images) {
     const content = para.join("\n").trim();
     para = [];
     if (content && !isNoiseBlock(content)) {
-      for (const piece of splitLong(content)) blocks.push({ id: `b${bid++}`, kind: "text", section, content: piece, hash: hashText(piece) });
+      const noEmbed = NO_EMBED_SECTION.test((section || "").trim());
+      for (const piece of splitLong(content)) {
+        const b = { id: `b${bid++}`, kind: "text", section, content: piece, hash: hashText(piece) };
+        if (noEmbed) b.embed = false;
+        blocks.push(b);
+      }
     }
     flushFigs();
   };
 
+  let pendingFig = null;   // figure whose caption may follow on the next non-empty line
   for (const raw of lines) {
     const line = stripNoiseTags(raw);
     const h = line.match(/^(#{1,6})\s+(.*)/);
     if (h) {
       const name = h[2].trim();
       if (name === section) continue;        // duplicate heading (MinerU repeats it across columns/pages) → stay in one block
+      pendingFig = null;
       emit(); section = name; continue;      // real section boundary → flush text + its figures
     }
     const img = raw.match(/!\[[^\]]*\]\((image_\d+\.\w+)\)/);
@@ -254,9 +273,24 @@ function splitIntoBlocks(text, images) {
       const fig = { kind: "figure", section, content: caption || img[1], imageName: img[1], hash: hashText(img[1] + caption) };
       if (im) { fig.image = im.base64; fig.imageMime = im.mime; }
       sectionFigs.push(fig);
+      pendingFig = caption ? null : fig;     // same-line caption wins; else watch the next line
       continue;
     }
-    para.push(line.trim() === "" ? "" : line);   // accumulate everything else into the section block
+    // MinerU puts a paper figure's caption on its own line BELOW the image; fold it into
+    // the figure block (its embed text) instead of the prose, so the figure becomes
+    // retrievable by its caption rather than by "image_01.jpg". Only the first non-empty
+    // line after the image is considered, and only if it looks like a caption.
+    const t = line.trim();
+    if (pendingFig && t) {
+      const fig = pendingFig;
+      pendingFig = null;
+      if (FIG_CAPTION_RE.test(t)) {
+        fig.content = t;
+        fig.hash = hashText(fig.imageName + t);
+        continue;
+      }
+    }
+    para.push(t === "" ? "" : line);   // accumulate everything else into the section block
   }
   emit();
   return blocks;
@@ -412,8 +446,32 @@ async function importDocInternal(body) {
   const model = body.model || DEFAULT_MODEL;
   const blocks = splitIntoBlocks(body.text || "", body.images || []);
   if (!blocks.length) throw new Error("文档为空，无法导入");
-  const vectors = await embedMany(blocks.map(blockEmbedText), model);
-  const docId = deriveDocId(body.source || `file:${body.title || "doc"}`);
+  // embed:false blocks (a references section) keep a zero-vector slot — never embedded.
+  const vectors = new Array(blocks.length).fill(null);
+  const toEmbed = [], toEmbedIdx = [];
+  blocks.forEach((b, i) => { if (b.embed !== false) { toEmbed.push(blockEmbedText(b)); toEmbedIdx.push(i); } });
+  if (toEmbed.length) {
+    const embs = await embedMany(toEmbed, model);
+    toEmbedIdx.forEach((bi, k) => { vectors[bi] = embs[k]; });
+  }
+  let docId = deriveDocId(body.source || `file:${body.title || "doc"}`);
+  // File imports (dedupe:true): the docId comes from the file's BASENAME, and generic
+  // names (main.pdf, paper.pdf) collide across genuinely different documents. Same body
+  // text → same docId (an idempotent re-import still overwrites); different text →
+  // suffix _2/_3/… so a same-named but unrelated file can never silently destroy an
+  // existing doc. Cards/conversation bubbles are ignored in the comparison — they are
+  // added after import, not part of the incoming text.
+  let dedupedFrom = "";
+  if (body.dedupe) {
+    const bodyText = (bs) => bs.filter(b => b.kind !== "card" && !isConvBlock(b)).map(b => b.content).join("\n");
+    const mine = bodyText(blocks), base = docId;
+    for (let n = 2; n <= 50; n++) {          // 50 = runaway guard; beyond it, overwrite
+      const existing = readDoc(docId);
+      if (!existing || !existing.blocks || bodyText(existing.blocks) === mine) break;
+      docId = `${base}_${n}`;
+    }
+    if (docId !== base) dedupedFrom = base;
+  }
   const doc = {
     type: "libdoc", schemaVersion: 1,
     docKind: body.docKind || "doc",
@@ -434,7 +492,7 @@ async function importDocInternal(body) {
   writeVectors(docId, vectors, folder, model);
   upsertIndex(doc);
   invalidateCache();
-  return { docId, blockCount: blocks.length, folder };
+  return { docId, blockCount: blocks.length, folder, dedupedFrom };
 }
 
 // POST /api/library/import  { source, docKind, title, authors?, year?, tags?, text, images?[] }
@@ -767,7 +825,8 @@ function tagColor(name) {
 // sampled head/middle/tail instead — its opening alone is usually just greetings.
 const DISTILL_BUDGET = 16000;
 function distillSample(doc, tocLabel, budget = DISTILL_BUDGET) {
-  const body = (doc.blocks || []).filter(b => b.kind === "text" && !isConvBlock(b));
+  // embed:false sections (references) are citation noise — keep them out of the sample too.
+  const body = (doc.blocks || []).filter(b => b.kind === "text" && b.embed !== false && !isConvBlock(b));
   if (!body.length) return "";
   const sections = [...new Set(body.map(b => b.section).filter(Boolean))];
   const head = sections.length ? tocLabel + sections.join(" / ") + "\n\n" : "";
@@ -779,13 +838,22 @@ function distillSample(doc, tocLabel, budget = DISTILL_BUDGET) {
     return head + c.slice(0, third) + "\n……\n" + c.slice(Math.floor(c.length / 2), Math.floor(c.length / 2) + third) + "\n……\n" + c.slice(-third);
   }
   const per = Math.max(500, Math.floor((budget - head.length) / reps.length));
+  // Opening sections (abstract/intro) carry the most signal; for a paper the LAST
+  // section (conclusion) does too — results and limitations often live there. The
+  // conclusion sits at the sample's end, exactly where the budget trim cuts, so its
+  // slice is carved out FIRST and its space reserved; the middle sections yield.
+  let tail = "";
+  if (doc.docKind === "paper" && reps.length > 3) {
+    const b = reps.pop();
+    tail = (b.section ? `【${b.section}】\n` : "") + b.content.slice(0, per * 2) + "\n\n";
+  }
   let out = head;
   reps.forEach((b, i) => {
-    if (out.length >= budget) return;
-    const cap = i < 2 ? per * 2 : per;   // opening sections (abstract/intro) carry the most signal
+    if (out.length + tail.length >= budget) return;
+    const cap = i < 2 ? per * 2 : per;
     out += (b.section ? `【${b.section}】\n` : "") + b.content.slice(0, cap) + "\n\n";
   });
-  return out.slice(0, budget);
+  return (out.slice(0, Math.max(0, budget - tail.length)) + tail).slice(0, budget);
 }
 
 // Distill & rerank prompts follow the user's PROMPT-LANGUAGE setting (en / zh /
@@ -803,6 +871,16 @@ const DISTILL_I18N = {
       "只输出 JSON，不要任何解释或代码块标记：\n" +
       "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
       "作者只保留人名、去掉机构编号和上标数字，多个作者用英文逗号分隔；年份只要 4 位数字，没有就空字符串；标签用简短名词短语；摘要和要点用中文写（专有名词保留原文）。",
+    paper: "你是学术论文蒸馏助手。给你的是一篇论文的抽样（目录 + 各章节开头）。完成两件事：\n" +
+      "1) 抽取元数据：论文标题、作者、发表年份；\n" +
+      "2) 写一张\"蒸馏卡\"：\n" +
+      "- 摘要：3-5 句话，按「研究问题 → 方法 → 主要结果 → 意义」组织；\n" +
+      "- 关键要点：4-8 条，各一句话，尽量覆盖：核心贡献、方法的一句话概括、关键定量结果（带数据集/基准名和具体数字）、相对已有方法的改进幅度、局限性；\n" +
+      "- 3-6 个简短主题标签。\n" +
+      "数学公式一律用 $...$ 包裹，不要用 \\(...\\) 或 \\[...\\]。\n" +
+      "只输出 JSON，不要任何解释或代码块标记：\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "作者只保留人名、去掉机构编号和上标数字，多个作者用英文逗号分隔；年份只要 4 位数字，没有就空字符串；标签用简短名词短语；摘要和要点用中文写（专有名词、方法名保留原文）。",
     video: "你是视频内容蒸馏助手。给你的是一个视频的字幕抽样（自动语音转写的口语文本，可能有识别错误，抽样取自开头/中间/结尾）。请写一张\"蒸馏卡\"：\n" +
       "1) 3-5 句话的摘要：视频讲了什么主题、讲者的核心观点或演示了什么、结论或建议；\n" +
       "2) 4-8 条关键要点：各一句话，保留具体结论、数字、步骤，以及提到的工具/论文/作品名；\n" +
@@ -823,6 +901,16 @@ const DISTILL_I18N = {
       "只輸出 JSON，不要任何解釋或代碼塊標記：\n" +
       "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
       "作者只保留人名、去掉機構編號和上標數字，多個作者用英文逗號分隔；年份只要 4 位數字，沒有就空字符串；標籤用簡短名詞短語；摘要和要點用繁體中文寫（專有名詞保留原文）。",
+    paper: "你是學術論文蒸餾助手。給你的是一篇論文的抽樣（目錄 + 各章節開頭）。完成兩件事：\n" +
+      "1) 抽取元數據：論文標題、作者、發表年份；\n" +
+      "2) 寫一張\"蒸餾卡\"：\n" +
+      "- 摘要：3-5 句話，按「研究問題 → 方法 → 主要結果 → 意義」組織；\n" +
+      "- 關鍵要點：4-8 條，各一句話，儘量覆蓋：核心貢獻、方法的一句話概括、關鍵定量結果（帶數據集/基準名和具體數字）、相對已有方法的改進幅度、局限性；\n" +
+      "- 3-6 個簡短主題標籤。\n" +
+      "數學公式一律用 $...$ 包裹，不要用 \\(...\\) 或 \\[...\\]。\n" +
+      "只輸出 JSON，不要任何解釋或代碼塊標記：\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "作者只保留人名、去掉機構編號和上標數字，多個作者用英文逗號分隔；年份只要 4 位數字，沒有就空字符串；標籤用簡短名詞短語；摘要和要點用繁體中文寫（專有名詞、方法名保留原文）。",
     video: "你是影片內容蒸餾助手。給你的是一個影片的字幕抽樣（自動語音轉寫的口語文本，可能有識別錯誤，抽樣取自開頭/中間/結尾）。請寫一張\"蒸餾卡\"：\n" +
       "1) 3-5 句話的摘要：影片講了什麼主題、講者的核心觀點或演示了什麼、結論或建議；\n" +
       "2) 4-8 條關鍵要點：各一句話，保留具體結論、數字、步驟，以及提到的工具/論文/作品名；\n" +
@@ -843,6 +931,16 @@ const DISTILL_I18N = {
       "Output ONLY JSON, no explanation or code fences:\n" +
       "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
       "Authors: names only, strip affiliation numbers and superscripts, comma-separated. Year: 4 digits, or empty if unknown. Tags: short noun phrases. Write the summary and claims in English (keep proper nouns as-is).",
+    paper: "You are an academic-paper distillation assistant. You are given a sample of a paper (TOC + the opening of each section). Do two things:\n" +
+      "1) Extract metadata: title, authors, publication year.\n" +
+      "2) Write a distillation card:\n" +
+      "- Summary: 3-5 sentences organized as research question → method → main results → significance.\n" +
+      "- Key claims: 4-8, one sentence each, aiming to cover: the core contribution, a one-sentence description of the method, the key quantitative results (with dataset/benchmark names and concrete numbers), the improvement over prior methods, and the limitations.\n" +
+      "- 3-6 short topic tags.\n" +
+      "Wrap ALL math in $...$ — never use \\(...\\) or \\[...\\].\n" +
+      "Output ONLY JSON, no explanation or code fences:\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "Authors: names only, strip affiliation numbers and superscripts, comma-separated. Year: 4 digits, or empty if unknown. Tags: short noun phrases. Write the summary and claims in English (keep proper nouns and method names as-is).",
     video: "You are a video-content distillation assistant. You are given a sampled transcript of a video (automatic speech-to-text, may contain recognition errors; sampled from the beginning/middle/end). Write a distillation card:\n" +
       "1) A 3-5 sentence summary: the video's topic, the speaker's core points or what was demonstrated, and the conclusions or recommendations.\n" +
       "2) 4-8 key claims: one sentence each, keeping concrete findings, numbers, steps, and any tools/papers/works mentioned.\n" +
@@ -871,13 +969,16 @@ async function distillDocInternal(docId, { metadata = false, model, language = "
   const sample = distillSample(doc, L.toc);
   if (!sample.trim()) throw new Error("文档没有可蒸馏的文本");
   // Videos get the transcript-aware prompt; their exact title/channel (from YouTube)
-  // is fed IN as context instead of being asked back out of the LLM.
+  // is fed IN as context instead of being asked back out of the LLM. Papers get an
+  // academic variant (same JSON shape): summary structured as question→method→results→
+  // significance, claims required to carry the quantitative results and limitations,
+  // and math pinned to $...$ delimiters (the only span parseJsonLoose repairs).
   const isVideo = doc.docKind === "video";
   const user = isVideo
     ? [`${L.vTitle}${doc.title || ""}`, doc.authors ? `${L.vChannel}${doc.authors}` : "", "", L.vSample, sample].filter(s => s !== "").join("\n")
     : sample;
   const out = await llmComplete(model, [
-    { role: "system", content: isVideo ? L.video : L.doc },
+    { role: "system", content: isVideo ? L.video : (doc.docKind === "paper" ? L.paper : L.doc) },
     { role: "user", content: user },
   ], { signal });
   const j = parseJsonLoose(out);
