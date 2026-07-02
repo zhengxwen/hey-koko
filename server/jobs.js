@@ -120,28 +120,50 @@ const emitUpdate = (job) => broadcast({ type: "update", job: publicJob(job) });
 // The runner lives on THIS machine's server (ComfyUI is remote, but the queue,
 // the loopback POST and the result delivery are all local). So a SYSTEM sleep
 // would suspend the runner even though the GPU box keeps rendering. While any job
-// is queued or running we hold one `caffeinate -i` child; it's released the moment
-// the queue drains. Only `-i` (prevent system IDLE sleep) is needed — we just need
-// the server PROCESS to keep running; the display may sleep (no -d), the disk may
-// sleep (no -m). `-w <pid>` makes it self-exit if the server dies, so a crash can
-// never leave the Mac pinned awake. macOS-only (caffeinate is built in); a no-op
-// elsewhere — independent of whether any browser tab is open/visible.
-let _caffeine = null;
+// is queued or running we hold ONE child process that blocks system idle sleep;
+// it's released the moment the queue drains, and self-exits if the server dies so
+// a crash can never leave the machine pinned awake. Display/disk may still sleep.
+//   macOS   → `caffeinate -i -w <pid>` (built in).
+//   Windows → a PowerShell holding SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED);
+//             that keep-awake state lasts as long as the calling thread lives, and
+//             `Wait-Process -Id <pid>` releases it (thread exits) when the server pid
+//             dies — mirroring caffeinate's `-w`.
+//   Linux   → no built-in equivalent; no-op.
+let _sleepGuard = null;
+function spawnSleepGuard() {
+  if (process.platform === "darwin") {
+    return spawn("caffeinate", ["-i", "-w", String(process.pid)], { stdio: "ignore" });
+  }
+  if (process.platform === "win32") {
+    // -EncodedCommand (base64 of UTF-16LE) so Windows arg-quoting can't mangle the
+    // embedded C#. 2147483649 = 0x80000001 = ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+    // (PowerShell parses 0x80000001 as a negative Int32, hence the [uint32] decimal).
+    const script =
+      "Add-Type -Namespace Win -Name Power -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern uint SetThreadExecutionState(uint e);'; " +
+      "[Win.Power]::SetThreadExecutionState([uint32]2147483649) | Out-Null; " +
+      `Wait-Process -Id ${process.pid} -ErrorAction SilentlyContinue`;
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    return spawn("powershell", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], { stdio: "ignore" });
+  }
+  return null;
+}
 function updateSleepGuard() {
-  if (process.platform !== "darwin") return;
+  if (process.platform !== "darwin" && process.platform !== "win32") return; // no built-in guard elsewhere
   const busy = jobs.some((j) => j.status === "queued" || j.status === "running");
-  if (busy && !_caffeine) {
+  if (busy && !_sleepGuard) {
     try {
-      _caffeine = spawn("caffeinate", ["-i", "-w", String(process.pid)], { stdio: "ignore" });
-      _caffeine.on("error", () => { _caffeine = null; }); // caffeinate missing → ignore
-      _caffeine.on("exit", () => { _caffeine = null; });
-    } catch { _caffeine = null; }
-  } else if (!busy && _caffeine) {
-    try { _caffeine.kill(); } catch {}
-    _caffeine = null;
+      _sleepGuard = spawnSleepGuard();
+      if (_sleepGuard) {
+        _sleepGuard.on("error", () => { _sleepGuard = null; }); // helper missing → ignore
+        _sleepGuard.on("exit", () => { _sleepGuard = null; });
+      }
+    } catch { _sleepGuard = null; }
+  } else if (!busy && _sleepGuard) {
+    try { _sleepGuard.kill(); } catch {}
+    _sleepGuard = null;
   }
 }
-process.on("exit", () => { try { _caffeine && _caffeine.kill(); } catch {} });
+process.on("exit", () => { try { _sleepGuard && _sleepGuard.kill(); } catch {} });
 
 // ---- the per-lane runner (parallel across lanes) ----------------------------
 function pumpLanes() {
