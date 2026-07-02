@@ -15,7 +15,7 @@ import { openMaskModal } from './mask-paint.js';
 import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
-import { parseAskCommand, handleAskCommand } from './library.js';
+import { parseAskCommand, handleAskCommand, isTranscriptSection, transcriptMark } from './library.js';
 import { kindIcon } from './mentions.js';
 import { buildPendingGenBubble } from './pending-gen.js';
 import { enqueueBgJob, releaseEnhancingJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
@@ -2801,6 +2801,12 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     const secTag = document.createElement("div");
     secTag.className = "librarySectionTag";
     secTag.textContent = _libMsg.librarySection;
+    // A video's transcript section is ASR+LLM-reformatted speech, not verbatim → ✏️
+    // badge, hover/click for the explanation (shared helper — same as the library panel).
+    const _libMeta = (_libTab && _libTab.libraryMeta) || {};
+    if (_libMeta.docKind === "video" && isTranscriptSection(_libMsg.librarySection)) {
+      secTag.appendChild(transcriptMark());
+    }
     item.appendChild(secTag);
   }
 

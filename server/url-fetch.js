@@ -1232,15 +1232,32 @@ function ytdlpLangArg(language) {
 // Run `yt-dlp --flat-playlist` and return [{id, date, title}] for a feed URL. Fast: no
 // per-video extraction. `youtubetab:approximate_date` fills upload_date on flat channel/
 // playlist entries (derived from "3 weeks ago" — month-level precision, better than
-// nothing); missing dates print as NA → "". `youtube:lang` picks the localized title
-// language. `--encoding UTF-8` forces UTF-8 stdout: the frozen yt-dlp.exe on Windows
-// otherwise emits titles in the ANSI code page and drops every CJK char (PYTHONIOENCODING
-// is ignored). yt-dlp may exit non-zero on partial errors yet still print good entries,
-// so we only reject when nothing usable came back.
-function ytFlatList(ytdlpCmd, feedUrl, lang) {
+// nothing); missing dates print as NA → "". `--encoding UTF-8` forces UTF-8 stdout: the
+// frozen yt-dlp.exe on Windows otherwise emits titles in the ANSI code page and drops
+// every CJK char (PYTHONIOENCODING is ignored). yt-dlp may exit non-zero on partial
+// errors yet still print good entries, so we only reject when nothing usable came back.
+//
+// Dates vs localized titles CANNOT come from one call. approximate_date parses the
+// ENGLISH "3 weeks ago" relative-time text, so the date call must FORCE youtube:lang=en:
+// without an explicit lang YouTube serves relative times in a geo-guessed language and
+// the dates come back NA nondeterministically (verified: playlist with no lang → NA, with
+// youtube:lang=en → dates; a non-English lang also → NA). So the DATE call always uses
+// youtube:lang=en. English/unset UI → that single call (English titles too). Other UI
+// languages → a SECOND parallel call with youtube:lang=<lang> for localized titles,
+// merged by id; that localized run is best-effort (failure → English titles).
+async function ytFlatList(ytdlpCmd, feedUrl, lang) {
+  const enArgs = ["--extractor-args", "youtube:lang=en"];   // forces parseable English dates
+  if (!lang || lang === "en") return ytFlatListRaw(ytdlpCmd, feedUrl, enArgs);
+  const [base, localized] = await Promise.all([
+    ytFlatListRaw(ytdlpCmd, feedUrl, enArgs),
+    ytFlatListRaw(ytdlpCmd, feedUrl, ["--extractor-args", `youtube:lang=${lang}`]).catch(() => []),
+  ]);
+  const titleOf = new Map(localized.map((e) => [e.id, e.title]));
+  return base.map((e) => ({ ...e, title: titleOf.get(e.id) || e.title }));
+}
+function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
   return new Promise((resolve, reject) => {
-    const extractorArgs = ["--extractor-args", "youtubetab:approximate_date"];
-    if (lang) extractorArgs.push("--extractor-args", `youtube:lang=${lang}`);
+    const extractorArgs = ["--extractor-args", "youtubetab:approximate_date", ...extraArgs];
     const proc = spawn(ytdlpCmd, [
       "--flat-playlist", "--no-warnings", "--ignore-errors",
       "--encoding", "UTF-8",
@@ -1273,7 +1290,9 @@ function ytFlatList(ytdlpCmd, feedUrl, lang) {
 }
 
 // POST /api/youtube-expand  { urls:[...] }
-//   → { videos:[{id, url(canonical watch?v=), title, date("YYYY-MM-DD" or "")}], errors:[{url, error}] }
+//   → { videos:[{id, url(canonical watch?v=), title, date("YYYY-MM-DD" or ""), approxDate?}],
+//       errors:[{url, error}] }   approxDate: true when the date is only month-precise
+//       (channel feed); absent for exact playlist/single-video dates.
 // Expands channels/playlists into their videos, canonicalizes single videos, and
 // dedupes by video id across all inputs (order preserved).
 async function expandYoutubeUrls(req, res) {
@@ -1292,10 +1311,13 @@ async function expandYoutubeUrls(req, res) {
       if (!cls) { errors.push({ url: raw, error: "无法识别的 YouTube 链接" }); continue; }
       try {
         const entries = await ytFlatList(ytdlpCmd, cls.feed, lang);
+        // A channel /videos feed's dates are approximate (approximate_date reverse-parses
+        // "3 weeks ago" — month-level only); playlist/single-video dates are exact.
+        const approxDate = cls.kind === "channel";
         for (const e of entries) {
           if (seen.has(e.id)) continue;
           seen.add(e.id);
-          videos.push({ id: e.id, url: `https://www.youtube.com/watch?v=${e.id}`, title: e.title || e.id, date: e.date || "" });
+          videos.push({ id: e.id, url: `https://www.youtube.com/watch?v=${e.id}`, title: e.title || e.id, date: e.date || "", approxDate: approxDate || undefined });
         }
       } catch (e) { errors.push({ url: raw, error: (e && e.message) || "expand failed" }); }
     }

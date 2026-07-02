@@ -442,7 +442,7 @@ function loopbackParseFile(filename, buf, signal, onProgress) {
 }
 
 // ---- cancel / remove --------------------------------------------------------
-function removeJob(job) { const i = jobs.indexOf(job); if (i >= 0) jobs.splice(i, 1); dropResult(job.id); dropSpool(job); }
+function removeJob(job, { keepSpool = false } = {}) { const i = jobs.indexOf(job); if (i >= 0) jobs.splice(i, 1); dropResult(job.id); if (!keepSpool) dropSpool(job); }
 function doCancel(job) {
   const ctrl = controllers.get(job.id);
   if (ctrl) { try { ctrl.abort(); } catch {} controllers.delete(job.id); }
@@ -543,7 +543,11 @@ async function ackJobs(req, res) {
   let body; try { body = await readBody(req); } catch { sendJson(res, 400, { error: "bad body" }); return; }
   for (const id of (Array.isArray(body.ids) ? body.ids : [])) {
     const j = jobs.find((x) => x.id === id);
-    if (j) { j.deliveredAt = Date.now(); if (j.status === "done" || j.status === "error" || j.status === "interrupted") removeJob(j); }
+    // Failed (error/interrupted) libimport: KEEP the spool file — the drawer's ↻ retry
+    // resubmits by the same spoolName and needs the raw upload to still exist (the browser
+    // can't re-produce it; the File object is long gone). A successful retry deletes it in
+    // runLibImportJob; an abandoned one is swept as an orphan on the next server start.
+    if (j) { j.deliveredAt = Date.now(); if (j.status === "done" || j.status === "error" || j.status === "interrupted") removeJob(j, { keepSpool: j.status !== "done" }); }
   }
   persist();
   sendJson(res, 200, { ok: true });

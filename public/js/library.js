@@ -35,6 +35,47 @@ export function notifyLibraryJobsChanged() { if (_updateTaskCount) _updateTaskCo
 export function openLibraryPanel() { if (_openLibrary) _openLibrary(); }
 const embedModel = () => (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:0.6b";
 const kindIcon = (k) => KIND_ICON[k] || "📎";
+// The transcript-section names the server importer writes (DISTILL_I18N transcriptHeading,
+// server/library.js) — a video doc's section with one of these names is ASR-transcribed
+// AND LLM-reformatted text, not a verbatim record; displays add a ✏️ badge to say so.
+const TRANSCRIPT_SECTIONS = new Set(["字幕整理", "Transcript"]);
+export const isTranscriptSection = (s) => TRANSCRIPT_SECTIONS.has(String(s || "").trim());
+// The ✏️ badge element (display-only — never stored in the doc). Hover shows the
+// native title; CLICK pops the explanation immediately as a small tooltip bubble
+// (also the only way to see it on touch devices, which have no hover).
+export function transcriptMark() {
+  const mark = document.createElement("span");
+  mark.className = "libTranscriptMark";
+  mark.textContent = "✏️";
+  mark.title = t("lib_transcriptEditedHint");
+  mark.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); toggleTranscriptTip(mark); });
+  mark.addEventListener("mousedown", (e) => e.stopPropagation());   // don't arm the chat bubble's drag
+  mark.addEventListener("dblclick", (e) => e.stopPropagation());    // don't trigger section rename
+  return mark;
+}
+// One tip at a time; closed by a second click on its badge, any outside click,
+// Escape, or a 4s auto-hide.
+let _tipEl = null, _tipAnchor = null, _tipTimer = 0;
+function hideTranscriptTip() {
+  if (_tipEl) _tipEl.remove();
+  _tipEl = null; _tipAnchor = null;
+  if (_tipTimer) { clearTimeout(_tipTimer); _tipTimer = 0; }
+}
+function toggleTranscriptTip(anchor) {
+  if (_tipAnchor === anchor) { hideTranscriptTip(); return; }
+  hideTranscriptTip();
+  const tip = document.createElement("div");
+  tip.className = "libTranscriptTip";
+  tip.textContent = t("lib_transcriptEditedHint");
+  document.body.appendChild(tip);
+  const r = anchor.getBoundingClientRect();
+  tip.style.left = Math.max(8, Math.min(r.left, window.innerWidth - tip.offsetWidth - 8)) + "px";
+  tip.style.top = (r.bottom + 6) + "px";
+  _tipEl = tip; _tipAnchor = anchor;
+  _tipTimer = setTimeout(hideTranscriptTip, 4000);
+}
+document.addEventListener("click", () => hideTranscriptTip());   // badge clicks stopPropagation → only outside clicks land here
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideTranscriptTip(); });
 // Papers can have dozens of authors — show at most the first 3 in the list view.
 function shortAuthors(authors) {
   if (!authors) return "";
@@ -754,7 +795,11 @@ export function initLibrary() {
       title.textContent = r.title || r.id;
       const sub = document.createElement("div");
       sub.className = "checkboxRowSub";
-      sub.textContent = (r.date ? r.date + "　·　" : "") + r.url + (r.imported ? "　·　" + t("lib_ytImported") : "");
+      // "~" marks an approximate (month-precise) date from a channel feed; playlist/
+      // single-video dates are exact and shown bare. Tooltip explains the "~".
+      const dateStr = r.date ? (r.approxDate ? "~" : "") + r.date : "";
+      if (r.approxDate && r.date) sub.title = t("lib_ytApproxDate");
+      sub.textContent = (dateStr ? dateStr + "　·　" : "") + r.url + (r.imported ? "　·　" + t("lib_ytImported") : "");
       meta.append(title, sub);
       row.append(handle, cb, meta);
       ytList.appendChild(row);
@@ -1060,6 +1105,8 @@ export function initLibrary() {
         h.className = "libDocSection";
         h.textContent = b.section;
         h.title = t("lib_editSectionHint");
+        // a video's transcript section is AI-reformatted speech, not verbatim → ✏️ badge
+        if (doc.docKind === "video" && isTranscriptSection(b.section)) h.appendChild(transcriptMark());
         attachSectionEdit(h, doc, b.section);
         previewContent.appendChild(h);
         lastSection = b.section;
