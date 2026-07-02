@@ -783,6 +783,34 @@ function findWhisperModel() {
   return null;
 }
 
+// Locate whisper-cli: PATH first, then conventional install dirs. whisper-cli is the
+// one tool installed by hand (no package manager on Windows — the README's manual
+// unzip to %LOCALAPPDATA%\whisper-cpp), and hand-added PATH entries have proven
+// unreliable across launch environments — so never depend on PATH alone for it.
+async function findWhisperCli() {
+  const onPath = await findCommand("whisper-cli");
+  if (onPath) return onPath;
+  const home = os.homedir();
+  const guesses = process.platform === "win32"
+    ? [
+        // ~/.local/share/whisper-cpp mirrors the model search path — and unlike
+        // %LOCALAPPDATA% it is never subject to MSIX filesystem virtualization,
+        // so binaries placed there are visible to every launch context.
+        path.join(home, ".local", "share", "whisper-cpp", "bin", "whisper-cli.exe"),
+        path.join(process.env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "whisper-cpp", "Release", "whisper-cli.exe"),
+        path.join(process.env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "whisper-cpp", "whisper-cli.exe"),
+      ]
+    : [
+        "/opt/homebrew/bin/whisper-cli",
+        "/usr/local/bin/whisper-cli",
+        path.join(home, "whisper.cpp", "build", "bin", "whisper-cli"),
+      ];
+  for (const g of guesses) {
+    try { if (fs.existsSync(g)) return g; } catch { /* keep looking */ }
+  }
+  return null;
+}
+
 // Transcribe YouTube audio via whisper.cpp
 function abortError() { const e = new Error("aborted"); e.name = "AbortError"; return e; }
 
@@ -795,7 +823,7 @@ function whisperLangCode(raw) {
 
 // Verify the CLI tools + whisper model are present (throws a user-facing message if not).
 async function ensureWhisperDeps() {
-  const whisperCmd = await findCommand("whisper-cli");
+  const whisperCmd = await findWhisperCli();
   if (!whisperCmd) throw new Error("whisper-cli 未安装。请运行: brew install whisper-cpp");
   const ytdlpCmd = await findCommand("yt-dlp");
   if (!ytdlpCmd) throw new Error("yt-dlp 未安装。请运行: brew install yt-dlp");
@@ -1274,5 +1302,33 @@ async function expandYoutubeUrls(req, res) {
     sendJson(res, 200, { videos, errors });
   } catch (e) { sendJson(res, 500, { error: (e && e.message) || "youtube-expand failed" }); }
 }
+
+// Startup visibility: log which optional YouTube/ASR tools are reachable (async,
+// non-blocking — mirrors parse-file's pandoc/mineru lines). Runs after config's
+// Windows PATH refresh, so a "not found" here means genuinely missing, and the
+// server console answers "why does whisper say 未安装?" at a glance.
+(async function detectYoutubeTools() {
+  for (const cmd of ["yt-dlp", "ffmpeg"]) {
+    const p = await findCommand(cmd);
+    console.log(p ? `[url-fetch] ${cmd} detected at ${p}` : `[url-fetch] ${cmd} not found`);
+  }
+  // whisper-cli goes through the same PATH+conventional-dirs lookup the deps check
+  // uses, so this line reflects what transcription will actually do.
+  const w = await findWhisperCli();
+  if (w) console.log(`[url-fetch] whisper-cli detected at ${w}`);
+  else {
+    console.log("[url-fetch] whisper-cli not found");
+    // Deep diagnostic: WHY is the conventional location unreachable from this
+    // process? ENOENT = invisible/absent in this view; EPERM/EACCES = blocked.
+    if (process.platform === "win32") {
+      const guess = path.join(process.env.LOCALAPPDATA || "(LOCALAPPDATA unset)", "whisper-cpp", "Release", "whisper-cli.exe");
+      try { fs.statSync(guess); console.log(`[url-fetch]   probe ${guess} -> statSync OK (unexpected)`); }
+      catch (e) { console.log(`[url-fetch]   probe ${guess} -> ${e.code}`); }
+      console.log(`[url-fetch]   LOCALAPPDATA=${process.env.LOCALAPPDATA || "(unset)"} USERPROFILE=${process.env.USERPROFILE || "(unset)"}`);
+    }
+  }
+  const model = findWhisperModel();
+  console.log(model ? `[url-fetch] whisper model: ${model}` : "[url-fetch] whisper model not found");
+})();
 
 module.exports = { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, formatTranscriptServer, extractCleanContent, expandYoutubeUrls };

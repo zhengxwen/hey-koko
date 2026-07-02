@@ -4,6 +4,32 @@
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
+const { execFileSync } = require("child_process");
+
+// Windows: the shell / Explorer / IDE that launched us may hold a STALE PATH
+// snapshot — tools installed AFTER that parent process started (yt-dlp, whisper-cli,
+// ffmpeg, …) aren't on its inherited PATH, so `where` and spawn miss them and the
+// app reports them "not installed" even though they're present. Refresh
+// process.env.PATH from the registry (Machine + User, %VAR% already expanded) once at
+// startup — exactly the PATH a freshly-opened shell would see. Runs on require, before
+// any module spawns a tool. Best-effort: on any failure we keep the inherited PATH.
+if (process.platform === "win32") {
+  try {
+    // Full path to powershell.exe — a very stale PATH might not even include the
+    // PowerShell dir, and we must not depend on PATH to repair PATH.
+    const ps = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const reg = execFileSync(ps, ["-NoProfile", "-NonInteractive", "-Command",
+      "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')"],
+      { encoding: "utf-8", timeout: 10000 }).trim();
+    const cur = process.env.PATH || "";
+    const have = new Set(cur.split(";").map((s) => s.trim().toLowerCase()).filter(Boolean));
+    const extra = reg.split(";").map((s) => s.trim()).filter((p) => p && !have.has(p.toLowerCase()));
+    if (extra.length) process.env.PATH = cur + (cur.endsWith(";") || !cur ? "" : ";") + extra.join(";");
+    // Always log (even +0) so the startup console states unambiguously whether the
+    // refresh ran and what it contributed — silence here has proven hard to debug.
+    console.log(`[config] PATH refresh: +${extra.length} dirs from registry`);
+  } catch (e) { console.warn(`[config] PATH refresh failed (${e.message}) — keeping inherited PATH`); }
+}
 
 // TTS python: explicit TTS_PYTHON wins; else auto-detect the conventional
 // ~/venv/tts venv; else fall back to whatever "python3" is on PATH.
