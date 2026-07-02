@@ -278,9 +278,10 @@ Installing OpenCC upgrades this automatically to **phrase-accurate** conversion,
 
 ```bash
 brew install opencc                # macOS
+winget install BYVoid.OpenCC       # Windows (official package; adds opencc to PATH)
 ```
 
-**Windows** — download a prebuilt release from the [OpenCC releases](https://github.com/BYVoid/OpenCC/releases) and add the folder containing `opencc.exe` to your user PATH (same approach as whisper.cpp above), then open a new terminal.
+(Windows alternative: download a prebuilt `OpenCC-*-windows-x64-portable.zip` from the [OpenCC releases](https://github.com/BYVoid/OpenCC/releases) and add the folder containing `opencc.exe` to your user PATH, then open a new terminal.)
 
 The server auto-detects `opencc` on startup and uses it when present; otherwise it silently falls back to the built-in tables. No configuration needed.
 
