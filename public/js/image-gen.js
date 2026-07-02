@@ -775,6 +775,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // Surface a fatal "nothing generated" error in the bubble and bail.
   const failFatal = (errText) => {
     sink.clearBubble();
+    sink.fail(`视频生成失败：${errText || "未返回视频"}`);
     sink.place({ role: "assistant", content: `视频生成失败：${errText || "未返回视频"}`, timestamp: Date.now() });
     setAvatarState("idle");
   };
@@ -884,6 +885,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     sink.clearBubble();
     // Videos finished before a stop/error are already shown via renderReply().
     if (error.name !== "AbortError" && !allVideos.length) {
+      sink.fail(`视频生成出错：${error.message}`);
       sink.place({ role: "assistant", content: `视频生成出错：${error.message}`, timestamp: Date.now() });
     }
     setAvatarState("idle");
@@ -935,6 +937,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   if (!sink) sink = foregroundSink({ tabId, insertIndex, setGenerating: _setGenerating, renderChat: _renderChat, saveChat, getTab });
 
   if (!activeModel) {
+    sink.fail(t("msg_noImageModel"));
     sink.place({ role: "assistant", content: t("msg_noImageModel"), timestamp: Date.now() });
     sink.cleanup();
     return;
@@ -1126,6 +1129,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       content = lastError
         ? `图片生成失败：${lastError}`
         : "图片生成失败，请检查模型是否正确安装并支持图像生成。";
+      sink.fail(content);   // total failure — keep the job listed with the reason
     } else if (noopMessage && generatedImages.length === 0) {
       content = noopMessage; // server intentionally did nothing → plain notice
     }
@@ -1204,6 +1208,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       sink.place(replyMsg);
     } else {
       // Failed with no images — surface the error as a normal message.
+      sink.fail(`图片生成出错：${error.message}`);
       sink.place({ role: "assistant", content: `图片生成出错：${error.message}`, timestamp: Date.now() });
     }
     setAvatarState("idle");

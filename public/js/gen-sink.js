@@ -42,6 +42,7 @@ export function foregroundSink({ tabId, insertIndex, setGenerating, renderChat, 
     eta(x) { pendingGenSetEta(tabId, x); },
     seg(x) { pendingGenSetSeg(tabId, x); },
     indeterminate(b) { pendingGenSetIndeterminate(tabId, b); },
+    fail() {},   // foreground: the error bubble in chat IS the failure UX (no job record)
     clearBubble() { pendingGenClear(tabId); },
     // Insert the result/error message at insertIndex (or append), persist + render.
     place(msg) {

@@ -73,7 +73,7 @@ const laneSubmitChain = new Map();
 // Strip runtime-only fields before persisting (controllers live in the Map; the
 // preview is a transient blob: URL that's meaningless after a reload).
 function persist() {
-  const clean = state.bgJobs.map(({ preview, seg, _fired, _inflight, _runLabel, _submitWait, _submitRelease, ...j }) => j);
+  const clean = state.bgJobs.map(({ preview, seg, _fired, _inflight, _runLabel, _submitWait, _submitRelease, _failReason, ...j }) => j);
   dbSaveJobs(clean).catch((e) => console.warn('[bg-jobs] persist failed:', e));
 }
 // Let the server-queue client persist a job's serverJobId (so a reload can reconnect),
@@ -347,6 +347,7 @@ function pumpLane(workerId) {
 async function fireJob(job) {
   job._fired = true;                                  // runtime-only guard (stripped from persist)
   job._inflight = true;                               // a generator is actively running for this job (vs merely _fired)
+  job._failReason = null;                             // fresh run — clear any stale sink.fail() from a previous attempt
   // Chain this VIDEO job's server submission behind the previous one in its lane (fireJob runs
   // in enqueue order), so a fire-all batch reaches the queue 1→2→3 despite the concurrent
   // source-video upload race. submitAndAwait awaits _submitWait before POSTing, then calls
@@ -370,7 +371,13 @@ async function fireJob(job) {
   startElapsedTicker();
   try {
     await runJob(job);
-    if (job.status !== 'canceled') job.status = 'done';
+    // Generators handle their own failures (they place an error bubble in chat and return
+    // normally) — sink.fail(reason) is how they tell US it failed, so the job stays in the
+    // drawer marked 'error' with the reason instead of being auto-removed as 'done'.
+    if (job.status !== 'canceled') {
+      if (job._failReason) { job.status = 'error'; job.error = job._failReason; }
+      else job.status = 'done';
+    }
   } catch (e) {
     if (e && e.bgCanceled) job.status = 'canceled';
     else { job.status = 'error'; job.error = (e && e.message) || String(e); }
@@ -520,7 +527,10 @@ async function runUrl(job, sink) {
   } else {
     await _handleMultiUrlCommand(entries, tab, job.tabId, p.fullContent, cursor, sink);
   }
-  removePlaceholder(job);
+  // Failed (sink.fail was called) → KEEP the placeholder: it becomes the in-chat error
+  // marker with a working ↻ (retry re-anchors at it; without it a retry finds no msgId
+  // and silently no-ops). On success the real bubbles replaced it — drop it.
+  if (!job._failReason) removePlaceholder(job);
 }
 
 // libimport: import anything (file/text/url/youtube) into the Knowledge Library HEADLESS
@@ -581,6 +591,10 @@ function makeBgSink(job, controller) {
     label(l) { if (job.status === 'running') job.label = l; else job._runLabel = l; refreshPlaceholders(); },
     enhanced() {},             // surfaced in the final message instead
     addImage() {},             // results delivered via place()
+    // Generator-reported failure: the run ends "normally" (error bubble already placed in
+    // chat) but the JOB failed — record why so fireJob marks it 'error' (stays in the
+    // drawer with the reason) instead of 'done' (auto-removed). First reason wins.
+    fail(reason) { if (!job._failReason) job._failReason = String(reason || '').trim() || t('bg_statusError'); },
     // Progress ticks are frequent → update the drawer + poke the placeholder's bar
     // directly in the DOM, never a full chat re-render.
     progress(v, m) {

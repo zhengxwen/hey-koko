@@ -83,6 +83,9 @@ function langName(code) {
 export async function runLibraryImport(payload, sink) {
   const type = payload.type;
   let source, docKind, title, text, images = [];
+  // authors/year are set inline for YouTube (from channel + upload date, since the LLM
+  // enrich step is skipped for it); other types leave them "" and enrichDoc fills them in.
+  let authors = "", year = "";
   const folder = payload.folder || undefined;
 
   if (type === "youtube") {
@@ -97,6 +100,9 @@ export async function runLibraryImport(payload, sink) {
     // normalize YouTube's "20260701" → "2026-07-01" (same as the chat info card)
     const rawDate = String(data.uploadDate || "").replace(/-/g, "").slice(0, 8);
     const uploadDate = rawDate.length === 8 ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}` : "";
+    // authors = channel name; year = the 4-digit upload year (both feed the doc's citation metadata)
+    authors = data.channel || "";
+    year = rawDate.length >= 4 ? rawDate.slice(0, 4) : "";
     // Metadata, one field per line. Without a thumbnail it rides as a plain multi-line
     // text block using real newlines. With a thumbnail it must share the image's single
     // line (the chunker only keeps same-line text as the figure caption), so the fields
@@ -144,7 +150,7 @@ export async function runLibraryImport(payload, sink) {
   }
 
   sink.label(t("lib_importing"));
-  const res = await postJson("/api/library/import", { source, docKind, folder, title, text, images, model: embedModel() }, sink.signal);
+  const res = await postJson("/api/library/import", { source, docKind, folder, title, authors, year, text, images, model: embedModel() }, sink.signal);
   if (res.error) throw new Error(res.error);
   // Enrich metadata (title/authors/year/tags) for docs/webpages; skip YouTube — it already
   // has an accurate title (the LLM would only risk overwriting it with transcript guesses).

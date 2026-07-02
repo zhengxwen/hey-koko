@@ -26,7 +26,10 @@ export function setDeps({ setGenerating, renderChat, regenerateReply, showSendEr
 }
 
 // Surface a /url failure as the red status pill (best-effort; dep may be unset).
-function urlError(reason) {
+function urlError(reason, bg) {
+  // Background run: mark the JOB failed too (bg.fail), so it stays in the jobs drawer
+  // as "失败 · <reason>" instead of vanishing as done. Foreground: toast only.
+  if (bg && bg.fail) bg.fail(reason);
   if (_showSendError) _showSendError(reason);
 }
 
@@ -142,7 +145,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
 
     if (!res.ok || data.type === "error") {
       placeMsg(tab, { role: "assistant", content: `⚠️ ${data.error || data.content || "获取失败"}`, timestamp: Date.now() }, cursor);
-      urlError(data.error || data.content || "获取失败");
+      urlError(data.error || data.content || "获取失败", bg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
       if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); }
@@ -151,7 +154,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
 
     if (data.type === "unsupported") {
       placeMsg(tab, { role: "assistant", content: `⚠️ ${data.content}`, timestamp: Date.now() }, cursor);
-      urlError(data.content);
+      urlError(data.content, bg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
       if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); }
@@ -234,7 +237,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
       // User cancelled
     } else {
       placeMsg(tab, { role: "assistant", content: `⚠️ 获取失败：${error.message}`, timestamp: Date.now() }, cursor);
-      urlError(`获取失败：${error.message}`);
+      urlError(`获取失败：${error.message}`, bg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
@@ -357,7 +360,7 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
     }
     upsertById(base + ':fmt', { role: 'assistant', content: `⚠️ ${errMsg}`, timestamp: genTs });
     commit();
-    urlError(errMsg);
+    urlError(errMsg, bg);
     return;
   }
   // Render the finished transcript now, so "📝 整理好的字幕" lands on its own first.
@@ -550,7 +553,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
     } else {
       if (pending) pending.remove();
       placeMsg(tab, { role: "assistant", content: `⚠️ 字幕整理失败：${error.message}`, timestamp: Date.now() }, cursor);
-      urlError(`字幕整理失败：${error.message}`);
+      urlError(`字幕整理失败：${error.message}`, bg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
@@ -645,7 +648,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
           if (pending) pending.remove();
           pending = null;
           placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${errMsg}`, timestamp: Date.now() }, cursor);
-          urlError(`语音识别失败：${errMsg}`);
+          urlError(`语音识别失败：${errMsg}`, bg);
           saveChat();
           if (state.activeTabId === tabId && _renderChat) _renderChat();
         }
@@ -661,7 +664,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
           if (pending) pending.remove();
           pending = null;
           placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${msg.message || msg.error}`, timestamp: Date.now() }, cursor);
-          urlError(`语音识别失败：${msg.message || msg.error}`);
+          urlError(`语音识别失败：${msg.message || msg.error}`, bg);
           saveChat();
           if (state.activeTabId === tabId && _renderChat) _renderChat();
         }
@@ -681,7 +684,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
       await formatTranscriptChunked(title, transcriptText, tab, tabId, "whisper", cursor, bg);
     } else {
       placeMsg(tab, { role: "assistant", content: "⚠️ 语音识别未返回内容", timestamp: Date.now() }, cursor);
-      urlError("语音识别未返回内容");
+      urlError("语音识别未返回内容", bg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
       if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); state.currentAbortController = null; }
@@ -690,7 +693,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
     if (pending) pending.remove();
     if (error.name !== "AbortError") {
       placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${error.message}`, timestamp: Date.now() }, cursor);
-      urlError(`语音识别失败：${error.message}`);
+      urlError(`语音识别失败：${error.message}`, bg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }

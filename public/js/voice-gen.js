@@ -95,6 +95,7 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
     sink.clearBubble();
 
     if (!resp.ok || !data.audio) {
+      sink.fail(`语音生成失败：${data.error || "未返回音频"}`);
       sink.place({ role: "assistant", content: `语音生成失败：${data.error || "未返回音频"}`, timestamp: Date.now() });
       setAvatarState("idle");
       return;
@@ -121,6 +122,7 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
   } catch (error) {
     sink.clearBubble();
     if (error.name !== "AbortError") {
+      sink.fail(`语音生成出错：${error.message}`);
       sink.place({ role: "assistant", content: `语音生成出错：${error.message}`, timestamp: Date.now() });
     }
     setAvatarState("idle");
