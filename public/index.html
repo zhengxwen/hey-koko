@@ -402,6 +402,7 @@
             <h2 id="libraryTitle" class="archiveTitle">📚 Knowledge Library</h2>
             <div class="archiveToolbar">
               <input id="librarySearch" type="text" class="archiveSearchInput" placeholder="Semantic search the library..." />
+              <button id="libraryRefreshBtn" type="button" class="secondary archiveSortBtn libraryRefreshBtn" aria-label="Refresh">🔄</button>
               <div class="libraryImportWrapper">
                 <button id="libraryImportBtn" type="button" class="secondary archiveSortBtn">+ Import ▾</button>
                 <div id="libraryImportMenu" class="exportMenu" hidden>
@@ -419,6 +420,10 @@
             </div>
           </div>
           <div id="libraryTagBar" class="archiveTagBar"></div>
+          <!-- Rescan-in-progress overlay: same three bouncing dots as the tab-loading wait. -->
+          <div id="libraryLoading" class="chatLoading" hidden>
+            <span class="chatLoadingDots"><span></span><span></span><span></span></span>
+          </div>
           <div class="archiveBody">
             <div class="archiveLeftPanel">
               <div id="libraryList" class="archiveList"></div>
@@ -705,6 +710,7 @@
               <span id="libraryYtCount" class="libraryYtCount"></span>
             </span>
           </div>
+          <label class="checkboxLabel libraryYtAutoFolderLabel"><input type="checkbox" id="libraryYtAutoFolder" /> <span id="libraryYtAutoFolderText">按频道自动归入 youtube 下的对应子目录</span></label>
           <div id="libraryYtList" class="libraryYtList"></div>
           <div id="libraryYtErrors" class="libraryYtErrors" hidden></div>
           <div class="maskPointActions">

@@ -9,6 +9,7 @@ const { sendJson, readBody, findCommand } = require("./utils");
 const config = require("./config");
 const claude = require("./claude");
 const openai = require("./openai");
+const { convertChinese } = require("./chinese-convert");
 
 async function fetchUrlContent(req, res) {
   try {
@@ -1169,6 +1170,15 @@ async function youtubeJob(req, res) {
       // decide: /url shows the raw subtitles, the library import fails loudly instead.
       formatError = (e && e.message) || "字幕整理失败";
     }
+    // Normalize Simplified/Traditional to the PROMPT language (zh → Simplified, zh-Hant →
+    // Traditional). Chinese subtitles arrive in either variant (or a whisper mix); this is
+    // the final deterministic pass so the stored doc matches what the user asked for. No-op
+    // for non-Chinese prompt languages. Convert both the formatted text and the raw fallback
+    // (shown on format failure) so they're consistent. Best-effort — never blocks the result.
+    try {
+      if (formattedText) formattedText = await convertChinese(formattedText, language);
+      if (rawTranscript) rawTranscript = await convertChinese(rawTranscript, language);
+    } catch (e) { if (ctrl.signal.aborted) throw e; /* keep unconverted text on failure */ }
     send({ type: "done", result: {
       title: (meta && meta.title) || "", channel: (meta && meta.channel) || "",
       duration: (meta && meta.duration) || "", viewCount: (meta && meta.viewCount) || "",
@@ -1262,7 +1272,12 @@ function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
       "--flat-playlist", "--no-warnings", "--ignore-errors",
       "--encoding", "UTF-8",
       ...extractorArgs,
-      "--print", "%(id)s\t%(upload_date)s\t%(title)s",
+      // Channel fields: a single-video entry carries its own uploader_id/channel; a
+      // channel-feed or playlist entry has NA there but carries the feed-level
+      // playlist_uploader_id/playlist_channel. We take whichever is present. Handle
+      // (@name) → the folder-matching slug; channel = display name. Title stays LAST
+      // (only it can contain arbitrary text; the rest never contain tabs).
+      "--print", "%(id)s\t%(upload_date)s\t%(uploader_id)s\t%(playlist_uploader_id)s\t%(channel)s\t%(playlist_channel)s\t%(title)s",
       feedUrl,
     ], { timeout: 120000 });
     // Collect stdout as raw Buffers and decode once at the end — decoding per-chunk
@@ -1274,12 +1289,16 @@ function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
     proc.on("error", reject);
     proc.on("close", (code) => {
       const out = Buffer.concat(outBufs).toString("utf-8");
+      const na = (s) => { const v = (s || "").trim(); return v === "NA" ? "" : v; };
       const entries = out.split("\n").map((l) => l.replace(/\r$/, "")).filter(Boolean).map((line) => {
-        const [id = "", rawDate = "", ...rest] = line.split("\t");
+        const [id = "", rawDate = "", uid = "", plUid = "", chan = "", plChan = "", ...rest] = line.split("\t");
         const dm = rawDate.trim().match(/^(\d{4})(\d{2})(\d{2})$/);
+        const handle = na(uid) || na(plUid);   // "@name" from the entry, else the feed level
         return {
           id: id.trim(),
           date: dm ? `${dm[1]}-${dm[2]}-${dm[3]}` : "",
+          channel: na(chan) || na(plChan) || "",                        // display name
+          channelSlug: handle.replace(/^@/, "").toLowerCase(),          // folder-matching slug
           title: rest.join("\t").trim(),
         };
       }).filter((e) => /^[\w-]{11}$/.test(e.id));
@@ -1290,7 +1309,8 @@ function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
 }
 
 // POST /api/youtube-expand  { urls:[...] }
-//   → { videos:[{id, url(canonical watch?v=), title, date("YYYY-MM-DD" or ""), approxDate?}],
+//   → { videos:[{id, url(canonical watch?v=), title, date("YYYY-MM-DD" or ""), approxDate?,
+//       channel(display name), channelSlug(@handle without @, lowercased — for foldering)}],
 //       errors:[{url, error}] }   approxDate: true when the date is only month-precise
 //       (channel feed); absent for exact playlist/single-video dates.
 // Expands channels/playlists into their videos, canonicalizes single videos, and
@@ -1317,7 +1337,11 @@ async function expandYoutubeUrls(req, res) {
         for (const e of entries) {
           if (seen.has(e.id)) continue;
           seen.add(e.id);
-          videos.push({ id: e.id, url: `https://www.youtube.com/watch?v=${e.id}`, title: e.title || e.id, date: e.date || "", approxDate: approxDate || undefined });
+          videos.push({
+            id: e.id, url: `https://www.youtube.com/watch?v=${e.id}`,
+            title: e.title || e.id, date: e.date || "", approxDate: approxDate || undefined,
+            channel: e.channel || "", channelSlug: e.channelSlug || "",
+          });
         }
       } catch (e) { errors.push({ url: raw, error: (e && e.message) || "expand failed" }); }
     }

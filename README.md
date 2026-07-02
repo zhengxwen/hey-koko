@@ -270,6 +270,20 @@ curl -L -o ~/.local/share/whisper-cpp/ggml-medium.bin \
 
 When a YouTube video has no subtitles, `/url` falls back to downloading the audio and transcribing it with whisper.cpp (this is one of the slower jobs that the [background queue](#background-jobs) keeps off the main thread).
 
+### OpenCC (Simplified/Traditional Chinese normalization — optional)
+
+Chinese YouTube subtitles come in either Simplified or Traditional (and whisper can output a mix). A cleaned-up transcript is normalized to the variant your **prompt language** asks for — Simplified for `zh`, Traditional for `zh-Hant` — as a final deterministic pass. This works **out of the box with no install**, using built-in character tables (bundled from OpenCC's dictionaries): Traditional→Simplified is near-lossless.
+
+Installing OpenCC upgrades this automatically to **phrase-accurate** conversion, which matters for Simplified→Traditional (it disambiguates one-to-many characters like 面/麵, 发/髮, 里/裡 that a character-level table can't):
+
+```bash
+brew install opencc                # macOS
+```
+
+**Windows** — download a prebuilt release from the [OpenCC releases](https://github.com/BYVoid/OpenCC/releases) and add the folder containing `opencc.exe` to your user PATH (same approach as whisper.cpp above), then open a new terminal.
+
+The server auto-detects `opencc` on startup and uses it when present; otherwise it silently falls back to the built-in tables. No configuration needed.
+
 ### Local text-to-speech (`/voice` command)
 
 The `/voice <text>` command synthesizes a **downloadable audio file** with a

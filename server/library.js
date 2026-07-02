@@ -148,9 +148,8 @@ function readVectors(id, _blockCount, folder) {
 // ---- index.json (lightweight per-doc metadata for the list view) ----------
 function loadIndex() { try { return JSON.parse(fs.readFileSync(indexFile(), "utf-8")); } catch { return []; } }
 function saveIndex(arr) { ensureDir(); fs.writeFileSync(indexFile(), JSON.stringify(arr)); }
-function upsertIndex(doc) {
-  const arr = loadIndex().filter(d => d.docId !== doc.docId);
-  arr.push({
+function indexEntryOf(doc) {
+  return {
     docId: doc.docId, type: doc.type, docKind: doc.docKind, source: doc.source,
     title: doc.title, authors: doc.authors || "", year: doc.year || "",
     tags: doc.tags || [], blockCount: (doc.blocks || []).length,
@@ -158,7 +157,11 @@ function upsertIndex(doc) {
     // hasCard: whether a distillation card (kind:"card") leads the blocks.
     importedAt: doc.importedAt || undefined,
     hasCard: (doc.blocks || []).some(b => b.kind === "card") || undefined,
-  });
+  };
+}
+function upsertIndex(doc) {
+  const arr = loadIndex().filter(d => d.docId !== doc.docId);
+  arr.push(indexEntryOf(doc));
   saveIndex(arr);
 }
 function removeFromIndex(id) { saveIndex(loadIndex().filter(d => d.docId !== id)); }
@@ -557,6 +560,38 @@ async function moveLibraryDocs(req, res) {
     invalidateLoc();
     invalidateCache();
     sendJson(res, 200, { moved, errors });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+// POST /api/library/rescan → reconcile index.json with what's ACTUALLY on disk, so
+// manual file operations under LIBRARY_DIR (dropping in a doc's .json.zst, moving it
+// between sub-folders in Finder, deleting it) all take effect:
+//   - added files  → read each doc, append a fresh index entry (type "libdoc" only)
+//   - deleted files → drop their ghost index entries
+//   - moved files  → handled by the fresh LOC scan (index has no folder; locOf resolves it)
+// Every doc on disk is re-read so entries also pick up manual edits to a doc file.
+// Slow on a big library (full read of every doc) — the client shows a loading state.
+async function rescanLibrary(_req, res) {
+  try {
+    invalidateLoc();
+    const loc = buildLoc();                       // fresh disk truth: docId -> folder
+    const oldOrder = new Map(loadIndex().map((d, i) => [d.docId, i]));
+    const entries = [];
+    for (const [id, folder] of loc) {
+      const doc = readDoc(id, folder);
+      if (!doc || doc.type !== "libdoc") continue;   // stray/corrupt json.zst → not a library doc
+      // Key the entry by the FILENAME-derived id, not doc.docId: every path resolution
+      // (locOf/docPath/get/delete) goes by filename, so a manually copied/renamed file
+      // whose internal docId disagrees must still list under the name that resolves.
+      entries.push({ ...indexEntryOf(doc), docId: id });
+    }
+    // Keep the list stable: previously-indexed docs in their old order, new ones appended.
+    entries.sort((a, b) => (oldOrder.get(a.docId) ?? Infinity) - (oldOrder.get(b.docId) ?? Infinity));
+    const added = entries.filter(e => !oldOrder.has(e.docId)).length;
+    const removed = [...oldOrder.keys()].filter(id => !entries.some(e => e.docId === id)).length;
+    saveIndex(entries);
+    invalidateCache();
+    sendJson(res, 200, { ok: true, total: entries.length, added, removed });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
@@ -1068,7 +1103,7 @@ async function buildYoutubeDoc(data, url, language = "") {
 module.exports = {
   importLibrary, listLibrary, searchLibrary, getLibraryDoc,
   saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, LIBRARY_DIR,
-  listLibraryDirs, moveLibraryDocs,
+  listLibraryDirs, moveLibraryDocs, rescanLibrary,
   splitIntoBlocks,   // exported for reuse/testing of the chunker
   // server-side libimport job (jobs.js) + distill + related-docs
   importDocInternal, distillDocInternal, distillLibraryDoc, buildYoutubeDoc, llmComplete,

@@ -3429,6 +3429,11 @@ button.secondary:disabled {
   font-size: 13px;
   white-space: nowrap;
 }
+/* Library refresh (rescan disk): compact emoji button; spin the glyph while disabled
+   (the rescan is running) alongside the full-panel three-dots overlay. */
+.libraryRefreshBtn { padding: 0 10px; font-size: 15px; }
+.libraryRefreshBtn:disabled { animation: libRefreshSpin 1.2s linear infinite; }
+@keyframes libRefreshSpin { to { transform: rotate(360deg); } }
 
 #archiveSemanticBtn.isActive {
   background: var(--accent);
@@ -5303,6 +5308,8 @@ button.secondary:disabled {
 .libraryYtModal { width: min(620px, 92vw); }
 .libraryYtToolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 6px; }
 .libraryYtSelectAll { font-size: 0.9em; font-weight: 400; white-space: nowrap; }
+/* "auto-file by channel" toggle sits on its own row under the select-all/reverse toolbar */
+.libraryYtAutoFolderLabel { font-size: 0.9em; font-weight: 400; margin: 0 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .libraryYtToolbarRight { display: inline-flex; align-items: center; gap: 12px; }
 .libraryYtReverseBtn { font-size: 0.82em; padding: 3px 10px; min-height: 0; white-space: nowrap; }
 .libraryYtReverseBtn:disabled { opacity: 0.45; cursor: default; }

@@ -499,6 +499,8 @@ export function initLibrary() {
   const moveBtn = document.querySelector("#libraryMoveBtn");
   const askFolderSel = document.querySelector("#libraryAskFolder");
   const importBtn = document.querySelector("#libraryImportBtn");
+  const refreshBtn = document.querySelector("#libraryRefreshBtn");
+  const loadingEl = document.querySelector("#libraryLoading");
   const importMenu = document.querySelector("#libraryImportMenu");
   const taskCountEl = document.querySelector("#libraryTaskCount");
   const importPaperItem = document.querySelector("#libraryImportPaper");
@@ -527,6 +529,7 @@ export function initLibrary() {
   const ytClose = document.querySelector("#libraryYtClose");
   const ytCancel = document.querySelector("#libraryYtCancel");
   const ytConfirm = document.querySelector("#libraryYtConfirm");
+  const ytAutoFolder = document.querySelector("#libraryYtAutoFolder");
 
   let docs = [];
   let selected = new Set();
@@ -561,6 +564,30 @@ export function initLibrary() {
   _openLibrary = open;
   openBtn.addEventListener("click", open);
   closeBtn.addEventListener("click", () => overlay.classList.remove("isOpen"));
+
+  // ---- refresh (rescan disk) ----
+  // Reconcile the library with manual file operations under LIBRARY_DIR: docs the user
+  // dropped in / moved between folders / deleted in Finder. The server re-reads every doc
+  // (slow on a big library) → show the tab-loading three-dots overlay while it runs.
+  refreshBtn.title = t("lib_refresh");
+  refreshBtn.addEventListener("click", async () => {
+    if (refreshBtn.disabled) return;
+    refreshBtn.disabled = true;
+    if (loadingEl) loadingEl.hidden = false;
+    try {
+      const r = await postJson("/api/library/rescan", {});
+      if (r && r.error) throw new Error(r.error);   // postJson doesn't throw on HTTP errors
+      await refreshList();
+      // The open doc may have been deleted/replaced on disk — reset the preview if gone.
+      if (currentDoc && !docs.some((d) => d.docId === currentDoc.docId)) clearPreview();
+      setStatus(t("lib_rescanDone", { total: r.total, added: r.added, removed: r.removed }));
+    } catch (e) {
+      setStatus(t("lib_rescanFailed", { error: (e && e.message) || "?" }));
+    } finally {
+      if (loadingEl) loadingEl.hidden = true;
+      refreshBtn.disabled = false;
+    }
+  });
 
   // ---- import menu ----
   importBtn.addEventListener("click", (e) => { e.stopPropagation(); importMenu.hidden = !importMenu.hidden; });
@@ -627,17 +654,33 @@ export function initLibrary() {
   // Enqueue one import job per URL. Webpage OR YouTube → a background job
   // (fetch/parse/whisper/format + import + enrich run headless, shown in the task list).
   // YouTube gets the full /url pipeline (cover + whisper + subtitle formatting); other
-  // URLs just fetch the page text.
-  function enqueueUrlImports(urls) {
-    for (const u of urls) {
+  // URLs just fetch the page text. Each item is a URL string, or {url, folder} to file
+  // the import into a specific sub-folder (used by the per-channel auto-foldering below).
+  function enqueueUrlImports(items) {
+    for (const it of items) {
+      const u = typeof it === "string" ? it : it.url;
+      const folder = typeof it === "string" ? undefined : it.folder;
       enqueueBgJob({
         tabId: state.activeTabId, kind: "libimport",
         label: isYoutubeUrl(u) ? t("bg_fetchingContent") : u,
-        payload: { type: isYoutubeUrl(u) ? "youtube" : "url", url: u, ...importJobCommon() },
+        payload: { type: isYoutubeUrl(u) ? "youtube" : "url", url: u, folder, ...importJobCommon() },
         noPlaceholder: true,
       });
     }
     setStatus(t("lib_importQueued"));
+  }
+
+  // Resolve the target sub-folder for a video's channel when "auto-file by channel" is on.
+  // Match by the channel's @handle slug against EXISTING folder leaf names (case-insensitive);
+  // "first match" = the first such folder, preferring one already under youtube/. No existing
+  // folder → default to youtube/<slug> (created on import). No slug (channel unknown) → "" so
+  // it auto-classifies to the youtube root as before.
+  function channelFolderFor(slug) {
+    const s = String(slug || "").toLowerCase();
+    if (!s) return "";
+    const leaf = (d) => d.split("/").pop().toLowerCase();
+    const matches = allDirs.filter((d) => d && leaf(d) === s);
+    return matches.find((d) => d === "youtube/" + s || d.startsWith("youtube/")) || matches[0] || ("youtube/" + s);
   }
 
   // Multi-line URL import: a textarea modal so the user can type/paste one URL per line.
@@ -822,7 +865,9 @@ export function initLibrary() {
   // Reverse the list order → flips the import sequence (e.g. oldest-first for a channel).
   ytReverse.addEventListener("click", () => { ytRows.reverse(); renderYtList(); });
   function confirmYtModal() {
-    const picked = ytRows.filter((r) => r.checked).map((r) => r.url);
+    const auto = ytAutoFolder && ytAutoFolder.checked;
+    const picked = ytRows.filter((r) => r.checked)
+      .map((r) => auto ? { url: r.url, folder: channelFolderFor(r.channelSlug) } : r.url);
     closeYtModal();
     if (picked.length) enqueueUrlImports(picked);
   }
