@@ -4,7 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execFile, execSync, spawn } = require("child_process");
+const { execFile, execFileSync, spawn } = require("child_process");
 const { sendJson } = require("./utils");
 
 // Detect tool availability (async, non-blocking)
@@ -30,19 +30,24 @@ function findExecutable(name) {
     } catch {}
   }
 
-  // Try with 'which' command
+  // Try the platform's command locator: `where` on Windows, `which` elsewhere.
   try {
-    const result = execSync(`which ${name}`, { encoding: "utf-8", stdio: "ignore" });
-    return result.trim();
+    const finder = process.platform === "win32" ? "where" : "which";
+    const result = execFileSync(finder, [name], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const first = result.trim().split(/\r?\n/)[0].trim();
+    if (first) return first;
   } catch {}
 
-  return name; // fallback to just the name
+  return name; // fallback to just the name (resolved via PATH at spawn time)
 }
 
 (async function detectTools() {
   try {
     pandocPath = findExecutable("pandoc");
-    execSync(`${pandocPath} --version`, { stdio: "ignore", timeout: 5000 });
+    execFileSync(pandocPath, ["--version"], { stdio: "ignore", timeout: 5000 });
     hasPandoc = true;
     console.log(`[parse-file] pandoc detected at ${pandocPath}`);
   } catch (err) {

@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { execFile, spawn } = require("child_process");
-const { sendJson, readBody } = require("./utils");
+const { sendJson, readBody, findCommand } = require("./utils");
 const config = require("./config");
 const claude = require("./claude");
 const openai = require("./openai");
@@ -608,8 +608,8 @@ function fetchTranscriptViaYtdlp(videoId) {
   const url = `https://www.youtube.com/watch?v=${videoId}`;
   return new Promise((resolve) => {
     // Check if yt-dlp is available
-    execFile("which", ["yt-dlp"], (err) => {
-      if (err) { resolve(null); return; }
+    findCommand("yt-dlp").then((ytdlp) => {
+      if (!ytdlp) { resolve(null); return; }
 
       // Step 1: list available subtitles to pick the best language
       execFile("yt-dlp", ["--list-subs", "--skip-download", url],
@@ -1039,15 +1039,6 @@ async function youtubeJob(req, res) {
     if (!ctrl.signal.aborted) send({ type: "error", error: (e && e.message) || "youtube job failed" });
     try { res.end(); } catch {}
   }
-}
-
-function findCommand(cmd) {
-  return new Promise((resolve) => {
-    execFile("which", [cmd], (err, stdout) => {
-      if (err || !stdout.trim()) resolve(null);
-      else resolve(stdout.trim());
-    });
-  });
 }
 
 // ---- YouTube channel/playlist expansion (for bulk library import) ------------

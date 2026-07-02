@@ -28,6 +28,16 @@ import json
 import wave
 import tempfile
 
+# On Windows, sys.stdin/stdout/stderr default to the locale code page (e.g.
+# cp1252 / cp936), which corrupts the UTF-8 JSON the Node server exchanges with
+# us: non-ASCII text (Chinese, etc.) arrives as mojibake and the model
+# mispronounces it. Force UTF-8 on the protocol streams before we touch them.
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 # Swap stdout → stderr so libraries that print (modelscope, torch, etc.) never
 # corrupt the JSON protocol. _OUT is the real stdout, used only by emit().
 _OUT = sys.stdout

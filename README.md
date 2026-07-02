@@ -42,6 +42,8 @@ service also make the modified source available to its users.
 
 ## Quick Start
 
+### macOS
+
 1. Install [Homebrew](https://brew.sh) (if not already installed):
 
    ```bash
@@ -68,13 +70,50 @@ service also make the modified source available to its users.
    node server.js
    ```
 
-   Or double-click `start.command` on macOS.
+   Or double-click `start.command`.
 
 6. Open your browser at:
 
    ```
    http://127.0.0.1:1314
    ```
+
+### Windows
+
+Windows uses [winget](https://learn.microsoft.com/windows/package-manager/winget/) in place of Homebrew. PowerShell examples below; run them in a normal (non-admin) PowerShell.
+
+1. Install [Node.js](https://nodejs.org) LTS (if not already installed):
+
+   ```powershell
+   winget install OpenJS.NodeJS.LTS
+   ```
+
+2. Install and launch [Ollama](https://ollama.com):
+
+   ```powershell
+   winget install Ollama.Ollama
+   ```
+
+   Ollama then runs in the background and serves on `127.0.0.1:11434` automatically.
+
+3. Pull a model:
+
+   ```powershell
+   ollama pull gemma4:12b-it-qat   # chat model
+   ollama pull x/flux2-klein:9b    # image generation model (optional)
+   ```
+
+4. Start the server (open a **new** terminal after installing tools so the updated PATH is picked up):
+
+   ```powershell
+   node server.js
+   ```
+
+   Or double-click `start.bat`.
+
+5. Open your browser at `http://127.0.0.1:1314`.
+
+> **What's macOS-only on Windows:** the native [macOS app bundle](#macos-app-bundle) (Swift/WebKit wrapper) and the built-in **macOS `say` system voices** (the `say:` entries in the voice dropdown — Windows only offers the Kokoro voices). Both **reading replies aloud** (the 朗读 button / auto-speak) and the **`/voice` command** work on Windows using the [Kokoro](#local-text-to-speech-voice-command) voices: reading-aloud plays through the server's speakers (via PowerShell's built-in player), and `/voice` plays a clip in the browser. See [Optional Enhancements](#optional-enhancements) for the Windows setup of each helper.
 
 Everything beyond a chat model is optional — image generation, file parsers, YouTube, and text-to-speech each light up as you install their helper (see [Optional Enhancements](#optional-enhancements)).
 
@@ -166,17 +205,19 @@ Hey-Koko works with just Ollama. Each helper below unlocks an extra capability w
 ### Pandoc (better DOCX/PPTX parsing)
 
 ```bash
-brew install pandoc
+brew install pandoc               # macOS
+winget install JohnMacFarlane.Pandoc   # Windows
 ```
 
 ### MinerU (high-quality PDF parsing)
 
 ```bash
 pip install uv
-uv pip install -U "mineru[all]"
+uv pip install -U "mineru[all]"          # macOS
+uv pip install --system -U "mineru[all]" # Windows (or drop --system inside a venv)
 ```
 
-Requirements: Python 3.10–3.13, ≥16GB RAM. Supports CPU-only and Apple Silicon acceleration.
+Requirements: Python 3.10–3.13, ≥16GB RAM. Supports CPU-only, CUDA (NVIDIA), and Apple Silicon acceleration.
 
 On first run, MinerU downloads ~2GB of models. If behind a firewall:
 
@@ -196,18 +237,30 @@ export TRANSFORMERS_OFFLINE=1
 ### yt-dlp & ffmpeg (YouTube support)
 
 ```bash
-brew install yt-dlp ffmpeg
+brew install yt-dlp ffmpeg        # macOS
+winget install yt-dlp.yt-dlp      # Windows (bundles ffmpeg; or: winget install Gyan.FFmpeg)
 ```
 
 Enables `/url https://youtube.com/watch?v=xxx` to extract subtitles and summarize video content.
 
 ### whisper.cpp (speech-to-text for videos without subtitles)
 
+**macOS:**
+
 ```bash
 brew install whisper-cpp
 ```
 
-Download a model (recommended: `medium`, 1.5 GiB):
+**Windows** — there's no winget package, so use the prebuilt binary:
+
+1. Download `whisper-bin-x64.zip` from the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases) and extract it, e.g. to `%LOCALAPPDATA%\whisper-cpp`.
+2. Add the extracted `Release\` folder (it holds `whisper-cli.exe` + its DLLs) to your user PATH, then open a new terminal:
+
+   ```powershell
+   [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","User") + ";$env:LOCALAPPDATA\whisper-cpp\Release", "User")
+   ```
+
+Download a model (recommended: `medium`, 1.5 GiB). This `curl` line works in both macOS and Windows PowerShell (Windows 10 1803+/11 ship `curl.exe`); on Windows it lands in `%USERPROFILE%\.local\share\whisper-cpp\`:
 
 ```bash
 curl -L -o ~/.local/share/whisper-cpp/ggml-medium.bin \
@@ -228,10 +281,13 @@ or inline with `--use`/`-u`:
 |--------|----------|---------------|
 | **Kokoro** | light & fast | Chinese `kokoro:zf_xiaoxiao` (女) / `kokoro:zm_yunxi` (男); English `kokoro:af_heart` (US ♀) / `kokoro:bm_george` (UK ♂) … |
 
-These need PyTorch/MLX wheels that don't yet exist for the newest Python, so
-install them in a **dedicated venv (Python 3.10–3.11)**. The easiest way is
-[uv](https://github.com/astral-sh/uv) (`brew install uv`), which also downloads
-the right Python for you:
+These need PyTorch wheels installed into a **dedicated venv (Python 3.10–3.11)**
+— the newest Python may not have matching wheels yet, and keeping TTS in its own
+venv avoids clashing with the system Python. The easiest way is
+[uv](https://github.com/astral-sh/uv), which also downloads the right Python for
+you.
+
+**macOS** (`brew install uv`):
 
 ```bash
 # Kokoro (light & fast) — recommended
@@ -245,13 +301,37 @@ uv pip install --python ~/venv/tts/bin/python \
 brew install espeak-ng
 ```
 
-The server **auto-detects `~/venv/tts/bin/python`**, so you can just run
-`node server.js` — no extra env var needed. (To use a different venv, point
-`TTS_PYTHON` at its `bin/python`.) AAC encoding uses `ffmpeg` (`brew install
-ffmpeg`); without it the audio falls back to wav.
+**Windows** — use a **standard `venv`** from an installed Python 3.10–3.12
+(the venv interpreter is `Scripts\python.exe`, not `bin/python`). Prefer
+`python -m venv` over `uv venv` here: a uv-managed interpreter uses a launcher
+shim that can break when spawned by the server (the daemon exits with "No Python
+at …"), whereas a standard venv copies a real `python.exe`.
 
-The engine is hidden from the voice dropdown if it fails to import (the macOS
-`say` voices are always available). Usage: `/voice 你好世界`,
+```powershell
+# Kokoro (light & fast) — recommended. Requires an installed Python 3.10-3.12.
+python -m venv "$env:USERPROFILE\venv\tts"
+$vpy = "$env:USERPROFILE\venv\tts\Scripts\python.exe"
+& $vpy -m pip install --upgrade pip
+& $vpy -m pip install kokoro "misaki[zh]" numpy soundfile
+
+# English voices (af_*/am_* US, bf_*/bm_* UK) also need the spaCy English model
+# + espeak-ng (otherwise misaki tries to auto-download the model and fails):
+& $vpy -m pip install "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+winget install eSpeak-NG.eSpeak-NG
+```
+
+On first synthesis Kokoro downloads its ~330 MB model from Hugging Face (cached
+under `~/.cache/huggingface`), so the very first `/voice` call is slow; later
+calls are fast.
+
+The server **auto-detects the venv** at `~/venv/tts` (using `bin/python` on
+macOS, `Scripts\python.exe` on Windows), so you can just run `node server.js` —
+no extra env var needed. (To use a different venv, point `TTS_PYTHON` at its
+interpreter.) AAC encoding uses `ffmpeg`; without it the audio falls back to wav.
+
+The engine is hidden from the voice dropdown if it fails to import. (On macOS the
+built-in `say` voices are always available too; on Windows only the Kokoro voices
+are offered.) Usage: `/voice 你好世界`,
 `/voice --use kokoro:zm_yunxi --speed 1.1 早上好` (`-u`/`-s` short forms).
 
 Examples:
@@ -266,7 +346,7 @@ Image generation works out of the box with local **Ollama image models** (e.g. `
 
 **Setup**
 
-1. Install and launch ComfyUI, then download the model files you want into its `models/` folders (`checkpoints/`, `diffusion_models/`, `text_encoders/`, `vae/`, `loras/`).
+1. Install and launch ComfyUI (cross-platform — on Windows the portable build or a manual install both work; see the [ComfyUI repo](https://github.com/comfyanonymous/ComfyUI)), then download the model files you want into its `models/` folders (`checkpoints/`, `diffusion_models/`, `text_encoders/`, `vae/`, `loras/`).
 2. In Hey-Koko's **Settings → Model** tab, leave the **Ollama image model** dropdown empty (`Leave empty (use ComfyUI)`).
 3. Set the ComfyUI address: click the ✎ next to the ComfyUI URL to enter `host:port` manually, or use the **scan** button to auto-discover ComfyUI on your local network (probes `:8188`). Default is `127.0.0.1:8188` (also configurable via the `COMFY_URL` environment variable).
 4. Pick a model from the ComfyUI dropdown — it is grouped into **text-to-image**, **instruction edit** (needs a reference image), **video**, and **video editing** (needs a source video).
@@ -367,7 +447,13 @@ the model's own output cap, per the OpenAI API.
 ## Environment Variables
 
 ```bash
+# macOS / Linux
 OLLAMA_URL=http://127.0.0.1:11434 PORT=1314 node server.js
+```
+
+```powershell
+# Windows PowerShell
+$env:OLLAMA_URL = "http://127.0.0.1:11434"; $env:PORT = "1314"; node server.js
 ```
 
 | Variable | Default | Description |

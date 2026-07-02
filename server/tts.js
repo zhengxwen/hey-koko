@@ -6,23 +6,18 @@
 // persistent so the (slow-to-load) models stay warm between requests. The
 // daemon writes each clip to a temp wav; we base64 it for the browser, which
 // renders an <audio> + download button (mirrors the image/video generation flow).
-const { spawn, execFile } = require("child_process");
+const { spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const config = require("./config");
-const { sendJson, readBody, cleanSpeechText } = require("./utils");
+const { sendJson, readBody, cleanSpeechText, findCommand } = require("./utils");
 
 // Resolve ffmpeg once (used to transcode the engine's wav → AAC). null if absent.
 let ffmpegPath; // undefined = not probed yet, null = absent, string = path
 function findFfmpeg() {
   if (ffmpegPath !== undefined) return Promise.resolve(ffmpegPath);
-  return new Promise((resolve) => {
-    execFile("which", ["ffmpeg"], (err, stdout) => {
-      ffmpegPath = err || !stdout.trim() ? null : stdout.trim();
-      resolve(ffmpegPath);
-    });
-  });
+  return findCommand("ffmpeg").then((p) => (ffmpegPath = p));
 }
 
 // Transcode an audio file (wav/aiff) to AAC (ADTS .aac). Resolves the output

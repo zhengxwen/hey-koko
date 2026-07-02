@@ -9,9 +9,14 @@ const fs = require("fs");
 // ~/venv/tts venv; else fall back to whatever "python3" is on PATH.
 function resolveTtsPython() {
   if (process.env.TTS_PYTHON) return process.env.TTS_PYTHON;
-  const guess = path.join(os.homedir(), "venv", "tts", "bin", "python");
+  // venv interpreter layout differs by platform: Scripts\python.exe on Windows,
+  // bin/python elsewhere. Fall back to the platform's default python launcher.
+  const win = process.platform === "win32";
+  const guess = win
+    ? path.join(os.homedir(), "venv", "tts", "Scripts", "python.exe")
+    : path.join(os.homedir(), "venv", "tts", "bin", "python");
   try { if (fs.existsSync(guess)) return guess; } catch { /* ignore */ }
-  return "python3";
+  return win ? "python" : "python3";
 }
 
 const config = {

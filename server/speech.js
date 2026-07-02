@@ -30,11 +30,25 @@ function killProcs() {
   if (playProcess) { try { playProcess.kill(); } catch { /* gone */ } playProcess = null; }
 }
 
-// Play an audio file on the server's speakers (macOS afplay). Used for neural
-// engines, mirroring how `say` plays directly — keeps the reader server-side.
+// Play an audio file on the server's speakers. Used for neural engines,
+// mirroring how `say` plays directly — keeps the reader server-side. Per platform:
+//   macOS   → afplay
+//   Windows → PowerShell's built-in Media.SoundPlayer (plays 16-bit PCM WAV
+//             synchronously; no extra dependency — the neural engines emit WAV)
+//   Linux   → ffplay if present (error handler resolves silently otherwise)
+// Kept as a child process so killProcs() (stop button) can interrupt playback.
 function playFile(p) {
   return new Promise((resolve) => {
-    playProcess = spawn("afplay", [p]);
+    if (process.platform === "win32") {
+      playProcess = spawn("powershell", [
+        "-NoProfile", "-NonInteractive", "-Command",
+        `(New-Object Media.SoundPlayer '${p.replace(/'/g, "''")}').PlaySync()`,
+      ]);
+    } else if (process.platform === "darwin") {
+      playProcess = spawn("afplay", [p]);
+    } else {
+      playProcess = spawn("ffplay", ["-nodisp", "-autoexit", "-loglevel", "quiet", p]);
+    }
     playProcess.on("close", () => { playProcess = null; resolve(); });
     playProcess.on("error", () => { playProcess = null; resolve(); });
   });
