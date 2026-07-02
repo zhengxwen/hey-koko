@@ -21,7 +21,7 @@ import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveC
 import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup, hideMentionPopup, moveMentionSelection, selectActiveMention, isMentionPopupOpen } from './mentions.js';
 import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
-import { initLibrary, setLibraryDeps, runLibraryImport, notifyLibraryJobsChanged, openLibraryPanel } from './library.js';
+import { initLibrary, runLibraryImport, notifyLibraryJobsChanged, openLibraryPanel } from './library.js';
 import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
 import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
@@ -176,6 +176,12 @@ if (dom.sendTimeToggle) {
 }
 if (dom.toolsToggle) {
   dom.toolsToggle.addEventListener("change", saveCurrentSettings);
+}
+if (dom.libraryDistillToggle) {
+  dom.libraryDistillToggle.addEventListener("change", saveCurrentSettings);
+}
+if (dom.libraryRerankToggle) {
+  dom.libraryRerankToggle.addEventListener("change", saveCurrentSettings);
 }
 
 // Apply i18n on startup
@@ -2355,8 +2361,8 @@ state.openVideoLightbox = videoLightboxApi.openVideoLightbox;
 // Initialize archive
 initArchive();
 
-// Initialize knowledge library (reuses parseDocumentHeadless for local-doc import)
-setLibraryDeps({ parseDocumentHeadless });
+// Initialize knowledge library (imports run as SERVER-side libimport jobs; local-doc
+// parsing happens server-side via MinerU/Pandoc, no in-browser parser involved)
 initLibrary();
 loadMentionDocs();       // prime the /ask @mention doc list
 loadMentionArchives();   // prime the /ask #mention conversation-archive list

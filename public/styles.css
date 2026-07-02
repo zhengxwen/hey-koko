@@ -5253,6 +5253,20 @@ button.secondary:disabled {
 .librarySectionTag { font-size: 0.95em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.72; margin-bottom: 4px; }
 .libSectionEdit { font-size: 1.05em; font-weight: 600; width: 100%; box-sizing: border-box; }
 .libDocBlock img.generatedImage { display: block; max-width: 100%; margin: 8px auto; }
+/* Distillation card (kind:"card", always blocks[0]): tinted panel with an accent edge,
+   so the LLM summary reads as "about the doc" rather than part of the document body. */
+.libDocCard { background: rgba(108, 142, 191, 0.08); border-left: 3px solid var(--accent); border-radius: 6px; padding: 6px 10px; margin: 6px 0 10px; }
+.libDocCard .markdownBody:hover { background: rgba(108, 142, 191, 0.05); }
+/* Tag-bar "+N ▾ / 收起 ▴" expander chip: same shape as a tag, visually a control. */
+.libraryTagMore { background: var(--surface) !important; border: 1px dashed var(--muted); cursor: pointer; opacity: 0.85; }
+.libraryTagMore:hover { opacity: 1; border-color: var(--accent); }
+/* "🔗 Related" chips row under the per-doc toolbar (top-5 similar docs, clickable).
+   The global `button` rule paints white-on-accent with a 42px min-height — reset
+   color/height/weight so a chip reads as a small tag, not a primary button. */
+.libRelatedRow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 8px; }
+.libRelatedLabel { font-size: 0.85em; opacity: 0.75; white-space: nowrap; }
+.libRelatedChip { font-size: 0.82em; font-weight: 500; min-height: 0; line-height: 1.5; color: var(--ink); padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); cursor: pointer; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.libRelatedChip:hover { border-color: var(--accent); color: var(--accent); background: var(--panel); }
 /* User (question) bubbles written back into the doc: right-aligned, tinted.
    Container is a flex column (.archivePreviewContent) so use align-self: flex-end
    (same idiom as .archivePreviewMsg.user) — margin-left:auto is unreliable here. */

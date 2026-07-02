@@ -430,7 +430,7 @@ async function proxyChat(res, body) {
 // prompt enhancement) that talk to the chat backend directly and bypass the
 // /api/chat router. Takes Ollama-shaped messages, returns the assistant text.
 // Throws on error.
-async function complete(model, messages, { signal } = {}) {
+async function complete(model, messages, { signal, temperature } = {}) {
   const cfg = loadConfig();
   if (!cfg) throw new Error("OpenAI 未配置");
   const payload = buildPayload({
@@ -439,7 +439,7 @@ async function complete(model, messages, { signal } = {}) {
     tools: undefined,
     stream: false,
     maxTokens: 0,
-    temperature: undefined,
+    temperature,   // buildPayload drops it for reasoning models
   });
   const r = await fetch(`${apiBase(cfg)}/chat/completions`, {
     method: "POST",

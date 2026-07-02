@@ -115,12 +115,6 @@
 
         <div class="panelTabContent" data-panel-content="more">
           <div class="modelGroup">
-            <label id="embedModelLabel">
-              <span id="embedModelLabelText">Embedding model (archive semantic search)</span>
-              <select id="embedModelSelect">
-                <option value="">No embedding model detected</option>
-              </select>
-            </label>
             <label id="modelLabel">
               <span id="modelLabelText">LLM model</span>
               <select id="modelSelect">
@@ -213,6 +207,23 @@
               <span id="autoSpeakLabel">Auto speak</span>
             </label>
           </div>
+
+          <label id="embedModelLabel">
+            <span id="embedModelLabelText">Embedding model (archive semantic search)</span>
+            <select id="embedModelSelect">
+              <option value="">No embedding model detected</option>
+            </select>
+          </label>
+          <label class="checkboxLabel">
+            <input id="libraryDistillToggle" type="checkbox" checked />
+            <span id="libraryDistillLabelText">Distill card on library import</span>
+          </label>
+          <p class="hint" id="libraryDistillHint">When importing into the Knowledge Library, ask the chat model for a summary card (abstract + key points + tags) stored as the doc's first block.</p>
+          <label class="checkboxLabel">
+            <input id="libraryRerankToggle" type="checkbox" />
+            <span id="libraryRerankLabelText">Rerank /ask retrieval</span>
+          </label>
+          <p class="hint" id="libraryRerankHint">One extra chat-model call per /ask reorders the retrieved snippets — more accurate, but slower.</p>
         </div>
 
         <div class="panelTabContent" data-panel-content="extra">
@@ -398,6 +409,7 @@
                   <button id="libraryImportFiles" type="button">Local docs (PDF/PPTX/DOCX)</button>
                   <button id="libraryImportText" type="button">Text / Markdown files</button>
                   <button id="libraryImportUrl" type="button">Web URL / blog</button>
+                  <button id="libraryBackfillCards" type="button">📇 Backfill distill cards</button>
                 </div>
               </div>
               <span id="libraryTaskCount" class="libraryTaskCount" hidden></span>

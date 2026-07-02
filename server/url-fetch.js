@@ -592,7 +592,9 @@ async function fetchYouTubeTranscript(videoId, language) {
           .trim();
         if (text) segments.push(text);
       }
-      if (segments.length > 0) return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: segments.join(" ") };
+      // One cue per line — splitTranscript cuts at line boundaries, so a space-joined
+      // single line would defeat chunking and feed the WHOLE transcript as one chunk.
+      if (segments.length > 0) return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: segments.join("\n") };
     }
 
     // Caption fetch failed
@@ -663,7 +665,6 @@ function fetchTranscriptViaYtdlp(videoId) {
 
               // Parse VTT: extract timestamped segments
               const segments = [];
-              const seen = new Set();
               const vttLines = content.split("\n");
               let currentTime = "";
               for (let i = 0; i < vttLines.length; i++) {
@@ -679,8 +680,10 @@ function fetchTranscriptViaYtdlp(videoId) {
                 const clean = trimmed.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&")
                   .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
                   .replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
-                if (clean && !seen.has(clean)) {
-                  seen.add(clean);
+                // Rolling auto-captions repeat the previous cue's line — drop CONSECUTIVE
+                // repeats only (a global set would also delete legitimate repeated lines
+                // spoken minutes apart).
+                if (clean && clean !== (segments.length ? segments[segments.length - 1].text : "")) {
                   segments.push({ time: currentTime, text: clean });
                 }
               }
@@ -905,11 +908,27 @@ async function transcribeYouTubeAudio(req, res) {
 
 // Split a raw transcript into <= limit-char chunks at line boundaries (mirrors the
 // browser splitTranscript so server formatting matches the old in-page behavior).
-const TRANSCRIPT_CHUNK_LIMIT = 3000;
+const TRANSCRIPT_CHUNK_LIMIT = 6000;
+// Safety net for a single line longer than the limit (e.g. captions that arrived as one
+// long line): force-cut it at whitespace/punctuation so it can never become a mega-chunk.
+function splitOverlongLine(line, limit) {
+  const parts = [];
+  while (line.length > limit) {
+    let cut = -1;
+    for (let j = limit; j > limit * 0.5; j--) {
+      if (/[\s。.!?！？，,;；]/.test(line[j])) { cut = j + 1; break; }
+    }
+    if (cut <= 0) cut = limit;
+    parts.push(line.slice(0, cut).trimEnd());
+    line = line.slice(cut);
+  }
+  if (line) parts.push(line);
+  return parts;
+}
 function splitTranscript(text, limit) {
   const chunks = [];
   let current = "";
-  for (const line of text.split("\n")) {
+  for (const line of text.split("\n").flatMap((l) => (l.length > limit ? splitOverlongLine(l, limit) : [l]))) {
     if (current.length + line.length + 1 > limit && current.length > 0) { chunks.push(current); current = line; }
     else current += (current ? "\n" : "") + line;
   }
@@ -917,67 +936,106 @@ function splitTranscript(text, limit) {
   return chunks;
 }
 
-// Server-side transcript cleanup: feed the raw transcript to Ollama chunk-by-chunk
-// (same prompts/params as the old in-page formatTranscriptChunked) and accumulate the
-// readable result. onProgress({stage:'formatting',progress:{value,max}}) per chunk;
-// signal aborts the in-flight fetch. Throws on any chunk failure (caller surfaces it).
-async function formatTranscriptServer(title, transcript, model, { onProgress = () => {}, signal } = {}) {
+// Prompt/scaffold strings for the transcript formatter, keyed by the user's prompt
+// language ("en" | "zh" | "zh-Hant", same codes as the distill table; fallback zh).
+// Kept in sync with the browser twin in public/js/url-fetch.js (foreground /url path).
+const FORMAT_I18N = {
+  zh: {
+    system: (title, channel) =>
+      "你是字幕整理助手。将原始字幕片段整理为易读文本：添加标点符号、连成完整句子、适当分段；在话题明显切换处插入一行简短的 Markdown 小标题（如「## 小标题」，用字幕本身的语言书写），没有明显切换就不加。不要改变原意，不要添加或省略内容，不要翻译。直接输出整理后的文本，不要加任何前缀说明。"
+      + (title ? `\n视频标题：《${title}》` : "") + (channel ? `\n频道：${channel}` : "")
+      + (title || channel ? "\n字幕来自自动识别，专有名词可能听错——请结合标题/频道纠正明显的错别字。" : ""),
+    first: (i, n, chunk) => `请整理以下字幕片段（第${i}/${n}段），添加标点并分段，不要省略内容：\n\n${chunk}`,
+    cont: (i, n, tail, chunk) => `上一段整理结果的结尾（仅供衔接上下文，不要重复输出）：\n…${tail}\n\n请继续整理下一段字幕（第${i}/${n}段），与上文自然衔接，添加标点并分段，不要省略内容：\n\n${chunk}`,
+    header: "**📝 整理好的字幕**",
+  },
+  "zh-Hant": {
+    system: (title, channel) =>
+      "你是字幕整理助手。將原始字幕片段整理為易讀文本：添加標點符號、連成完整句子、適當分段；在話題明顯切換處插入一行簡短的 Markdown 小標題（如「## 小標題」，用字幕本身的語言書寫），沒有明顯切換就不加。不要改變原意，不要添加或省略內容，不要翻譯。直接輸出整理後的文本，不要加任何前綴說明。"
+      + (title ? `\n影片標題：《${title}》` : "") + (channel ? `\n頻道：${channel}` : "")
+      + (title || channel ? "\n字幕來自自動識別，專有名詞可能聽錯——請結合標題/頻道糾正明顯的錯別字。" : ""),
+    first: (i, n, chunk) => `請整理以下字幕片段（第${i}/${n}段），添加標點並分段，不要省略內容：\n\n${chunk}`,
+    cont: (i, n, tail, chunk) => `上一段整理結果的結尾（僅供銜接上下文，不要重複輸出）：\n…${tail}\n\n請繼續整理下一段字幕（第${i}/${n}段），與上文自然銜接，添加標點並分段，不要省略內容：\n\n${chunk}`,
+    header: "**📝 整理好的字幕**",
+  },
+  en: {
+    system: (title, channel) =>
+      "You are a subtitle cleanup assistant. Turn raw subtitle fragments into readable text: add punctuation, join fragments into complete sentences, and break the text into natural paragraphs. Where the topic clearly changes, insert one short Markdown subheading line (e.g. \"## Topic\", written in the transcript's own language); add none if there is no clear change. Do not change the meaning, do not add or omit content, and do not translate. Output only the cleaned text with no preamble."
+      + (title ? `\nVideo title: "${title}"` : "") + (channel ? `\nChannel: ${channel}` : "")
+      + (title || channel ? "\nThe transcript comes from automatic speech recognition and may mis-hear proper nouns — use the title/channel to fix obvious errors." : ""),
+    first: (i, n, chunk) => `Please clean up the following subtitle fragment (part ${i}/${n}). Add punctuation and paragraphs; do not omit content:\n\n${chunk}`,
+    cont: (i, n, tail, chunk) => `End of the previous cleaned part (context only — do not repeat it):\n…${tail}\n\nPlease continue with the next fragment (part ${i}/${n}), flowing naturally from the text above. Add punctuation and paragraphs; do not omit content:\n\n${chunk}`,
+    header: "**📝 Formatted transcript**",
+  },
+};
+const fmtL = (language) => FORMAT_I18N[language] || FORMAT_I18N.zh;
+
+// Server-side transcript cleanup: feed the raw transcript to the chat model chunk-by-chunk
+// and accumulate the readable result. The prompt (localized via `language`) asks for
+// punctuation, paragraphs and topic subheadings; title/channel give the model context to
+// fix mis-heard proper nouns. Each continuation carries the tail of the previous cleaned
+// chunk so sentences broken at a chunk boundary knit back together.
+// onProgress({stage:'formatting',progress:{value,max}}) per chunk; signal aborts the
+// in-flight call. Throws on any chunk failure (caller surfaces it).
+async function formatTranscriptServer(title, transcript, model, { channel = "", language = "", onProgress = () => {}, signal } = {}) {
+  const L = fmtL(language);
   const chunks = splitTranscript(transcript, TRANSCRIPT_CHUNK_LIMIT);
   const total = chunks.length;
-  const systemPrompt = `你是字幕整理助手。将原始字幕片段整理为易读文本：添加标点符号、连成完整句子、适当分段。不要改变原意，不要添加或省略内容。直接输出整理后的文本，不要加任何前缀说明。`;
+  const systemPrompt = L.system(title, channel);
+  const nonWs = (s) => String(s).replace(/\s+/g, "").length;
+  const callOnce = async (chunkPrompt) => {
+    const messages = [{ role: "system", content: systemPrompt }, { role: "user", content: chunkPrompt }];
+    // Cloud models: the /api/chat router doesn't sit in this server-side path, so call
+    // them directly (non-streaming) instead of local Ollama.
+    if (claude.isClaudeModel(model)) return claude.complete(model, messages, { signal });
+    if (openai.isOpenAIModel(model)) return openai.complete(model, messages, { temperature: 0.3, signal });
+    let chunkText = "";
+    const resp = await fetch(`${config.ollamaUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, messages, options: { temperature: 0.3 } }),
+      signal,
+    });
+    if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error(`字幕整理失败 (${resp.status})${t ? ": " + t.slice(0, 200) : ""}`); }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let o; try { o = JSON.parse(line); } catch { continue; }
+        if (o.error) throw new Error(o.error);
+        if (o.message && o.message.content) chunkText += o.message.content;
+      }
+    }
+    if (buffer.trim()) { try { const o = JSON.parse(buffer); if (o.message && o.message.content) chunkText += o.message.content; } catch {} }
+    return chunkText;
+  };
   let fullContent = "";
   for (let i = 0; i < total; i++) {
     // value = chunks ALREADY DONE (0 while working on the 1st) so the progress bar shows
     // real completion (0% on 1/2, 50% on 2/2) instead of jumping to 100% mid-work. The
     // drawer label adds +1 to show the chunk currently being processed (i/n).
     onProgress({ stage: "formatting", progress: { value: i, max: total } });
-    const chunkPrompt = i === 0
-      ? `请整理以下字幕片段（第${i + 1}/${total}段），添加标点并分段，不要省略内容：\n\n${chunks[i]}`
-      : `请继续整理下一段字幕（第${i + 1}/${total}段），保持与前面相同的格式风格，添加标点并分段，不要省略内容：\n\n${chunks[i]}`;
-    let chunkText = "";
-    if (claude.isClaudeModel(model)) {
-      // Cloud model: the /api/chat router doesn't sit in this server-side path,
-      // so call Claude directly (non-streaming) instead of local Ollama.
-      chunkText = await claude.complete(
-        model,
-        [{ role: "system", content: systemPrompt }, { role: "user", content: chunkPrompt }],
-        { signal },
-      );
-    } else if (openai.isOpenAIModel(model)) {
-      chunkText = await openai.complete(
-        model,
-        [{ role: "system", content: systemPrompt }, { role: "user", content: chunkPrompt }],
-        { signal },
-      );
-    } else {
-      const resp = await fetch(`${config.ollamaUrl}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: chunkPrompt }], options: { temperature: 0.3 } }),
-        signal,
-      });
-      if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error(`字幕整理失败 (${resp.status})${t ? ": " + t.slice(0, 200) : ""}`); }
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          let o; try { o = JSON.parse(line); } catch { continue; }
-          if (o.error) throw new Error(o.error);
-          if (o.message && o.message.content) chunkText += o.message.content;
-        }
-      }
-      if (buffer.trim()) { try { const o = JSON.parse(buffer); if (o.message && o.message.content) chunkText += o.message.content; } catch {} }
+    const tail = fullContent.trimEnd().slice(-200);
+    const chunkPrompt = i === 0 ? L.first(1, total, chunks[i]) : L.cont(i + 1, total, tail, chunks[i]);
+    let chunkText = String(await callOnce(chunkPrompt) || "").trim();
+    // Anti-summarize guard: cleaned text should be about as long as its raw input; a much
+    // shorter result means the model condensed it — retry once and keep the longer answer.
+    if (nonWs(chunkText) < nonWs(chunks[i]) * 0.6) {
+      try {
+        const retry = String(await callOnce(chunkPrompt) || "").trim();
+        if (nonWs(retry) > nonWs(chunkText)) chunkText = retry;
+      } catch (e) { if (e && e.name === "AbortError") throw e; /* else keep the first attempt */ }
     }
-    fullContent += (fullContent ? "\n\n" : "") + chunkText.trim();
+    fullContent += (fullContent ? "\n\n" : "") + chunkText;
   }
-  return "**📝 整理好的字幕**\n\n" + fullContent.trim();
+  return L.header + "\n\n" + fullContent.trim();
 }
 
 // Streaming NDJSON endpoint for the youtube background job (POST /api/youtube-job):
@@ -1026,7 +1084,8 @@ async function youtubeJob(req, res) {
       rawTranscript = await transcribeYouTubeAudioCore(videoId, { onProgress, signal: ctrl.signal });
       source = "whisper";
     }
-    const formattedText = await formatTranscriptServer((meta && meta.title) || "", rawTranscript, model, { onProgress, signal: ctrl.signal });
+    const formattedText = await formatTranscriptServer((meta && meta.title) || "", rawTranscript, model,
+      { channel: (meta && meta.channel) || "", language, onProgress, signal: ctrl.signal });
     send({ type: "done", result: {
       title: (meta && meta.title) || "", channel: (meta && meta.channel) || "",
       duration: (meta && meta.duration) || "", viewCount: (meta && meta.viewCount) || "",

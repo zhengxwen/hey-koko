@@ -7,8 +7,8 @@
 import { dom, state } from './state.js';
 import { escapeHtml } from './utils.js';
 
-const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", doc: "📝", other: "📎" };
-const kindIcon = (k) => KIND_ICON[k] || "📎";
+const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", video: "📺", doc: "📝", chat: "💬", other: "📎" };
+export const kindIcon = (k) => KIND_ICON[k] || "📎";
 
 let _docs = [];       // cached library index entries {docId,title,docKind,…}  (for "@")
 let _archives = [];   // cached archive index entries {filename,title,firstTimestamp,…} (for "#")
@@ -23,6 +23,11 @@ export function mentionDocName(docId) {
   const d = _docs.find((x) => x.docId === docId);
   if (!d) return docId;
   return (d.source || "").replace(/^(file|url):/, "") || d.title || docId;
+}
+// Kind icon for a docId (📺 for a YouTube video, 📄 for a paper, …) — same lookup.
+export function mentionDocIcon(docId) {
+  const d = _docs.find((x) => x.docId === docId);
+  return kindIcon(d && d.docKind);
 }
 
 // Human-readable name for an archive filename: its conversation title, else the

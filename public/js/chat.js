@@ -16,6 +16,7 @@ import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
 import { parseAskCommand, handleAskCommand } from './library.js';
+import { kindIcon } from './mentions.js';
 import { buildPendingGenBubble } from './pending-gen.js';
 import { enqueueBgJob, releaseEnhancingJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
 import { chatFetch } from './server-queue.js';
@@ -2791,7 +2792,8 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     if (fname) {
       const fileTag = document.createElement("div");
       fileTag.className = "libraryFileNameTag";
-      fileTag.textContent = `📄 ${fname}`;
+      // kind icon (📺 video / 📄 paper / …); older tabs may predate docKind in meta → 📄
+      fileTag.textContent = `${meta.docKind ? kindIcon(meta.docKind) : "📄"} ${fname}`;
       item.appendChild(fileTag);
     }
   }

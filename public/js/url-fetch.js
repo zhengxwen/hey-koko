@@ -10,7 +10,44 @@ import { makePreview } from './utils.js';
 import { getPromptLanguage, t } from './i18n.js';
 import { youtubeFetch, serverJobTiming } from './server-queue.js';
 
-const CHUNK_CHAR_LIMIT = 3000; // Split transcripts longer than this
+const CHUNK_CHAR_LIMIT = 6000; // Split transcripts longer than this
+
+// Prompt/scaffold strings for the transcript formatter, keyed by the user's prompt
+// language. Kept in sync with the server twin (server/url-fetch.js FORMAT_I18N) —
+// this copy only serves the foreground (non-server-queue) /url path.
+const FORMAT_I18N = {
+  zh: {
+    system: (title, channel) =>
+      "你是字幕整理助手。将原始字幕片段整理为易读文本：添加标点符号、连成完整句子、适当分段；在话题明显切换处插入一行简短的 Markdown 小标题（如「## 小标题」，用字幕本身的语言书写），没有明显切换就不加。不要改变原意，不要添加或省略内容，不要翻译。直接输出整理后的文本，不要加任何前缀说明。"
+      + (title ? `\n视频标题：《${title}》` : "") + (channel ? `\n频道：${channel}` : "")
+      + (title || channel ? "\n字幕来自自动识别，专有名词可能听错——请结合标题/频道纠正明显的错别字。" : ""),
+    first: (i, n, chunk) => `请整理以下字幕片段（第${i}/${n}段），添加标点并分段，不要省略内容：\n\n${chunk}`,
+    cont: (i, n, tail, chunk) => `上一段整理结果的结尾（仅供衔接上下文，不要重复输出）：\n…${tail}\n\n请继续整理下一段字幕（第${i}/${n}段），与上文自然衔接，添加标点并分段，不要省略内容：\n\n${chunk}`,
+    header: "**📝 整理好的字幕**",
+    intro: (title, n) => `请将以下YouTube视频「${title}」的原始字幕整理成易读的文本${n > 1 ? `（共${n}段）` : ""}。要求：\n1. 添加标点符号，连成完整的句子和段落\n2. 适当分段换行（按语义自然分段）\n3. 不要改变原意，不要添加内容\n4. 不要省略任何字幕内容`,
+  },
+  "zh-Hant": {
+    system: (title, channel) =>
+      "你是字幕整理助手。將原始字幕片段整理為易讀文本：添加標點符號、連成完整句子、適當分段；在話題明顯切換處插入一行簡短的 Markdown 小標題（如「## 小標題」，用字幕本身的語言書寫），沒有明顯切換就不加。不要改變原意，不要添加或省略內容，不要翻譯。直接輸出整理後的文本，不要加任何前綴說明。"
+      + (title ? `\n影片標題：《${title}》` : "") + (channel ? `\n頻道：${channel}` : "")
+      + (title || channel ? "\n字幕來自自動識別，專有名詞可能聽錯——請結合標題/頻道糾正明顯的錯別字。" : ""),
+    first: (i, n, chunk) => `請整理以下字幕片段（第${i}/${n}段），添加標點並分段，不要省略內容：\n\n${chunk}`,
+    cont: (i, n, tail, chunk) => `上一段整理結果的結尾（僅供銜接上下文，不要重複輸出）：\n…${tail}\n\n請繼續整理下一段字幕（第${i}/${n}段），與上文自然銜接，添加標點並分段，不要省略內容：\n\n${chunk}`,
+    header: "**📝 整理好的字幕**",
+    intro: (title, n) => `請將以下YouTube影片「${title}」的原始字幕整理成易讀的文本${n > 1 ? `（共${n}段）` : ""}。要求：\n1. 添加標點符號，連成完整的句子和段落\n2. 適當分段換行（按語義自然分段）\n3. 不要改變原意，不要添加內容\n4. 不要省略任何字幕內容`,
+  },
+  en: {
+    system: (title, channel) =>
+      "You are a subtitle cleanup assistant. Turn raw subtitle fragments into readable text: add punctuation, join fragments into complete sentences, and break the text into natural paragraphs. Where the topic clearly changes, insert one short Markdown subheading line (e.g. \"## Topic\", written in the transcript's own language); add none if there is no clear change. Do not change the meaning, do not add or omit content, and do not translate. Output only the cleaned text with no preamble."
+      + (title ? `\nVideo title: "${title}"` : "") + (channel ? `\nChannel: ${channel}` : "")
+      + (title || channel ? "\nThe transcript comes from automatic speech recognition and may mis-hear proper nouns — use the title/channel to fix obvious errors." : ""),
+    first: (i, n, chunk) => `Please clean up the following subtitle fragment (part ${i}/${n}). Add punctuation and paragraphs; do not omit content:\n\n${chunk}`,
+    cont: (i, n, tail, chunk) => `End of the previous cleaned part (context only — do not repeat it):\n…${tail}\n\nPlease continue with the next fragment (part ${i}/${n}), flowing naturally from the text above. Add punctuation and paragraphs; do not omit content:\n\n${chunk}`,
+    header: "**📝 Formatted transcript**",
+    intro: (title, n) => `Please clean up the raw subtitles of the YouTube video "${title}" into readable text${n > 1 ? ` (${n} parts)` : ""}. Requirements:\n1. Add punctuation and join fragments into complete sentences\n2. Break into natural paragraphs\n3. Do not change the meaning or add content\n4. Do not omit any subtitle content`,
+  },
+};
+const fmtL = (language) => FORMAT_I18N[language] || FORMAT_I18N.zh;
 
 // Dependencies injected from main.js to avoid circular imports
 let _setGenerating = null;
@@ -204,7 +241,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
 
     // For YouTube, ask AI to format the transcript into readable text
     if (hasRealTranscript) {
-      await formatTranscriptChunked(data.title, data.content, tab, tabId, undefined, cursor, bg);
+      await formatTranscriptChunked(data.title, data.content, tab, tabId, undefined, cursor, bg, data.channel || "");
       // After transcript is formatted, if there's a prompt, send it
       if (prompt) {
         placeMsg(tab, { role: "user", content: prompt, timestamp: Date.now() }, cursor);
@@ -387,12 +424,27 @@ export async function handleMultiUrlCommand(entries, tab, tabId, fullContent, cu
   }
 }
 
-// Split transcript into chunks at line boundaries
+// Split transcript into chunks at line boundaries.
+// Safety net for a single line longer than the limit (e.g. captions that arrived as one
+// long line): force-cut it at whitespace/punctuation so it can never become a mega-chunk.
+function splitOverlongLine(line, limit) {
+  const parts = [];
+  while (line.length > limit) {
+    let cut = -1;
+    for (let j = limit; j > limit * 0.5; j--) {
+      if (/[\s。.!?！？，,;；]/.test(line[j])) { cut = j + 1; break; }
+    }
+    if (cut <= 0) cut = limit;
+    parts.push(line.slice(0, cut).trimEnd());
+    line = line.slice(cut);
+  }
+  if (line) parts.push(line);
+  return parts;
+}
 function splitTranscript(text, limit) {
-  const lines = text.split("\n");
   const chunks = [];
   let current = "";
-  for (const line of lines) {
+  for (const line of text.split("\n").flatMap((l) => (l.length > limit ? splitOverlongLine(l, limit) : [l]))) {
     if (current.length + line.length + 1 > limit && current.length > 0) {
       chunks.push(current);
       current = line;
@@ -406,14 +458,13 @@ function splitTranscript(text, limit) {
 
 // Process transcript in chunks, streaming each chunk's AI response
 // source: "subtitle" (default) or "whisper" (from audio transcription)
-async function formatTranscriptChunked(title, transcript, tab, tabId, source, cursor = null, bg = null) {
+async function formatTranscriptChunked(title, transcript, tab, tabId, source, cursor = null, bg = null, channel = "") {
+  const L = fmtL(getPromptLanguage());
   const chunks = splitTranscript(transcript, CHUNK_CHAR_LIMIT);
   const totalChunks = chunks.length;
 
   // Add a user message indicating transcript formatting, with the raw transcript appended
-  const instructions = totalChunks > 1
-    ? `请将以下YouTube视频「${title}」的原始字幕整理成易读的文本（共${totalChunks}段）。要求：\n1. 添加标点符号，连成完整的句子和段落\n2. 适当分段换行（按语义自然分段）\n3. 不要改变原意，不要添加内容\n4. 不要省略任何字幕内容`
-    : `请将以下YouTube视频「${title}」的原始字幕整理成易读的文本。要求：\n1. 添加标点符号，连成完整的句子和段落\n2. 适当分段换行（按语义自然分段）\n3. 不要改变原意，不要添加内容\n4. 不要省略任何字幕内容`;
+  const instructions = L.intro(title, totalChunks);
   const label = source === "whisper" ? "**[语音识别结果]**" : "**[原始字幕]**";
   const userMsg = `${instructions}\n\n${label}\n\n${transcript}`;
   placeMsg(tab, { role: "user", content: userMsg, timestamp: Date.now() }, cursor);
@@ -445,11 +496,75 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
     scrollChatToEnd();
   }
 
+  const systemPrompt = L.system(title, channel);
+  const nonWs = (s) => String(s).replace(/\s+/g, "").length;
+  const progressMarker = /\n\n---\n\*正在整理第 \d+\/\d+ 段\.\.\.\*\n\n/g;
+
+  // One model call for one chunk, streaming its text into fullContent (and the live bubble).
+  const streamChunk = async (messages) => {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abortController.signal,
+      body: JSON.stringify({
+        model: dom.modelSelect.value,
+        messages,
+        options: { temperature: 0.3 },
+        timeout: parseInt(dom.imageTimeoutInput?.value, 10) || 120,
+      }),
+    });
+
+    if (!response.ok) {
+      const errData = await response.json();
+      throw new Error(errData.error || "请求失败");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const appendLine = (line) => {
+      if (!line.trim()) return;
+      const parsed = JSON.parse(line);
+      const chunk = parsed.message?.content || "";
+      if (!chunk) return;
+
+      if (!bg && !textEl && pending) {
+        pending.innerHTML = "";
+        pending.classList.remove("thinking");
+        setAvatarState("talking");
+        textEl = document.createElement("div");
+        textEl.className = "markdownBody";
+        pending.appendChild(textEl);
+      }
+
+      fullContent += chunk;
+      if (state.activeTabId === tabId && textEl) {
+        textEl.innerHTML = markdownToHtml(fullContent);
+        scrollChatToEnd();
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) appendLine(line);
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) appendLine(buffer);
+  };
+
   try {
     for (let i = 0; i < chunks.length; i++) {
       if (abortController.signal.aborted) break;
 
       if (bg) bg.label(t("bg_formattingSubs", { i: i + 1, n: totalChunks }));
+      // Tail of the cleaned text so far (progress markers stripped) — carried into the
+      // next prompt so sentences broken at the chunk boundary knit back together.
+      const tail = fullContent.replace(progressMarker, "\n\n").trimEnd().slice(-200);
       // Show progress between chunks
       if (i > 0 && pending && textEl) {
         fullContent += `\n\n---\n*正在整理第 ${i + 1}/${totalChunks} 段...*\n\n`;
@@ -460,68 +575,27 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
         if (body) body.innerHTML = '<span class="thinking-text">正在整理字幕 (' + (i + 1) + '/' + totalChunks + ')<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
       }
 
-      const chunkPrompt = i === 0
-        ? `请整理以下字幕片段（第${i + 1}/${totalChunks}段），添加标点并分段，不要省略内容：\n\n${chunks[i]}`
-        : `请继续整理下一段字幕（第${i + 1}/${totalChunks}段），保持与前面相同的格式风格，添加标点并分段，不要省略内容：\n\n${chunks[i]}`;
-
       const messages = [
-        { role: "system", content: `你是字幕整理助手。将原始字幕片段整理为易读文本：添加标点符号、连成完整句子、适当分段。不要改变原意，不要添加或省略内容。直接输出整理后的文本，不要加任何前缀说明。` },
-        { role: "user", content: chunkPrompt },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: i === 0 ? L.first(1, totalChunks, chunks[i]) : L.cont(i + 1, totalChunks, tail, chunks[i]) },
       ];
 
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: abortController.signal,
-        body: JSON.stringify({
-          model: dom.modelSelect.value,
-          messages,
-          options: { temperature: 0.3 },
-          timeout: parseInt(dom.imageTimeoutInput?.value, 10) || 120,
-        }),
-      });
-
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "请求失败");
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      function appendLine(line) {
-        if (!line.trim()) return;
-        const parsed = JSON.parse(line);
-        const chunk = parsed.message?.content || "";
-        if (!chunk) return;
-
-        if (!bg && !textEl && pending) {
-          pending.innerHTML = "";
-          pending.classList.remove("thinking");
-          setAvatarState("talking");
-          textEl = document.createElement("div");
-          textEl.className = "markdownBody";
-          pending.appendChild(textEl);
+      const chunkStart = fullContent.length;
+      await streamChunk(messages);
+      // Anti-summarize guard: cleaned text should be about as long as its raw input; a much
+      // shorter result means the model condensed it — retry once and keep the longer answer.
+      const firstTry = fullContent.slice(chunkStart);
+      if (nonWs(firstTry) < nonWs(chunks[i]) * 0.6) {
+        fullContent = fullContent.slice(0, chunkStart);
+        try {
+          await streamChunk(messages);
+          if (nonWs(fullContent.slice(chunkStart)) < nonWs(firstTry)) fullContent = fullContent.slice(0, chunkStart) + firstTry;
+        } catch (e) {
+          if (e.name === "AbortError") throw e;
+          fullContent = fullContent.slice(0, chunkStart) + firstTry;
         }
-
-        fullContent += chunk;
-        if (state.activeTabId === tabId && textEl) {
-          textEl.innerHTML = markdownToHtml(fullContent);
-          scrollChatToEnd();
-        }
+        if (state.activeTabId === tabId && textEl) textEl.innerHTML = markdownToHtml(fullContent);
       }
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) appendLine(line);
-      }
-      buffer += decoder.decode();
-      if (buffer.trim()) appendLine(buffer);
 
       // Add separator between chunks
       if (i < chunks.length - 1) {
@@ -533,10 +607,10 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
     }
 
     // Remove progress markers from final content
-    fullContent = fullContent.replace(/\n\n---\n\*正在整理第 \d+\/\d+ 段\.\.\.\*\n\n/g, "\n\n");
+    fullContent = fullContent.replace(progressMarker, "\n\n");
     // Save final result
     fullContent = fullContent.trim() || "整理失败，请重试。";
-    fullContent = `**📝 整理好的字幕**\n\n${fullContent}`;
+    fullContent = `${L.header}\n\n${fullContent}`;
     if (state.activeTabId === tabId && textEl) textEl.innerHTML = markdownToHtml(fullContent);
     placeMsg(tab, { role: "assistant", content: fullContent, timestamp: Date.now() }, cursor);
     saveChat();

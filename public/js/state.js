@@ -96,6 +96,8 @@ export const dom = {
   numCtxSelect: document.querySelector("#numCtxSelect"),
   numCtxDisplay: document.querySelector("#numCtxDisplay"),
   embedModelSelect: document.querySelector("#embedModelSelect"),
+  libraryDistillToggle: document.querySelector("#libraryDistillToggle"),
+  libraryRerankToggle: document.querySelector("#libraryRerankToggle"),
   memoryList: document.querySelector("#memoryList"),
   memoryInput: document.querySelector("#memoryInput"),
   memoryAddBtn: document.querySelector("#memoryAddBtn"),

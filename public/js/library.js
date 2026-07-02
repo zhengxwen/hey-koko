@@ -1,21 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Xiuwen Zheng
 
-// Knowledge Library (RAG) frontend: import docs (local files / URL / text) by
-// reusing the existing parse + fetch pipelines, browse each doc as an editable
-// bubble stream, semantic-search, and ask the whole library (panel box + the
-// chat-side /ask command). Retrieval is server-side; generation reuses /api/chat.
+// Knowledge Library (RAG) frontend: import docs (local files / URL / text /
+// YouTube) as SERVER-side background jobs (kind "libimport" — the whole
+// fetch/whisper/parse → embed → distill-card pipeline runs in server/jobs.js, so a
+// queued batch finishes even with the browser closed), browse each doc as an
+// editable bubble stream, semantic-search, and ask the whole library (panel box +
+// the chat-side /ask command). Retrieval is server-side; generation reuses /api/chat.
 
 import { dom, state } from './state.js';
-import { escapeHtml, makePreview } from './utils.js';
+import { escapeHtml } from './utils.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './markdown.js';
 import { applyHighlights } from './highlight.js';
 import { saveTabs } from './settings.js';
 import { createTab, switchTab } from './tabs.js';
 import { t, getPromptLanguage } from './i18n.js';
-import { setMentionDocs, mentionDocName, mentionArchiveName } from './mentions.js';
+import { setMentionDocs, mentionDocName, mentionDocIcon, mentionArchiveName } from './mentions.js';
 import { enqueueBgJob, openBgDrawer } from './bg-jobs.js';
-import { youtubeFetch } from './server-queue.js';
+import { libImportFetch } from './server-queue.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", video: "📺", doc: "📝", chat: "💬", other: "📎" };
 const genId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -40,12 +42,6 @@ function shortAuthors(authors) {
   return list.length <= 3 ? list.join(", ") : list.slice(0, 3).join(", ") + " " + t("lib_etAl");
 }
 
-// parseDocumentHeadless is injected from main.js (reuses MinerU/Pandoc + pdf.js fallback).
-let _parseDocumentHeadless = null;
-export function setLibraryDeps({ parseDocumentHeadless }) {
-  if (parseDocumentHeadless) _parseDocumentHeadless = parseDocumentHeadless;
-}
-
 function fileToB64(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -65,97 +61,33 @@ async function postJson(url, body, signal = null) {
   return res.json();
 }
 
-// Run ANY library import as a background job (see bg-jobs.js runLibImport). Dispatches on
-// payload.type — 'file' (parse a doc: PDF/DOCX/… via _parseDocumentHeadless), 'text'
-// (already-read .txt/.md), 'url' (fetch a webpage), 'youtube' (same server pipeline as
-// chat /url: cover + whisper + subtitle formatting). Every branch produces {source,
-// docKind, title, text, images}, then one shared save → enrich → list-refresh. Progress
-// streams to the drawer via sink.label / the youtube SSE; throws so failures show an error.
-// Map a YouTube language code (en / zh-Hans / ja …) to its English display name
-// ("English", "Chinese (Simplified)", "Japanese"). Intl handles the code→name table;
-// fall back to the raw code if the runtime lacks it or the code is unknown.
-function langName(code) {
-  if (!code) return "";
-  try { return new Intl.DisplayNames(["en"], { type: "language" }).of(code) || code; }
-  catch { return code; }
+// Run ANY library import (file/text/url/youtube — plus 'distill' card backfill) by
+// submitting it to the SERVER queue (kind "libimport", server/jobs.js): the whole
+// fetch/whisper/parse → chunk+embed → distill-card pipeline runs server-side, so a
+// queued batch drains even after every page is closed. This generator (fired up front
+// by pumpQueue, like image/video jobs) just submits, awaits the SSE result, and
+// refreshes the panel; on reload it reconnects to the same job by serverJobId. Stage
+// progress (fetching/parsing/importing/distilling + whisper stages) arrives via the
+// jobs SSE → bgProgressLabel, not through this sink.
+export async function runLibraryImport(payload, sink) {
+  const r = await libImportFetch(payload, {
+    bgJob: sink.server.bgJob, conversationId: sink.server.conversationId,
+    msgId: sink.server.msgId, label: sink.server.label, signal: sink.signal,
+  });
+  const data = await r.json();
+  if (!r.ok || !data || data.error) throw new Error((data && data.error) || t("lib_fetchFailed", { error: "?" }));
+  if (_refreshLibraryList) { try { await _refreshLibraryList(); } catch { /* panel maybe closed */ } }
 }
 
-export async function runLibraryImport(payload, sink) {
-  const type = payload.type;
-  let source, docKind, title, text, images = [];
-  // authors/year are set inline for YouTube (from channel + upload date, since the LLM
-  // enrich step is skipped for it); other types leave them "" and enrichDoc fills them in.
-  let authors = "", year = "";
-  const folder = payload.folder || undefined;
-
-  if (type === "youtube") {
-    sink.label(t("bg_fetchingContent"));
-    const r = await youtubeFetch(
-      { url: payload.url, language: getPromptLanguage(), model: dom.modelSelect.value },
-      { bgJob: sink.server.bgJob, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, signal: sink.signal },
-    );
-    const data = await r.json();
-    if (!r.ok || !data || data.error) throw new Error((data && data.error) || t("lib_fetchFailed", { error: "?" }));
-    title = data.title || payload.url;
-    // normalize YouTube's "20260701" → "2026-07-01" (same as the chat info card)
-    const rawDate = String(data.uploadDate || "").replace(/-/g, "").slice(0, 8);
-    const uploadDate = rawDate.length === 8 ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}` : "";
-    // authors = channel name; year = the 4-digit upload year (both feed the doc's citation metadata)
-    authors = data.channel || "";
-    year = rawDate.length >= 4 ? rawDate.slice(0, 4) : "";
-    // Metadata, one field per line. Without a thumbnail it rides as a plain multi-line
-    // text block using real newlines. With a thumbnail it must share the image's single
-    // line (the chunker only keeps same-line text as the figure caption), so the fields
-    // are joined with <br> there — the server converts that back to \n when it extracts
-    // the caption, so the STORED block content always uses real newlines (never <br>).
-    const metaParts = [payload.url,
-      data.channel ? `频道：${data.channel}` : "",
-      data.duration ? `时长：${data.duration}` : "",
-      uploadDate ? `日期：${uploadDate}` : "",
-      data.category ? `分类：${data.category}` : "",
-      // tags are creator-filled and often long → cap at 15 to keep the cover readable
-      (data.tags && data.tags.length) ? `标签：${data.tags.slice(0, 15).join("、")}` : "",
-      data.language ? `语言：${langName(data.language)}` : ""].filter(Boolean);
-    // First "bubble" = title-tagged cover figure (image + metadata caption). A cover is
-    // optional; without one the metadata rides as a plain multi-line block under the title.
-    let infoLine = metaParts.join("\n");
-    if (data.thumbnail) {
-      try {
-        const dataUrl = await makePreview(data.thumbnail, 720);   // server returns a base64 data URL → no CORS taint
-        const raw = (dataUrl.split(",")[1]) || "";
-        if (raw) { images.push({ name: "image_01.jpg", base64: raw, mime: "image/jpeg" }); infoLine = `![](image_01.jpg) ${metaParts.join("<br>")}`; }
-      } catch { /* cover is optional */ }
-    }
-    source = `url:${payload.url}`; docKind = "video";
-    // A heading between the cover and the transcript forces them into SEPARATE blocks
-    // (§title = cover, §字幕整理 = transcript) → two bubbles, cover first, subs second.
-    text = [`# ${title}`, "", infoLine, "", "# 字幕整理", "",
-      (data.formattedText || data.rawTranscript || "")].join("\n");
-  } else if (type === "url") {
-    sink.label(t("bg_fetchingContent"));
-    const data = await postJson("/api/fetch-url", { url: payload.url }, sink.signal);
-    if (data.type === "error" || data.type === "unsupported" || !data.content) throw new Error(data.content || t("lib_fetchFailed", { error: "?" }));
-    source = `url:${payload.url}`; docKind = "blog"; title = data.title || payload.url; text = data.content;
-  } else if (type === "text") {
-    source = `file:${payload.name}`; docKind = payload.docKind || "other"; title = payload.title; text = payload.text;
-  } else if (type === "file") {
-    sink.label(t("bg_parsing"));
-    if (!_parseDocumentHeadless) throw new Error(t("lib_parserNotReady"));
-    const parsed = await _parseDocumentHeadless(payload.fileB64, payload.name, payload.ext, "", (p) => { if (p) sink.label(p); });
-    if (!parsed || !(parsed.text || "").trim()) throw new Error(t("lib_parseEmpty", { name: payload.name }));
-    source = `file:${payload.name}`; docKind = payload.docKind || "other";
-    title = payload.name.replace(/\.[^.]+$/, ""); text = parsed.text; images = parsed.images || [];
-  } else {
-    throw new Error("unknown import type");
-  }
-
-  sink.label(t("lib_importing"));
-  const res = await postJson("/api/library/import", { source, docKind, folder, title, authors, year, text, images, model: embedModel() }, sink.signal);
-  if (res.error) throw new Error(res.error);
-  // Enrich metadata (title/authors/year/tags) for docs/webpages; skip YouTube — it already
-  // has an accurate title (the LLM would only risk overwriting it with transcript guesses).
-  if (res.docId && type !== "youtube") { sink.label(t("lib_enriching", { name: title })); await enrichDoc(res.docId); }
-  if (_refreshLibraryList) { try { await _refreshLibraryList(); } catch { /* panel maybe closed */ } }
+// Snapshot the per-import settings at ENQUEUE time (payload rides to the server):
+// embedModel = vector space; chatModel + language = distill card; distill = the toggle.
+function importJobCommon() {
+  return {
+    embedModel: embedModel(),
+    chatModel: dom.modelSelect.value,
+    language: getPromptLanguage(),
+    distill: dom.libraryDistillToggle ? !!dom.libraryDistillToggle.checked : true,
+  };
 }
 
 // Shared by the panel ask-box and the chat /ask command: retrieve → generate.
@@ -233,8 +165,12 @@ async function runLibraryQuery(query, { docId = null, docIds = null, archives = 
     sys = `你是知识库助手。下面是用户指定的文档/对话全文${truncated ? "（内容较长，已截断部分）" : ""}，请通读全文后完成用户的要求（如理解、总结、生成表格等）。\n\n全文：\n${combined}`;
   } else {
     // Whole-library → semantic retrieval of the most relevant chunks, cite [n].
+    // rerank: when the toggle is on, the server runs one extra chat-model call to
+    // reorder the candidates (silently falls back to vector order on any failure).
     const r = await postJson("/api/library/retrieve", {
       query, model: embedModel(), docId, folder, topK: 6, attachImages: true, maxImages: 3,
+      rerank: dom.libraryRerankToggle && dom.libraryRerankToggle.checked ? dom.modelSelect.value : "",
+      language: getPromptLanguage(),   // prompt language for the rerank call
     }, signal);
     if (!r.hits || !r.hits.length) return { answer: t("lib_noResults"), hits: [] };
     sourceHits = r.hits;
@@ -379,43 +315,12 @@ export async function writeTabToLibrary(tab) {
   return postJson("/api/library/save", { doc, model: embedModel() });
 }
 
-// Extract the first JSON object from loose LLM output (may be fenced/prefixed).
-function parseJsonLoose(s) {
-  const m = String(s).match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try { return JSON.parse(m[0]); } catch { return null; }
-}
-// Deterministic pastel color per tag name (no per-tag state needed).
+// Deterministic pastel color per tag name (no per-tag state needed). The server's
+// distill step uses the same formula, so tags color identically wherever assigned.
 function tagColor(name) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
   return `hsl(${h}, 55%, 82%)`;
-}
-
-// After import, ask the chat model to extract title/authors/year + topic tags
-// from the doc's opening blocks, then save (blocks unchanged → 0 re-embed).
-async function enrichDoc(docId) {
-  try {
-    const { doc } = await postJson("/api/library/get", { docId });
-    if (!doc || !doc.blocks) return;
-    const head = doc.blocks.slice(0, 6).map((b) => b.content).filter(Boolean).join("\n").slice(0, 2000);
-    if (!head.trim()) return;
-    const sys = "你是文献元数据抽取助手。根据文档开头内容，抽取标题、作者、发表年份，并生成 3-5 个简短主题标签。只输出 JSON，不要任何解释或代码块标记：{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"]}。作者只保留人名、去掉机构编号和上标数字，多个作者用英文逗号分隔（如 \"N. Gharahdaghi, P.-J. Yeh, L. Ceron-Gutierrez\"）；年份只要 4 位数字，没有就空字符串；标签用简短名词短语。";
-    const data = await postJson("/api/chat", {
-      model: dom.modelSelect.value,
-      messages: [{ role: "system", content: sys }, { role: "user", content: head }],
-      stream: false, options: { temperature: 0.1 },
-    });
-    const j = parseJsonLoose((data.message && data.message.content) || "");
-    if (!j) return;
-    if (j.title && String(j.title).trim()) doc.title = String(j.title).trim();
-    doc.authors = String(j.authors || "").trim();
-    doc.year = String(j.year || "").trim();
-    if (Array.isArray(j.tags)) {
-      doc.tags = j.tags.filter(Boolean).slice(0, 6).map((name) => ({ name: String(name).trim(), color: tagColor(String(name)) }));
-    }
-    await postJson("/api/library/save", { doc, model: embedModel() });  // blocks unchanged → 0 re-embed
-  } catch { /* enrichment is best-effort */ }
 }
 
 // ---- /ask command (chat-side): inserts Q + A(+sources) into the conversation ----
@@ -456,10 +361,11 @@ export async function handleAskCommand(query, tab, scope = {}, insertAt = null) 
   const { renderChat, setGenerating } = await import('./chat.js');
   const rerender = async () => { saveTabs(); renderChat(); };
   const now = Date.now();
-  // Name the scope in the "searching…" bubble: folders by path, docs/archives by full name.
+  // Name the scope in the "searching…" bubble: folders by path, docs/archives by full
+  // name, each doc with its KIND icon (📺 for a YouTube video, 📄 for a paper, …).
   const nameLines = [
     ...folders.map((f) => `📁 ${f}/`),
-    ...(fullReadIds ? fullReadIds.map((d) => `📄 ${mentionDocName(d)}`) : []),
+    ...(fullReadIds ? fullReadIds.map((d) => `${mentionDocIcon(d)} ${mentionDocName(d)}`) : []),
     ...(fullReadArchives ? fullReadArchives.map((a) => `💬 ${mentionArchiveName(a)}`) : []),
   ];
   const scopedNames = nameLines.length ? "\n\n" + nameLines.join("\n\n") : "";
@@ -607,6 +513,23 @@ export function initLibrary() {
   importFilesItem.addEventListener("click", () => { importMenu.hidden = true; fileInput.click(); });
   importTextItem.addEventListener("click", () => { importMenu.hidden = true; textInput.click(); });
   importUrlItem.addEventListener("click", () => { importMenu.hidden = true; importUrl(); });
+  // Backfill distillation cards for docs that predate the feature (index lacks hasCard):
+  // one server-side distill job per doc — same queue as imports, browser-closable.
+  const backfillItem = document.querySelector("#libraryBackfillCards");
+  if (backfillItem) backfillItem.addEventListener("click", () => {
+    importMenu.hidden = true;
+    const missing = docs.filter((d) => !d.hasCard);
+    if (!missing.length) { setStatus(t("lib_backfillNone")); return; }
+    if (!confirm(t("lib_backfillConfirm", { n: missing.length }))) return;
+    for (const d of missing) {
+      enqueueBgJob({
+        tabId: state.activeTabId, kind: "libimport", label: "📇 " + (d.title || d.docId),
+        payload: { type: "distill", docId: d.docId, chatModel: dom.modelSelect.value, language: getPromptLanguage() },
+        noPlaceholder: true,
+      });
+    }
+    setStatus(t("lib_importQueued"));
+  });
   // "本地论文" → always docKind:paper, stored in the paper/ folder.
   paperInput.addEventListener("change", () => { importFiles([...paperInput.files], { folder: "paper", docKind: "paper" }); paperInput.value = ""; });
   fileInput.addEventListener("change", () => { importFiles([...fileInput.files]); fileInput.value = ""; });
@@ -630,9 +553,9 @@ export function initLibrary() {
       const dk = docKind || docKindForExt(ext);
       let payload;
       if (ext === ".txt" || ext === ".md" || ext === ".markdown") {
-        payload = { type: "text", name: file.name, title: file.name.replace(/\.[^.]+$/, ""), text: await file.text(), folder, docKind: dk };
+        payload = { type: "text", name: file.name, title: file.name.replace(/\.[^.]+$/, ""), text: await file.text(), folder, docKind: dk, ...importJobCommon() };
       } else {
-        payload = { type: "file", name: file.name, ext, fileB64: await fileToB64(file), folder, docKind: dk };
+        payload = { type: "file", name: file.name, ext, fileB64: await fileToB64(file), folder, docKind: dk, ...importJobCommon() };
       }
       enqueueBgJob({ tabId: state.activeTabId, kind: "libimport", label: file.name, payload, noPlaceholder: true });
     }
@@ -648,7 +571,7 @@ export function initLibrary() {
       enqueueBgJob({
         tabId: state.activeTabId, kind: "libimport",
         label: isYoutubeUrl(u) ? t("bg_fetchingContent") : u,
-        payload: { type: isYoutubeUrl(u) ? "youtube" : "url", url: u },
+        payload: { type: isYoutubeUrl(u) ? "youtube" : "url", url: u, ...importJobCommon() },
         noPlaceholder: true,
       });
     }
@@ -842,22 +765,47 @@ export function initLibrary() {
     askFolderSel.value = allDirs.includes(prev) ? prev : "";
   }
 
+  // Tag bar: most-used tags first; collapsed to the top TAGBAR_LIMIT with a "+N ▾"
+  // expander — a thousand-doc library has hundreds of unique tags, and an uncapped
+  // wrap would swallow half the panel. The active filter chip is never hidden.
+  const TAGBAR_LIMIT = 24;
+  let tagBarExpanded = false;
   function renderTagBar() {
-    const allTags = new Map();
-    docs.forEach((d) => (d.tags || []).forEach((tg) => { if (tg && tg.name && !allTags.has(tg.name)) allTags.set(tg.name, tg.color || "#e0e0e0"); }));
+    const counts = new Map();   // name -> { color, n: docs carrying it }
+    docs.forEach((d) => (d.tags || []).forEach((tg) => {
+      if (!tg || !tg.name) return;
+      const e = counts.get(tg.name);
+      if (e) e.n++; else counts.set(tg.name, { color: tg.color || "#e0e0e0", n: 1 });
+    }));
+    const entries = [...counts.entries()].sort((a, b) => (b[1].n - a[1].n) || a[0].localeCompare(b[0]));
     tagBar.innerHTML = "";
-    allTags.forEach((color, name) => {
+    let shown = entries;
+    if (!tagBarExpanded && entries.length > TAGBAR_LIMIT) {
+      shown = entries.slice(0, TAGBAR_LIMIT);
+      if (activeTagFilter && counts.has(activeTagFilter) && !shown.some(([n]) => n === activeTagFilter)) {
+        shown.push([activeTagFilter, counts.get(activeTagFilter)]);
+      }
+    }
+    for (const [name, e] of shown) {
       const chip = document.createElement("span");
       chip.className = "archiveTagChip" + (activeTagFilter === name ? " isActive" : "");
       chip.textContent = name;
-      chip.style.background = color;
+      chip.title = `${name} · ${e.n}`;
+      chip.style.background = e.color;
       chip.addEventListener("click", () => {
         activeTagFilter = activeTagFilter === name ? null : name;
         renderTagBar();
         renderList();
       });
       tagBar.appendChild(chip);
-    });
+    }
+    if (entries.length > TAGBAR_LIMIT) {
+      const more = document.createElement("span");
+      more.className = "archiveTagChip libraryTagMore";
+      more.textContent = tagBarExpanded ? t("lib_tagsCollapse") : `+${entries.length - shown.length} ▾`;
+      more.addEventListener("click", () => { tagBarExpanded = !tagBarExpanded; renderTagBar(); });
+      tagBar.appendChild(more);
+    }
   }
 
   // One doc card (depth indents it under its folder in the tree view).
@@ -867,7 +815,8 @@ export function initLibrary() {
     if (depth) card.style.paddingLeft = (depth * 16 + 8) + "px";
     const sc = scores && scores.has(d.docId) ? `<span class="archiveCardScore">${Math.round(scores.get(d.docId) * 100)}%</span>` : "";
     const tagsHtml = (d.tags || []).map((tg) => `<span class="archiveCardTag" style="background:${tg.color || "#e0e0e0"}">${escapeHtml(tg.name)}</span>`).join("");
-    const meta = [d.docKind, shortAuthors(d.authors), d.year].filter(Boolean).join(" · ");
+    // 📇 = this doc has a distillation card (kind:"card" block leads its blocks)
+    const meta = [d.hasCard ? "📇 " + d.docKind : d.docKind, shortAuthors(d.authors), d.year].filter(Boolean).join(" · ");
     card.innerHTML = `
       <input type="checkbox" class="archiveCardCheckbox" ${selected.has(d.docId) ? "checked" : ""} />
       <div class="archiveCardInfo">
@@ -961,12 +910,44 @@ export function initLibrary() {
       preview.classList.add("isOpen");
       askScoped.disabled = false;   // enable "this doc only" scoping
       renderBlocks(doc);
+      renderRelated(docId);   // async — fills in below the toolbar when ready
     } catch (e) { alert(t("lib_loadFailed") + " " + e.message); }
+  }
+
+  // "🔗 Related" chips under the doc toolbar: top-5 similar docs by centroid cosine,
+  // computed on demand server-side. Click a chip → open that doc. Best-effort: any
+  // error (or an empty library) just leaves the row out.
+  async function renderRelated(docId) {
+    try {
+      const { related } = await postJson("/api/library/related", { docId });
+      if (!related || !related.length) return;
+      if (!currentDoc || currentDoc.docId !== docId) return;   // user already moved on
+      const row = document.createElement("div");
+      row.className = "libRelatedRow";
+      const label = document.createElement("span");
+      label.className = "libRelatedLabel";
+      label.textContent = "🔗 " + t("lib_relatedDocs");
+      row.appendChild(label);
+      for (const r of related) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "libRelatedChip";
+        chip.textContent = `${kindIcon(r.docKind)} ${r.title} ${Math.round(r.score * 100)}%`;
+        chip.title = r.title;
+        chip.addEventListener("click", () => openDoc(r.docId));
+        row.appendChild(chip);
+      }
+      // insert right after the per-doc toolbar (previewContent's first child)
+      const bar = previewContent.querySelector(".libraryDocToolbar");
+      if (bar && bar.nextSibling) previewContent.insertBefore(row, bar.nextSibling);
+      else previewContent.appendChild(row);
+    } catch (e) { console.warn("[library] related chips failed:", e); /* decoration — never block the doc view */ }
   }
 
   function renderBlocks(doc) {
     previewContent.innerHTML = "";
-    // Per-doc toolbar: re-extract metadata (useful for docs imported before enrich existed).
+    // Per-doc toolbar: regenerate metadata + distillation card (server-side distill —
+    // useful for docs imported before the card feature, or after heavy edits).
     const bar = document.createElement("div");
     bar.className = "libraryDocToolbar";
     const reBtn = document.createElement("button");
@@ -976,7 +957,10 @@ export function initLibrary() {
     reBtn.addEventListener("click", async () => {
       reBtn.disabled = true;
       setStatus(t("lib_enriching", { name: doc.title }));
-      await enrichDoc(doc.docId);
+      try {
+        const r = await postJson("/api/library/distill", { docId: doc.docId, model: dom.modelSelect.value, language: getPromptLanguage() });
+        if (r.error) { setStatus(t("lib_distillFailed", { error: r.error })); reBtn.disabled = false; return; }
+      } catch (e) { setStatus(t("lib_distillFailed", { error: e.message })); reBtn.disabled = false; return; }
       setStatus("");
       await refreshList();
       openDoc(doc.docId);
@@ -1017,7 +1001,7 @@ export function initLibrary() {
         lastSection = b.section;
       }
       const div = document.createElement("div");
-      div.className = "libDocBlock" + (b.role === "user" ? " libDocBlockUser" : "");
+      div.className = "libDocBlock" + (b.role === "user" ? " libDocBlockUser" : "") + (b.kind === "card" ? " libDocCard" : "");
       div.id = `lib-block-${b.id}`;
       if (b.kind === "figure" && b.image) {
         // Filename-style label for the lightbox/download: the original image name when
@@ -1109,7 +1093,7 @@ export function initLibrary() {
   // ---- import the current doc as a special editable tab (one bubble per chunk) ----
   function importDocAsTab(doc) {
     const messages = docToBlockMessages(doc);
-    const tab = createTab(`📄 ${doc.title}`, messages);
+    const tab = createTab(`${kindIcon(doc.docKind)} ${doc.title}`, messages);
     tab.libraryDocId = doc.docId;   // marks this tab as a library doc → archive writes it back
     tab.libraryMeta = {
       type: doc.type, schemaVersion: doc.schemaVersion, docKind: doc.docKind,

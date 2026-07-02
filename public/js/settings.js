@@ -65,6 +65,8 @@ export function saveCurrentSettings() {
       tools: dom.toolsToggle?.checked || false,
       numCtx: dom.numCtxSelect?.value || "32768",
       embedModel: dom.embedModelSelect?.value || "qwen3-embedding:0.6b",
+      libraryDistill: dom.libraryDistillToggle?.checked ?? true,
+      libraryRerank: dom.libraryRerankToggle?.checked || false,
       dailyGreeting: dom.dailyGreetingToggle?.checked || false,
       dailyGreetingTime: dom.dailyGreetingTime?.value || "09:00",
       idleNudge: dom.idleNudgeToggle?.checked || false,
@@ -229,6 +231,10 @@ export function loadSavedSettings() {
   // Context window
   if (savedSettings.numCtx && dom.numCtxSelect) dom.numCtxSelect.value = savedSettings.numCtx;
   // Embedding model selection is applied by loadEmbedModels (after options load).
+  // Library distill card defaults to ON; respect an explicit saved off-choice.
+  if (dom.libraryDistillToggle) dom.libraryDistillToggle.checked = savedSettings.libraryDistill !== undefined ? !!savedSettings.libraryDistill : true;
+  // Retrieval rerank defaults to OFF (an extra LLM call per /ask).
+  if (dom.libraryRerankToggle) dom.libraryRerankToggle.checked = !!savedSettings.libraryRerank;
   // Proactive messages
   if (savedSettings.dailyGreeting && dom.dailyGreetingToggle) dom.dailyGreetingToggle.checked = true;
   if (savedSettings.dailyGreetingTime && dom.dailyGreetingTime) dom.dailyGreetingTime.value = savedSettings.dailyGreetingTime;

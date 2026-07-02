@@ -139,6 +139,14 @@ export function youtubeFetch(payload, meta) {
     (err) => { if (err && err.name === 'AbortError') throw err; return { ok: false, json: async () => ({ error: (err && err.message) || 'failed' }) }; },
   );
 }
+// Knowledge-library import: the whole pipeline (fetch/whisper/parse → embed → distill
+// card) runs as ONE server job in the 'lib' lane; result is { docId, blockCount, … }.
+export function libImportFetch(payload, meta) {
+  return submitAndAwait(payload, { ...meta, kind: 'libimport', engine: 'lib' }).then(
+    (data) => ({ ok: true, json: async () => data }),
+    (err) => { if (err && err.name === 'AbortError') throw err; return { ok: false, json: async () => ({ error: (err && err.message) || 'failed' }) }; },
+  );
+}
 
 // Server-authoritative timing for a settled (or running) job — used to stamp a
 // generated bubble with the REAL generation time/duration (server's startedAt/finishedAt,

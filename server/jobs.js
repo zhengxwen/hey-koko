@@ -2,17 +2,19 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // Option B: SERVER-SIDE persistent background-job queue for GENERATION (image /
-// video / audio). The queue + execution live here, not in the browser, so jobs
-// survive page reload / sleep and are shared across clients. The browser submits a
-// job spec, subscribes to status + result over SSE, and reattaches the result into
-// its conversation by (conversationId, msgId).
+// video / audio) and LIBRARY IMPORTS (kind "libimport": fetch/whisper/parse →
+// chunk+embed → distill card). The queue + execution live here, not in the browser,
+// so jobs survive page reload / sleep and are shared across clients. The browser
+// submits a job spec, subscribes to status + result over SSE, and reattaches the
+// result into its conversation by (conversationId, msgId).
 //
 // Execution is LOOPBACK: the runner POSTs the job's payload to this server's OWN
 // already-self-contained /api/generate-comfy | /api/generate-image | /api/tts
 // endpoint — so the heavy generation code is reused untouched.
 //
 // Lanes: one per ComfyUI endpoint (job.comfyUrl) + a shared 'local' lane (audio /
-// Ollama image). Serial within a lane (GPU safety), parallel across.
+// Ollama image) + a 'lib' lane (library imports — a bulk import batch must never
+// block image/video/TTS, and vice versa). Serial within a lane, parallel across.
 
 const crypto = require("crypto");
 const http = require("http");
@@ -21,15 +23,19 @@ const path = require("path");
 const { spawn } = require("child_process");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
+const library = require("./library");
 
 const JOBS_FILE = path.join(config.JOBS_DIR, "jobs.json");
+// Library file imports spool their raw file here (payload carries the path) so N
+// queued PDFs don't sit base64-inflated in queue memory AND in jobs.json.
+const SPOOL_DIR = path.join(config.JOBS_DIR, "spool");
 
 let jobs = [];                  // see job shape in submitJob()
 const controllers = new Map();  // jobId -> AbortController (runtime only)
 const activeLanes = new Set();  // laneId currently draining
 const sseClients = new Set();   // SSE res objects
 
-const laneOf = (job) => job.comfyUrl || "local";
+const laneOf = (job) => job.kind === "libimport" ? "lib" : (job.comfyUrl || "local");
 function normUrl(u) { if (!u) return ""; return /^https?:\/\//i.test(u) ? u.replace(/\/+$/, "") : "http://" + u.replace(/\/+$/, ""); }
 
 // ---- persistence (metadata only — result base64 stays in memory; a server
@@ -89,6 +95,17 @@ function load() {
       if (!live.has(f.replace(/\.json$/, ""))) dropResult(f.replace(/\.json$/, ""));
     }
   } catch { /* no results dir yet → nothing to clean */ }
+  // Clean orphan spool files (their job is gone → the raw upload is unreachable).
+  try {
+    const liveIds = new Set(jobs.map((j) => j.id));
+    for (const f of fs.readdirSync(SPOOL_DIR)) {
+      if (!liveIds.has(f.replace(/\.bin$/, ""))) { try { fs.unlinkSync(path.join(SPOOL_DIR, f)); } catch {} }
+    }
+  } catch { /* no spool dir yet → nothing to clean */ }
+}
+function dropSpool(job) {
+  const sp = job && job.payload && job.payload.spool;
+  if (sp) { try { fs.unlinkSync(sp); } catch { /* already gone */ } }
 }
 
 // ---- SSE broadcast ----------------------------------------------------------
@@ -200,6 +217,8 @@ async function runJob(job) {
     return result;
   }
 
+  if (job.kind === "libimport") return runLibImportJob(job, ctrl.signal);
+
   const body = { ...job.payload, clientId: job.clientId };
   if (job.comfyUrl) body.comfyUrl = job.comfyUrl;
 
@@ -278,8 +297,122 @@ function loopbackStream(path, bodyObj, signal, onLine) {
 
 function abortErr() { const e = new Error("Aborted"); e.name = "AbortError"; return e; }
 
+// ---- libimport: the whole Knowledge-Library import pipeline, SERVER-side ----
+// fetch/whisper (youtube) | fetch-url | parse-file (MinerU/Pandoc) → importDocInternal
+// (chunk + embed) → distillDocInternal (card, best-effort). Runs in the 'lib' lane, so a
+// batch queued from the browser finishes even with every page closed. Stage names surface
+// via job.label as raw keys (fetching/parsing/importing/distilling — plus the youtube
+// sub-job's transcribing/downloading/…); the browser maps them to i18n labels.
+async function runLibImportJob(job, signal) {
+  const p = job.payload || {};
+  const stage = (s, progress = null) => { job.label = s; job.progress = progress; emitUpdate(job); };
+
+  if (p.type === "distill") {          // backfill: regenerate one doc's card, no re-import
+    stage("distilling");
+    const r = await library.distillDocInternal(p.docId, { metadata: false, model: p.chatModel, language: p.language, signal });
+    return { docId: p.docId, distilled: !!r.ok, reembedded: r.reembedded };
+  }
+
+  let source, docKind = p.docKind, title, authors = "", year = "", text, images = [];
+  if (p.type === "youtube") {
+    stage("fetching");
+    let data = null, errored = null;
+    await loopbackStream("/api/youtube-job", { url: p.url, language: p.language, model: p.chatModel }, signal, (line) => {
+      let o; try { o = JSON.parse(line); } catch { return; }
+      if (o.type === "progress") stage(o.stage || "fetching", o.progress || null);
+      else if (o.type === "done") data = o.result;
+      else if (o.type === "error") errored = o.error;
+    });
+    if (errored) throw new Error(errored);
+    if (!data) throw new Error("youtube job: no result");
+    stage("importing");
+    ({ source, docKind, title, authors, year, text, images } = await library.buildYoutubeDoc(data, p.url, p.language));
+  } else if (p.type === "url") {
+    stage("fetching");
+    const r = await loopbackPost("/api/fetch-url", { url: p.url }, signal);
+    let d = {}; try { d = JSON.parse(r.text); } catch {}
+    if (!r.ok || d.type === "error" || d.type === "unsupported" || !d.content) throw new Error(d.content || `fetch failed (${r.status})`);
+    source = `url:${p.url}`; docKind = docKind || "blog"; title = d.title || p.url; text = d.content;
+  } else if (p.type === "text") {
+    source = `file:${p.name}`; docKind = docKind || "other"; title = p.title || p.name; text = p.text;
+  } else if (p.type === "file") {
+    stage("parsing");
+    const buf = p.spool ? fs.readFileSync(p.spool) : Buffer.from(p.fileB64 || "", "base64");
+    if (!buf.length) throw new Error("file payload missing");
+    const parsed = await loopbackParseFile(p.name, buf, signal, (pct) => stage("parsing", pct ? { value: pct, max: 100 } : null));
+    source = `file:${p.name}`; docKind = docKind || "other"; title = p.name.replace(/\.[^.]+$/, ""); text = parsed.text; images = parsed.images || [];
+  } else {
+    throw new Error("unknown libimport type");
+  }
+
+  if (!text || !String(text).trim()) throw new Error("empty document");
+  stage("importing");
+  const imp = await library.importDocInternal({ source, docKind, folder: p.folder, title, authors, year, text, images, model: p.embedModel });
+  let distilled = false;
+  if (p.distill !== false && p.chatModel) {
+    stage("distilling");
+    // Card generation is best-effort: an unreachable/misbehaving chat model must not fail
+    // the import itself (the doc is already in the library; the backfill action can retry).
+    try {
+      const r = await library.distillDocInternal(imp.docId, { metadata: p.type !== "youtube", model: p.chatModel, language: p.language, signal });
+      distilled = !!r.ok;
+    } catch (e) {
+      if (e && e.name === "AbortError") throw e;
+      console.warn("[jobs] distill failed:", e && e.message);
+    }
+  }
+  dropSpool(job);
+  return { docId: imp.docId, blockCount: imp.blockCount, folder: imp.folder, distilled };
+}
+
+// Loopback multipart POST to our own /api/parse-file. The response is EITHER one JSON
+// object (pandoc DOCX/PPTX — success or {error}) OR NDJSON (MinerU PDF: {progress}
+// lines, then a final {text,images,tool} line). onProgress gets the MinerU percentage.
+function loopbackParseFile(filename, buf, signal, onProgress) {
+  return new Promise((resolve, reject) => {
+    const boundary = "----hkspool" + crypto.randomUUID().replace(/-/g, "");
+    const head = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${String(filename).replace(/"/g, "_")}"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const payload = Buffer.concat([head, buf, tail]);
+    const req = http.request({
+      host: "127.0.0.1", port: config.PORT, path: "/api/parse-file", method: "POST",
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": payload.length },
+    }, (res) => {
+      let buffer = "", last = null, error = null;
+      res.setEncoding("utf-8");
+      const handleLine = (line) => {
+        let o; try { o = JSON.parse(line); } catch { return; }
+        if (o.error) error = o.error;
+        else if (o.progress && onProgress) { const m = String(o.progress).match(/(\d+)%/); onProgress(m ? Number(m[1]) : 0); }
+        if (o.text != null) last = o;
+      };
+      res.on("data", (chunk) => {
+        buffer += chunk;
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) if (line.trim()) handleLine(line);
+      });
+      res.on("end", () => {
+        if (buffer.trim()) handleLine(buffer);
+        if (last && last.text != null) resolve(last);
+        else if (error === "mineru_unavailable") reject(new Error("MinerU 不可用：服务端解析 PDF 需要安装 MinerU"));
+        else if (error === "pandoc_unavailable") reject(new Error("Pandoc 不可用：服务端解析 DOCX/PPTX 需要安装 Pandoc"));
+        else reject(new Error(error || `parse failed (${res.statusCode})`));
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(0);   // MinerU on a long PDF can take minutes
+    if (signal) {
+      if (signal.aborted) { req.destroy(abortErr()); return; }
+      signal.addEventListener("abort", () => { try { req.destroy(abortErr()); } catch {} }, { once: true });
+    }
+    req.end(payload);
+  });
+}
+
 // ---- cancel / remove --------------------------------------------------------
-function removeJob(job) { const i = jobs.indexOf(job); if (i >= 0) jobs.splice(i, 1); dropResult(job.id); }
+function removeJob(job) { const i = jobs.indexOf(job); if (i >= 0) jobs.splice(i, 1); dropResult(job.id); dropSpool(job); }
 function doCancel(job) {
   const ctrl = controllers.get(job.id);
   if (ctrl) { try { ctrl.abort(); } catch {} controllers.delete(job.id); }
@@ -305,6 +438,15 @@ async function submitJob(req, res) {
     status: "queued", progress: null, result: null, error: "",
     createdAt: Date.now(), startedAt: 0, finishedAt: 0, deliveredAt: 0,
   };
+  // Library file import → spool the raw file to disk; the queued payload keeps only the path.
+  if (kind === "libimport" && payload.type === "file" && payload.fileB64) {
+    try {
+      fs.mkdirSync(SPOOL_DIR, { recursive: true });
+      const sp = path.join(SPOOL_DIR, `${job.id}.bin`);
+      fs.writeFileSync(sp, Buffer.from(payload.fileB64, "base64"));
+      job.payload = { ...payload, fileB64: undefined, spool: sp };
+    } catch { /* spool failed → keep the inline base64 */ }
+  }
   // Insert keeping QUEUED jobs in the client's batch-enqueue (seq) order. Fire-all submits the
   // whole batch up front and each job races through its own source-video upload first, so POST
   // arrival order ≠ the order the user enqueued them. Drop the new job just before the first

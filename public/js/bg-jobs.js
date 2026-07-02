@@ -111,6 +111,11 @@ function bgProgressLabel(stage, progress) {
     case 'downloading': return t('bg_downloadingAudio');
     case 'converting': return t('bg_convertingAudio');
     case 'formatting': return t('bg_formattingSubs', progress ? { i: progress.value + 1, n: progress.max } : { i: 1, n: 1 });
+    // libimport (server-side library import) stages
+    case 'fetching': return t('bg_fetchingContent');
+    case 'parsing': return t('bg_parsing');
+    case 'importing': return t('lib_importing');
+    case 'distilling': return t('bg_distilling');
     default: return '';
   }
 }
