@@ -633,9 +633,10 @@ export function initLibrary() {
     return set;
   }
 
-  let ytRows = [];   // [{id, url, title, imported}] currently shown in the selection modal
+  let ytRows = [];   // [{id, url, title, date, imported}] currently shown in the selection modal
+  let ytDrag = null; // index of the row being dragged (via its ⠿ handle), or null
 
-  function closeYtModal() { ytModal.hidden = true; ytList.innerHTML = ""; ytRows = []; }
+  function closeYtModal() { ytModal.hidden = true; ytList.innerHTML = ""; ytRows = []; ytDrag = null; }
 
   async function openYoutubeSelection(ytUrls) {
     ytRows = [];
@@ -673,11 +674,53 @@ export function initLibrary() {
 
   function renderYtList() {
     ytList.innerHTML = "";
+    ytDrag = null;
     ytRows.forEach((r, i) => {
-      // Canonical checkbox row: .checkboxLabel gives the 2-col (checkbox | text) grid;
-      // .isMultiline top-aligns the box and styles the .checkboxRowSub url line.
+      // Canonical checkbox row (with a leading ⠿ drag handle → 3-col grid via
+      // .libraryYtRow override); .isMultiline top-aligns the box and styles the
+      // .checkboxRowSub date/url line.
       const row = document.createElement("label");
       row.className = "checkboxLabel isMultiline libraryYtRow" + (r.imported ? " isImported" : "");
+      // Rows can be reordered by dragging the handle — list order = import order.
+      // Same pattern as the bg-jobs drawer: drag is armed only by mousedown on the
+      // handle, so clicking the row body just toggles the checkbox.
+      const clearCue = () => row.classList.remove("ytDragOverTop", "ytDragOverBottom");
+      const isAfter = (e) => { const b = row.getBoundingClientRect(); return e.clientY > b.top + b.height / 2; };
+      row.draggable = false;
+      row.addEventListener("dragstart", (e) => {
+        ytDrag = i;
+        if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", r.id); } catch {} }
+      });
+      row.addEventListener("dragover", (e) => {
+        if (ytDrag === null || ytDrag === i) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        const after = isAfter(e);
+        row.classList.toggle("ytDragOverBottom", after);
+        row.classList.toggle("ytDragOverTop", !after);
+      });
+      row.addEventListener("dragleave", clearCue);
+      row.addEventListener("drop", (e) => {
+        e.preventDefault();
+        clearCue();
+        const src = ytDrag;
+        ytDrag = null;
+        if (src === null || src === i) return;
+        const [moved] = ytRows.splice(src, 1);
+        // Removing an earlier row shifts this row's index down by one.
+        const at = (src < i ? i - 1 : i) + (isAfter(e) ? 1 : 0);
+        ytRows.splice(at, 0, moved);
+        renderYtList();
+      });
+      row.addEventListener("dragend", () => { clearCue(); row.draggable = false; ytDrag = null; });
+      row.addEventListener("mouseup", () => { row.draggable = false; });
+      const handle = document.createElement("span");
+      handle.className = "libraryYtHandle";
+      handle.textContent = "⠿";
+      handle.title = t("bg_reorder");
+      handle.addEventListener("mousedown", () => { row.draggable = true; });
+      // A plain click on the handle would otherwise activate the label → toggle the box.
+      handle.addEventListener("click", (e) => e.preventDefault());
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = r.checked;
@@ -690,9 +733,9 @@ export function initLibrary() {
       title.textContent = r.title || r.id;
       const sub = document.createElement("div");
       sub.className = "checkboxRowSub";
-      sub.textContent = r.url + (r.imported ? "　·　" + t("lib_ytImported") : "");
+      sub.textContent = (r.date ? r.date + "　·　" : "") + r.url + (r.imported ? "　·　" + t("lib_ytImported") : "");
       meta.append(title, sub);
-      row.append(cb, meta);
+      row.append(handle, cb, meta);
       ytList.appendChild(row);
     });
     ytSelectAll.disabled = false;

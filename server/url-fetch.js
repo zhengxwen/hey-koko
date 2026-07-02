@@ -1179,14 +1179,17 @@ function ytFeedUrl(raw) {
   return null;
 }
 
-// Run `yt-dlp --flat-playlist` and return [{id, title}] for a feed URL. Fast: no
-// per-video extraction. yt-dlp may exit non-zero on partial errors yet still print
-// good entries, so we only reject when nothing usable came back.
+// Run `yt-dlp --flat-playlist` and return [{id, date, title}] for a feed URL. Fast: no
+// per-video extraction. `youtubetab:approximate_date` fills upload_date on flat channel/
+// playlist entries (derived from "3 weeks ago" — month-level precision, better than
+// nothing); missing dates print as NA → "". yt-dlp may exit non-zero on partial errors
+// yet still print good entries, so we only reject when nothing usable came back.
 function ytFlatList(ytdlpCmd, feedUrl) {
   return new Promise((resolve, reject) => {
     const proc = spawn(ytdlpCmd, [
       "--flat-playlist", "--no-warnings", "--ignore-errors",
-      "--print", "%(id)s\t%(title)s",
+      "--extractor-args", "youtubetab:approximate_date",
+      "--print", "%(id)s\t%(upload_date)s\t%(title)s",
       feedUrl,
     ], { timeout: 120000 });
     let out = "", err = "";
@@ -1195,10 +1198,13 @@ function ytFlatList(ytdlpCmd, feedUrl) {
     proc.on("error", reject);
     proc.on("close", (code) => {
       const entries = out.split("\n").map((l) => l.replace(/\r$/, "")).filter(Boolean).map((line) => {
-        const tab = line.indexOf("\t");
-        const id = tab === -1 ? line : line.slice(0, tab);
-        const title = tab === -1 ? "" : line.slice(tab + 1);
-        return { id: id.trim(), title: title.trim() };
+        const [id = "", rawDate = "", ...rest] = line.split("\t");
+        const dm = rawDate.trim().match(/^(\d{4})(\d{2})(\d{2})$/);
+        return {
+          id: id.trim(),
+          date: dm ? `${dm[1]}-${dm[2]}-${dm[3]}` : "",
+          title: rest.join("\t").trim(),
+        };
       }).filter((e) => /^[\w-]{11}$/.test(e.id));
       if (!entries.length && code !== 0) return reject(new Error((err.trim().split("\n").pop() || `yt-dlp code ${code}`).slice(-200)));
       resolve(entries);
@@ -1207,7 +1213,7 @@ function ytFlatList(ytdlpCmd, feedUrl) {
 }
 
 // POST /api/youtube-expand  { urls:[...] }
-//   → { videos:[{id, url(canonical watch?v=), title}], errors:[{url, error}] }
+//   → { videos:[{id, url(canonical watch?v=), title, date("YYYY-MM-DD" or "")}], errors:[{url, error}] }
 // Expands channels/playlists into their videos, canonicalizes single videos, and
 // dedupes by video id across all inputs (order preserved).
 async function expandYoutubeUrls(req, res) {
@@ -1228,7 +1234,7 @@ async function expandYoutubeUrls(req, res) {
         for (const e of entries) {
           if (seen.has(e.id)) continue;
           seen.add(e.id);
-          videos.push({ id: e.id, url: `https://www.youtube.com/watch?v=${e.id}`, title: e.title || e.id });
+          videos.push({ id: e.id, url: `https://www.youtube.com/watch?v=${e.id}`, title: e.title || e.id, date: e.date || "" });
         }
       } catch (e) { errors.push({ url: raw, error: (e && e.message) || "expand failed" }); }
     }
