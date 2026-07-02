@@ -40,19 +40,23 @@ const kindIcon = (k) => KIND_ICON[k] || "📎";
 // AND LLM-reformatted text, not a verbatim record; displays add a ✏️ badge to say so.
 const TRANSCRIPT_SECTIONS = new Set(["字幕整理", "Transcript"]);
 export const isTranscriptSection = (s) => TRANSCRIPT_SECTIONS.has(String(s || "").trim());
-// The ✏️ badge element (display-only — never stored in the doc). Hover shows the
-// native title; CLICK pops the explanation immediately as a small tooltip bubble
-// (also the only way to see it on touch devices, which have no hover).
-export function transcriptMark() {
+// Small badge element marking a SPECIAL generated section (display-only — never stored
+// in the doc). Hover shows the native title; CLICK pops the explanation immediately as
+// a small tooltip bubble (also the only way to see it on touch devices, with no hover).
+function sectionMark(icon, hint) {
   const mark = document.createElement("span");
   mark.className = "libTranscriptMark";
-  mark.textContent = "✏️";
-  mark.title = t("lib_transcriptEditedHint");
-  mark.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); toggleTranscriptTip(mark); });
+  mark.textContent = icon;
+  mark.title = hint;
+  mark.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); toggleTranscriptTip(mark, hint); });
   mark.addEventListener("mousedown", (e) => e.stopPropagation());   // don't arm the chat bubble's drag
   mark.addEventListener("dblclick", (e) => e.stopPropagation());    // don't trigger section rename
   return mark;
 }
+// ✏️ = AI-reformatted ASR transcript (not verbatim speech).
+export function transcriptMark() { return sectionMark("✏️", t("lib_transcriptEditedHint")); }
+// 📇 = the distillation card (AI-generated summary/key points, not original content).
+export function cardMark() { return sectionMark("📇", t("lib_distillCardHint")); }
 // One tip at a time; closed by a second click on its badge, any outside click,
 // Escape, or a 4s auto-hide.
 let _tipEl = null, _tipAnchor = null, _tipTimer = 0;
@@ -61,12 +65,12 @@ function hideTranscriptTip() {
   _tipEl = null; _tipAnchor = null;
   if (_tipTimer) { clearTimeout(_tipTimer); _tipTimer = 0; }
 }
-function toggleTranscriptTip(anchor) {
+function toggleTranscriptTip(anchor, text) {
   if (_tipAnchor === anchor) { hideTranscriptTip(); return; }
   hideTranscriptTip();
   const tip = document.createElement("div");
   tip.className = "libTranscriptTip";
-  tip.textContent = t("lib_transcriptEditedHint");
+  tip.textContent = text || t("lib_transcriptEditedHint");
   document.body.appendChild(tip);
   const r = anchor.getBoundingClientRect();
   tip.style.left = Math.max(8, Math.min(r.left, window.innerWidth - tip.offsetWidth - 8)) + "px";
@@ -1150,8 +1154,10 @@ export function initLibrary() {
         h.className = "libDocSection";
         h.textContent = b.section;
         h.title = t("lib_editSectionHint");
-        // a video's transcript section is AI-reformatted speech, not verbatim → ✏️ badge
+        // a video's transcript section is AI-reformatted speech, not verbatim → ✏️ badge;
+        // the distill card is AI-generated summary/key points, not original content → 📇 badge
         if (doc.docKind === "video" && isTranscriptSection(b.section)) h.appendChild(transcriptMark());
+        else if (b.kind === "card") h.appendChild(cardMark());
         attachSectionEdit(h, doc, b.section);
         previewContent.appendChild(h);
         lastSection = b.section;

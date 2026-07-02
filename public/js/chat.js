@@ -15,7 +15,7 @@ import { openMaskModal } from './mask-paint.js';
 import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
-import { parseAskCommand, handleAskCommand, isTranscriptSection, transcriptMark } from './library.js';
+import { parseAskCommand, handleAskCommand, isTranscriptSection, transcriptMark, cardMark } from './library.js';
 import { kindIcon } from './mentions.js';
 import { buildPendingGenBubble } from './pending-gen.js';
 import { enqueueBgJob, releaseEnhancingJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
@@ -2806,6 +2806,9 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     const _libMeta = (_libTab && _libTab.libraryMeta) || {};
     if (_libMeta.docKind === "video" && isTranscriptSection(_libMsg.librarySection)) {
       secTag.appendChild(transcriptMark());
+    } else if (_libMsg.libraryKind === "card") {
+      // distill-card bubble: 📇 badge after "蒸馏卡" — AI-generated summary, not original content
+      secTag.appendChild(cardMark());
     }
     item.appendChild(secTag);
   }
