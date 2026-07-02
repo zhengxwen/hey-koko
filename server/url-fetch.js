@@ -21,7 +21,7 @@ async function fetchUrlContent(req, res) {
     if (!["http:", "https:"].includes(parsed.protocol)) { sendJson(res, 400, { error: "Only http/https supported" }); return; }
 
     // Check if YouTube
-    const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{11})/);
+    const ytMatch = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([\w-]{11})/);
     if (ytMatch) {
       const videoId = ytMatch[1];
       const transcript = await fetchYouTubeTranscript(videoId, language);
@@ -631,19 +631,32 @@ function fetchTranscriptViaYtdlp(videoId) {
 
           if (realLangs.length === 0 && autoLangs.length === 0) { resolve(null); return; }
 
-          // Pick best language
+          // Pick best language — the video's ORIGINAL language first. yt-dlp marks the
+          // speech-recognition source track "xx-orig"; every other auto caption is a
+          // machine TRANSLATION of it (a hardcoded zh-first preference used to grab the
+          // Chinese machine translation of English videos). The preference list is only
+          // a fallback when no -orig marker exists.
           const preferred = ["zh-Hans", "zh-Hant", "zh", "en", "ja"];
+          const origAuto = autoLangs.find(l => /-orig$/.test(l));
+          const origLang = origAuto ? origAuto.replace(/-orig$/, "") : "";
           let selectedLang = null;
 
-          for (const pref of preferred) {
-            if (realLangs.includes(pref)) { selectedLang = pref; break; }
+          // Manual subs beat auto captions; among them, the original language beats all.
+          if (origLang && realLangs.includes(origLang)) selectedLang = origLang;
+          if (!selectedLang) {
+            for (const pref of preferred) {
+              if (realLangs.includes(pref)) { selectedLang = pref; break; }
+            }
           }
+          if (!selectedLang && realLangs.length) selectedLang = realLangs[0];
+          // Auto captions: the -orig track IS the recognized speech, take it verbatim.
+          if (!selectedLang && origAuto) selectedLang = origAuto;
           if (!selectedLang) {
             for (const pref of preferred) {
               if (autoLangs.includes(pref)) { selectedLang = pref; break; }
             }
           }
-          if (!selectedLang) selectedLang = realLangs[0] || autoLangs[0];
+          if (!selectedLang) selectedLang = autoLangs[0];
 
           // Step 2: download the selected subtitle
           const tmpDir = path.join(os.tmpdir(), `yt-${videoId}-${Date.now()}`);
@@ -765,6 +778,13 @@ function findWhisperModel() {
 // Transcribe YouTube audio via whisper.cpp
 function abortError() { const e = new Error("aborted"); e.name = "AbortError"; return e; }
 
+// Normalize a BCP-47-ish code ("zh-Hans", "en-US", "NA") to a whisper "-l" code ("zh",
+// "en"). Empty when unusable ("NA"/"und"/garbage) — the caller then falls back to auto.
+function whisperLangCode(raw) {
+  const c = String(raw || "").trim().split("-")[0].toLowerCase();
+  return /^[a-z]{2,3}$/.test(c) && c !== "und" && c !== "na" ? c : "";
+}
+
 // Verify the CLI tools + whisper model are present (throws a user-facing message if not).
 async function ensureWhisperDeps() {
   const whisperCmd = await findCommand("whisper-cli");
@@ -782,8 +802,21 @@ async function ensureWhisperDeps() {
 // returns the transcript text. onProgress({status,message,progress}) reports the same
 // phase objects the SSE handler used to write; signal aborts (kills child processes +
 // cleans up). Shared by the /api/youtube-transcribe SSE shell and the youtube job.
-async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, signal } = {}) {
+// `language` is a hint for whisper (video metadata language, any BCP-47-ish code).
+async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, signal, language = "" } = {}) {
   const { whisperCmd, ytdlpCmd, ffmpegCmd, modelPath } = await ensureWhisperDeps();
+
+  // Whisper's "-l auto" detects the language from the FIRST ~30s only — intro music,
+  // silence or a foreign-language opening derails the whole transcription. Prefer the
+  // caller's metadata language; else best-effort ask yt-dlp for the audio language.
+  let lang = whisperLangCode(language);
+  if (!lang) {
+    lang = whisperLangCode(await new Promise((resolve) => {
+      execFile(ytdlpCmd, ["--print", "%(language)s", "--skip-download", "--no-playlist",
+        `https://www.youtube.com/watch?v=${videoId}`],
+        { timeout: 15000 }, (e, out) => resolve(e ? "" : String(out || "").trim()));
+    }));
+  }
 
   const tmpDir = path.join(os.tmpdir(), `yt-whisper-${videoId}-${Date.now()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -808,7 +841,9 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
         "-o", audioRaw + ".%(ext)s",
         "--no-playlist",
         `https://www.youtube.com/watch?v=${videoId}`,
-      ], { timeout: 300000 });
+        // 30 min: 5 min used to kill legitimate audio downloads of long videos on slow
+        // links. A truly hung download stays bounded; cancel (signal) kills it anytime.
+      ], { timeout: 1800000 });
       childProcesses.push(proc);
       let stderr = "";
       proc.stderr.on("data", (d) => { stderr += d.toString(); });
@@ -851,7 +886,7 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
     onProgress({ status: "transcribing", message: "正在语音识别...", progress: "0%" });
     const transcriptText = await new Promise((resolve, reject) => {
       if (aborted) return reject(abortError());
-      const proc = spawn(whisperCmd, ["-m", modelPath, "-f", audioWav, "-l", "auto", "--print-progress"]);
+      const proc = spawn(whisperCmd, ["-m", modelPath, "-f", audioWav, "-l", lang || "auto", "--print-progress"]);
       childProcesses.push(proc);
       let stdout = "";
       let lastProgress = "";
@@ -993,7 +1028,7 @@ async function formatTranscriptServer(title, transcript, model, { channel = "", 
     const resp = await fetch(`${config.ollamaUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, messages, options: { temperature: 0.3 } }),
+      body: JSON.stringify({ model, messages, options: { temperature: 0.3, num_ctx: config.llmTaskCtx } }),
       signal,
     });
     if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error(`字幕整理失败 (${resp.status})${t ? ": " + t.slice(0, 200) : ""}`); }
@@ -1059,7 +1094,7 @@ async function youtubeJob(req, res) {
     send({ type: "progress", stage, progress });
   };
   try {
-    const ytMatch = (url || "").match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{11})/);
+    const ytMatch = (url || "").match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([\w-]{11})/);
     const videoId = ytMatch && ytMatch[1];
     if (!videoId) { send({ type: "error", error: "无效的 YouTube 链接" }); res.end(); return; }
     // The client may have already fetched the metadata (+ subtitles) to render the
@@ -1081,17 +1116,27 @@ async function youtubeJob(req, res) {
       if (hasReal) { rawTranscript = meta.text; source = "subtitle"; }
     }
     if (!rawTranscript) {
-      rawTranscript = await transcribeYouTubeAudioCore(videoId, { onProgress, signal: ctrl.signal });
+      rawTranscript = await transcribeYouTubeAudioCore(videoId, { onProgress, signal: ctrl.signal, language: (meta && meta.language) || "" });
       source = "whisper";
     }
-    const formattedText = await formatTranscriptServer((meta && meta.title) || "", rawTranscript, model,
-      { channel: (meta && meta.channel) || "", language, onProgress, signal: ctrl.signal });
+    let formattedText = "", formatError = "";
+    try {
+      formattedText = await formatTranscriptServer((meta && meta.title) || "", rawTranscript, model,
+        { channel: (meta && meta.channel) || "", language, onProgress, signal: ctrl.signal });
+    } catch (e) {
+      if (ctrl.signal.aborted) throw e;
+      // Formatting failed AFTER a (possibly hour-long) transcription — don't discard the
+      // transcript. Return "done" carrying rawTranscript + formatError and let the caller
+      // decide: /url shows the raw subtitles, the library import fails loudly instead.
+      formatError = (e && e.message) || "字幕整理失败";
+    }
     send({ type: "done", result: {
       title: (meta && meta.title) || "", channel: (meta && meta.channel) || "",
       duration: (meta && meta.duration) || "", viewCount: (meta && meta.viewCount) || "",
       uploadDate: (meta && meta.uploadDate) || "", description: (meta && meta.description) || "",
       category: (meta && meta.category) || "", tags: (meta && meta.tags) || [], language: (meta && meta.language) || "",
       thumbnail, videoId, source, rawTranscript, formattedText,
+      formatError: formatError || undefined,
     } });
     res.end();
   } catch (e) {

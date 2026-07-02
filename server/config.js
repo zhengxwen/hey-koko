@@ -19,17 +19,30 @@ function resolveTtsPython() {
   return win ? "python" : "python3";
 }
 
+// App data home: everything the server persists (chat archives, knowledge library,
+// background-job queue) plus the cloud-backend config files (claude.json/openai.json)
+// lives under this one directory. HEYKOKO_DIR overrides it — point a throwaway/test
+// server at a temp dir for complete isolation from the real data.
+const DATA_DIR = process.env.HEYKOKO_DIR || path.join(os.homedir(), ".hey-koko");
+
 const config = {
+  DATA_DIR,
   PORT: Number(process.env.PORT || 1314),
   URL_CONTENT_MAX_CHARS: Number(process.env.URL_CONTENT_MAX_CHARS || 40000),
   ollamaUrl: process.env.OLLAMA_URL || "http://127.0.0.1:11434",
+  // Context window for internal Ollama LLM tasks (subtitle formatting, distill, rerank):
+  // Ollama's default num_ctx is tiny (2-4k) and SILENTLY truncates the prompt. 24576
+  // covers a 6k-CJK-char subtitle chunk plus its equal-length rewrite, and the 16k-char
+  // distill sample. One shared value so back-to-back format→distill in a libimport job
+  // doesn't reload the model with a different context size.
+  llmTaskCtx: Number(process.env.LLM_TASK_CTX || 24576),
   imageOllamaUrl: process.env.IMAGE_OLLAMA_URL || (process.env.OLLAMA_URL || "http://127.0.0.1:11434"),
   comfyUrl: process.env.COMFY_URL || "http://127.0.0.1:8188",
   PUBLIC_DIR: path.join(__dirname, "..", "public"),
-  ARCHIVES_DIR: path.join(os.homedir(), ".hey-koko", "chat"),
-  // Option B: server-side background job queue store. HK_JOBS_DIR: test-only override so a
+  ARCHIVES_DIR: path.join(DATA_DIR, "chat"),
+  // Option B: server-side background job queue store. Isolated via HEYKOKO_DIR so a
   // throwaway server never loads (and starts running!) the real server's persisted queue.
-  JOBS_DIR: process.env.HK_JOBS_DIR || path.join(os.homedir(), ".hey-koko", "jobs"),
+  JOBS_DIR: path.join(DATA_DIR, "jobs"),
   whisperModel: process.env.WHISPER_MODEL || "",
   // Local text-to-speech (/voice command). TTS_PYTHON should point at a venv
   // python (3.10/3.11) with kokoro installed — the system python may be too

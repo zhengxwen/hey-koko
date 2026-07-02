@@ -22,12 +22,11 @@
 // The file is re-read per request, so edits take effect without a restart.
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const config = require("./config");
 const { sendJson } = require("./utils");
 
-const OPENAI_CONFIG_PATH = path.join(os.homedir(), ".hey-koko", "openai.json");
+const OPENAI_CONFIG_PATH = path.join(config.DATA_DIR, "openai.json");
 const DEFAULT_BASE_URL = "https://api.openai.com";
 const DEFAULT_MODELS = ["gpt-5", "gpt-4o"];
 

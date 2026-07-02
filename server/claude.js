@@ -19,12 +19,11 @@
 // The file is re-read per request, so edits take effect without a restart.
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const config = require("./config");
 const { sendJson } = require("./utils");
 
-const CLAUDE_CONFIG_PATH = path.join(os.homedir(), ".hey-koko", "claude.json");
+const CLAUDE_CONFIG_PATH = path.join(config.DATA_DIR, "claude.json");
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const DEFAULT_MODELS = ["claude-opus-4-8", "claude-sonnet-4-6"];
 const ANTHROPIC_VERSION = "2023-06-01";

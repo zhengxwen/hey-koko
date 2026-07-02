@@ -459,14 +459,18 @@ $env:OLLAMA_URL = "http://127.0.0.1:11434"; $env:PORT = "1314"; node server.js
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
+| `IMAGE_OLLAMA_URL` | `OLLAMA_URL` | Separate Ollama endpoint for image analysis (vision models), if different from the chat one |
 | `COMFY_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
 | `PORT` | `1314` | Server port |
+| `LLM_TASK_CTX` | `24576` | Ollama context window (`num_ctx`) for internal LLM tasks (subtitle formatting, library distill/rerank). Ollama's small default would silently truncate long prompts |
+| `URL_CONTENT_MAX_CHARS` | `40000` | Max characters kept from a fetched webpage (`/url`); `0` = unlimited. YouTube transcripts are never truncated |
 | `WHISPER_MODEL` | auto-detect | Path to whisper.cpp model file |
-| `TTS_PYTHON` | `python3` | Python (venv) with kokoro for `/voice` |
+| `TTS_PYTHON` | auto-detect | Python with kokoro for `/voice` (default: `~/venv/tts` venv if present, else `python3`/`python`) |
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Claude API origin (overrides `claude.json`) |
 | `ANTHROPIC_API_KEY` | — | Claude API key (overrides `claude.json`; enables cloud models) |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI API origin (overrides `openai.json`) |
 | `OPENAI_API_KEY` | — | OpenAI API key (overrides `openai.json`; enables cloud models) |
+| `HEYKOKO_DIR` | `~/.hey-koko` | App data home: chat archives, knowledge library, background-job queue, `claude.json`/`openai.json` all live under it. Mainly for tests: point a throwaway server at a temp dir so it never touches your real data (or loads — and starts running — your real server's persisted job queue) |
 
 
 ## Tech Stack

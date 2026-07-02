@@ -389,8 +389,10 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
     // was generated (genTs) + how long it took (genMs → renderChat shows the ⏱ on the bubble).
     upsertById(base + ':fmt', { role: 'assistant', content: data.formattedText, timestamp: genTs, genMs });
   } else {
-    // 2b. failure → raw transcript as a fallback user bubble (if any) + the error
-    const errMsg = data.error || '字幕整理失败';
+    // 2b. failure → raw transcript as a fallback user bubble (if any) + the error.
+    // formatError = the server transcribed fine but formatting failed; the raw
+    // transcript rides along in the "done" result so it can be shown here.
+    const errMsg = data.formatError || data.error || '字幕整理失败';
     if (data.rawTranscript) {
       const label = data.source === 'whisper' ? '**[语音识别结果]**' : '**[原始字幕]**';
       upsertById(base + ':raw', { role: 'user', content: `${label}\n\n${data.rawTranscript}`, timestamp: genTs });
@@ -509,7 +511,9 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
       body: JSON.stringify({
         model: dom.modelSelect.value,
         messages,
-        options: { temperature: 0.3 },
+        // num_ctx mirrors server config.llmTaskCtx — Ollama's tiny default would silently
+        // truncate a 6k-char chunk plus its equal-length rewrite.
+        options: { temperature: 0.3, num_ctx: 24576 },
         timeout: parseInt(dom.imageTimeoutInput?.value, 10) || 120,
       }),
     });

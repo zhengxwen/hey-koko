@@ -325,6 +325,9 @@ async function runLibImportJob(job, signal) {
     });
     if (errored) throw new Error(errored);
     if (!data) throw new Error("youtube job: no result");
+    // Formatting failed (raw transcript only): FAIL the import loudly — in a batch the
+    // user must see which videos need reprocessing, not silently get an unformatted doc.
+    if (data.formatError) throw new Error(`字幕整理失败: ${data.formatError}`);
     stage("importing");
     ({ source, docKind, title, authors, year, text, images } = await library.buildYoutubeDoc(data, p.url, p.language));
   } else if (p.type === "url") {

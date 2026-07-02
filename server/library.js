@@ -9,7 +9,6 @@
 
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 const zlib = require("zlib");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
@@ -19,9 +18,9 @@ const claude = require("./claude");
 const openai = require("./openai");
 
 const HAS_ZSTD = typeof zlib.zstdCompressSync === "function";
-// HK_LIBRARY_DIR: test-only override so a throwaway server can run against a temp
-// library without ever touching the real ~/.hey-koko/library.
-const LIBRARY_DIR = process.env.HK_LIBRARY_DIR || path.join(os.homedir(), ".hey-koko", "library");
+// Under the shared data home (config.DATA_DIR): HEYKOKO_DIR lets a throwaway server
+// run against a temp library without ever touching the real ~/.hey-koko/library.
+const LIBRARY_DIR = path.join(config.DATA_DIR, "library");
 const DOC_EXT = HAS_ZSTD ? ".json.zst" : ".json.gz";
 const MAX_BLOCK_CHARS = 32000;    // one section = one block; only split a genuinely huge section
                                   // (qwen3-embedding handles ~32k tokens; 32k chars ≈ 8k tokens, still within)
@@ -720,7 +719,7 @@ async function llmComplete(model, messages, { timeoutMs = 120000, signal = null 
     const r = await fetch(`${config.ollamaUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, stream: false, messages, options: { temperature: 0.1 } }),
+      body: JSON.stringify({ model, stream: false, messages, options: { temperature: 0.1, num_ctx: config.llmTaskCtx } }),
       signal: sig,
     });
     const data = await r.json().catch(() => ({}));
@@ -739,13 +738,21 @@ async function llmComplete(model, messages, { timeoutMs = 120000, signal = null 
 }
 
 // Extract the first JSON object from loose LLM output (may be fenced/prefixed).
+// LLMs write raw LaTeX inside JSON strings ("$\rightarrow$") without escaping the
+// backslashes. Illegal escapes (\lambda's \l) fail JSON.parse and can be repaired by
+// doubling — but \r \n \t \b \f are LEGAL escapes, so JSON.parse "succeeds" and
+// silently turns $\rightarrow$ into CR+"ightarrow". Fix BEFORE parsing: inside $...$
+// math spans (LaTeX territory — a genuine control-char escape there is implausible),
+// make every odd backslash run even, so the parsed markdown keeps $\rightarrow$ intact.
 function parseJsonLoose(s) {
   const m = String(s).match(/\{[\s\S]*\}/);
   if (!m) return null;
-  try { return JSON.parse(m[0]); } catch { /* try repair below */ }
-  // Common LLM damage: raw LaTeX backslashes inside strings ("$\lambda$") are invalid
-  // JSON escapes — double every backslash that doesn't start a legal escape, then retry.
-  try { return JSON.parse(m[0].replace(/\\(?!["\\/bfnrtu])/g, "\\\\")); } catch { return null; }
+  const fixed = m[0].replace(/\$[^$"\n]{1,300}\$/g,
+    (seg) => seg.replace(/\\+/g, (bs) => (bs.length % 2 ? bs + "\\" : bs)));
+  try { return JSON.parse(fixed); } catch { /* try repair below */ }
+  // Remaining damage outside math spans: double every backslash that doesn't start a
+  // legal escape, then retry.
+  try { return JSON.parse(fixed.replace(/\\(?!["\\/bfnrtu])/g, "\\\\")); } catch { return null; }
 }
 // Deterministic pastel color per tag name (same formula as the frontend's tagColor,
 // so server-assigned tags render identically).
