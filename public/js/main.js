@@ -30,6 +30,7 @@ import { initPanelResize } from './panel-resize.js';
 import { openMaskModal } from './mask-paint.js';
 import { setBgDeps, restoreBgJobsOnLoad, restoreBgWorkersOnLoad, toggleBgDrawer, closeBgDrawer, enqueueBgJob } from './bg-jobs.js';
 import { connectServerQueue } from './server-queue.js';   // Option B: SSE stream of server-side gen jobs
+import { initTabGuard } from './tab-guard.js';   // warn when hey-koko is open in 2+ tabs (shared IndexedDB, last save wins)
 
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
@@ -197,6 +198,9 @@ if (dom.libraryRerankToggle) {
 
 // Apply i18n on startup
 applyUILanguage();
+
+// Duplicate-tab warning (needs t() ready, hence after applyUILanguage)
+initTabGuard();
 
 // Slider display handlers
 dom.requestTimeoutInput.addEventListener("input", () => {

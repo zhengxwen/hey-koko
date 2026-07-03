@@ -611,6 +611,12 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
         }
         if (state.activeTabId === tabId && textEl) textEl.innerHTML = markdownToHtml(fullContent);
       }
+      // Both attempts empty for a non-empty chunk: continuing would silently drop the
+      // chunk's entire content from the result — fail loudly instead (mirrors the
+      // server twin in server/url-fetch.js formatTranscriptServer).
+      if (!nonWs(fullContent.slice(chunkStart)) && nonWs(chunks[i])) {
+        throw new Error(`模型对第 ${i + 1}/${totalChunks} 段返回了空结果`);
+      }
 
       // Add separator between chunks
       if (i < chunks.length - 1) {

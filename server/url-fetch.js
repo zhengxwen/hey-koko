@@ -1121,6 +1121,12 @@ async function formatTranscriptServer(title, transcript, model, { channel = "", 
         if (nonWs(retry) > nonWs(chunkText)) chunkText = retry;
       } catch (e) { if (e && e.name === "AbortError") throw e; /* else keep the first attempt */ }
     }
+    // Both attempts empty for a non-empty chunk: appending "" would silently drop the
+    // chunk's entire content from the result — fail loudly instead (the caller keeps
+    // rawTranscript, so nothing is lost; the 0.6 retry above already ran).
+    if (!nonWs(chunkText) && nonWs(chunks[i])) {
+      throw new Error(`字幕整理失败：模型对第 ${i + 1}/${total} 段返回了空结果`);
+    }
     fullContent += (fullContent ? "\n\n" : "") + chunkText;
   }
   return L.header + "\n\n" + fullContent.trim();
@@ -1301,7 +1307,7 @@ function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
       // playlist_uploader_id/playlist_channel. We take whichever is present. Handle
       // (@name) → the folder-matching slug; channel = display name. Title stays LAST
       // (only it can contain arbitrary text; the rest never contain tabs).
-      "--print", "%(id)s\t%(upload_date)s\t%(uploader_id)s\t%(playlist_uploader_id)s\t%(channel)s\t%(playlist_channel)s\t%(title)s",
+      "--print", "%(id)s\t%(upload_date)s\t%(uploader_id)s\t%(playlist_uploader_id)s\t%(channel)s\t%(playlist_channel)s\t%(availability)s\t%(title)s",
       feedUrl,
     ], { timeout: 120000 });
     // Collect stdout as raw Buffers and decode once at the end — decoding per-chunk
@@ -1315,7 +1321,7 @@ function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
       const out = Buffer.concat(outBufs).toString("utf-8");
       const na = (s) => { const v = (s || "").trim(); return v === "NA" ? "" : v; };
       const entries = out.split("\n").map((l) => l.replace(/\r$/, "")).filter(Boolean).map((line) => {
-        const [id = "", rawDate = "", uid = "", plUid = "", chan = "", plChan = "", ...rest] = line.split("\t");
+        const [id = "", rawDate = "", uid = "", plUid = "", chan = "", plChan = "", avail = "", ...rest] = line.split("\t");
         const dm = rawDate.trim().match(/^(\d{4})(\d{2})(\d{2})$/);
         const handle = na(uid) || na(plUid);   // "@name" from the entry, else the feed level
         return {
@@ -1323,6 +1329,9 @@ function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
           date: dm ? `${dm[1]}-${dm[2]}-${dm[3]}` : "",
           channel: na(chan) || na(plChan) || "",                        // display name
           channelSlug: handle.replace(/^@/, "").toLowerCase(),          // folder-matching slug
+          // Members-only / paid content: importable only with a member account's
+          // cookies — the picker marks it 🔒 and leaves it unchecked. NA → public.
+          memberOnly: /^(subscriber_only|premium_only)$/.test(na(avail)),
           title: rest.join("\t").trim(),
         };
       }).filter((e) => /^[\w-]{11}$/.test(e.id));
@@ -1365,6 +1374,7 @@ async function expandYoutubeUrls(req, res) {
             id: e.id, url: `https://www.youtube.com/watch?v=${e.id}`,
             title: e.title || e.id, date: e.date || "", approxDate: approxDate || undefined,
             channel: e.channel || "", channelSlug: e.channelSlug || "",
+            memberOnly: e.memberOnly || undefined,
           });
         }
       } catch (e) { errors.push({ url: raw, error: (e && e.message) || "expand failed" }); }
