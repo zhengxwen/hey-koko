@@ -1280,9 +1280,18 @@ function ytdlpLangArg(language) {
 // merged by id; that localized run is best-effort (failure → English titles).
 async function ytFlatList(ytdlpCmd, feedUrl, lang) {
   const enArgs = ["--extractor-args", "youtube:lang=en"];   // forces parseable English dates
-  if (!lang || lang === "en") return ytFlatListRaw(ytdlpCmd, feedUrl, enArgs);
+  // Even WITH youtube:lang=en, a loaded YouTube sometimes serves the relative-time text
+  // in a geo-guessed language and EVERY date parses to NA (observed live: a full 574-entry
+  // response with 0 dates, then the identical next call fully dated). All-NA across a
+  // multi-entry feed is that flake, not reality → retry the date call once.
+  const datedList = async () => {
+    const list = await ytFlatListRaw(ytdlpCmd, feedUrl, enArgs);
+    if (list.length < 3 || list.some((e) => e.date)) return list;
+    return ytFlatListRaw(ytdlpCmd, feedUrl, enArgs);
+  };
+  if (!lang || lang === "en") return datedList();
   const [base, localized] = await Promise.all([
-    ytFlatListRaw(ytdlpCmd, feedUrl, enArgs),
+    datedList(),
     ytFlatListRaw(ytdlpCmd, feedUrl, ["--extractor-args", `youtube:lang=${lang}`]).catch(() => []),
   ]);
   const titleOf = new Map(localized.map((e) => [e.id, e.title]));
@@ -1311,7 +1320,7 @@ function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
       // playlist_uploader_id/playlist_channel. We take whichever is present. Handle
       // (@name) → the folder-matching slug; channel = display name. Title stays LAST
       // (only it can contain arbitrary text; the rest never contain tabs).
-      "--print", "%(id)s\t%(upload_date)s\t%(uploader_id)s\t%(playlist_uploader_id)s\t%(channel)s\t%(playlist_channel)s\t%(availability)s\t%(title)s",
+      "--print", "%(id)s\t%(upload_date)s\t%(uploader_id)s\t%(playlist_uploader_id)s\t%(channel)s\t%(playlist_channel)s\t%(channel_id)s\t%(playlist_channel_id)s\t%(availability)s\t%(title)s",
       feedUrl,
     ], { timeout: 120000 });
     // Collect stdout as raw Buffers and decode once at the end — decoding per-chunk
@@ -1325,7 +1334,7 @@ function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
       const out = Buffer.concat(outBufs).toString("utf-8");
       const na = (s) => { const v = (s || "").trim(); return v === "NA" ? "" : v; };
       const entries = out.split("\n").map((l) => l.replace(/\r$/, "")).filter(Boolean).map((line) => {
-        const [id = "", rawDate = "", uid = "", plUid = "", chan = "", plChan = "", avail = "", ...rest] = line.split("\t");
+        const [id = "", rawDate = "", uid = "", plUid = "", chan = "", plChan = "", chanId = "", plChanId = "", avail = "", ...rest] = line.split("\t");
         const dm = rawDate.trim().match(/^(\d{4})(\d{2})(\d{2})$/);
         const handle = na(uid) || na(plUid);   // "@name" from the entry, else the feed level
         return {
@@ -1333,8 +1342,11 @@ function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
           date: dm ? `${dm[1]}-${dm[2]}-${dm[3]}` : "",
           channel: na(chan) || na(plChan) || "",                        // display name
           channelSlug: handle.replace(/^@/, "").toLowerCase(),          // folder-matching slug
-          // Members-only / paid content: importable only with a member account's
-          // cookies — the picker marks it 🔒 and leaves it unchecked. NA → public.
+          channelId: na(chanId) || na(plChanId),                        // "UC…", feeds the UUMO probe
+          // Members-only / paid content: importable only with a member account's cookies —
+          // the picker marks it 🔒 and leaves it unchecked. availability is a long shot:
+          // flat listings leave it NA even INSIDE a members playlist (verified) — the real
+          // detection is the UUMO members-playlist probe in expandYoutubeUrls.
           memberOnly: /^(subscriber_only|premium_only)$/.test(na(avail)),
           title: rest.join("\t").trim(),
         };
@@ -1360,6 +1372,21 @@ async function expandYoutubeUrls(req, res) {
     const ytdlpCmd = await findCommand("yt-dlp");
     if (!ytdlpCmd) { sendJson(res, 200, { videos: [], errors: [{ url: "", error: "yt-dlp 未安装。请运行: brew install yt-dlp" }] }); return; }
 
+    // Members-only detection: every channel has an auto-generated members playlist
+    // "UUMO<channel-id>" that flat-lists anonymously. Its ids are the ground truth —
+    // %(availability)s stays NA in every flat listing (verified even inside UUMO), and
+    // member uploads DO appear unmarked in the /videos feed. One extra yt-dlp call per
+    // distinct channel (cached across this request); no membership → error → empty list.
+    const memberCache = new Map();   // channelId -> Promise<entries[]>
+    const memberListOf = (channelId) => {
+      if (!channelId) return Promise.resolve([]);
+      if (!memberCache.has(channelId)) {
+        const uumo = `https://www.youtube.com/playlist?list=UUMO${channelId.replace(/^UC/, "")}`;
+        memberCache.set(channelId, ytFlatListRaw(ytdlpCmd, uumo, []).catch(() => []));
+      }
+      return memberCache.get(channelId);
+    };
+
     const seen = new Set();
     const videos = [];
     const errors = [];
@@ -1371,6 +1398,18 @@ async function expandYoutubeUrls(req, res) {
         // A channel /videos feed's dates are approximate (approximate_date reverse-parses
         // "3 weeks ago" — month-level only); playlist/single-video dates are exact.
         const approxDate = cls.kind === "channel";
+        if (cls.kind !== "video" && entries.length) {
+          const memberEntries = await memberListOf(entries.find((x) => x.channelId)?.channelId);
+          const memberIds = new Set(memberEntries.map((m) => m.id));
+          for (const e of entries) if (memberIds.has(e.id)) e.memberOnly = true;
+          // A channel feed shows only SOME member uploads — append the rest (🔒-marked,
+          // default-unchecked in the picker) so cookie-holding members can import them.
+          if (cls.kind === "channel") {
+            for (const m of memberEntries) {
+              if (!entries.some((e) => e.id === m.id)) entries.push({ ...m, memberOnly: true });
+            }
+          }
+        }
         for (const e of entries) {
           if (seen.has(e.id)) continue;
           seen.add(e.id);

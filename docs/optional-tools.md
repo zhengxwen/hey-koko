@@ -56,6 +56,8 @@ Enables `/url https://youtube.com/watch?v=xxx` to extract subtitles and summariz
 
 **If YouTube blocks requests** ("Sign in to confirm you're not a bot" / 429 — common during batch imports): export your youtube.com cookies in Netscape `cookies.txt` format (browser extension; ideally from a private window with a throwaway account, then close that window) and save them as `~/.hey-koko/youtube-cookies.txt`. Every yt-dlp call picks the file up automatically — no restart needed; delete it to stop. Keep it writable (yt-dlp saves rotated cookies back).
 
+**Members-only videos** are detected when a channel/playlist is expanded (via the channel's auto-generated members playlist) and flagged 🔒 in the import picker, unchecked by default — importing them needs the cookies file above, exported from an account that is a member of that channel.
+
 ## whisper.cpp
 
 Speech-to-text for videos without subtitles.
