@@ -291,6 +291,8 @@ winget install yt-dlp.yt-dlp      # Windows (bundles ffmpeg; or: winget install 
 
 Enables `/url https://youtube.com/watch?v=xxx` to extract subtitles and summarize video content.
 
+**If YouTube blocks requests** ("Sign in to confirm you're not a bot" / 429 — common during batch imports): export your youtube.com cookies in Netscape `cookies.txt` format (browser extension; ideally from a private window with a throwaway account, then close that window) and save them as `~/.hey-koko/youtube-cookies.txt`. Every yt-dlp call picks the file up automatically — no restart needed; delete it to stop. Keep it writable (yt-dlp saves rotated cookies back).
+
 ### whisper.cpp (speech-to-text for videos without subtitles)
 
 **macOS:**

@@ -11,6 +11,17 @@ const claude = require("./claude");
 const openai = require("./openai");
 const { convertChinese } = require("./chinese-convert");
 
+// Optional YouTube cookies, the way past YouTube's "Sign in to confirm you're not a
+// bot" / 429 checks: export youtube.com cookies (Netscape cookies.txt format, ideally
+// from a private window so the browser doesn't rotate them) to
+// <DATA_DIR>/youtube-cookies.txt and every yt-dlp call picks them up. Checked per
+// call — drop the file in or delete it without restarting. Must stay WRITABLE:
+// yt-dlp saves rotated cookies back into it.
+function ytCookieArgs() {
+  const p = path.join(config.DATA_DIR, "youtube-cookies.txt");
+  try { return fs.existsSync(p) ? ["--cookies", p] : []; } catch { return []; }
+}
+
 async function fetchUrlContent(req, res) {
   try {
     const body = await readBody(req);
@@ -617,7 +628,7 @@ function fetchTranscriptViaYtdlp(videoId, language) {
       // Step 1: list available subtitles to pick the best language. `--encoding UTF-8`
       // keeps yt-dlp's stdout UTF-8 on Windows (the frozen exe otherwise emits the ANSI
       // code page and mangles any non-ASCII).
-      execFile("yt-dlp", ["--encoding", "UTF-8", "--list-subs", "--skip-download", url],
+      execFile("yt-dlp", ["--encoding", "UTF-8", "--list-subs", "--skip-download", ...ytCookieArgs(), url],
         { timeout: 30000 }, (err2, stdout) => {
           if (err2 || !stdout) { resolve(null); return; }
 
@@ -671,6 +682,7 @@ function fetchTranscriptViaYtdlp(videoId, language) {
             "--sub-format", "vtt",
             "--skip-download",
             "-o", path.join(tmpDir, "%(id)s"),
+            ...ytCookieArgs(),
             url,
           ], { timeout: 60000 }, (err3) => {
             try {
@@ -728,7 +740,7 @@ function fetchTranscriptViaYtdlp(videoId, language) {
                 "--print", "%(tags)j",
                 "--print", "%(language)s",
                 "--print", "%(description).500s",
-                "--skip-download", url,
+                "--skip-download", ...ytCookieArgs(), url,
               );
               execFile("yt-dlp", metaArgs, { timeout: 15000 }, (e, metaOut) => {
                   const metaLines = (metaOut || "").split("\n");
@@ -850,7 +862,7 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
   if (!lang) {
     lang = whisperLangCode(await new Promise((resolve) => {
       execFile(ytdlpCmd, ["--print", "%(language)s", "--skip-download", "--no-playlist",
-        `https://www.youtube.com/watch?v=${videoId}`],
+        ...ytCookieArgs(), `https://www.youtube.com/watch?v=${videoId}`],
         { timeout: 15000 }, (e, out) => resolve(e ? "" : String(out || "").trim()));
     }));
   }
@@ -877,6 +889,7 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
         "-x", "--audio-quality", "worst",
         "-o", audioRaw + ".%(ext)s",
         "--no-playlist",
+        ...ytCookieArgs(),
         `https://www.youtube.com/watch?v=${videoId}`,
         // 30 min: 5 min used to kill legitimate audio downloads of long videos on slow
         // links. A truly hung download stays bounded; cancel (signal) kills it anytime.
@@ -1281,6 +1294,7 @@ function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
     const proc = spawn(ytdlpCmd, [
       "--flat-playlist", "--no-warnings", "--ignore-errors",
       "--encoding", "UTF-8",
+      ...ytCookieArgs(),
       ...extractorArgs,
       // Channel fields: a single-video entry carries its own uploader_id/channel; a
       // channel-feed or playlist entry has NA there but carries the feed-level
