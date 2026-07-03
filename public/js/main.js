@@ -2400,6 +2400,12 @@ initLibrary();
 loadMentionDocs();       // prime the /ask @mention doc list
 loadMentionArchives();   // prime the /ask #mention conversation-archive list
 
+// Knowledge star map: lazy-load the (WebGL/canvas) module only on first open, so
+// chat-only users never download it. Entrance lives inside the library panel.
+document.querySelector("#starMapBtn")?.addEventListener("click", () => {
+  import("./star-map.js").then((m) => m.openStarMap()).catch((e) => console.error("star map failed to load", e));
+});
+
 // Enable drag-to-resize / auto-collapse for the settings panel.
 initPanelResize();
 

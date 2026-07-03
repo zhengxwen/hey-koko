@@ -5400,3 +5400,47 @@ button.secondary:disabled {
 .librarySourceItem:hover { background: rgba(108, 142, 191, 0.1); text-decoration: underline; }
 .libraryBlockHighlight { animation: libFlash 1.6s ease; }
 @keyframes libFlash { 0%, 100% { background: transparent; } 30% { background: rgba(255, 213, 79, 0.35); } }
+
+/* ---- Knowledge star map (public/js/star-map.js) — inherits the app theme ---- */
+.starMapOverlay { position: absolute; inset: 0; z-index: 60; display: none; flex-direction: column; background: var(--paper); color: var(--ink); }
+.starMapOverlay.isOpen { display: flex; }
+.starMapHeader { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex: none; }
+.starMapHeader .archiveTitle { margin: 0; font-size: 16px; }
+.starMapSourceToggle { margin-left: auto; display: flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.starMapSourceToggle button { background: transparent; border: 0; color: var(--muted); padding: 6px 14px; font: inherit; font-size: 12.5px; cursor: pointer; }
+.starMapSourceToggle button:hover { color: var(--ink); }
+.starMapSourceToggle button[aria-pressed="true"] { background: var(--surface); color: var(--accent); }
+.starMapStage { position: relative; flex: 1; overflow: hidden; }
+#starMapCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+.starMapLegend { position: absolute; left: 16px; top: 16px; width: 208px; z-index: 4; background: var(--panel-alpha, var(--panel)); border: 1px solid var(--line); border-radius: 13px; padding: 12px 12px 8px; backdrop-filter: blur(8px); }
+.starMapLegend h3 { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+.starMapLegend ul { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; }
+.starMapLegend li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 7px; cursor: pointer; font-size: 12.5px; color: var(--ink); }
+.starMapLegend li:hover { background: var(--surface); }
+.starMapLegend li.isDim { opacity: 0.32; }
+.starMapDot { width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: 0 0 8px currentColor; }
+.starMapNm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.starMapCt { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.starMapLegendFoot { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; font-size: 11px; color: var(--muted); }
+
+.starMapInspector { position: absolute; right: -360px; top: 16px; bottom: 16px; width: 328px; z-index: 5; background: var(--panel-alpha, var(--panel)); border: 1px solid var(--line); border-radius: 15px; padding: 18px; overflow-y: auto; transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: var(--shadow); }
+.starMapInspector.isOpen { right: 16px; }
+.starMapInspKind { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; }
+.starMapInspTitle { font-size: 17px; line-height: 1.35; margin: 8px 0 10px; font-weight: 600; }
+.starMapInspSnippet { font-size: 12.5px; color: var(--muted); line-height: 1.6; margin: 0 0 14px; }
+.starMapInspClose { position: absolute; top: 12px; right: 12px; background: none; border: 0; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; }
+.starMapInspClose:hover { color: var(--ink); }
+.starMapAskBtn { display: block; width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--line); color: var(--ink); padding: 10px 12px; border-radius: 10px; cursor: pointer; font: inherit; font-size: 12.5px; }
+.starMapAskBtn:hover { border-color: var(--accent); }
+
+.starMapTip { position: absolute; z-index: 30; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; font-size: 12px; max-width: 240px; box-shadow: var(--shadow); }
+.starMapTipTitle { font-weight: 600; line-height: 1.35; margin-bottom: 3px; }
+.starMapTipMeta { font-size: 11px; color: var(--muted); }
+.starMapHint { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 4; font-size: 11.5px; color: var(--muted); background: var(--panel-alpha, var(--panel)); padding: 6px 16px; border-radius: 20px; border: 1px solid var(--line); white-space: nowrap; }
+.starMapStatus { position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 14px; }
+.starMapPrompt { text-align: center; max-width: 380px; }
+.starMapPrompt p { margin: 0 0 14px; color: var(--ink); }
+.starMapBuildBtn { background: var(--accent); border: 0; color: #fff; padding: 10px 22px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; }
+.starMapBuildBtn:hover { filter: brightness(1.06); }
+@media (max-width: 760px) { .starMapLegend { display: none; } .starMapInspector { width: calc(100vw - 32px); } }

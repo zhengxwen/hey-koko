@@ -532,6 +532,8 @@ export function initLibrary() {
   const ytErrors = document.querySelector("#libraryYtErrors");
   const ytCount = document.querySelector("#libraryYtCount");
   const ytSelectAll = document.querySelector("#libraryYtSelectAll");
+  const ytMemberLabel = document.querySelector("#libraryYtMemberLabel");
+  const ytMemberToggle = document.querySelector("#libraryYtMember");
   const ytReverse = document.querySelector("#libraryYtReverse");
   const ytClose = document.querySelector("#libraryYtClose");
   const ytCancel = document.querySelector("#libraryYtCancel");
@@ -796,9 +798,13 @@ export function initLibrary() {
     const imported = importedYoutubeIds();
     // `checked` is the source of truth (survives reverse/re-render); channel videos arrive
     // newest-first, so list order = publish order (newest → oldest) until the user reverses.
-    ytRows = videos.map((v) => ({ ...v, imported: imported.has(v.id), checked: !imported.has(v.id) }));
+    // Members-only videos default to UNCHECKED — without member-account cookies they
+    // would just queue up and fail; ticking one manually is still allowed.
+    ytRows = videos.map((v) => ({ ...v, imported: imported.has(v.id), checked: !imported.has(v.id) && !v.memberOnly }));
     // Not-yet-imported first (checked by default); already-imported after (unchecked).
     ytRows.sort((a, b) => (a.imported === b.imported ? 0 : a.imported ? 1 : -1));
+    // The 🔒 batch toggle only appears when the list actually has members-only rows.
+    if (ytMemberLabel) ytMemberLabel.hidden = !ytRows.some((r) => r.memberOnly);
     renderYtList();
   }
 
@@ -860,14 +866,17 @@ export function initLibrary() {
       meta.className = "libraryYtMeta";
       const title = document.createElement("div");
       title.className = "libraryYtTitle";
-      title.textContent = r.title || r.id;
+      title.textContent = (r.memberOnly ? "🔒 " : "") + (r.title || r.id);
+      if (r.memberOnly) title.title = t("lib_ytMemberOnly");
       const sub = document.createElement("div");
       sub.className = "checkboxRowSub";
       // "~" marks an approximate (month-precise) date from a channel feed; playlist/
       // single-video dates are exact and shown bare. Tooltip explains the "~".
       const dateStr = r.date ? (r.approxDate ? "~" : "") + r.date : "";
       if (r.approxDate && r.date) sub.title = t("lib_ytApproxDate");
-      sub.textContent = (dateStr ? dateStr + "　·　" : "") + r.url + (r.imported ? "　·　" + t("lib_ytImported") : "");
+      sub.textContent = (dateStr ? dateStr + "　·　" : "") + r.url
+        + (r.imported ? "　·　" + t("lib_ytImported") : "")
+        + (r.memberOnly ? "　·　" + t("lib_ytMemberOnly") : "");
       meta.append(title, sub);
       row.append(handle, cb, meta);
       ytList.appendChild(row);
@@ -881,10 +890,22 @@ export function initLibrary() {
     const n = ytRows.filter((r) => r.checked).length;
     ytCount.textContent = t("lib_ytSelectedCount", { n, total: ytRows.length });
     ytSelectAll.checked = n > 0 && n === ytRows.length;
+    // Keep the 🔒 toggle in sync with the rows it governs (per-row ticks, select-all…).
+    if (ytMemberToggle) {
+      const mem = ytRows.filter((r) => r.memberOnly);
+      ytMemberToggle.checked = mem.length > 0 && mem.every((r) => r.checked);
+    }
   }
 
   ytSelectAll.addEventListener("change", () => {
     ytRows.forEach((r) => { r.checked = ytSelectAll.checked; });
+    renderYtList();
+  });
+  // Batch tick/untick ONLY the members-only rows (e.g. after dropping member-account
+  // cookies in, one click queues them all; or clear them out before a bulk import).
+  if (ytMemberLabel) ytMemberLabel.title = t("lib_ytMemberToggleHint");
+  if (ytMemberToggle) ytMemberToggle.addEventListener("change", () => {
+    ytRows.forEach((r) => { if (r.memberOnly) r.checked = ytMemberToggle.checked; });
     renderYtList();
   });
   // Reverse the list order → flips the import sequence (e.g. oldest-first for a channel).

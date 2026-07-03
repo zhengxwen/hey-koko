@@ -409,6 +409,7 @@
               <input id="librarySearch" type="text" class="archiveSearchInput" placeholder="Semantic search the library..." />
               <button id="libraryRefreshBtn" type="button" class="secondary archiveSortBtn libraryRefreshBtn" aria-label="Refresh">🔄</button>
               <button id="librarySortBtn" type="button" class="secondary archiveSortBtn" title="Sort docs by date (YouTube upload date; otherwise import time)">Import order</button>
+              <button id="starMapBtn" type="button" class="secondary archiveSortBtn" title="Knowledge star map">🌌 Star map</button>
               <div class="libraryImportWrapper">
                 <button id="libraryImportBtn" type="button" class="secondary archiveSortBtn">+ Import ▾</button>
                 <div id="libraryImportMenu" class="exportMenu" hidden>
@@ -457,6 +458,30 @@
             <span id="libraryStatus" class="archiveSelectedCount"></span>
             <button id="libraryMoveBtn" type="button" class="secondary" disabled>Move to</button>
             <button id="libraryDeleteBtn" type="button" class="secondary" disabled>Delete Selected</button>
+          </div>
+        </div>
+
+        <!-- Knowledge star map (lazy-loaded on first open; see public/js/star-map.js) -->
+        <div id="starMapOverlay" class="starMapOverlay" aria-hidden="true">
+          <div class="starMapHeader">
+            <button id="starMapCloseBtn" type="button" class="archiveBackBtn" aria-label="Close">←</button>
+            <h2 class="archiveTitle"><span id="starMapTitleText">Knowledge star map</span></h2>
+            <div class="starMapSourceToggle" role="group" aria-label="source">
+              <button type="button" data-source="library" aria-pressed="true">Library</button>
+              <button type="button" data-source="archive" aria-pressed="false">Chats</button>
+            </div>
+          </div>
+          <div class="starMapStage">
+            <canvas id="starMapCanvas"></canvas>
+            <aside id="starMapLegend" class="starMapLegend">
+              <h3 id="starMapLegendTitle">Constellations</h3>
+              <ul id="starMapLegendList"></ul>
+              <div id="starMapLegendFoot" class="starMapLegendFoot"></div>
+            </aside>
+            <aside id="starMapInspector" class="starMapInspector" aria-hidden="true"></aside>
+            <div id="starMapTip" class="starMapTip" hidden></div>
+            <div id="starMapStatus" class="starMapStatus" hidden></div>
+            <div id="starMapHint" class="starMapHint">Drag to pan · scroll to zoom · click a star · click a constellation to isolate</div>
           </div>
         </div>
 
@@ -711,6 +736,7 @@
           <p class="hint" id="libraryYtHint">已导入的视频默认不勾选。</p>
           <div class="libraryYtToolbar">
             <label class="checkboxLabel libraryYtSelectAll"><input type="checkbox" id="libraryYtSelectAll" /> <span id="libraryYtSelectAllText">全选</span></label>
+            <label class="checkboxLabel libraryYtSelectAll" id="libraryYtMemberLabel" hidden><input type="checkbox" id="libraryYtMember" /> <span id="libraryYtMemberText">🔒 会员专属</span></label>
             <span class="libraryYtToolbarRight">
               <button id="libraryYtReverse" type="button" class="secondary libraryYtReverseBtn">⇅ 颠倒顺序</button>
               <span id="libraryYtCount" class="libraryYtCount"></span>
