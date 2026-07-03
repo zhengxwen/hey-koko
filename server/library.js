@@ -1159,5 +1159,5 @@ module.exports = {
   splitIntoBlocks,   // exported for reuse/testing of the chunker
   // server-side libimport job (jobs.js) + distill + related-docs
   importDocInternal, distillDocInternal, distillLibraryDoc, buildYoutubeDoc, llmComplete,
-  relatedLibraryDocs,
+  relatedLibraryDocs, docCentroids,
 };

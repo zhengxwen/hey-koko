@@ -180,4 +180,4 @@ async function semanticSearchArchives(req, res) {
   }
 }
 
-module.exports = { buildArchiveIndex, semanticSearchArchives, embedBatch, cosine, hashText, DEFAULT_MODEL };
+module.exports = { buildArchiveIndex, semanticSearchArchives, embedBatch, cosine, hashText, DEFAULT_MODEL, loadArchiveEmbeddings: loadIndex };

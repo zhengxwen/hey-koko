@@ -35,7 +35,7 @@ const controllers = new Map();  // jobId -> AbortController (runtime only)
 const activeLanes = new Set();  // laneId currently draining
 const sseClients = new Set();   // SSE res objects
 
-const laneOf = (job) => job.kind === "libimport" ? "lib" : (job.comfyUrl || "local");
+const laneOf = (job) => (job.kind === "libimport" || job.kind === "starmap") ? "lib" : (job.comfyUrl || "local");
 function normUrl(u) { if (!u) return ""; return /^https?:\/\//i.test(u) ? u.replace(/\/+$/, "") : "http://" + u.replace(/\/+$/, ""); }
 
 // ---- persistence (metadata only — result base64 stays in memory; a server
@@ -258,6 +258,7 @@ async function runJob(job) {
   }
 
   if (job.kind === "libimport") return runLibImportJob(job, ctrl.signal);
+  if (job.kind === "starmap") return require("./star-map").computeStarmap(job, ctrl.signal, emitUpdate);
 
   const body = { ...job.payload, clientId: job.clientId };
   if (job.comfyUrl) body.comfyUrl = job.comfyUrl;
