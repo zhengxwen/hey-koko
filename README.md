@@ -540,6 +540,51 @@ models. `OPENAI_BASE_URL` / `OPENAI_API_KEY` environment variables override the
 file. Note: reasoning models (`o1`/`o3`/`o4`/`gpt-5`) drop `temperature` and use
 the model's own output cap, per the OpenAI API.
 
+**Other OpenAI-compatible endpoints** work through the same `openai.json` — just
+point `baseUrl` at the provider and list its models. **DeepSeek** is recognized
+out of the box (`deepseek-chat`, `deepseek-reasoner`):
+
+```json
+{ "baseUrl": "https://api.deepseek.com", "apiKey": "sk-...", "models": ["deepseek-chat", "deepseek-reasoner"] }
+```
+
+`deepseek-reasoner`'s chain-of-thought (returned in `reasoning_content`) is shown
+in the collapsible thinking UI when show-thinking is enabled.
+
+**OpenRouter** (one key, hundreds of models across providers) also works —
+because its model ids are `provider/model` (e.g. `anthropic/claude-3.5-sonnet`),
+they don't match the auto-detect prefixes, so you **must list them explicitly**:
+
+```json
+{
+  "baseUrl": "https://openrouter.ai/api/v1",
+  "apiKey": "sk-or-...",
+  "models": ["anthropic/claude-3.5-sonnet", "deepseek/deepseek-r1", "google/gemini-2.0-flash"]
+}
+```
+
+Reasoning models routed through OpenRouter return their thinking in a `reasoning`
+field (vs DeepSeek's `reasoning_content`); both are surfaced in the thinking UI.
+
+**xAI Grok** is auto-recognized like DeepSeek (`grok-*` needs no allowlist):
+
+```json
+{ "baseUrl": "https://api.x.ai/v1", "apiKey": "xai-...", "models": ["grok-4"] }
+```
+
+(`models` optional — auto-discovery works too.)
+
+**Alibaba Qwen** (via DashScope compatible-mode) is likewise auto-recognized
+(`qwen-*` chat + `qwq-*`/qwen3 reasoning, no allowlist needed):
+
+```json
+{ "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1", "apiKey": "sk-...", "models": ["qwen-max"] }
+```
+
+Other OpenAI-compatible providers (Kimi, GLM, Groq, Mistral, local vLLM / LM
+Studio / llama.cpp) work the same way: point `baseUrl` at the endpoint and list
+the models.
+
 
 ## Environment Variables
 

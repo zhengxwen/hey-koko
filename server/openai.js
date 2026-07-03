@@ -44,10 +44,23 @@ const CONTEXT_LENGTHS = {
   "o1": 200000,
   "o3": 200000,
   "o4": 200000,
+  // DeepSeek (OpenAI-compatible endpoint at api.deepseek.com): deepseek-chat (V3)
+  // and deepseek-reasoner (R1) both sit at a 64K window.
+  "deepseek": 65536,
+  // xAI Grok (OpenAI-compatible at api.x.ai/v1): grok-4 is 256K, others ~128K.
+  "grok-4": 256000,
+  "grok": 131072,
+  // Alibaba Qwen via DashScope compatible-mode: qwen-* chat + qwq/qwen3 reasoning,
+  // ~128K typical (qwen-turbo/long go higher; 128K is a safe conservative floor).
+  "qwen": 131072,
+  "qwq": 131072,
 };
 
 // Reasoning-family models (o-series + gpt-5) behave differently: max_completion_tokens
 // instead of max_tokens, no temperature/top_p, and a "developer" system role.
+// NOTE: deepseek-reasoner is deliberately NOT here — it wants plain max_tokens and
+// simply ignores temperature, so treating it as a classic model is correct; its
+// chain-of-thought is handled separately via the reasoning_content field.
 function isReasoningModel(model) {
   return /^(o1|o3|o4|gpt-5)/i.test(model || "");
 }
@@ -85,7 +98,7 @@ const DISCOVER_TTL_MS = 5 * 60 * 1000;
 // OpenAI's /v1/models lists EVERYTHING (embeddings, tts, whisper, dall-e, moderation,
 // dated snapshots…). Keep only chat-capable text models and drop the noise.
 function isChatModelId(id) {
-  if (!/^(gpt-|o1|o3|o4|chatgpt-)/i.test(id)) return false;
+  if (!/^(gpt-|o1|o3|o4|chatgpt-|deepseek|grok|qwen|qwq)/i.test(id)) return false;
   // Exclude non-chat / non-text variants that share the gpt- prefix.
   if (/(image|audio|realtime|transcribe|tts|whisper|embedding|moderation|search|dall-e)/i.test(id)) return false;
   return true;
@@ -141,7 +154,7 @@ function isOpenAIModel(model) {
   const cfg = loadConfig();
   if (!cfg) return false;
   if (cfg.models.length) return cfg.models.includes(model);
-  return /^(gpt-|o1|o3|o4|chatgpt-)/i.test(model);
+  return /^(gpt-|o1|o3|o4|chatgpt-|deepseek|grok|qwen|qwq)/i.test(model);
 }
 
 function contextLengthFor(model) {
@@ -351,6 +364,13 @@ async function proxyChat(res, body) {
     const choice = (data.choices && data.choices[0]) || {};
     const cm = choice.message || {};
     const message = { role: "assistant", content: cm.content || "" };
+    // Reasoning models on OpenAI-compatible providers return their chain-of-thought
+    // in a non-standard field (plain OpenAI does NOT): DeepSeek uses
+    // `reasoning_content`, OpenRouter uses `reasoning`. Accept either and surface
+    // it as `thinking` when the show-thinking toggle is on — the frontend already
+    // renders that field (claude.js does the same).
+    const reasoningOut = cm.reasoning_content || cm.reasoning;
+    if (body.think && reasoningOut) message.thinking = reasoningOut;
     if (Array.isArray(cm.tool_calls) && cm.tool_calls.length) {
       message.tool_calls = cm.tool_calls.map((tc) => {
         const fn = tc.function || {};
@@ -408,8 +428,17 @@ async function proxyChat(res, body) {
           outputTokens = evt.usage.completion_tokens || outputTokens;
         }
         const delta = evt.choices && evt.choices[0] && evt.choices[0].delta;
-        if (delta && delta.content) {
-          writeChunk({ message: { role: "assistant", content: delta.content }, done: false });
+        if (delta) {
+          // Reasoning models stream their chain-of-thought before the answer, in a
+          // provider-specific field: DeepSeek `reasoning_content`, OpenRouter
+          // `reasoning`. Forward either as `thinking` (gated by the toggle).
+          const rc = delta.reasoning_content || delta.reasoning;
+          if (body.think && rc) {
+            writeChunk({ message: { role: "assistant", content: "", thinking: rc }, done: false });
+          }
+          if (delta.content) {
+            writeChunk({ message: { role: "assistant", content: delta.content }, done: false });
+          }
         }
       }
     }
