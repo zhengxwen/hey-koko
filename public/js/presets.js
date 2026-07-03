@@ -3,7 +3,7 @@
 
 // Custom personality presets — a named, reusable library the user builds up.
 // A preset is a single language-agnostic block of text: { id, name, text }.
-// Built-in presets (sweet/genki/yujie) still resolve per UI language via
+// Built-in presets (sweet/genki/mature/…) still resolve per UI language via
 // getPersonalityPreset(); custom presets are used verbatim, regardless of the
 // UI language, because the user authored the exact wording themselves.
 //
@@ -16,7 +16,17 @@ import { PERSONALITY_PRESETS, getPersonalityPreset } from './constants.js';
 import { saveCurrentSettings, syncPersonaEditable } from './settings.js';
 import { t, getUILanguage } from './i18n.js';
 
-const BUILTINS = ["sweet", "genki", "yujie"];   // dropdown order = original <option> order
+// Built-ins grouped for the dropdown: female / male / profession-flavored.
+const BUILTIN_GROUPS = [
+  { labelKey: "preset_groupFemale", keys: ["sweet", "genki", "mature"] },
+  { labelKey: "preset_groupMale", keys: ["warm", "sunny", "steady"] },
+  { labelKey: "preset_groupPro", keys: ["counselor", "scholar", "editor"] },
+];
+const BUILTINS = BUILTIN_GROUPS.flatMap((g) => g.keys);
+
+// The AI's display name (header, dblclick-editable) — substituted into the
+// built-in persona texts in place of the default "Bella".
+export const currentAiName = () => dom.aiName?.textContent?.trim() || "Bella";
 
 export const isCustomPresetId = (v) => typeof v === "string" && v.startsWith("cp_");
 export const getCustomPreset = (id) => (state.customPresets || []).find((p) => p.id === id) || null;
@@ -30,15 +40,17 @@ export function renderPersonalityOptions() {
   const prev = sel.value;
   sel.textContent = "";
 
-  const gBuiltin = document.createElement("optgroup");
-  gBuiltin.label = t("preset_groupBuiltin");
-  for (const key of BUILTINS) {
-    const o = document.createElement("option");
-    o.value = key;
-    o.textContent = t(`personality_${key}`);
-    gBuiltin.appendChild(o);
+  for (const g of BUILTIN_GROUPS) {
+    const grp = document.createElement("optgroup");
+    grp.label = t(g.labelKey);
+    for (const key of g.keys) {
+      const o = document.createElement("option");
+      o.value = key;
+      o.textContent = t(`personality_${key}`);
+      grp.appendChild(o);
+    }
+    sel.appendChild(grp);
   }
-  sel.appendChild(gBuiltin);
 
   const presets = state.customPresets || [];
   if (presets.length) {
@@ -93,7 +105,7 @@ export function deleteCurrentPreset() {
   state.customPresets = (state.customPresets || []).filter((x) => x.id !== p.id);
   renderPersonalityOptions();
   dom.personalitySelect.value = "sweet";
-  dom.persona.value = getPersonalityPreset("sweet", getUILanguage()) || PERSONALITY_PRESETS.sweet;
+  dom.persona.value = getPersonalityPreset("sweet", getUILanguage(), currentAiName()) || PERSONALITY_PRESETS.sweet;
   syncPersonaEditable();
   saveCurrentSettings();
 }
@@ -113,7 +125,7 @@ export function writeBackPersonaToPreset() {
 // the caller's default.
 export function resolveImportedPersonality(value) {
   if (!value) return { personality: null, persona: null };
-  if (BUILTINS.includes(value)) return { personality: value, persona: getPersonalityPreset(value, getUILanguage()) };
+  if (BUILTINS.includes(value)) return { personality: value, persona: getPersonalityPreset(value, getUILanguage(), currentAiName()) };
   const p = (state.customPresets || []).find((x) => x.name === value);
   if (p) return { personality: p.id, persona: p.text };
   return { personality: "temp", persona: "" };   // unknown custom name, no exported text

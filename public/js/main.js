@@ -22,7 +22,7 @@ import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup,
 import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
 import { initLibrary, runLibraryImport, notifyLibraryJobsChanged, openLibraryPanel } from './library.js';
-import { renderPersonalityOptions, saveCurrentPersonaAsPreset, renameCurrentPreset, deleteCurrentPreset, writeBackPersonaToPreset, isCustomPresetId, getCustomPreset, resolveImportedPersonality } from './presets.js';
+import { renderPersonalityOptions, saveCurrentPersonaAsPreset, renameCurrentPreset, deleteCurrentPreset, writeBackPersonaToPreset, isCustomPresetId, getCustomPreset, resolveImportedPersonality, currentAiName } from './presets.js';
 import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
 import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
@@ -92,6 +92,13 @@ initAvatar();
       const newName = input.value.trim() || "Bella";
       dom.aiName.textContent = newName;
       localStorage.setItem("aiName", newName);
+      // Built-in persona texts embed the AI name — re-resolve the current one so
+      // the prompt follows the rename (custom presets are the user's own words).
+      const sel = dom.personalitySelect.value;
+      if (sel !== "temp" && !isCustomPresetId(sel)) {
+        const text = getPersonalityPreset(sel, getUILanguage(), newName);
+        if (text) { dom.persona.value = text; saveCurrentSettings(); }
+      }
     };
     input.addEventListener("blur", commit);
     input.addEventListener("keydown", (e) => {
@@ -125,7 +132,7 @@ renderPersonalityOptions();
   const initialTab = getActiveTab();
   if (initialTab && initialTab.personality) {
     dom.personalitySelect.value = initialTab.personality;
-    dom.persona.value = initialTab.persona || getPersonalityPreset(initialTab.personality, getUILanguage()) || PERSONALITY_PRESETS.sweet;
+    dom.persona.value = initialTab.persona || getPersonalityPreset(initialTab.personality, getUILanguage(), currentAiName()) || PERSONALITY_PRESETS.sweet;
   }
   syncPersonaEditable();
 }
@@ -141,7 +148,7 @@ dom.personalitySelect.addEventListener("change", () => {
     dom.persona.value = p ? p.text : "";
     dom.persona.focus();
   } else {
-    dom.persona.value = getPersonalityPreset(val, getUILanguage()) || PERSONALITY_PRESETS.sweet;
+    dom.persona.value = getPersonalityPreset(val, getUILanguage(), currentAiName()) || PERSONALITY_PRESETS.sweet;
   }
   syncPersonaEditable();
   const currentTab = getActiveTab();
@@ -171,6 +178,15 @@ dom.uiLanguageSelect.addEventListener("change", () => {
   dom.promptLanguageSelect.value = dom.uiLanguageSelect.value;
   applyUILanguage();
   renderPersonalityOptions(); // re-localize built-in option + group labels (dropdown is dynamic)
+  // Built-in persona texts exist per language — follow the language switch too
+  // (custom presets are the user's own words and stay untouched).
+  {
+    const sel = dom.personalitySelect.value;
+    if (sel !== "temp" && !isCustomPresetId(sel)) {
+      const text = getPersonalityPreset(sel, getUILanguage(), currentAiName());
+      if (text) dom.persona.value = text;
+    }
+  }
   populateVoiceList(); // re-localize voice optgroup + option labels
   renderChat();
   saveCurrentSettings();
@@ -1111,7 +1127,7 @@ function exportJson(tab) {
   // userName and persona are hey-koko-local identity/settings, not part of the
   // conversation — don't export them. For a custom preset, tab.personality holds an
   // opaque local id ("cp_…") that means nothing elsewhere — export the human-readable
-  // preset NAME instead. Built-ins keep their stable key (sweet/yujie/…).
+  // preset NAME instead. Built-ins keep their stable key (sweet/mature/…).
   const cp = getCustomPreset(tab.personality);
   const payload = { title: tab.title, personality: cp ? cp.name : tab.personality };
   payload.messages = messages;
