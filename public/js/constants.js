@@ -53,7 +53,9 @@ export function getPersonalityPreset(key, lang = "en", name = "") {
   if (lang === "zh-Hant") text = PERSONALITY_PRESETS_ZH_HANT[key] || PERSONALITY_PRESETS[key];
   else if (lang === "zh") text = PERSONALITY_PRESETS[key];
   else text = PERSONALITY_PRESETS_EN[key] || PERSONALITY_PRESETS[key];
-  if (text && name && name !== "Bella") text = text.replaceAll("Bella", name);
+  // split/join, not replaceAll: a replacement string containing "$" patterns
+  // ($&, $$, $'…) would otherwise be interpreted and corrupt the prompt.
+  if (text && name) text = text.split("Bella").join(name);
   return text;
 }
 

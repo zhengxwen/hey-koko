@@ -3,16 +3,19 @@
 
 // Settings persistence
 import { dom, state } from './state.js';
-import { SETTINGS_KEY, PERSONALITY_PRESETS } from './constants.js';
+import { SETTINGS_KEY } from './constants.js';
 import { getActiveTab } from './tabs.js';
 import { dbSaveTabs } from './db.js';
 import { t } from './i18n.js';
+// Circular at module level (presets.js imports back from here) — fine, both sides
+// only call the other's functions at runtime, same as the settings↔tabs pair.
+import { isCustomPresetId, resolvePersonaText, renderPersonalityOptions } from './presets.js';
 
 // "Her personality" is only editable for a custom personality — the "new custom"
 // sentinel ("temp") or a saved custom preset ("cp_…"). Built-ins are read-only.
 export function syncPersonaEditable() {
   const v = dom.personalitySelect.value;
-  const isSaved = typeof v === "string" && v.startsWith("cp_");   // an existing named preset
+  const isSaved = isCustomPresetId(v);   // an existing named preset
   const isCustom = v === "temp" || isSaved;
   dom.persona.readOnly = !isCustom;
   dom.persona.classList.toggle("isReadonly", !isCustom);
@@ -166,7 +169,7 @@ export function saveTabs() {
       messages: tab.messages.map(saveChatMessage),
       tags: tab.tags || [],
       personality: tab.personality || "sweet",
-      persona: tab.persona || PERSONALITY_PRESETS[tab.personality] || PERSONALITY_PRESETS.sweet,
+      persona: tab.persona || resolvePersonaText(tab.personality),
     }));
     dbSaveTabs(data, state.activeTabId).catch((err) => {
       console.error("[saveTabs] IndexedDB write failed:", err);
@@ -218,9 +221,11 @@ export function loadSavedSettings() {
     dom.speechRateValue.textContent = savedSettings.speechRate;
   }
   if (Array.isArray(savedSettings.customPresets)) state.customPresets = savedSettings.customPresets;
-  if (savedSettings.personality) dom.personalitySelect.value = savedSettings.personality;
+  // savedSettings.personality is applied at the END of this function — the dropdown
+  // must be rebuilt (with custom presets AND the restored UI language) first, or a
+  // "cp_…"/non-static value silently fails against the initial empty <select>.
   if (savedSettings.persona) {
-    const savedPersona = savedSettings.persona.replaceAll("澪", "Bella");
+    const savedPersona = savedSettings.persona;
     // Only apply Chinese suffix normalization if persona is in Chinese
     if (/[\u4e00-\u9fff]/.test(savedPersona)) {
       dom.persona.value = savedPersona.includes("加油打气") ? savedPersona : `${savedPersona}，加油打气。`;
@@ -249,6 +254,11 @@ export function loadSavedSettings() {
   if (savedSettings.dailyGreetingTime && dom.dailyGreetingTime) dom.dailyGreetingTime.value = savedSettings.dailyGreetingTime;
   if (savedSettings.idleNudge && dom.idleNudgeToggle) dom.idleNudgeToggle.checked = true;
   if (savedSettings.idleNudgeMinutes && dom.idleNudgeMinutes) dom.idleNudgeMinutes.value = savedSettings.idleNudgeMinutes;
+  // The personality dropdown is dynamic (built-ins + custom presets, labels follow
+  // the UI language) — build it only now that customPresets and uiLanguage are both
+  // restored, then apply the saved selection so its option actually exists.
+  renderPersonalityOptions();
+  if (savedSettings.personality) dom.personalitySelect.value = savedSettings.personality;
 }
 
 // --- userName history ---

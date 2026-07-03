@@ -12,9 +12,10 @@
 // holds the resolved text. The list lives in state.customPresets and is persisted
 // inside SETTINGS_KEY by settings.js.
 import { dom, state } from './state.js';
-import { PERSONALITY_PRESETS, getPersonalityPreset } from './constants.js';
+import { getPersonalityPreset } from './constants.js';
 import { saveCurrentSettings, syncPersonaEditable } from './settings.js';
 import { t, getUILanguage } from './i18n.js';
+import { genId } from './utils.js';
 
 // Built-ins grouped for the dropdown: female / male / profession-flavored.
 const BUILTIN_GROUPS = [
@@ -28,9 +29,20 @@ const BUILTINS = BUILTIN_GROUPS.flatMap((g) => g.keys);
 // built-in persona texts in place of the default "Bella".
 export const currentAiName = () => dom.aiName?.textContent?.trim() || "Bella";
 
+export const isBuiltinKey = (v) => BUILTINS.includes(v);
 export const isCustomPresetId = (v) => typeof v === "string" && v.startsWith("cp_");
 export const getCustomPreset = (id) => (state.customPresets || []).find((p) => p.id === id) || null;
-const genPresetId = () => `cp_${Date.now().toString(36)}${Math.random().toString(16).slice(2, 6)}`;
+const genPresetId = () => `cp_${genId()}`;
+
+// The one place a dropdown selection value becomes persona TEXT: a built-in key →
+// the localized text with the AI name substituted; a custom preset id → the
+// preset's stored text; "temp" or anything unknown (e.g. a dangling id) → "",
+// i.e. an editable blank rather than a silently wrong built-in.
+export function resolvePersonaText(sel, aiName = currentAiName()) {
+  if (!sel || sel === "temp") return "";
+  if (isCustomPresetId(sel)) return getCustomPreset(sel)?.text || "";
+  return getPersonalityPreset(sel, getUILanguage(), aiName) || "";
+}
 
 // Rebuild the personality dropdown from the built-ins + the user's saved presets +
 // the "new custom" sentinel. Labels come from t() so it's correct in any language.
@@ -103,9 +115,18 @@ export function deleteCurrentPreset() {
   if (!p) { alert(t("preset_selectFirst")); return; }
   if (!confirm(t("preset_confirmDelete", { name: p.name }))) return;
   state.customPresets = (state.customPresets || []).filter((x) => x.id !== p.id);
+  // Other tabs may still reference the deleted id — remap them to the unsaved-
+  // custom sentinel, keeping their persona text, so they don't dangle (a dangling
+  // id blanks the select on tab switch and corrupts the tab on switch-away).
+  for (const tab of state.tabs) {
+    if (tab.personality === p.id) {
+      tab.personality = "temp";
+      if (!tab.persona) tab.persona = p.text;
+    }
+  }
   renderPersonalityOptions();
   dom.personalitySelect.value = "sweet";
-  dom.persona.value = getPersonalityPreset("sweet", getUILanguage(), currentAiName()) || PERSONALITY_PRESETS.sweet;
+  dom.persona.value = resolvePersonaText("sweet");
   syncPersonaEditable();
   saveCurrentSettings();
 }
@@ -122,11 +143,12 @@ export function writeBackPersonaToPreset() {
 // Exports write a built-in key (sweet/…) or a custom preset's NAME (see exportJson).
 // A name that matches one of the user's local presets re-binds to that preset (id +
 // text); an unknown name becomes a blank editable custom slot; a missing value keeps
-// the caller's default.
+// the caller's default. Persona text is hey-koko-local and never read from the file —
+// even if one carries a `persona` field, it is ignored and resolved locally instead.
 export function resolveImportedPersonality(value) {
   if (!value) return { personality: null, persona: null };
-  if (BUILTINS.includes(value)) return { personality: value, persona: getPersonalityPreset(value, getUILanguage(), currentAiName()) };
+  if (isBuiltinKey(value)) return { personality: value, persona: resolvePersonaText(value) };
   const p = (state.customPresets || []).find((x) => x.name === value);
   if (p) return { personality: p.id, persona: p.text };
-  return { personality: "temp", persona: "" };   // unknown custom name, no exported text
+  return { personality: "temp", persona: "" };   // unknown custom name → blank editable slot
 }

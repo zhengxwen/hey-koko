@@ -3,7 +3,6 @@
 
 // Main entry point - imports and initializes all modules
 import { dom, state, refreshScrollState } from './state.js';
-import { PERSONALITY_PRESETS, getPersonalityPreset } from './constants.js';
 import { readFileAsDataUrl, convertToJpeg, makePreview, escapeHtml, genId } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
@@ -22,8 +21,8 @@ import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup,
 import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
 import { initLibrary, runLibraryImport, notifyLibraryJobsChanged, openLibraryPanel } from './library.js';
-import { renderPersonalityOptions, saveCurrentPersonaAsPreset, renameCurrentPreset, deleteCurrentPreset, writeBackPersonaToPreset, isCustomPresetId, getCustomPreset, resolveImportedPersonality, currentAiName } from './presets.js';
-import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
+import { renderPersonalityOptions, saveCurrentPersonaAsPreset, renameCurrentPreset, deleteCurrentPreset, writeBackPersonaToPreset, isBuiltinKey, getCustomPreset, resolveImportedPersonality, resolvePersonaText } from './presets.js';
+import { applyUILanguage, t, getPrompt } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
 import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
 import { loadReminders, getReminders, removeReminder, describeReminder, setReminderChangeHandler, setDeliverHandler, startScheduler } from './proactive.js';
@@ -95,9 +94,9 @@ initAvatar();
       // Built-in persona texts embed the AI name — re-resolve the current one so
       // the prompt follows the rename (custom presets are the user's own words).
       const sel = dom.personalitySelect.value;
-      if (sel !== "temp" && !isCustomPresetId(sel)) {
-        const text = getPersonalityPreset(sel, getUILanguage(), newName);
-        if (text) { dom.persona.value = text; saveCurrentSettings(); }
+      if (isBuiltinKey(sel)) {
+        dom.persona.value = resolvePersonaText(sel, newName);
+        saveCurrentSettings();
       }
     };
     input.addEventListener("blur", commit);
@@ -120,19 +119,16 @@ initAvatar();
 await loadMemories();
 await loadReminders();
 
-// Load saved settings
+// Load saved settings. This also builds the personality dropdown (built-ins +
+// custom presets) and restores the saved selection, so a "cp_…" value resolves.
 loadSavedSettings();
-
-// Build the personality dropdown from the built-ins + the user's saved custom
-// presets BEFORE restoring the tab's selection (so a "cp_…" value resolves).
-renderPersonalityOptions();
 
 // Restore active tab's personality
 {
   const initialTab = getActiveTab();
   if (initialTab && initialTab.personality) {
     dom.personalitySelect.value = initialTab.personality;
-    dom.persona.value = initialTab.persona || getPersonalityPreset(initialTab.personality, getUILanguage(), currentAiName()) || PERSONALITY_PRESETS.sweet;
+    dom.persona.value = initialTab.persona || resolvePersonaText(initialTab.personality);
   }
   syncPersonaEditable();
 }
@@ -140,16 +136,8 @@ renderPersonalityOptions();
 // Personality select handler
 dom.personalitySelect.addEventListener("change", () => {
   const val = dom.personalitySelect.value;
-  if (val === "temp") {
-    dom.persona.value = "";
-    dom.persona.focus();
-  } else if (isCustomPresetId(val)) {
-    const p = getCustomPreset(val);
-    dom.persona.value = p ? p.text : "";
-    dom.persona.focus();
-  } else {
-    dom.persona.value = getPersonalityPreset(val, getUILanguage(), currentAiName()) || PERSONALITY_PRESETS.sweet;
-  }
+  dom.persona.value = resolvePersonaText(val);
+  if (!isBuiltinKey(val)) dom.persona.focus();   // temp/custom are editable — jump in
   syncPersonaEditable();
   const currentTab = getActiveTab();
   if (currentTab) {
@@ -182,10 +170,7 @@ dom.uiLanguageSelect.addEventListener("change", () => {
   // (custom presets are the user's own words and stay untouched).
   {
     const sel = dom.personalitySelect.value;
-    if (sel !== "temp" && !isCustomPresetId(sel)) {
-      const text = getPersonalityPreset(sel, getUILanguage(), currentAiName());
-      if (text) dom.persona.value = text;
-    }
+    if (isBuiltinKey(sel)) dom.persona.value = resolvePersonaText(sel);
   }
   populateVoiceList(); // re-localize voice optgroup + option labels
   renderChat();
@@ -1127,7 +1112,8 @@ function exportJson(tab) {
   // userName and persona are hey-koko-local identity/settings, not part of the
   // conversation — don't export them. For a custom preset, tab.personality holds an
   // opaque local id ("cp_…") that means nothing elsewhere — export the human-readable
-  // preset NAME instead. Built-ins keep their stable key (sweet/mature/…).
+  // preset NAME instead (import re-binds it to a same-named local preset). Built-ins
+  // keep their stable key (sweet/mature/…), re-resolved per language on import.
   const cp = getCustomPreset(tab.personality);
   const payload = { title: tab.title, personality: cp ? cp.name : tab.personality };
   payload.messages = messages;
@@ -1249,9 +1235,9 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
         return m;
       }));
       // Resolve the exported personality (built-in key or a custom preset NAME) back
-      // to a local selection — re-binding to a matching custom preset when we have one.
-      // data.persona is intentionally ignored: persona text is hey-koko-local and not
-      // exported, so the text always comes from the resolved local preset.
+      // to a local selection — re-binding to a matching local preset when we have one.
+      // data.persona is intentionally ignored even when present: persona text is
+      // hey-koko-local and always comes from the local resolution.
       const resolved = resolveImportedPersonality(data.personality);
       const tab = createTab(data.title || "导入的对话", messages, resolved.personality);
       if (resolved.persona != null) tab.persona = resolved.persona;

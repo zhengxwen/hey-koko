@@ -76,12 +76,9 @@
 
           <label id="personalityLabel">
             <span id="personalityLabelText">Personality</span>
-            <select id="personalitySelect">
-              <option value="sweet">Sweet</option>
-              <option value="genki">Energetic</option>
-              <option value="mature">Mature</option>
-              <option value="temp">Custom preset</option>
-            </select>
+            <!-- Options are built dynamically by presets.js renderPersonalityOptions()
+                 (built-ins + the user's custom presets) — keep this empty. -->
+            <select id="personalitySelect"></select>
           </label>
 
           <label id="personaLabel">
