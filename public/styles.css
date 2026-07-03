@@ -5644,7 +5644,10 @@ button.secondary:disabled {
 /* Both the transient status ("building…", "semantic search…") and the build prompt sit
    in an OPAQUE card so they never blend into the stars behind them. */
 .starMapStatusBox, .starMapPrompt { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: var(--shadow); }
-.starMapStatusBox { padding: 12px 22px; color: var(--muted); pointer-events: none; }
+.starMapStatusBox { display: flex; align-items: center; gap: 10px; padding: 12px 22px; color: var(--muted); pointer-events: none; }
+/* Waiting states get a spinner (reuses the library-refresh keyframes) */
+.starMapStatusBox.isBusy::before { content: ""; width: 14px; height: 14px; flex: none; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: libRefreshSpin 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .starMapStatusBox.isBusy::before { animation-duration: 2.5s; } }
 .starMapPrompt { text-align: center; max-width: 380px; pointer-events: auto; padding: 22px 26px; }
 .starMapPrompt p { margin: 0 0 14px; color: var(--ink); }
 .starMapBuildBtn { background: var(--accent); border: 0; color: #fff; padding: 10px 22px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; }

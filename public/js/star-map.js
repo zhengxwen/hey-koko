@@ -44,7 +44,9 @@ let anim = null;       // in-flight camera animation { from, to, t0, ms }
 // always-on neighbour edges, colour-blind palette, cluster labels.
 // Persisted per browser; twinkle defaults OFF when the OS asks for reduced motion.
 const DISP_KEY = "heykoko-starmap-display";
-let disp = { glow: true, twinkle: true, spokes: true, edges: false, cb: false, labels: true };
+// glow defaults OFF (user preference): crisp dots by default; the SELECTED star still
+// gets its standing halo regardless of this toggle.
+let disp = { glow: false, twinkle: true, spokes: true, edges: false, cb: false, labels: true };
 function loadDisp() {
   if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) disp.twinkle = false;
   try { Object.assign(disp, JSON.parse(localStorage.getItem(DISP_KEY) || "{}")); } catch { /* defaults */ }
@@ -99,7 +101,11 @@ export async function openStarMap() {
   resize();
   await load(source);
 }
+// Set ONLY by the panel-button dismissal path: reopen the map when the library
+// panel next opens (the archive ↔ star-map toggle). Any direct close clears it.
+let resumeOnLibrary = false;
 function closeStarMap() {
+  resumeOnLibrary = false;
   el.overlay.classList.remove("isOpen");
   el.overlay.setAttribute("aria-hidden", "true");
   cancelAnimationFrame(raf); raf = 0;
@@ -129,6 +135,21 @@ function ensureDom() {
   if (!usingGL) el.ctx = el.canvas.getContext("2d");
 
   document.querySelector("#starMapCloseBtn").addEventListener("click", closeStarMap);
+  // The left-panel 知识库/档案库 buttons fire these (custom events — those modules must
+  // not import this lazily-loaded one). Dismissing the map via a PANEL button remembers
+  // it, so the 知识库 button brings the STAR MAP back — the user toggles archive ↔ map.
+  // An explicit close (←/Esc/launchpad jump) clears the memory: then 知识库 = the list.
+  document.addEventListener("heykoko:closeStarMap", () => {
+    // Keep an EXISTING memory when the map is already closed — the 知识库 button fires
+    // close-then-libraryOpened back to back, and the close must not eat the resume flag
+    // set by an earlier 档案库 dismissal.
+    const remember = el.overlay.classList.contains("isOpen") || resumeOnLibrary;
+    closeStarMap();               // (sets resumeOnLibrary = false)
+    resumeOnLibrary = remember;
+  });
+  document.addEventListener("heykoko:libraryOpened", () => {
+    if (resumeOnLibrary) { resumeOnLibrary = false; openStarMap(); }
+  });
   // Staged Escape: clear the search first, then close the inspector, THEN exit —
   // so a stray Esc never throws the user out of the whole map.
   document.addEventListener("keydown", (e) => {
@@ -227,7 +248,7 @@ function setSourceTab(s) {
 // ---- data load / build ---------------------------------------------------
 async function load(which) {
   source = which;
-  setStatus(t("star_loading"));
+  setStatus(t("star_loading"), true);
   let map;
   try { map = await post("/api/library/starmap", { source: which }); }
   catch { setStatus(t("star_error")); return; }
@@ -251,7 +272,7 @@ async function load(which) {
     closeInspector(); hideTip();
     el.legend.style.display = "none";
     el.legendList.innerHTML = ""; el.legendFoot.textContent = "";
-    if (building) { setStatus(t("star_building")); pollBuild(which); }
+    if (building) { setStatus(t("star_building"), true); pollBuild(which); }
     else showBuildPrompt(which, map.stale ? "stale" : "empty");
     return;
   }
@@ -280,7 +301,7 @@ async function load(which) {
   anim = null; matched = null; if (el.search) el.search.value = "";
   closeInspector();
   // Rebuilding over an existing cache: keep the old map visible under the hint.
-  if (building) { setStatus(t("star_building")); pollBuild(which); }
+  if (building) { setStatus(t("star_building"), true); pollBuild(which); }
   else setStatus("");
   computeFit();
   if (usingGL) buildGLBuffers();
@@ -299,7 +320,7 @@ function showBuildPrompt(which, why) {
   el.status.appendChild(box); el.status.hidden = false;
 }
 async function triggerBuild(which) {
-  setStatus(t("star_building"));
+  setStatus(t("star_building"), true);
   if (el.rebuildBtn) { el.rebuildBtn.disabled = true; el.rebuildBtn.classList.remove("isOutdated"); }
   // Already building (e.g. clicked from the stale prompt while a job runs) → just attach.
   if (!activeServerJob("starmap", which)) {
@@ -331,13 +352,15 @@ async function pollBuild(which) {
   }
   setStatus(t("star_error"));
 }
-function setStatus(text) {
+// Boxed, opaque card — bare centred text would visually blend into the stars.
+// busy=true adds a spinner: it's a WAITING state (building/loading/searching),
+// not a terminal message (error / no results).
+function setStatus(text, busy = false) {
   if (!text) { el.status.hidden = true; el.status.textContent = ""; return; }
-  // Boxed, opaque card — bare centred text would visually blend into the stars.
   el.status.hidden = false;
   el.status.innerHTML = "";
   const box = document.createElement("div");
-  box.className = "starMapStatusBox";
+  box.className = "starMapStatusBox" + (busy ? " isBusy" : "");
   box.textContent = text;
   el.status.appendChild(box);
 }
@@ -386,12 +409,16 @@ const F_PT = `
   precision mediump float;
   varying vec3 v_color; varying float v_shown; varying float v_phase; varying float v_size;
   uniform float u_time; uniform float u_glow; uniform float u_twinkle;
-  uniform float u_rim; uniform vec3 u_rimColor; uniform float u_rimW;
+  uniform float u_rim; uniform vec3 u_rimColor; uniform float u_rimW; uniform float u_glowW;
   void main(){
     if (v_shown < 0.03) discard;
     float d = length(gl_PointCoord - vec2(0.5)) * 2.0;
     float core = 1.0 - smoothstep(0.21, 0.30, d);
-    float glow = (1.0 - smoothstep(0.0, 1.0, d)) * 0.45 * u_glow;
+    // Glow band in PIXELS (u_glowW ≈ the smallest star's halo), hugging the core edge —
+    // same fixed-stroke treatment as the rim, so big stars don't get giant halos.
+    float rpx0 = d * v_size * 0.5;
+    float coreEdge = 0.30 * v_size * 0.5;
+    float glow = (1.0 - smoothstep(coreEdge, coreEdge + u_glowW, rpx0)) * 0.45 * u_glow;
     // Dark rim hugging the core, for light backgrounds (u_rim=1). Band computed in
     // PIXELS (u_rimW, ~the smallest star's rim) so every star gets the SAME stroke
     // width — in sprite-normalised units big stars would get fat borders.
@@ -452,7 +479,8 @@ function initGL(gl) {
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   for (const k of ["pos", "size", "color", "shown", "lpos", "loth", "lside", "lcolor", "lshown",
     "epos", "eoth", "eside", "ecolor", "eshown",
-    "hlpos", "hloth", "hlside", "hlcolor", "hlshown", "hppos", "hpsize", "hpcolor", "hpshown"]) G.buf[k] = gl.createBuffer();
+    "hlpos", "hloth", "hlside", "hlcolor", "hlshown", "hppos", "hpsize", "hpcolor", "hpshown",
+    "spos", "ssize", "scolor", "sshown"]) G.buf[k] = gl.createBuffer();
   G.hkey = -1; G.hln = 0; G.hpn = 0;   // hover/selection highlight state
   G.buf.quad = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, G.buf.quad);
@@ -614,6 +642,8 @@ function drawGL() {
   gl.uniform3fv(gl.getUniformLocation(G.pt, "u_rimColor"), hexToRgb(theme.ink));
   // rim stroke width in device px = what the SMALLEST star (base radius 3) used to get
   gl.uniform1f(gl.getUniformLocation(G.pt, "u_rimW"), 0.195 * sf);
+  // glow band width in device px = the smallest star's halo (0.7 × its sprite radius)
+  gl.uniform1f(gl.getUniformLocation(G.pt, "u_glowW"), 1.05 * sf);
   attrib(gl, G.pt, "a_pos", G.buf.pos, 2); attrib(gl, G.pt, "a_size", G.buf.size, 1);
   attrib(gl, G.pt, "a_color", G.buf.color, 3); attrib(gl, G.pt, "a_shown", G.buf.shown, 1);
   gl.drawArrays(gl.POINTS, 0, G.n);
@@ -622,6 +652,22 @@ function drawGL() {
     attrib(gl, G.pt, "a_pos", G.buf.hppos, 2); attrib(gl, G.pt, "a_size", G.buf.hpsize, 1);
     attrib(gl, G.pt, "a_color", G.buf.hpcolor, 3); attrib(gl, G.pt, "a_shown", G.buf.hpshown, 1);
     gl.drawArrays(gl.POINTS, 0, G.hpn);
+  }
+  // the SELECTED star gets a standing glow halo — even with the 🎛 glow toggle off,
+  // and even while search-dimmed: that's what "selected" means on this map.
+  if (selected) {
+    gl.uniform1f(gl.getUniformLocation(G.pt, "u_glow"), 1.3);
+    // wider halo = selection; ×2.0 exactly fits the ×2.0 sprite of the smallest star
+    // (edge 0.3R + band ≤ R), so the halo never clips into the sprite's square bounds
+    gl.uniform1f(gl.getUniformLocation(G.pt, "u_glowW"), 1.05 * sf * 2.0);
+    upload(gl, G.buf.spos, new Float32Array([selected.x, selected.y]));
+    upload(gl, G.buf.ssize, new Float32Array([selected._r * 2.0]));
+    const srgb = clusterRGB(selected.cluster, DATA.clusters.length);
+    upload(gl, G.buf.scolor, new Float32Array(srgb));
+    upload(gl, G.buf.sshown, new Float32Array([1]));
+    attrib(gl, G.pt, "a_pos", G.buf.spos, 2); attrib(gl, G.pt, "a_size", G.buf.ssize, 1);
+    attrib(gl, G.pt, "a_color", G.buf.scolor, 3); attrib(gl, G.pt, "a_shown", G.buf.sshown, 1);
+    gl.drawArrays(gl.POINTS, 0, 1);
   }
 }
 // Rebuild the tiny highlight buffers only when the focused star changes. Neighbour
@@ -672,7 +718,7 @@ function buildLabels() {
     s.addEventListener("click", (e) => {
       const d = pick(e.clientX, e.clientY);
       if (d) { openInspector(d); return; }
-      flyToCluster(c.id);
+      flyToCluster(c.id);   // inspector (if open) stays — it closes only via ×/Esc
     });
     el.labels.appendChild(s); labelEls[c.id] = s;
   });
@@ -731,13 +777,21 @@ function draw2d() {
     const [x, y] = toScreen(d), r = d._r * Math.max(0.6, Math.min(cam.scale, 2.4)), col = clusterColor(d.cluster, DATA.clusters.length);
     ctx.globalAlpha = a;
     if (disp.glow) {
-      const gg = ctx.createRadialGradient(x, y, 0, x, y, r * 3.2); gg.addColorStop(0, withAlpha(col, 0.5)); gg.addColorStop(1, withAlpha(col, 0)); ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(x, y, r * 3.2, 0, 7); ctx.fill();
+      // fixed-width halo (the smallest star's), hugging each star's edge
+      const gw = 6.6 * Math.max(0.6, Math.min(cam.scale, 2.4));
+      const gg = ctx.createRadialGradient(x, y, r, x, y, r + gw); gg.addColorStop(0, withAlpha(col, 0.5)); gg.addColorStop(1, withAlpha(col, 0)); ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(x, y, r + gw, 0, 7); ctx.fill();
     }
     ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
     if (!theme.dark) { ctx.strokeStyle = theme.ink; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x, y, r + 0.5, 0, 7); ctx.stroke(); }
     ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.35, 0, 7); ctx.fill();
     ctx.globalAlpha = 1;
     if (d === hover || d === selected) { ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, 7); ctx.stroke(); }
+    if (d === selected) {   // standing glow on the selected star (even with glow off)
+      const gw = 2 * 6.6 * Math.max(0.6, Math.min(cam.scale, 2.4));
+      const sg = ctx.createRadialGradient(x, y, r, x, y, r + gw);
+      sg.addColorStop(0, withAlpha(col, 0.55)); sg.addColorStop(1, withAlpha(col, 0));
+      ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(x, y, r + gw, 0, 7); ctx.fill();
+    }
   });
   // semantic-neighbour edges of the focused star (cross-cluster edges in accent)
   const f = hover || selected;
@@ -826,7 +880,7 @@ function jumpToMatch() {
 }
 async function semanticJump(q) {
   const seq = ++semSeq, src = source;
-  setStatus(t("star_semSearching"));
+  setStatus(t("star_semSearching"), true);
   let hits = [];
   try {
     const r = src === "archive"
@@ -910,10 +964,18 @@ function pick(px, py) {
   if (!DATA) return null;
   const [cx, cy] = canvasXY(px, py);
   let best = null, bd = 18;
-  for (const d of DATA.docs) { if (hidden.has(d.cluster)) continue; const [x, y] = toScreen(d); const dist = Math.hypot(x - cx, y - cy); if (dist < bd) { bd = dist; best = d; } }
+  for (const d of DATA.docs) {
+    // Skip hidden AND search-dimmed stars: a 15%-alpha star is visually "empty sky",
+    // and picking it made clicks there LOOK like the inspector refused to close.
+    if (alphaOf(d, d._i) < 0.5) continue;
+    const [x, y] = toScreen(d); const dist = Math.hypot(x - cx, y - cy);
+    if (dist < bd) { bd = dist; best = d; }
+  }
   return best;
 }
-function clickAt(px, py) { const d = pick(px, py); if (d) openInspector(d); else closeInspector(); }
+// Clicking a star opens/switches the inspector; clicking empty sky does NOT close it
+// (user's rule: the panel closes ONLY via its × button or Escape).
+function clickAt(px, py) { const d = pick(px, py); if (d) openInspector(d); }
 function hideTip() { if (el.tip) el.tip.hidden = true; }
 const kindLabel = (k) => ({ video: "视频", url: "网页", paper: "论文", pdf: "PDF", doc: "文档", chat: "对话" }[k] || k);
 

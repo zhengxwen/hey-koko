@@ -169,6 +169,9 @@ export function initArchive() {
 
   // Retrieve
   document.querySelector("#retrieveChat").addEventListener("click", () => {
+    // Dismiss the star map first — it sits ABOVE the panels, so without this the
+    // archive would open invisibly beneath it (same pattern as the library button).
+    document.dispatchEvent(new CustomEvent("heykoko:closeStarMap"));
     openArchiveOverlay();
   });
 

@@ -597,7 +597,15 @@ export function initLibrary() {
   }
   _openLibrary = open;
   _openDoc = openDoc;
-  openBtn.addEventListener("click", open);
+  // Panel BUTTON also notifies the star map (else the panel opens beneath it and the
+  // click looks dead). "libraryOpened" lets a panel-dismissed star map RESUME here —
+  // that's the archive ↔ star-map toggle. The star map's own source-toggle syncing
+  // calls open() directly, NOT this handler, so it neither closes nor reopens the map.
+  openBtn.addEventListener("click", () => {
+    document.dispatchEvent(new CustomEvent("heykoko:closeStarMap"));
+    open();
+    document.dispatchEvent(new CustomEvent("heykoko:libraryOpened"));
+  });
   closeBtn.addEventListener("click", () => overlay.classList.remove("isOpen"));
 
   // ---- refresh (rescan disk) ----
