@@ -84,7 +84,7 @@ Windows uses [winget](https://learn.microsoft.com/windows/package-manager/winget
 
 5. Open your browser at `http://127.0.0.1:1314`.
 
-> **What's macOS-only on Windows:** the native [macOS app bundle](#macos-app-bundle) (Swift/WebKit wrapper) and the built-in **macOS `say` system voices** (the `say:` entries in the voice dropdown — Windows only offers the Kokoro voices). Both **reading replies aloud** (the 朗读 button / auto-speak) and the **`/voice` command** work on Windows using the [Kokoro](tts.md) voices: reading-aloud plays through the server's speakers (via PowerShell's built-in player), and `/voice` plays a clip in the browser. See [Optional Enhancements](../README.md#optional-enhancements) for the Windows setup of each helper.
+> **What's macOS-only on Windows:** the native [macOS app bundle](#macos-app-bundle) (Swift/WebKit wrapper) and the built-in **macOS `say` system voices** (the `say:` entries in the voice dropdown — Windows only offers the Kokoro voices). Both **reading replies aloud** (the 朗读 button / auto-speak) and the **`/voice` command** work on Windows using the [Kokoro](local-python.md) voices: reading-aloud plays through the server's speakers (via PowerShell's built-in player), and `/voice` plays a clip in the browser. See [Optional Enhancements](../README.md#optional-enhancements) for the Windows setup of each helper.
 
 Everything beyond a chat model is optional — image generation, file parsers, YouTube, and text-to-speech each light up as you install their helper (see [Optional Enhancements](../README.md#optional-enhancements)).
 

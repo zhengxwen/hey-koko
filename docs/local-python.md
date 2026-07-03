@@ -1,4 +1,8 @@
-# Local Text-to-Speech (`/voice` command)
+# Local Python venv — Text-to-Speech (`/voice`)
+
+> This page also sets up hey-koko's **shared local-Python venv** (`~/venv/heykoko`).
+> TTS is the feature that uses it today; other opt-in ML features install into the
+> same venv later. Skip this whole page if you don't need local voices.
 
 The `/voice <text>` command synthesizes a **downloadable audio file** with a
 local open-source engine. The **Kokoro** engine is light & fast and exposes
@@ -10,8 +14,10 @@ or inline with `--use`/`-u`:
 | **Kokoro** | light & fast | Chinese `kokoro:zf_xiaoxiao` (女) / `kokoro:zm_yunxi` (男); English `kokoro:af_heart` (US ♀) / `kokoro:bm_george` (UK ♂) … |
 
 These need PyTorch wheels installed into a **dedicated venv (Python 3.10–3.11)**
-— the newest Python may not have matching wheels yet, and keeping TTS in its own
-venv avoids clashing with the system Python. The easiest way is
+— the newest Python may not have matching wheels yet, and keeping these ML deps in
+their own venv avoids clashing with the system Python. hey-koko uses **one shared
+venv, `~/venv/heykoko`**, for its local-Python features (TTS today; other opt-in ML
+features can install into the same venv later). The easiest way is
 [uv](https://github.com/astral-sh/uv), which also downloads the right Python for
 you.
 
@@ -21,12 +27,12 @@ you.
 
 ```bash
 # Kokoro (light & fast) — recommended
-uv venv --python 3.11 ~/venv/tts
-uv pip install --python ~/venv/tts/bin/python kokoro "misaki[zh]" numpy soundfile
+uv venv --python 3.11 ~/venv/heykoko
+uv pip install --python ~/venv/heykoko/bin/python kokoro "misaki[zh]" numpy soundfile
 
 # English voices (af_*/am_* US, bf_*/bm_* UK) also need the spaCy English model
 # + espeak-ng (otherwise misaki tries to auto-download the model and fails):
-uv pip install --python ~/venv/tts/bin/python \
+uv pip install --python ~/venv/heykoko/bin/python \
   "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 brew install espeak-ng
 ```
@@ -37,12 +43,12 @@ Install [uv](https://github.com/astral-sh/uv) first if you don't have it: `curl 
 
 ```bash
 # Kokoro (light & fast) — recommended
-uv venv --python 3.11 ~/venv/tts
-uv pip install --python ~/venv/tts/bin/python kokoro "misaki[zh]" numpy soundfile
+uv venv --python 3.11 ~/venv/heykoko
+uv pip install --python ~/venv/heykoko/bin/python kokoro "misaki[zh]" numpy soundfile
 
 # English voices (af_*/am_* US, bf_*/bm_* UK) also need the spaCy English model
 # + espeak-ng (otherwise misaki tries to auto-download the model and fails):
-uv pip install --python ~/venv/tts/bin/python \
+uv pip install --python ~/venv/heykoko/bin/python \
   "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 sudo apt install -y espeak-ng
 ```
@@ -59,8 +65,8 @@ at …"), whereas a standard venv copies a real `python.exe`.
 
 ```powershell
 # Kokoro (light & fast) — recommended. Requires an installed Python 3.10-3.12.
-python -m venv "$env:USERPROFILE\venv\tts"
-$vpy = "$env:USERPROFILE\venv\tts\Scripts\python.exe"
+python -m venv "$env:USERPROFILE\venv\heykoko"
+$vpy = "$env:USERPROFILE\venv\heykoko\Scripts\python.exe"
 & $vpy -m pip install --upgrade pip
 & $vpy -m pip install kokoro "misaki[zh]" numpy soundfile
 
@@ -81,10 +87,11 @@ calls are fast.
 > with a `PermissionError` on that cache's lock files. Either `unset HF_HOME`
 > before starting the server, or point it at a directory your user can write to.
 
-The server **auto-detects the venv** at `~/venv/tts` (using `bin/python` on
-macOS, `Scripts\python.exe` on Windows), so you can just run `node server.js` —
-no extra env var needed. (To use a different venv, point `TTS_PYTHON` at its
-interpreter.) AAC encoding uses `ffmpeg`; without it the audio falls back to wav.
+The server **auto-detects the venv** at `~/venv/heykoko` (falling back to the
+legacy `~/venv/tts`; using `bin/python` on macOS, `Scripts\python.exe` on
+Windows), so you can just run `node server.js` — no extra env var needed. (To use
+a different venv, point `TTS_PYTHON` at its interpreter.) AAC encoding uses
+`ffmpeg`; without it the audio falls back to wav.
 
 The engine is hidden from the voice dropdown if it fails to import. (On macOS the
 built-in `say` voices are always available too; on Windows only the Kokoro voices

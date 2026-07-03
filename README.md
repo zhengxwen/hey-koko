@@ -20,7 +20,7 @@ Hey-Koko gives you a personal AI chat experience without sending a single byte t
 - **Web & YouTube** — `/url` fetches and summarizes a web page, or transcribes and tidies up a YouTube video.
 - **Web search** — `/search` queries DuckDuckGo, optionally reading the top results in depth.
 - **Image & video generation** — `/imagine` with local Ollama image models; optionally connect [ComfyUI](docs/comfyui.md) for advanced text-to-image, instruction editing, multi-image composition, and video.
-- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file ([Kokoro](docs/tts.md), or macOS system voices). Optional auto-speak reads replies aloud.
+- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file ([Kokoro](docs/local-python.md), or macOS system voices). Optional auto-speak reads replies aloud.
 - **Long-term memory & proactive messages** — remembers facts about you, and can greet, nudge, or remind you on its own.
 - **Agentic tools** — an optional tool-use loop (date/time, calculator, web search, recall memory, set reminders, remember facts).
 - **Background task queue** — long-running jobs run detached so you can keep chatting; see [Background Jobs](#background-jobs).
@@ -131,7 +131,7 @@ Hey-Koko works with just Ollama. Each helper below unlocks an extra capability w
 | YouTube support (`/url`) | yt-dlp & ffmpeg | [optional-tools.md → yt-dlp](docs/optional-tools.md#yt-dlp--ffmpeg) |
 | Speech-to-text for videos without subtitles | whisper.cpp | [optional-tools.md → whisper.cpp](docs/optional-tools.md#whispercpp) |
 | Simplified/Traditional Chinese normalization | OpenCC | [optional-tools.md → OpenCC](docs/optional-tools.md#opencc) |
-| Local text-to-speech (`/voice`) | Kokoro | [docs/tts.md](docs/tts.md) |
+| Local text-to-speech (`/voice`) | Kokoro | [docs/local-python.md](docs/local-python.md) |
 | Advanced image & video generation | ComfyUI | [docs/comfyui.md](docs/comfyui.md) |
 | Cloud chat models (Claude / OpenAI / DeepSeek / OpenRouter / Grok / Qwen / …) | API key | [docs/cloud-models.md](docs/cloud-models.md) |
 

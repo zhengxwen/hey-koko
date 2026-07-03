@@ -2,7 +2,7 @@
 
 Hey-Koko works with just Ollama. Each helper below unlocks an extra capability when installed; without it, that feature is simply hidden or falls back to a lighter path.
 
-See also: [Local text-to-speech](tts.md) · [ComfyUI](comfyui.md) · [Cloud models](cloud-models.md)
+See also: [Local text-to-speech](local-python.md) · [ComfyUI](comfyui.md) · [Cloud models](cloud-models.md)
 
 ## Pandoc
 

@@ -31,17 +31,19 @@ if (process.platform === "win32") {
   } catch (e) { console.warn(`[config] PATH refresh failed (${e.message}) — keeping inherited PATH`); }
 }
 
-// TTS python: explicit TTS_PYTHON wins; else auto-detect the conventional
-// ~/venv/tts venv; else fall back to whatever "python3" is on PATH.
-function resolveTtsPython() {
-  if (process.env.TTS_PYTHON) return process.env.TTS_PYTHON;
+// Local ML python. Kokoro TTS and the UMAP star-map projection share ONE venv.
+// Explicit env (TTS_PYTHON / UMAP_PYTHON) wins; else auto-detect ~/venv/heykoko
+// (the shared name) then ~/venv/tts (legacy); else fall back to "python3" on PATH.
+function resolveVenvPython(envVar) {
+  if (process.env[envVar]) return process.env[envVar];
   // venv interpreter layout differs by platform: Scripts\python.exe on Windows,
   // bin/python elsewhere. Fall back to the platform's default python launcher.
   const win = process.platform === "win32";
-  const guess = win
-    ? path.join(os.homedir(), "venv", "tts", "Scripts", "python.exe")
-    : path.join(os.homedir(), "venv", "tts", "bin", "python");
-  try { if (fs.existsSync(guess)) return guess; } catch { /* ignore */ }
+  const sub = win ? ["Scripts", "python.exe"] : ["bin", "python"];
+  for (const name of ["heykoko", "tts"]) {
+    const guess = path.join(os.homedir(), "venv", name, ...sub);
+    try { if (fs.existsSync(guess)) return guess; } catch { /* ignore */ }
+  }
   return win ? "python" : "python3";
 }
 
@@ -70,11 +72,12 @@ const config = {
   // throwaway server never loads (and starts running!) the real server's persisted queue.
   JOBS_DIR: path.join(DATA_DIR, "jobs"),
   whisperModel: process.env.WHISPER_MODEL || "",
-  // Local text-to-speech (/voice command). TTS_PYTHON should point at a venv
-  // python (3.10/3.11) with kokoro installed — the system python may be too
-  // new for those ML wheels. Engines that fail to import are reported
-  // unavailable rather than breaking the daemon.
-  ttsPython: resolveTtsPython(),
+  // Local text-to-speech (/voice) + UMAP star-map projection share ~/venv/heykoko
+  // (python 3.11 with kokoro + umap-learn). TTS_PYTHON / UMAP_PYTHON override the
+  // path; the system python may be too new for those ML wheels. Engines that fail
+  // to import are reported unavailable rather than breaking the daemon.
+  ttsPython: resolveVenvPython("TTS_PYTHON"),
+  umapPython: resolveVenvPython("UMAP_PYTHON"),
   WHISPER_MODEL_SEARCH_PATHS: [
     path.join(os.homedir(), ".local", "share", "whisper-cpp"),
     path.join(os.homedir(), "whisper.cpp", "models"),
