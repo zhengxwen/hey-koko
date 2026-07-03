@@ -1050,6 +1050,8 @@ export function initLibrary() {
       }
       node.files.push(d);
     }
+    // Doc count shown next to the folder name — the whole subtree, not just direct children.
+    const countDocs = (n) => n.files.length + Object.values(n.dirs).reduce((s, c) => s + countDocs(c), 0);
     const renderNode = (node, container, depth, parentPath) => {
       Object.keys(node.dirs).sort().forEach((name) => {
         const path = parentPath ? parentPath + "/" + name : name;
@@ -1059,7 +1061,7 @@ export function initLibrary() {
         const header = document.createElement("div");
         header.className = "archiveTreeDirHeader";
         header.style.paddingLeft = (depth * 16 + 8) + "px";
-        header.innerHTML = `<span class="archiveTreeDirArrow">${expanded ? "▼" : "▶"}</span><span class="archiveTreeDirIcon">📁</span><span class="archiveTreeDirName">${escapeHtml(name)}</span>`;
+        header.innerHTML = `<span class="archiveTreeDirArrow">${expanded ? "▼" : "▶"}</span><span class="archiveTreeDirIcon">📁</span><span class="archiveTreeDirName">${escapeHtml(name)} <span class="archiveTreeDirCount">(${countDocs(node.dirs[name])})</span></span>`;
         const content = document.createElement("div");
         content.className = "archiveTreeDirContent";
         header.addEventListener("click", () => {

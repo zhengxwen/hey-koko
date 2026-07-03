@@ -3592,6 +3592,12 @@ button.secondary:disabled {
   flex: 1;
 }
 
+.archiveTreeDirCount {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: normal;
+}
+
 .archiveTreeDirContent {
   display: block;
   border-left: 2px solid var(--line);
