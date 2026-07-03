@@ -1022,6 +1022,120 @@ export function initLibrary() {
       more.addEventListener("click", () => { tagBarExpanded = !tagBarExpanded; renderTagBar(); });
       tagBar.appendChild(more);
     }
+    // Library-wide tag maintenance (rename / delete a tag everywhere) — shown only
+    // when there's at least one tag to manage.
+    if (entries.length) {
+      const manage = document.createElement("span");
+      manage.className = "archiveTagChip libraryTagManage";
+      manage.textContent = t("lib_tagManage");
+      manage.addEventListener("click", openTagManager);
+      tagBar.appendChild(manage);
+    }
+  }
+
+  // Tag manager modal: lists every tag with its doc count and rename/delete actions.
+  // Each op hits /api/library/tag-edit (whole-library, metadata-only) then refreshes.
+  function openTagManager() {
+    const counts = new Map();
+    docs.forEach((d) => (d.tags || []).forEach((tg) => {
+      if (tg && tg.name) counts.set(tg.name, (counts.get(tg.name) || 0) + 1);
+    }));
+    const back = document.createElement("div");
+    back.className = "scanModalBackdrop libraryTagManagerBackdrop";
+    const modal = document.createElement("div");
+    modal.className = "scanModal libraryTagManager";
+    const close = () => back.remove();
+
+    const header = document.createElement("div");
+    header.className = "scanModalHeader";
+    const h = document.createElement("h3");
+    h.className = "scanModalTitle";
+    h.textContent = t("lib_tagManageTitle");
+    const x = document.createElement("button");
+    x.type = "button"; x.className = "scanModalClose"; x.textContent = "✕";
+    x.addEventListener("click", close);
+    header.append(h, x);
+
+    const body = document.createElement("div");
+    body.className = "comfyParamsBody";
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = t("lib_tagManageHint");
+    body.appendChild(hint);
+
+    const list = document.createElement("div");
+    list.className = "libraryTagManagerList";
+    body.appendChild(list);
+
+    const paint = () => {
+      list.innerHTML = "";
+      const entries = [...counts.entries()].sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]));
+      if (!entries.length) {
+        const empty = document.createElement("div");
+        empty.className = "archiveEmpty";
+        empty.textContent = t("lib_tagNone");
+        list.appendChild(empty);
+        return;
+      }
+      for (const [name, n] of entries) {
+        const row = document.createElement("div");
+        row.className = "libraryTagManagerRow";
+        const chip = document.createElement("span");
+        chip.className = "archiveTagChip";
+        chip.textContent = name;
+        chip.style.background = tagColorOf(name);
+        const cnt = document.createElement("span");
+        cnt.className = "libraryTagManagerCount";
+        cnt.textContent = t("lib_tagCount", { n });
+        const spacer = document.createElement("span");
+        spacer.className = "libraryTagManagerSpacer";
+        const renameBtn = document.createElement("button");
+        renameBtn.type = "button"; renameBtn.className = "secondary"; renameBtn.textContent = t("lib_tagRename");
+        renameBtn.addEventListener("click", () => runTagOp("rename", name, n));
+        const delBtn = document.createElement("button");
+        delBtn.type = "button"; delBtn.className = "secondary"; delBtn.textContent = t("lib_tagDelete");
+        delBtn.addEventListener("click", () => runTagOp("delete", name, n));
+        row.append(chip, cnt, spacer, renameBtn, delBtn);
+        list.appendChild(row);
+      }
+    };
+
+    const runTagOp = async (op, name, n) => {
+      let newName = "";
+      if (op === "rename") {
+        newName = (prompt(t("lib_tagRenamePrompt", { name }), name) || "").trim();
+        if (!newName || newName === name) return;
+      } else {
+        if (!confirm(t("lib_tagDeleteConfirm", { name, n }))) return;
+      }
+      setStatus(t("lib_saving"));
+      try {
+        const r = await postJson("/api/library/tag-edit", { op, name, newName });
+        if (r && r.error) throw new Error(r.error);
+        setStatus(t("lib_tagEditDone", { n: r.changed || 0 }));
+        await refreshList();   // pulls fresh docs → tag bar + list reflect the change
+        // Recompute counts for the still-open modal from the refreshed docs.
+        counts.clear();
+        docs.forEach((d) => (d.tags || []).forEach((tg) => {
+          if (tg && tg.name) counts.set(tg.name, (counts.get(tg.name) || 0) + 1);
+        }));
+        // A filter pinned to a now-renamed/deleted tag no longer matches anything.
+        if (activeTagFilter && !counts.has(activeTagFilter)) { activeTagFilter = null; renderList(); }
+        paint();
+      } catch (e) { setStatus(t("lib_tagEditFailed", { error: e.message })); }
+    };
+
+    paint();
+    modal.append(header, body);
+    back.appendChild(modal);
+    back.addEventListener("click", (e) => { if (e.target === back) close(); });
+    document.body.appendChild(back);
+  }
+
+  // The tag bar's per-tag color (from whichever doc carries it); falls back to grey.
+  function tagColorOf(name) {
+    for (const d of docs) for (const tg of (d.tags || [])) if (tg && tg.name === name) return tg.color || "#e0e0e0";
+    return "#e0e0e0";
   }
 
   // One doc card (depth indents it under its folder in the tree view).

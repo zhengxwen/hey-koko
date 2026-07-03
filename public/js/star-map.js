@@ -398,7 +398,7 @@ function loop() { twinkle += 0.02; if (usingGL) drawGL(); else draw2d(); positio
 function wireCanvas() {
   const cv = el.canvas;
   cv.addEventListener("mousedown", (e) => { drag = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y, moved: false }; });
-  window.addEventListener("mouseup", () => { if (drag && !drag.moved) clickAt(drag.ex, drag.ey); drag = null; });
+  window.addEventListener("mouseup", (e) => { if (drag && !drag.moved) clickAt(e.clientX, e.clientY); drag = null; });
   window.addEventListener("mousemove", (e) => {
     if (!el.overlay.classList.contains("isOpen") || !DATA) return;
     if (drag) {

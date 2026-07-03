@@ -27,7 +27,7 @@ const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
 const { listSystemVoices, speakAudio } = require("./server/speech");
 const { listTtsVoices, synthesize } = require("./server/tts");
 const { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives } = require("./server/archive");
-const { importLibrary, listLibrary, searchLibrary, getLibraryDoc, saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, listLibraryDirs, moveLibraryDocs, rescanLibrary, rateLibraryDoc, distillLibraryDoc, relatedLibraryDocs } = require("./server/library");
+const { importLibrary, listLibrary, searchLibrary, getLibraryDoc, saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, listLibraryDirs, moveLibraryDocs, rescanLibrary, rateLibraryDoc, editLibraryTag, distillLibraryDoc, relatedLibraryDocs } = require("./server/library");
 const { serveStarmap } = require("./server/star-map");
 const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file");
 const bgQueue = require("./server/jobs");   // Option B: server-side background job queue
@@ -316,6 +316,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/library/rate") {
     rateLibraryDoc(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/library/tag-edit") {
+    editLibraryTag(req, res);
     return;
   }
 

@@ -1116,6 +1116,55 @@ async function rateLibraryDoc(req, res) {
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
+// POST /api/library/tag-edit { op: "delete"|"rename", name, newName? }
+//   → { ok, changed } — library-wide tag maintenance. Tags are pure metadata (never
+// embedded), so this only rewrites doc JSON + the index; NO re-embedding needed.
+// rename: if the new name already exists on a doc, the two merge (deduped, keeping the
+// existing color). Runs over the whole library by index, editing each entry in place so
+// the list's default import order is preserved.
+async function editLibraryTag(req, res) {
+  try {
+    const body = await readBody(req);
+    const op = String(body.op || "");
+    const name = String(body.name || "").trim();
+    const newName = String(body.newName || "").trim();
+    if (!name) { sendJson(res, 400, { error: "缺少标签名" }); return; }
+    if (op === "rename" && !newName) { sendJson(res, 400, { error: "缺少新标签名" }); return; }
+    if (op !== "delete" && op !== "rename") { sendJson(res, 400, { error: "未知操作" }); return; }
+
+    // Apply the op to a [{name,color}] list; returns a NEW list or null if unchanged.
+    const apply = (tags) => {
+      if (!Array.isArray(tags) || !tags.some((tg) => tg && tg.name === name)) return null;
+      if (op === "delete") return tags.filter((tg) => tg && tg.name !== name);
+      // rename → newName, then dedupe (a doc may already carry newName).
+      const out = []; const seen = new Set();
+      for (const tg of tags) {
+        if (!tg || !tg.name) continue;
+        const nm = tg.name === name ? newName : tg.name;
+        if (seen.has(nm)) continue;
+        seen.add(nm);
+        out.push(tg.name === name ? { name: newName, color: tagColor(newName) } : tg);
+      }
+      return out;
+    };
+
+    const arr = loadIndex();
+    let changed = 0;
+    for (const e of arr) {
+      const doc = readDoc(e.docId);
+      if (!doc) continue;
+      const next = apply(doc.tags);
+      if (!next) continue;
+      doc.tags = next;
+      writeDoc(doc);
+      e.tags = next;   // keep the index entry in sync (in place — no reorder)
+      changed++;
+    }
+    if (changed) { saveIndex(arr); invalidateCache(); }
+    sendJson(res, 200, { ok: true, changed });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
 async function distillLibraryDoc(req, res) {
   try {
     const body = await readBody(req);
@@ -1176,7 +1225,7 @@ async function buildYoutubeDoc(data, url, language = "") {
 module.exports = {
   importLibrary, listLibrary, searchLibrary, getLibraryDoc,
   saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, LIBRARY_DIR,
-  listLibraryDirs, moveLibraryDocs, rescanLibrary, rateLibraryDoc,
+  listLibraryDirs, moveLibraryDocs, rescanLibrary, rateLibraryDoc, editLibraryTag,
   splitIntoBlocks,   // exported for reuse/testing of the chunker
   // server-side libimport job (jobs.js) + distill + related-docs
   importDocInternal, distillDocInternal, distillLibraryDoc, buildYoutubeDoc, llmComplete,
