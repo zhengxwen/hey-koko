@@ -130,7 +130,16 @@ const emitUpdate = (job) => broadcast({ type: "update", job: publicJob(job) });
 //             that keep-awake state lasts as long as the calling thread lives, and
 //             `Wait-Process -Id <pid>` releases it (thread exits) when the server pid
 //             dies — mirroring caffeinate's `-w`.
-//   Linux   → no built-in equivalent; no-op.
+//   Linux   → `systemd-inhibit` (systemd-logind, present on mainstream distros)
+//             holds an inhibitor lock for as long as the wrapped command lives;
+//             `tail --pid=<pid>` exits when the server pid dies, releasing the
+//             lock — mirroring caffeinate's `-w`. Prefers `idle:sleep` (unlike
+//             caffeinate's idle-only it also blocks desktop auto-suspend, which
+//             may ignore logind idle inhibitors), but blocking sleep needs a
+//             polkit approval that remote (SSH) sessions don't get — so probe
+//             first and settle for idle-only there. The probed variant is
+//             exec'd so the child IS systemd-inhibit and kill() releases it.
+//             Non-systemd distros hit the spawn "error"/instant-exit handlers.
 let _sleepGuard = null;
 function spawnSleepGuard() {
   if (process.platform === "darwin") {
@@ -147,10 +156,17 @@ function spawnSleepGuard() {
     const encoded = Buffer.from(script, "utf16le").toString("base64");
     return spawn("powershell", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], { stdio: "ignore", windowsHide: true });
   }
+  if (process.platform === "linux") {
+    const opts = "--who=hey-koko '--why=background jobs running' --mode=block";
+    return spawn("sh", ["-c",
+      `if systemd-inhibit --what=idle:sleep ${opts} true 2>/dev/null; then w=idle:sleep; else w=idle; fi; ` +
+      `exec systemd-inhibit --what=$w ${opts} tail --pid=${process.pid} -f /dev/null`,
+    ], { stdio: "ignore" });
+  }
   return null;
 }
 function updateSleepGuard() {
-  if (process.platform !== "darwin" && process.platform !== "win32") return; // no built-in guard elsewhere
+  if (!["darwin", "win32", "linux"].includes(process.platform)) return; // no guard elsewhere
   const busy = jobs.some((j) => j.status === "queued" || j.status === "running");
   if (busy && !_sleepGuard) {
     try {
