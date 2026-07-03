@@ -104,17 +104,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
         } else {
             env["PATH"] = commonPaths.joined(separator: ":")
         }
-        // ComfyUI endpoint. Read COMFY_URL from the environment so the server can
+        // ComfyUI endpoint. Read COMFYUI_URL from the environment so the server can
         // reach a ComfyUI on another host. A Finder-launched app gets only the
         // launchd environment, so set it once with:
-        //     launchctl setenv COMFY_URL http://192.168.1.3:8188
+        //     launchctl setenv COMFYUI_URL http://192.168.1.3:8188
         // (then relaunch the app), or export it when launching from a terminal.
         // env already inherits it; this just surfaces it explicitly + logs it.
-        if let comfyUrl = ProcessInfo.processInfo.environment["COMFY_URL"], !comfyUrl.isEmpty {
-            env["COMFY_URL"] = comfyUrl
-            NSLog("[hey-koko] COMFY_URL = \(comfyUrl)")
+        if let comfyUrl = ProcessInfo.processInfo.environment["COMFYUI_URL"], !comfyUrl.isEmpty {
+            env["COMFYUI_URL"] = comfyUrl
+            NSLog("[hey-koko] COMFYUI_URL = \(comfyUrl)")
         } else {
-            NSLog("[hey-koko] COMFY_URL not set — server defaults to http://127.0.0.1:8188")
+            NSLog("[hey-koko] COMFYUI_URL not set — server defaults to http://127.0.0.1:8188")
         }
         process.environment = env
 

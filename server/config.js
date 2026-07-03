@@ -63,7 +63,7 @@ const config = {
   // doesn't reload the model with a different context size.
   llmTaskCtx: Number(process.env.LLM_TASK_CTX || 24576),
   imageOllamaUrl: process.env.IMAGE_OLLAMA_URL || (process.env.OLLAMA_URL || "http://127.0.0.1:11434"),
-  comfyUrl: process.env.COMFY_URL || "http://127.0.0.1:8188",
+  comfyUrl: process.env.COMFYUI_URL || "http://127.0.0.1:8188",
   PUBLIC_DIR: path.join(__dirname, "..", "public"),
   ARCHIVES_DIR: path.join(DATA_DIR, "chat"),
   // Option B: server-side background job queue store. Isolated via HEYKOKO_DIR so a

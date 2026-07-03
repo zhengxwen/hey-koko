@@ -60,7 +60,7 @@ macOS steps below — for **Linux** and **Windows** see [docs/install.md](docs/i
    node server.js
    ```
 
-   Or double-click `start.command`.
+   Or run `./start.sh` / double-click `start.command` — both start the server and open the browser automatically.
 
 6. Open your browser at:
 
@@ -143,7 +143,7 @@ The most common ones — full reference in [docs/install.md](docs/install.md#env
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
-| `COMFY_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
+| `COMFYUI_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
 | `PORT` | `1314` | Server port |
 
 ```bash

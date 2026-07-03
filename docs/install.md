@@ -39,6 +39,8 @@ The macOS quick start lives in the [README](../README.md#quick-start). This page
    node server.js
    ```
 
+   Or run `./start.sh`, which also opens the browser automatically (when a graphical session exists).
+
 5. Open your browser at:
 
    ```
@@ -108,7 +110,7 @@ Once built you can:
 - Double-click `hey-koko.app` to launch.
 - Drag it to `/Applications` to install, or to the Dock for quick access.
 
-To pass a non-default `COMFY_URL` (or other env var) to the Finder-launched app, set it once with `launchctl setenv COMFY_URL http://host:8188` and relaunch.
+To pass a non-default `COMFYUI_URL` (or other env var) to the Finder-launched app, set it once with `launchctl setenv COMFYUI_URL http://host:8188` and relaunch.
 
 ### Stop the app
 
@@ -134,7 +136,7 @@ $env:OLLAMA_URL = "http://127.0.0.1:11434"; $env:PORT = "1314"; node server.js
 |----------|---------|-------------|
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
 | `IMAGE_OLLAMA_URL` | `OLLAMA_URL` | Separate Ollama endpoint for image analysis (vision models), if different from the chat one |
-| `COMFY_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
+| `COMFYUI_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
 | `PORT` | `1314` | Server port |
 | `LLM_TASK_CTX` | `24576` | Ollama context window (`num_ctx`) for internal LLM tasks (subtitle formatting, library distill/rerank). Ollama's small default would silently truncate long prompts |
 | `URL_CONTENT_MAX_CHARS` | `40000` | Max characters kept from a fetched webpage (`/url`); `0` = unlimited. YouTube transcripts are never truncated |
