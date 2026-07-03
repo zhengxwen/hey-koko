@@ -1,8 +1,8 @@
 # Local Python venv — Text-to-Speech (`/voice`)
 
 > This page also sets up hey-koko's **shared local-Python venv** (`~/venv/heykoko`).
-> TTS is the feature that uses it today; other opt-in ML features install into the
-> same venv later. Skip this whole page if you don't need local voices.
+> TTS and the knowledge **star-map** (UMAP projection + KMeans constellations) both
+> run in it. Skip this whole page if you don't need local voices or the star map.
 
 The `/voice <text>` command synthesizes a **downloadable audio file** with a
 local open-source engine. The **Kokoro** engine is light & fast and exposes
@@ -16,8 +16,8 @@ or inline with `--use`/`-u`:
 These need PyTorch wheels installed into a **dedicated venv (Python 3.10–3.11)**
 — the newest Python may not have matching wheels yet, and keeping these ML deps in
 their own venv avoids clashing with the system Python. hey-koko uses **one shared
-venv, `~/venv/heykoko`**, for its local-Python features (TTS today; other opt-in ML
-features can install into the same venv later). The easiest way is
+venv, `~/venv/heykoko`**, for its local-Python features (TTS and the star-map's
+UMAP/KMeans projection). The easiest way is
 [uv](https://github.com/astral-sh/uv), which also downloads the right Python for
 you.
 
@@ -28,7 +28,7 @@ you.
 ```bash
 # Kokoro (light & fast) — recommended
 uv venv --python 3.11 ~/venv/heykoko
-uv pip install --python ~/venv/heykoko/bin/python kokoro "misaki[zh]" numpy soundfile
+uv pip install --python ~/venv/heykoko/bin/python kokoro "misaki[zh]" numpy soundfile umap-learn scikit-learn
 
 # English voices (af_*/am_* US, bf_*/bm_* UK) also need the spaCy English model
 # + espeak-ng (otherwise misaki tries to auto-download the model and fails):
@@ -44,7 +44,7 @@ Install [uv](https://github.com/astral-sh/uv) first if you don't have it: `curl 
 ```bash
 # Kokoro (light & fast) — recommended
 uv venv --python 3.11 ~/venv/heykoko
-uv pip install --python ~/venv/heykoko/bin/python kokoro "misaki[zh]" numpy soundfile
+uv pip install --python ~/venv/heykoko/bin/python kokoro "misaki[zh]" numpy soundfile umap-learn scikit-learn
 
 # English voices (af_*/am_* US, bf_*/bm_* UK) also need the spaCy English model
 # + espeak-ng (otherwise misaki tries to auto-download the model and fails):
@@ -68,7 +68,7 @@ at …"), whereas a standard venv copies a real `python.exe`.
 python -m venv "$env:USERPROFILE\venv\heykoko"
 $vpy = "$env:USERPROFILE\venv\heykoko\Scripts\python.exe"
 & $vpy -m pip install --upgrade pip
-& $vpy -m pip install kokoro "misaki[zh]" numpy soundfile
+& $vpy -m pip install kokoro "misaki[zh]" numpy soundfile umap-learn scikit-learn
 
 # English voices (af_*/am_* US, bf_*/bm_* UK) also need the spaCy English model
 # + espeak-ng (otherwise misaki tries to auto-download the model and fails):
@@ -82,6 +82,13 @@ On first synthesis Kokoro downloads its ~330 MB model from Hugging Face (cached
 under `~/.cache/huggingface`), so the very first `/voice` call is slow; later
 calls are fast.
 
+The star-map build runs as a background job; its first run pays numba's JIT
+warm-up (tens of seconds) before the UMAP projection starts — later rebuilds are
+much faster. An existing legacy `~/venv/tts` keeps working: just add the two
+star-map packages to it (`pip install umap-learn scikit-learn`) instead of
+recreating the venv. (Note: pip may downgrade numpy slightly to satisfy numba's
+version ceiling — kokoro/torch are fine with that.)
+
 > **Troubleshooting:** if you have `HF_HOME` set globally (e.g. pointing at a
 > shared or read-only model cache used by other tools), the download can fail
 > with a `PermissionError` on that cache's lock files. Either `unset HF_HOME`
@@ -90,7 +97,8 @@ calls are fast.
 The server **auto-detects the venv** at `~/venv/heykoko` (falling back to the
 legacy `~/venv/tts`; using `bin/python` on macOS, `Scripts\python.exe` on
 Windows), so you can just run `node server.js` — no extra env var needed. (To use
-a different venv, point `TTS_PYTHON` at its interpreter.) AAC encoding uses
+a different venv, point `TTS_PYTHON` / `UMAP_PYTHON` at its interpreter.) AAC
+encoding uses
 `ffmpeg`; without it the audio falls back to wav.
 
 The engine is hidden from the voice dropdown if it fails to import. (On macOS the
