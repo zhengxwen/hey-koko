@@ -218,6 +218,7 @@ function applyText() {
     for (const [key, tkey] of [["glow", "star_dispGlow"], ["twinkle", "star_dispTwinkle"], ["spokes", "star_dispSpokes"],
       ["edges", "star_dispEdges"], ["cb", "star_dispCb"], ["labels", "star_dispLabels"]]) {
       const lab = document.createElement("label"); lab.className = "checkboxLabel";
+      lab.title = t(tkey + "Tip");
       const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = !!disp[key];
       cb.addEventListener("change", () => {
         disp[key] = cb.checked; saveDisp();
@@ -638,7 +639,9 @@ function drawGL() {
   gl.uniform1f(gl.getUniformLocation(G.pt, "u_time"), twinkle);
   gl.uniform1f(gl.getUniformLocation(G.pt, "u_glow"), disp.glow ? 1 : 0);
   gl.uniform1f(gl.getUniformLocation(G.pt, "u_twinkle"), disp.twinkle ? 1 : 0);
-  gl.uniform1f(gl.getUniformLocation(G.pt, "u_rim"), theme.dark ? 0 : 1);
+  // rim in BOTH themes: --ink is dark-on-light and light-on-dark, so the stroke is
+  // black-ish in light mode and white-ish in dark mode.
+  gl.uniform1f(gl.getUniformLocation(G.pt, "u_rim"), 1);
   gl.uniform3fv(gl.getUniformLocation(G.pt, "u_rimColor"), hexToRgb(theme.ink));
   // rim stroke width in device px = what the SMALLEST star (base radius 3) used to get
   gl.uniform1f(gl.getUniformLocation(G.pt, "u_rimW"), 0.195 * sf);
@@ -782,7 +785,7 @@ function draw2d() {
       const gg = ctx.createRadialGradient(x, y, r, x, y, r + gw); gg.addColorStop(0, withAlpha(col, 0.5)); gg.addColorStop(1, withAlpha(col, 0)); ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(x, y, r + gw, 0, 7); ctx.fill();
     }
     ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
-    if (!theme.dark) { ctx.strokeStyle = theme.ink; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x, y, r + 0.5, 0, 7); ctx.stroke(); }
+    ctx.strokeStyle = theme.ink; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x, y, r + 0.5, 0, 7); ctx.stroke();
     ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.35, 0, 7); ctx.fill();
     ctx.globalAlpha = 1;
     if (d === hover || d === selected) { ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, 7); ctx.stroke(); }
