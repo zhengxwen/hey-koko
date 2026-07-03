@@ -771,7 +771,7 @@ function docCentroids() {
       if (!e.n) continue;
       const v = new Float32Array(e.sum.length);
       for (let i = 0; i < v.length; i++) v[i] = e.sum[i] / e.n;
-      map.set(id, { vec: v, model: e.model, title: e.title, docKind: e.docKind });
+      map.set(id, { vec: v, model: e.model, title: e.title, docKind: e.docKind, blocks: e.n });
     }
     cache.centroids = map;   // rides the cache → invalidated with it on any write
   }

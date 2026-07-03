@@ -474,15 +474,27 @@
           <div class="starMapHeader">
             <button id="starMapCloseBtn" type="button" class="archiveBackBtn" aria-label="Close">←</button>
             <h2 class="archiveTitle"><span id="starMapTitleText">Knowledge star map</span></h2>
+            <input id="starMapSearch" class="starMapSearch" type="search" placeholder="Search…" autocomplete="off" spellcheck="false" />
             <div class="starMapSourceToggle" role="group" aria-label="source">
               <button type="button" data-source="library" aria-pressed="true">Library</button>
               <button type="button" data-source="archive" aria-pressed="false">Chats</button>
             </div>
+            <div class="starMapBtnGroup">
+              <button id="starMapExportBtn" type="button" class="secondary starMapRebuildBtn" title="Export PNG">📷</button>
+              <button id="starMapDispBtn" type="button" class="secondary starMapRebuildBtn" title="Display">🎛</button>
+              <button id="starMapResetBtn" type="button" class="secondary starMapRebuildBtn" title="Reset view">⌂</button>
+            </div>
+            <button id="starMapRebuildBtn" type="button" class="secondary starMapRebuildBtn" title="Rebuild">🔄 Rebuild</button>
           </div>
           <div class="starMapStage">
             <canvas id="starMapCanvas"></canvas>
+            <div id="starMapDispMenu" class="starMapDispMenu" hidden></div>
             <aside id="starMapLegend" class="starMapLegend">
-              <h3 id="starMapLegendTitle">Constellations</h3>
+              <div class="starMapLegendHead">
+                <h3 id="starMapLegendTitle">Constellations</h3>
+                <button id="starMapHelpBtn" type="button" class="starMapHelpBtn" title="How to read this map" aria-label="How to read this map">?</button>
+              </div>
+              <div id="starMapHelp" class="starMapHelp" hidden><ul></ul></div>
               <ul id="starMapLegendList"></ul>
               <div id="starMapLegendFoot" class="starMapLegendFoot"></div>
             </aside>
@@ -742,6 +754,7 @@
         </div>
         <div class="comfyParamsBody">
           <p class="hint" id="libraryYtHint">已导入的视频默认不勾选。</p>
+          <input id="libraryYtFilter" class="libraryYtFilter" type="search" placeholder="过滤视频…" autocomplete="off" spellcheck="false" />
           <div class="libraryYtToolbar">
             <label class="checkboxLabel libraryYtSelectAll"><input type="checkbox" id="libraryYtSelectAll" /> <span id="libraryYtSelectAllText">全选</span></label>
             <label class="checkboxLabel libraryYtSelectAll" id="libraryYtMemberLabel" hidden><input type="checkbox" id="libraryYtMember" /> <span id="libraryYtMemberText">🔒 会员专属</span></label>
@@ -750,7 +763,7 @@
               <span id="libraryYtCount" class="libraryYtCount"></span>
             </span>
           </div>
-          <label class="checkboxLabel libraryYtAutoFolderLabel"><input type="checkbox" id="libraryYtAutoFolder" /> <span id="libraryYtAutoFolderText">按频道自动归入 youtube 下的对应子目录</span></label>
+          <label class="checkboxLabel libraryYtAutoFolderLabel"><input type="checkbox" id="libraryYtAutoFolder" checked /> <span id="libraryYtAutoFolderText">按频道自动归入 youtube 下的对应子目录</span></label>
           <div id="libraryYtList" class="libraryYtList"></div>
           <div id="libraryYtErrors" class="libraryYtErrors" hidden></div>
           <div class="maskPointActions">

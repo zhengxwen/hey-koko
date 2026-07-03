@@ -26,6 +26,7 @@ const isYoutubeUrl = (u) => /youtube\.com|youtu\.be/.test(u || "");
 let _refreshLibraryList = null;
 let _updateTaskCount = null;
 let _openLibrary = null;
+let _openDoc = null;
 
 // Called by bg-jobs (via setBgDeps onJobsChanged) whenever the job list/status changes,
 // so the library header shows how many imports are still queued/running.
@@ -33,6 +34,9 @@ export function notifyLibraryJobsChanged() { if (_updateTaskCount) _updateTaskCo
 // Open the library panel — used by bg-jobs to return here when a library import task
 // (which has no chat bubble) is clicked in the task drawer.
 export function openLibraryPanel() { if (_openLibrary) _openLibrary(); }
+// Open the library panel WITH a document shown — used by the star map's inspector
+// ("open document" on a star) to jump straight into reading.
+export function openLibraryDoc(docId) { if (_openLibrary) _openLibrary(); if (_openDoc) _openDoc(docId); }
 const embedModel = () => (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:8b";
 const kindIcon = (k) => KIND_ICON[k] || "📎";
 // The transcript-section names the server importer writes (DISTILL_I18N transcriptHeading,
@@ -546,6 +550,7 @@ export function initLibrary() {
   const ytCancel = document.querySelector("#libraryYtCancel");
   const ytConfirm = document.querySelector("#libraryYtConfirm");
   const ytAutoFolder = document.querySelector("#libraryYtAutoFolder");
+  const ytFilter = document.querySelector("#libraryYtFilter");
 
   let docs = [];
   let selected = new Set();
@@ -579,6 +584,10 @@ export function initLibrary() {
 
   // ---- open / close ----
   function open() {
+    // The two full-area panels are mutually exclusive: the archive overlay sits EARLIER
+    // in the DOM at the same z-index, so left open it would hide under us and clicking
+    // its button later would look dead. Opening one always closes the other.
+    document.querySelector("#archiveOverlay")?.classList.remove("isOpen");
     overlay.classList.add("isOpen");
     if (!currentDoc) clearPreview();   // keep the doc being read across close/reopen
     refreshList().then(() => {
@@ -587,6 +596,7 @@ export function initLibrary() {
     });
   }
   _openLibrary = open;
+  _openDoc = openDoc;
   openBtn.addEventListener("click", open);
   closeBtn.addEventListener("click", () => overlay.classList.remove("isOpen"));
 
@@ -781,11 +791,19 @@ export function initLibrary() {
 
   let ytRows = [];   // [{id, url, title, date, imported}] currently shown in the selection modal
   let ytDrag = null; // index of the row being dragged (via its ⠿ handle), or null
+  let ytFilterQ = ""; // active filter — hides non-matching rows (view only, checks survive)
+  const ytMatch = (r) => !ytFilterQ
+    || String(r.title || "").toLowerCase().includes(ytFilterQ)
+    || String(r.url || "").toLowerCase().includes(ytFilterQ)
+    || String(r.date || "").includes(ytFilterQ);
+  if (ytFilter) ytFilter.addEventListener("input", () => { ytFilterQ = ytFilter.value.trim().toLowerCase(); renderYtList(); });
 
-  function closeYtModal() { ytModal.hidden = true; ytList.innerHTML = ""; ytRows = []; ytDrag = null; }
+  function closeYtModal() { ytModal.hidden = true; ytList.innerHTML = ""; ytRows = []; ytDrag = null; ytFilterQ = ""; if (ytFilter) ytFilter.value = ""; }
 
   async function openYoutubeSelection(ytUrls) {
     ytRows = [];
+    ytFilterQ = "";
+    if (ytFilter) { ytFilter.value = ""; ytFilter.placeholder = t("lib_ytFilterPh"); }
     ytErrors.hidden = true; ytErrors.textContent = "";
     ytSelectAll.checked = false; ytSelectAll.disabled = true;
     ytReverse.disabled = true;
@@ -825,7 +843,10 @@ export function initLibrary() {
   function renderYtList() {
     ytList.innerHTML = "";
     ytDrag = null;
+    let shown = 0;
     ytRows.forEach((r, i) => {
+      if (!ytMatch(r)) return;   // filtered out — state (incl. checks) survives
+      shown++;
       // Canonical checkbox row (with a leading ⠿ drag handle → 3-col grid via
       // .libraryYtRow override); .isMultiline top-aligns the box and styles the
       // .checkboxRowSub date/url line.
@@ -868,7 +889,10 @@ export function initLibrary() {
       handle.className = "libraryYtHandle";
       handle.textContent = "⠿";
       handle.title = t("bg_reorder");
-      handle.addEventListener("mousedown", () => { row.draggable = true; });
+      // Reordering across a FILTERED view would splice against invisible neighbours —
+      // hide the handle while a filter is active (order still edits fine unfiltered).
+      if (ytFilterQ) handle.style.visibility = "hidden";
+      handle.addEventListener("mousedown", () => { if (!ytFilterQ) row.draggable = true; });
       // A plain click on the handle would otherwise activate the label → toggle the box.
       handle.addEventListener("click", (e) => e.preventDefault());
       const cb = document.createElement("input");
@@ -895,6 +919,7 @@ export function initLibrary() {
       row.append(handle, cb, meta);
       ytList.appendChild(row);
     });
+    if (!shown && ytRows.length) ytList.innerHTML = `<div class="libraryYtLoading">${escapeHtml(t("lib_ytFilterNone"))}</div>`;
     ytSelectAll.disabled = false;
     ytReverse.disabled = false;
     updateYtCount();
@@ -902,8 +927,11 @@ export function initLibrary() {
 
   function updateYtCount() {
     const n = ytRows.filter((r) => r.checked).length;
-    ytCount.textContent = t("lib_ytSelectedCount", { n, total: ytRows.length });
-    ytSelectAll.checked = n > 0 && n === ytRows.length;
+    const vis = ytFilterQ ? ytRows.filter(ytMatch) : ytRows;
+    ytCount.textContent = t("lib_ytSelectedCount", { n, total: ytRows.length })
+      + (ytFilterQ ? t("lib_ytFilterMatch", { m: vis.length }) : "");
+    // With a filter active, the select-all box mirrors the VISIBLE rows only.
+    ytSelectAll.checked = vis.length > 0 && vis.every((r) => r.checked);
     // Keep the 🔒 toggle in sync with the rows it governs (per-row ticks, select-all…).
     if (ytMemberToggle) {
       const mem = ytRows.filter((r) => r.memberOnly);
@@ -911,8 +939,10 @@ export function initLibrary() {
     }
   }
 
+  // Select-all follows the filter: with one active it (un)ticks only the visible rows
+  // ("filter 教程 → select all" selects just the tutorials).
   ytSelectAll.addEventListener("change", () => {
-    ytRows.forEach((r) => { r.checked = ytSelectAll.checked; });
+    ytRows.forEach((r) => { if (ytMatch(r)) r.checked = ytSelectAll.checked; });
     renderYtList();
   });
   // Batch tick/untick ONLY the members-only rows (e.g. after dropping member-account

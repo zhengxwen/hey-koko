@@ -51,6 +51,18 @@ function settle(jobId, result, err) {
 
 // ---- submit + await ---------------------------------------------------------
 // meta: { bgJob, kind, engine, comfyUrl, conversationId, msgId, label, clientId, signal }
+// Latest known state of every server job arrives via the SSE snapshot/updates into
+// lastJobs — this lets other views ask "is a <kind> job queued/running right now?"
+// (e.g. the star map shows a "rebuilding…" hint when a starmap job is in flight).
+export function activeServerJob(kind, payloadSource = null) {
+  for (const j of lastJobs.values()) {
+    if (j.kind !== kind || (j.status !== 'queued' && j.status !== 'running')) continue;
+    if (payloadSource && !(j.payload && j.payload.source === payloadSource)) continue;
+    return j;
+  }
+  return null;
+}
+
 // Release a job's lane submit-gate → lets the NEXT video job in the lane POST. Idempotent.
 function releaseSubmitGate(bgJob) {
   if (bgJob && bgJob._submitRelease) { bgJob._submitRelease(); bgJob._submitRelease = null; }

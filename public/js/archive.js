@@ -11,6 +11,15 @@ import { getActiveTab, createTab, closeTab, switchTab, renderTabs } from './tabs
 import { t } from './i18n.js';
 import { tabActiveJobCount, cancelTabJobs } from './bg-jobs.js';   // Option B: warn + cancel jobs on archive
 
+// Set by initArchive — lets the star map's inspector jump straight into an archived
+// conversation's read-only preview (open overlay + select + preview in one call).
+let _openArchived = null;
+export function openArchivedChat(filename) { if (_openArchived) _openArchived(filename); }
+// Open the archive overlay itself (list view) — the star map swaps to it when its
+// source toggle flips to "archive", so leaving the map lands in the matching panel.
+let _openArchivePanel = null;
+export function openArchivePanel() { if (_openArchivePanel) _openArchivePanel(); }
+
 export function initArchive() {
   const archiveOverlay = document.querySelector("#archiveOverlay");
   const archiveList = document.querySelector("#archiveList");
@@ -164,6 +173,9 @@ export function initArchive() {
   });
 
   async function openArchiveOverlay() {
+    // Mutually exclusive with the library panel (same z-index full-area overlays;
+    // the library sits LATER in the DOM and would cover us if left open).
+    document.querySelector("#libraryOverlay")?.classList.remove("isOpen");
     archiveOverlay.classList.add("isOpen");
     archivePreview.classList.remove("isOpen");
     archivePreviewEmpty.style.display = "";
@@ -515,6 +527,14 @@ export function initArchive() {
     archiveMoveBtn.disabled = count === 0;
     archiveDeleteBtn.disabled = count === 0;
   }
+
+  _openArchivePanel = openArchiveOverlay;
+  _openArchived = async (filename) => {
+    await openArchiveOverlay();
+    activePreviewFilename = filename;
+    renderArchiveList();   // re-render so the card shows as active
+    openArchivePreview(filename);
+  };
 
   async function openArchivePreview(filename) {
     try {

@@ -5488,10 +5488,16 @@ button.secondary:disabled {
   background: var(--surface-hover);
   border-color: var(--line) !important;
 }
-.libraryYtToolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 6px; }
+/* Compact control stack: the body's shared 12px gap is halved for THIS modal and the
+   rows' own margins go — hint / filter / toolbar / auto-folder sit tight. */
+.libraryYtModal .comfyParamsBody { gap: 6px; }
+.libraryYtModal .hint { margin: 0; }
+.libraryYtFilter { width: 100%; min-height: 32px; padding: 0 12px; font: inherit; font-size: 12.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; color: var(--ink); box-sizing: border-box; }
+.libraryYtFilter:focus { outline: none; border-color: var(--accent); }
+.libraryYtToolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; }
 .libraryYtSelectAll { font-size: 0.9em; font-weight: 400; white-space: nowrap; }
 /* "auto-file by channel" toggle sits on its own row under the select-all/reverse toolbar */
-.libraryYtAutoFolderLabel { font-size: 0.9em; font-weight: 400; margin: 0 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.libraryYtAutoFolderLabel { font-size: 0.9em; font-weight: 400; margin: 0; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
 .libraryYtToolbarRight { display: inline-flex; align-items: center; gap: 12px; }
 .libraryYtReverseBtn { font-size: 0.82em; padding: 3px 10px; min-height: 0; white-space: nowrap; }
 .libraryYtReverseBtn:disabled { opacity: 0.45; cursor: default; }
@@ -5537,13 +5543,48 @@ button.secondary:disabled {
 .starMapSourceToggle button { background: transparent; border: 0; color: var(--muted); padding: 6px 14px; font: inherit; font-size: 12.5px; cursor: pointer; }
 .starMapSourceToggle button:hover { color: var(--ink); }
 .starMapSourceToggle button[aria-pressed="true"] { background: var(--surface); color: var(--accent); }
+.starMapRebuildBtn { margin-left: 8px; min-height: 32px; padding: 0 12px; font-size: 12.5px; white-space: nowrap; }
+/* 📷 🎛 ⌂ sit flush together as one tool group */
+.starMapBtnGroup { display: flex; gap: 2px; }
+.starMapBtnGroup .starMapRebuildBtn { margin-left: 0; }
+/* Outdated cache → pull the eye to Rebuild (map still shows underneath) */
+.starMapRebuildBtn.isOutdated {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+/* Search sits right of the title; it takes over the auto margin from the toggle.
+   Explicit width — the global input{width:100%} would stretch it across the header. */
+.starMapSearch { margin-left: auto; width: 220px; min-height: 32px; padding: 0 12px; font: inherit; font-size: 12.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; color: var(--ink); }
+.starMapSearch:focus { outline: none; border-color: var(--accent); }
+.starMapHeader .starMapSourceToggle { margin-left: 0; }
 .starMapStage { position: relative; flex: 1; overflow: hidden; }
+/* 🎛 display menu — dropdown pinned under the header, above the canvas */
+.starMapDispMenu { position: absolute; right: 16px; top: 10px; z-index: 7; display: flex; flex-direction: column; gap: 6px; background: var(--panel-alpha, var(--panel)); border: 1px solid var(--line); border-radius: 11px; padding: 10px 14px; box-shadow: var(--shadow); backdrop-filter: blur(8px); font-size: 12.5px; }
+.starMapDispMenu[hidden] { display: none; }
 #starMapCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .starMapLabels { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
-.starMapLabel { position: absolute; left: 0; top: 0; font-size: 12px; font-weight: 600; white-space: nowrap; text-shadow: 0 0 5px var(--paper), 0 0 5px var(--paper); }
+/* Labels are clickable (zoom to their cluster) even though the layer itself is not */
+.starMapLabel { position: absolute; left: 0; top: 0; font-size: 14.5px; font-weight: 600; white-space: nowrap; text-shadow: 0 0 5px var(--paper), 0 0 5px var(--paper); pointer-events: auto; cursor: pointer; }
+.starMapLabel:hover { text-decoration: underline; }
 
 .starMapLegend { position: absolute; left: 16px; top: 16px; width: 208px; z-index: 4; background: var(--panel-alpha, var(--panel)); border: 1px solid var(--line); border-radius: 13px; padding: 12px 12px 8px; backdrop-filter: blur(8px); }
+.starMapLegendHead { display: flex; align-items: center; justify-content: space-between; margin: 0 0 8px; }
 .starMapLegend h3 { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+.starMapLegendHead h3 { margin: 0; }
+/* Perfect circle: the global button{min-height:42px;padding:0 16px} would stretch it
+   (min-height beats height), and button:hover would paint it accent — override both.
+   Hover is a neutral grey, per the user. */
+.starMapHelpBtn { width: 20px; height: 20px; min-height: 0; min-width: 0; padding: 0; box-sizing: border-box; border-radius: 50%; border: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: 11px; font-weight: 600; line-height: 1; display: inline-flex; align-items: center; justify-content: center; flex: none; cursor: pointer; }
+.starMapHelpBtn:hover { background: var(--line); color: var(--ink); border-color: var(--line); }
+/* The map key. Its <li>s must escape the legend's flex/pointer li styling, and the
+   author display rule needs the explicit [hidden] override (the recurring trap). */
+.starMapHelp { border-bottom: 1px solid var(--line); margin: 0 0 8px; padding: 0 0 8px; }
+.starMapHelp[hidden] { display: none; }
+.starMapHelp ul { list-style: none; margin: 0; padding: 0; }
+.starMapLegend .starMapHelp li { display: block; cursor: default; padding: 2px 0; font-size: 11.5px; line-height: 1.55; color: var(--muted); }
+.starMapLegend .starMapHelp li:hover { background: none; }
 .starMapLegend ul { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; }
 .starMapLegend li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 7px; cursor: pointer; font-size: 12.5px; color: var(--ink); }
 .starMapLegend li:hover { background: var(--surface); }
@@ -5553,7 +5594,9 @@ button.secondary:disabled {
 .starMapCt { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .starMapLegendFoot { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; font-size: 11px; color: var(--muted); }
 
-.starMapInspector { position: absolute; right: -360px; top: 16px; bottom: 16px; width: 328px; z-index: 5; background: var(--panel-alpha, var(--panel)); border: 1px solid var(--line); border-radius: 15px; padding: 18px; overflow-y: auto; transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: var(--shadow); }
+/* Flex column so the document preview can flex-fill the remaining panel height and
+   scroll INSIDE itself (the panel as a whole no longer scrolls). */
+.starMapInspector { position: absolute; right: -360px; top: 16px; bottom: 16px; width: 328px; z-index: 5; background: var(--panel-alpha, var(--panel)); border: 1px solid var(--line); border-radius: 15px; padding: 18px; display: flex; flex-direction: column; overflow: hidden; transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: var(--shadow); }
 .starMapInspector.isOpen { right: 16px; }
 .starMapInspKind { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; }
 .starMapInspTitle { font-size: 17px; line-height: 1.35; margin: 8px 0 10px; font-weight: 600; }
@@ -5562,6 +5605,32 @@ button.secondary:disabled {
 .starMapInspClose:hover { color: var(--ink); }
 .starMapAskBtn { display: block; width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--line); color: var(--ink); padding: 10px 12px; border-radius: 10px; cursor: pointer; font: inherit; font-size: 12.5px; }
 .starMapAskBtn:hover { border-color: var(--accent); }
+/* Semantic-neighbour chips; .isBridge = neighbour from ANOTHER cluster (cross-domain) */
+.starMapRelRow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 14px; }
+.starMapRelLabel { font-size: 11px; color: var(--muted); flex: none; }
+.starMapRelChip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--surface); border: 1px solid var(--line); color: var(--ink); padding: 1px 8px; border-radius: 20px; cursor: pointer; font: inherit; font-size: 11px; line-height: 1.35; min-height: 20px; }
+.starMapRelChip:hover { border-color: var(--accent); }
+.starMapRelChip.isBridge { border-color: var(--accent); color: var(--accent); }
+/* Inline ask form (replaces the old window.prompt). flex:1 so its preview child can
+   take all the height left under the title/chips. */
+.starMapAskForm { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; flex: 1; min-height: 0; }
+.starMapAskInput { width: 100%; min-height: 34px; padding: 0 12px; font: inherit; font-size: 12.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; color: var(--ink); }
+.starMapAskInput:focus { outline: none; border-color: var(--accent); }
+.starMapAskScopes { display: flex; gap: 6px; }
+.starMapAskScopes .starMapAskBtn { width: auto; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.starMapAskNewTab { font-size: 12px; color: var(--muted); }
+.starMapAskOpts { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+/* In-panel document preview (below the checkbox): the library-style read-only render
+   (markdown + images), filling the remaining panel height, scrolling on its own */
+.starMapDocPreview { margin-top: 4px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; flex: 1; min-height: 120px; overflow-y: auto; overflow-wrap: anywhere; }
+.starMapDocPreview[hidden] { display: none; }
+.starMapPrevSection { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600; color: var(--muted); margin: 12px 0 4px; }
+.starMapPrevSection:first-child { margin-top: 0; }
+.starMapDocPreview .starMapPrevBody { font-size: 11.5px; line-height: 1.45; color: var(--ink); }
+.starMapDocPreview .starMapPrevBody p, .starMapDocPreview .starMapPrevBody ul, .starMapDocPreview .starMapPrevBody ol { margin: 4px 0; }
+.starMapDocPreview .starMapPrevBody li { margin: 2px 0; }
+.starMapDocPreview .starMapPrevBody img { max-width: 100%; }
+.starMapPrevImg { display: block; max-width: 100%; border-radius: 8px; margin: 6px 0; }
 
 .starMapTip { position: absolute; z-index: 30; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; font-size: 12px; max-width: 240px; box-shadow: var(--shadow); }
 .starMapTipTitle { font-weight: 600; line-height: 1.35; margin-bottom: 3px; }
@@ -5572,7 +5641,11 @@ button.secondary:disabled {
    status layer stays on top of the canvas and swallows all mouse events. pointer-events:none
    also lets loading/error text pass clicks through — only the build prompt re-enables them. */
 .starMapStatus[hidden] { display: none; }
-.starMapPrompt { text-align: center; max-width: 380px; pointer-events: auto; }
+/* Both the transient status ("building…", "semantic search…") and the build prompt sit
+   in an OPAQUE card so they never blend into the stars behind them. */
+.starMapStatusBox, .starMapPrompt { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: var(--shadow); }
+.starMapStatusBox { padding: 12px 22px; color: var(--muted); pointer-events: none; }
+.starMapPrompt { text-align: center; max-width: 380px; pointer-events: auto; padding: 22px 26px; }
 .starMapPrompt p { margin: 0 0 14px; color: var(--ink); }
 .starMapBuildBtn { background: var(--accent); border: 0; color: #fff; padding: 10px 22px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; }
 .starMapBuildBtn:hover { filter: brightness(1.06); }

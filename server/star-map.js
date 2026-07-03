@@ -34,13 +34,21 @@ function gather(source) {
     return { items, model: idx.model || "", tags: new Map() };
   }
   // library
-  const cents = library.docCentroids();   // Map<docId, { vec, model, title, docKind }>
-  const items = [];
+  const cents = library.docCentroids();   // Map<docId, { vec, model, title, docKind, blocks }>
+  // Different embedding models are different vector spaces (often different DIMS) —
+  // mixing them would give the odd doc a garbage position/cluster. Keep only the
+  // majority model's docs; stragglers need a re-embed to (re)appear on the map.
+  const counts = new Map();
+  for (const [, c] of cents) counts.set(c.model, (counts.get(c.model) || 0) + 1);
   let model = "";
+  for (const [m, n] of counts) if (!model || n > (counts.get(model) || 0)) model = m;
+  const items = [];
+  let excluded = 0;
   for (const [docId, c] of cents) {
-    items.push({ id: docId, vec: c.vec, title: c.title || docId, kind: c.docKind || "doc", snippet: "" });
-    model = c.model;
+    if (c.model !== model) { excluded++; continue; }
+    items.push({ id: docId, vec: c.vec, title: c.title || docId, kind: c.docKind || "doc", snippet: "", blocks: c.blocks || 0 });
   }
+  if (excluded) console.warn(`[starmap] ${excluded} doc(s) excluded: embedding model ≠ ${model}`);
   const tags = new Map();
   try {
     const index = JSON.parse(fs.readFileSync(path.join(library.LIBRARY_DIR, "index.json"), "utf-8"));
@@ -123,7 +131,7 @@ async function computeStarmap(job, signal, emitUpdate) {
   const inPath = writeMatrix(items.map((it) => it.vec));
   try {
     setLabel(`星图:UMAP 投影 ${items.length} 点…`);
-    const { xy, cluster } = await runUmap(inPath, signal);
+    const { xy, cluster, nn } = await runUmap(inPath, signal);
     const k = cluster.length ? Math.max(...cluster) + 1 : 0;
     const clusters = labelClusters(items, cluster, tags, k);
     const docs = items.map((it, i) => ({
@@ -131,6 +139,10 @@ async function computeStarmap(job, signal, emitUpdate) {
       x: xy[i] ? xy[i][0] : 0, y: xy[i] ? xy[i][1] : 0,
       cluster: cluster[i] != null ? cluster[i] : 0,
       ...(it.snippet ? { snippet: it.snippet } : {}),
+      ...(it.blocks ? { blocks: it.blocks } : {}),
+      // top-3 semantic neighbours (indices into docs) — the frontend draws these
+      // as constellation edges on hover/selection and as "related" chips.
+      ...(nn && nn[i] && nn[i].length ? { nn: nn[i] } : {}),
     }));
     const result = { source, n: docs.length, model, builtAt: Date.now(), clusters, docs };
     fs.writeFileSync(starmapPath(source), JSON.stringify(result));
@@ -140,13 +152,27 @@ async function computeStarmap(job, signal, emitUpdate) {
   }
 }
 
+// Current number of mappable items for a source — the cheap staleness signal (a cache
+// built for N docs is out of date once the library holds a different count). library →
+// index.json length; archive → embeddings index size.
+function currentCount(source) {
+  try {
+    if (source === "archive") return Object.keys(embed.loadArchiveEmbeddings().items || {}).length;
+    return JSON.parse(fs.readFileSync(path.join(library.LIBRARY_DIR, "index.json"), "utf-8")).length;
+  } catch { return 0; }
+}
+
 // HTTP: return the cached map for a source (POST /api/library/starmap { source }).
 // Missing cache → { stale: true } so the frontend can prompt "build the star map".
+// Present but built for a different doc count → still returned (so the user sees the
+// old map) with { outdated: true, currentN } so the UI can offer a rebuild.
 async function serveStarmap(req, res) {
   let body; try { body = await readBody(req); } catch { body = {}; }
   const source = SOURCES.has(body && body.source) ? body.source : "library";
   try {
     const cached = JSON.parse(fs.readFileSync(starmapPath(source), "utf-8"));
+    const now = currentCount(source);
+    if (now !== cached.n) { cached.outdated = true; cached.currentN = now; }
     sendJson(res, 200, cached);
   } catch {
     sendJson(res, 200, { source, stale: true, n: 0, docs: [], clusters: [] });
