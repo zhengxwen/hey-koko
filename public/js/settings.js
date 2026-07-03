@@ -49,7 +49,7 @@ export function saveCurrentSettings() {
         relight: dom.comfyParamRelight?.value || "",
       },
       defaultImageSize: dom.defaultImageSize.value,
-      imageTimeout: dom.imageTimeoutInput.value,
+      requestTimeout: dom.requestTimeoutInput.value,
       userName: dom.userName.value,
       persona: dom.persona.value,
       personality: dom.personalitySelect.value,
@@ -198,9 +198,9 @@ export function loadSavedSettings() {
     if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";
   }
   if (savedSettings.defaultImageSize) dom.defaultImageSize.value = savedSettings.defaultImageSize;
-  if (savedSettings.imageTimeout) {
-    dom.imageTimeoutInput.value = savedSettings.imageTimeout;
-    dom.imageTimeoutValue.textContent = savedSettings.imageTimeout;
+  if (savedSettings.requestTimeout) {
+    dom.requestTimeoutInput.value = savedSettings.requestTimeout;
+    dom.requestTimeoutValue.textContent = savedSettings.requestTimeout;
   }
   if (savedSettings.userName) dom.userName.value = savedSettings.userName;
   if (savedSettings.voiceName) dom.voiceSelect.value = savedSettings.voiceName;

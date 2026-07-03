@@ -333,7 +333,7 @@ async function runLibImportJob(job, signal) {
 
   if (p.type === "distill") {          // backfill: regenerate one doc's card, no re-import
     stage("distilling");
-    const r = await library.distillDocInternal(p.docId, { metadata: false, model: p.chatModel, language: p.language, signal });
+    const r = await library.distillDocInternal(p.docId, { metadata: false, model: p.chatModel, language: p.language, timeoutS: p.llmTimeoutS, signal });
     return { docId: p.docId, distilled: !!r.ok, reembedded: r.reembedded };
   }
 
@@ -384,10 +384,14 @@ async function runLibImportJob(job, signal) {
     // Card generation is best-effort: an unreachable/misbehaving chat model must not fail
     // the import itself (the doc is already in the library; the backfill action can retry).
     try {
-      const r = await library.distillDocInternal(imp.docId, { metadata: p.type !== "youtube", model: p.chatModel, language: p.language, signal });
+      const r = await library.distillDocInternal(imp.docId, { metadata: p.type !== "youtube", model: p.chatModel, language: p.language, timeoutS: p.llmTimeoutS, signal });
       distilled = !!r.ok;
     } catch (e) {
       if (e && e.name === "AbortError") throw e;
+      // Timeout fails the job LOUDLY (user request): a batch import must show which
+      // docs still need a card. Other distill errors stay best-effort — the doc itself
+      // is already imported either way, and the backfill action can retry.
+      if (e && e.code === "DISTILL_TIMEOUT") throw new Error(`${e.message}——文档已入库，可用「补卡」重试`);
       console.warn("[jobs] distill failed:", e && e.message);
     }
   }

@@ -1045,7 +1045,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
 
         // Image editing (img2img) is markedly slower than text2img — give it
         // generous headroom over the user's configured txt2img timeout.
-        const baseTimeout = parseInt(dom.imageTimeoutInput.value, 10) || 120;
+        const baseTimeout = parseInt(dom.requestTimeoutInput.value, 10) || 120;
         const reqTimeout = refImages ? Math.max(baseTimeout, 300) : baseTimeout;
 
         const reqBody = {

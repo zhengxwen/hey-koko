@@ -40,7 +40,7 @@ export async function translateMessage(index, lang = "en") {
           { role: "user", content: message.content },
         ],
         options: { temperature: 0.3 },
-        timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+        timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
       }),
       signal: abortController.signal,
     });

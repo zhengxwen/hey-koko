@@ -803,7 +803,7 @@ async function reparseLibrary(req, res) {
 // chat proxy uses (local Ollama / Claude / OpenAI). Also reused by retrieval rerank.
 // One automatic retry: a cold-loading local model transiently 500s / returns empty
 // (seen with MLX backends), and batch imports hit exactly that on their first doc.
-async function llmComplete(model, messages, { timeoutMs = 120000, signal = null } = {}) {
+async function llmComplete(model, messages, { timeoutMs = 300000, signal = null } = {}) {
   const once = async () => {
     const timeout = AbortSignal.timeout(timeoutMs);
     const sig = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -996,7 +996,7 @@ const distillL = (language) => DISTILL_I18N[language] || DISTILL_I18N.zh;
 // (id "card", kind "card") + tags (+ title/authors/year when metadata:true — false for
 // YouTube docs, whose exact metadata the LLM must not overwrite). The save path
 // re-embeds ONLY the card (all other blocks reuse their vectors by hash). Throws on failure.
-async function distillDocInternal(docId, { metadata = false, model, language = "", signal = null } = {}) {
+async function distillDocInternal(docId, { metadata = false, model, language = "", timeoutS = 0, signal = null } = {}) {
   if (!model) throw new Error("蒸馏需要指定聊天模型");
   const doc = readDoc(docId);
   if (!doc || doc.type !== "libdoc") throw new Error("文档不存在");
@@ -1012,10 +1012,27 @@ async function distillDocInternal(docId, { metadata = false, model, language = "
   const user = isVideo
     ? [`${L.vTitle}${doc.title || ""}`, doc.authors ? `${L.vChannel}${doc.authors}` : "", "", L.vSample, sample].filter(s => s !== "").join("\n")
     : sample;
-  const out = await llmComplete(model, [
-    { role: "system", content: isVideo ? L.video : (doc.docKind === "paper" ? L.paper : L.doc) },
-    { role: "user", content: user },
-  ], { signal });
+  // Per-call budget follows the UI "timeout (s)" slider (snapshotted into the job
+  // payload at enqueue) so slow machines can raise it — but never below 300s: the
+  // slider bottoms out at 60s (fine for chat), which would starve a distill call
+  // (16k-char sample + a full JSON card). Absent/invalid → the same 300s floor.
+  const timeoutMs = Math.max(Number(timeoutS) || 0, 300) * 1000;
+  let out;
+  try {
+    out = await llmComplete(model, [
+      { role: "system", content: isVideo ? L.video : (doc.docKind === "paper" ? L.paper : L.doc) },
+      { role: "user", content: user },
+    ], { timeoutMs, signal });
+  } catch (e) {
+    // Surface a timeout as a NAMED failure ("蒸馏超时") so the task drawer can show it —
+    // slow machines hit this, and the fix is a longer timeout-slider value, not a retry.
+    if (e && e.name === "TimeoutError") {
+      const err = new Error(`蒸馏超时（${Math.round((timeoutMs || 300000) / 1000)} 秒）`);
+      err.code = "DISTILL_TIMEOUT";
+      throw err;
+    }
+    throw e;
+  }
   const j = parseJsonLoose(out);
   if (!j || (!j.summary && !Array.isArray(j.claims))) throw new Error("蒸馏输出无法解析：" + String(out).slice(0, 120));
   if (metadata) {
@@ -1047,7 +1064,7 @@ async function distillLibraryDoc(req, res) {
   try {
     const body = await readBody(req);
     if (!body.docId || !body.model) { sendJson(res, 400, { error: "docId and model required" }); return; }
-    const r = await distillDocInternal(body.docId, { metadata: body.metadata !== false, model: body.model, language: body.language || "" });
+    const r = await distillDocInternal(body.docId, { metadata: body.metadata !== false, model: body.model, language: body.language || "", timeoutS: body.timeoutS });
     sendJson(res, 200, { ok: true, reembedded: r.reembedded });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }

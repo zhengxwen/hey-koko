@@ -147,6 +147,8 @@ function importJobCommon() {
     chatModel: dom.modelSelect.value,
     language: getPromptLanguage(),
     distill: dom.libraryDistillToggle ? !!dom.libraryDistillToggle.checked : true,
+    // distill LLM budget = the chat "timeout (s)" slider, snapshotted at enqueue
+    llmTimeoutS: parseInt(dom.requestTimeoutInput.value, 10) || 300,
   };
 }
 
@@ -616,7 +618,7 @@ export function initLibrary() {
     for (const d of missing) {
       enqueueBgJob({
         tabId: state.activeTabId, kind: "libimport", label: "📇 " + (d.title || d.docId),
-        payload: { type: "distill", docId: d.docId, chatModel: dom.modelSelect.value, language: getPromptLanguage() },
+        payload: { type: "distill", docId: d.docId, chatModel: dom.modelSelect.value, language: getPromptLanguage(), llmTimeoutS: parseInt(dom.requestTimeoutInput.value, 10) || 300 },
         noPlaceholder: true,
       });
     }
@@ -1124,7 +1126,7 @@ export function initLibrary() {
       reBtn.disabled = true;
       setStatus(t("lib_enriching", { name: doc.title }));
       try {
-        const r = await postJson("/api/library/distill", { docId: doc.docId, model: dom.modelSelect.value, language: getPromptLanguage() });
+        const r = await postJson("/api/library/distill", { docId: doc.docId, model: dom.modelSelect.value, language: getPromptLanguage(), timeoutS: parseInt(dom.requestTimeoutInput.value, 10) || 300 });
         if (r.error) { setStatus(t("lib_distillFailed", { error: r.error })); reBtn.disabled = false; return; }
       } catch (e) { setStatus(t("lib_distillFailed", { error: e.message })); reBtn.disabled = false; return; }
       setStatus("");

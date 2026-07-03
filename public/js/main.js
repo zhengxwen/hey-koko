@@ -188,9 +188,12 @@ if (dom.libraryRerankToggle) {
 applyUILanguage();
 
 // Slider display handlers
-dom.imageTimeoutInput.addEventListener("input", () => {
-  dom.imageTimeoutValue.textContent = dom.imageTimeoutInput.value;
+dom.requestTimeoutInput.addEventListener("input", () => {
+  dom.requestTimeoutValue.textContent = dom.requestTimeoutInput.value;
 });
+// "change" fires once on release (not per drag tick) — persist the slider on its own,
+// instead of riding along with the next unrelated saveCurrentSettings() call.
+dom.requestTimeoutInput.addEventListener("change", saveCurrentSettings);
 
 dom.speechRateInput.addEventListener("input", () => {
   dom.speechRateValue.textContent = dom.speechRateInput.value;
@@ -514,7 +517,7 @@ if (dom.memoryExtractBtn) {
             { role: "user", content: getPrompt("memoryExtractUser", existing, transcript) },
           ],
           options: { temperature: 0.3 },
-          timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+          timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
         }),
       });
       if (!response.ok) throw new Error("request failed");

@@ -809,7 +809,7 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
         model: dom.modelSelect.value,
         messages: compactPrompt,
         options: { temperature: 0.3, num_ctx: getNumCtx() },
-        timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+        timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
       }),
     });
 
@@ -982,7 +982,7 @@ async function handleTitleCommand(tab, tabId, content) {
             model: dom.modelSelect.value,
             messages: prompt,
             options: { temperature: 0.3 },
-            timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+            timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
           }),
         });
         if (response.ok) {
@@ -1204,7 +1204,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
       model: dom.modelSelect.value,
       messages,
       options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
-      timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+      timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
     };
     if (showThinking) fetchBody.think = true;
 
@@ -1426,7 +1426,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       model: dom.modelSelect.value,
       messages,
       options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
-      timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+      timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
     };
     if (showThinking) fetchBody.think = true;
 
@@ -1675,7 +1675,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
         model: dom.modelSelect.value,
         messages,
         options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
-        timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+        timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
       }),
     });
     if (!response.ok) {
@@ -1934,7 +1934,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
           ...(showThinking ? { think: true } : {}),
           stream: false,
           options: { temperature: 0.7, num_ctx: getNumCtx() },
-          timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+          timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
         }),
       });
       if (!res.ok) { const d = await res.json(); throw new Error(cleanErrorMessage(d.error) || "请求失败"); }
@@ -2211,7 +2211,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
     let content = "";
     if (bg && bg.server) {
       const resp = await chatFetch(
-        { model: dom.modelSelect.value, messages, options: { temperature: 0.5, num_ctx: getNumCtx() }, timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120 },
+        { model: dom.modelSelect.value, messages, options: { temperature: 0.5, num_ctx: getNumCtx() }, timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120 },
         { bgJob: bg.server.bgJob, conversationId: bg.server.conversationId, msgId: bg.server.msgId, label: bg.server.label, signal: abortController.signal });
       if (!resp.ok) throw new Error(cleanErrorMessage((await resp.json()).error) || "请求失败");
       content = ((await resp.json()).content || "");
@@ -2224,7 +2224,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
           model: dom.modelSelect.value,
           messages,
           options: { temperature: 0.5, num_ctx: getNumCtx() },
-          timeout: parseInt(dom.imageTimeoutInput.value, 10) || 120,
+          timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
         }),
       });
       if (!response.ok) {
