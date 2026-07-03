@@ -1150,6 +1150,46 @@ function buildLaneHeader(wid, jobs) {
   return h;
 }
 
+// One-line fine print above the label: WHERE the job came from (source tab / the
+// library) + WHAT it works on when the label alone doesn't say (URL, doc name,
+// analysis instruction, target model). Answers "which job is whose" in a long queue.
+function jobContext(job) {
+  const parts = [];
+  if (job.kind === 'libimport') {
+    parts.push('📚 ' + t('bg_srcLibrary'));
+  } else {
+    const tab = getTab(job.tabId);
+    if (tab && tab.title) parts.push('💬 ' + clipCtx(tab.title, 24));
+  }
+  const detail = jobDetail(job);
+  if (detail) parts.push(detail);
+  return parts.join(' · ');
+}
+function clipCtx(s, n) { s = String(s || '').trim(); return s.length > n ? s.slice(0, n) + '…' : s; }
+function shortUrl(u) { return clipCtx(String(u || '').replace(/^https?:\/\/(www\.)?/, ''), 44); }
+// Kind-specific detail — only what the label DOESN'T already carry (the image/audio
+// label is the prompt/text itself; url/analyze/doc labels are generic phase texts).
+function jobDetail(job) {
+  const p = job.payload || {};
+  if (job.kind === 'url') {
+    const urls = (p.entries || []).map((e) => e && e.url).filter(Boolean);
+    if (urls.length) return shortUrl(urls[0]) + (urls.length > 1 ? ` +${urls.length - 1}` : '');
+  } else if (job.kind === 'analyze') {
+    const q = p.parsed && p.parsed.prompt;
+    if (q && q.trim()) return clipCtx(q, 44);
+  } else if (job.kind === 'docfull') {
+    return clipCtx(p.name || '', 44);
+  } else if (job.kind === 'image' || job.kind === 'video') {
+    const m = p.modelOverride || {};
+    return clipCtx(m.comfyModel || m.imageModel || '', 44);
+  } else if (job.kind === 'libimport') {
+    // url/youtube imports: a page's label IS its URL, but youtube's is a generic
+    // "fetching" text → show the address only when it isn't already the label.
+    if (p.url && p.url !== job.label && p.url !== job.baseLabel) return shortUrl(p.url);
+  }
+  return '';
+}
+
 function buildJobRow(job) {
   {
     const row = document.createElement('div');
@@ -1210,6 +1250,8 @@ function buildJobRow(job) {
       : t('bg_jumpTitle');
     main.addEventListener('click', () => jumpToJob(job.id));
     const icon = `<span class="bgJobIcon">${KIND_ICON[job.kind] || '⚙'}</span>`;
+    const ctx = jobContext(job);
+    const ctxLine = ctx ? `<span class="bgJobCtx" title="${escapeText(ctx)}">${escapeText(ctx)}</span>` : '';
     const label = `<span class="bgJobLabel">${escapeText(job.label || job.kind)}</span>`;
     // Failed/interrupted: append WHY (job.error) after the status, with the full text on
     // hover (it truncates with an ellipsis if long).
@@ -1233,7 +1275,7 @@ function buildJobRow(job) {
     if (job.status === 'running' && job.preview) {
       preview = `<img class="bgJobPreview" src="${job.preview}" alt="preview">`;
     }
-    main.innerHTML = `<div class="bgJobTop">${icon}${label}</div>${status}${bar}${preview}`;
+    main.innerHTML = `${ctxLine}<div class="bgJobTop">${icon}${label}</div>${status}${bar}${preview}`;
 
     // Control buttons (retry / pause / resume) go on the LEFT — right after the drag
     // handle — so they never sit under the × (which is pinned to the top-right corner
