@@ -8,6 +8,7 @@ import { t } from './i18n.js';
 import { saveCurrentSettings } from './settings.js';
 import { getBgWorkers, setBgWorkerStatus } from './bg-jobs.js';
 import { updateCloudBadge } from './avatar.js';
+import { refreshModelMaxContext } from './context-meter.js';
 
 // "http://127.0.0.1:11434" + "localhost" -> "127.0.0.1:11434 (localhost)".
 // The hostname (reverse-DNS, from the server) is only appended when present.
@@ -22,8 +23,14 @@ export function urlFromDisplay(el) {
   return (el?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim();
 }
 
+// Last server-side endpoint URLs this page has seen — lets the return-to-
+// foreground refresh detect changes made from ANOTHER page/machine (the
+// config is server-global but each page's dropdowns are load-time snapshots).
+let knownUrls = null;
+
 function updateUrlDisplay(data) {
   const { url, imageUrl, comfyUrl, hostname, imageHostname, comfyHostname } = data;
+  knownUrls = { url, imageUrl: imageUrl || url, comfyUrl };
   dom.llmUrlDisplay.textContent = formatUrl(url, hostname);
   dom.imageUrlDisplay.textContent = formatUrl(imageUrl || url, imageHostname || (imageUrl ? "" : hostname));
   if (dom.comfyUrlDisplay) {
@@ -46,27 +53,52 @@ function editOllamaUrl(type) {
     body: JSON.stringify({ type, url: newUrl })
   }).then(r => r.json()).then(data => {
     displayEl.textContent = formatUrl(data.url, data.hostname);
+    if (knownUrls) knownUrls[type === "comfy" ? "comfyUrl" : type === "image" ? "imageUrl" : "url"] = data.url;
     if (type === "comfy") {
       loadComfyModels().catch(() => {});
     } else if (type === "image") {
       loadImageModels().catch(() => {});
     } else {
-      loadModels().catch(() => {});
+      reloadLlmModelLists();
     }
   }).catch(() => {});
+}
+
+// Everything fed by the LLM endpoint: chat models (forced — a dead endpoint
+// must be visible), embedding models, and the context meter for the new pick.
+function reloadLlmModelLists() {
+  loadModels({ force: true })
+    .then(() => refreshModelMaxContext(dom.modelSelect.value))
+    .catch(() => {});
+  loadEmbedModels().catch(() => {});
 }
 
 // Embedding and image models live in their own dropdowns — keep them out of the LLM list.
 const NON_LLM_RE = /embed|z-image|flux/i;
 
-export async function loadModels() {
+// force: rebuild the dropdown even when no models come back (URL just changed —
+// a dead endpoint must show as "none detected", not silently keep the old
+// machine's list). The default keeps the lenient page-load behavior (Ollama
+// may simply not be up yet).
+export async function loadModels({ force = false } = {}) {
   const response = await fetch("/api/models");
   const data = await response.json();
   // Keep the objects (not just names) so we can badge cloud vs local models.
   const entries = (data.models || [])
     .filter((m) => m.name && !NON_LLM_RE.test(m.name));
 
-  if (entries.length === 0) return;
+  if (entries.length === 0) {
+    if (!force) return;
+    dom.modelSelect.innerHTML = "";
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = t("model_none");
+    opt.disabled = true;
+    opt.selected = true;
+    dom.modelSelect.appendChild(opt);
+    updateCloudBadge();
+    return;
+  }
 
   const names = entries.map((m) => m.name);
   const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
@@ -555,10 +587,42 @@ function initComfyParamsModal() {
   });
 }
 
+// Return-to-foreground sync: the endpoint URLs live in the server process and
+// can be changed from another page/machine at any time — re-fetch them when
+// this page comes back to the foreground and reload only the lists whose
+// endpoint actually changed (no-op churn on ordinary tab switches).
+let urlSyncInflight = null; // focus + visibilitychange fire together — run once
+
+function refreshIfUrlsChanged() {
+  if (urlSyncInflight) return urlSyncInflight;
+  urlSyncInflight = (async () => {
+    let d;
+    try {
+      d = await fetch("/api/ollama-url").then((r) => r.json());
+    } catch {
+      return; // server unreachable — nothing to sync
+    }
+    const prev = knownUrls;
+    updateUrlDisplay(d); // also re-records knownUrls
+    if (!prev) return;   // initial load hadn't landed yet; init's loaders cover it
+    if (prev.url !== d.url) reloadLlmModelLists();
+    if ((prev.imageUrl || "") !== (d.imageUrl || d.url)) loadImageModels().catch(() => {});
+    if (prev.comfyUrl !== d.comfyUrl) loadComfyModels().catch(() => {});
+  })().finally(() => { urlSyncInflight = null; });
+  return urlSyncInflight;
+}
+
 export function initOllama() {
   fetch("/api/ollama-url").then(r => r.json()).then(d => updateUrlDisplay(d)).catch(() => {});
 
   initComfyParamsModal();
+
+  // Catches both a hidden tab being revealed and an always-visible window
+  // (second monitor / another machine) being clicked back into.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshIfUrlsChanged();
+  });
+  window.addEventListener("focus", () => refreshIfUrlsChanged());
 
   document.querySelector("#editLlmUrl").addEventListener("click", (e) => { e.preventDefault(); editOllamaUrl("llm"); });
   document.querySelector("#editImageUrl").addEventListener("click", (e) => { e.preventDefault(); editOllamaUrl("image"); });
@@ -576,7 +640,8 @@ export function initOllama() {
         body: JSON.stringify({ type: "llm", url })
       }).then(r => r.json()).then(data => {
         dom.llmUrlDisplay.textContent = formatUrl(data.url, data.hostname);
-        loadModels().catch(() => {});
+        if (knownUrls) knownUrls.url = data.url;
+        reloadLlmModelLists();
         loadImageModels().catch(() => {});
       }).catch(() => {});
     },
@@ -592,6 +657,7 @@ export function initOllama() {
         body: JSON.stringify({ type: "comfy", url })
       }).then(r => r.json()).then(data => {
         if (dom.comfyUrlDisplay) dom.comfyUrlDisplay.textContent = formatUrl(data.url, data.hostname);
+        if (knownUrls) knownUrls.comfyUrl = data.url;
         loadComfyModels().catch(() => {});
       }).catch(() => {});
     },
