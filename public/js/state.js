@@ -17,6 +17,9 @@ export const dom = {
   userNameDropdown: document.querySelector("#userNameDropdown"),
   persona: document.querySelector("#persona"),
   personalitySelect: document.querySelector("#personalitySelect"),
+  presetSaveAs: document.querySelector("#presetSaveAs"),
+  presetRename: document.querySelector("#presetRename"),
+  presetDelete: document.querySelector("#presetDelete"),
   clearChat: document.querySelector("#clearChat"),
   fileInput: document.querySelector("#fileInput"),
   imagePreview: document.querySelector("#imagePreview"),
@@ -115,6 +118,7 @@ export const dom = {
 export const state = {
   tabs: [],
   activeTabId: null,
+  customPresets: [],                 // user-authored personality presets: [{ id:"cp_…", name, text }] — see presets.js. Persisted in SETTINGS_KEY.
   currentAbortController: null,
   imageGenAbortController: null,
   selectedImage: null,

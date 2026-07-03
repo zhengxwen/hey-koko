@@ -22,6 +22,7 @@ import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup,
 import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
 import { initLibrary, runLibraryImport, notifyLibraryJobsChanged, openLibraryPanel } from './library.js';
+import { renderPersonalityOptions, saveCurrentPersonaAsPreset, renameCurrentPreset, deleteCurrentPreset, writeBackPersonaToPreset, isCustomPresetId, getCustomPreset, resolveImportedPersonality } from './presets.js';
 import { applyUILanguage, getUILanguage, t, getPrompt } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
 import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
@@ -115,6 +116,10 @@ await loadReminders();
 // Load saved settings
 loadSavedSettings();
 
+// Build the personality dropdown from the built-ins + the user's saved custom
+// presets BEFORE restoring the tab's selection (so a "cp_…" value resolves).
+renderPersonalityOptions();
+
 // Restore active tab's personality
 {
   const initialTab = getActiveTab();
@@ -130,6 +135,10 @@ dom.personalitySelect.addEventListener("change", () => {
   const val = dom.personalitySelect.value;
   if (val === "temp") {
     dom.persona.value = "";
+    dom.persona.focus();
+  } else if (isCustomPresetId(val)) {
+    const p = getCustomPreset(val);
+    dom.persona.value = p ? p.text : "";
     dom.persona.focus();
   } else {
     dom.persona.value = getPersonalityPreset(val, getUILanguage()) || PERSONALITY_PRESETS.sweet;
@@ -161,6 +170,7 @@ document.querySelectorAll(".panelTab").forEach((tab) => {
 dom.uiLanguageSelect.addEventListener("change", () => {
   dom.promptLanguageSelect.value = dom.uiLanguageSelect.value;
   applyUILanguage();
+  renderPersonalityOptions(); // re-localize built-in option + group labels (dropdown is dynamic)
   populateVoiceList(); // re-localize voice optgroup + option labels
   renderChat();
   saveCurrentSettings();
@@ -625,13 +635,20 @@ startScheduler();
 // "Save settings" button existed for — now removed as redundant.
 let personaSaveTimer = null;
 dom.persona.addEventListener("input", () => {
+  writeBackPersonaToPreset();   // keep the named preset's text in sync while editing
   clearTimeout(personaSaveTimer);
   personaSaveTimer = setTimeout(saveCurrentSettings, 500);
 });
 dom.persona.addEventListener("blur", () => {
+  writeBackPersonaToPreset();
   clearTimeout(personaSaveTimer);
   saveCurrentSettings();
 });
+
+// Custom-preset management buttons (Save as… / Rename / Delete)
+dom.presetSaveAs.addEventListener("click", saveCurrentPersonaAsPreset);
+dom.presetRename.addEventListener("click", renameCurrentPreset);
+dom.presetDelete.addEventListener("click", deleteCurrentPreset);
 
 // userName history dropdown
 dom.userNameDropdownBtn.addEventListener("click", () => {
@@ -1092,8 +1109,11 @@ function exportJson(tab) {
     return m;
   });
   // userName and persona are hey-koko-local identity/settings, not part of the
-  // conversation — don't export them. Keep the personality preset name only.
-  const payload = { title: tab.title, personality: tab.personality };
+  // conversation — don't export them. For a custom preset, tab.personality holds an
+  // opaque local id ("cp_…") that means nothing elsewhere — export the human-readable
+  // preset NAME instead. Built-ins keep their stable key (sweet/yujie/…).
+  const cp = getCustomPreset(tab.personality);
+  const payload = { title: tab.title, personality: cp ? cp.name : tab.personality };
   payload.messages = messages;
   const data = JSON.stringify(payload, null, 2);
   downloadBlob(`${tab.title || "对话"}.json`, data, "application/json");
@@ -1212,8 +1232,13 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
         }
         return m;
       }));
-      const tab = createTab(data.title || "导入的对话", messages, data.personality || null);
-      if (data.persona) tab.persona = data.persona;
+      // Resolve the exported personality (built-in key or a custom preset NAME) back
+      // to a local selection — re-binding to a matching custom preset when we have one.
+      // data.persona is intentionally ignored: persona text is hey-koko-local and not
+      // exported, so the text always comes from the resolved local preset.
+      const resolved = resolveImportedPersonality(data.personality);
+      const tab = createTab(data.title || "导入的对话", messages, resolved.personality);
+      if (resolved.persona != null) tab.persona = resolved.persona;
       state.tabs.unshift(tab);
     } catch (e) {
       const msgEl = document.createElement("div");

@@ -8,11 +8,18 @@ import { getActiveTab } from './tabs.js';
 import { dbSaveTabs } from './db.js';
 import { t } from './i18n.js';
 
-// "Her personality" is only editable when the personality type is "Custom preset".
+// "Her personality" is only editable for a custom personality — the "new custom"
+// sentinel ("temp") or a saved custom preset ("cp_…"). Built-ins are read-only.
 export function syncPersonaEditable() {
-  const isCustom = dom.personalitySelect.value === "temp";
+  const v = dom.personalitySelect.value;
+  const isSaved = typeof v === "string" && v.startsWith("cp_");   // an existing named preset
+  const isCustom = v === "temp" || isSaved;
   dom.persona.readOnly = !isCustom;
   dom.persona.classList.toggle("isReadonly", !isCustom);
+  // Rename/Delete only act on a saved custom preset — disable them otherwise
+  // (built-ins, or the unsaved "new custom" slot). Save-as is always available.
+  if (dom.presetRename) dom.presetRename.disabled = !isSaved;
+  if (dom.presetDelete) dom.presetDelete.disabled = !isSaved;
 }
 
 export function saveCurrentSettings() {
@@ -53,6 +60,7 @@ export function saveCurrentSettings() {
       userName: dom.userName.value,
       persona: dom.persona.value,
       personality: dom.personalitySelect.value,
+      customPresets: state.customPresets || [],
       voiceName: dom.voiceSelect.value,
       autoSpeak: dom.autoSpeakCheckbox.checked,
       speechRate: dom.speechRateInput.value,
@@ -209,6 +217,7 @@ export function loadSavedSettings() {
     dom.speechRateInput.value = savedSettings.speechRate;
     dom.speechRateValue.textContent = savedSettings.speechRate;
   }
+  if (Array.isArray(savedSettings.customPresets)) state.customPresets = savedSettings.customPresets;
   if (savedSettings.personality) dom.personalitySelect.value = savedSettings.personality;
   if (savedSettings.persona) {
     const savedPersona = savedSettings.persona.replaceAll("澪", "Bella");

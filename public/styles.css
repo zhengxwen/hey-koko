@@ -934,6 +934,51 @@ input[type="file"] {
   gap: 10px;
 }
 
+/* Custom-preset management row, hugging the persona textarea above it. The
+   parent .panelTabContent adds a 16px gap between children — pull the row back
+   up so it sits tight (net ~4px) under the textarea. */
+.presetActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: -12px;
+}
+/* Ghost / pill buttons — no gray fill, no color; neutral outline + ink text. */
+.presetActions button {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 600;
+  /* 2/3 of the global 42px button height */
+  min-height: 28px;
+  height: 28px;
+  padding: 0 14px;
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.presetActions button:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+  border-color: var(--muted);
+}
+.presetActions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+/* Thin separator between the preset row and the export/import actions below.
+   Pull it up (parent .panelTabContent adds a 16px gap) so it hugs the buttons. */
+.settingsDivider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: -12px 0 0;
+  width: 100%;
+}
+
 .exportWrapper {
   position: relative;
   display: inline-flex;
