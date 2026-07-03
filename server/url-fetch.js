@@ -886,7 +886,7 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
       proc.stderr.on("data", (d) => { stderr += d.toString(); });
       proc.on("close", (code) => {
         if (aborted) return reject(abortError());
-        if (code !== 0) return reject(new Error(`yt-dlp 失败 (code ${code}): ${stderr.slice(-200)}`));
+        if (code !== 0) return reject(new Error(ytdlpErrMsg(stderr, code)));
         resolve();
       });
       proc.on("error", reject);
@@ -1265,6 +1265,16 @@ async function ytFlatList(ytdlpCmd, feedUrl, lang) {
   const titleOf = new Map(localized.map((e) => [e.id, e.title]));
   return base.map((e) => ({ ...e, title: titleOf.get(e.id) || e.title }));
 }
+// yt-dlp failures end in a wall of FAQ/wiki URLs; a blind tail slice lands mid-URL and
+// surfaces gibberish like "-do-i-pass-cookies-". Pull the ERROR: line instead and drop
+// its trailing "See https://…" advice — the bubble needs the cause, not the wiki links.
+function ytdlpErrMsg(stderr, code) {
+  const s = String(stderr || "");
+  const line = (s.match(/^ERROR:\s*(.*)$/m) || [])[1] || s.trim().split("\n").pop() || "";
+  const cleaned = line.replace(/\s*(?:Also see\s+|See\s+)?https?:\/\/\S[\s\S]*$/, "").trim();
+  return `yt-dlp 失败 (code ${code}): ${cleaned.slice(0, 300) || "(无错误输出)"}`;
+}
+
 function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
   return new Promise((resolve, reject) => {
     const extractorArgs = ["--extractor-args", "youtubetab:approximate_date", ...extraArgs];
@@ -1302,7 +1312,7 @@ function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
           title: rest.join("\t").trim(),
         };
       }).filter((e) => /^[\w-]{11}$/.test(e.id));
-      if (!entries.length && code !== 0) return reject(new Error((err.trim().split("\n").pop() || `yt-dlp code ${code}`).slice(-200)));
+      if (!entries.length && code !== 0) return reject(new Error(ytdlpErrMsg(err, code)));
       resolve(entries);
     });
   });

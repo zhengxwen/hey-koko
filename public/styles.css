@@ -4946,9 +4946,9 @@ button.secondary:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px;
+  padding: 5px 8px 6px;
   border-radius: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   background: var(--surface);
 }
 .bgJobMain {
@@ -4966,23 +4966,25 @@ button.secondary:disabled {
    the row instead (inset box-shadow → no layout shift, background unchanged). */
 .bgJobMain:hover { background: transparent; color: var(--ink); }
 .bgJobRow:hover { box-shadow: inset 0 0 0 1.5px var(--accent); }
-.bgJobTop { display: flex; align-items: center; gap: 6px; }
+/* Fine-print context line above the label: source tab / library + task detail. */
+.bgJobCtx { display: block; font-size: 10px; color: var(--muted); opacity: 0.85; margin-bottom: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bgJobTop { display: flex; align-items: center; gap: 5px; }
 .bgJobLabel {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 12px;
 }
-.bgJobStatus { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bgJobBar { height: 4px; border-radius: 4px; background: var(--surface-hover); margin-top: 4px; overflow: hidden; }
+.bgJobStatus { display: block; font-size: 10.5px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bgJobBar { height: 4px; border-radius: 4px; background: var(--surface-hover); margin-top: 3px; overflow: hidden; }
 .bgJobBarFill { height: 100%; background: var(--accent); transition: width 0.2s; }
 /* Indeterminate (no % yet): a sliding sliver — reuses the placeholder's keyframes. */
 .bgJobBar.indeterminate .bgJobBarFill { width: 40%; transition: none; animation: bgPhIndet 1.1s ease-in-out infinite; }
 /* Top-of-list tally: "N running · M queued · K paused". */
-.bgJobsSummary { font-size: 11px; color: var(--muted); padding: 2px 4px 8px; }
-.bgJobsActions { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 4px 10px; }
+.bgJobsSummary { font-size: 11px; color: var(--muted); padding: 2px 4px 6px; }
+.bgJobsActions { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 4px 8px; }
 .bgJobsActionBtn { min-height: 0; padding: 3px 10px; border-radius: 12px; background: transparent; border: 1px solid var(--muted); color: var(--ink); font-size: 11px; cursor: pointer; }
 .bgJobsActionBtn:hover { border-color: var(--accent); color: var(--accent); }
 .bgJobsActionBtn.danger:hover { border-color: #e5484d; color: #e5484d; }
@@ -5023,7 +5025,7 @@ button.secondary:disabled {
 .bgWorkerAdd { min-height: 0; padding: 2px 8px; border-radius: 12px; background: transparent; border: 1px dashed var(--muted); color: var(--muted); font-size: 11px; cursor: pointer; }
 
 /* Lane (worker) headers grouping the drawer rows when more than one lane is active. */
-.bgLaneHeader { display: flex; align-items: center; gap: 6px; padding: 7px 4px 2px; font-size: 11px; color: var(--muted); }
+.bgLaneHeader { display: flex; align-items: center; gap: 6px; padding: 5px 4px 2px; font-size: 11px; color: var(--muted); }
 .bgLaneName { font-weight: 600; }
 .bgLaneCounts { margin-left: auto; }
 .bgLaneDot::before { content: '●'; font-size: 8px; }
