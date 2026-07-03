@@ -75,7 +75,7 @@ export function saveCurrentSettings() {
       sendTime: dom.sendTimeToggle?.checked ?? true,
       tools: dom.toolsToggle?.checked || false,
       numCtx: dom.numCtxSelect?.value || "32768",
-      embedModel: dom.embedModelSelect?.value || "qwen3-embedding:0.6b",
+      embedModel: dom.embedModelSelect?.value || "qwen3-embedding:8b",
       libraryDistill: dom.libraryDistillToggle?.checked ?? true,
       libraryRerank: dom.libraryRerankToggle?.checked || false,
       dailyGreeting: dom.dailyGreetingToggle?.checked || false,

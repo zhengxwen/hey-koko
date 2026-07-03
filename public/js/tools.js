@@ -82,7 +82,7 @@ export const TOOL_SCHEMAS = [
 ];
 
 function embedModel() {
-  return (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:0.6b";
+  return (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:8b";
 }
 
 function getDatetime() {

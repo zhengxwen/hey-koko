@@ -424,7 +424,7 @@ export async function loadEmbedModels() {
     if (current && models.includes(current)) {
       dom.embedModelSelect.value = current;
     } else {
-      const preferred = models.find((m) => /qwen3-embedding/i.test(m));
+      const preferred = models.find((m) => /qwen3-embedding:8b/i.test(m)) || models.find((m) => /qwen3-embedding/i.test(m));
       dom.embedModelSelect.value = preferred || models[0];
     }
   } catch {

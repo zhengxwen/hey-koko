@@ -30,7 +30,7 @@ export function initArchive() {
   const archiveSemanticBtn = document.querySelector("#archiveSemanticBtn");
   const archiveIndexBtn = document.querySelector("#archiveIndexBtn");
 
-  const embedModel = () => (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:0.6b";
+  const embedModel = () => (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:8b";
 
   fetch("/api/archives/dir").then(r => r.json()).then(d => {
     if (d.dir) archiveDirHint.textContent = t("archive_dirHint", { dir: d.dir });

@@ -33,7 +33,7 @@ export function notifyLibraryJobsChanged() { if (_updateTaskCount) _updateTaskCo
 // Open the library panel — used by bg-jobs to return here when a library import task
 // (which has no chat bubble) is clicked in the task drawer.
 export function openLibraryPanel() { if (_openLibrary) _openLibrary(); }
-const embedModel = () => (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:0.6b";
+const embedModel = () => (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:8b";
 const kindIcon = (k) => KIND_ICON[k] || "📎";
 // The transcript-section names the server importer writes (DISTILL_I18N transcriptHeading,
 // server/library.js) — a video doc's section with one of these names is ASR-transcribed

@@ -8,7 +8,7 @@ const { sendJson, readBody } = require("./utils");
 const { readArchiveFile, scanArchiveFilenames } = require("./archive");
 const { encodeVectors, decodeVectors } = require("./vecfile");
 
-const DEFAULT_MODEL = "qwen3-embedding:0.6b";
+const DEFAULT_MODEL = "qwen3-embedding:8b";
 const MAX_TEXT = 2000;   // chars per archive fed to the embedder
 const BATCH = 4;         // keep batches small — long diverse text can crash the runner
 
