@@ -118,7 +118,14 @@ async function postJson(url, body, signal = null) {
     body: JSON.stringify(body || {}),
     signal,
   });
-  return res.json();
+  // Parse via text so a NON-JSON body gives a clear error instead of the browser's
+  // cryptic "did not match the expected pattern". The usual cause: a newly-added route
+  // whose server wasn't restarted → serveStatic returns a 404 "Not found" (plain text).
+  const text = await res.text();
+  try { return text ? JSON.parse(text) : {}; }
+  catch {
+    throw new Error(res.ok ? "服务端返回了非 JSON 响应" : `请求失败（${res.status}）——服务端可能需要重启`);
+  }
 }
 
 // Run ANY library import (file/text/url/youtube — plus 'distill' card backfill) by
@@ -1091,23 +1098,71 @@ export function initLibrary() {
         spacer.className = "libraryTagManagerSpacer";
         const renameBtn = document.createElement("button");
         renameBtn.type = "button"; renameBtn.className = "secondary"; renameBtn.textContent = t("lib_tagRename");
-        renameBtn.addEventListener("click", () => runTagOp("rename", name, n));
+        // Inline rename editor (not window.prompt, which the browser can suppress). If the
+        // typed name is an EXISTING tag, saving merges the two — the Save button first
+        // swaps to "Merge into «X»?" so the merge is an explicit, confirmed choice.
+        renameBtn.addEventListener("click", () => {
+          const input = document.createElement("input");
+          input.type = "text"; input.className = "libraryTagRenameInput"; input.value = name;
+          const saveBtn = document.createElement("button");
+          saveBtn.type = "button"; saveBtn.className = "secondary"; saveBtn.textContent = t("lib_tagRenameSave");
+          const cancelBtn = document.createElement("button");
+          cancelBtn.type = "button"; cancelBtn.className = "secondary"; cancelBtn.textContent = t("lib_tagDeleteCancel");
+          cancelBtn.addEventListener("click", paint);
+          let armedMerge = false;
+          const disarm = () => {
+            if (!armedMerge) return;
+            armedMerge = false;
+            saveBtn.textContent = t("lib_tagRenameSave");
+            saveBtn.classList.remove("libraryTagDeleteConfirm");
+          };
+          const doSave = () => {
+            const nn = input.value.trim();
+            if (!nn || nn === name) { paint(); return; }
+            if (counts.has(nn) && !armedMerge) {   // collides with an existing tag → confirm the merge
+              armedMerge = true;
+              saveBtn.textContent = t("lib_tagMergeConfirm", { name: nn });
+              saveBtn.classList.add("libraryTagDeleteConfirm");
+              return;
+            }
+            runTagOp("rename", name, n, nn);
+          };
+          saveBtn.addEventListener("click", doSave);
+          input.addEventListener("input", disarm);   // editing the name cancels a pending merge confirm
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") { e.preventDefault(); doSave(); }
+            else if (e.key === "Escape") paint();
+          });
+          chip.remove(); cnt.remove(); spacer.remove(); renameBtn.remove(); delBtn.remove();
+          row.append(input, saveBtn, cancelBtn);
+          input.focus(); input.select();
+        });
         const delBtn = document.createElement("button");
         delBtn.type = "button"; delBtn.className = "secondary"; delBtn.textContent = t("lib_tagDelete");
-        delBtn.addEventListener("click", () => runTagOp("delete", name, n));
+        // Two-step INLINE confirm (not window.confirm, which the browser can suppress
+        // after the first dialog): the Delete button swaps to "Confirm delete? / Cancel"
+        // and only the second click actually deletes.
+        delBtn.addEventListener("click", () => {
+          const confirmBtn = document.createElement("button");
+          confirmBtn.type = "button"; confirmBtn.className = "secondary libraryTagDeleteConfirm";
+          confirmBtn.textContent = t("lib_tagDeleteConfirmBtn", { n });
+          confirmBtn.addEventListener("click", () => runTagOp("delete", name, n));
+          const cancelBtn = document.createElement("button");
+          cancelBtn.type = "button"; cancelBtn.className = "secondary"; cancelBtn.textContent = t("lib_tagDeleteCancel");
+          cancelBtn.addEventListener("click", paint);   // redraw the row back to normal
+          renameBtn.remove(); delBtn.remove();
+          row.append(confirmBtn, cancelBtn);
+        });
         row.append(chip, cnt, spacer, renameBtn, delBtn);
         list.appendChild(row);
       }
     };
 
-    const runTagOp = async (op, name, n) => {
-      let newName = "";
-      if (op === "rename") {
-        newName = (prompt(t("lib_tagRenamePrompt", { name }), name) || "").trim();
-        if (!newName || newName === name) return;
-      } else {
-        if (!confirm(t("lib_tagDeleteConfirm", { name, n }))) return;
-      }
+    // rename passes its new name from the inline editor; delete already went through the
+    // inline two-step confirm. Both collision (merge) and delete are user-confirmed by here.
+    const runTagOp = async (op, name, n, newName = "") => {
+      newName = String(newName || "").trim();
+      if (op === "rename" && (!newName || newName === name)) return;
       setStatus(t("lib_saving"));
       try {
         const r = await postJson("/api/library/tag-edit", { op, name, newName });

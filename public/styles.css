@@ -5453,15 +5453,15 @@ button.secondary:disabled {
 .libraryTagManagerList {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 1px;
+  margin-top: 6px;
   overflow-y: auto;
 }
 .libraryTagManagerRow {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 2px;
+  padding: 1px 2px;
 }
 .libraryTagManagerRow .archiveTagChip { cursor: default; }
 .libraryTagManagerCount {
@@ -5470,7 +5470,19 @@ button.secondary:disabled {
   white-space: nowrap;
 }
 .libraryTagManagerSpacer { flex: 1; }
-.libraryTagManagerRow button { min-height: 30px; padding: 0 10px; font-size: 12px; }
+.libraryTagManagerRow button { min-height: 26px; padding: 0 10px; font-size: 12px; }
+.libraryTagDeleteConfirm { color: #c0392b; font-weight: 600; }
+.libraryTagRenameInput {
+  flex: 1;
+  min-width: 0;
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: inherit;
+}
 /* The tag-bar "🏷 Manage" chip: a neutral action pill, not a colored tag */
 .libraryTagManage {
   background: var(--surface-hover);
