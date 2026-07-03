@@ -795,6 +795,24 @@ export function pauseAllQueued() {
   refreshPlaceholders();
 }
 
+// Resume EVERY paused job at once — same per-job rules as resumeBgJob (server re-queue
+// vs. local re-fire, _inflight guard) but batched into one persist/re-render + pump.
+export function resumeAllPaused() {
+  let changed = false;
+  for (const job of state.bgJobs) {
+    if (job.status !== 'paused') continue;
+    job.status = 'queued';
+    if (job.serverJobId) resumeServerJob(job.serverJobId);
+    else if (!job._inflight) job._fired = false;
+    // else: a generator is already parked at the submit gate — leave _fired set (see resumeBgJob)
+    changed = true;
+  }
+  if (!changed) return;
+  persist();
+  refreshPlaceholders();
+  pumpQueue();
+}
+
 // Turn a failed job's live error placeholder into a PERMANENT chat bubble (strip the
 // bgPlaceholder flag + bake the error text into content), so it survives clearing the task
 // list and a reload instead of being pruned as an orphan placeholder. No-op if the bubble
@@ -1043,7 +1061,8 @@ function buildJobsSummary() {
 }
 
 // Bulk-action row under the summary: "pause all waiting" (only when some are queued) +
-// "delete all" (always, since the list is non-empty when this renders).
+// "resume all" (only when some are paused) + "delete all" (always, since the list is
+// non-empty when this renders).
 function buildJobsActions() {
   const bar = document.createElement('div');
   bar.className = 'bgJobsActions';
@@ -1055,6 +1074,15 @@ function buildJobsActions() {
     pauseAll.textContent = t('bg_pauseAll', { n: queued });
     pauseAll.addEventListener('click', pauseAllQueued);
     bar.appendChild(pauseAll);
+  }
+  const paused = state.bgJobs.filter((j) => j.status === 'paused').length;
+  if (paused) {
+    const resumeAll = document.createElement('button');
+    resumeAll.type = 'button';
+    resumeAll.className = 'bgJobsActionBtn';
+    resumeAll.textContent = t('bg_resumeAll', { n: paused });
+    resumeAll.addEventListener('click', resumeAllPaused);
+    bar.appendChild(resumeAll);
   }
   const clearAll = document.createElement('button');
   clearAll.type = 'button';
