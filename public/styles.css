@@ -4968,7 +4968,9 @@ button.secondary:disabled {
   overflow: hidden;          /* clip content to the rounded corners */
   transform: translateX(105%);
   transition: transform 0.22s ease;
-  z-index: 50;   /* above the floating ✏️ opener (z-index 40) so it covers it when open */
+  z-index: 60;   /* above the archive/library overlays (50) — the drawer must be usable
+                    WHILE the Knowledge Library stays open (its ⏳ badge opens it in
+                    place) — and above the floating ✏️ opener (40) */
   display: flex;
   flex-direction: column;
 }

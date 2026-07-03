@@ -16,7 +16,7 @@ import { saveTabs } from './settings.js';
 import { createTab, switchTab } from './tabs.js';
 import { t, getPromptLanguage } from './i18n.js';
 import { setMentionDocs, mentionDocName, mentionDocIcon, mentionArchiveName } from './mentions.js';
-import { enqueueBgJob, openBgDrawer } from './bg-jobs.js';
+import { enqueueBgJob, openBgDrawer, closeBgDrawer } from './bg-jobs.js';
 import { libImportFetch } from './server-queue.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", video: "📺", doc: "📝", chat: "💬", other: "📎" };
@@ -921,12 +921,21 @@ export function initLibrary() {
   }
   _updateTaskCount = updateTaskCount;
   updateTaskCount();
-  // Clicking the badge closes the library and opens the background-task drawer (the
-  // drawer sits below the library overlay, so it must close first to be visible).
+  // Clicking the badge slides the background-task drawer over the library panel — the
+  // library stays open underneath (drawer z-index sits above the overlay's) so the
+  // user can flip between the two without reopening anything.
   if (taskCountEl) {
     taskCountEl.title = t("lib_taskCountHint");
-    taskCountEl.addEventListener("click", () => { overlay.classList.remove("isOpen"); openBgDrawer(); });
+    taskCountEl.addEventListener("click", () => openBgDrawer());
   }
+  // Clicking anywhere on the library panel retracts the drawer (the drawer is a
+  // SIBLING element, so its own clicks never bubble through here). Library-only by
+  // design: in the chat view people keep the drawer open to watch generation progress
+  // while typing. The ⏳ badge is excluded — its click just OPENED the drawer and
+  // would otherwise close it again on the same bubble.
+  overlay.addEventListener("click", (e) => {
+    if (state.bgDrawerOpen && !(taskCountEl && taskCountEl.contains(e.target))) closeBgDrawer();
+  });
 
   // Pull every folder under the library → fill the ask-scope <select> (keeps the
   // current selection if it still exists) and cache for the move popup.
