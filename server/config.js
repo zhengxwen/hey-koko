@@ -53,7 +53,7 @@ const DATA_DIR = process.env.HEYKOKO_DIR || path.join(os.homedir(), ".hey-koko")
 
 const config = {
   DATA_DIR,
-  PORT: Number(process.env.PORT || 1314),
+  PORT: Number(process.env.HEYKOKO_PORT || 1314),
   URL_CONTENT_MAX_CHARS: Number(process.env.URL_CONTENT_MAX_CHARS || 40000),
   ollamaUrl: process.env.OLLAMA_URL || "http://127.0.0.1:11434",
   // Context window for internal Ollama LLM tasks (subtitle formatting, distill, rerank):

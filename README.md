@@ -144,10 +144,10 @@ The most common ones — full reference in [docs/install.md](docs/install.md#env
 |----------|---------|-------------|
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
-| `PORT` | `1314` | Server port |
+| `HEYKOKO_PORT` | `1314` | Server port |
 
 ```bash
-OLLAMA_URL=http://127.0.0.1:11434 PORT=1314 node server.js
+OLLAMA_URL=http://127.0.0.1:11434 HEYKOKO_PORT=1314 node server.js
 ```
 
 

@@ -124,12 +124,12 @@ Force-kills any running `hey-koko` app instances and `node server.js` processes,
 
 ```bash
 # macOS / Linux
-OLLAMA_URL=http://127.0.0.1:11434 PORT=1314 node server.js
+OLLAMA_URL=http://127.0.0.1:11434 HEYKOKO_PORT=1314 node server.js
 ```
 
 ```powershell
 # Windows PowerShell
-$env:OLLAMA_URL = "http://127.0.0.1:11434"; $env:PORT = "1314"; node server.js
+$env:OLLAMA_URL = "http://127.0.0.1:11434"; $env:HEYKOKO_PORT = "1314"; node server.js
 ```
 
 | Variable | Default | Description |
@@ -137,7 +137,7 @@ $env:OLLAMA_URL = "http://127.0.0.1:11434"; $env:PORT = "1314"; node server.js
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
 | `IMAGE_OLLAMA_URL` | `OLLAMA_URL` | Separate Ollama endpoint for image analysis (vision models), if different from the chat one |
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
-| `PORT` | `1314` | Server port |
+| `HEYKOKO_PORT` | `1314` | Server port |
 | `LLM_TASK_CTX` | `24576` | Ollama context window (`num_ctx`) for internal LLM tasks (subtitle formatting, library distill/rerank). Ollama's small default would silently truncate long prompts |
 | `URL_CONTENT_MAX_CHARS` | `40000` | Max characters kept from a fetched webpage (`/url`); `0` = unlimited. YouTube transcripts are never truncated |
 | `WHISPER_MODEL` | auto-detect | Path to whisper.cpp model file |
