@@ -2,11 +2,15 @@
 // Copyright (C) 2026 Xiuwen Zheng
 //
 // Knowledge star map — a zoomable constellation view of the library / chat-archive
-// embeddings. This module is LAZY-LOADED (dynamic import on first open, gate 1) so a
-// chat-only user never downloads or parses it. It reads the precomputed cache from
-// POST /api/library/starmap; if the cache is stale it enqueues the background
-// `starmap` job and polls (gate 2 — nothing is computed until a user opens the map).
-// Colours are read from the app's CSS theme variables and follow theme switches.
+// embeddings. LAZY-LOADED (dynamic import on first open, gate 1) so a chat-only user
+// never downloads it. Reads the precomputed cache from POST /api/library/starmap; if
+// stale, enqueues the background `starmap` job and polls (gate 2). Colours come from
+// the app's CSS theme variables and follow theme switches.
+//
+// Rendering is WebGL: all stars in a single gl.POINTS draw call with a glow sprite in
+// the fragment shader, constellation lines as gl.LINES, pan/zoom via a uniform (no
+// per-frame buffer upload). Cluster labels are overlaid HTML (WebGL can't draw text).
+// Falls back to Canvas2D where WebGL is unavailable.
 
 import { handleAskCommand } from "./library.js";
 import { getActiveTab } from "./tabs.js";
@@ -16,7 +20,7 @@ const post = (url, body) => fetch(url, {
   method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}),
 }).then((r) => r.json());
 
-let el = {};                 // cached DOM refs
+let el = {};
 let wired = false;
 let DATA = null;
 let source = "library";
@@ -26,8 +30,11 @@ let hidden = new Set();
 let hover = null, selected = null, raf = 0, twinkle = 0, DPR = 1;
 let theme = {};
 let drag = null;
+let usingGL = false;
+let G = null;          // WebGL state: { gl, pt, ln, bg, buf, n }
+let labelEls = [];
 
-// ---- theme ---------------------------------------------------------------
+// ---- theme / colours -----------------------------------------------------
 function readTheme() {
   const cs = getComputedStyle(document.documentElement);
   const g = (n, d) => (cs.getPropertyValue(n).trim() || d);
@@ -38,13 +45,24 @@ function readTheme() {
     dark: document.documentElement.getAttribute("data-mode") !== "light",
   };
 }
-function clusterColor(i, total) {
-  const hues = [45, 210, 160, 300, 20, 255, 110, 330, 185, 235, 75, 285];
-  const h = total <= hues.length ? hues[i % hues.length] : Math.round((i * 360) / total);
-  const L = theme.dark ? 63 : 46;
-  return `hsl(${h} 68% ${L}%)`;
-}
+const HUES = [45, 210, 160, 300, 20, 255, 110, 330, 185, 235, 75, 285];
+function clusterHue(i, total) { return total <= HUES.length ? HUES[i % HUES.length] : Math.round((i * 360) / total); }
+function clusterColor(i, total) { return `hsl(${clusterHue(i, total)} 68% ${theme.dark ? 63 : 46}%)`; }
+function clusterRGB(i, total) { return hslToRgb(clusterHue(i, total), 0.68, theme.dark ? 0.63 : 0.46); }
 function withAlpha(hsl, a) { return hsl.replace("hsl(", "hsla(").replace(")", ` / ${a})`); }
+function hslToRgb(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
+  let r, g, b;
+  if (h < 60) [r, g, b] = [c, x, 0]; else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x]; else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c]; else [r, g, b] = [c, 0, x];
+  return [r + m, g + m, b + m];
+}
+function hexToRgb(hex) {
+  hex = (hex || "").trim();
+  if (hex[0] === "#" && hex.length >= 7) { const n = parseInt(hex.slice(1), 16); return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]; }
+  const m = hex.match(/(\d+\.?\d*)/g); return m ? [(+m[0]) / 255, (+m[1]) / 255, (+m[2]) / 255] : [0.04, 0.05, 0.1];
+}
 
 // ---- open / close --------------------------------------------------------
 export async function openStarMap() {
@@ -66,30 +84,36 @@ function ensureDom() {
   if (wired) return;
   el.overlay = document.querySelector("#starMapOverlay");
   el.canvas = document.querySelector("#starMapCanvas");
+  el.stage = el.canvas.parentElement;
   el.legend = document.querySelector("#starMapLegend");
   el.legendList = document.querySelector("#starMapLegendList");
   el.legendFoot = document.querySelector("#starMapLegendFoot");
   el.inspector = document.querySelector("#starMapInspector");
   el.tip = document.querySelector("#starMapTip");
   el.status = document.querySelector("#starMapStatus");
-  el.ctx = el.canvas.getContext("2d");
+  el.labels = document.createElement("div"); el.labels.className = "starMapLabels";
+  el.stage.insertBefore(el.labels, el.tip);
+
+  try {
+    const gl = el.canvas.getContext("webgl", { alpha: false, antialias: true, premultipliedAlpha: false });
+    if (gl) { initGL(gl); usingGL = true; }
+  } catch { /* fall through to 2D */ }
+  if (!usingGL) el.ctx = el.canvas.getContext("2d");
 
   document.querySelector("#starMapCloseBtn").addEventListener("click", closeStarMap);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && el.overlay.classList.contains("isOpen")) closeStarMap(); });
-  el.overlay.querySelectorAll("[data-source]").forEach((b) =>
-    b.addEventListener("click", () => { setSourceTab(b.dataset.source); }));
-
-  window.addEventListener("resize", () => { if (el.overlay.classList.contains("isOpen")) { resize(); } });
-  new MutationObserver(() => { if (el.overlay.classList.contains("isOpen")) readTheme(); })
-    .observe(document.documentElement, { attributes: true, attributeFilter: ["data-mode", "data-theme"] });
+  el.overlay.querySelectorAll("[data-source]").forEach((b) => b.addEventListener("click", () => setSourceTab(b.dataset.source)));
+  window.addEventListener("resize", () => { if (el.overlay.classList.contains("isOpen")) resize(); });
+  new MutationObserver(() => {
+    if (!el.overlay.classList.contains("isOpen")) return;
+    readTheme(); if (usingGL && DATA) rebuildColors();
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-mode", "data-theme"] });
 
   wireCanvas();
   applyText();
   wired = true;
 }
 
-// Fill the static overlay chrome from i18n (JS-driven so we don't extend the app's
-// applyUILanguage id-map). Re-runs each open, which is enough for mid-session switches.
 function applyText() {
   const set = (sel, key, vars) => { const n = el.overlay.querySelector(sel); if (n) n.textContent = t(key, vars); };
   set("#starMapTitleText", "star_title");
@@ -98,11 +122,9 @@ function applyText() {
   set("#starMapLegendTitle", "star_legendTitle");
   set("#starMapHint", "star_hint");
 }
-
 function setSourceTab(s) {
   source = s;
-  el.overlay.querySelectorAll("[data-source]").forEach((b) =>
-    b.setAttribute("aria-pressed", String(b.dataset.source === s)));
+  el.overlay.querySelectorAll("[data-source]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.source === s)));
   load(s);
 }
 
@@ -115,7 +137,7 @@ async function load(which) {
   catch { setStatus(t("star_error")); return; }
   if (map.stale || !map.docs || !map.docs.length) {
     DATA = null; cancelAnimationFrame(raf); raf = 0;
-    clearCanvas();
+    clearScreen(); clearLabels();
     showBuildPrompt(which, map.stale ? "stale" : "empty");
     return;
   }
@@ -125,30 +147,25 @@ async function load(which) {
   closeInspector();
   setStatus("");
   computeFit();
+  if (usingGL) buildGLBuffers();
   buildLegend();
+  buildLabels();
   if (!raf) loop();
 }
 
 function showBuildPrompt(which, why) {
   const msg = why === "empty" && which === "archive" ? t("star_archiveEmpty") : t("star_needBuild");
   el.status.innerHTML = "";
-  const box = document.createElement("div");
-  box.className = "starMapPrompt";
+  const box = document.createElement("div"); box.className = "starMapPrompt";
   const p = document.createElement("p"); p.textContent = msg; box.appendChild(p);
-  const btn = document.createElement("button");
-  btn.className = "starMapBuildBtn"; btn.textContent = t("star_build");
-  btn.addEventListener("click", () => triggerBuild(which));
-  box.appendChild(btn);
-  el.status.appendChild(box);
-  el.status.hidden = false;
+  const btn = document.createElement("button"); btn.className = "starMapBuildBtn"; btn.textContent = t("star_build");
+  btn.addEventListener("click", () => triggerBuild(which)); box.appendChild(btn);
+  el.status.appendChild(box); el.status.hidden = false;
 }
-
 async function triggerBuild(which) {
   setStatus(t("star_building"));
-  try {
-    await post("/api/jobs", { kind: "starmap", payload: { source: which }, label: "star map" });
-  } catch { setStatus(t("star_error")); return; }
-  // poll the cache until the job lands
+  try { await post("/api/jobs", { kind: "starmap", payload: { source: which }, label: "star map" }); }
+  catch { setStatus(t("star_error")); return; }
   for (let i = 0; i < 120; i++) {
     await new Promise((r) => setTimeout(r, 1000));
     if (source !== which || !el.overlay.classList.contains("isOpen")) return;
@@ -157,7 +174,6 @@ async function triggerBuild(which) {
   }
   setStatus(t("star_error"));
 }
-
 function setStatus(text) {
   if (!text) { el.status.hidden = true; el.status.textContent = ""; return; }
   el.status.hidden = false; el.status.textContent = text;
@@ -167,7 +183,8 @@ function setStatus(text) {
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
   const w = el.canvas.clientWidth, h = el.canvas.clientHeight;
-  el.canvas.width = w * DPR; el.canvas.height = h * DPR;
+  el.canvas.width = Math.max(1, Math.round(w * DPR)); el.canvas.height = Math.max(1, Math.round(h * DPR));
+  if (usingGL && G) G.gl.viewport(0, 0, el.canvas.width, el.canvas.height);
   computeFit();
 }
 function computeFit() {
@@ -182,58 +199,200 @@ function toScreen(d) {
   const w = el.canvas.clientWidth, h = el.canvas.clientHeight;
   return [(d.x - fit.cx) * fit.s * cam.scale + w / 2 + cam.x, (d.y - fit.cy) * fit.s * cam.scale + h / 2 + cam.y];
 }
-
-// ---- render --------------------------------------------------------------
-function clearCanvas() {
-  if (!el.ctx) return;
-  el.ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  el.ctx.fillStyle = theme.paper;
-  el.ctx.fillRect(0, 0, el.canvas.clientWidth, el.canvas.clientHeight);
+// data → clip-space transform shared by the GL programs
+function transform() {
+  const w = el.canvas.clientWidth, h = el.canvas.clientHeight, S = fit.s * cam.scale;
+  return { center: [fit.cx, fit.cy], scale: [2 * S / w, -2 * S / h], offset: [2 * cam.x / w, -2 * cam.y / h] };
 }
-function loop() { twinkle += 0.02; draw(); raf = requestAnimationFrame(loop); }
-function draw() {
+
+// ---- WebGL ---------------------------------------------------------------
+const V_PT = `
+  precision mediump float;
+  attribute vec2 a_pos; attribute float a_size; attribute vec3 a_color; attribute float a_shown;
+  uniform vec2 u_center; uniform vec2 u_scale; uniform vec2 u_offset; uniform float u_sizeFactor;
+  varying vec3 v_color; varying float v_shown; varying float v_phase;
+  void main(){
+    v_color = a_color; v_shown = a_shown; v_phase = a_pos.x * 20.0 + a_pos.y * 15.0;
+    gl_Position = vec4((a_pos - u_center) * u_scale + u_offset, 0.0, 1.0);
+    gl_PointSize = a_shown > 0.5 ? a_size * u_sizeFactor : 0.0;
+  }`;
+const F_PT = `
+  precision mediump float;
+  varying vec3 v_color; varying float v_shown; varying float v_phase; uniform float u_time;
+  void main(){
+    if (v_shown < 0.5) discard;
+    float d = length(gl_PointCoord - vec2(0.5)) * 2.0;
+    float core = 1.0 - smoothstep(0.21, 0.30, d);
+    float glow = (1.0 - smoothstep(0.0, 1.0, d)) * 0.45;
+    float a = max(core, glow);
+    if (a < 0.01) discard;
+    a *= 0.82 + 0.18 * sin(u_time * 1.3 + v_phase);
+    vec3 col = mix(v_color, vec3(1.0), core * 0.55);
+    gl_FragColor = vec4(col, a);
+  }`;
+const V_LN = `
+  precision mediump float;
+  attribute vec2 a_pos; attribute vec3 a_color; attribute float a_shown;
+  uniform vec2 u_center; uniform vec2 u_scale; uniform vec2 u_offset;
+  varying vec3 v_color;
+  void main(){ v_color = a_color; gl_Position = a_shown > 0.5 ? vec4((a_pos - u_center) * u_scale + u_offset, 0.0, 1.0) : vec4(2.0, 2.0, 0.0, 1.0); }`;
+const F_LN = `precision mediump float; varying vec3 v_color; void main(){ gl_FragColor = vec4(v_color, 0.13); }`;
+const V_BG = `attribute vec2 a_pos; void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+const F_BG = `
+  precision mediump float;
+  uniform vec2 u_res; uniform vec3 u_ctr; uniform vec3 u_edge;
+  void main(){ float d = distance(gl_FragCoord.xy / u_res, vec2(0.5, 0.45)) / 0.72; gl_FragColor = vec4(mix(u_ctr, u_edge, clamp(d, 0.0, 1.0)), 1.0); }`;
+
+function compile(gl, type, src) {
+  const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error("shader: " + gl.getShaderInfoLog(sh));
+  return sh;
+}
+function program(gl, vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl, gl.VERTEX_SHADER, vs)); gl.attachShader(p, compile(gl, gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error("link: " + gl.getProgramInfoLog(p));
+  return p;
+}
+function initGL(gl) {
+  G = { gl, pt: program(gl, V_PT, F_PT), ln: program(gl, V_LN, F_LN), bg: program(gl, V_BG, F_BG), buf: {}, n: 0, ln2: 0 };
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  for (const k of ["pos", "size", "color", "shown", "lpos", "lcolor", "lshown"]) G.buf[k] = gl.createBuffer();
+  G.buf.quad = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, G.buf.quad);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW); // fullscreen triangle
+}
+function buildGLBuffers() {
+  const gl = G.gl, docs = DATA.docs, n = docs.length, K = DATA.clusters.length;
+  G.n = n;
+  const pos = new Float32Array(n * 2), size = new Float32Array(n), color = new Float32Array(n * 3), shown = new Float32Array(n);
+  // cluster centroids in data space (for constellation lines)
+  const cen = {};
+  for (const d of docs) { const c = cen[d.cluster] || (cen[d.cluster] = { x: 0, y: 0, n: 0 }); c.x += d.x; c.y += d.y; c.n++; }
+  for (const k in cen) { cen[k].x /= cen[k].n; cen[k].y /= cen[k].n; }
+  const lpos = new Float32Array(n * 4), lcolor = new Float32Array(n * 6), lshown = new Float32Array(n * 2);
+  docs.forEach((d, i) => {
+    pos[i * 2] = d.x; pos[i * 2 + 1] = d.y; size[i] = d._r; shown[i] = 1;
+    const rgb = clusterRGB(d.cluster, K); color[i * 3] = rgb[0]; color[i * 3 + 1] = rgb[1]; color[i * 3 + 2] = rgb[2];
+    const c = cen[d.cluster];
+    lpos[i * 4] = d.x; lpos[i * 4 + 1] = d.y; lpos[i * 4 + 2] = c.x; lpos[i * 4 + 3] = c.y;
+    lshown[i * 2] = 1; lshown[i * 2 + 1] = 1;
+    for (let v = 0; v < 2; v++) { lcolor[i * 6 + v * 3] = rgb[0]; lcolor[i * 6 + v * 3 + 1] = rgb[1]; lcolor[i * 6 + v * 3 + 2] = rgb[2]; }
+  });
+  G.ln2 = n * 2;
+  upload(gl, G.buf.pos, pos); upload(gl, G.buf.size, size); upload(gl, G.buf.color, color); upload(gl, G.buf.shown, shown);
+  upload(gl, G.buf.lpos, lpos); upload(gl, G.buf.lcolor, lcolor); upload(gl, G.buf.lshown, lshown);
+  G._shown = shown; G._lshown = lshown;
+}
+function rebuildColors() {
+  if (!G || !DATA) return;
+  const gl = G.gl, docs = DATA.docs, K = DATA.clusters.length;
+  const color = new Float32Array(docs.length * 3), lcolor = new Float32Array(docs.length * 6);
+  docs.forEach((d, i) => {
+    const rgb = clusterRGB(d.cluster, K);
+    color[i * 3] = rgb[0]; color[i * 3 + 1] = rgb[1]; color[i * 3 + 2] = rgb[2];
+    for (let v = 0; v < 2; v++) { lcolor[i * 6 + v * 3] = rgb[0]; lcolor[i * 6 + v * 3 + 1] = rgb[1]; lcolor[i * 6 + v * 3 + 2] = rgb[2]; }
+  });
+  upload(gl, G.buf.color, color); upload(gl, G.buf.lcolor, lcolor);
+  buildLabels(); // label colours too
+}
+function updateVisibilityGL() {
+  if (!G || !DATA) return;
+  const gl = G.gl;
+  DATA.docs.forEach((d, i) => { const s = hidden.has(d.cluster) ? 0 : 1; G._shown[i] = s; G._lshown[i * 2] = s; G._lshown[i * 2 + 1] = s; });
+  upload(gl, G.buf.shown, G._shown); upload(gl, G.buf.lshown, G._lshown);
+}
+function upload(gl, buf, data) { gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW); }
+function attrib(gl, prog, name, buf, size) {
+  const loc = gl.getAttribLocation(prog, name); if (loc < 0) return;
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+}
+
+function drawGL() {
+  const gl = G.gl, tr = transform();
+  // background gradient
+  gl.useProgram(G.bg);
+  const ctr = theme.dark ? mix(hexToRgb(theme.panel), hexToRgb(theme.paper), 0.35) : hexToRgb(theme.panel);
+  gl.uniform2f(gl.getUniformLocation(G.bg, "u_res"), el.canvas.width, el.canvas.height);
+  gl.uniform3fv(gl.getUniformLocation(G.bg, "u_ctr"), ctr);
+  gl.uniform3fv(gl.getUniformLocation(G.bg, "u_edge"), hexToRgb(theme.paper));
+  attrib(gl, G.bg, "a_pos", G.buf.quad, 2);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  // constellation lines
+  gl.useProgram(G.ln);
+  setTr(gl, G.ln, tr);
+  attrib(gl, G.ln, "a_pos", G.buf.lpos, 2); attrib(gl, G.ln, "a_color", G.buf.lcolor, 3); attrib(gl, G.ln, "a_shown", G.buf.lshown, 1);
+  gl.drawArrays(gl.LINES, 0, G.ln2);
+  // stars
+  gl.useProgram(G.pt);
+  setTr(gl, G.pt, tr);
+  const zoom = Math.max(0.6, Math.min(cam.scale, 2.4));
+  gl.uniform1f(gl.getUniformLocation(G.pt, "u_sizeFactor"), DPR * zoom * 3.4 * 2.0);
+  gl.uniform1f(gl.getUniformLocation(G.pt, "u_time"), twinkle);
+  attrib(gl, G.pt, "a_pos", G.buf.pos, 2); attrib(gl, G.pt, "a_size", G.buf.size, 1);
+  attrib(gl, G.pt, "a_color", G.buf.color, 3); attrib(gl, G.pt, "a_shown", G.buf.shown, 1);
+  gl.drawArrays(gl.POINTS, 0, G.n);
+}
+function setTr(gl, prog, tr) {
+  gl.uniform2fv(gl.getUniformLocation(prog, "u_center"), tr.center);
+  gl.uniform2fv(gl.getUniformLocation(prog, "u_scale"), tr.scale);
+  gl.uniform2fv(gl.getUniformLocation(prog, "u_offset"), tr.offset);
+}
+function mix(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+
+// ---- cluster labels (overlaid HTML) --------------------------------------
+function buildLabels() {
+  clearLabels();
+  DATA.clusters.forEach((c) => {
+    const s = document.createElement("div"); s.className = "starMapLabel";
+    s.textContent = c.label; s.style.color = clusterColor(c.id, DATA.clusters.length);
+    s.dataset.cluster = c.id; el.labels.appendChild(s); labelEls[c.id] = s;
+  });
+  positionLabels();
+}
+function clearLabels() { if (el.labels) el.labels.innerHTML = ""; labelEls = []; }
+function positionLabels() {
   if (!DATA) return;
+  const cen = {};
+  for (const d of DATA.docs) { const c = cen[d.cluster] || (cen[d.cluster] = { x: 0, y: 0, n: 0 }); const [x, y] = toScreen(d); c.x += x; c.y += y; c.n++; }
+  DATA.clusters.forEach((c) => {
+    const div = labelEls[c.id], e = cen[c.id]; if (!div || !e) return;
+    const show = !hidden.has(c.id) && cam.scale < 3.5;
+    div.style.display = show ? "block" : "none";
+    if (show) div.style.transform = `translate(-50%, -100%) translate(${(e.x / e.n)}px, ${(e.y / e.n) - 12}px)`;
+  });
+}
+
+// ---- 2D fallback ---------------------------------------------------------
+function clearScreen() {
+  if (usingGL && G) { G.gl.clearColor(...hexToRgb(theme.paper), 1); G.gl.clear(G.gl.COLOR_BUFFER_BIT); return; }
+  if (!el.ctx) return;
+  el.ctx.setTransform(DPR, 0, 0, DPR, 0, 0); el.ctx.fillStyle = theme.paper; el.ctx.fillRect(0, 0, el.canvas.clientWidth, el.canvas.clientHeight);
+}
+function draw2d() {
   const ctx = el.ctx, w = el.canvas.clientWidth, h = el.canvas.clientHeight;
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   const grad = ctx.createRadialGradient(w * 0.5, h * 0.45, 0, w * 0.5, h * 0.45, Math.max(w, h) * 0.75);
-  grad.addColorStop(0, theme.panel); grad.addColorStop(1, theme.paper);
-  ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h);
-
+  grad.addColorStop(0, theme.panel); grad.addColorStop(1, theme.paper); ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h);
   const shown = (d) => !hidden.has(d.cluster);
-  // cluster centroids in screen space (for constellation lines + labels)
-  const cent = {};
-  for (const d of DATA.docs) { const c = cent[d.cluster] || (cent[d.cluster] = { x: 0, y: 0, n: 0 }); const [x, y] = toScreen(d); c.x += x; c.y += y; c.n++; }
-  for (const k in cent) { cent[k].x /= cent[k].n; cent[k].y /= cent[k].n; }
-
+  const cen = {};
+  for (const d of DATA.docs) { const c = cen[d.cluster] || (cen[d.cluster] = { x: 0, y: 0, n: 0 }); const [x, y] = toScreen(d); c.x += x; c.y += y; c.n++; }
+  for (const k in cen) { cen[k].x /= cen[k].n; cen[k].y /= cen[k].n; }
   ctx.lineWidth = 1;
+  for (const d of DATA.docs) { if (!shown(d)) continue; const [x, y] = toScreen(d), c = cen[d.cluster]; ctx.strokeStyle = withAlpha(clusterColor(d.cluster, DATA.clusters.length), 0.1); ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(c.x, c.y); ctx.stroke(); }
   for (const d of DATA.docs) {
     if (!shown(d)) continue;
-    const [x, y] = toScreen(d), c = cent[d.cluster];
-    ctx.strokeStyle = withAlpha(clusterColor(d.cluster, DATA.clusters.length), 0.1);
-    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(c.x, c.y); ctx.stroke();
-  }
-  for (const d of DATA.docs) {
-    if (!shown(d)) continue;
-    const [x, y] = toScreen(d), r = d._r * Math.max(0.6, Math.min(cam.scale, 2.4));
-    const col = clusterColor(d.cluster, DATA.clusters.length);
-    const tw = 1 + 0.16 * Math.sin(twinkle * 1.3 + d.x * 20 + d.y * 15);
-    const gg = ctx.createRadialGradient(x, y, 0, x, y, r * 3.2 * tw);
-    gg.addColorStop(0, withAlpha(col, 0.5)); gg.addColorStop(1, withAlpha(col, 0));
-    ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(x, y, r * 3.2 * tw, 0, 7); ctx.fill();
+    const [x, y] = toScreen(d), r = d._r * Math.max(0.6, Math.min(cam.scale, 2.4)), col = clusterColor(d.cluster, DATA.clusters.length);
+    const gg = ctx.createRadialGradient(x, y, 0, x, y, r * 3.2); gg.addColorStop(0, withAlpha(col, 0.5)); gg.addColorStop(1, withAlpha(col, 0)); ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(x, y, r * 3.2, 0, 7); ctx.fill();
     ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
     ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.35, 0, 7); ctx.fill();
     if (d === hover || d === selected) { ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, r + 5, 0, 7); ctx.stroke(); }
   }
-  if (cam.scale < 3.5) {
-    ctx.font = '600 12px -apple-system,"PingFang SC",sans-serif'; ctx.textAlign = "center";
-    for (const c of DATA.clusters) {
-      if (hidden.has(c.id) || !cent[c.id]) continue;
-      ctx.fillStyle = withAlpha(clusterColor(c.id, DATA.clusters.length), 0.92);
-      ctx.shadowColor = "rgba(0,0,0,.85)"; ctx.shadowBlur = 8;
-      ctx.fillText(c.label, cent[c.id].x, cent[c.id].y - 14); ctx.shadowBlur = 0;
-    }
-  }
 }
+
+// ---- loop ----------------------------------------------------------------
+function loop() { twinkle += 0.02; if (usingGL) drawGL(); else draw2d(); positionLabels(); raf = requestAnimationFrame(loop); }
 
 // ---- interaction ---------------------------------------------------------
 function wireCanvas() {
@@ -260,9 +419,8 @@ function wireCanvas() {
   });
   cv.addEventListener("wheel", (e) => {
     e.preventDefault();
-    const f = Math.exp(-e.deltaY * 0.0012), w = cv.clientWidth, h = cv.clientHeight;
-    const mx = e.clientX - cv.getBoundingClientRect().left - w / 2 - cam.x;
-    const my = e.clientY - cv.getBoundingClientRect().top - h / 2 - cam.y;
+    const f = Math.exp(-e.deltaY * 0.0012), w = cv.clientWidth, h = cv.clientHeight, rect = cv.getBoundingClientRect();
+    const mx = e.clientX - rect.left - w / 2 - cam.x, my = e.clientY - rect.top - h / 2 - cam.y;
     cam.x -= mx * (f - 1); cam.y -= my * (f - 1); cam.scale = Math.max(0.4, Math.min(cam.scale * f, 8));
   }, { passive: false });
 }
@@ -282,8 +440,7 @@ const kindLabel = (k) => ({ video: "视频", url: "网页", paper: "论文", pdf
 function buildLegend() {
   el.legendList.innerHTML = "";
   DATA.clusters.forEach((c) => {
-    const li = document.createElement("li");
-    const col = clusterColor(c.id, DATA.clusters.length);
+    const li = document.createElement("li"), col = clusterColor(c.id, DATA.clusters.length);
     li.innerHTML = `<span class="starMapDot"></span><span class="starMapNm"></span><span class="starMapCt"></span>`;
     li.querySelector(".starMapDot").style.cssText = `background:${col};color:${col}`;
     li.querySelector(".starMapNm").textContent = c.label;
@@ -300,6 +457,7 @@ function buildLegend() {
 }
 function syncLegend() {
   [...el.legendList.children].forEach((li, i) => li.classList.toggle("isDim", hidden.has(DATA.clusters[i].id)));
+  if (usingGL) updateVisibilityGL();
 }
 
 // ---- inspector + ask -----------------------------------------------------
@@ -324,7 +482,6 @@ function openInspector(d) {
   el.inspector.classList.add("isOpen");
 }
 function closeInspector() { selected = null; if (el.inspector) el.inspector.classList.remove("isOpen"); }
-
 async function askConstellation(clusterId) {
   const ids = DATA.docs.filter((d) => d.cluster === clusterId).map((d) => d.id);
   const tab = getActiveTab();

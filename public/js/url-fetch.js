@@ -200,7 +200,9 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
 
     // Display fetched content in an assistant bubble
     let displayContent = "";
-    const hasRealTranscript = data.type === "youtube" && data.content && !data.content.startsWith("[");
+    // Structured flag from /api/fetch-url — do not infer from the text shape: real
+    // transcripts can begin with "[" (e.g. a "[Music]" first cue).
+    const hasRealTranscript = data.type === "youtube" && data.content && !data.noTranscript;
     if (data.type === "youtube") {
       // Show video info card
       const infoParts = [`📺 **${data.title}**`, url, ""];
@@ -344,7 +346,7 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
         const infoNow = await buildYoutubeInfoMsg(url, d0); infoNow.timestamp = 0;
         upsertById(base + ':info', infoNow);   // first bubble, now
         commit();
-        const hasRealTranscript = !!(d0.content && !d0.content.startsWith('['));
+        const hasRealTranscript = !!(d0.content && !d0.noTranscript);
         prefetch = {
           title: d0.title || '', channel: d0.channel || '', duration: d0.duration || '',
           viewCount: d0.viewCount || '', uploadDate: d0.uploadDate || '', description: d0.description || '',

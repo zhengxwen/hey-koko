@@ -47,6 +47,7 @@ async function fetchUrlContent(req, res) {
           uploadDate: transcript.uploadDate || "",
           description: transcript.description || "",
           content: transcript.text,
+          noTranscript: !!transcript.noTranscript,
           thumbnail: thumbnail || "",
         });
         return;
@@ -561,7 +562,10 @@ async function fetchYouTubeTranscript(videoId, language) {
 
     const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
     if (!captionTracks || captionTracks.length === 0) {
-      return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: "[该视频无原始字幕]" };
+      // noTranscript is the STRUCTURED "no real subtitles" signal — `text` is only a
+      // human-readable notice. Never infer from the text shape: real transcripts can
+      // legitimately begin with "[" (e.g. a "[Music]" first cue).
+      return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: "[该视频无原始字幕]", noTranscript: true };
     }
     language = (captionTracks.find(t => t.kind === "asr") || captionTracks[0]).languageCode || "";
 
@@ -611,7 +615,7 @@ async function fetchYouTubeTranscript(videoId, language) {
 
     // Caption fetch failed
     const langInfo = captionTracks.map(t => t.languageCode).join(", ");
-    return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: `[字幕获取失败，可用语言: ${langInfo}]` };
+    return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: `[字幕获取失败，可用语言: ${langInfo}]`, noTranscript: true };
   } catch (e) {
     console.error("[yt-transcript] error:", e.message);
     return null;
@@ -1171,7 +1175,7 @@ async function youtubeJob(req, res) {
     } else {
       meta = await fetchYouTubeTranscript(videoId, language);
       thumbnail = (await fetchYouTubeThumbnail(videoId)) || "";
-      const hasReal = meta && meta.text && !meta.text.startsWith("[");
+      const hasReal = meta && meta.text && !meta.noTranscript;
       if (hasReal) { rawTranscript = meta.text; source = "subtitle"; }
     }
     if (!rawTranscript) {
