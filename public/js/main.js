@@ -4,7 +4,7 @@
 // Main entry point - imports and initializes all modules
 import { dom, state, refreshScrollState } from './state.js';
 import { PERSONALITY_PRESETS, getPersonalityPreset } from './constants.js';
-import { readFileAsDataUrl, convertToJpeg, makePreview, escapeHtml } from './utils.js';
+import { readFileAsDataUrl, convertToJpeg, makePreview, escapeHtml, genId } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
 import { initAvatar, updateCloudBadge } from './avatar.js';
@@ -1075,6 +1075,9 @@ function downloadBlob(filename, content, mime) {
 function exportJson(tab) {
   const messages = tab.messages.map((msg) => {
     const m = { ...msg };
+    // `id` is an internal runtime key (DOM diffing / upsert-by-id) with no meaning in
+    // the exported conversation — drop it. Import backfills a fresh one.
+    delete m.id;
     if (m.timestamp) m.timestamp = exportTimeStr(m.timestamp, true);
     // Don't export the heavy video data — keep only the poster thumbnail.
     if (m.generatedVideos) { delete m.generatedVideos; delete m.videoMime; }
@@ -1088,10 +1091,9 @@ function exportJson(tab) {
     if (m.generatedImages?.length) delete m.generatedThumbnails;
     return m;
   });
-  const payload = { title: tab.title, userName: dom.userName.value, personality: tab.personality };
-  // "Her personality" is only a user-authored value for the custom preset; for
-  // the built-in types it's derived from the preset, so don't export it.
-  if (tab.personality === "temp") payload.persona = tab.persona;
+  // userName and persona are hey-koko-local identity/settings, not part of the
+  // conversation — don't export them. Keep the personality preset name only.
+  const payload = { title: tab.title, personality: tab.personality };
   payload.messages = messages;
   const data = JSON.stringify(payload, null, 2);
   downloadBlob(`${tab.title || "对话"}.json`, data, "application/json");
@@ -1177,6 +1179,7 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
       if (!Array.isArray(data.messages)) throw new Error("无效的对话文件");
       const messages = await Promise.all(data.messages.map(async (msg) => {
         const m = { ...msg };
+        if (!m.id) m.id = genId();   // exports drop the internal id → mint a fresh one
         if (typeof m.timestamp === "string") {
           m.timestamp = new Date(m.timestamp.replace(" ", "T")).getTime();
         }
