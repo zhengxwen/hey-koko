@@ -4,34 +4,6 @@
 import Cocoa
 import WebKit
 
-// Custom window to handle zoom keyboard shortcuts
-class ZoomWindow: NSWindow {
-    var webView: WKWebView?
-
-    override func keyDown(with event: NSEvent) {
-        let commandKey = event.modifierFlags.contains(.command)
-        let characters = event.characters?.lowercased() ?? ""
-
-        if commandKey {
-            if characters == "=" || characters == "+" {
-                // Cmd+ : Zoom in
-                webView?.magnification += 0.1
-                return
-            } else if characters == "-" {
-                // Cmd- : Zoom out
-                webView?.magnification -= 0.1
-                return
-            } else if characters == "0" {
-                // Cmd+0 : Reset zoom
-                webView?.magnification = 1.0
-                return
-            }
-        }
-
-        super.keyDown(with: event)
-    }
-}
-
 class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
     var window: NSWindow!
     var webView: WKWebView!
@@ -143,7 +115,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
         let x = screenFrame.origin.x + (screenFrame.width - width) / 2
         let y = screenFrame.origin.y + (screenFrame.height - height) / 2
 
-        window = ZoomWindow(
+        window = NSWindow(
             contentRect: NSRect(x: x, y: y, width: width, height: height),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
@@ -162,8 +134,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
         webView.uiDelegate = self   // so JS alert()/confirm()/prompt() show native dialogs
         window.contentView?.addSubview(webView)
 
-        // Connect webView to window for zoom handling
-        (window as? ZoomWindow)?.webView = webView
+        // Restore the last zoom level (Safari-like page zoom persists across launches)
+        let savedZoom = UserDefaults.standard.double(forKey: "pageZoom")
+        if savedZoom > 0 {
+            webView.pageZoom = CGFloat(savedZoom)
+        }
+    }
+
+    // MARK: - Zoom (Safari-style page zoom: text scales and content reflows to fill the window)
+
+    private func setPageZoom(_ zoom: CGFloat) {
+        let clamped = min(max(zoom, 0.5), 3.0)
+        webView.pageZoom = clamped
+        UserDefaults.standard.set(Double(clamped), forKey: "pageZoom")
+    }
+
+    @objc func zoomIn(_ sender: Any?) {
+        setPageZoom(webView.pageZoom + 0.1)
+    }
+
+    @objc func zoomOut(_ sender: Any?) {
+        setPageZoom(webView.pageZoom - 0.1)
+    }
+
+    @objc func resetZoom(_ sender: Any?) {
+        setPageZoom(1.0)
     }
 
     func waitAndLoad() {
@@ -308,6 +303,24 @@ editMenuItem.submenu = editMenu
 let viewMenuItem = NSMenuItem()
 mainMenu.addItem(viewMenuItem)
 let viewMenu = NSMenu(title: "View")
+// Zoom shortcuts route through the responder chain to AppDelegate, so they work
+// even while typing in the web view (same behavior as Safari's View menu).
+let zoomInItem = NSMenuItem(title: "Zoom In", action: #selector(AppDelegate.zoomIn(_:)), keyEquivalent: "+")
+zoomInItem.keyEquivalentModifierMask = [.command]
+viewMenu.addItem(zoomInItem)
+// Hidden twin so plain Cmd+= (no shift) also zooms in, like Safari.
+let zoomInAltItem = NSMenuItem(title: "Zoom In", action: #selector(AppDelegate.zoomIn(_:)), keyEquivalent: "=")
+zoomInAltItem.keyEquivalentModifierMask = [.command]
+zoomInAltItem.isHidden = true
+zoomInAltItem.allowsKeyEquivalentWhenHidden = true
+viewMenu.addItem(zoomInAltItem)
+let zoomOutItem = NSMenuItem(title: "Zoom Out", action: #selector(AppDelegate.zoomOut(_:)), keyEquivalent: "-")
+zoomOutItem.keyEquivalentModifierMask = [.command]
+viewMenu.addItem(zoomOutItem)
+let actualSizeItem = NSMenuItem(title: "Actual Size", action: #selector(AppDelegate.resetZoom(_:)), keyEquivalent: "0")
+actualSizeItem.keyEquivalentModifierMask = [.command]
+viewMenu.addItem(actualSizeItem)
+viewMenu.addItem(NSMenuItem.separator())
 viewMenu.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
 viewMenuItem.submenu = viewMenu
 
