@@ -548,7 +548,9 @@ export function initLibrary() {
   const expandedDirs = new Set();   // folder paths the user expanded — survives re-renders
                                     // (the list refreshes on every panel open)
   let sortMode = "";          // "" = import order · "new"/"old" = by date (publishedAt,
-                              // i.e. YouTube upload date, else importedAt); session-scoped
+                              // i.e. YouTube upload date, else importedAt) · "rate" =
+                              // manual ★ rating high→low; session-scoped
+  let ratingFilter = "";      // "" all · "3"/"4"/"5" = ★N and up · "unrated"
   let allDirs = [""];         // every folder under the library (for move popup + ask scope)
 
   const setStatus = (s) => { statusEl.textContent = s || ""; };
@@ -584,16 +586,21 @@ export function initLibrary() {
   // ---- refresh (rescan disk) ----
   // Reconcile the library with manual file operations under LIBRARY_DIR: docs the user
   // dropped in / moved between folders / deleted in Finder. The server re-reads every doc
-  // Sort cycles import order → date new→old → date old→new. dataset.mode lets the
-  // language switcher (applyI18n) re-label the button without knowing library state.
+  // Sort cycles import order → date new→old → date old→new → rating high→low.
+  // dataset.mode lets the language switcher (applyI18n) re-label the button without
+  // knowing library state.
   sortBtn.title = t("lib_sortHint");
   sortBtn.textContent = t("lib_sortDefault");
   sortBtn.addEventListener("click", () => {
-    sortMode = sortMode === "" ? "new" : sortMode === "new" ? "old" : "";
+    sortMode = sortMode === "" ? "new" : sortMode === "new" ? "old" : sortMode === "old" ? "rate" : "";
     sortBtn.dataset.mode = sortMode;
-    sortBtn.textContent = t(sortMode === "new" ? "lib_sortNewOld" : sortMode === "old" ? "lib_sortOldNew" : "lib_sortDefault");
+    sortBtn.textContent = t(sortMode === "new" ? "lib_sortNewOld" : sortMode === "old" ? "lib_sortOldNew" : sortMode === "rate" ? "lib_sortRate" : "lib_sortDefault");
     renderList();
   });
+
+  // ★ filter: minimum rating (or unrated-only, for finding docs still to grade).
+  const ratingFilterSel = document.querySelector("#libraryRatingFilter");
+  ratingFilterSel.addEventListener("change", () => { ratingFilter = ratingFilterSel.value; renderList(); });
 
   // (slow on a big library) → show the tab-loading three-dots overlay while it runs.
   refreshBtn.title = t("lib_refresh");
@@ -1026,7 +1033,8 @@ export function initLibrary() {
     const tagsHtml = (d.tags || []).map((tg) => `<span class="archiveCardTag" style="background:${tg.color || "#e0e0e0"}">${escapeHtml(tg.name)}</span>`).join("");
     // 📇 = this doc has a distillation card (kind:"card" block leads its blocks).
     // Date: publishedAt (YouTube upload date) beats the coarser year when present.
-    const meta = [d.hasCard ? "📇 " + d.docKind : d.docKind, shortAuthors(d.authors), d.publishedAt || d.year].filter(Boolean).join(" · ");
+    // ★N = the manual rating (set from the preview pane's star widget).
+    const meta = [d.hasCard ? "📇 " + d.docKind : d.docKind, d.rating ? "★" + d.rating : "", shortAuthors(d.authors), d.publishedAt || d.year].filter(Boolean).join(" · ");
     card.innerHTML = `
       <input type="checkbox" class="archiveCardCheckbox" ${selected.has(d.docId) ? "checked" : ""} />
       <div class="archiveCardInfo">
@@ -1048,8 +1056,13 @@ export function initLibrary() {
     listEl.innerHTML = "";
     let list = [...docs];
     if (activeTagFilter) list = list.filter((d) => (d.tags || []).some((tg) => tg && tg.name === activeTagFilter));
+    if (ratingFilter === "unrated") list = list.filter((d) => !d.rating);
+    else if (ratingFilter) list = list.filter((d) => (d.rating || 0) >= Number(ratingFilter));
     if (scores) {
       list = list.filter((d) => scores.has(d.docId)).sort((a, b) => scores.get(b.docId) - scores.get(a.docId));
+    } else if (sortMode === "rate") {
+      // Rating high→low; unrated sink to the end, ties keep import order (stable sort).
+      list.sort((a, b) => (b.rating || 0) - (a.rating || 0));
     } else if (sortMode) {
       // Date sort applies inside each folder too (the tree below groups a pre-sorted
       // list, so node.files inherit this order). Undated docs always sink to the end.
@@ -1124,12 +1137,54 @@ export function initLibrary() {
   }
 
   // ---- doc browse (editable bubble stream) ----
+  // ★ rating widget appended to the preview title. Half-star capable: each star is a
+  // muted base ★ with a gold overlay clipped to 0/50/100% width; clicking a star's LEFT
+  // half sets n−0.5, the right half sets n, and clicking the current value clears.
+  // Persists via /api/library/rate; the list card's "★N" meta updates immediately.
+  function renderPreviewStars(doc) {
+    const wrap = document.createElement("span");
+    wrap.className = "libDocStars";
+    wrap.title = t("lib_rateHint");
+    const paint = () => {
+      [...wrap.children].forEach((s, idx) => {
+        const frac = Math.max(0, Math.min(1, (doc.rating || 0) - idx));
+        s.querySelector(".libDocStarFill").style.width = (frac * 100) + "%";
+      });
+    };
+    for (let i = 1; i <= 5; i++) {
+      const s = document.createElement("span");
+      s.className = "libDocStar";
+      s.textContent = "★";
+      const fill = document.createElement("span");
+      fill.className = "libDocStarFill";
+      fill.textContent = "★";
+      s.appendChild(fill);
+      s.addEventListener("click", async (e) => {
+        const val = e.offsetX < s.offsetWidth / 2 ? i - 0.5 : i;
+        const next = (doc.rating || 0) === val ? 0 : val;
+        try {
+          const r = await postJson("/api/library/rate", { docId: doc.docId, rating: next });
+          if (r && r.error) throw new Error(r.error);
+          doc.rating = next || undefined;
+          const entry = docs.find((d) => d.docId === doc.docId);
+          if (entry) entry.rating = doc.rating;
+          paint();
+          renderList();
+        } catch (e2) { setStatus(t("lib_rateFailed", { error: e2.message })); }
+      });
+      wrap.appendChild(s);
+    }
+    paint();
+    previewTitle.appendChild(wrap);
+  }
+
   async function openDoc(docId) {
     try {
       const { doc, error } = await postJson("/api/library/get", { docId });
       if (error || !doc) { alert(error || t("lib_loadFailed")); return; }
       currentDoc = doc;
       previewTitle.textContent = `${kindIcon(doc.docKind)} ${doc.title}`;
+      renderPreviewStars(doc);
       previewEmpty.style.display = "none";
       preview.classList.add("isOpen");
       askScoped.disabled = false;   // enable "this doc only" scoping
@@ -1407,6 +1462,7 @@ export function initLibrary() {
         await postJson("/api/library/save", { doc, model: embedModel() });
         setStatus("");
         previewTitle.textContent = `${kindIcon(doc.docKind)} ${doc.title}`;
+        renderPreviewStars(doc);
         await refreshList();
       } catch (e) { setStatus(t("lib_saveFailed") + " " + e.message); }
     });

@@ -409,7 +409,16 @@
               <input id="librarySearch" type="text" class="archiveSearchInput" placeholder="Semantic search the library..." />
               <button id="libraryRefreshBtn" type="button" class="secondary archiveSortBtn libraryRefreshBtn" aria-label="Refresh">🔄</button>
               <button id="librarySortBtn" type="button" class="secondary archiveSortBtn" title="Sort docs by date (YouTube upload date; otherwise import time)">Import order</button>
+              <select id="libraryRatingFilter" class="libraryRatingFilter" title="Filter by rating">
+                <option value="">All ratings</option>
+                <option value="5">★5</option>
+                <option value="4">★4+</option>
+                <option value="3">★3+</option>
+                <option value="unrated">Unrated</option>
+              </select>
               <button id="starMapBtn" type="button" class="secondary archiveSortBtn" title="Knowledge star map">🌌 Star map</button>
+              <span id="libraryTaskCount" class="libraryTaskCount" hidden></span>
+              <!-- Import stays the LAST toolbar element — even with the ⏳ badge visible -->
               <div class="libraryImportWrapper">
                 <button id="libraryImportBtn" type="button" class="secondary archiveSortBtn">+ Import ▾</button>
                 <div id="libraryImportMenu" class="exportMenu" hidden>
@@ -420,7 +429,6 @@
                   <button id="libraryBackfillCards" type="button">📇 Backfill distill cards</button>
                 </div>
               </div>
-              <span id="libraryTaskCount" class="libraryTaskCount" hidden></span>
               <input id="libraryPaperInput" type="file" accept=".pdf,.docx" multiple hidden />
               <input id="libraryFileInput" type="file" accept=".pdf,.pptx,.docx" multiple hidden />
               <input id="libraryTextInput" type="file" accept=".txt,.md,.markdown" multiple hidden />

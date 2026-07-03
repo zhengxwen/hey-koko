@@ -159,6 +159,7 @@ function indexEntryOf(doc) {
     // hasCard: whether a distillation card (kind:"card") leads the blocks.
     importedAt: doc.importedAt || undefined,
     publishedAt: doc.publishedAt || undefined,
+    rating: doc.rating || undefined,           // manual 1-5 ★ (absent = unrated)
     hasCard: (doc.blocks || []).some(b => b.kind === "card") || undefined,
   };
 }
@@ -1095,6 +1096,26 @@ async function distillDocInternal(docId, { metadata = false, model, language = "
 
 // POST /api/library/distill  { docId, model, language?, metadata? } → regenerate one
 // doc's card inline (the panel's "re-extract" button; batch backfill goes through jobs.js).
+// POST /api/library/rate { docId, rating: 0..5 in 0.5 steps } → { ok, rating } — 0 clears.
+// A manual quality mark, shown as ★ in the list and next to the preview title.
+async function rateLibraryDoc(req, res) {
+  try {
+    const body = await readBody(req);
+    const docId = String(body.docId || "");
+    const rating = Math.max(0, Math.min(5, Math.round((Number(body.rating) || 0) * 2) / 2));
+    const doc = readDoc(docId);
+    if (!doc) { sendJson(res, 404, { error: "文档不存在" }); return; }
+    if (rating) doc.rating = rating; else delete doc.rating;
+    writeDoc(doc);
+    // Update the index entry IN PLACE — upsertIndex pushes to the end, which would
+    // reshuffle the list's default import order on every rating click.
+    const arr = loadIndex();
+    const e = arr.find((d) => d.docId === docId);
+    if (e) { e.rating = rating || undefined; saveIndex(arr); }
+    sendJson(res, 200, { ok: true, rating });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
 async function distillLibraryDoc(req, res) {
   try {
     const body = await readBody(req);
@@ -1155,7 +1176,7 @@ async function buildYoutubeDoc(data, url, language = "") {
 module.exports = {
   importLibrary, listLibrary, searchLibrary, getLibraryDoc,
   saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, LIBRARY_DIR,
-  listLibraryDirs, moveLibraryDocs, rescanLibrary,
+  listLibraryDirs, moveLibraryDocs, rescanLibrary, rateLibraryDoc,
   splitIntoBlocks,   // exported for reuse/testing of the chunker
   // server-side libimport job (jobs.js) + distill + related-docs
   importDocInternal, distillDocInternal, distillLibraryDoc, buildYoutubeDoc, llmComplete,

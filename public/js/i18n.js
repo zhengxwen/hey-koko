@@ -131,6 +131,11 @@ const UI = {
     lib_ytModalTitle: "Choose videos to import",
     lib_ytHint: "Already-imported videos are unchecked by default.",
     lib_ytSelectAll: "Select all",
+    lib_sortRate: "Rating high→low",
+    lib_rateFilterAll: "All ratings",
+    lib_rateFilterUnrated: "Unrated",
+    lib_rateHint: "Rate this doc — left half of a star = half a point (e.g. 3.5); click the current value again to clear",
+    lib_rateFailed: "Rating failed: ${error}",
     lib_ytMemberToggle: "🔒 Members-only",
     lib_ytMemberToggleHint: "Tick/untick all members-only videos. They can be imported once you export a member account's youtube.com cookies to ~/.hey-koko/youtube-cookies.txt (Netscape cookies.txt format — see README).",
     lib_ytAutoFolder: "Auto-file each video into its channel's sub-folder under youtube/",
@@ -682,6 +687,11 @@ const UI = {
     lib_ytModalTitle: "选择要导入的视频",
     lib_ytHint: "已导入的视频默认不勾选。",
     lib_ytSelectAll: "全选",
+    lib_sortRate: "分数 高→低",
+    lib_rateFilterAll: "全部分数",
+    lib_rateFilterUnrated: "未评分",
+    lib_rateHint: "给文档打分——点星的左半＝半星（如 3.5），再点当前分数可清除",
+    lib_rateFailed: "打分失败：${error}",
     lib_ytMemberToggle: "🔒 会员专属",
     lib_ytMemberToggleHint: "一键勾选/取消所有会员专属视频。把会员账号的 youtube.com cookies 导出到 ~/.hey-koko/youtube-cookies.txt（Netscape cookies.txt 格式，详见 README）后即可正常导入。",
     lib_ytAutoFolder: "按频道自动归入 youtube 下的对应子目录",
@@ -1224,6 +1234,11 @@ const UI = {
     lib_ytModalTitle: "選擇要匯入的影片",
     lib_ytHint: "已匯入的影片預設不勾選。",
     lib_ytSelectAll: "全選",
+    lib_sortRate: "分數 高→低",
+    lib_rateFilterAll: "全部分數",
+    lib_rateFilterUnrated: "未評分",
+    lib_rateHint: "給文件打分——點星的左半＝半星（如 3.5），再點當前分數可清除",
+    lib_rateFailed: "打分失敗：${error}",
     lib_ytMemberToggle: "🔒 會員專屬",
     lib_ytMemberToggleHint: "一鍵勾選/取消所有會員專屬影片。把會員帳號的 youtube.com cookies 匯出到 ~/.hey-koko/youtube-cookies.txt（Netscape cookies.txt 格式，詳見 README）後即可正常匯入。",
     lib_ytAutoFolder: "按頻道自動歸入 youtube 下的對應子目錄",
@@ -2012,8 +2027,15 @@ export function applyUILanguage() {
   const libSortBtn = document.querySelector("#librarySortBtn");
   if (libSortBtn) {
     const m = libSortBtn.dataset.mode;
-    libSortBtn.textContent = t(m === "new" ? "lib_sortNewOld" : m === "old" ? "lib_sortOldNew" : "lib_sortDefault");
+    libSortBtn.textContent = t(m === "new" ? "lib_sortNewOld" : m === "old" ? "lib_sortOldNew" : m === "rate" ? "lib_sortRate" : "lib_sortDefault");
     libSortBtn.title = t("lib_sortHint");
+  }
+  const libRateFilter = document.querySelector("#libraryRatingFilter");
+  if (libRateFilter) {
+    for (const opt of libRateFilter.options) {
+      if (opt.value === "") opt.textContent = t("lib_rateFilterAll");
+      else if (opt.value === "unrated") opt.textContent = t("lib_rateFilterUnrated");
+    }
   }
   // Archive expand button
   const expandBtn = document.querySelector("#archiveExpandAllBtn");

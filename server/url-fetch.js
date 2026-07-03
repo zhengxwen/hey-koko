@@ -40,7 +40,9 @@ async function fetchUrlContent(req, res) {
       if (transcript) {
         const thumbnail = await fetchYouTubeThumbnail(videoId);
         sendJson(res, 200, {
-          type: "youtube", videoId, title: transcript.title,
+          // Title follows the prompt language's S/T variant (no-op for non-Chinese) —
+          // it becomes the info-card heading and, via prefetch, the library doc title.
+          type: "youtube", videoId, title: await convertChinese(transcript.title || "", language),
           channel: transcript.channel || "",
           duration: transcript.duration || "",
           viewCount: transcript.viewCount || "",
@@ -1197,13 +1199,16 @@ async function youtubeJob(req, res) {
     // Traditional). Chinese subtitles arrive in either variant (or a whisper mix); this is
     // the final deterministic pass so the stored doc matches what the user asked for. No-op
     // for non-Chinese prompt languages. Convert both the formatted text and the raw fallback
-    // (shown on format failure) so they're consistent. Best-effort — never blocks the result.
+    // (shown on format failure) so they're consistent, plus the title — it becomes the
+    // library doc title and the "# heading". Best-effort — never blocks the result.
+    let docTitle = (meta && meta.title) || "";
     try {
       if (formattedText) formattedText = await convertChinese(formattedText, language);
       if (rawTranscript) rawTranscript = await convertChinese(rawTranscript, language);
+      if (docTitle) docTitle = await convertChinese(docTitle, language);
     } catch (e) { if (ctrl.signal.aborted) throw e; /* keep unconverted text on failure */ }
     send({ type: "done", result: {
-      title: (meta && meta.title) || "", channel: (meta && meta.channel) || "",
+      title: docTitle, channel: (meta && meta.channel) || "",
       duration: (meta && meta.duration) || "", viewCount: (meta && meta.viewCount) || "",
       uploadDate: (meta && meta.uploadDate) || "", description: (meta && meta.description) || "",
       category: (meta && meta.category) || "", tags: (meta && meta.tags) || [], language: (meta && meta.language) || "",
