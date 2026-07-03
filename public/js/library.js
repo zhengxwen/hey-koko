@@ -506,6 +506,7 @@ export function initLibrary() {
   const askFolderSel = document.querySelector("#libraryAskFolder");
   const importBtn = document.querySelector("#libraryImportBtn");
   const refreshBtn = document.querySelector("#libraryRefreshBtn");
+  const sortBtn = document.querySelector("#librarySortBtn");
   const loadingEl = document.querySelector("#libraryLoading");
   const importMenu = document.querySelector("#libraryImportMenu");
   const taskCountEl = document.querySelector("#libraryTaskCount");
@@ -544,6 +545,8 @@ export function initLibrary() {
   let currentDoc = null;
   const expandedDirs = new Set();   // folder paths the user expanded — survives re-renders
                                     // (the list refreshes on every panel open)
+  let sortMode = "";          // "" = import order · "new"/"old" = by date (publishedAt,
+                              // i.e. YouTube upload date, else importedAt); session-scoped
   let allDirs = [""];         // every folder under the library (for move popup + ask scope)
 
   const setStatus = (s) => { statusEl.textContent = s || ""; };
@@ -579,6 +582,17 @@ export function initLibrary() {
   // ---- refresh (rescan disk) ----
   // Reconcile the library with manual file operations under LIBRARY_DIR: docs the user
   // dropped in / moved between folders / deleted in Finder. The server re-reads every doc
+  // Sort cycles import order → date new→old → date old→new. dataset.mode lets the
+  // language switcher (applyI18n) re-label the button without knowing library state.
+  sortBtn.title = t("lib_sortHint");
+  sortBtn.textContent = t("lib_sortDefault");
+  sortBtn.addEventListener("click", () => {
+    sortMode = sortMode === "" ? "new" : sortMode === "new" ? "old" : "";
+    sortBtn.dataset.mode = sortMode;
+    sortBtn.textContent = t(sortMode === "new" ? "lib_sortNewOld" : sortMode === "old" ? "lib_sortOldNew" : "lib_sortDefault");
+    renderList();
+  });
+
   // (slow on a big library) → show the tab-loading three-dots overlay while it runs.
   refreshBtn.title = t("lib_refresh");
   refreshBtn.addEventListener("click", async () => {
@@ -980,8 +994,9 @@ export function initLibrary() {
     if (depth) card.style.paddingLeft = (depth * 16 + 8) + "px";
     const sc = scores && scores.has(d.docId) ? `<span class="archiveCardScore">${Math.round(scores.get(d.docId) * 100)}%</span>` : "";
     const tagsHtml = (d.tags || []).map((tg) => `<span class="archiveCardTag" style="background:${tg.color || "#e0e0e0"}">${escapeHtml(tg.name)}</span>`).join("");
-    // 📇 = this doc has a distillation card (kind:"card" block leads its blocks)
-    const meta = [d.hasCard ? "📇 " + d.docKind : d.docKind, shortAuthors(d.authors), d.year].filter(Boolean).join(" · ");
+    // 📇 = this doc has a distillation card (kind:"card" block leads its blocks).
+    // Date: publishedAt (YouTube upload date) beats the coarser year when present.
+    const meta = [d.hasCard ? "📇 " + d.docKind : d.docKind, shortAuthors(d.authors), d.publishedAt || d.year].filter(Boolean).join(" · ");
     card.innerHTML = `
       <input type="checkbox" class="archiveCardCheckbox" ${selected.has(d.docId) ? "checked" : ""} />
       <div class="archiveCardInfo">
@@ -1005,6 +1020,15 @@ export function initLibrary() {
     if (activeTagFilter) list = list.filter((d) => (d.tags || []).some((tg) => tg && tg.name === activeTagFilter));
     if (scores) {
       list = list.filter((d) => scores.has(d.docId)).sort((a, b) => scores.get(b.docId) - scores.get(a.docId));
+    } else if (sortMode) {
+      // Date sort applies inside each folder too (the tree below groups a pre-sorted
+      // list, so node.files inherit this order). Undated docs always sink to the end.
+      const dateOf = (d) => (d.publishedAt ? Date.parse(d.publishedAt) : d.importedAt) || 0;
+      list.sort((a, b) => {
+        const da = dateOf(a), db = dateOf(b);
+        if (!da || !db) return (da ? -1 : 0) + (db ? 1 : 0);
+        return sortMode === "new" ? db - da : da - db;
+      });
     }
     if (!list.length) {
       listEl.innerHTML = `<div class="archiveEmpty">${docs.length ? t("lib_noMatch") : t("lib_emptyList")}</div>`;

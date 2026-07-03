@@ -120,6 +120,10 @@ const UI = {
     lib_importing: "Saving to library…",
     lib_taskCount: "⏳ ${n} importing",
     lib_taskCountHint: "Show background tasks",
+    lib_sortDefault: "Import order",
+    lib_sortNewOld: "Date New→Old",
+    lib_sortOldNew: "Date Old→New",
+    lib_sortHint: "Sort docs by date (YouTube upload date; otherwise import time)",
     lib_noMatch: "No matching results.",
     lib_emptyList: "Library is empty — click + Import to start.",
     lib_blocks: "${n} blocks",
@@ -629,6 +633,10 @@ const UI = {
     lib_importing: "正在存入知识库…",
     lib_taskCount: "⏳ ${n} 个导入中",
     lib_taskCountHint: "查看后台任务",
+    lib_sortDefault: "导入序",
+    lib_sortNewOld: "日期 新→旧",
+    lib_sortOldNew: "日期 旧→新",
+    lib_sortHint: "按日期排序（YouTube 用发布日期，其余按导入时间）",
     lib_noMatch: "没有匹配的结果。",
     lib_emptyList: "知识库为空，点「+ 导入」开始建库。",
     lib_blocks: "${n} 块",
@@ -1129,6 +1137,10 @@ const UI = {
     lib_importing: "正在存入知識庫…",
     lib_taskCount: "⏳ ${n} 個匯入中",
     lib_taskCountHint: "查看背景任務",
+    lib_sortDefault: "匯入序",
+    lib_sortNewOld: "日期 新→舊",
+    lib_sortOldNew: "日期 舊→新",
+    lib_sortHint: "按日期排序（YouTube 用發布日期，其餘按匯入時間）",
     lib_noMatch: "沒有匹配的結果。",
     lib_emptyList: "知識庫為空，點「+ 匯入」開始建庫。",
     lib_blocks: "${n} 區塊",
@@ -1878,6 +1890,13 @@ export function applyUILanguage() {
     sortBtn.textContent = sortBtn.textContent.includes("→") ?
       (sortBtn.textContent.includes("New") || sortBtn.textContent.includes("新") ? t("archive_sortNewOld") : t("archive_sortOldNew")) :
       t("archive_sortNewOld");
+  }
+  // Library sort button (dynamic — current mode lives in dataset.mode)
+  const libSortBtn = document.querySelector("#librarySortBtn");
+  if (libSortBtn) {
+    const m = libSortBtn.dataset.mode;
+    libSortBtn.textContent = t(m === "new" ? "lib_sortNewOld" : m === "old" ? "lib_sortOldNew" : "lib_sortDefault");
+    libSortBtn.title = t("lib_sortHint");
   }
   // Archive expand button
   const expandBtn = document.querySelector("#archiveExpandAllBtn");

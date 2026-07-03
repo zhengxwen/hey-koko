@@ -154,8 +154,11 @@ function indexEntryOf(doc) {
     title: doc.title, authors: doc.authors || "", year: doc.year || "",
     tags: doc.tags || [], blockCount: (doc.blocks || []).length,
     // importedAt: recorded from now on (older docs simply lack it — never faked);
+    // publishedAt ("YYYY-MM-DD"): the CONTENT's own date (YouTube upload date) — the
+    // list view sorts by it, falling back to importedAt;
     // hasCard: whether a distillation card (kind:"card") leads the blocks.
     importedAt: doc.importedAt || undefined,
+    publishedAt: doc.publishedAt || undefined,
     hasCard: (doc.blocks || []).some(b => b.kind === "card") || undefined,
   };
 }
@@ -481,6 +484,7 @@ async function importDocInternal(body) {
     docId, source: body.source || "",
     title: body.title || docId,
     authors: body.authors || "", year: body.year || "",
+    publishedAt: body.publishedAt || "",
     tags: body.tags || [], embedModel: model,
     importedAt: Date.now(),
     blocks,
@@ -507,10 +511,41 @@ async function importLibrary(req, res) {
   } catch (e) { sendJson(res, e.message === "文档为空，无法导入" ? 400 : 500, { error: e.message }); }
 }
 
+// One-time (per process) backfill: video docs imported before publishedAt existed
+// carry the upload date only as prose in their meta block ("日期：YYYY-MM-DD" on the
+// same line as the video URL). Lift it into the structured field so the list view can
+// sort them. Docs whose meta block lacks a date are simply skipped (rescanned only on
+// the next server restart — cheap: the scan reads just unresolved video docs, once).
+let PUB_BACKFILL_DONE = false;
+function backfillPublishedAt() {
+  if (PUB_BACKFILL_DONE) return;
+  PUB_BACKFILL_DONE = true;
+  const arr = loadIndex();
+  let changed = false;
+  for (const e of arr) {
+    if (e.docKind !== "video" || e.publishedAt) continue;
+    const doc = readDoc(e.docId);
+    if (!doc || doc.publishedAt) continue;
+    // Only trust the meta block (it carries the video URL) — a bare 日期： in the
+    // transcript body must not become the doc's date.
+    const metaBlock = (doc.blocks || []).slice(0, 4).find(b =>
+      /youtu\.?be/.test(b.content || "") && /日期[：:]\s*\d{4}-\d{2}-\d{2}/.test(b.content || ""));
+    if (!metaBlock) continue;
+    doc.publishedAt = metaBlock.content.match(/日期[：:]\s*(\d{4}-\d{2}-\d{2})/)[1];
+    // Update the entry IN PLACE (not upsertIndex, which pushes to the end): a
+    // backfill must not reshuffle the list's default import order.
+    try { writeDoc(doc); e.publishedAt = doc.publishedAt; changed = true; }
+    catch { /* read-only fs etc. — retry next restart */ }
+  }
+  if (changed) saveIndex(arr);
+}
+
 // POST /api/library/list  → { docs:[index entries] }
 async function listLibrary(_req, res) {
-  try { sendJson(res, 200, { docs: loadIndex().map(d => ({ ...d, folder: locOf(d.docId) })) }); }
-  catch (e) { sendJson(res, 500, { error: e.message }); }
+  try {
+    backfillPublishedAt();
+    sendJson(res, 200, { docs: loadIndex().map(d => ({ ...d, folder: locOf(d.docId) })) });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
 // POST /api/library/dirs → { dirs:[""(root), "papers", "papers/ml", …] }
@@ -1114,7 +1149,7 @@ async function buildYoutubeDoc(data, url, language = "") {
   const transcript = String(data.formattedText || data.rawTranscript || "").replace(/^\*\*📝[^\n]*\*\*\s*\n+/, "");
   const text = [`# ${title}`, "", infoLine, "", `# ${distillL(language).transcriptHeading}`, "",
     transcript].join("\n");
-  return { source: `url:${url}`, docKind: "video", title, authors, year, text, images };
+  return { source: `url:${url}`, docKind: "video", title, authors, year, publishedAt: uploadDate, text, images };
 }
 
 module.exports = {

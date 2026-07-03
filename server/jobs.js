@@ -337,7 +337,7 @@ async function runLibImportJob(job, signal) {
     return { docId: p.docId, distilled: !!r.ok, reembedded: r.reembedded };
   }
 
-  let source, docKind = p.docKind, title, authors = "", year = "", text, images = [];
+  let source, docKind = p.docKind, title, authors = "", year = "", publishedAt = "", text, images = [];
   if (p.type === "youtube") {
     stage("fetching");
     let data = null, errored = null;
@@ -353,7 +353,7 @@ async function runLibImportJob(job, signal) {
     // user must see which videos need reprocessing, not silently get an unformatted doc.
     if (data.formatError) throw new Error(`字幕整理失败: ${data.formatError}`);
     stage("importing");
-    ({ source, docKind, title, authors, year, text, images } = await library.buildYoutubeDoc(data, p.url, p.language));
+    ({ source, docKind, title, authors, year, publishedAt, text, images } = await library.buildYoutubeDoc(data, p.url, p.language));
   } else if (p.type === "url") {
     stage("fetching");
     const r = await loopbackPost("/api/fetch-url", { url: p.url }, signal);
@@ -377,7 +377,7 @@ async function runLibImportJob(job, signal) {
   // dedupe only for file imports: their docId comes from the file BASENAME, so two
   // different papers both named main.pdf would otherwise silently overwrite each other
   // (URL/YouTube docIds derive from the URL — same id really is the same doc there).
-  const imp = await library.importDocInternal({ source, docKind, folder: p.folder, title, authors, year, text, images, model: p.embedModel, dedupe: p.type === "file" });
+  const imp = await library.importDocInternal({ source, docKind, folder: p.folder, title, authors, year, publishedAt, text, images, model: p.embedModel, dedupe: p.type === "file" });
   let distilled = false;
   if (p.distill !== false && p.chatModel) {
     stage("distilling");
