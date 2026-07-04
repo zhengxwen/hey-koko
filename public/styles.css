@@ -1995,6 +1995,19 @@ button.secondary:disabled {
   margin-bottom: 0;
 }
 
+/* 渲染的 SVG block（```svg 代码块） */
+.markdownBody .svg-block,
+.plainBody .svg-block {
+  margin: 0 0 6px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.markdownBody .svg-block svg,
+.plainBody .svg-block svg {
+  max-width: 100%;
+  height: auto;
+}
+
 .markdownBody pre,
 .plainBody pre {
   max-width: 100%;

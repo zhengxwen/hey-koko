@@ -74,6 +74,18 @@ export function renderInlineMarkdown(value) {
   return result;
 }
 
+// Sanitize an ```svg block before inlining it (LLM output → innerHTML). Strips
+// the SVG XSS vectors: <script>/<foreignObject>, inline on* handlers, and
+// javascript: URLs. Mirrors sanitizeHtmlTable's defense-in-depth approach.
+function sanitizeSvg(svg) {
+  return svg
+    .replace(/<script[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/<foreignObject[\s\S]*?<\/foreignObject\s*>/gi, "")
+    .replace(/<\/?(?:script|foreignObject)\b[^>]*>/gi, "")
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, "")
+    .replace(/((?:xlink:)?href)\s*=\s*("|')?\s*javascript:[^"'>]*\2?/gi, "");
+}
+
 export function markdownToHtml(markdown) {
   const lines = markdown.split(/\r?\n/);
   const html = [];
@@ -106,11 +118,15 @@ export function markdownToHtml(markdown) {
   }
 
   function closeCodeBlock() {
+    const code = codeLines.join("\n");
     if (codeBlockLang === "mermaid") {
-      html.push(`<pre class="mermaid">${escapeHtml(codeLines.join("\n"))}</pre>`);
+      html.push(`<pre class="mermaid">${escapeHtml(code)}</pre>`);
+    } else if (codeBlockLang === "svg" && /<svg[\s>]/i.test(code)) {
+      // Render the SVG inline (sanitized) instead of showing its source.
+      html.push(`<div class="svg-block">${sanitizeSvg(code)}</div>`);
     } else {
       const langClass = codeBlockLang ? ` class="language-${escapeHtml(codeBlockLang)}"` : "";
-      html.push(`<pre><code${langClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      html.push(`<pre><code${langClass}>${escapeHtml(code)}</code></pre>`);
     }
     codeLines = [];
     codeBlockLang = "";

@@ -314,9 +314,11 @@ const BLOCK_TTS = new Set([
 //  null      → spoken normally (incl. inline <code>, <strong>, <a> …)
 function skipMode(el) {
   if (el.classList.contains("tts-math")) return "math";
-  const tag = el.tagName;
+  // NOTE: inline <svg> elements report a lowercase tagName ("svg", SVG namespace),
+  // so match case-insensitively — and catch the .svg-block wrapper before descending.
+  const tag = el.tagName.toUpperCase();
   if (tag === "PRE" || tag === "SVG") return "break";
-  if (el.classList.contains("katex-block") || el.classList.contains("mermaid")) return "break";
+  if (el.classList.contains("svg-block") || el.classList.contains("katex-block") || el.classList.contains("mermaid")) return "break";
   if (el.classList.contains("katex")) return "nobreak";
   // Injected 💬 highlight-note marker: not part of the spoken message text.
   if (el.classList.contains("hlNoteMark")) return "nobreak";
