@@ -213,12 +213,15 @@
             </label>
           </div>
 
-          <label id="embedModelLabel">
-            <span id="embedModelLabelText">Embedding model (archive semantic search)</span>
-            <select id="embedModelSelect">
-              <option value="">No embedding model detected</option>
-            </select>
-          </label>
+          <div class="comfyModelRow">
+            <label id="embedModelLabel">
+              <span id="embedModelLabelText">Embedding model (archive semantic search)</span>
+              <select id="embedModelSelect">
+                <option value="">No embedding model detected</option>
+              </select>
+            </label>
+            <button id="libraryAskParamsBtn" type="button" class="secondary comfyParamsBtn" title="/ask parameters">⚙</button>
+          </div>
           <label class="checkboxLabel">
             <input id="libraryDistillToggle" type="checkbox" checked />
             <span id="libraryDistillLabelText">Distill card on library import</span>
@@ -748,6 +751,31 @@
             <button id="libraryUrlCancel" type="button" class="secondary">取消</button>
             <button id="libraryUrlConfirm" type="button">导入</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Library: /ask parameters (⚙ next to the embedding-model select) -->
+    <div id="libraryAskParamsModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal comfyParamsModal" role="dialog" aria-modal="true" aria-labelledby="libraryAskParamsTitle">
+        <div class="scanModalHeader">
+          <h3 id="libraryAskParamsTitle" class="scanModalTitle">/ask parameters</h3>
+          <button id="libraryAskParamsClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
+        </div>
+        <div class="comfyParamsBody">
+          <p class="hint" id="libraryAskParamsHint">Knowledge-library question answering (/ask and the library panel box).</p>
+          <label>
+            <span id="libraryAskTopKLabel">Retrieved snippets (top-K)</span>
+            <input id="libraryAskTopK" type="number" min="1" max="50" step="1" value="6" />
+          </label>
+          <label>
+            <span id="libraryAskImagesLabel">Attached images (max)</span>
+            <input id="libraryAskImages" type="number" min="0" max="10" step="1" value="3" />
+          </label>
+          <label>
+            <span id="libraryAskBudgetLabel">Full-read budget (characters)</span>
+            <input id="libraryAskBudget" type="number" min="10000" max="2000000" step="10000" placeholder="auto" />
+          </label>
         </div>
       </div>
     </div>

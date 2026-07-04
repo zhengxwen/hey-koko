@@ -12,7 +12,8 @@ import { dom, state } from './state.js';
 import { escapeHtml } from './utils.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './markdown.js';
 import { applyHighlights, registerHighlightHost } from './highlight.js';
-import { saveTabs } from './settings.js';
+import { saveTabs, saveCurrentSettings } from './settings.js';
+import { openArchivedChat } from './archive.js';
 import { createTab, switchTab } from './tabs.js';
 import { t, getPromptLanguage } from './i18n.js';
 import { setMentionDocs, mentionDocName, mentionDocIcon, mentionArchiveName } from './mentions.js';
@@ -40,6 +41,19 @@ export function openLibraryPanel() { if (_openLibrary) _openLibrary(); }
 export function openLibraryDoc(docId) { if (_openLibrary) _openLibrary(); if (_openDoc) _openDoc(docId); }
 const embedModel = () => (dom.embedModelSelect?.value || "").trim() || "qwen3-embedding:8b";
 const kindIcon = (k) => KIND_ICON[k] || "📎";
+// /ask ⚙ parameters (gear button next to the embedding-model select). Fall back to
+// the long-standing defaults when a field is empty or out of range.
+const askTopK = () => { const v = parseInt(dom.libraryAskTopK?.value, 10); return (v >= 1 && v <= 50) ? v : 6; };
+const askMaxImages = () => { const v = parseInt(dom.libraryAskImages?.value, 10); return (v >= 0 && v <= 10) ? v : 3; };
+// Full-read budget: an explicit number wins; EMPTY = auto-size to the context-length
+// setting — (num_ctx − 8k reserve for question/snippets/answer) × ~4 chars/token,
+// floored at 8k chars. 32k ctx → ~98k chars, i.e. the old fixed 100000 default.
+// (~4 chars/token fits English; CJK-heavy docs run denser and may still truncate.)
+const autoFullBudget = () => {
+  const ctx = parseInt(dom.numCtxSelect?.value, 10) || 32768;
+  return Math.max(8000, (ctx - 8192) * 4);
+};
+const askFullBudget = () => { const v = parseInt(dom.libraryAskBudget?.value, 10); return v >= 1000 ? v : autoFullBudget(); };
 // The transcript-section names the server importer writes (DISTILL_I18N transcriptHeading,
 // server/library.js) — a video doc's section with one of these names is ASR-transcribed
 // AND LLM-reformatted text, not a verbatim record; displays add a ✏️ badge to say so.
@@ -189,7 +203,42 @@ function importJobCommon() {
 // model then reads the entire article(s) instead of a handful of retrieved snippets —
 // so instructions like "帮我理解，生成表格" work on the full paper.
 const FULL_DOC_BUDGET = 100000;   // ~25k tokens; needs the chat model's num_ctx to be large enough
-async function fullDocsContext(docIds, budget = FULL_DOC_BUDGET, signal = null) {
+
+// /ask generation prompts follow the PROMPT-LANGUAGE setting (same rule as the
+// server's rerank/distill prompts). sysFull/sysRag get the assembled context
+// appended; roleUser/roleAssistant label archive transcripts; summarize is the
+// default question for a scoped "/ask @doc" with no question.
+const ASK_I18N = {
+  zh: {
+    sysFullA: "你是知识库助手。下面是用户指定的文档/对话全文",
+    sysFullTrunc: "（内容较长，已截断部分）",
+    sysFullB: "，请通读全文后完成用户的要求（如理解、总结、生成表格等）。\n\n全文：\n",
+    sysRag: "你是知识库助手。请仅依据下列资料片段回答问题，并用 [n] 标注引用来源；若资料中找不到依据，请直接说明未找到。\n\n资料片段：\n",
+    sysRagMore: "另外，以下是从知识库限定文件夹检索到的相关片段，可与上文全文互为补充；引用片段时用 [n] 标注来源。\n\n资料片段：\n",
+    roleUser: "用户", roleAssistant: "助手",
+    summarize: "请通读全文，总结主要内容和要点。",
+  },
+  "zh-Hant": {
+    sysFullA: "你是知識庫助手。下面是用戶指定的文檔/對話全文",
+    sysFullTrunc: "（內容較長，已截斷部分）",
+    sysFullB: "，請通讀全文後完成用戶的要求（如理解、總結、生成表格等）。\n\n全文：\n",
+    sysRag: "你是知識庫助手。請僅依據下列資料片段回答問題，並用 [n] 標註引用來源；若資料中找不到依據，請直接說明未找到。\n\n資料片段：\n",
+    sysRagMore: "另外，以下是從知識庫限定資料夾檢索到的相關片段，可與上文全文互為補充；引用片段時用 [n] 標註來源。\n\n資料片段：\n",
+    roleUser: "用戶", roleAssistant: "助手",
+    summarize: "請通讀全文，總結主要內容和要點。",
+  },
+  en: {
+    sysFullA: "You are a knowledge-library assistant. Below is the full text of the document(s)/conversation(s) the user selected",
+    sysFullTrunc: " (long content, partially truncated)",
+    sysFullB: ". Read it all, then carry out the user's request (understand, summarize, build a table, …).\n\nFull text:\n",
+    sysRag: "You are a knowledge-library assistant. Answer ONLY from the source snippets below, citing them as [n]; if the snippets don't support an answer, say so plainly.\n\nSource snippets:\n",
+    sysRagMore: "Additionally, the snippets below were retrieved from the scoped library folder(s); use them alongside the full text above, citing them as [n].\n\nSource snippets:\n",
+    roleUser: "User", roleAssistant: "Assistant",
+    summarize: "Read the full text and summarize its main content and key points.",
+  },
+};
+const askL = () => ASK_I18N[getPromptLanguage()] || ASK_I18N.en;
+async function fullDocsContext(docIds, budget = FULL_DOC_BUDGET, signal = null, maxImages = 3) {
   let text = "", truncated = false;
   const docs = [], images = [];
   for (const id of docIds) {
@@ -202,7 +251,7 @@ async function fullDocsContext(docIds, budget = FULL_DOC_BUDGET, signal = null) 
     let body = `# ${doc.title}\n\n`, lastSec = null;
     for (const b of (doc.blocks || [])) {
       if (b.kind === "user" || b.kind === "reply" || b.kind === "note") continue;   // skip conversation
-      if (b.kind === "figure") { if (images.length < 3 && b.image) images.push({ image: b.image }); continue; }
+      if (b.kind === "figure") { if (images.length < maxImages && b.image) images.push({ image: b.image }); continue; }
       if (b.section && b.section !== lastSec) { body += `## ${b.section}\n\n`; lastSec = b.section; }
       body += (b.content || "") + "\n\n";
     }
@@ -232,7 +281,7 @@ async function fullArchivesContext(archiveNames, budget = FULL_DOC_BUDGET, signa
     for (const m of (conv.messages || [])) {
       const content = (m && m.content || "").trim();
       if (!content) continue;
-      body += `**${m.role === "user" ? "用户" : "助手"}**：${content}\n\n`;
+      body += `**${m.role === "user" ? askL().roleUser : askL().roleAssistant}**: ${content}\n\n`;
     }
     if (text.length + body.length > budget) { body = body.slice(0, budget - text.length); truncated = true; }
     text += body;
@@ -240,34 +289,52 @@ async function fullArchivesContext(archiveNames, budget = FULL_DOC_BUDGET, signa
   return { text: text.trim(), truncated, sources };
 }
 
-async function runLibraryQuery(query, { docId = null, docIds = null, archives = null, folder = null, onToken = null, signal = null } = {}) {
-  const scoped = !!((docIds && docIds.length) || (archives && archives.length));
-  let sys, sourceHits, images;
-  if (scoped) {
-    // Scoped to specific docs / archives → READ THE WHOLE source(s), don't retrieve snippets.
-    const full = await fullDocsContext(docIds || [], FULL_DOC_BUDGET, signal);
-    const arch = await fullArchivesContext(archives || [], FULL_DOC_BUDGET, signal);
+async function runLibraryQuery(query, { docId = null, docIds = null, archives = null, folder = null, folders = null, onToken = null, signal = null } = {}) {
+  const fullRead = !!((docIds && docIds.length) || (archives && archives.length));
+  const folderList = (folders && folders.length) ? folders : (folder ? [folder] : []);
+  // Retrieval runs for whole-library asks AND alongside full-read when @folder/ is
+  // also mentioned — mixed scope reads the docs/archives whole and adds snippets
+  // retrieved from the folder(s) to the same context.
+  const doRetrieve = !fullRead || folderList.length > 0;
+  const sysParts = [];
+  let sourceHits = [], images = [], truncated = false;
+  if (fullRead) {
+    // Scoped to specific docs / archives → READ THE WHOLE source(s).
+    const full = await fullDocsContext(docIds || [], askFullBudget(), signal, askMaxImages());
+    const arch = await fullArchivesContext(archives || [], askFullBudget(), signal);
     const combined = [full.text, arch.text].filter(Boolean).join("\n\n---\n\n");
-    if (!combined) return { answer: t("lib_noResults"), hits: [] };
-    sourceHits = [...full.docs, ...arch.sources];
-    images = full.images;
-    const truncated = full.truncated || arch.truncated;
-    sys = `你是知识库助手。下面是用户指定的文档/对话全文${truncated ? "（内容较长，已截断部分）" : ""}，请通读全文后完成用户的要求（如理解、总结、生成表格等）。\n\n全文：\n${combined}`;
-  } else {
-    // Whole-library → semantic retrieval of the most relevant chunks, cite [n].
+    if (combined) {
+      sourceHits = [...full.docs, ...arch.sources];
+      images = full.images || [];
+      truncated = full.truncated || arch.truncated;
+      sysParts.push(askL().sysFullA + (truncated ? askL().sysFullTrunc : "") + askL().sysFullB + combined);
+    }
+  }
+  if (doRetrieve) {
+    // Semantic retrieval of the most relevant chunks, cite [n].
     // rerank: when the toggle is on, the server runs one extra chat-model call to
     // reorder the candidates (silently falls back to vector order on any failure).
+    // folders: send BOTH shapes — a pre-restart server only knows the single
+    // `folder` (first one), a restarted one honors the whole list.
     const r = await postJson("/api/library/retrieve", {
-      query, model: embedModel(), docId, folder, topK: 6, attachImages: true, maxImages: 3,
+      query, model: embedModel(), docId,
+      folder: folderList[0] || null, folders: folderList,
+      topK: askTopK(), attachImages: askMaxImages() > 0, maxImages: askMaxImages(),
       rerank: dom.libraryRerankToggle && dom.libraryRerankToggle.checked ? dom.modelSelect.value : "",
       language: getPromptLanguage(),   // prompt language for the rerank call
     }, signal);
-    if (!r.hits || !r.hits.length) return { answer: t("lib_noResults"), hits: [] };
-    sourceHits = r.hits;
-    images = r.images;
-    const context = r.hits.map((h, i) => `[${i + 1}] (${h.title}${h.section ? " · " + h.section : ""}):\n${h.content}`).join("\n\n");
-    sys = `你是知识库助手。请仅依据下列资料片段回答问题，并用 [n] 标注引用来源；若资料中找不到依据，请直接说明未找到。\n\n资料片段：\n${context}`;
+    if (r.hits && r.hits.length) {
+      // [n] numbering continues after any full-read sources so the citations in the
+      // answer line up with the numbered sources footer.
+      const offset = sourceHits.length;
+      const context = r.hits.map((h, i) => `[${offset + i + 1}] (${h.title}${h.section ? " · " + h.section : ""}):\n${h.content}`).join("\n\n");
+      sourceHits = [...sourceHits, ...r.hits];
+      images = [...images, ...(r.images || [])].slice(0, askMaxImages());
+      sysParts.push((sysParts.length ? askL().sysRagMore : askL().sysRag) + context);
+    }
   }
+  if (!sysParts.length) return { answer: t("lib_noResults"), hits: [], truncated };
+  const sys = sysParts.join("\n\n");
   const userMsg = { role: "user", content: query };
   if (images && images.length) userMsg.images = images.map((im) => im.image);
 
@@ -282,7 +349,7 @@ async function runLibraryQuery(query, { docId = null, docIds = null, archives = 
     }),
     signal,
   });
-  if (!res.ok || !res.body) return { answer: t("lib_noAnswer"), hits: sourceHits };
+  if (!res.ok || !res.body) return { answer: t("lib_noAnswer"), hits: sourceHits, truncated };
 
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -302,13 +369,47 @@ async function runLibraryQuery(query, { docId = null, docIds = null, archives = 
       } catch { /* ignore partial / non-JSON lines */ }
     }
   }
-  return { answer: answer || t("lib_noAnswer"), hits: sourceHits };
+  return { answer: answer || t("lib_noAnswer"), hits: sourceHits, truncated };
 }
 
+// Encode a source ref as a "#libsrc=…" hash href — markdownToHtml turns [label](#…)
+// into a link, and the document-level click handler in initLibrary jumps to the doc
+// block (or archived conversation). encodeURIComponent leaves ( ) ! ' * alone; ( )
+// would break the [text](url) markdown regex, so re-encode those by hand.
+function srcHref(h) {
+  const ref = h.archive ? { a: h.archive }
+    : h.docId ? { d: h.docId, ...(h.blockId ? { b: h.blockId } : {}) } : null;
+  if (!ref) return null;
+  return "#libsrc=" + encodeURIComponent(JSON.stringify(ref))
+    .replace(/[()!'*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+}
 function sourcesMarkdown(hits) {
   if (!hits || !hits.length) return "";
-  return `\n\n---\n**${t("lib_sources")}**\n` + hits.map((h, i) =>
-    `${i + 1}. ${kindIcon(h.docKind)} ${h.title}${h.section ? " · " + h.section : ""}`).join("\n");
+  return `\n\n---\n**${t("lib_sources")}**\n` + hits.map((h, i) => {
+    // [ ] in a title would break the markdown link syntax; an ASCII "|" makes the
+    // renderer read consecutive source lines as a TABLE (seen with "… | 4K" video
+    // titles) — soften to the box-drawing lookalike │ (U+2502, width-neutral in
+    // both Latin and CJK text, unlike the fullwidth ｜).
+    const label = `${kindIcon(h.docKind)} ${h.title}${h.section ? " · " + h.section : ""}`
+      .replace(/[[\]]/g, " ").replace(/\|/g, "│");
+    const href = srcHref(h);
+    return `${i + 1}. ${href ? `[${label}](${href})` : label}`;
+  }).join("\n");
+}
+
+// Open the library panel, load a doc, and flash the cited block — used by the
+// chat-side /ask source links (blockId absent → just open the doc at the top).
+export async function openLibrarySource(hit) {
+  if (!_openLibrary || !_openDoc) return;
+  _openLibrary();
+  await _openDoc(hit.docId);
+  if (!hit.blockId) return;
+  const el = document.getElementById(`lib-block-${hit.blockId}`);
+  if (el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("libraryBlockHighlight");
+    setTimeout(() => el.classList.remove("libraryBlockHighlight"), 1600);
+  }
 }
 
 // Turn each library block into its OWN assistant chat bubble: text → content,
@@ -440,17 +541,17 @@ export function parseAskCommand(content) {
 
 // scope: { docIds:[], folders:[], archives:[] }. A folder mention (@folder/) scopes
 // RETRIEVAL to that sub-folder (+ nested); doc mentions (@docId) READ the whole doc(s);
-// archive mentions (#archive) READ the whole conversation archive(s). Folder wins over
-// full-read if both are present (a folder can hold many docs, so full-read isn't apt).
+// archive mentions (#archive) READ the whole conversation archive(s). Mixing folders
+// with docs/archives does BOTH: full text of the docs/archives + snippets retrieved
+// from the folder(s) go into one combined context.
 // insertAt: null → fresh send (append the "/ask …" user bubble + answer at the end).
 // A number → resend/edit: the user bubble already exists; insert the answer there.
 export async function handleAskCommand(query, tab, scope = {}, insertAt = null) {
   const docIds = (scope && scope.docIds) || [];
   const folders = (scope && scope.folders) || [];
   const archives = (scope && scope.archives) || [];
-  const folder = folders.length ? folders[0] : null;      // one sub-folder, retrieval-scoped
-  const fullReadIds = (!folder && docIds.length) ? docIds : null;        // docs → read whole (only when no folder)
-  const fullReadArchives = (!folder && archives.length) ? archives : null;  // archives → read whole (only when no folder)
+  const fullReadIds = docIds.length ? docIds : null;          // docs → read whole
+  const fullReadArchives = archives.length ? archives : null; // archives → read whole
   // Loaded up front (async) so the abort/button plumbing below is synchronous. Dynamic
   // import avoids a top-level chat.js⇄library.js cycle.
   const { renderChat, setGenerating } = await import('./chat.js');
@@ -487,12 +588,16 @@ export async function handleAskCommand(query, tab, scope = {}, insertAt = null) 
   await rerender();
   const started = Date.now();   // run-time clock → shown as "⏱ 用时 …" on the answer bubble
   let streamed = false;
+  // "/ask @doc" / "/ask #archive" with no question → default to a summary request
+  // (full-read only; retrieval needs a real question to embed). The user bubble
+  // keeps what was typed; only the query sent to the model is substituted.
+  const effQuery = (!query && (fullReadIds || fullReadArchives)) ? askL().summarize : query;
   try {
     let last = 0;
-    const { answer, hits } = await runLibraryQuery(query, {
+    const { answer, hits, truncated } = await runLibraryQuery(effQuery, {
       docIds: fullReadIds,
       archives: fullReadArchives,
-      folder,
+      folders,
       signal: abort.signal,
       onToken: (acc) => {
         streamed = true;
@@ -503,7 +608,8 @@ export async function handleAskCommand(query, tab, scope = {}, insertAt = null) 
       },
     });
     amsg.searching = false;       // also covers the no-token (no-results) path
-    amsg.content = answer + sourcesMarkdown(hits);
+    amsg.content = answer + sourcesMarkdown(hits)
+      + (truncated ? `\n\n${t("lib_truncatedNote")}` : "");
   } catch (e) {
     amsg.searching = false;
     if (e && e.name === "AbortError") {
@@ -654,6 +760,36 @@ export function initLibrary() {
   }
   _openLibrary = open;
   _openDoc = openDoc;
+
+  // ---- /ask ⚙ parameters modal (gear button next to the embedding-model select) ----
+  const askParamsModal = dom.libraryAskParamsModal;
+  const onAskParamsKey = (e) => { if (e.key === "Escape") { e.preventDefault(); closeAskParams(); } };
+  function closeAskParams() {
+    if (askParamsModal) askParamsModal.hidden = true;
+    document.removeEventListener("keydown", onAskParamsKey);
+  }
+  dom.libraryAskParamsBtn?.addEventListener("click", () => {
+    if (!askParamsModal) return;
+    // Placeholder shows what "empty = auto" resolves to right now (tracks num_ctx).
+    if (dom.libraryAskBudget) dom.libraryAskBudget.placeholder = String(autoFullBudget());
+    askParamsModal.hidden = false;
+    document.addEventListener("keydown", onAskParamsKey);
+  });
+  dom.libraryAskParamsClose?.addEventListener("click", closeAskParams);
+  for (const el of [dom.libraryAskTopK, dom.libraryAskImages, dom.libraryAskBudget]) {
+    el?.addEventListener("change", () => saveCurrentSettings());
+  }
+
+  // ---- chat-side /ask source links (#libsrc=…) → jump to the doc block / archive ----
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest && e.target.closest('a[href^="#libsrc="]');
+    if (!a) return;
+    e.preventDefault();
+    let ref;
+    try { ref = JSON.parse(decodeURIComponent(a.getAttribute("href").slice("#libsrc=".length))); } catch { return; }
+    if (ref.a) openArchivedChat(ref.a);
+    else if (ref.d) openLibrarySource({ docId: ref.d, blockId: ref.b });
+  });
   // Panel BUTTON also notifies the star map (else the panel opens beneath it and the
   // click looks dead). "libraryOpened" lets a panel-dismissed star map RESUME here —
   // that's the archive ↔ star-map toggle. The star map's own source-toggle syncing

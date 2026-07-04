@@ -61,6 +61,12 @@ export function renderInlineMarkdown(value) {
       /\[([^\]]+)\]\((mailto:[^\s)]+)\)/g,
       '<a href="$2">$1</a>'
     )
+    // In-page hash links (e.g. the /ask sources "#libsrc=…" refs) — inert as
+    // navigation, handled by delegated click handlers.
+    .replace(
+      /\[([^\]]+)\]\((#[^\s)]+)\)/g,
+      '<a href="$2">$1</a>'
+    )
     // Auto-link bare URLs (not already inside an href)
     .replace(
       /(?<!href=&quot;|href=")(https?:\/\/[^\s<&]+)/g,

@@ -459,12 +459,13 @@ async function embedQuery(query, model) {
   return qvec;
 }
 
-async function retrieve(query, model, { docId = null, docIds = null, folder = null, topK = 8, rerank = "", language = "" } = {}) {
+async function retrieve(query, model, { docId = null, docIds = null, folder = null, folders = null, topK = 8, rerank = "", language = "" } = {}) {
   // docIds (array) scopes to several docs; docId (string) scopes to one;
-  // folder (string) scopes to a sub-folder and everything nested under it;
-  // none of them → whole library.
+  // folder (string) / folders (array) scope to sub-folder(s) and everything
+  // nested under them; none of them → whole library.
   const set = (docIds && docIds.length) ? new Set(docIds) : null;
-  const inFolder = (it) => folder == null ? true : (it.folder === folder || it.folder.startsWith(folder + "/"));
+  const flist = (folders && folders.length) ? folders : (folder != null ? [folder] : null);
+  const inFolder = (it) => flist == null ? true : flist.some(f => it.folder === f || it.folder.startsWith(f + "/"));
   // Only compare against vectors built with the SAME embedding model — a different
   // model is a different vector space (and possibly a different dim), so cosine there
   // is meaningless. The .vec header records the model; we match it to the query's.
@@ -913,6 +914,9 @@ async function retrieveLibrary(req, res) {
       docId: body.docId || null,
       docIds: Array.isArray(body.docIds) ? body.docIds : null,
       folder: (typeof body.folder === "string" && body.folder.trim()) ? sanitizeFolder(body.folder) : null,
+      folders: Array.isArray(body.folders)
+        ? body.folders.filter(f => typeof f === "string" && f.trim()).map(sanitizeFolder).filter(Boolean)
+        : null,
       topK: body.topK || 8,
       rerank: (typeof body.rerank === "string" && body.rerank.trim()) || "",   // chat model name; "" = off
       language: body.language || "",   // prompt language for the rerank call

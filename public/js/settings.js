@@ -78,6 +78,9 @@ export function saveCurrentSettings() {
       embedModel: dom.embedModelSelect?.value || "qwen3-embedding:8b",
       libraryDistill: dom.libraryDistillToggle?.checked ?? true,
       libraryRerank: dom.libraryRerankToggle?.checked || false,
+      libraryAskTopK: dom.libraryAskTopK?.value || "6",
+      libraryAskImages: dom.libraryAskImages?.value || "3",
+      libraryAskBudget: dom.libraryAskBudget?.value || "",   // "" = auto (from num_ctx)
       dailyGreeting: dom.dailyGreetingToggle?.checked || false,
       dailyGreetingTime: dom.dailyGreetingTime?.value || "09:00",
       idleNudge: dom.idleNudgeToggle?.checked || false,
@@ -249,6 +252,10 @@ export function loadSavedSettings() {
   if (dom.libraryDistillToggle) dom.libraryDistillToggle.checked = savedSettings.libraryDistill !== undefined ? !!savedSettings.libraryDistill : true;
   // Retrieval rerank defaults to OFF (an extra LLM call per /ask).
   if (dom.libraryRerankToggle) dom.libraryRerankToggle.checked = !!savedSettings.libraryRerank;
+  // /ask ⚙ parameters (top-K / attached images / full-read budget)
+  if (savedSettings.libraryAskTopK && dom.libraryAskTopK) dom.libraryAskTopK.value = savedSettings.libraryAskTopK;
+  if (savedSettings.libraryAskImages !== undefined && dom.libraryAskImages) dom.libraryAskImages.value = savedSettings.libraryAskImages;
+  if (savedSettings.libraryAskBudget !== undefined && dom.libraryAskBudget) dom.libraryAskBudget.value = savedSettings.libraryAskBudget;
   // Proactive messages
   if (savedSettings.dailyGreeting && dom.dailyGreetingToggle) dom.dailyGreetingToggle.checked = true;
   if (savedSettings.dailyGreetingTime && dom.dailyGreetingTime) dom.dailyGreetingTime.value = savedSettings.dailyGreetingTime;

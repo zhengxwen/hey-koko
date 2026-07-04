@@ -619,7 +619,9 @@ function resendChatMessage(index) {
   // /ask on resend / edit-then-enter: regenerate the library answer in place (the old
   // answer at index+1 was already removed above). The user bubble stays at `index`.
   const askResend = parseAskCommand(message.content);
-  if (askResend && askResend.query) {
+  if (askResend && (askResend.query ||
+      ((askResend.docIds.length || askResend.archives.length) && !askResend.folders.length))) {
+    // Question-less but doc/archive-scoped asks regenerate too (default summary).
     handleAskCommand(askResend.query, tab, { docIds: askResend.docIds, folders: askResend.folders, archives: askResend.archives }, index + 1);
     return;
   }
@@ -2363,7 +2365,10 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   // Supports "/ask @docId1 @docId2 question" to scope the search to specific docs.
   const ask = parseAskCommand(content);
   if (ask !== null) {
-    if (!ask.query) {
+    // No question is fine when whole docs/archives are mentioned (defaults to a
+    // summary); folder scope still needs a real question (retrieval must embed it).
+    const askCanDefault = (ask.docIds.length || ask.archives.length) && !ask.folders.length;
+    if (!ask.query && !askCanDefault) {
       tab.messages.push({ role: "user", content, timestamp: Date.now() });
       tab.messages.push({ role: "assistant", content: t("library_askUsage"), timestamp: Date.now() });
       saveChat();
