@@ -648,6 +648,9 @@ export function initLibrary() {
       // The shown doc may have been deleted while the panel was closed.
       if (currentDoc && !docs.some((d) => d.docId === currentDoc.docId)) clearPreview();
     });
+    // Safari/WKWebView Tab skips tabindex'd divs by default — hand the list focus
+    // directly so arrow-key navigation works the moment the panel opens.
+    listEl.focus({ preventScroll: true });
   }
   _openLibrary = open;
   _openDoc = openDoc;

@@ -56,8 +56,9 @@ the model's own output cap, per the OpenAI API.
 
 ## Other OpenAI-compatible endpoints
 
-They work through the same `openai.json` — just point `baseUrl` at the provider
-and list its models.
+Most work through the same `openai.json` — just point `baseUrl` at the provider
+and list its models. (OpenRouter is the exception: it has its own file so it can
+coexist with OpenAI — see below.)
 
 **DeepSeek** is recognized out of the box (`deepseek-chat`, `deepseek-reasoner`):
 
@@ -68,8 +69,10 @@ and list its models.
 `deepseek-reasoner`'s chain-of-thought (returned in `reasoning_content`) is shown
 in the collapsible thinking UI when show-thinking is enabled.
 
-**OpenRouter** (one key, hundreds of models across providers) also works —
-because its model ids are `provider/model` (e.g. `anthropic/claude-3.5-sonnet`),
+**OpenRouter** (one key, hundreds of models across providers) has its **own
+dedicated file**, `~/.hey-koko/openrouter.json`, so it can run **alongside**
+whatever `openai.json` holds (e.g. official OpenAI *and* OpenRouter at the same
+time). Because its model ids are `provider/model` (e.g. `anthropic/claude-3.5-sonnet`)
 they don't match the auto-detect prefixes, so you **must list them explicitly**:
 
 ```json
@@ -80,8 +83,12 @@ they don't match the auto-detect prefixes, so you **must list them explicitly**:
 }
 ```
 
-Reasoning models routed through OpenRouter return their thinking in a `reasoning`
-field (vs DeepSeek's `reasoning_content`); both are surfaced in the thinking UI.
+Each model in the dropdown is routed to the file that owns it: prefix-matched
+names (`gpt-*`, `deepseek-*`, `grok-*`, `qwen-*`…) go to `openai.json`; the
+slashed names listed above go to `openrouter.json`. `OPENROUTER_BASE_URL` /
+`OPENROUTER_API_KEY` environment variables override the file. Reasoning models
+routed through OpenRouter return their thinking in a `reasoning` field (vs
+DeepSeek's `reasoning_content`); both are surfaced in the thinking UI.
 
 **xAI Grok** is auto-recognized like DeepSeek (`grok-*` needs no allowlist):
 

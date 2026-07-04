@@ -27,8 +27,15 @@ const config = require("./config");
 const { sendJson } = require("./utils");
 
 const OPENAI_CONFIG_PATH = path.join(config.DATA_DIR, "openai.json");
+const OPENROUTER_CONFIG_PATH = path.join(config.DATA_DIR, "openrouter.json");
 const DEFAULT_BASE_URL = "https://api.openai.com";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_MODELS = ["gpt-5", "gpt-4o"];
+
+// The families whose model ids auto-route WITHOUT an allowlist (clean, slash-free
+// prefixes). OpenRouter ids are `provider/model` (slashed) so they DON'T match —
+// OpenRouter always routes via its allowlist instead.
+const PREFIX_RE = /^(gpt-|o1|o3|o4|chatgpt-|deepseek|grok|qwen|qwq)/i;
 
 // Architectural context window per model (for /api/model-info — OpenAI's
 // /v1/models does NOT report a context length, unlike Anthropic, so we read
@@ -65,24 +72,65 @@ function isReasoningModel(model) {
   return /^(o1|o3|o4|gpt-5)/i.test(model || "");
 }
 
-// Read ~/.hey-koko/openai.json, apply env overrides. Returns null when no API
-// key is available (the whole feature stays invisible in that case).
-function loadConfig() {
+// Load one provider config from {baseUrl, apiKey, models[]} on disk + env
+// overrides. Returns null when no API key is available (that provider stays
+// invisible). `kind` distinguishes routing behavior: "openai" auto-routes by
+// prefix, "openrouter" routes ONLY via its allowlist (slashed model ids).
+function loadProviderConfig({ file: filePath, kind, defaultBase, envKey, envBase }) {
   let file = {};
   try {
-    file = JSON.parse(fs.readFileSync(OPENAI_CONFIG_PATH, "utf8"));
+    file = JSON.parse(fs.readFileSync(filePath, "utf8"));
   } catch {
     file = {};
   }
-  const apiKey = process.env.OPENAI_API_KEY || file.apiKey || "";
+  const apiKey = (envKey && process.env[envKey]) || file.apiKey || "";
   if (!apiKey) return null;
-  let baseUrl = (process.env.OPENAI_BASE_URL || file.baseUrl || DEFAULT_BASE_URL).trim();
+  let baseUrl = ((envBase && process.env[envBase]) || file.baseUrl || defaultBase).trim();
   baseUrl = baseUrl.replace(/\/+$/, "");
   if (!/^https?:\/\//i.test(baseUrl)) baseUrl = "https://" + baseUrl;
   // Tolerate a baseUrl that already ends in /v1 (common for OpenAI-compatible
   // relays) — apiBase() below normalizes it so we never double up the segment.
   const models = Array.isArray(file.models) ? file.models : [];
-  return { apiKey, baseUrl, models };
+  return { apiKey, baseUrl, models, kind };
+}
+
+// Warn at most once per key (loadProviders runs per message — don't spam the log).
+const _warned = new Set();
+function warnOnce(key, msg) { if (!_warned.has(key)) { _warned.add(key); console.warn(msg); } }
+
+// All configured cloud providers, in ROUTING PRIORITY order. openai.json first
+// (the generic/official slot, prefix-routed), then openrouter.json (allowlist-
+// only). Each is independent — enable either, both, or neither.
+function loadProviders() {
+  const list = [];
+  const oa = loadProviderConfig({ file: OPENAI_CONFIG_PATH, kind: "openai", defaultBase: DEFAULT_BASE_URL, envKey: "OPENAI_API_KEY", envBase: "OPENAI_BASE_URL" });
+  if (oa) list.push(oa);
+  const or = loadProviderConfig({ file: OPENROUTER_CONFIG_PATH, kind: "openrouter", defaultBase: OPENROUTER_BASE_URL, envKey: "OPENROUTER_API_KEY", envBase: "OPENROUTER_BASE_URL" });
+  if (or) {
+    // OpenRouter ids are slashed `provider/model` and its catalog has hundreds of
+    // entries — REQUIRE an explicit allowlist. Without one the provider is ignored
+    // (with a one-time warning) rather than flooding the dropdown or guessing.
+    if (or.models.length) list.push(or);
+    else warnOnce("openrouter-no-models", '[hey-koko] openrouter.json 已配置 apiKey 但缺少 "models" —— OpenRouter 需要显式列出模型（如 ["anthropic/claude-3.5-sonnet"]），本次已跳过。');
+  }
+  return list;
+}
+
+// Find the provider that owns a model name (network-free). Allowlist match wins;
+// otherwise a prefix match, but ONLY for non-openrouter providers (OpenRouter's
+// slashed ids must be listed explicitly). First provider in priority order wins.
+function resolveProvider(model) {
+  if (!model) return null;
+  for (const p of loadProviders()) {
+    if (p.models.length) {
+      if (p.models.includes(model)) return p;
+    } else if (p.kind !== "openrouter" && PREFIX_RE.test(model)) {
+      // openrouter without models[] is never in `loadProviders`, so this branch
+      // only ever prefix-routes the openai.json provider.
+      return p;
+    }
+  }
+  return null;
 }
 
 // The /v1 prefix. Callers append "/chat/completions" or "/models".
@@ -90,15 +138,15 @@ function apiBase(cfg) {
   return /\/v1$/i.test(cfg.baseUrl) ? cfg.baseUrl : cfg.baseUrl + "/v1";
 }
 
-// Cache of auto-discovered chat model ids, so we don't hit /v1/models on every
-// /api/models poll. 5-minute TTL.
-let _discovered = { ts: 0, ids: null };
+// Cache of auto-discovered chat model ids per baseUrl, so we don't hit /v1/models
+// on every /api/models poll (keyed by baseUrl now that >1 provider can exist).
+const _discovered = new Map(); // baseUrl -> { ts, ids }
 const DISCOVER_TTL_MS = 5 * 60 * 1000;
 
 // OpenAI's /v1/models lists EVERYTHING (embeddings, tts, whisper, dall-e, moderation,
 // dated snapshots…). Keep only chat-capable text models and drop the noise.
 function isChatModelId(id) {
-  if (!/^(gpt-|o1|o3|o4|chatgpt-|deepseek|grok|qwen|qwq)/i.test(id)) return false;
+  if (!PREFIX_RE.test(id)) return false;
   // Exclude non-chat / non-text variants that share the gpt- prefix.
   if (/(image|audio|realtime|transcribe|tts|whisper|embedding|moderation|search|dall-e)/i.test(id)) return false;
   return true;
@@ -122,7 +170,8 @@ function denoiseModelIds(ids) {
 // error, relay doesn't implement it, empty) so callers fall back to allowlist.
 async function discoverModels(cfg) {
   const now = Date.now();
-  if (_discovered.ids && now - _discovered.ts < DISCOVER_TTL_MS) return _discovered;
+  const cached = _discovered.get(cfg.baseUrl);
+  if (cached && cached.ids && now - cached.ts < DISCOVER_TTL_MS) return cached;
   const controller = new AbortController();
   const to = setTimeout(() => controller.abort(), 8000);
   try {
@@ -138,23 +187,19 @@ async function discoverModels(cfg) {
       if (m.id && isChatModelId(m.id)) rawIds.push(m.id);
     }
     if (!rawIds.length) return null;
-    _discovered = { ts: now, ids: denoiseModelIds(rawIds) };
-    return _discovered;
+    const entry = { ts: now, ids: denoiseModelIds(rawIds) };
+    _discovered.set(cfg.baseUrl, entry);
+    return entry;
   } catch {
     clearTimeout(to);
     return null;
   }
 }
 
-// Is this model name an OpenAI model? Drives /api/chat routing — must be fast and
-// network-free (called per message). Manual allowlist wins; otherwise fall back
-// to a prefix match on the known OpenAI families.
+// Is this model name owned by an OpenAI-compatible provider? Drives /api/chat
+// routing — network-free (called per message). Delegates to resolveProvider.
 function isOpenAIModel(model) {
-  if (!model) return false;
-  const cfg = loadConfig();
-  if (!cfg) return false;
-  if (cfg.models.length) return cfg.models.includes(model);
-  return /^(gpt-|o1|o3|o4|chatgpt-|deepseek|grok|qwen|qwq)/i.test(model);
+  return resolveProvider(model) != null;
 }
 
 function contextLengthFor(model) {
@@ -163,22 +208,22 @@ function contextLengthFor(model) {
   return 128000;
 }
 
-// Append configured/discovered OpenAI models to an existing model list (mutates
-// it in place). Called by claude.listModels so /api/models carries both clouds.
+// Append every configured provider's models to an existing list (mutates it in
+// place). Called by claude.listModels so /api/models carries all clouds.
 // cloud:true lets the frontend badge these (☁️) apart from local Ollama models.
 async function injectModels(models) {
-  const cfg = loadConfig();
-  if (!cfg) return;
-  let ids;
-  if (cfg.models.length) {
-    ids = cfg.models;                                   // manual allowlist
-  } else {
-    const disc = await discoverModels(cfg);             // auto-discover
-    ids = disc ? disc.ids : DEFAULT_MODELS;             // fallback if /v1/models unavailable
-  }
   const existing = new Set(models.map((m) => m.name));
-  for (const name of ids) {
-    if (!existing.has(name)) models.push({ name, model: name, cloud: true });
+  for (const cfg of loadProviders()) {
+    let ids;
+    if (cfg.models.length) {
+      ids = cfg.models;                                 // manual allowlist (always used for openrouter)
+    } else {
+      const disc = await discoverModels(cfg);           // auto-discover (openai kind only)
+      ids = disc ? disc.ids : DEFAULT_MODELS;           // fallback if /v1/models unavailable
+    }
+    for (const name of ids) {
+      if (!existing.has(name)) { models.push({ name, model: name, cloud: true }); existing.add(name); }
+    }
   }
 }
 
@@ -298,7 +343,7 @@ function buildPayload({ model, messages, tools, stream, maxTokens, temperature }
 // --- Chat proxy ------------------------------------------------------------
 
 async function proxyChat(res, body) {
-  const cfg = loadConfig();
+  const cfg = resolveProvider(body.model);
   if (!cfg) {
     sendJson(res, 400, { error: "OpenAI 未配置。" });
     return;
@@ -459,7 +504,7 @@ async function proxyChat(res, body) {
 // /api/chat router. Takes Ollama-shaped messages, returns the assistant text.
 // Throws on error.
 async function complete(model, messages, { signal, temperature } = {}) {
-  const cfg = loadConfig();
+  const cfg = resolveProvider(model);
   if (!cfg) throw new Error("OpenAI 未配置");
   const payload = buildPayload({
     model,

@@ -207,6 +207,9 @@ export function initArchive() {
 
     renderArchiveTagBar();
     renderArchiveList();
+    // Safari/WKWebView Tab skips tabindex'd divs by default — hand the list focus
+    // directly so arrow-key navigation works the moment the panel opens.
+    archiveList.focus({ preventScroll: true });
   }
 
   document.querySelector("#archiveCloseBtn").addEventListener("click", () => {
