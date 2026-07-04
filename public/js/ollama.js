@@ -402,30 +402,34 @@ export async function loadEmbedModels() {
   try {
     const response = await fetch("/api/models");
     const data = await response.json();
-    // Only models with "embed" in the name are valid embedding models.
-    const models = (data.models || []).map((m) => m.name).filter((n) => n && /embed/i.test(n));
+    // Only models with "embed" in the name are valid embedding models. Keep the
+    // objects (not just names) so we can badge cloud vs local — same ☁️/💻 scheme
+    // as the chat picker. The .cloud flag comes from /api/models (injectModels).
+    const entries = (data.models || []).filter((m) => m.name && /embed/i.test(m.name));
+    const names = entries.map((m) => m.name);
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
     const current = saved.embedModel || dom.embedModelSelect.value;
     dom.embedModelSelect.innerHTML = "";
 
-    if (models.length === 0) {
+    if (entries.length === 0) {
       const opt = document.createElement("option");
       opt.value = "";
       opt.textContent = "未检测到 embedding 模型";
       dom.embedModelSelect.appendChild(opt);
       return;
     }
-    for (const name of models) {
+    for (const m of entries) {
       const opt = document.createElement("option");
-      opt.value = name;
-      opt.textContent = name;
+      opt.value = m.name;  // raw name — sent to the embed endpoints unchanged
+      opt.textContent = (m.cloud ? "☁️ " : "💻 ") + m.name;  // ☁️ cloud vs 💻 local Ollama
+      if (m.cloud) opt.dataset.cloud = "1";
       dom.embedModelSelect.appendChild(opt);
     }
-    if (current && models.includes(current)) {
+    if (current && names.includes(current)) {
       dom.embedModelSelect.value = current;
     } else {
-      const preferred = models.find((m) => /qwen3-embedding:8b/i.test(m)) || models.find((m) => /qwen3-embedding/i.test(m));
-      dom.embedModelSelect.value = preferred || models[0];
+      const preferred = names.find((m) => /qwen3-embedding:8b/i.test(m)) || names.find((m) => /qwen3-embedding/i.test(m));
+      dom.embedModelSelect.value = preferred || names[0];
     }
   } catch {
     /* leave placeholder */
