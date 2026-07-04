@@ -140,6 +140,8 @@ export function markdownToSpeechText(markdown) {
     .replace(/```[\s\S]*?```/g, "")
     .replace(/\$\$[\s\S]*?\$\$/g, (m) => mathToSpeech(m.slice(2, -2)))
     .replace(/\$([^$]+)\$/g, (_, expr) => mathToSpeech(expr))
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, expr) => mathToSpeech(expr))
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, expr) => mathToSpeech(expr))
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/<table[\s\S]*?<\/table>/gi, (m) => m.replace(/<[^>]+>/g, " "))

@@ -622,7 +622,7 @@ function resendChatMessage(index) {
   if (askResend && (askResend.query ||
       ((askResend.docIds.length || askResend.archives.length) && !askResend.folders.length))) {
     // Question-less but doc/archive-scoped asks regenerate too (default summary).
-    handleAskCommand(askResend.query, tab, { docIds: askResend.docIds, folders: askResend.folders, archives: askResend.archives }, index + 1);
+    handleAskCommand(askResend.query, tab, { docIds: askResend.docIds, folders: askResend.folders, archives: askResend.archives, topK: askResend.topK, short: askResend.short }, index + 1);
     return;
   }
   const rememberResend = message.content.match(/^\/memory\s+([\s\S]+)/);
@@ -2375,7 +2375,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       if (state.activeTabId === tabId) renderChat();
       return;
     }
-    await handleAskCommand(ask.query, tab, { docIds: ask.docIds, folders: ask.folders, archives: ask.archives });
+    await handleAskCommand(ask.query, tab, { docIds: ask.docIds, folders: ask.folders, archives: ask.archives, topK: ask.topK, short: ask.short });
     return;
   }
 

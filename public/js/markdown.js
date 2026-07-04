@@ -48,6 +48,18 @@ export function renderInlineMarkdown(value) {
     return key;
   });
 
+  // Protect LaTeX-delimiter math: \[...\] display, \(...\) inline
+  value = value.replace(/\\\[([\s\S]+?)\\\]/g, (_, math) => {
+    const key = `\x00PH${idx++}\x00`;
+    placeholders.push(mathHtml(math, true, false));
+    return key;
+  });
+  value = value.replace(/\\\(([\s\S]+?)\\\)/g, (_, math) => {
+    const key = `\x00PH${idx++}\x00`;
+    placeholders.push(mathHtml(math, false, false));
+    return key;
+  });
+
   // Now escape and apply other inline formatting
   let result = escapeHtml(value)
     .replace(/&lt;br\s*\/?\s*&gt;/gi, "<br>")
@@ -258,10 +270,22 @@ export function markdownToHtml(markdown) {
       continue;
     }
 
-    const singleLineMath = line.trim().match(/^\$\$(.+)\$\$$/);
+    const singleLineMath = line.trim().match(/^\$\$(.+)\$\$$/) || line.trim().match(/^\\\[(.+)\\\]$/);
     if (singleLineMath && !inMathBlock) {
       closeList();
       html.push(mathHtml(singleLineMath[1], true, true));
+      continue;
+    }
+
+    // LaTeX display-math block delimiters on their own lines: \[ … \]
+    if (line.trim() === "\\[" && !inMathBlock) {
+      closeList();
+      inMathBlock = true;
+      mathLines = [];
+      continue;
+    }
+    if (line.trim() === "\\]" && inMathBlock) {
+      closeMathBlock();
       continue;
     }
 
