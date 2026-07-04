@@ -225,7 +225,7 @@ function isNoiseBlock(s) {
 // from retrieval (embed:false → zero-vector slot, skipped by the cache). Optional
 // leading numbering ("7. References", "VII References") is tolerated; anchored to the
 // full heading so e.g. "Reference Architecture" is NOT excluded.
-const NO_EMBED_SECTION = /^(?:[0-9ivxlc]+[.):：]?\s*)?(references?|bibliography|参考文献|參考文獻)$/i;
+const NO_EMBED_SECTION = /^(?:[0-9ivxlc]+[.):：]?\s*)?(references?|bibliography|literature cited|works cited|参考文献|參考文獻)$/i;
 
 // A figure caption on its OWN line right below the image (MinerU's usual layout for
 // papers): "Figure 1: …" / "Fig. 2." / "Table 3 …" / "图 1：…" / "表2…", optionally bold.
