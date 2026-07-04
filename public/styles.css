@@ -3800,7 +3800,7 @@ button.secondary:disabled {
   color: var(--muted);
   display: flex;
   align-items: center;
-  gap: 6px 6px;
+  gap: 2px 6px;   /* tight ROW gap when meta text / pills wrap onto several lines */
   flex-wrap: wrap;
   line-height: 1.25;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -3808,7 +3808,7 @@ button.secondary:disabled {
 
 .archiveCardTags {
   display: flex;
-  gap: 3px;
+  gap: 2px 3px;
   flex-wrap: wrap;
 }
 
@@ -5128,8 +5128,13 @@ button.secondary:disabled {
    the row instead (inset box-shadow → no layout shift, background unchanged). */
 .bgJobMain:hover { background: transparent; color: var(--ink); }
 .bgJobRow:hover { box-shadow: inset 0 0 0 1.5px var(--accent); }
-/* Fine-print context line above the label: source tab / library + task detail. */
-.bgJobCtx { display: block; font-size: 10px; color: var(--muted); opacity: 0.85; margin-bottom: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Fine-print context line above the label: source tab / library + task detail (left,
+   truncates) and the submission time (right, always visible). */
+/* padding-right clears the row's corner × (.bgJobCancel, pinned top-right) so the
+   submission time isn't hidden under it. */
+.bgJobCtx { display: flex; align-items: baseline; gap: 6px; font-size: 10px; color: var(--muted); opacity: 0.85; margin-bottom: 1px; padding-right: 18px; }
+.bgJobCtxText { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bgJobTime { flex: 0 0 auto; font-variant-numeric: tabular-nums; opacity: 0.9; }
 .bgJobTop { display: flex; align-items: center; gap: 5px; }
 .bgJobLabel {
   flex: 1;

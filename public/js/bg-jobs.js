@@ -11,7 +11,7 @@
 // JS, so a reload interrupts an in-flight job — its payload is persisted so it can
 // resume (queued) or be retried (interrupted).
 import { state, dom } from './state.js';
-import { genId } from './utils.js';
+import { genId, formatTimestamp } from './utils.js';
 import { dbSaveJobs, dbLoadJobs, dbSaveWorkers, dbLoadWorkers } from './db.js';
 import { saveChat } from './settings.js';
 import { getTab, switchTab } from './tabs.js';
@@ -1195,6 +1195,17 @@ function jobContext(job) {
 }
 function clipCtx(s, n) { s = String(s || '').trim(); return s.length > n ? s.slice(0, n) + '…' : s; }
 function shortUrl(u) { return clipCtx(String(u || '').replace(/^https?:\/\/(www\.)?/, ''), 44); }
+// When the job was SUBMITTED (enqueued). Compact for the tight drawer row: HH:MM for a
+// job queued today, MM/DD HH:MM otherwise. Full date-time on hover (title).
+function bgSubmitTime(job) {
+  const ts = job.createdAt;
+  if (!ts) return { short: '', full: '' };
+  const d = new Date(ts), now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return { short: sameDay ? hm : `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${hm}`, full: formatTimestamp(ts) };
+}
 // Kind-specific detail — only what the label DOESN'T already carry (the image/audio
 // label is the prompt/text itself; url/analyze/doc labels are generic phase texts).
 function jobDetail(job) {
@@ -1282,8 +1293,13 @@ function buildJobRow(job) {
       : t('bg_jumpTitle');
     main.addEventListener('click', () => jumpToJob(job.id));
     const icon = `<span class="bgJobIcon">${KIND_ICON[job.kind] || '⚙'}</span>`;
+    // Top line: source/detail context (left, truncates) + submission time (right, always
+    // shown so the user can see WHEN each queued task was submitted).
     const ctx = jobContext(job);
-    const ctxLine = ctx ? `<span class="bgJobCtx" title="${escapeText(ctx)}">${escapeText(ctx)}</span>` : '';
+    const sub = bgSubmitTime(job);
+    const ctxText = ctx ? `<span class="bgJobCtxText" title="${escapeText(ctx)}">${escapeText(ctx)}</span>` : '<span class="bgJobCtxText"></span>';
+    const timeEl = sub.short ? `<span class="bgJobTime" title="${escapeText(t('bg_submittedAt', { time: sub.full }))}">${escapeText(sub.short)}</span>` : '';
+    const ctxLine = `<div class="bgJobCtx">${ctxText}${timeEl}</div>`;
     const label = `<span class="bgJobLabel">${escapeText(job.label || job.kind)}</span>`;
     // Failed/interrupted: append WHY (job.error) after the status, with the full text on
     // hover (it truncates with an ellipsis if long).
