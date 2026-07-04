@@ -5592,7 +5592,14 @@ button.secondary:disabled {
 .starMapDot { width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: 0 0 8px currentColor; }
 .starMapNm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .starMapCt { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.starMapLegendFoot { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; font-size: 11px; color: var(--muted); }
+.starMapLegendFoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; }
+.starMapLegendFoot:hover { color: var(--ink); }
+.starMapLegendChevron { flex: none; font-size: 20px; line-height: 1; opacity: 0.7; transition: transform 0.15s; }
+.starMapLegend.isCollapsed .starMapLegendHead,
+.starMapLegend.isCollapsed .starMapHelp,
+.starMapLegend.isCollapsed #starMapLegendList { display: none; }
+.starMapLegend.isCollapsed .starMapLegendFoot { border-top: none; margin-top: 0; padding-top: 0; }
+.starMapLegend.isCollapsed .starMapLegendChevron { transform: rotate(180deg); }
 
 /* Flex column so the document preview can flex-fill the remaining panel height and
    scroll INSIDE itself (the panel as a whole no longer scrolls). */

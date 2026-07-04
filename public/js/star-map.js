@@ -32,6 +32,7 @@ let source = "library";
 let cam = { x: 0, y: 0, scale: 1 };
 let fit = { cx: 0, cy: 0, s: 1 };
 let hidden = new Set();
+let legendCollapsed = (() => { try { return localStorage.getItem("heykoko-starmap-legend-collapsed") === "1"; } catch { return false; } })();
 let hover = null, selected = null, raf = 0, twinkle = 0, DPR = 1;
 let theme = {};
 let drag = null;
@@ -186,6 +187,8 @@ function ensureDom() {
   // "?" in the legend header toggles the how-to-read-this-map key (star size etc.).
   el.help = document.querySelector("#starMapHelp");
   document.querySelector("#starMapHelpBtn").addEventListener("click", () => { el.help.hidden = !el.help.hidden; });
+  // The legend foot ("N docs · K constellations") folds the whole legend away.
+  el.legendFoot.addEventListener("click", toggleLegendCollapse);
   // 🎛 display menu: glow / twinkle / constellation spokes, persisted per browser.
   loadDisp();
   el.dispMenu = document.querySelector("#starMapDispMenu");
@@ -1174,7 +1177,20 @@ function buildLegend() {
     el.legendList.appendChild(li);
   });
   syncLegend();
-  el.legendFoot.textContent = t("star_footN", { n: DATA.n, k: DATA.clusters.length });
+  el.legendFoot.innerHTML = `<span class="starMapLegendFootTxt"></span><span class="starMapLegendChevron" aria-hidden="true">▴</span>`;
+  el.legendFoot.querySelector(".starMapLegendFootTxt").textContent = t("star_footN", { n: DATA.n, k: DATA.clusters.length });
+  applyLegendCollapse();
+}
+// The foot line doubles as a collapse handle: fold the whole legend down to just
+// the "N docs · K constellations" summary (handy once K climbs toward its cap of 40).
+function applyLegendCollapse() {
+  el.legend.classList.toggle("isCollapsed", legendCollapsed);
+  el.legendFoot.title = t(legendCollapsed ? "star_legendExpand" : "star_legendCollapse");
+}
+function toggleLegendCollapse() {
+  legendCollapsed = !legendCollapsed;
+  try { localStorage.setItem("heykoko-starmap-legend-collapsed", legendCollapsed ? "1" : "0"); } catch {}
+  applyLegendCollapse();
 }
 function syncLegend() {
   [...el.legendList.children].forEach((li, i) => li.classList.toggle("isDim", hidden.has(DATA.clusters[i].id)));
