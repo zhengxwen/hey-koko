@@ -226,47 +226,75 @@ function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000) {
       "Cache-Control": "no-store",
     });
 
+    // detached → MinerU becomes its own process-group leader, so a canceled import
+    // can kill the whole tree (MinerU forks torch/OCR workers a bare proc.kill would
+    // orphan). On Windows there are no process groups, so fall back to a plain spawn.
     const proc = spawn(mineruPath, ["-p", inputPath, "-o", outputDir], {
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      detached: process.platform !== "win32",
     });
 
     let stderrBuf = "";
+    let settled = false;
+    const finish = () => { if (settled) return; settled = true; clearTimeout(timeout); resolve(); };
+    // SIGKILL the whole group (negative pid); fall back to the bare process if the
+    // group signal isn't available (Windows, or the leader already reaped).
+    const killTree = () => {
+      try {
+        if (process.platform !== "win32" && proc.pid) process.kill(-proc.pid, "SIGKILL");
+        else proc.kill("SIGKILL");
+      } catch { try { proc.kill("SIGKILL"); } catch {} }
+    };
     const timeout = setTimeout(() => {
-      proc.kill();
-      res.write(JSON.stringify({ error: `MinerU timeout (${Math.round(timeoutMs / 60000)} min)` }) + "\n");
-      res.end();
-      resolve();
+      killTree();
+      try { res.write(JSON.stringify({ error: `MinerU timeout (${Math.round(timeoutMs / 60000)} min)` }) + "\n"); res.end(); } catch {}
+      finish();
     }, timeoutMs);
+
+    // The libimport job canceled → its loopback request drops and this response
+    // socket closes while MinerU is still churning. Kill the process tree so a
+    // canceled import doesn't leave Python (+ torch/OCR workers) running to
+    // completion in the background. Fires on normal end too — the settled guard
+    // makes that a no-op.
+    res.on("error", () => {});   // swallow EPIPE after the client hangs up
+    res.on("close", () => { if (settled) return; killTree(); finish(); });
 
     // Only forward lines that look like progress (contain %, page, or progress bar chars)
     const isProgressLine = (line) => /\d+%|█|▓|░|page|pages|进度/i.test(line);
 
+    proc.on("error", (err) => {
+      try { res.write(JSON.stringify({ error: `MinerU spawn failed: ${err.message}` }) + "\n"); res.end(); } catch {}
+      finish();
+    });
+
     proc.stdout.on("data", (chunk) => {
+      if (settled) return;
       const lines = chunk.toString().split(/\r?\n|\r/).filter(Boolean);
       for (const line of lines) {
         if (isProgressLine(line)) {
-          res.write(JSON.stringify({ progress: line.trim() }) + "\n");
+          try { res.write(JSON.stringify({ progress: line.trim() }) + "\n"); } catch {}
         }
       }
     });
 
     proc.stderr.on("data", (chunk) => {
       stderrBuf += chunk.toString();
+      if (settled) return;
       const lines = chunk.toString().split(/\r?\n|\r/).filter(Boolean);
       for (const line of lines) {
         if (isProgressLine(line)) {
-          res.write(JSON.stringify({ progress: line.trim() }) + "\n");
+          try { res.write(JSON.stringify({ progress: line.trim() }) + "\n"); } catch {}
         }
       }
     });
 
     proc.on("close", (code) => {
-      clearTimeout(timeout);
+      if (settled) return;   // already timed out or canceled (killTree fired) → don't emit a result
 
       if (code !== 0) {
         res.write(JSON.stringify({ error: `MinerU exited with code ${code}: ${stderrBuf.slice(-500)}` }) + "\n");
         res.end();
-        resolve();
+        finish();
         return;
       }
 
@@ -275,7 +303,7 @@ function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000) {
       if (!mdFile) {
         res.write(JSON.stringify({ error: "MinerU produced no markdown output" }) + "\n");
         res.end();
-        resolve();
+        finish();
         return;
       }
 
@@ -340,7 +368,7 @@ function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000) {
 
       res.write(JSON.stringify({ text: markdown, images, tool: "mineru" }) + "\n");
       res.end();
-      resolve();
+      finish();
     });
   });
 }
