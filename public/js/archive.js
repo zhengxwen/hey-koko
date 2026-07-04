@@ -10,6 +10,7 @@ import { saveTabs } from './settings.js';
 import { getActiveTab, createTab, closeTab, switchTab, renderTabs } from './tabs.js';
 import { t } from './i18n.js';
 import { tabActiveJobCount, cancelTabJobs } from './bg-jobs.js';   // Option B: warn + cancel jobs on archive
+import { initListKeyNav } from './list-keynav.js';
 
 // Set by initArchive — lets the star map's inspector jump straight into an archived
 // conversation's read-only preview (open overlay + select + preview in one call).
@@ -23,6 +24,7 @@ export function openArchivePanel() { if (_openArchivePanel) _openArchivePanel();
 export function initArchive() {
   const archiveOverlay = document.querySelector("#archiveOverlay");
   const archiveList = document.querySelector("#archiveList");
+  initListKeyNav(archiveList);   // ↑↓ move, ←→ fold/unfold folders, Enter opens
   const archivePreview = document.querySelector("#archivePreview");
   const archivePreviewContent = document.querySelector("#archivePreviewContent");
   const archivePreviewTitle = document.querySelector("#archivePreviewTitle");

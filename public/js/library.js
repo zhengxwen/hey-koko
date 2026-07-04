@@ -17,6 +17,7 @@ import { createTab, switchTab } from './tabs.js';
 import { t, getPromptLanguage } from './i18n.js';
 import { setMentionDocs, mentionDocName, mentionDocIcon, mentionArchiveName } from './mentions.js';
 import { enqueueBgJob, openBgDrawer, closeBgDrawer } from './bg-jobs.js';
+import { initListKeyNav } from './list-keynav.js';
 import { libImportFetch } from './server-queue.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", video: "📺", doc: "📝", chat: "💬", other: "📎" };
@@ -526,6 +527,7 @@ export function initLibrary() {
   const openBtn = document.querySelector("#libraryBtn");
   const closeBtn = document.querySelector("#libraryCloseBtn");
   const listEl = document.querySelector("#libraryList");
+  initListKeyNav(listEl);   // ↑↓ move, ←→ fold/unfold folders, Enter opens
   const searchEl = document.querySelector("#librarySearch");
   const tagBar = document.querySelector("#libraryTagBar");
   const preview = document.querySelector("#libraryPreview");
