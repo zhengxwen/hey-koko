@@ -5488,6 +5488,46 @@ button.secondary:disabled {
 .libMetaSave { align-self: flex-end; padding: 6px 16px; border: none; border-radius: 8px; background: var(--accent, #6c8ebf); color: #fff; cursor: pointer; }
 .libraryMarkdownEditor { width: 100%; min-height: 60vh; padding: 12px; border: 1px solid var(--line); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; line-height: 1.55; box-sizing: border-box; resize: vertical; }
 .libraryUrlTextarea { width: 100%; min-height: 8em; padding: 10px; border: 1px solid var(--line); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; line-height: 1.5; box-sizing: border-box; resize: vertical; }
+/* Recent-inputs history under the URL textarea (localStorage-backed; click = append). */
+.libraryUrlHistory { margin-top: 8px; }
+.libraryUrlHistoryHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.libraryUrlHistoryHead button {
+  min-height: 22px;
+  height: 22px;
+  padding: 0 10px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.libraryUrlHistoryHead button:hover { background: var(--surface-hover); color: var(--ink); }
+.libraryUrlHistoryList {
+  max-height: 9em;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.libraryUrlHistoryItem {
+  padding: 4px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8em;
+  line-height: 1.4;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.libraryUrlHistoryItem:hover { background: var(--accent-subtle); color: var(--ink); }
+.libraryUrlHistoryItem + .libraryUrlHistoryItem { border-top: 1px solid var(--line); }
 /* YouTube import selection modal. Rows + select-all use the canonical `.checkboxLabel`
    for layout (checkbox + text); only modal-specific chrome lives here. */
 .libraryYtModal { width: min(620px, 92vw); }

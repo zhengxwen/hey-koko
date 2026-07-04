@@ -1073,17 +1073,64 @@ export function initLibrary() {
     return matches.find((d) => d === "youtube/" + s || d.startsWith("youtube/")) || matches[0] || ("youtube/" + s);
   }
 
+  // ---- URL-import input history (localStorage) ----------------------------
+  // Recent lines the user typed into the URL modal, most recent first. Whole LINES
+  // are kept — a line may carry free-text notes around the URL ("[说明] https://… [说明]"),
+  // and those notes are the reason the history is useful.
+  const URL_HISTORY_KEY = "heykoko-liburl-history";
+  const URL_HISTORY_MAX = 20;
+  const loadUrlHistory = () => {
+    try { const a = JSON.parse(localStorage.getItem(URL_HISTORY_KEY) || "[]"); return Array.isArray(a) ? a : []; }
+    catch { return []; }
+  };
+  const saveUrlHistory = (lines) => localStorage.setItem(URL_HISTORY_KEY, JSON.stringify(lines.slice(0, URL_HISTORY_MAX)));
+  function addToUrlHistory(lines) {
+    const hist = loadUrlHistory().filter((h) => !lines.includes(h));   // dedupe, refresh position
+    saveUrlHistory([...lines, ...hist]);
+  }
+  const urlHistoryBox = document.querySelector("#libraryUrlHistory");
+  const urlHistoryList = document.querySelector("#libraryUrlHistoryList");
+  document.querySelector("#libraryUrlHistoryClear").addEventListener("click", () => {
+    localStorage.removeItem(URL_HISTORY_KEY);
+    renderUrlHistory();
+  });
+  function renderUrlHistory() {
+    const hist = loadUrlHistory();
+    urlHistoryBox.hidden = !hist.length;
+    urlHistoryList.innerHTML = "";
+    for (const line of hist) {
+      const row = document.createElement("div");
+      row.className = "libraryUrlHistoryItem";
+      row.textContent = line;
+      row.title = t("lib_urlHistoryHint");
+      row.addEventListener("click", () => {   // click → append the line to the textarea
+        const v = urlTextarea.value;
+        urlTextarea.value = v && !v.endsWith("\n") ? `${v}\n${line}` : v + line;
+        urlTextarea.focus();
+      });
+      urlHistoryList.appendChild(row);
+    }
+  }
+
+  // Extract the URLs from one line, tolerating free-text notes around them
+  // ("[说明1] https://… [说明2]") and trailing punctuation stuck to a URL.
+  const urlsInLine = (line) =>
+    (line.match(/https?:\/\/\S+/g) || []).map((u) => u.replace(/[)\]}>.,;，。；、"'）】》]+$/, ""));
+
   // Multi-line URL import: a textarea modal so the user can type/paste one URL per line.
   function importUrl() {
     urlHint.textContent = t("lib_urlPrompt");
     urlTextarea.value = "";
+    renderUrlHistory();
     urlModal.hidden = false;
     urlTextarea.focus();
   }
   function closeUrlModal() { urlModal.hidden = true; urlTextarea.value = ""; }
   function confirmUrlModal() {
-    // One URL per line; also tolerate whitespace-separated paste.
-    const urls = urlTextarea.value.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+    // One URL per line; notes around the URL are allowed (and remembered in history).
+    const lines = urlTextarea.value.split(/\n/).map((s) => s.trim()).filter(Boolean);
+    const urls = lines.flatMap(urlsInLine);
+    addToUrlHistory(lines.filter((l) => urlsInLine(l).length));   // only lines that had a URL
     closeUrlModal();
     if (!urls.length) return;
     // Plain web pages import straight away; YouTube URLs (incl. channels/playlists) go

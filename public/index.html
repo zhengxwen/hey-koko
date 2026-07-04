@@ -747,6 +747,13 @@
         <div class="comfyParamsBody">
           <p class="hint" id="libraryUrlHint">每行一个网址（博客 / 网页 / YouTube）。</p>
           <textarea id="libraryUrlTextarea" class="libraryUrlTextarea" rows="6" spellcheck="false" placeholder="https://example.com/post-1&#10;https://example.com/post-2"></textarea>
+          <div id="libraryUrlHistory" class="libraryUrlHistory" hidden>
+            <div class="libraryUrlHistoryHead">
+              <span id="libraryUrlHistoryTitle">最近输入</span>
+              <button id="libraryUrlHistoryClear" type="button">清空</button>
+            </div>
+            <div id="libraryUrlHistoryList" class="libraryUrlHistoryList"></div>
+          </div>
           <div class="maskPointActions">
             <button id="libraryUrlCancel" type="button" class="secondary">取消</button>
             <button id="libraryUrlConfirm" type="button">导入</button>
