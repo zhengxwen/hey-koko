@@ -25,7 +25,7 @@ import { getNumCtx, recordContextUsage, renderContextMeter } from './context-met
 import { addMemory, getMemoryPromptBlock } from './memory.js';
 import { parseRemind, addReminder, describeReminder, markActivity } from './proactive.js';
 import { TOOL_SCHEMAS, executeTool, getToolLabel } from './tools.js';
-import { applyHighlights, captureAnchor, highlightsInSelection } from './highlight.js';
+import { applyHighlights, captureAnchor, highlightsInSelection, registerHighlightHost, resolveHighlightHost } from './highlight.js';
 
 // Streaming markdown re-render throttle. Ollama streams a chunk (often a single
 // token/character) at a time; re-parsing the whole message and swapping the
@@ -3777,11 +3777,25 @@ function positionHlFloat(el, rect) {
   el.style.left = Math.round(left) + "px";
 }
 
-function hlActiveMessage() {
-  if (!hlTarget) return null;
-  const tab = getActiveTab();
-  return tab?.messages?.[hlTarget.msgIndex] || null;
-}
+// The chat host: message bubbles own their highlights on tab.messages[i].
+const HL_CHAT_HOST = {
+  resolve(bodyEl) {
+    if (bodyEl.parentElement?.classList.contains("message") !== true) return null;
+    const idx = bodyEl.closest(".message")?.dataset.msgIndex;
+    return idx == null ? null : { msgIndex: Number(idx) };
+  },
+  list(ctx) {
+    const m = getActiveTab()?.messages?.[ctx.msgIndex];
+    return m ? (m.highlights = m.highlights || []) : null;
+  },
+  commit(ctx) {
+    const m = getActiveTab()?.messages?.[ctx.msgIndex];
+    if (m && m.highlights && !m.highlights.length) delete m.highlights;
+    saveChat();
+    renderChat();
+  },
+  scope(ctx) { return dom.messagesEl.querySelector(`.message[data-msg-index="${ctx.msgIndex}"]`); },
+};
 
 // Apply `style` to the current selection. If `withNote`, open the note editor on
 // the freshly-created highlight afterwards.
@@ -3789,17 +3803,17 @@ function applyHlStyle(style, withNote = false) {
   const range = getHlRange();
   if (!hlTarget || !range) { hideHlToolbar(); return; }
   const anchor = captureAnchor(hlTarget.bodyEl, range);
-  const msg = hlActiveMessage();
-  const msgIndex = hlTarget.msgIndex;
+  const { host, ctx } = hlTarget;
   hideHlToolbar();
-  if (!anchor || !msg) return;
+  if (!anchor) return;
+  const arr = host.list(ctx);
+  if (!arr) return;
   if (!STYLE_IS_DECORATION(style)) hlLastStyle = style;
-  (msg.highlights = msg.highlights || []).push({ style, quote: anchor.quote, prefix: anchor.prefix });
-  const newIdx = msg.highlights.length - 1;
-  saveChat();
+  arr.push({ style, quote: anchor.quote, prefix: anchor.prefix });
+  const newIdx = arr.length - 1;
+  host.commit(ctx);
   window.getSelection()?.removeAllRanges();
-  renderChat();
-  if (withNote) openHlNote(msgIndex, newIdx, true);
+  if (withNote) openHlNote(host, ctx, newIdx, true);
 }
 // Colors are the "primary" styles the pen remembers; underline/strike don't
 // change the pen's default.
@@ -3808,17 +3822,16 @@ function STYLE_IS_DECORATION(style) { return style === "underline" || style === 
 // Remove any highlights overlapping the current selection.
 function clearHlSelection() {
   const range = getHlRange();
-  const msg = hlActiveMessage();
-  if (!hlTarget || !msg || !range) { hideHlToolbar(); return; }
-  const idxs = highlightsInSelection(hlTarget.bodyEl, range, msg.highlights || []);
+  if (!hlTarget || !range) { hideHlToolbar(); return; }
+  const { host, ctx } = hlTarget;
+  const arr = host.list(ctx) || [];
+  const idxs = highlightsInSelection(hlTarget.bodyEl, range, arr);
   hideHlToolbar();
   if (!idxs.length) return;
   const drop = new Set(idxs);
-  msg.highlights = msg.highlights.filter((_, i) => !drop.has(i));
-  if (!msg.highlights.length) delete msg.highlights;
-  saveChat();
+  for (let i = arr.length - 1; i >= 0; i--) if (drop.has(i)) arr.splice(i, 1);
+  host.commit(ctx);
   window.getSelection()?.removeAllRanges();
-  renderChat();
 }
 
 // Copy the currently selected text to the clipboard.
@@ -3829,20 +3842,19 @@ function copyHlSelection() {
   if (text) navigator.clipboard?.writeText(text).catch(() => {});
 }
 
-// Open the note editor for highlight `hlIdx` of message `msgIndex`, anchored to
-// its rendered span. `focusNew` selects-all so an empty note is ready to type.
-function openHlNote(msgIndex, hlIdx, focusNew = false) {
-  const tab = getActiveTab();
-  const msg = tab?.messages?.[msgIndex];
-  if (!msg || !msg.highlights?.[hlIdx]) return;
-  const msgEl = dom.messagesEl.querySelector(`.message[data-msg-index="${msgIndex}"]`);
-  const span = msgEl?.querySelector(`.hlmark[data-hl-idx="${hlIdx}"]`);
-  hlPopoverTarget = { msgIndex, hlIdx };
-  hlPopoverTextarea.value = msg.highlights[hlIdx].note || "";
+// Open the note editor for highlight `hlIdx` owned by (host, ctx), anchored to its
+// rendered span. `focusNew` selects-all so an empty note is ready to type.
+function openHlNote(host, ctx, hlIdx, focusNew = false) {
+  const arr = host.list(ctx);
+  if (!arr || !arr[hlIdx]) return;
+  const scope = host.scope(ctx);
+  const span = scope?.querySelector(`.hlmark[data-hl-idx="${hlIdx}"]`);
+  hlPopoverTarget = { host, ctx, hlIdx };
+  hlPopoverTextarea.value = arr[hlIdx].note || "";
   // Mark the swatch matching this highlight's current color.
   hlPopover.querySelectorAll(".hlNoteSwatch").forEach((sw) =>
-    sw.classList.toggle("active", sw.dataset.style === msg.highlights[hlIdx].style));
-  positionHlFloat(hlPopover, (span || msgEl || document.body).getBoundingClientRect());
+    sw.classList.toggle("active", sw.dataset.style === arr[hlIdx].style));
+  positionHlFloat(hlPopover, (span || scope || document.body).getBoundingClientRect());
   hlPopoverTextarea.focus();
   if (focusNew) hlPopoverTextarea.select();
 }
@@ -3850,43 +3862,37 @@ function openHlNote(msgIndex, hlIdx, focusNew = false) {
 // Recolor the highlight the note editor is open on (keeps the note text).
 function setHlNoteColor(style) {
   if (!hlPopoverTarget) return;
-  const { msgIndex, hlIdx } = hlPopoverTarget;
-  const hl = getActiveTab()?.messages?.[msgIndex]?.highlights?.[hlIdx];
+  const { host, ctx, hlIdx } = hlPopoverTarget;
+  const hl = host.list(ctx)?.[hlIdx];
   if (!hl) return;
   hl.style = style;
   hlLastStyle = style;   // remember for the next comment
   const note = hlPopoverTextarea.value.trim();
   if (note) hl.note = note; else delete hl.note;
-  saveChat();
-  renderChat();
-  openHlNote(msgIndex, hlIdx, false);   // reopen on the recolored highlight
+  host.commit(ctx);
+  openHlNote(host, ctx, hlIdx, false);   // reopen on the recolored highlight
 }
 
 function saveHlNote() {
   if (!hlPopoverTarget) return;
-  const { msgIndex, hlIdx } = hlPopoverTarget;
-  const tab = getActiveTab();
-  const hl = tab?.messages?.[msgIndex]?.highlights?.[hlIdx];
+  const { host, ctx, hlIdx } = hlPopoverTarget;
+  const hl = host.list(ctx)?.[hlIdx];
   hideHlPopover();
   if (!hl) return;
   const note = hlPopoverTextarea.value.trim();
   if (note) hl.note = note; else delete hl.note;
-  saveChat();
-  renderChat();
+  host.commit(ctx);
 }
 
 // Delete the highlight the note editor is open on (removes highlight + note).
 function deleteHlFromNote() {
   if (!hlPopoverTarget) return;
-  const { msgIndex, hlIdx } = hlPopoverTarget;
-  const tab = getActiveTab();
-  const msg = tab?.messages?.[msgIndex];
+  const { host, ctx, hlIdx } = hlPopoverTarget;
+  const arr = host.list(ctx);
   hideHlPopover();
-  if (!msg?.highlights) return;
-  msg.highlights.splice(hlIdx, 1);
-  if (!msg.highlights.length) delete msg.highlights;
-  saveChat();
-  renderChat();
+  if (!arr) return;
+  arr.splice(hlIdx, 1);
+  host.commit(ctx);
 }
 
 // Icon-only toolbar button; its label lives in the tooltip (title).
@@ -4018,15 +4024,12 @@ export function initHighlightUI() {
       };
       const startBody = bodyOf(range.startContainer);
       const endBody = bodyOf(range.endContainer);
-      // Only the bubble's own top-level body (not thinking blocks / nested bodies),
-      // and the selection must stay within that one body.
-      if (!startBody || startBody !== endBody || startBody.parentElement?.classList.contains("message") !== true) {
-        hideHlToolbar(); return;
-      }
-      const msgEl = startBody.closest(".message");
-      const idxAttr = msgEl?.dataset.msgIndex;
-      if (idxAttr == null) { hideHlToolbar(); return; }
-      hlTarget = { bodyEl: startBody, msgIndex: Number(idxAttr) };
+      // The selection must stay within one highlightable body, owned by a
+      // registered host (chat bubble or knowledge-library block).
+      if (!startBody || startBody !== endBody) { hideHlToolbar(); return; }
+      const resolved = resolveHighlightHost(startBody);
+      if (!resolved) { hideHlToolbar(); return; }
+      hlTarget = { bodyEl: startBody, host: resolved.host, ctx: resolved.ctx };
       hlBar.classList.remove("expanded");   // always spawn collapsed
       // Keep a dragged position; otherwise anchor to the selection.
       if (hlManualPos) hlBar.hidden = false;
@@ -4044,15 +4047,17 @@ export function initHighlightUI() {
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) hideHlToolbar();
   });
 
-  // Click a 💬 marker → open its note editor.
-  dom.messagesEl.addEventListener("click", (e) => {
+  // Click a 💬 marker → open its note editor. Document-level so it works in both
+  // the chat and the knowledge-library preview (host resolved from the marker).
+  document.addEventListener("click", (e) => {
     const mk = e.target.closest(".hlNoteMark");
     if (!mk) return;
-    const msgEl = mk.closest(".message");
-    const idxAttr = msgEl?.dataset.msgIndex;
-    if (idxAttr == null) return;
-    openHlNote(Number(idxAttr), Number(mk.dataset.hlIdx));
+    const resolved = resolveHighlightHost(mk.closest(".markdownBody, .plainBody"));
+    if (!resolved) return;
+    openHlNote(resolved.host, resolved.ctx, Number(mk.dataset.hlIdx));
   });
+
+  registerHighlightHost(HL_CHAT_HOST);
 
   // Dismiss on outside interaction / scroll. A press outside the toolbar starts a
   // new selection (or clicks away), so drop any dragged position.
@@ -4193,7 +4198,7 @@ function renderHighlightsPanel(items = gatherHighlights()) {
       b.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
       return b;
     };
-    actions.appendChild(mkBtn(t("hl_comment"), "✎", () => { jumpToHighlight(it.msgIndex, it.hlIdx); openHlNote(it.msgIndex, it.hlIdx); }));
+    actions.appendChild(mkBtn(t("hl_comment"), "✎", () => { jumpToHighlight(it.msgIndex, it.hlIdx); openHlNote(HL_CHAT_HOST, { msgIndex: it.msgIndex }, it.hlIdx); }));
     actions.appendChild(mkBtn(t("btn_copy"), "📋", () => { if (it.quote) navigator.clipboard?.writeText(it.quote).catch(() => {}); }));
     actions.appendChild(mkBtn(t("hl_noteDelete"), "🗑", () => deleteHighlightFromPanel(it.msgIndex, it.hlIdx)));
     card.appendChild(actions);

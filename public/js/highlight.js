@@ -182,6 +182,26 @@ export function applyHighlights(bodyEl, highlights) {
   });
 }
 
+// ── Host registry ─────────────────────────────────────────────────────────
+// A "host" owns some highlightable bodies and knows how to read/persist/re-render
+// their highlights. Chat registers one (message bubbles); the knowledge library
+// registers another (doc blocks). The selection toolbar resolves a body to its
+// host so the same UI drives both. A host is:
+//   { resolve(bodyEl) -> ctx|null,   // does this host own bodyEl? → an id object
+//     list(ctx) -> array,            // the block/message's highlights array (created if missing)
+//     commit(ctx) -> void,           // persist + re-render after the array was mutated
+//     scope(ctx) -> Element|null }    // container to query the rendered .hlmark spans in
+const hlHosts = [];
+export function registerHighlightHost(host) { hlHosts.push(host); }
+export function resolveHighlightHost(bodyEl) {
+  if (!bodyEl) return null;
+  for (const host of hlHosts) {
+    const ctx = host.resolve(bodyEl);
+    if (ctx) return { host, ctx };
+  }
+  return null;
+}
+
 // Indices of `highlights` whose resolved range overlaps the current selection —
 // used by the eraser to clear only what the user dragged over.
 export function highlightsInSelection(bodyEl, range, highlights) {

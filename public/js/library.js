@@ -11,7 +11,7 @@
 import { dom, state } from './state.js';
 import { escapeHtml } from './utils.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './markdown.js';
-import { applyHighlights } from './highlight.js';
+import { applyHighlights, registerHighlightHost } from './highlight.js';
 import { saveTabs } from './settings.js';
 import { createTab, switchTab } from './tabs.js';
 import { t, getPromptLanguage } from './i18n.js';
@@ -577,6 +577,32 @@ export function initLibrary() {
   let scores = null;          // Map<docId, score> when a semantic search is active
   let activeTagFilter = null;
   let currentDoc = null;
+
+  // Highlight host: knowledge-library doc blocks own their highlights on
+  // block.highlights. Lets the shared selection toolbar / notes work in the doc
+  // preview, persisting to the library (renderBlocks re-applies them).
+  registerHighlightHost({
+    resolve(bodyEl) {
+      const block = bodyEl.closest(".libDocBlock");
+      if (!block || !currentDoc || !previewContent.contains(block)) return null;
+      return { blockId: block.id.replace(/^lib-block-/, "") };
+    },
+    list(ctx) {
+      const b = currentDoc?.blocks?.find((x) => x.id === ctx.blockId);
+      return b ? (b.highlights = b.highlights || []) : null;
+    },
+    commit(ctx) {
+      const b = currentDoc?.blocks?.find((x) => x.id === ctx.blockId);
+      if (b && b.highlights && !b.highlights.length) delete b.highlights;
+      const st = previewContent.scrollTop;   // renderBlocks rebuilds innerHTML → keep the reader's place
+      renderBlocks(currentDoc);
+      previewContent.scrollTop = st;
+      // Highlights don't change block content → no re-embed; just persist the doc.
+      postJson("/api/library/save", { doc: currentDoc, model: embedModel() }).catch(() => {});
+    },
+    scope(ctx) { return document.getElementById(`lib-block-${ctx.blockId}`); },
+  });
+
   const expandedDirs = new Set();   // folder paths the user expanded — survives re-renders
                                     // (the list refreshes on every panel open)
   let sortMode = "";          // "" = import order · "new"/"old" = by date (publishedAt,
@@ -606,8 +632,13 @@ export function initLibrary() {
   function open() {
     // The two full-area panels are mutually exclusive: the archive overlay sits EARLIER
     // in the DOM at the same z-index, so left open it would hide under us and clicking
-    // its button later would look dead. Opening one always closes the other.
+    // its button later would look dead. Opening one always closes the other — and must
+    // also undo the browser's side effect: openArchiveBrowser disables #archiveChat and
+    // only its OWN close button re-enables it, so closing it from here without this
+    // would leave the Archive button disabled forever.
     document.querySelector("#archiveOverlay")?.classList.remove("isOpen");
+    const archiveBtn = document.querySelector("#archiveChat");
+    if (archiveBtn) archiveBtn.disabled = false;
     overlay.classList.add("isOpen");
     if (!currentDoc) clearPreview();   // keep the doc being read across close/reopen
     refreshList().then(() => {
