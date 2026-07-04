@@ -96,8 +96,15 @@ function sectionMark(icon, hint, action = null) {
   mark.addEventListener("dblclick", (e) => e.stopPropagation());    // don't trigger section rename
   return mark;
 }
-// ✏️ = AI-reformatted ASR transcript (not verbatim speech).
-export function transcriptMark() { return sectionMark("✏️", t("lib_transcriptEditedHint")); }
+// ✏️ = AI-reformatted ASR transcript (not verbatim speech). onRegen (optional) adds a
+// "regenerate the distill card" button to the click-popup — the library preview passes
+// it (the transcript is the card's source material, so this is where you notice the
+// card needs a redo); the chat-bubble copy stays explanation-only.
+export function transcriptMark(onRegen) {
+  // Explicit "…distill card" label here — a bare "regenerate" next to the transcript
+  // hint would read as regenerating the TRANSCRIPT.
+  return sectionMark("✏️", t("lib_transcriptEditedHint"), onRegen ? { label: t("lib_regenCardFull"), run: onRegen } : null);
+}
 // 📇 = the distillation card (AI-generated summary/key points, not original content).
 // onRegen (optional) adds a "regenerate" button to the click-popup — the library preview
 // passes it (re-distill with the CURRENT chat model); the chat-bubble copy is a snapshot
@@ -1868,7 +1875,7 @@ export function initLibrary() {
         h.title = t("lib_editSectionHint");
         // a video's transcript section is AI-reformatted speech, not verbatim → ✏️ badge;
         // the distill card is AI-generated summary/key points, not original content → 📇 badge
-        if (doc.docKind === "video" && isTranscriptSection(b.section)) h.appendChild(transcriptMark());
+        if (doc.docKind === "video" && isTranscriptSection(b.section)) h.appendChild(transcriptMark(() => regenerateCard(doc)));
         else if (b.kind === "card") h.appendChild(cardMark(() => regenerateCard(doc)));
         attachSectionEdit(h, doc, b.section);
         previewContent.appendChild(h);
