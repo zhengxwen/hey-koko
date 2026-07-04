@@ -154,6 +154,9 @@ function indexEntryOf(doc) {
   return {
     docId: doc.docId, type: doc.type, docKind: doc.docKind, source: doc.source,
     title: doc.title, authors: doc.authors || "", year: doc.year || "",
+    // venue surfaced to the list card (which journal/conference); rest of the citation
+    // lives in the full doc only.
+    venue: (doc.citation && doc.citation.venue) || undefined,
     tags: doc.tags || [], blockCount: (doc.blocks || []).length,
     // importedAt: recorded from now on (older docs simply lack it — never faked);
     // publishedAt ("YYYY-MM-DD"): the CONTENT's own date (YouTube upload date) — the
@@ -560,6 +563,10 @@ async function importDocInternal(body) {
     authors: body.authors || "", year: body.year || "",
     publishedAt: body.publishedAt || "",
     doi: body.doi || "",
+    // citation = {venue,volume,issue,pages,type,url}; keywords = author keyword strings.
+    // Only stored when non-empty so non-paper docs don't carry empty scaffolding.
+    citation: (body.citation && Object.values(body.citation).some(Boolean)) ? body.citation : undefined,
+    keywords: (Array.isArray(body.keywords) && body.keywords.length) ? body.keywords : undefined,
     tags: body.tags || [], embedModel: model,
     importedAt: Date.now(),
     blocks,
@@ -1325,8 +1332,32 @@ async function lookupPaperMeta(text) {
     const dp = ((msg.issued || msg["published-print"] || msg["published-online"] || {})["date-parts"] || [])[0] || [];
     const year = dp[0] ? String(dp[0]) : "";
     const publishedAt = dp[0] ? [String(dp[0]), ...dp.slice(1, 3).map(n => String(n).padStart(2, "0"))].join("-") : "";
-    return { doi, title, authors, year, publishedAt };
+    // Bibliographic citation block, all from the SAME Crossref call — venue is the
+    // headline field (which journal/conference); type distinguishes a real publication
+    // (journal-article/proceedings-article) from a preprint (posted-content).
+    const citation = {
+      venue: (msg["container-title"] || [])[0] || (msg["short-container-title"] || [])[0] || "",
+      volume: msg.volume || "",
+      issue: msg.issue || "",
+      pages: msg.page || msg["article-number"] || "",
+      type: msg.type || "",
+      url: msg.URL || (doi ? `https://doi.org/${doi}` : ""),
+    };
+    return { doi, title, authors, year, publishedAt, citation };
   } catch { return { doi }; }
+}
+
+// Author-supplied keywords from a paper's first page: a "Keywords:" / "Index Terms—"
+// (IEEE em-dash) / "关键词：" line. Only the HEAD is scanned (the word "keywords" also
+// appears in prose / related work). Split on ; , 、 ；, strip markdown emphasis, and
+// drop anything sentence-shaped (a real keyword is a short phrase, not a clause).
+function extractKeywords(text) {
+  const head = String(text || "").slice(0, 6000);
+  const m = head.match(/(?:key\s?words?|index\s+terms|关\s?键\s?词|關\s?鍵\s?詞)\s*[:：—–]\s*(.+)/i);
+  if (!m) return [];
+  const line = m[1].split(/\r?\n/)[0].replace(/^[*_\s]+/, "").replace(/[.*_\s]+$/, "");
+  const parts = line.split(/[;,、；，]/).map(s => s.replace(/[*_`]/g, "").trim()).filter(Boolean);
+  return parts.filter(p => p.length <= 60 && p.split(/\s+/).length <= 8).slice(0, 12);
 }
 
 module.exports = {
@@ -1336,6 +1367,6 @@ module.exports = {
   splitIntoBlocks,   // exported for reuse/testing of the chunker
   // server-side libimport job (jobs.js) + distill + related-docs
   importDocInternal, distillDocInternal, distillLibraryDoc, buildYoutubeDoc, llmComplete,
-  relatedLibraryDocs, docCentroids, lookupPaperMeta,
+  relatedLibraryDocs, docCentroids, lookupPaperMeta, extractKeywords,
   locOf,   // docId → on-disk folder ("" = root); used by the star map for folder scoping
 };

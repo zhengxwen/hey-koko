@@ -3718,7 +3718,7 @@ button.secondary:disabled {
   grid-template-columns: auto 1fr;
   gap: 8px;
   align-items: start;
-  padding: 10px 14px;
+  padding: 6px 14px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
   cursor: pointer;
@@ -3732,7 +3732,7 @@ button.secondary:disabled {
 .archiveCard.isActive {
   background: var(--bubble);
   border-left: 3px solid var(--accent);
-  padding-left: 11px;
+  padding: 6px 14px 6px 11px;
 }
 
 .archiveCard.isSelected {
@@ -3759,12 +3759,13 @@ button.secondary:disabled {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .archiveCardTitle {
   font-size: 13px;
   font-weight: 700;
+  line-height: 1.25;
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3776,8 +3777,9 @@ button.secondary:disabled {
   color: var(--muted);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 6px 6px;
   flex-wrap: wrap;
+  line-height: 1.25;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
@@ -5443,8 +5445,14 @@ button.secondary:disabled {
    shoves the label text to the far right — pin it to its natural size, like .checkboxLabel */
 .libraryScopeLabel input[type="checkbox"] { width: auto; flex: none; margin: 0; accent-color: var(--accent); }
 .libraryScopeLabel input[disabled] { opacity: 0.4; cursor: not-allowed; }
+/* doc-fact rows (dates/file · metadata) between the title and toolbar */
+.libraryDocInfoLine { font-size: 12px; color: var(--muted); margin: 0; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* wrapper keeps the two fact rows tight (the preview is a gapped flex column) */
+.libraryDocFacts { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.libraryDocSrcLink { color: var(--muted); text-decoration: none; }
+.libraryDocSrcLink:hover { color: var(--accent); text-decoration: underline; }
 .libraryDocToolbar { display: flex; gap: 8px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
-.libraryDocToolbar button { font-size: 0.82em; padding: 4px 10px; }
+.libraryDocToolbar button { font-size: 0.82em; padding: 4px 10px; min-height: 32px; }
 .libraryMetaPopup { flex-direction: column; padding: 12px; min-width: 300px; max-height: none; }
 .libMetaRow { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
 .libMetaRow span { font-size: 0.76em; opacity: 0.7; }

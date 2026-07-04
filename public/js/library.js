@@ -402,6 +402,7 @@ export async function writeTabToLibrary(tab) {
     // save rewrites the doc WHOLESALE — carry the rest of the metadata through, or a
     // tab write-back silently strips it (undefined fields drop out of the JSON)
     doi: meta.doi || "", publishedAt: meta.publishedAt || "",
+    citation: meta.citation, keywords: meta.keywords,
     importedAt: meta.importedAt, rating: meta.rating,
     blocks,
   };
@@ -1292,7 +1293,8 @@ export function initLibrary() {
     // 📇 = this doc has a distillation card (kind:"card" block leads its blocks).
     // Date: publishedAt (YouTube upload date) beats the coarser year when present.
     // ★N = the manual rating (set from the preview pane's star widget).
-    const meta = [d.hasCard ? "📇 " + d.docKind : d.docKind, d.rating ? "★" + d.rating : "", shortAuthors(d.authors), d.publishedAt || d.year].filter(Boolean).join(" · ");
+    const venueShort = d.venue ? (d.venue.length > 30 ? d.venue.slice(0, 30) + "…" : d.venue) : "";
+    const meta = [d.hasCard ? "📇 " + d.docKind : d.docKind, d.rating ? "★" + d.rating : "", shortAuthors(d.authors), venueShort ? "📗 " + venueShort : "", d.publishedAt || d.year].filter(Boolean).join(" · ");
     card.innerHTML = `
       <input type="checkbox" class="archiveCardCheckbox" ${selected.has(d.docId) ? "checked" : ""} />
       <div class="archiveCardInfo">
@@ -1504,6 +1506,44 @@ export function initLibrary() {
 
   function renderBlocks(doc) {
     previewContent.innerHTML = "";
+    // One muted info row between the title and the toolbar: content date (publishedAt,
+    // else year), import time, and the doc's on-disk file name (docId).
+    const info = document.createElement("div");
+    info.className = "libraryDocInfoLine";
+    const fmtTs = (ms) => {
+      const d = new Date(ms), p = (x) => String(x).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    };
+    const parts = [];
+    if (doc.publishedAt || doc.year) parts.push(`${t("lib_docPublished")} ${doc.publishedAt || doc.year}`);
+    if (doc.importedAt) parts.push(`${t("lib_docImported")} ${fmtTs(doc.importedAt)}`);
+    parts.push(`📄 ${doc.docId}`);
+    info.textContent = parts.join("　·　");
+    // Both fact rows share ONE wrapper: previewContent is a flex column with a gap, so
+    // as siblings the rows would inherit that gap — wrapped, they stack tight.
+    const facts = document.createElement("div");
+    facts.className = "libraryDocFacts";
+    facts.appendChild(info);
+    // Second row: the doc's metadata — kind, authors/channel, tags, and the source
+    // (clickable when it's a URL). Year is omitted here: row one already carries it.
+    const metaLine = document.createElement("div");
+    metaLine.className = "libraryDocInfoLine";
+    const mp = [`${kindIcon(doc.docKind)} ${doc.docKind || "doc"}`];
+    if (doc.authors) mp.push(doc.authors);
+    if (doc.tags && doc.tags.length) mp.push("🏷 " + doc.tags.map((tg) => tg && tg.name).filter(Boolean).join("、"));
+    metaLine.textContent = mp.join("　·　");
+    const src = String(doc.source || "");
+    if (src.startsWith("url:")) {
+      const a = document.createElement("a");
+      a.href = src.slice(4); a.target = "_blank"; a.rel = "noopener";
+      a.className = "libraryDocSrcLink";
+      a.textContent = "🔗 " + src.slice(4);
+      metaLine.append("　·　", a);
+    } else if (src.startsWith("file:")) {
+      metaLine.append(`　·　📎 ${src.slice(5)}`);
+    }
+    facts.appendChild(metaLine);
+    previewContent.appendChild(facts);
     // Per-doc toolbar: regenerate metadata + distillation card (server-side distill —
     // useful for docs imported before the card feature, or after heavy edits).
     const bar = document.createElement("div");
@@ -1714,6 +1754,24 @@ export function initLibrary() {
     const authorsInp = mkRow(t("lib_metaAuthors"), doc.authors);
     const yearInp = mkRow(t("lib_metaYear"), doc.year);
     const doiInp = mkRow(t("lib_metaDoi"), doc.doi);
+    // Bibliographic citation (auto-filled from Crossref on import; all editable).
+    const cit = doc.citation || {};
+    const venueInp = mkRow(t("lib_metaVenue"), cit.venue);
+    const volumeInp = mkRow(t("lib_metaVolume"), cit.volume);
+    const issueInp = mkRow(t("lib_metaIssue"), cit.issue);
+    const pagesInp = mkRow(t("lib_metaPages"), cit.pages);
+    const typeInp = mkRow(t("lib_metaPubType"), cit.type);
+    const urlInp = mkRow(t("lib_metaUrl"), cit.url);
+    const keywordsInp = mkRow(t("lib_metaKeywords"), (doc.keywords || []).join(", "));
+    // DOI + citation + keywords are PAPER-ONLY — a YouTube video / blog has no journal,
+    // volume, pages, etc. Show this group only when the kind is "paper", toggling live as
+    // the kind dropdown changes. Inline display:none (beats the global label{display:grid}
+    // trap); hidden inputs keep their loaded values so switching kind never destroys data.
+    const paperRows = [doiInp, venueInp, volumeInp, issueInp, pagesInp, typeInp, urlInp, keywordsInp]
+      .map((inp) => inp.closest(".libMetaRow"));
+    const togglePaperRows = () => { const show = kindSel.value === "paper"; paperRows.forEach((r) => { if (r) r.style.display = show ? "" : "none"; }); };
+    kindSel.addEventListener("change", togglePaperRows);
+    togglePaperRows();
     const tagsInp = mkRow(t("lib_metaTags"), (doc.tags || []).map((tg) => tg.name).join(", "));
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
@@ -1727,6 +1785,8 @@ export function initLibrary() {
     popup.style.left = `${rect.left}px`;
     popup.style.bottom = "auto";
     popup.style.zIndex = "1000";
+    popup.style.maxHeight = "80vh";      // many rows now → let the popup scroll instead of overflowing
+    popup.style.overflowY = "auto";
     document.body.appendChild(popup);
     titleInp.focus();
 
@@ -1736,6 +1796,14 @@ export function initLibrary() {
       doc.authors = authorsInp.value.trim();
       doc.year = yearInp.value.trim();
       doc.doi = doiInp.value.trim();
+      const citation = {
+        venue: venueInp.value.trim(), volume: volumeInp.value.trim(), issue: issueInp.value.trim(),
+        pages: pagesInp.value.trim(), type: typeInp.value.trim(), url: urlInp.value.trim(),
+      };
+      // keep the doc lean: drop the citation block entirely when every field is blank
+      doc.citation = Object.values(citation).some(Boolean) ? citation : undefined;
+      const kws = keywordsInp.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+      doc.keywords = kws.length ? kws : undefined;
       doc.tags = tagsInp.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean).map((name) => ({ name, color: tagColor(name) }));
       popup.remove();
       setStatus(t("lib_saving"));

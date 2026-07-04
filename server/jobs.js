@@ -354,7 +354,7 @@ async function runLibImportJob(job, signal) {
     return { docId: p.docId, distilled: !!r.ok, reembedded: r.reembedded };
   }
 
-  let source, docKind = p.docKind, title, authors = "", year = "", publishedAt = "", doi = "", exactMeta = false, text, images = [];
+  let source, docKind = p.docKind, title, authors = "", year = "", publishedAt = "", doi = "", citation = null, keywords = [], exactMeta = false, text, images = [];
   if (p.type === "youtube") {
     stage("fetching");
     let data = null, errored = null;
@@ -385,14 +385,18 @@ async function runLibImportJob(job, signal) {
     if (!buf.length) throw new Error("file payload missing");
     const parsed = await loopbackParseFile(p.name, buf, signal, (pct) => stage("parsing", pct ? { value: pct, max: 100 } : null), p.llmTimeoutS);
     source = `file:${p.name}`; docKind = docKind || "other"; title = p.name.replace(/\.[^.]+$/, ""); text = parsed.text; images = parsed.images || [];
-    // DOI on the first page → Crossref exact metadata (title/authors/date). When it
-    // lands, the distill LLM is told NOT to re-guess metadata (YouTube pattern); a DOI
-    // without Crossref (offline) is still recorded on the doc.
+    // DOI on the first page → Crossref exact metadata (title/authors/date + citation).
+    // When it lands, the distill LLM is told NOT to re-guess metadata (YouTube pattern);
+    // a DOI without Crossref (offline) is still recorded on the doc.
     const pm = await library.lookupPaperMeta(text);
     if (pm) {
       doi = pm.doi;
       if (pm.title) { title = pm.title; authors = pm.authors || ""; year = pm.year || ""; publishedAt = pm.publishedAt || ""; exactMeta = true; }
+      if (pm.citation) citation = pm.citation;
     }
+    // Author keywords are parsed straight from the first page — independent of the DOI,
+    // so a paper Crossref can't resolve still gets them.
+    keywords = library.extractKeywords(text);
   } else {
     throw new Error("unknown libimport type");
   }
@@ -402,7 +406,7 @@ async function runLibImportJob(job, signal) {
   // dedupe only for file imports: their docId comes from the file BASENAME, so two
   // different papers both named main.pdf would otherwise silently overwrite each other
   // (URL/YouTube docIds derive from the URL — same id really is the same doc there).
-  const imp = await library.importDocInternal({ source, docKind, folder: p.folder, title, authors, year, publishedAt, doi, text, images, model: p.embedModel, dedupe: p.type === "file" });
+  const imp = await library.importDocInternal({ source, docKind, folder: p.folder, title, authors, year, publishedAt, doi, citation, keywords, text, images, model: p.embedModel, dedupe: p.type === "file" });
   let distilled = false;
   if (p.distill !== false && p.chatModel) {
     stage("distilling");
