@@ -133,7 +133,11 @@ async function parseFile(req, res) {
     if (ext === ".docx" || ext === ".pptx") {
       await parseDocx(inputPath, tmpDir, res);
     } else if (ext === ".pdf") {
-      await parsePdf(inputPath, tmpDir, res);
+      // MinerU kill timer follows the caller's ⚙ timeout (x-parse-timeout-s, seconds),
+      // floored at 5 min — the chat slider bottoms out at 60s, which would kill any
+      // real PDF; long/OCR-heavy papers need the headroom.
+      const timeoutMs = Math.max(parseInt(req.headers["x-parse-timeout-s"], 10) || 0, 300) * 1000;
+      await parsePdf(inputPath, tmpDir, res, timeoutMs);
     }
   } catch (error) {
     sendJson(res, 500, { error: error.message });
@@ -205,7 +209,7 @@ function parseDocx(inputPath, tmpDir, res) {
   });
 }
 
-function parsePdf(inputPath, tmpDir, res) {
+function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000) {
   return new Promise((resolve) => {
     if (!hasMinerU) {
       sendJson(res, 501, { error: "mineru_unavailable", fallback: true });
@@ -229,10 +233,10 @@ function parsePdf(inputPath, tmpDir, res) {
     let stderrBuf = "";
     const timeout = setTimeout(() => {
       proc.kill();
-      res.write(JSON.stringify({ error: "MinerU timeout (5 min)" }) + "\n");
+      res.write(JSON.stringify({ error: `MinerU timeout (${Math.round(timeoutMs / 60000)} min)` }) + "\n");
       res.end();
       resolve();
-    }, 300000);
+    }, timeoutMs);
 
     // Only forward lines that look like progress (contain %, page, or progress bar chars)
     const isProgressLine = (line) => /\d+%|█|▓|░|page|pages|进度/i.test(line);

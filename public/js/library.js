@@ -383,6 +383,10 @@ export async function writeTabToLibrary(tab) {
     docKind: meta.docKind || "doc", docId: tab.libraryDocId,
     source: meta.source || "", title: meta.title || tab.libraryDocId,
     authors: meta.authors || "", year: meta.year || "", tags: meta.tags || [],
+    // save rewrites the doc WHOLESALE — carry the rest of the metadata through, or a
+    // tab write-back silently strips it (undefined fields drop out of the JSON)
+    doi: meta.doi || "", publishedAt: meta.publishedAt || "",
+    importedAt: meta.importedAt, rating: meta.rating,
     blocks,
   };
   return postJson("/api/library/save", { doc, model: embedModel() });
@@ -1641,6 +1645,7 @@ export function initLibrary() {
     ]);
     const authorsInp = mkRow(t("lib_metaAuthors"), doc.authors);
     const yearInp = mkRow(t("lib_metaYear"), doc.year);
+    const doiInp = mkRow(t("lib_metaDoi"), doc.doi);
     const tagsInp = mkRow(t("lib_metaTags"), (doc.tags || []).map((tg) => tg.name).join(", "));
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
@@ -1662,6 +1667,7 @@ export function initLibrary() {
       doc.docKind = kindSel.value;
       doc.authors = authorsInp.value.trim();
       doc.year = yearInp.value.trim();
+      doc.doi = doiInp.value.trim();
       doc.tags = tagsInp.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean).map((name) => ({ name, color: tagColor(name) }));
       popup.remove();
       setStatus(t("lib_saving"));

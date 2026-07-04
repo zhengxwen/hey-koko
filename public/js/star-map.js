@@ -40,6 +40,9 @@ let G = null;          // WebGL state: { gl, pt, ln, bg, buf, n }
 let labelEls = [];
 let matched = null;    // Set<doc index> while a search query is active; null = no query
 let anim = null;       // in-flight camera animation { from, to, t0, ms }
+// Timeline scrubber: show only docs published on/before `timeCut`. null = show all.
+let timeCut = null, timeMin = 0, timeMax = 0;
+let playing = false, playT0 = 0;   // ▶ auto-advance state
 // Display prefs (🎛 menu): glow halo, twinkle, ambient constellation spokes,
 // always-on neighbour edges, colour-blind palette, cluster labels.
 // Persisted per browser; twinkle defaults OFF when the OS asks for reduced motion.
@@ -110,6 +113,7 @@ function closeStarMap() {
   el.overlay.setAttribute("aria-hidden", "true");
   cancelAnimationFrame(raf); raf = 0;
   anim = null;
+  stopPlay();
   hideTip();
 }
 
@@ -124,6 +128,11 @@ function ensureDom() {
   el.inspector = document.querySelector("#starMapInspector");
   el.tip = document.querySelector("#starMapTip");
   el.status = document.querySelector("#starMapStatus");
+  el.timeline = document.querySelector("#starMapTimeline");
+  el.playBtn = document.querySelector("#starMapPlayBtn");
+  el.timeRange = document.querySelector("#starMapTimeRange");
+  el.timeLabel = document.querySelector("#starMapTimeLabel");
+  el.hint = document.querySelector("#starMapHint");
   el.labels = document.createElement("div"); el.labels.className = "starMapLabels";
   el.stage.insertBefore(el.labels, el.tip);
 
@@ -153,10 +162,25 @@ function ensureDom() {
   // Staged Escape: clear the search first, then close the inspector, THEN exit —
   // so a stray Esc never throws the user out of the whole map.
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || !el.overlay.classList.contains("isOpen")) return;
-    if (document.activeElement === el.search && el.search.value) { setSearch(""); return; }
-    if (el.inspector.classList.contains("isOpen")) { closeInspector(); return; }
-    closeStarMap();
+    if (!el.overlay.classList.contains("isOpen")) return;
+    if (e.key === "Escape") {
+      if (document.activeElement === el.search && el.search.value) { setSearch(""); return; }
+      if (el.inspector.classList.contains("isOpen")) { closeInspector(); return; }
+      closeStarMap();
+      return;
+    }
+    // Keyboard roaming: arrows hop from the selected star to its neighbour in that
+    // direction (nothing selected → pick the star nearest the viewport centre).
+    // Never steal keys from the search box / ask input.
+    const AK = { ArrowRight: [1, 0], ArrowLeft: [-1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    const v = AK[e.key];
+    if (!v || !DATA) return;
+    // Only fields INSIDE the map (search / ask input) keep their arrow keys. The chat
+    // textarea beneath the overlay often still holds focus — irrelevant while roaming.
+    const ae = document.activeElement;
+    if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && el.overlay.contains(ae)) return;
+    e.preventDefault();
+    hopTowards(v);
   });
   el.overlay.querySelectorAll("[data-source]").forEach((b) => b.addEventListener("click", () => setSourceTab(b.dataset.source)));
   // "?" in the legend header toggles the how-to-read-this-map key (star size etc.).
@@ -167,6 +191,10 @@ function ensureDom() {
   el.dispMenu = document.querySelector("#starMapDispMenu");
   document.querySelector("#starMapDispBtn").addEventListener("click", () => { el.dispMenu.hidden = !el.dispMenu.hidden; });
   document.querySelector("#starMapExportBtn").addEventListener("click", exportPng);
+  // Timeline scrubber: drag ghosts docs published after the thumb's year; ▶ animates
+  // the cutoff forward so the map lights up in publication order.
+  el.timeRange.addEventListener("input", () => { stopPlay(); setTimeCut(parseInt(el.timeRange.value, 10)); });
+  el.playBtn.addEventListener("click", togglePlay);
   // Search: typing dims non-matching stars; Enter flies to the best match.
   el.search = document.querySelector("#starMapSearch");
   el.search.addEventListener("input", () => applySearch(el.search.value));
@@ -208,7 +236,7 @@ function applyText() {
   const helpUl = el.overlay.querySelector("#starMapHelp ul");
   if (helpUl) {
     helpUl.innerHTML = "";
-    for (const k of ["star_helpStar", "star_helpSize", "star_helpPos", "star_helpColor", "star_helpFaint", "star_helpBright"]) {
+    for (const k of ["star_helpStar", "star_helpSize", "star_helpPos", "star_helpColor", "star_helpFaint", "star_helpBright", "star_helpKeys"]) {
       const li = document.createElement("li"); li.textContent = t(k); helpUl.appendChild(li);
     }
   }
@@ -230,6 +258,8 @@ function applyText() {
     }
   }
   const xb = el.overlay.querySelector("#starMapExportBtn"); if (xb) xb.title = t("star_export");
+  if (el.playBtn) el.playBtn.title = t("star_timePlay");
+  if (el.timeLabel && DATA && !el.timeline.hidden) updateTimeLabel();
 }
 function setSourceTab(s) {
   source = s;
@@ -270,15 +300,23 @@ async function load(which) {
     // empty archive map reads as "the switch didn't work").
     DATA = null; cancelAnimationFrame(raf); raf = 0;
     clearScreen(); clearLabels();
-    closeInspector(); hideTip();
+    closeInspector(); hideTip(); stopPlay();
     el.legend.style.display = "none";
     el.legendList.innerHTML = ""; el.legendFoot.textContent = "";
+    el.timeline.hidden = true; timeCut = null;
     if (building) { setStatus(t("star_building"), true); pollBuild(which); }
     else showBuildPrompt(which, map.stale ? "stale" : "empty");
     return;
   }
   el.legend.style.display = "";
   DATA = map;
+  // Undirected adjacency over the top-3 neighbour edges — keyboard navigation walks
+  // this graph (both directions, so you can hop BACK along an incoming edge too).
+  {
+    const adj = map.docs.map(() => new Set());
+    map.docs.forEach((d, i) => { for (const j of (d.nn || [])) if (map.docs[j]) { adj[i].add(j); adj[j].add(i); } });
+    map._adj = adj.map((s) => [...s]);
+  }
   // Star size = hub-ness, not length: count how many docs list this one among their
   // top-3 semantic neighbours (in-degree). Every doc casts exactly 3 votes, so the
   // average is 3 regardless of cluster size — big topics don't inflate. Votes from
@@ -300,6 +338,7 @@ async function load(which) {
   DATA._hubbed = anyNN;
   hidden.clear(); selected = null; hover = null; cam = { x: 0, y: 0, scale: 1 };
   anim = null; matched = null; if (el.search) el.search.value = "";
+  setupTimeline();
   closeInspector();
   // Rebuilding over an existing cache: keep the old map visible under the hint.
   if (building) { setStatus(t("star_building"), true); pollBuild(which); }
@@ -575,8 +614,14 @@ function rebuildColors() {
   buildLabels(); // label colours too
 }
 // A star's effective alpha: legend-hidden clusters vanish; an active search dims
-// everything that doesn't match (but keeps it pickable for context).
-function alphaOf(d, i) { return hidden.has(d.cluster) ? 0 : (matched && !matched.has(i) ? 0.15 : 1); }
+// non-matches; the timeline ghosts docs published AFTER the cutoff (undated docs are
+// unaffected — they have no place on the timeline).
+function alphaOf(d, i) {
+  if (hidden.has(d.cluster)) return 0;
+  let a = matched && !matched.has(i) ? 0.15 : 1;
+  if (timeCut != null && d.year && d.year > timeCut) a = Math.min(a, 0.06);
+  return a;
+}
 function updateVisibilityGL() {
   if (!G || !DATA) return;
   const gl = G.gl;
@@ -813,7 +858,7 @@ function draw2d() {
 }
 
 // ---- loop ----------------------------------------------------------------
-function loop() { twinkle += 0.02; stepAnim(); if (usingGL) drawGL(); else draw2d(); positionLabels(); raf = requestAnimationFrame(loop); }
+function loop() { twinkle += 0.02; stepAnim(); stepPlay(); if (usingGL) drawGL(); else draw2d(); positionLabels(); raf = requestAnimationFrame(loop); }
 
 // ---- camera --------------------------------------------------------------
 // The camera animates in (data-space centre, log scale) so a combined pan+zoom
@@ -845,6 +890,91 @@ function flyToCluster(id) {
   flyCam(camFromCenter((minx + maxx) / 2, (miny + maxy) / 2, scale));
 }
 function resetView() { flyCam({ x: 0, y: 0, scale: 1 }); }
+
+// ---- timeline --------------------------------------------------------------
+// Configure the scrubber from the docs' content years. Needs ≥2 distinct years to be
+// meaningful; otherwise it's hidden and the time filter stays off (timeCut = null).
+function setupTimeline() {
+  stopPlay();
+  const years = DATA.docs.map((d) => d.year).filter((y) => y);
+  const uniq = new Set(years);
+  if (uniq.size < 2) {
+    timeCut = null; timeMin = timeMax = 0;
+    el.timeline.hidden = true; el.hint.hidden = false;
+    return;
+  }
+  timeMin = Math.min(...years); timeMax = Math.max(...years);
+  timeCut = timeMax;   // start showing everything
+  el.timeRange.min = String(timeMin);
+  el.timeRange.max = String(timeMax);
+  el.timeRange.value = String(timeMax);
+  el.timeline.hidden = false;
+  el.hint.hidden = true;   // timeline takes the bottom-centre slot
+  updateTimeLabel();
+}
+function setTimeCut(y) {
+  timeCut = y;
+  if (el.timeRange.value !== String(y)) el.timeRange.value = String(y);
+  updateTimeLabel();
+  if (usingGL) { updateVisibilityGL(); updateEdgeVisibility(); }
+}
+function updateTimeLabel() {
+  const shown = DATA ? DATA.docs.filter((d) => d.year && d.year <= timeCut).length : 0;
+  const total = DATA ? DATA.docs.filter((d) => d.year).length : 0;
+  el.timeLabel.textContent = timeCut >= timeMax
+    ? t("star_timeAll", { year: timeMax, n: total })
+    : t("star_timeUpto", { year: timeCut, n: shown });
+}
+function togglePlay() { playing ? stopPlay() : startPlay(); }
+function startPlay() {
+  if (timeCut >= timeMax) setTimeCut(timeMin);   // replay from the start
+  playing = true; playT0 = performance.now();
+  el.playBtn.textContent = "⏸"; el.playBtn.classList.add("isPlaying");
+}
+function stopPlay() {
+  if (!playing) return;
+  playing = false;
+  if (el.playBtn) { el.playBtn.textContent = "▶"; el.playBtn.classList.remove("isPlaying"); }
+}
+// Advance the cutoff ~800ms per year while playing; called each frame from loop().
+function stepPlay() {
+  if (!playing) return;
+  const perYear = 800;
+  const pos = timeMin + (performance.now() - playT0) / perYear;
+  if (pos >= timeMax) { setTimeCut(timeMax); stopPlay(); return; }
+  const y = Math.floor(pos);
+  if (y !== timeCut) setTimeCut(y);
+}
+
+// ---- keyboard roaming ------------------------------------------------------
+// Hop along the semantic-neighbour graph in the pressed direction: among the selected
+// star's (undirected) neighbours, fly to the one whose screen bearing best matches the
+// arrow — must be at least loosely that way (cos > 0.2), else the key does nothing.
+function hopTowards(v) {
+  if (!selected) {
+    const w = el.canvas.clientWidth, h = el.canvas.clientHeight;
+    let best = null, bd = Infinity;
+    DATA.docs.forEach((d, i) => {
+      if (alphaOf(d, i) < 0.5) return;
+      const [x, y] = toScreen(d);
+      const dist = Math.hypot(x - w / 2, y - h / 2);
+      if (dist < bd) { bd = dist; best = d; }
+    });
+    if (best) { flyToDoc(best); openInspector(best); }
+    return;
+  }
+  const [sx, sy] = toScreen(selected);
+  let best = null, bs = 0.2;
+  for (const j of ((DATA._adj && DATA._adj[selected._i]) || [])) {
+    const nb = DATA.docs[j];
+    if (!nb || alphaOf(nb, j) < 0.5) continue;
+    const [x, y] = toScreen(nb);
+    const dx = x - sx, dy = y - sy, len = Math.hypot(dx, dy) || 1;
+    const score = (dx * v[0] + dy * v[1]) / len;
+    if (score > bs) { bs = score; best = nb; }
+  }
+  if (best) { flyToDoc(best); openInspector(best); }
+}
 
 // ---- search --------------------------------------------------------------
 function setSearch(v) { if (el.search) el.search.value = v; applySearch(v); }

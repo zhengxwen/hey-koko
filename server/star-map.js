@@ -50,11 +50,26 @@ function gather(source) {
   }
   if (excluded) console.warn(`[starmap] ${excluded} doc(s) excluded: embedding model ≠ ${model}`);
   const tags = new Map();
+  const years = new Map();   // docId → content YEAR (publishedAt date > year field), for the timeline
   try {
     const index = JSON.parse(fs.readFileSync(path.join(library.LIBRARY_DIR, "index.json"), "utf-8"));
-    for (const e of index) tags.set(e.docId, (e.tags || []).map((t) => (typeof t === "string" ? t : t.name)));
+    for (const e of index) {
+      tags.set(e.docId, (e.tags || []).map((t) => (typeof t === "string" ? t : t.name)));
+      const y = yearOf(e.publishedAt) || yearOf(e.year);
+      if (y) years.set(e.docId, y);
+    }
   } catch { /* no index yet */ }
+  for (const it of items) { const y = years.get(it.id); if (y) it.year = y; }
   return { items, model, tags };
+}
+
+// First 4-digit year in a date/year string ("2024-01-15" / "2024" / 2024) → int or null.
+function yearOf(v) {
+  if (v == null) return null;
+  const m = String(v).match(/\b(19|20)\d{2}\b/);
+  if (!m) return null;
+  const y = parseInt(m[0], 10);
+  return y >= 1900 && y <= 2100 ? y : null;
 }
 
 // Write the vectors as a raw float32 matrix the python side reads with np.fromfile.
@@ -140,6 +155,8 @@ async function computeStarmap(job, signal, emitUpdate) {
       cluster: cluster[i] != null ? cluster[i] : 0,
       ...(it.snippet ? { snippet: it.snippet } : {}),
       ...(it.blocks ? { blocks: it.blocks } : {}),
+      // content year (publishedAt / year) — drives the timeline scrubber.
+      ...(it.year ? { year: it.year } : {}),
       // top-3 semantic neighbours (indices into docs) — the frontend draws these
       // as constellation edges on hover/selection and as "related" chips.
       ...(nn && nn[i] && nn[i].length ? { nn: nn[i] } : {}),

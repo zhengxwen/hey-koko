@@ -24,6 +24,8 @@ const LIBRARY_DIR = path.join(config.DATA_DIR, "library");
 const DOC_EXT = HAS_ZSTD ? ".json.zst" : ".json.gz";
 const MAX_BLOCK_CHARS = 32000;    // one section = one block; only split a genuinely huge section
                                   // (qwen3-embedding handles ~32k tokens; 32k chars ≈ 8k tokens, still within)
+const FALLBACK_BLOCK_CHARS = 3000; // heading-less long docs: window size when "one section = one block"
+                                   // degenerates (see splitIntoBlocks) — keeps retrieval granularity sane
 const MIN_BLOCK_CHARS = 16;       // drop noise blocks (stray tags, page numbers) below this
 const EMBED_BATCH = 8;
 
@@ -196,12 +198,12 @@ function deriveDocId(source) {
 }
 
 // ---- chunking: Markdown → blocks (text / figure / table), no overlap ------
-function splitLong(s) {
-  if (s.length <= MAX_BLOCK_CHARS) return [s];
+function splitLong(s, max = MAX_BLOCK_CHARS) {
+  if (s.length <= max) return [s];
   const out = [];
   let buf = "";
   for (const part of s.split(/(?<=[。.!?！？\n])/)) {
-    if (buf.length + part.length > MAX_BLOCK_CHARS && buf) { out.push(buf.trim()); buf = ""; }
+    if (buf.length + part.length > max && buf) { out.push(buf.trim()); buf = ""; }
     buf += part;
   }
   if (buf.trim()) out.push(buf.trim());
@@ -228,28 +230,38 @@ const NO_EMBED_SECTION = /^(?:[0-9ivxlc]+[.):：]?\s*)?(references?|bibliography
 // A figure caption on its OWN line right below the image (MinerU's usual layout for
 // papers): "Figure 1: …" / "Fig. 2." / "Table 3 …" / "图 1：…" / "表2…", optionally bold.
 const FIG_CAPTION_RE = /^[*_]{0,2}(?:figure|fig\.?|table|图|表|圖)[\s*_]*\.?\s*\d/i;
+// A table's caption ("Table 3: …" only — a "Figure N" line must never claim a table).
+const TABLE_CAPTION_RE = /^[*_]{0,2}(?:table|表)[\s*_]*\.?\s*\d/i;
 
 function splitIntoBlocks(text, images) {
   const imgByName = new Map((images || []).map(im => [im.name, im]));
   const lines = (text || "").split(/\r?\n/);
+  // Degenerate-structure fallback: "one section = one block" relies on headings, but
+  // MinerU misses them on some layouts (scanned/odd two-column papers), and plain .txt
+  // has none — the whole doc would become 32k-char blocks (one retrieval hit = 32k chars
+  // of context). <2 headings on a long doc → cut prose into ~3k sentence-boundary
+  // windows instead; sections just stay empty.
+  const headingCount = lines.reduce((n, l) => n + (/^#{1,6}\s+\S/.test(l) ? 1 : 0), 0);
+  const maxBlock = (headingCount < 2 && (text || "").length > 12000) ? FALLBACK_BLOCK_CHARS : MAX_BLOCK_CHARS;
   const blocks = [];
   let section = "", para = [], bid = 0, sectionFigs = [];
 
-  // Figures found inside a section are deferred and flushed right AFTER its text,
-  // so an interspersed figure never breaks the section's prose into separate chunks.
+  // Figures/tables found inside a section are deferred and flushed right AFTER its
+  // text, so an interspersed figure/table never breaks the section's prose into
+  // separate chunks.
   const flushFigs = () => {
     for (const fig of sectionFigs) { fig.id = `b${bid++}`; blocks.push(fig); }
     sectionFigs = [];
   };
-  // One section = one text block: all paragraphs/lists/tables accumulate (across any
-  // figures), and only a genuinely huge section gets split (splitLong) to avoid embed
-  // truncation. Then the section's figures follow as their own blocks.
+  // One section = one text block: all paragraphs/lists accumulate (across any figures
+  // or tables), and only a genuinely huge section gets split (splitLong) to avoid embed
+  // truncation. Then the section's figures/tables follow as their own blocks.
   const emit = () => {
     const content = para.join("\n").trim();
     para = [];
     if (content && !isNoiseBlock(content)) {
       const noEmbed = NO_EMBED_SECTION.test((section || "").trim());
-      for (const piece of splitLong(content)) {
+      for (const piece of splitLong(content, maxBlock)) {
         const b = { id: `b${bid++}`, kind: "text", section, content: piece, hash: hashText(piece) };
         if (noEmbed) b.embed = false;
         blocks.push(b);
@@ -258,9 +270,58 @@ function splitIntoBlocks(text, images) {
     flushFigs();
   };
 
-  let pendingFig = null;   // figure whose caption may follow on the next non-empty line
+  let pendingFig = null;   // figure/table whose caption may follow on the next non-empty line
+  let tableBuf = null;     // in-progress table region: { html:bool, lines:[] }
+  // Close the current table region into its own block (kind "table", deferred like a
+  // figure). A caption directly ABOVE ("Table 3: …" as the last prose line) is pulled
+  // out of the prose into the block; otherwise the next line may still claim it (the
+  // pendingFig mechanism, gated on TABLE_CAPTION_RE). A markdown pipe run that lacks a
+  // separator row isn't a table at all — its lines go back to the prose.
+  const finishTable = () => {
+    if (!tableBuf) return;
+    const buf = tableBuf; tableBuf = null;
+    if (!buf.html && !(buf.lines.length >= 2 && /^\s*\|?[\s:|-]*-[\s:|-]*$/.test(buf.lines[1]))) {
+      para.push(...buf.lines);
+      return;
+    }
+    const markup = buf.lines.join("\n").trim();
+    if (!markup) return;
+    let caption = "";
+    for (let i = para.length - 1; i >= 0; i--) {
+      const pt = para[i].trim();
+      if (!pt) continue;                      // skip blank lines between caption and table
+      if (TABLE_CAPTION_RE.test(pt)) { caption = pt; para.splice(i); }
+      break;
+    }
+    const tb = { kind: "table", section, content: (caption ? caption + "\n" : "") + markup, hash: "" };
+    tb.hash = hashText(tb.content);
+    sectionFigs.push(tb);
+    pendingFig = caption ? null : tb;
+  };
+
   for (const raw of lines) {
     const line = stripNoiseTags(raw);
+    const t0 = line.trim();
+    // ---- table regions (MinerU emits HTML <table>…</table>; pandoc/markdown emit
+    // pipe rows) — collected verbatim, then finishTable() turns them into a block.
+    if (tableBuf && tableBuf.html) {
+      tableBuf.lines.push(line);
+      if (/<\/table>/i.test(line)) finishTable();
+      continue;
+    }
+    if (/^<table\b/i.test(t0)) {
+      pendingFig = null;
+      tableBuf = { html: true, lines: [line] };
+      if (/<\/table>/i.test(line)) finishTable();   // whole table on one line (MinerU's usual shape)
+      continue;
+    }
+    if (/^\|.*\|/.test(t0)) {
+      if (!tableBuf) { pendingFig = null; tableBuf = { html: false, lines: [] }; }
+      tableBuf.lines.push(t0);
+      continue;
+    }
+    if (tableBuf) finishTable();   // pipe run ended → close it before anything else sees this line
+
     const h = line.match(/^(#{1,6})\s+(.*)/);
     if (h) {
       const name = h[2].trim();
@@ -283,22 +344,25 @@ function splitIntoBlocks(text, images) {
       pendingFig = caption ? null : fig;     // same-line caption wins; else watch the next line
       continue;
     }
-    // MinerU puts a paper figure's caption on its own line BELOW the image; fold it into
-    // the figure block (its embed text) instead of the prose, so the figure becomes
-    // retrievable by its caption rather than by "image_01.jpg". Only the first non-empty
-    // line after the image is considered, and only if it looks like a caption.
+    // MinerU puts a paper figure's caption on its own line BELOW the image (and a
+    // table's sometimes below the table); fold it into that block (its embed text)
+    // instead of the prose, so the figure/table becomes retrievable by its caption.
+    // Only the first non-empty following line is considered, and only if it looks
+    // like a caption of the right kind.
     const t = line.trim();
     if (pendingFig && t) {
       const fig = pendingFig;
       pendingFig = null;
-      if (FIG_CAPTION_RE.test(t)) {
-        fig.content = t;
-        fig.hash = hashText(fig.imageName + t);
+      if (fig.kind === "table" ? TABLE_CAPTION_RE.test(t) : FIG_CAPTION_RE.test(t)) {
+        if (fig.kind === "table") fig.content = t + "\n" + fig.content;
+        else fig.content = t;
+        fig.hash = hashText((fig.imageName || "") + fig.content);
         continue;
       }
     }
     para.push(t === "" ? "" : line);   // accumulate everything else into the section block
   }
+  finishTable();
   emit();
   return blocks;
 }
@@ -318,7 +382,16 @@ async function embedMany(texts, model) {
   }
   return out;
 }
-const blockEmbedText = (b) => (b.kind === "figure" ? (b.content || "image") : (b.content || " "));
+// Tables embed as caption + flattened cell text — raw <table> markup / pipe punctuation
+// is tag soup to the embedding model and would drown out the actual numbers.
+const blockEmbedText = (b) => {
+  if (b.kind === "figure") return b.content || "image";
+  if (b.kind === "table") {
+    const flat = (b.content || "").replace(/<[^>]+>/g, " ").replace(/\|/g, " ").replace(/\s+/g, " ").trim();
+    return flat.slice(0, MAX_BLOCK_CHARS) || " ";
+  }
+  return b.content || " ";
+};
 
 // ---- in-memory retrieval cache (rebuilt only when the library changes) -----
 let CACHE = null;
@@ -486,6 +559,7 @@ async function importDocInternal(body) {
     title: body.title || docId,
     authors: body.authors || "", year: body.year || "",
     publishedAt: body.publishedAt || "",
+    doi: body.doi || "",
     tags: body.tags || [], embedModel: model,
     importedAt: Date.now(),
     blocks,
@@ -1222,6 +1296,39 @@ async function buildYoutubeDoc(data, url, language = "") {
   return { source: `url:${url}`, docKind: "video", title, authors, year, publishedAt: uploadDate, text, images };
 }
 
+// ---- paper metadata via DOI → Crossref -------------------------------------
+// Peer-reviewed papers carry their DOI on the first page (header/footer/footnote);
+// Crossref then gives the EXACT title/authors/date. Same spirit as YouTube imports:
+// feed precise metadata IN instead of asking the distill LLM to guess it back out of
+// the sample (which mangles author lists and hallucinates years). Only the HEAD of
+// the parsed text is scanned — the references section is full of OTHER papers' DOIs.
+// Returns null when no DOI is found; { doi } alone when Crossref is unreachable
+// (the caller then falls back to LLM metadata but still records the DOI).
+const DOI_RE = /\b10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+/;
+async function lookupPaperMeta(text) {
+  const m = String(text || "").slice(0, 6000).match(DOI_RE);
+  if (!m) return null;
+  const doi = m[0].replace(/[.,;:)]+$/, "");
+  try {
+    const r = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, {
+      headers: { "User-Agent": "hey-koko/1.0 (knowledge-library import)", "Accept": "application/json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return { doi };   // 404 = mis-parsed/unregistered DOI → keep it, skip the metadata
+    const msg = (await r.json()).message || {};
+    const title = (Array.isArray(msg.title) && msg.title[0]) ? String(msg.title[0]).replace(/\s+/g, " ").trim() : "";
+    const authors = (msg.author || [])
+      .map(a => [a.given, a.family].filter(Boolean).join(" ").trim() || a.name || "")
+      .filter(Boolean).join(", ");
+    // issued = earliest known publication date; date-parts may be [y], [y,m] or [y,m,d] —
+    // publishedAt keeps whatever precision exists (lexicographic sort still works).
+    const dp = ((msg.issued || msg["published-print"] || msg["published-online"] || {})["date-parts"] || [])[0] || [];
+    const year = dp[0] ? String(dp[0]) : "";
+    const publishedAt = dp[0] ? [String(dp[0]), ...dp.slice(1, 3).map(n => String(n).padStart(2, "0"))].join("-") : "";
+    return { doi, title, authors, year, publishedAt };
+  } catch { return { doi }; }
+}
+
 module.exports = {
   importLibrary, listLibrary, searchLibrary, getLibraryDoc,
   saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, LIBRARY_DIR,
@@ -1229,5 +1336,5 @@ module.exports = {
   splitIntoBlocks,   // exported for reuse/testing of the chunker
   // server-side libimport job (jobs.js) + distill + related-docs
   importDocInternal, distillDocInternal, distillLibraryDoc, buildYoutubeDoc, llmComplete,
-  relatedLibraryDocs, docCentroids,
+  relatedLibraryDocs, docCentroids, lookupPaperMeta,
 };

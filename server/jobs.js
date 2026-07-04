@@ -354,7 +354,7 @@ async function runLibImportJob(job, signal) {
     return { docId: p.docId, distilled: !!r.ok, reembedded: r.reembedded };
   }
 
-  let source, docKind = p.docKind, title, authors = "", year = "", publishedAt = "", text, images = [];
+  let source, docKind = p.docKind, title, authors = "", year = "", publishedAt = "", doi = "", exactMeta = false, text, images = [];
   if (p.type === "youtube") {
     stage("fetching");
     let data = null, errored = null;
@@ -383,8 +383,16 @@ async function runLibImportJob(job, signal) {
     stage("parsing");
     const buf = p.spool ? fs.readFileSync(p.spool) : Buffer.from(p.fileB64 || "", "base64");
     if (!buf.length) throw new Error("file payload missing");
-    const parsed = await loopbackParseFile(p.name, buf, signal, (pct) => stage("parsing", pct ? { value: pct, max: 100 } : null));
+    const parsed = await loopbackParseFile(p.name, buf, signal, (pct) => stage("parsing", pct ? { value: pct, max: 100 } : null), p.llmTimeoutS);
     source = `file:${p.name}`; docKind = docKind || "other"; title = p.name.replace(/\.[^.]+$/, ""); text = parsed.text; images = parsed.images || [];
+    // DOI on the first page → Crossref exact metadata (title/authors/date). When it
+    // lands, the distill LLM is told NOT to re-guess metadata (YouTube pattern); a DOI
+    // without Crossref (offline) is still recorded on the doc.
+    const pm = await library.lookupPaperMeta(text);
+    if (pm) {
+      doi = pm.doi;
+      if (pm.title) { title = pm.title; authors = pm.authors || ""; year = pm.year || ""; publishedAt = pm.publishedAt || ""; exactMeta = true; }
+    }
   } else {
     throw new Error("unknown libimport type");
   }
@@ -394,14 +402,15 @@ async function runLibImportJob(job, signal) {
   // dedupe only for file imports: their docId comes from the file BASENAME, so two
   // different papers both named main.pdf would otherwise silently overwrite each other
   // (URL/YouTube docIds derive from the URL — same id really is the same doc there).
-  const imp = await library.importDocInternal({ source, docKind, folder: p.folder, title, authors, year, publishedAt, text, images, model: p.embedModel, dedupe: p.type === "file" });
+  const imp = await library.importDocInternal({ source, docKind, folder: p.folder, title, authors, year, publishedAt, doi, text, images, model: p.embedModel, dedupe: p.type === "file" });
   let distilled = false;
   if (p.distill !== false && p.chatModel) {
     stage("distilling");
     // Card generation is best-effort: an unreachable/misbehaving chat model must not fail
     // the import itself (the doc is already in the library; the backfill action can retry).
     try {
-      const r = await library.distillDocInternal(imp.docId, { metadata: p.type !== "youtube", model: p.chatModel, language: p.language, timeoutS: p.llmTimeoutS, signal });
+      // metadata:false when Crossref already gave exact values — the LLM must not overwrite them
+      const r = await library.distillDocInternal(imp.docId, { metadata: p.type !== "youtube" && !exactMeta, model: p.chatModel, language: p.language, timeoutS: p.llmTimeoutS, signal });
       distilled = !!r.ok;
     } catch (e) {
       if (e && e.name === "AbortError") throw e;
@@ -419,7 +428,9 @@ async function runLibImportJob(job, signal) {
 // Loopback multipart POST to our own /api/parse-file. The response is EITHER one JSON
 // object (pandoc DOCX/PPTX — success or {error}) OR NDJSON (MinerU PDF: {progress}
 // lines, then a final {text,images,tool} line). onProgress gets the MinerU percentage.
-function loopbackParseFile(filename, buf, signal, onProgress) {
+// timeoutS rides the ⚙ "timeout (s)" slider down to MinerU's kill timer (floored at
+// 5 min server-side — a long/OCR-heavy PDF must not die at the chat slider's 60s).
+function loopbackParseFile(filename, buf, signal, onProgress, timeoutS = 0) {
   return new Promise((resolve, reject) => {
     const boundary = "----hkspool" + crypto.randomUUID().replace(/-/g, "");
     const head = Buffer.from(
@@ -428,7 +439,10 @@ function loopbackParseFile(filename, buf, signal, onProgress) {
     const payload = Buffer.concat([head, buf, tail]);
     const req = http.request({
       host: "127.0.0.1", port: config.PORT, path: "/api/parse-file", method: "POST",
-      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": payload.length },
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": payload.length,
+        "x-parse-timeout-s": String(Number(timeoutS) || 0),
+      },
     }, (res) => {
       let buffer = "", last = null, error = null;
       res.setEncoding("utf-8");
