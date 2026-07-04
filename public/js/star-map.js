@@ -40,6 +40,22 @@ let usingGL = false;
 let G = null;          // WebGL state: { gl, pt, ln, bg, buf, n }
 let labelEls = [];
 let matched = null;    // Set<doc index> while a search query is active; null = no query
+// Folder scoping. folderFilter = the SET of folders whose docs are shown. One rule,
+// no mode flip: a folder is visible iff its box is ticked. null = untouched → show all
+// (the panel ticks every box the first time it opens, so the default reads as "all on").
+// It also defines the scope B re-projects (the ticked subset). scopeFolders = the
+// folders the CURRENTLY loaded map was re-projected for (B); [] = whole library.
+let folderFilter = null;
+let scopeFolders = [];
+let allDirs = null;    // ["", "papers", "papers/ml", …] fetched once from /api/library/dirs
+// A doc is visible iff its own folder's box is ticked (exact match — every doc maps to
+// exactly one row, so boxes are independent, no parent/child cross-talk). null = show all.
+function folderMatch(folder) {
+  if (!folderFilter) return true;
+  return folderFilter.has(folder || "");
+}
+// First panel open: tick every folder so "default = everything visible" is literal.
+function ensureFilterSet() { if (!folderFilter) folderFilter = new Set(allDirs || [""]); }
 let anim = null;       // in-flight camera animation { from, to, t0, ms }
 // Timeline scrubber: show only docs published on/before `timeCut`. null = show all.
 let timeCut = null, timeMin = 0, timeMax = 0;
@@ -116,6 +132,8 @@ function closeStarMap() {
   anim = null;
   stopPlay();
   hideTip();
+  if (el.folderMenu) el.folderMenu.hidden = true;
+  if (el.dispMenu) el.dispMenu.hidden = true;
 }
 
 function ensureDom() {
@@ -192,7 +210,14 @@ function ensureDom() {
   // 🎛 display menu: glow / twinkle / constellation spokes, persisted per browser.
   loadDisp();
   el.dispMenu = document.querySelector("#starMapDispMenu");
-  document.querySelector("#starMapDispBtn").addEventListener("click", () => { el.dispMenu.hidden = !el.dispMenu.hidden; });
+  document.querySelector("#starMapDispBtn").addEventListener("click", () => { el.dispMenu.hidden = !el.dispMenu.hidden; if (!el.dispMenu.hidden) el.folderMenu.hidden = true; });
+  // 📁 folder scoping: multi-select filter (A, instant) + re-project (B, rebuild).
+  el.folderMenu = document.querySelector("#starMapFolderMenu");
+  el.folderBtn = document.querySelector("#starMapFolderBtn");
+  el.folderBtn.addEventListener("click", async () => {
+    if (!el.folderMenu.hidden) { el.folderMenu.hidden = true; return; }
+    await ensureDirs(); buildFolderMenu(); el.folderMenu.hidden = false; el.dispMenu.hidden = true;
+  });
   document.querySelector("#starMapExportBtn").addEventListener("click", exportPng);
   // Timeline scrubber: drag ghosts docs published after the thumb's year; ▶ animates
   // the cutoff forward so the map lights up in publication order.
@@ -244,6 +269,8 @@ function applyText() {
     }
   }
   const db = el.overlay.querySelector("#starMapDispBtn"); if (db) db.title = t("star_display");
+  const fb = el.overlay.querySelector("#starMapFolderBtn"); if (fb) fb.title = t("star_folder");
+  if (el.folderMenu && !el.folderMenu.hidden) buildFolderMenu();
   if (el.dispMenu) {
     el.dispMenu.innerHTML = "";
     for (const [key, tkey] of [["glow", "star_dispGlow"], ["twinkle", "star_dispTwinkle"], ["spokes", "star_dispSpokes"],
@@ -266,6 +293,10 @@ function applyText() {
 }
 function setSourceTab(s) {
   source = s;
+  // Switching source drops any folder scope/filter (folders are library-only, and a
+  // library scope is meaningless against the archive).
+  folderFilter = null; scopeFolders = [];
+  if (el.folderMenu) el.folderMenu.hidden = true;
   el.overlay.querySelectorAll("[data-source]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.source === s)));
   // Keep the panel UNDER the map in sync with the source: leaving the map should land
   // in the matching view (library map ↔ library panel, archive map ↔ archive panel).
@@ -280,16 +311,28 @@ function setSourceTab(s) {
 }
 
 // ---- data load / build ---------------------------------------------------
-async function load(which) {
+async function load(which, folders = scopeFolders) {
   source = which;
+  scopeFolders = which === "archive" ? [] : normScope(folders);
   setStatus(t("star_loading"), true);
   let map;
-  try { map = await post("/api/library/starmap", { source: which }); }
+  try { map = await post("/api/library/starmap", { source: which, folders: scopeFolders }); }
   catch { setStatus(t("star_error")); return; }
+  // A folder scope with too few docs to re-project: explain, offer a way back to the
+  // whole-library map — building won't help (the shortage is real).
+  if (map.tooFew) {
+    DATA = null; cancelAnimationFrame(raf); raf = 0;
+    clearScreen(); clearLabels(); closeInspector(); hideTip(); stopPlay();
+    el.legend.style.display = "none"; el.legendList.innerHTML = ""; el.legendFoot.textContent = "";
+    el.timeline.hidden = true; timeCut = null;
+    showScopePrompt("tooFew", map.minDocs || 8);
+    updateFolderBtn();
+    return;
+  }
   // A rebuild (UMAP) may already be running in the background — started from the
   // Rebuild button, another page, or the task queue. Say so instead of silently
   // showing the old cache, and swap in the fresh map when the job lands.
-  const building = !!activeServerJob("starmap", which);
+  const building = !!activeServerJob("starmap", which, scopeFolders);
   if (el.rebuildBtn) {
     el.rebuildBtn.disabled = building;
     el.rebuildBtn.classList.toggle("isOutdated", !building && !!map.outdated);
@@ -307,6 +350,7 @@ async function load(which) {
     el.legend.style.display = "none";
     el.legendList.innerHTML = ""; el.legendFoot.textContent = "";
     el.timeline.hidden = true; timeCut = null;
+    updateFolderBtn();
     if (building) { setStatus(t("star_building"), true); pollBuild(which); }
     else showBuildPrompt(which, map.stale ? "stale" : "empty");
     return;
@@ -350,50 +394,186 @@ async function load(which) {
   if (usingGL) buildGLBuffers();
   buildLegend();
   buildLabels();
+  updateFolderBtn();
   if (!raf) loop();
 }
 
 function showBuildPrompt(which, why) {
-  const msg = why === "empty" && which === "archive" ? t("star_archiveEmpty") : t("star_needBuild");
+  const scoped = which !== "archive" && scopeFolders.length;
+  const msg = scoped ? t("star_scopeBuild", { n: scopeFolders.length })
+    : why === "empty" && which === "archive" ? t("star_archiveEmpty") : t("star_needBuild");
   el.status.innerHTML = "";
   const box = document.createElement("div"); box.className = "starMapPrompt";
   const p = document.createElement("p"); p.textContent = msg; box.appendChild(p);
   const btn = document.createElement("button"); btn.className = "starMapBuildBtn"; btn.textContent = t("star_build");
-  btn.addEventListener("click", () => triggerBuild(which)); box.appendChild(btn);
+  btn.addEventListener("click", () => triggerBuild(which, scopeFolders)); box.appendChild(btn);
+  if (scoped) box.appendChild(makeReturnBtn());
   el.status.appendChild(box); el.status.hidden = false;
 }
-async function triggerBuild(which) {
+// Scope-specific notice (e.g. "too few docs to re-project") with a way back to the full map.
+function showScopePrompt(why, minDocs) {
+  el.status.innerHTML = "";
+  const box = document.createElement("div"); box.className = "starMapPrompt";
+  const p = document.createElement("p");
+  p.textContent = why === "tooFew" ? t("star_scopeTooFew", { n: minDocs }) : t("star_error");
+  box.appendChild(p);
+  box.appendChild(makeReturnBtn());
+  el.status.appendChild(box); el.status.hidden = false;
+}
+function makeReturnBtn() {
+  const b = document.createElement("button"); b.className = "starMapBuildBtn isGhost"; b.textContent = t("star_scopeReturn");
+  b.addEventListener("click", returnToFull);
+  return b;
+}
+async function triggerBuild(which, folders = scopeFolders) {
+  const scope = which === "archive" ? [] : normScope(folders);
+  scopeFolders = scope;
   setStatus(t("star_building"), true);
   if (el.rebuildBtn) { el.rebuildBtn.disabled = true; el.rebuildBtn.classList.remove("isOutdated"); }
   // Already building (e.g. clicked from the stale prompt while a job runs) → just attach.
-  if (!activeServerJob("starmap", which)) {
-    try { await post("/api/jobs", { kind: "starmap", payload: { source: which }, label: "star map" }); }
+  if (!activeServerJob("starmap", which, scope)) {
+    try { await post("/api/jobs", { kind: "starmap", payload: { source: which, folders: scope }, label: "star map" }); }
     catch { setStatus(t("star_error")); if (el.rebuildBtn) el.rebuildBtn.disabled = false; return; }
   }
-  pollBuild(which);
+  pollBuild(which, scope);
 }
 
 // Poll until the in-flight build lands (builtAt changes), then reload. One loop at a
-// time (pollSeq); bails when the overlay closes or the user switches source.
+// time (pollSeq); bails when the overlay closes or the user switches source/scope.
 let pollSeq = 0;
-async function pollBuild(which) {
+async function pollBuild(which, folders = scopeFolders) {
+  const scope = which === "archive" ? [] : normScope(folders);
   const seq = ++pollSeq;
   let base = null;
-  try { base = (await post("/api/library/starmap", { source: which })).builtAt || null; } catch { /* keep null */ }
+  try { base = (await post("/api/library/starmap", { source: which, folders: scope })).builtAt || null; } catch { /* keep null */ }
   for (let i = 0; i < 600; i++) {
     await new Promise((r) => setTimeout(r, 1000));
-    if (seq !== pollSeq || source !== which || !el.overlay.classList.contains("isOpen")) return;
-    let map; try { map = await post("/api/library/starmap", { source: which }); } catch { continue; }
-    const landed = !map.stale && map.docs && map.docs.length && (map.builtAt || null) !== base;
-    if (landed) { load(which); return; }
+    if (seq !== pollSeq || source !== which || !sameScope(scope, scopeFolders) || !el.overlay.classList.contains("isOpen")) return;
+    let map; try { map = await post("/api/library/starmap", { source: which, folders: scope }); } catch { continue; }
+    const landed = (map.tooFew || (!map.stale && map.docs && map.docs.length)) && (map.builtAt || null) !== base;
+    if (landed) { load(which, scope); return; }
     // Job left the queue without producing a new cache → it failed.
-    if (!activeServerJob("starmap", which)) {
+    if (!activeServerJob("starmap", which, scope)) {
       setStatus(t("star_error"));
       if (el.rebuildBtn) el.rebuildBtn.disabled = false;
       return;
     }
   }
   setStatus(t("star_error"));
+}
+// Normalize a folder scope the SAME way the server does (strip slashes, dedup, collapse
+// nested, sort) so cache keys / job-dedup line up on both sides.
+function normScope(folders) {
+  if (!Array.isArray(folders) && !(folders instanceof Set)) return [];
+  const clean = [...new Set([...folders]
+    .map((f) => String(f || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").replace(/\/+/g, "/"))
+    .filter(Boolean))];
+  return clean.filter((f) => !clean.some((g) => g !== f && (f === g || f.startsWith(g + "/")))).sort();
+}
+function sameScope(a, b) { const A = normScope(a), B = normScope(b); return A.length === B.length && A.every((x, i) => x === B[i]); }
+// Switch back to the whole-library map from a folder-scoped (B) view.
+function returnToFull() { folderFilter = null; load(source, []); if (el.folderMenu && !el.folderMenu.hidden) buildFolderMenu(); }
+
+// ---- folder scoping panel (📁) -------------------------------------------
+// Fetch the library's folder tree once per open. Archive has no folders.
+async function ensureDirs() {
+  if (allDirs) return allDirs;
+  try { allDirs = (await post("/api/library/dirs", {})).dirs || [""]; }
+  catch { allDirs = [""]; }
+  if (!allDirs.length) allDirs = [""];
+  return allDirs;
+}
+// How many loaded docs live directly in a folder — the count the box controls (exact,
+// so each doc is counted under exactly one row, matching the exact-match visibility).
+function countInDir(dir) {
+  if (!DATA || !DATA.docs) return null;
+  return DATA.docs.reduce((n, d) => n + ((d.folder || "") === dir ? 1 : 0), 0);
+}
+function buildFolderMenu() {
+  const m = el.folderMenu; if (!m) return;
+  ensureFilterSet();
+  m.innerHTML = "";
+  const dirs = (allDirs || [""]).filter((d) => d !== "");   // root handled separately below
+  // header + A/B explainer
+  const head = document.createElement("div"); head.className = "starMapFolderHead";
+  head.textContent = t("star_folderTitle"); m.appendChild(head);
+  const hint = document.createElement("div"); hint.className = "starMapFolderHint";
+  hint.textContent = t("star_folderHint"); m.appendChild(hint);
+  // select-all / clear
+  const bar = document.createElement("div"); bar.className = "starMapFolderBar";
+  const allBtn = document.createElement("button"); allBtn.type = "button"; allBtn.textContent = t("star_folderAll");
+  const clrBtn = document.createElement("button"); clrBtn.type = "button"; clrBtn.textContent = t("star_folderClear");
+  allBtn.addEventListener("click", () => { folderFilter = new Set(allDirs || [""]); applyFolderFilter(); buildFolderMenu(); });
+  clrBtn.addEventListener("click", () => { folderFilter = new Set(); applyFolderFilter(); buildFolderMenu(); });
+  bar.append(allBtn, clrBtn); m.appendChild(bar);
+  // checkbox list (root first, then folders — nested ones indented)
+  const list = document.createElement("div"); list.className = "starMapFolderList";
+  const rows = allDirs.includes("") ? ["", ...dirs] : dirs;
+  for (const dir of rows) {
+    const lab = document.createElement("label"); lab.className = "checkboxLabel starMapFolderRow";
+    const depth = dir ? dir.split("/").length : 0;
+    if (depth) lab.style.paddingLeft = 6 + depth * 12 + "px";
+    const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = folderFilter.has(dir);
+    cb.addEventListener("change", () => { if (cb.checked) folderFilter.add(dir); else folderFilter.delete(dir); applyFolderFilter(); updateReprojectBtn(); });
+    const nm = document.createElement("span"); nm.className = "starMapFolderNm";
+    nm.textContent = dir ? dir.split("/").pop() : t("star_folderRoot");
+    const ct = document.createElement("span"); ct.className = "starMapFolderCt";
+    const c = countInDir(dir); if (c != null) ct.textContent = c;
+    lab.append(cb, nm, ct); list.appendChild(lab);
+  }
+  m.appendChild(list);
+  // footer: re-project (B) + return-to-full when scoped
+  const foot = document.createElement("div"); foot.className = "starMapFolderFoot";
+  const rep = document.createElement("button"); rep.type = "button"; rep.className = "starMapFolderReproject"; rep.id = "starMapReprojectBtn";
+  rep.addEventListener("click", reprojectSelected);
+  foot.appendChild(rep);
+  if (scopeFolders.length) { const r = makeReturnBtn(); r.classList.add("starMapFolderReturn"); foot.appendChild(r); }
+  m.appendChild(foot);
+  updateReprojectBtn();
+}
+function updateReprojectBtn() {
+  const rep = el.folderMenu && el.folderMenu.querySelector("#starMapReprojectBtn"); if (!rep) return;
+  const checked = folderFilter ? folderFilter.size : 0;
+  const total = (allDirs || []).length;
+  // Re-projecting only makes sense for a proper, non-empty subset: ALL ticked = the
+  // whole-library map you already have; n===0 = nothing re-projectable (e.g. only the
+  // root ticked, which isn't a re-projectable sub-folder). Gate on the normalized n so
+  // the button never enables into a no-op.
+  const n = normScope(folderFilter).length;
+  const proper = n > 0 && checked < total;
+  rep.disabled = !proper;
+  rep.textContent = proper ? t("star_folderReproject", { n }) : t("star_folderReprojectEmpty");
+}
+// A (instant): re-apply folder visibility to the already-loaded map.
+function applyFolderFilter() {
+  if (!DATA) return;
+  if (usingGL) { updateVisibilityGL(); } // canvas path redraws from alphaOf each frame
+  buildLabels();
+  updateFolderBtn();
+}
+// B (rebuild): re-project just the ticked folders. Reuses a fresh cache if present.
+async function reprojectSelected() {
+  const scope = normScope(folderFilter);
+  if (!scope.length) return;
+  el.folderMenu.hidden = true;
+  let existing = null;
+  try { existing = await post("/api/library/starmap", { source, folders: scope }); } catch { /* build below */ }
+  if (existing && !existing.stale && !existing.outdated && !existing.tooFew && existing.docs && existing.docs.length) {
+    load(source, scope);
+  } else {
+    triggerBuild(source, scope);
+  }
+}
+// Reflect scope state on the 📁 button: hidden for archive, marked active when the
+// map is folder-scoped (B) or a folder filter (A) is narrowing the view.
+function updateFolderBtn() {
+  if (!el.folderBtn) return;
+  const show = source !== "archive";
+  el.folderBtn.style.display = show ? "" : "none";
+  // "active" = the view is actually narrowed: a B scope, or some folders un-ticked.
+  const filtering = folderFilter && folderFilter.size < (allDirs || []).length;
+  const active = scopeFolders.length > 0 || filtering;
+  el.folderBtn.classList.toggle("isActive", !!(show && active));
 }
 // Boxed, opaque card — bare centred text would visually blend into the stars.
 // busy=true adds a spinner: it's a WAITING state (building/loading/searching),
@@ -621,6 +801,7 @@ function rebuildColors() {
 // unaffected — they have no place on the timeline).
 function alphaOf(d, i) {
   if (hidden.has(d.cluster)) return 0;
+  if (!folderMatch(d.folder)) return 0;   // A: folders outside the ticked set drop out
   let a = matched && !matched.has(i) ? 0.15 : 1;
   if (timeCut != null && d.year && d.year > timeCut) a = Math.min(a, 0.06);
   return a;

@@ -1337,4 +1337,5 @@ module.exports = {
   // server-side libimport job (jobs.js) + distill + related-docs
   importDocInternal, distillDocInternal, distillLibraryDoc, buildYoutubeDoc, llmComplete,
   relatedLibraryDocs, docCentroids, lookupPaperMeta,
+  locOf,   // docId → on-disk folder ("" = root); used by the star map for folder scoping
 };

@@ -54,10 +54,14 @@ function settle(jobId, result, err) {
 // Latest known state of every server job arrives via the SSE snapshot/updates into
 // lastJobs — this lets other views ask "is a <kind> job queued/running right now?"
 // (e.g. the star map shows a "rebuilding…" hint when a starmap job is in flight).
-export function activeServerJob(kind, payloadSource = null) {
+export function activeServerJob(kind, payloadSource = null, payloadFolders = null) {
+  const want = payloadFolders != null ? JSON.stringify([...payloadFolders]) : null;
   for (const j of lastJobs.values()) {
     if (j.kind !== kind || (j.status !== 'queued' && j.status !== 'running')) continue;
     if (payloadSource && !(j.payload && j.payload.source === payloadSource)) continue;
+    // Folder-scoped starmap builds are distinct jobs — a whole-library rebuild and a
+    // folder re-projection must not be mistaken for one another.
+    if (want != null && JSON.stringify([...((j.payload && j.payload.folders) || [])]) !== want) continue;
     return j;
   }
   return null;

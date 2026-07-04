@@ -5563,6 +5563,25 @@ button.secondary:disabled {
 /* 🎛 display menu — dropdown pinned under the header, above the canvas */
 .starMapDispMenu { position: absolute; right: 16px; top: 10px; z-index: 7; display: flex; flex-direction: column; gap: 6px; background: var(--panel-alpha, var(--panel)); border: 1px solid var(--line); border-radius: 11px; padding: 10px 14px; box-shadow: var(--shadow); backdrop-filter: blur(8px); font-size: 12.5px; }
 .starMapDispMenu[hidden] { display: none; }
+/* 📁 folder scope panel: multi-select filter (A) + re-project (B) */
+.starMapFolderMenu { position: absolute; right: 16px; top: 10px; z-index: 7; width: 264px; display: flex; flex-direction: column; gap: 8px; background: var(--panel-alpha, var(--panel)); border: 1px solid var(--line); border-radius: 11px; padding: 12px 14px; box-shadow: var(--shadow); backdrop-filter: blur(8px); font-size: 12.5px; }
+.starMapFolderMenu[hidden] { display: none; }
+.starMapFolderHead { font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.starMapFolderHint { font-size: 11px; line-height: 1.5; color: var(--muted); }
+.starMapFolderBar { display: flex; gap: 8px; }
+.starMapFolderBar button { min-height: 0; padding: 3px 12px; font-size: 11.5px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.starMapFolderBar button:hover { background: var(--line); }
+.starMapFolderList { display: flex; flex-direction: column; gap: 1px; max-height: 42vh; overflow-y: auto; margin: 2px -4px; padding: 0 4px; }
+.starMapFolderRow { grid-template-columns: auto 1fr auto; gap: 8px; padding: 3px 6px; border-radius: 7px; }
+.starMapFolderRow:hover { background: var(--surface); }
+.starMapFolderNm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.starMapFolderCt { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.starMapFolderFoot { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+.starMapFolderReproject { min-height: 0; padding: 7px 12px; font-size: 12px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--on-accent, #fff); cursor: pointer; }
+.starMapFolderReproject:hover:not(:disabled) { filter: brightness(1.05); }
+.starMapFolderReproject:disabled { opacity: 0.45; cursor: default; border-color: var(--line); background: var(--surface); color: var(--muted); }
+.starMapFolderReturn { min-height: 0; }
+#starMapFolderBtn.isActive { border-color: var(--accent); color: var(--accent); }
 #starMapCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .starMapLabels { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
 /* Labels are clickable (zoom to their cluster) even though the layer itself is not */
@@ -5668,4 +5687,6 @@ button.secondary:disabled {
 .starMapPrompt p { margin: 0 0 14px; color: var(--ink); }
 .starMapBuildBtn { background: var(--accent); border: 0; color: #fff; padding: 10px 22px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; }
 .starMapBuildBtn:hover { filter: brightness(1.06); }
+.starMapBuildBtn.isGhost { background: transparent; color: var(--muted); border: 1px solid var(--line); margin-left: 8px; }
+.starMapBuildBtn.isGhost:hover { filter: none; background: var(--surface); color: var(--ink); }
 @media (max-width: 760px) { .starMapLegend { display: none; } .starMapInspector { width: calc(100vw - 32px); } }

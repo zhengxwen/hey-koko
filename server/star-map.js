@@ -18,13 +18,61 @@ const embed = require("./embed");
 const { sendJson, readBody } = require("./utils");
 
 const SOURCES = new Set(["library", "archive"]);
-const starmapPath = (source) => path.join(config.DATA_DIR, `starmap.${source}.json`);
+const MIN_SCOPED = 8;   // fewest docs a folder scope needs before UMAP re-projection is worthwhile
+
+// ---- folder scoping (B: re-project a chosen set of folders) ---------------
+// A scope is a set of library folders. We normalize it (trim, strip slashes,
+// dedup, COLLAPSE nested — "a" already covers "a/b" — then sort) so any two
+// equivalent selections map to the same cache. Empty scope = the whole library.
+function normFolders(folders) {
+  if (!Array.isArray(folders)) return [];
+  const clean = [...new Set(folders
+    .map((f) => path.normalize(String(f || "")).replace(/\\/g, "/").replace(/^\/+|\/+$/g, ""))
+    .filter(Boolean))];
+  // Drop any folder that sits under another selected folder (nested → redundant).
+  const kept = clean.filter((f) => !clean.some((g) => g !== f && (f === g || f.startsWith(g + "/"))));
+  return kept.sort();
+}
+// Is a doc's folder inside the scope? Empty scope → everything is in scope.
+function inScope(folder, folders) {
+  if (!folders.length) return true;
+  const f = folder || "";
+  return folders.some((g) => f === g || f.startsWith(g + "/"));
+}
+// FNV-1a 32-bit → base36; stable, no Date/random (safe for cache keys).
+function hashScope(folders) {
+  const s = folders.join("\n");
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36);
+}
+// Cache path: whole-library keeps the legacy name; a folder scope gets sel-<hash>.
+function starmapPath(source, folders) {
+  const scope = normFolders(folders);
+  if (source !== "archive" && scope.length) {
+    return path.join(config.DATA_DIR, `starmap.${source}.sel-${hashScope(scope)}.json`);
+  }
+  return path.join(config.DATA_DIR, `starmap.${source}.json`);
+}
+// Keep only the newest KEEP_SCOPED sel-* caches per source; evict older by mtime.
+// The whole-library cache and archive are never touched.
+const KEEP_SCOPED = 5;
+function evictOldScoped(source) {
+  try {
+    const pref = `starmap.${source}.sel-`;
+    const files = fs.readdirSync(config.DATA_DIR)
+      .filter((f) => f.startsWith(pref) && f.endsWith(".json"))
+      .map((f) => { const p = path.join(config.DATA_DIR, f); return { p, m: fs.statSync(p).mtimeMs }; })
+      .sort((a, b) => b.m - a.m);
+    for (const { p } of files.slice(KEEP_SCOPED)) { try { fs.unlinkSync(p); } catch { /* ignore */ } }
+  } catch { /* ignore */ }
+}
 
 // Gather { id, vec, title, kind, snippet }[] + per-id tags from one source.
 // library → per-doc centroid (mean of block vectors); archive → one vector per
 // conversation. Both share the same embedding space now (8b), but a map only ever
 // projects ONE source at a time, so mixed models never meet here.
-function gather(source) {
+function gather(source, folders = []) {
   if (source === "archive") {
     const idx = embed.loadArchiveEmbeddings();
     const items = [];
@@ -33,6 +81,7 @@ function gather(source) {
     }
     return { items, model: idx.model || "", tags: new Map() };
   }
+  const scope = normFolders(folders);
   // library
   const cents = library.docCentroids();   // Map<docId, { vec, model, title, docKind, blocks }>
   // Different embedding models are different vector spaces (often different DIMS) —
@@ -46,7 +95,9 @@ function gather(source) {
   let excluded = 0;
   for (const [docId, c] of cents) {
     if (c.model !== model) { excluded++; continue; }
-    items.push({ id: docId, vec: c.vec, title: c.title || docId, kind: c.docKind || "doc", snippet: "", blocks: c.blocks || 0 });
+    const folder = library.locOf(docId) || "";
+    if (!inScope(folder, scope)) continue;   // B: restrict to the chosen folders
+    items.push({ id: docId, vec: c.vec, title: c.title || docId, kind: c.docKind || "doc", snippet: "", blocks: c.blocks || 0, folder });
   }
   if (excluded) console.warn(`[starmap] ${excluded} doc(s) excluded: embedding model ≠ ${model}`);
   const tags = new Map();
@@ -133,13 +184,25 @@ function labelClusters(items, clusterIds, tagsById, k) {
 async function computeStarmap(job, signal, emitUpdate) {
   const source = (job && job.payload && job.payload.source) || "library";
   if (!SOURCES.has(source)) throw new Error(`unknown starmap source: ${source}`);
+  const scope = normFolders(job && job.payload && job.payload.folders);
+  const scoped = source !== "archive" && scope.length > 0;
+  const outPath = starmapPath(source, scope);
   const setLabel = (s) => { if (job) { job.label = s; if (emitUpdate) emitUpdate(job); } };
 
-  const { items, model, tags } = gather(source);
+  const { items, model, tags } = gather(source, scope);
   setLabel(`星图:读取 ${items.length} 个向量…`);
+  // Re-projecting a folder scope needs enough points for UMAP to lay out sensibly;
+  // below the floor we cache a `tooFew` marker so the frontend can explain instead
+  // of building a degenerate 3-dot map. The whole-library map has no such floor.
+  if (scoped && items.length < MIN_SCOPED) {
+    const thin = { source, folders: scope, n: items.length, model, builtAt: Date.now(), clusters: [], docs: [], tooFew: true, minDocs: MIN_SCOPED };
+    fs.writeFileSync(outPath, JSON.stringify(thin));
+    if (scoped) evictOldScoped(source);
+    return { source, n: items.length, tooFew: true };
+  }
   if (!items.length) {
-    const empty = { source, n: 0, model, builtAt: Date.now(), clusters: [], docs: [] };
-    fs.writeFileSync(starmapPath(source), JSON.stringify(empty));
+    const empty = { source, ...(scoped ? { folders: scope } : {}), n: 0, model, builtAt: Date.now(), clusters: [], docs: [] };
+    fs.writeFileSync(outPath, JSON.stringify(empty));
     return { source, n: 0 };
   }
 
@@ -155,27 +218,34 @@ async function computeStarmap(job, signal, emitUpdate) {
       cluster: cluster[i] != null ? cluster[i] : 0,
       ...(it.snippet ? { snippet: it.snippet } : {}),
       ...(it.blocks ? { blocks: it.blocks } : {}),
+      // on-disk folder ("" = root) — drives the A-mode folder FILTER on the full map.
+      ...(it.folder ? { folder: it.folder } : {}),
       // content year (publishedAt / year) — drives the timeline scrubber.
       ...(it.year ? { year: it.year } : {}),
       // top-3 semantic neighbours (indices into docs) — the frontend draws these
       // as constellation edges on hover/selection and as "related" chips.
       ...(nn && nn[i] && nn[i].length ? { nn: nn[i] } : {}),
     }));
-    const result = { source, n: docs.length, model, builtAt: Date.now(), clusters, docs };
-    fs.writeFileSync(starmapPath(source), JSON.stringify(result));
+    const result = { source, ...(scoped ? { folders: scope } : {}), n: docs.length, model, builtAt: Date.now(), clusters, docs };
+    fs.writeFileSync(outPath, JSON.stringify(result));
+    if (scoped) evictOldScoped(source);
     return { source, n: docs.length };
   } finally {
     try { fs.unlinkSync(inPath); } catch { /* ignore */ }
   }
 }
 
-// Current number of mappable items for a source — the cheap staleness signal (a cache
-// built for N docs is out of date once the library holds a different count). library →
-// index.json length; archive → embeddings index size.
-function currentCount(source) {
+// Current number of mappable items for a source (+ optional folder scope) — the cheap
+// staleness signal (a cache built for N docs is out of date once the count changes).
+// archive → embeddings index size; library whole → index.json length; library scope →
+// count docs whose folder is in scope.
+function currentCount(source, folders = []) {
   try {
     if (source === "archive") return Object.keys(embed.loadArchiveEmbeddings().items || {}).length;
-    return JSON.parse(fs.readFileSync(path.join(library.LIBRARY_DIR, "index.json"), "utf-8")).length;
+    const index = JSON.parse(fs.readFileSync(path.join(library.LIBRARY_DIR, "index.json"), "utf-8"));
+    const scope = normFolders(folders);
+    if (!scope.length) return index.length;
+    return index.filter((e) => inScope(library.locOf(e.docId) || "", scope)).length;
   } catch { return 0; }
 }
 
@@ -186,14 +256,18 @@ function currentCount(source) {
 async function serveStarmap(req, res) {
   let body; try { body = await readBody(req); } catch { body = {}; }
   const source = SOURCES.has(body && body.source) ? body.source : "library";
+  const scope = normFolders(body && body.folders);
   try {
-    const cached = JSON.parse(fs.readFileSync(starmapPath(source), "utf-8"));
-    const now = currentCount(source);
-    if (now !== cached.n) { cached.outdated = true; cached.currentN = now; }
+    const cached = JSON.parse(fs.readFileSync(starmapPath(source, scope), "utf-8"));
+    // A `tooFew` marker isn't a real map — don't slap an "outdated" badge on it.
+    if (!cached.tooFew) {
+      const now = currentCount(source, scope);
+      if (now !== cached.n) { cached.outdated = true; cached.currentN = now; }
+    }
     sendJson(res, 200, cached);
   } catch {
-    sendJson(res, 200, { source, stale: true, n: 0, docs: [], clusters: [] });
+    sendJson(res, 200, { source, ...(scope.length ? { folders: scope } : {}), stale: true, n: 0, docs: [], clusters: [] });
   }
 }
 
-module.exports = { computeStarmap, serveStarmap, starmapPath, SOURCES };
+module.exports = { computeStarmap, serveStarmap, starmapPath, SOURCES, _test: { normFolders, inScope, hashScope } };
