@@ -5697,4 +5697,13 @@ button.secondary:disabled {
 .starMapBuildBtn:hover { filter: brightness(1.06); }
 .starMapBuildBtn.isGhost { background: transparent; color: var(--muted); border: 1px solid var(--line); margin-left: 8px; }
 .starMapBuildBtn.isGhost:hover { filter: none; background: var(--surface); color: var(--ink); }
+/* Monospace install command shown in the umap-missing prompt/modal. */
+.starMapUmapCmd { display: inline-block; margin: 2px 0 4px; padding: 5px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--ink); user-select: all; }
+/* umap-missing popup: a centred modal over the whole star-map overlay. */
+.starMapModalBack { position: absolute; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.42); }
+.starMapModal { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); max-width: 440px; padding: 22px 26px; text-align: center; }
+.starMapModal h3 { margin: 0 0 10px; font-size: 17px; }
+.starMapModal p { margin: 0 0 12px; color: var(--ink); line-height: 1.55; text-align: left; }
+.starMapModalPath { font-size: 12px; color: var(--muted); word-break: break-all; }
+.starMapModalRow { margin-top: 6px; display: flex; justify-content: center; }
 @media (max-width: 760px) { .starMapLegend { display: none; } .starMapInspector { width: calc(100vw - 32px); } }

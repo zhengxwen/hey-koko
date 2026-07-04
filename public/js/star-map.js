@@ -35,6 +35,10 @@ let hidden = new Set();
 let legendCollapsed = (() => { try { return localStorage.getItem("heykoko-starmap-legend-collapsed") === "1"; } catch { return false; } })();
 let hover = null, selected = null, raf = 0, twinkle = 0, DPR = 1;
 let theme = {};
+// UMAP (python projector) availability — reported by the server on every load().
+// null = unknown yet. Gates the "python umap not installed" warning + the build path.
+let umapAvailable = null;
+let _umapWarned = false;   // showed the missing-umap popup this open? (reset on open)
 let drag = null;
 let usingGL = false;
 let G = null;          // WebGL state: { gl, pt, ln, bg, buf, n }
@@ -118,6 +122,7 @@ export async function openStarMap() {
   readTheme();
   el.overlay.classList.add("isOpen");
   el.overlay.setAttribute("aria-hidden", "false");
+  _umapWarned = false;   // warn again if umap is missing on this fresh open
   resize();
   await load(source);
 }
@@ -318,6 +323,10 @@ async function load(which, folders = scopeFolders) {
   let map;
   try { map = await post("/api/library/starmap", { source: which, folders: scopeFolders }); }
   catch { setStatus(t("star_error")); return; }
+  // No python umap → building/rebuilding is impossible. Warn once per open (a cached map
+  // still displays fine — only (re)projection needs the venv). Track it for the build path.
+  umapAvailable = map.umapReady !== false;
+  if (map.umapReady === false && !_umapWarned) { _umapWarned = true; showUmapMissingDialog(map.umapPython); }
   // A folder scope with too few docs to re-project: explain, offer a way back to the
   // whole-library map — building won't help (the shortage is real).
   if (map.tooFew) {
@@ -334,9 +343,11 @@ async function load(which, folders = scopeFolders) {
   // showing the old cache, and swap in the fresh map when the job lands.
   const building = !!activeServerJob("starmap", which, scopeFolders);
   if (el.rebuildBtn) {
-    el.rebuildBtn.disabled = building;
-    el.rebuildBtn.classList.toggle("isOutdated", !building && !!map.outdated);
-    el.rebuildBtn.title = map.outdated && !building
+    // No python umap → a rebuild can't run: keep the button disabled and say why.
+    el.rebuildBtn.disabled = building || !umapAvailable;
+    el.rebuildBtn.classList.toggle("isOutdated", !building && umapAvailable && !!map.outdated);
+    el.rebuildBtn.title = !umapAvailable ? t("star_umapMissingHint")
+      : map.outdated && !building
       ? t("star_outdated", { n: map.currentN != null ? map.currentN : "?" })
       : t("star_rebuildHint");
   }
@@ -352,6 +363,7 @@ async function load(which, folders = scopeFolders) {
     el.timeline.hidden = true; timeCut = null;
     updateFolderBtn();
     if (building) { setStatus(t("star_building"), true); pollBuild(which); }
+    else if (!umapAvailable) showUmapMissingPrompt();   // building is impossible — don't offer a doomed button
     else showBuildPrompt(which, map.stale ? "stale" : "empty");
     return;
   }
@@ -410,6 +422,42 @@ function showBuildPrompt(which, why) {
   if (scoped) box.appendChild(makeReturnBtn());
   el.status.appendChild(box); el.status.hidden = false;
 }
+// In-map notice shown when there's NO cached map AND python umap is missing — a build
+// button would only fail, so we explain the prerequisite instead of offering one.
+function showUmapMissingPrompt() {
+  el.status.innerHTML = "";
+  const box = document.createElement("div"); box.className = "starMapPrompt";
+  const p = document.createElement("p"); p.textContent = t("star_umapMissing"); box.appendChild(p);
+  const cmd = document.createElement("code"); cmd.className = "starMapUmapCmd"; cmd.textContent = "pip install umap-learn";
+  box.appendChild(cmd);
+  el.status.appendChild(box); el.status.hidden = false;
+}
+
+// Modal popup (over the whole map) warning that python umap isn't installed, so the
+// star map can't be (re)built. Dismissable — a cached map, if any, still shows behind it.
+function showUmapMissingDialog(pythonPath) {
+  if (el.overlay.querySelector(".starMapModalBack")) return;   // one at a time
+  const back = document.createElement("div"); back.className = "starMapModalBack";
+  const modal = document.createElement("div"); modal.className = "starMapModal";
+  const h = document.createElement("h3"); h.textContent = t("star_umapMissingTitle"); modal.appendChild(h);
+  const p = document.createElement("p"); p.textContent = t("star_umapMissing"); modal.appendChild(p);
+  const cmd = document.createElement("code"); cmd.className = "starMapUmapCmd"; cmd.textContent = "pip install umap-learn";
+  modal.appendChild(cmd);
+  if (pythonPath) {
+    const py = document.createElement("p"); py.className = "starMapModalPath";
+    py.textContent = t("star_umapPython", { path: pythonPath }); modal.appendChild(py);
+  }
+  const row = document.createElement("div"); row.className = "starMapModalRow";
+  const ok = document.createElement("button"); ok.className = "starMapBuildBtn"; ok.textContent = t("star_umapGotIt");
+  const close = () => back.remove();
+  ok.addEventListener("click", close);
+  back.addEventListener("mousedown", (e) => { if (e.target === back) close(); });
+  row.appendChild(ok); modal.appendChild(row);
+  back.appendChild(modal);
+  el.overlay.appendChild(back);
+  ok.focus();
+}
+
 // Scope-specific notice (e.g. "too few docs to re-project") with a way back to the full map.
 function showScopePrompt(why, minDocs) {
   el.status.innerHTML = "";
@@ -426,6 +474,8 @@ function makeReturnBtn() {
   return b;
 }
 async function triggerBuild(which, folders = scopeFolders) {
+  // Guard: without python umap the job would just fail — warn instead of enqueuing.
+  if (umapAvailable === false) { showUmapMissingDialog(); return; }
   const scope = which === "archive" ? [] : normScope(folders);
   scopeFolders = scope;
   setStatus(t("star_building"), true);

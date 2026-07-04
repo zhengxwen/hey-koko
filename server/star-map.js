@@ -138,6 +138,29 @@ function writeMatrix(vecs) {
   return p;
 }
 
+// Is the UMAP projector actually runnable — i.e. does config.umapPython exist AND
+// have umap-learn importable? Probed with a FAST `find_spec` (locates the module
+// without triggering umap's multi-second import). Cached per interpreter: a success
+// sticks (nothing to recheck), a failure re-probes after 15s so installing the venv
+// mid-session is picked up without a server restart. The frontend reads this on every
+// star-map open (via serveStarmap) so it can WARN before offering a doomed build.
+let _umapProbe = null;   // { ok, python, at }
+function checkUmap() {
+  const py = config.umapPython;
+  if (_umapProbe && _umapProbe.python === py && (_umapProbe.ok || Date.now() - _umapProbe.at < 15000)) {
+    return Promise.resolve(_umapProbe);
+  }
+  return new Promise((resolve) => {
+    const done = (ok) => { _umapProbe = { ok, python: py, at: Date.now() }; resolve(_umapProbe); };
+    let proc;
+    try {
+      proc = spawn(py, ["-c", "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('umap') else 3)"]);
+    } catch { done(false); return; }
+    proc.on("error", () => done(false));
+    proc.on("close", (code) => done(code === 0));
+  });
+}
+
 // Spawn the python projector; resolves { xy:[[x,y]...], cluster:[int...] }.
 function runUmap(inPath, signal) {
   return new Promise((resolve, reject) => {
@@ -257,6 +280,8 @@ async function serveStarmap(req, res) {
   let body; try { body = await readBody(req); } catch { body = {}; }
   const source = SOURCES.has(body && body.source) ? body.source : "library";
   const scope = normFolders(body && body.folders);
+  // Whether a (re)build is even possible — the frontend warns the user if not.
+  const umap = await checkUmap();
   try {
     const cached = JSON.parse(fs.readFileSync(starmapPath(source, scope), "utf-8"));
     // A `tooFew` marker isn't a real map — don't slap an "outdated" badge on it.
@@ -264,9 +289,10 @@ async function serveStarmap(req, res) {
       const now = currentCount(source, scope);
       if (now !== cached.n) { cached.outdated = true; cached.currentN = now; }
     }
+    cached.umapReady = umap.ok; cached.umapPython = umap.python;
     sendJson(res, 200, cached);
   } catch {
-    sendJson(res, 200, { source, ...(scope.length ? { folders: scope } : {}), stale: true, n: 0, docs: [], clusters: [] });
+    sendJson(res, 200, { source, ...(scope.length ? { folders: scope } : {}), stale: true, n: 0, docs: [], clusters: [], umapReady: umap.ok, umapPython: umap.python });
   }
 }
 
