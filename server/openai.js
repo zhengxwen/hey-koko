@@ -340,6 +340,28 @@ function buildPayload({ model, messages, tools, stream, maxTokens, temperature }
   return payload;
 }
 
+// Unpack an OpenAI/OpenRouter error into a readable one-line message. OpenRouter
+// hides the downstream provider's REAL error inside error.metadata (raw +
+// provider_name) behind a generic "Provider returned error" — surface it so the
+// user sees why (rate limit, model down, bad param…) instead of the vague top line.
+function formatError(err) {
+  if (!err) return "";
+  if (typeof err === "string") return err;
+  let msg = err.message || "";
+  const meta = err.metadata;
+  if (meta && typeof meta === "object") {
+    const raw = typeof meta.raw === "string" ? meta.raw : (meta.raw != null ? JSON.stringify(meta.raw) : "");
+    const prov = meta.provider_name ? `${meta.provider_name}: ` : "";
+    const extra = (prov + raw).trim();
+    if (extra && !msg.includes(raw)) msg = msg ? `${msg}（${extra}）` : extra;
+  }
+  return msg;
+}
+function extractApiError(text) {
+  try { return formatError(JSON.parse(text).error) || text; }
+  catch { return text; }
+}
+
 // --- Chat proxy ------------------------------------------------------------
 
 async function proxyChat(res, body) {
@@ -391,9 +413,7 @@ async function proxyChat(res, body) {
   if (!response.ok) {
     if (timeoutHandle) clearTimeout(timeoutHandle);
     const text = await response.text();
-    let msg = text;
-    try { msg = JSON.parse(text).error?.message || text; } catch { /* keep raw */ }
-    sendJson(res, response.status, { error: msg || response.statusText });
+    sendJson(res, response.status, { error: extractApiError(text) || response.statusText });
     return;
   }
 
@@ -465,6 +485,16 @@ async function proxyChat(res, body) {
         if (!dataStr || dataStr === "[DONE]") continue;
         let evt;
         try { evt = JSON.parse(dataStr); } catch { continue; }
+
+        // A provider can fail PART-WAY through a stream (common for overloaded
+        // free models) — OpenRouter sends `data: {"error":{...}}` mid-stream.
+        // Without this it was silently swallowed and the reply just cut off.
+        if (evt.error) {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          writeChunk({ error: formatError(evt.error) || "Provider returned error" });
+          res.end();
+          return;
+        }
 
         // With stream_options.include_usage, the final data chunk has empty
         // choices[] and a usage block.
