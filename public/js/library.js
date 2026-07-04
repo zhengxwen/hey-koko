@@ -691,15 +691,42 @@ export function initLibrary() {
     refreshBtn.disabled = true;
     if (loadingEl) loadingEl.hidden = false;
     try {
-      // Pass the current embed model so rescan can (deferred-)embed any doc that has no
-      // .vec yet — e.g. a YouTube import whose embedding failed because the model was down.
-      const r = await postJson("/api/library/rescan", { model: embedModel() });
-      if (r && r.error) throw new Error(r.error);   // postJson doesn't throw on HTTP errors
+      // Streams ndjson progress: start → progress per doc → done. Passes the current
+      // embed model so rescan can (re)embed docs missing a .vec OR built with a different
+      // model; if that model is down it skips embedding and only syncs the file list.
+      const res = await fetch("/api/library/rescan", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: embedModel() }),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "", result = null, modelDown = false;
+      const handle = (line) => {
+        if (!line.trim()) return;
+        let m; try { m = JSON.parse(line); } catch { return; }
+        if (m.status === "model-unavailable") { modelDown = true; setStatus(t("lib_rescanModelDown")); }
+        else if (m.status === "start" || m.status === "progress") {
+          if (!modelDown) setStatus(t("lib_rescanProgress", { done: m.done || 0, total: m.total }));
+        } else if (m.status === "done") result = m;
+        else if (m.status === "error") throw new Error(m.message);
+      };
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n"); buffer = lines.pop() || "";
+        for (const l of lines) handle(l);
+      }
+      if (buffer.trim()) handle(buffer);
       await refreshList();
       // The open doc may have been deleted/replaced on disk — reset the preview if gone.
       if (currentDoc && !docs.some((d) => d.docId === currentDoc.docId)) clearPreview();
+      const r = result || { total: docs.length, added: 0, removed: 0 };
       let msg = t("lib_rescanDone", { total: r.total, added: r.added, removed: r.removed });
       if (r.embedded) msg += t("lib_rescanEmbedded", { n: r.embedded });
+      if (r.reembedded) msg += t("lib_rescanReembedded", { n: r.reembedded });
+      if (r.skipped) msg += t("lib_rescanSkipped", { n: r.skipped });
       if (r.embedFailed) msg += t("lib_rescanEmbedFailed", { n: r.embedFailed });
       setStatus(msg);
     } catch (e) {
