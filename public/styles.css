@@ -5405,6 +5405,14 @@ button.secondary:disabled {
   text-transform: none; letter-spacing: normal;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
 }
+/* Action button inside the tip (e.g. the 📇 popup's "regenerate card"). */
+.libTipBtn {
+  display: block; margin-top: 8px; min-height: 0;
+  padding: 4px 10px; border-radius: 6px;
+  background: rgba(255, 255, 255, 0.14); border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #fff; font-size: 12px; cursor: pointer;
+}
+.libTipBtn:hover { background: rgba(255, 255, 255, 0.26); }
 /* Source filename header shown on the FIRST library chunk bubble in a chat tab */
 .libraryFileNameTag { font-size: 1.02em; font-weight: 700; margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1px solid var(--line); opacity: 0.9; word-break: break-all; }
 /* Section-name tag shown above a library chunk bubble in a chat tab */

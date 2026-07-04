@@ -1211,9 +1211,13 @@ function jobDetail(job) {
     const m = p.modelOverride || {};
     return clipCtx(m.comfyModel || m.imageModel || '', 44);
   } else if (job.kind === 'libimport') {
+    // file / text imports (a paper's PDF, a .txt): the stage label ("parsing"/"importing"/
+    // "distilling") overwrites job.label mid-run, so surface the source filename HERE — it
+    // keeps "知识库 · <文件名>" visible on the top line for the whole job.
+    if (p.type === 'file' || p.type === 'text') { if (p.name) return clipCtx(p.name, 44); }
     // url/youtube imports: a page's label IS its URL, but youtube's is a generic
     // "fetching" text → show the address only when it isn't already the label.
-    if (p.url && p.url !== job.label && p.url !== job.baseLabel) return shortUrl(p.url);
+    else if (p.url && p.url !== job.label && p.url !== job.baseLabel) return shortUrl(p.url);
   }
   return '';
 }

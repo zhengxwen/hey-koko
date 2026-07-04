@@ -47,12 +47,12 @@ export const isTranscriptSection = (s) => TRANSCRIPT_SECTIONS.has(String(s || ""
 // Small badge element marking a SPECIAL generated section (display-only — never stored
 // in the doc). Hover shows the native title; CLICK pops the explanation immediately as
 // a small tooltip bubble (also the only way to see it on touch devices, with no hover).
-function sectionMark(icon, hint) {
+function sectionMark(icon, hint, action = null) {
   const mark = document.createElement("span");
   mark.className = "libTranscriptMark";
   mark.textContent = icon;
   mark.title = hint;
-  mark.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); toggleTranscriptTip(mark, hint); });
+  mark.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); toggleTranscriptTip(mark, hint, action); });
   mark.addEventListener("mousedown", (e) => e.stopPropagation());   // don't arm the chat bubble's drag
   mark.addEventListener("dblclick", (e) => e.stopPropagation());    // don't trigger section rename
   return mark;
@@ -60,7 +60,12 @@ function sectionMark(icon, hint) {
 // ✏️ = AI-reformatted ASR transcript (not verbatim speech).
 export function transcriptMark() { return sectionMark("✏️", t("lib_transcriptEditedHint")); }
 // 📇 = the distillation card (AI-generated summary/key points, not original content).
-export function cardMark() { return sectionMark("📇", t("lib_distillCardHint")); }
+// onRegen (optional) adds a "regenerate" button to the click-popup — the library preview
+// passes it (re-distill with the CURRENT chat model); the chat-bubble copy is a snapshot
+// of the doc, so its popup stays explanation-only.
+export function cardMark(onRegen) {
+  return sectionMark("📇", t("lib_distillCardHint"), onRegen ? { label: t("lib_regenCard"), run: onRegen } : null);
+}
 // One tip at a time; closed by a second click on its badge, any outside click,
 // Escape, or a 4s auto-hide.
 let _tipEl = null, _tipAnchor = null, _tipTimer = 0;
@@ -69,18 +74,29 @@ function hideTranscriptTip() {
   _tipEl = null; _tipAnchor = null;
   if (_tipTimer) { clearTimeout(_tipTimer); _tipTimer = 0; }
 }
-function toggleTranscriptTip(anchor, text) {
+function toggleTranscriptTip(anchor, text, action = null) {
   if (_tipAnchor === anchor) { hideTranscriptTip(); return; }
   hideTranscriptTip();
   const tip = document.createElement("div");
   tip.className = "libTranscriptTip";
   tip.textContent = text || t("lib_transcriptEditedHint");
+  if (action) {
+    // Clicks inside the tip must not reach the document's outside-click closer.
+    tip.addEventListener("click", (e) => e.stopPropagation());
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "libTipBtn";
+    btn.textContent = action.label;
+    btn.addEventListener("click", (e) => { e.stopPropagation(); hideTranscriptTip(); action.run(); });
+    tip.appendChild(btn);
+  }
   document.body.appendChild(tip);
   const r = anchor.getBoundingClientRect();
   tip.style.left = Math.max(8, Math.min(r.left, window.innerWidth - tip.offsetWidth - 8)) + "px";
   tip.style.top = (r.bottom + 6) + "px";
   _tipEl = tip; _tipAnchor = anchor;
-  _tipTimer = setTimeout(hideTranscriptTip, 4000);
+  // With a button the user needs time to decide — hold the tip open longer.
+  _tipTimer = setTimeout(hideTranscriptTip, action ? 8000 : 4000);
 }
 document.addEventListener("click", () => hideTranscriptTip());   // badge clicks stopPropagation → only outside clicks land here
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideTranscriptTip(); });
@@ -1434,6 +1450,27 @@ export function initLibrary() {
     } catch (e) { console.warn("[library] related chips failed:", e); /* decoration — never block the doc view */ }
   }
 
+  // Regenerate JUST the distillation card (metadata untouched) with the currently
+  // selected chat model — the 📇 popup's "重新生成" button, for when a stronger model
+  // is hooked up later. Server-side distill replaces the old card in place.
+  let _cardRegenBusy = false;
+  async function regenerateCard(doc) {
+    if (_cardRegenBusy) return;
+    _cardRegenBusy = true;
+    setStatus(t("lib_regeneratingCard", { name: doc.title }));
+    try {
+      const r = await postJson("/api/library/distill", { docId: doc.docId, metadata: false, model: dom.modelSelect.value, language: getPromptLanguage(), timeoutS: parseInt(dom.requestTimeoutInput.value, 10) || 300 });
+      if (r && r.error) throw new Error(r.error);
+      setStatus("");
+      await refreshList();
+      openDoc(doc.docId);
+    } catch (e) {
+      setStatus(t("lib_distillFailed", { error: e.message }));
+    } finally {
+      _cardRegenBusy = false;
+    }
+  }
+
   function renderBlocks(doc) {
     previewContent.innerHTML = "";
     // Per-doc toolbar: regenerate metadata + distillation card (server-side distill —
@@ -1489,7 +1526,7 @@ export function initLibrary() {
         // a video's transcript section is AI-reformatted speech, not verbatim → ✏️ badge;
         // the distill card is AI-generated summary/key points, not original content → 📇 badge
         if (doc.docKind === "video" && isTranscriptSection(b.section)) h.appendChild(transcriptMark());
-        else if (b.kind === "card") h.appendChild(cardMark());
+        else if (b.kind === "card") h.appendChild(cardMark(() => regenerateCard(doc)));
         attachSectionEdit(h, doc, b.section);
         previewContent.appendChild(h);
         lastSection = b.section;
