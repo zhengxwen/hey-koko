@@ -7,8 +7,27 @@ const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const { readArchiveFile, scanArchiveFilenames } = require("./archive");
 const { encodeVectors, decodeVectors } = require("./vecfile");
+const openai = require("./openai");
 
 const DEFAULT_MODEL = "qwen3-embedding:8b";
+
+// The SAME underlying embedding model can appear under different provider names —
+// local Ollama `qwen3-embedding:8b` vs OpenRouter `qwen/qwen3-embedding-8b` are
+// byte-compatible vector spaces. Collapse them to ONE canonical id (the LOCAL
+// Ollama name) so the .vec index — which records the model to guard the vector
+// space — treats them as identical and switching backend does NOT force a full
+// re-embed. IMPORTANT: only STORAGE and vector-space COMPARISON use the canonical
+// name; the RAW selected name is still what routes the embed call (local vs cloud)
+// and what gets sent to the API.
+const EMBED_ALIASES = {
+  "qwen/qwen3-embedding-8b": "qwen3-embedding:8b",
+  "qwen/qwen3-embedding-4b": "qwen3-embedding:4b",
+  "qwen/qwen3-embedding-0.6b": "qwen3-embedding:0.6b",
+};
+function canonicalEmbedModel(model) {
+  if (!model) return model;
+  return EMBED_ALIASES[String(model).toLowerCase()] || model;
+}
 const MAX_TEXT = 2000;   // chars per archive fed to the embedder
 const BATCH = 4;         // keep batches small — long diverse text can crash the runner
 
@@ -70,6 +89,9 @@ function hashText(s) {
 }
 
 async function embedBatch(texts, model) {
+  // Cloud embedding model (allowlisted in openai.json/openrouter.json) → route to
+  // /v1/embeddings; anything else → local Ollama. Routing uses the RAW name.
+  if (openai.isCloudEmbedModel(model)) return openai.embed(model, texts);
   const res = await fetch(`${config.ollamaUrl}/api/embed`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -95,9 +117,13 @@ async function buildArchiveIndex(req, res) {
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
   const send = (o) => { try { res.write(JSON.stringify(o) + "\n"); } catch {} };
 
+  // Store/compare the CANONICAL name so switching between the local and cloud
+  // build of the same model doesn't invalidate the index (embedBatch below still
+  // gets the raw `model` to route local vs cloud).
+  const canon = canonicalEmbedModel(model);
   let idx = loadIndex();
-  if (idx.model && idx.model !== model) idx = { model, items: {} }; // model changed → full rebuild
-  idx.model = model;
+  if (idx.model && canonicalEmbedModel(idx.model) !== canon) idx = { model: canon, items: {} }; // model changed → full rebuild
+  idx.model = canon;
   if (!idx.items) idx.items = {};
 
   const files = scanArchiveFilenames();
@@ -157,7 +183,7 @@ async function semanticSearchArchives(req, res) {
 
   const idx = loadIndex();
   const entries = Object.entries(idx.items || {});
-  if (entries.length === 0 || (idx.model && idx.model !== model)) {
+  if (entries.length === 0 || (idx.model && canonicalEmbedModel(idx.model) !== canonicalEmbedModel(model))) {
     sendJson(res, 200, { needsIndex: true, results: [] });
     return;
   }
@@ -180,4 +206,4 @@ async function semanticSearchArchives(req, res) {
   }
 }
 
-module.exports = { buildArchiveIndex, semanticSearchArchives, embedBatch, cosine, hashText, DEFAULT_MODEL, loadArchiveEmbeddings: loadIndex };
+module.exports = { buildArchiveIndex, semanticSearchArchives, embedBatch, cosine, hashText, DEFAULT_MODEL, canonicalEmbedModel, loadArchiveEmbeddings: loadIndex };

@@ -133,7 +133,7 @@ Hey-Koko works with just Ollama. Each helper below unlocks an extra capability w
 | Simplified/Traditional Chinese normalization | OpenCC | [optional-tools.md → OpenCC](docs/optional-tools.md#opencc) |
 | Local text-to-speech (`/voice`) | Kokoro | [docs/local-python.md](docs/local-python.md) |
 | Advanced image & video generation | ComfyUI | [docs/comfyui.md](docs/comfyui.md) |
-| Cloud chat models (Claude / OpenAI / DeepSeek / OpenRouter / Grok / Qwen / …) | API key | [docs/cloud-models.md](docs/cloud-models.md) |
+| Cloud chat & embedding models (Claude / OpenAI / DeepSeek / OpenRouter / Grok / Qwen / …) | API key | [docs/cloud-models.md](docs/cloud-models.md) |
 
 
 ## Environment Variables

@@ -12,7 +12,7 @@ const path = require("path");
 const zlib = require("zlib");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
-const { embedBatch, cosine, hashText, DEFAULT_MODEL } = require("./embed");
+const { embedBatch, cosine, hashText, DEFAULT_MODEL, canonicalEmbedModel } = require("./embed");
 const { encodeVectors, decodeVectors } = require("./vecfile");
 const claude = require("./claude");
 const openai = require("./openai");
@@ -138,13 +138,42 @@ function writeVectors(id, vectors, folder, model = "") {
   const f = folder == null ? locOf(id) : folder;
   const dir = folderDir(f);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, id + ".vec"), encodeVectors(vectors, model));
+  // Single choke point for the model recorded in every .vec — store the CANONICAL
+  // name so local/cloud builds of the same model share one vector space (no rebuild).
+  fs.writeFileSync(path.join(dir, id + ".vec"), encodeVectors(vectors, canonicalEmbedModel(model)));
 }
 // → { vectors:[Float32Array], model, dim, count }. Non-HKV1 (legacy/absent) → empty.
 function readVectors(id, _blockCount, folder) {
   let buf;
   try { buf = fs.readFileSync(vecPath(id, folder)); } catch { return { vectors: [], model: "", dim: 0, count: 0 }; }
   return decodeVectors(buf);
+}
+// Remove a doc's .vec so the doc reads as "un-embedded" — used when an embed attempt
+// totally failed (model down): a later 🔄 rescan / edit re-attempts. Absent → no-op.
+function dropVectors(id, folder) {
+  try { fs.unlinkSync(vecPath(id, folder)); } catch { /* already gone */ }
+}
+// Does this doc have real vectors on disk (an HKV1 .vec with rows)? A missing/legacy
+// .vec → false → it's a candidate for deferred embedding on the next rescan.
+function hasVectors(id, folder) {
+  try { return readVectors(id, 0, folder).vectors.length > 0; } catch { return false; }
+}
+// Embed every embeddable block of `doc` and write its .vec (keyed by `id`, the resolving
+// filename — which can differ from doc.docId for a hand-renamed file). Writes NOTHING on
+// TOTAL failure (model produced no vector) so the doc stays un-embedded for a later retry.
+// Only touches the .vec (vectors align to the existing block order) — never rewrites the
+// doc file, so it's safe to call during a rescan sweep. Returns whether a .vec was written.
+async function embedDocVectors(doc, id, folder, model) {
+  const vectors = new Array(doc.blocks.length).fill(null);
+  const toEmbed = [], idx = [];
+  doc.blocks.forEach((b, i) => { if (b.embed !== false) { toEmbed.push(blockEmbedText(b)); idx.push(i); } });
+  if (toEmbed.length) {
+    const embs = await embedMany(toEmbed, model);
+    idx.forEach((bi, k) => { vectors[bi] = embs[k]; });
+    if (!idx.some((bi) => vectors[bi])) return false;   // model unavailable → no .vec, retry later
+  }
+  writeVectors(id, vectors, folder, model);
+  return true;
 }
 
 // ---- index.json (lightweight per-doc metadata for the list view) ----------
@@ -414,7 +443,7 @@ function buildCache() {
       items.push({
         docId: meta.docId, title: doc.title, docKind: doc.docKind, folder,
         blockId: b.id, idx: i, section: b.section, kind: b.kind,
-        content: b.content, hasImage: !!b.image, vec: vecs[i], model: vr.model,
+        content: b.content, hasImage: !!b.image, vec: vecs[i], model: canonicalEmbedModel(vr.model),
       });
     });
   }
@@ -439,7 +468,8 @@ async function retrieve(query, model, { docId = null, docIds = null, folder = nu
   // Only compare against vectors built with the SAME embedding model — a different
   // model is a different vector space (and possibly a different dim), so cosine there
   // is meaningless. The .vec header records the model; we match it to the query's.
-  const pool = getCache().items.filter(it => it.vec && it.model === model && inFolder(it) && (set ? set.has(it.docId) : (!docId || it.docId === docId)));
+  const canon = canonicalEmbedModel(model);
+  const pool = getCache().items.filter(it => it.vec && it.model === canon && inFolder(it) && (set ? set.has(it.docId) : (!docId || it.docId === docId)));
   if (!pool.length) return [];
   const qvec = await embedQuery(query, model);
   if (!qvec) return [];
@@ -578,10 +608,16 @@ async function importDocInternal(body) {
   const known = (LOC || buildLoc()).has(docId);
   const folder = requested != null ? requested : (known ? locOf(docId) : classifyFolder(body.source));
   writeDoc(doc, folder);
-  writeVectors(docId, vectors, folder, model);
+  // Embedding is DEFERRABLE. If the model was unavailable (every embeddable block came
+  // back null) DON'T write a .vec — the doc imports fine but reads as "un-embedded", and
+  // a later 🔄 rescan (or any edit) re-attempts. A zero .vec would look embedded yet be
+  // dead weight (cosine 0) and would poison the star-map centroid with a zero row.
+  const embedFailed = toEmbed.length > 0 && !toEmbedIdx.some((bi) => vectors[bi]);
+  if (embedFailed) dropVectors(docId, folder);
+  else writeVectors(docId, vectors, folder, model);
   upsertIndex(doc);
   invalidateCache();
-  return { docId, blockCount: blocks.length, folder, dedupedFrom };
+  return { docId, blockCount: blocks.length, folder, dedupedFrom, embedded: !embedFailed };
 }
 
 // POST /api/library/import  { source, docKind, title, authors?, year?, tags?, text, images?[] }
@@ -687,29 +723,82 @@ async function moveLibraryDocs(req, res) {
 //   - deleted files → drop their ghost index entries
 //   - moved files  → handled by the fresh LOC scan (index has no folder; locOf resolves it)
 // Every doc on disk is re-read so entries also pick up manual edits to a doc file.
-// Slow on a big library (full read of every doc) — the client shows a loading state.
-async function rescanLibrary(_req, res) {
+// Probe ONCE whether the embedding model can actually run (installed locally / cloud
+// reachable). rescan uses it to decide whether to (re)embed at all — if the model is
+// down or unspecified, we skip the vector work and only sync the file list.
+async function probeEmbedModel(model) {
+  if (!model) return false;
+  try { const [v] = await embedBatch([" "], model); return Array.isArray(v) && v.length > 0; }
+  catch { return false; }
+}
+
+// Reconcile the library with manual file operations (docs dropped in / moved / deleted
+// under LIBRARY_DIR) AND bring every doc's vectors up to the current embedding model.
+// Streams ndjson progress (start → progress per doc → done). Slow on a big library
+// (full read of every doc), hence the live progress. For each doc it (re)embeds when:
+//   • no .vec yet (import-time failure or a hand-dropped .json), or
+//   • the .vec was built with a DIFFERENT embedding model than the current one.
+// If the current model is unavailable/unspecified, embedding is SKIPPED entirely
+// (existing .vec files are left untouched) and only the file list is synced.
+async function rescanLibrary(req, res) {
+  let body = {}; try { body = await readBody(req); } catch { /* no body → defaults */ }
+  const model = body.model || DEFAULT_MODEL;
+  const canon = canonicalEmbedModel(model);
+
+  res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
+  const send = (o) => { try { res.write(JSON.stringify(o) + "\n"); } catch {} };
+
   try {
     invalidateLoc();
-    const loc = buildLoc();                       // fresh disk truth: docId -> folder
+    const loc = [...buildLoc().entries()];         // fresh disk truth: [id, folder][]
     const oldOrder = new Map(loadIndex().map((d, i) => [d.docId, i]));
+    send({ status: "start", total: loc.length });
+
+    // Gate all (re)embedding on a single availability probe.
+    const embedAvailable = await probeEmbedModel(model);
+    if (!embedAvailable) send({ status: "model-unavailable", model });
+
     const entries = [];
+    let embedded = 0, reembedded = 0, embedFailed = 0, skipped = 0, done = 0;
     for (const [id, folder] of loc) {
       const doc = readDoc(id, folder);
-      if (!doc || doc.type !== "libdoc") continue;   // stray/corrupt json.zst → not a library doc
+      if (!doc || doc.type !== "libdoc") { done++; send({ status: "progress", done, total: loc.length }); continue; }
+
+      // Does this doc need (re)embedding? "missing" = no .vec; "model" = built with a
+      // different embedding model (canonical compare, so a local↔cloud swap of the same
+      // model does NOT count as a change).
+      let need = null;
+      if (!hasVectors(id, folder)) need = "missing";
+      else if (canonicalEmbedModel(readVectors(id, 0, folder).model) !== canon) need = "model";
+
+      if (need) {
+        if (embedAvailable) {
+          let ok = false;
+          try { ok = await embedDocVectors(doc, id, folder, model); } catch { ok = false; }
+          if (ok) { if (need === "missing") embedded++; else reembedded++; }
+          else embedFailed++;
+        } else {
+          skipped++;   // model down → leave the existing .vec (or its absence) as-is
+        }
+      }
+
       // Key the entry by the FILENAME-derived id, not doc.docId: every path resolution
       // (locOf/docPath/get/delete) goes by filename, so a manually copied/renamed file
       // whose internal docId disagrees must still list under the name that resolves.
       entries.push({ ...indexEntryOf(doc), docId: id });
+      done++;
+      send({ status: "progress", done, total: loc.length, embedded, reembedded });
     }
+
     // Keep the list stable: previously-indexed docs in their old order, new ones appended.
     entries.sort((a, b) => (oldOrder.get(a.docId) ?? Infinity) - (oldOrder.get(b.docId) ?? Infinity));
     const added = entries.filter(e => !oldOrder.has(e.docId)).length;
     const removed = [...oldOrder.keys()].filter(id => !entries.some(e => e.docId === id)).length;
     saveIndex(entries);
     invalidateCache();
-    sendJson(res, 200, { ok: true, total: entries.length, added, removed });
-  } catch (e) { sendJson(res, 500, { error: e.message }); }
+    send({ status: "done", total: entries.length, added, removed, embedded, reembedded, embedFailed, skipped, modelUnavailable: !embedAvailable });
+    res.end();
+  } catch (e) { send({ status: "error", message: e.message }); res.end(); }
 }
 
 // POST /api/library/search { query, model? } → doc-level results by best block score
@@ -749,8 +838,9 @@ async function saveDocInternal(doc, model) {
   if (old && old.blocks) {
     let ov = { vectors: null, model: "" };
     try { ov = readVectors(doc.docId, old.blocks.length); } catch {}
-    // reuse an old vector only if it was built with the SAME model (else re-embed all)
-    if (ov.model === model && ov.vectors && ov.vectors.length) {
+    // reuse an old vector only if it was built with the SAME model (canonical, so a
+    // local↔cloud switch of the same model still reuses instead of re-embedding all)
+    if (canonicalEmbedModel(ov.model) === canonicalEmbedModel(model) && ov.vectors && ov.vectors.length) {
       old.blocks.forEach((b, i) => oldMap.set(b.id, { hash: b.hash, vec: ov.vectors[i] || null }));
     }
   }
@@ -769,10 +859,17 @@ async function saveDocInternal(doc, model) {
     toEmbedIdx.forEach((di, k) => { newVecs[di] = embs[k]; });
   }
   writeDoc(doc);
-  writeVectors(doc.docId, newVecs, null, model);
+  // Same deferral rule as import: only skip the .vec when NO embeddable block has a vector
+  // (model down AND nothing reusable). Partial success — some blocks reused, some freshly
+  // embedded — still writes; a lone null slot just scores 0. Dropping a stale .vec on total
+  // failure leaves the doc un-embedded so a rescan/next save retries.
+  const embeddable = doc.blocks.some((b) => b.embed !== false);
+  const haveAny = doc.blocks.some((b, i) => b.embed !== false && newVecs[i]);
+  if (embeddable && !haveAny) dropVectors(doc.docId);
+  else writeVectors(doc.docId, newVecs, null, model);
   upsertIndex(doc);
   invalidateCache();
-  return { reembedded: toEmbed.length };
+  return { reembedded: toEmbed.length, embedded: !(embeddable && !haveAny) };
 }
 
 // POST /api/library/save  { doc, model? } → re-embed only hash-changed blocks

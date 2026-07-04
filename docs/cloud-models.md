@@ -108,3 +108,22 @@ DeepSeek's `reasoning_content`); both are surfaced in the thinking UI.
 Other OpenAI-compatible providers (Kimi, GLM, Groq, Mistral, local vLLM / LM
 Studio / llama.cpp) work the same way: point `baseUrl` at the endpoint and list
 the models.
+
+### Cloud embedding models
+
+You can also run the **embedding** model (archive semantic search + knowledge
+library) in the cloud. Add an embedding model to the same allowlist — e.g.
+OpenRouter's `qwen/qwen3-embedding-8b`:
+
+```json
+{ "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "sk-or-...",
+  "models": ["deepseek/deepseek-r1:free", "qwen/qwen3-embedding-8b"] }
+```
+
+Embedding models appear in the **Embedding model** dropdown (Settings), separate
+from the chat dropdown — the split is automatic. Because `qwen/qwen3-embedding-8b`
+is the **same model** as the local Ollama `qwen3-embedding:8b`, Hey-Koko treats
+them as one vector space (canonicalized to the local name in the `.vec` files), so
+switching between local and cloud does **not** force a full re-index. Note: only
+providers that actually expose `/v1/embeddings` work here (OpenAI, OpenRouter) —
+chat-only endpoints don't.

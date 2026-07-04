@@ -41,6 +41,10 @@ const PREFIX_RE = /^(gpt-|o1|o3|o4|chatgpt-|deepseek|grok|qwen|qwq)/i;
 // /v1/models does NOT report a context length, unlike Anthropic, so we read
 // these instead). Prefix-matched longest-first in contextLengthFor().
 const CONTEXT_LENGTHS = {
+  // GPT-5 family: 5.5 (Apr 2026) is 1M, 5.4 is 1.05M; the original 5.0 is 400K.
+  // Longest-prefix-wins picks the versioned key over the bare "gpt-5".
+  "gpt-5.5": 1000000,
+  "gpt-5.4": 1050000,
   "gpt-5": 400000,
   "gpt-4.1": 1000000,
   "gpt-4o": 128000,
@@ -51,9 +55,10 @@ const CONTEXT_LENGTHS = {
   "o1": 200000,
   "o3": 200000,
   "o4": 200000,
-  // DeepSeek (OpenAI-compatible endpoint at api.deepseek.com): deepseek-chat (V3)
-  // and deepseek-reasoner (R1) both sit at a 64K window.
-  "deepseek": 65536,
+  // DeepSeek V4 (incl. Flash/Pro, from Apr 2026): 1M-token context.
+  "deepseek-v4": 1000000,
+  // DeepSeek V3.2 / R1 (api.deepseek.com deepseek-chat/-reasoner): 128K since Mar 2026.
+  "deepseek": 131072,
   // xAI Grok (OpenAI-compatible at api.x.ai/v1): grok-4 is 256K, others ~128K.
   "grok-4": 256000,
   "grok": 131072,
@@ -61,6 +66,8 @@ const CONTEXT_LENGTHS = {
   // ~128K typical (qwen-turbo/long go higher; 128K is a safe conservative floor).
   "qwen": 131072,
   "qwq": 131072,
+  // Google Gemma 4 (OpenRouter, Apr 2026): 12B/26B/31B are 256K; E2B/E4B are 128K.
+  "gemma-4": 262144,
 };
 
 // Reasoning-family models (o-series + gpt-5) behave differently: max_completion_tokens
@@ -203,8 +210,13 @@ function isOpenAIModel(model) {
 }
 
 function contextLengthFor(model) {
+  if (!model) return 128000;
+  // Strip an OpenRouter-style `provider/` prefix so a slashed id like
+  // `deepseek/deepseek-v4-flash` matches the specific `deepseek-v4` entry rather
+  // than stopping at the generic `deepseek`. Longest key wins (sorted below).
+  const name = (model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model).toLowerCase();
   const keys = Object.keys(CONTEXT_LENGTHS).sort((a, b) => b.length - a.length);
-  for (const k of keys) if (model && model.toLowerCase().startsWith(k)) return CONTEXT_LENGTHS[k];
+  for (const k of keys) if (name.startsWith(k)) return CONTEXT_LENGTHS[k];
   return 128000;
 }
 
@@ -563,4 +575,43 @@ async function complete(model, messages, { signal, temperature } = {}) {
   return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
 }
 
-module.exports = { isOpenAIModel, contextLengthFor, listModels, injectModels, proxyChat, complete };
+// --- Embeddings ------------------------------------------------------------
+
+// The provider that owns this model via an EXPLICIT allowlist entry (never a
+// prefix match). Cloud embedding models are always allowlisted (discover's
+// isChatModelId filters embeddings out), so this cleanly distinguishes a real
+// cloud embedding id (e.g. `qwen/qwen3-embedding-8b`) from a LOCAL Ollama name
+// that merely matches a chat prefix (`qwen3-embedding:8b` matches /^qwen/ but is
+// NOT allowlisted → stays local).
+function allowlistProvider(model) {
+  if (!model) return null;
+  for (const p of loadProviders()) if (p.models.length && p.models.includes(model)) return p;
+  return null;
+}
+
+// Route embeddings: true only for an allowlisted cloud model (see above). Callers
+// (embed.js) use this to send the batch to /v1/embeddings vs local Ollama.
+function isCloudEmbedModel(model) {
+  return allowlistProvider(model) != null;
+}
+
+// POST <apiBase>/embeddings (OpenAI-compatible; OpenRouter supports it too).
+// Returns an array of vectors aligned to `texts`. Throws on error.
+async function embed(model, texts) {
+  const cfg = allowlistProvider(model);
+  if (!cfg) throw new Error("OpenAI 未配置");
+  const r = await fetch(`${apiBase(cfg)}/embeddings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.apiKey}` },
+    body: JSON.stringify({ model, input: texts }),
+  });
+  if (!r.ok) {
+    const txt = await r.text().catch(() => "");
+    throw new Error(`OpenAI embeddings ${r.status}${txt ? ": " + extractApiError(txt).slice(0, 200) : ""}`);
+  }
+  const data = await r.json();
+  // OpenAI shape: {data:[{embedding, index}]}. Sort by index to guarantee order.
+  return (data.data || []).slice().sort((a, b) => (a.index || 0) - (b.index || 0)).map((d) => d.embedding);
+}
+
+module.exports = { isOpenAIModel, contextLengthFor, listModels, injectModels, proxyChat, complete, isCloudEmbedModel, embed };

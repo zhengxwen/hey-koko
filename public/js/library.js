@@ -691,12 +691,17 @@ export function initLibrary() {
     refreshBtn.disabled = true;
     if (loadingEl) loadingEl.hidden = false;
     try {
-      const r = await postJson("/api/library/rescan", {});
+      // Pass the current embed model so rescan can (deferred-)embed any doc that has no
+      // .vec yet — e.g. a YouTube import whose embedding failed because the model was down.
+      const r = await postJson("/api/library/rescan", { model: embedModel() });
       if (r && r.error) throw new Error(r.error);   // postJson doesn't throw on HTTP errors
       await refreshList();
       // The open doc may have been deleted/replaced on disk — reset the preview if gone.
       if (currentDoc && !docs.some((d) => d.docId === currentDoc.docId)) clearPreview();
-      setStatus(t("lib_rescanDone", { total: r.total, added: r.added, removed: r.removed }));
+      let msg = t("lib_rescanDone", { total: r.total, added: r.added, removed: r.removed });
+      if (r.embedded) msg += t("lib_rescanEmbedded", { n: r.embedded });
+      if (r.embedFailed) msg += t("lib_rescanEmbedFailed", { n: r.embedFailed });
+      setStatus(msg);
     } catch (e) {
       setStatus(t("lib_rescanFailed", { error: (e && e.message) || "?" }));
     } finally {
