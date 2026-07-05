@@ -5527,7 +5527,15 @@ button.secondary:disabled {
   border-radius: 8px;
 }
 .libraryUrlHistoryItem {
-  padding: 4px 10px;
+  display: flex;
+  align-items: center;
+}
+.libraryUrlHistoryItem:hover { background: var(--accent-subtle); }
+.libraryUrlHistoryItem + .libraryUrlHistoryItem { border-top: 1px solid var(--line); }
+.libraryUrlHistoryText {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 0 4px 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.8em;
   line-height: 1.4;
@@ -5537,8 +5545,26 @@ button.secondary:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.libraryUrlHistoryItem:hover { background: var(--accent-subtle); color: var(--ink); }
-.libraryUrlHistoryItem + .libraryUrlHistoryItem { border-top: 1px solid var(--line); }
+.libraryUrlHistoryItem:hover .libraryUrlHistoryText { color: var(--ink); }
+.libraryUrlHistoryDel {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  margin: 0 6px;
+  padding: 0;
+  line-height: 1;
+  font-size: 14px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+}
+.libraryUrlHistoryItem:hover .libraryUrlHistoryDel { opacity: 1; }
+.libraryUrlHistoryDel:hover { background: var(--surface-hover); color: var(--ink); }
 /* YouTube import selection modal. Rows + select-all use the canonical `.checkboxLabel`
    for layout (checkbox + text); only modal-specific chrome lives here. */
 .libraryYtModal { width: min(620px, 92vw); }

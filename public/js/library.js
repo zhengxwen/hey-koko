@@ -619,13 +619,26 @@ export function initLibrary() {
     for (const line of hist) {
       const row = document.createElement("div");
       row.className = "libraryUrlHistoryItem";
-      row.textContent = line;
-      row.title = t("lib_urlHistoryHint");
-      row.addEventListener("click", () => {   // click → append the line to the textarea
+      const text = document.createElement("span");
+      text.className = "libraryUrlHistoryText";
+      text.textContent = line;
+      text.title = t("lib_urlHistoryHint");
+      text.addEventListener("click", () => {   // click → append the line to the textarea
         const v = urlTextarea.value;
         urlTextarea.value = v && !v.endsWith("\n") ? `${v}\n${line}` : v + line;
         urlTextarea.focus();
       });
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "libraryUrlHistoryDel";
+      del.textContent = "×";
+      del.title = t("lib_urlHistoryDelete");
+      del.addEventListener("click", (e) => {   // remove just this entry
+        e.stopPropagation();
+        saveUrlHistory(loadUrlHistory().filter((h) => h !== line));
+        renderUrlHistory();
+      });
+      row.append(text, del);
       urlHistoryList.appendChild(row);
     }
   }
