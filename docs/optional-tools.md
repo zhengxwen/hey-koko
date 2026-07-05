@@ -41,6 +41,28 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 ```
 
+**Backend.** Hey-Koko runs MinerU's `pipeline` backend (`mineru -b pipeline`), which is dependency-light and works everywhere. MinerU 3.x's own default (`hybrid-engine` / VLM) is higher-accuracy but runs a **vLLM** engine that JIT-compiles CUDA at startup — it needs the Python dev headers (e.g. `sudo apt install python3.12-dev`) and a supported GPU, and fails with `fatal error: Python.h: No such file or directory` when they're missing. To opt into it once that's set up, start Hey-Koko with `MINERU_BACKEND=hybrid-engine` (set `MINERU_BACKEND=""` to let MinerU choose).
+
+## Unlimited-OCR
+
+Local GPU PDF parsing with [baidu/Unlimited-OCR](https://github.com/baidu/Unlimited-OCR) (a DeepSeek-OCR-derived model). An alternative to MinerU — fully local, no vLLM — that's strong on scanned/image PDFs. **Requires an NVIDIA GPU** (CUDA); no Apple-Silicon/CPU path.
+
+Install into its own venv (its Python 3.12 / torch / CUDA stack is separate from MinerU's):
+
+```bash
+python3.12 -m venv ~/venv/unlimited-ocr
+~/venv/unlimited-ocr/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+~/venv/unlimited-ocr/bin/pip install transformers pillow einops addict easydict pymupdf psutil
+```
+
+Use the CUDA index (`cu130`, `cu124`, …) that matches your driver; on first parse the `baidu/Unlimited-OCR` weights (~6 GB) download from Hugging Face. Point Hey-Koko at the venv:
+
+```bash
+export UNLIMITED_OCR_PYTHON=~/venv/unlimited-ocr/bin/python
+```
+
+Hey-Koko auto-detects `~/venv/unlimited-ocr` even without the env var. Once detected, pick **Unlimited-OCR** from the **PDF import** dropdown at the bottom of settings (MinerU is the default; other options are Unlimited-OCR and Fast/text-only). Any engine falls back to the built-in text extractor if it isn't available or fails.
+
 ## yt-dlp & ffmpeg
 
 YouTube support.

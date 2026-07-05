@@ -47,6 +47,20 @@ function resolveVenvPython(envVar) {
   return win ? "python" : "python3";
 }
 
+// Baidu Unlimited-OCR runs in its OWN venv (Python 3.12 / torch cu130 / CUDA 13 —
+// incompatible with the 3.11 heykoko/tts venv, so never shared). UNLIMITED_OCR_PYTHON
+// overrides; else auto-detect ~/venv/unlimited-ocr. Returns "" when absent so the PDF
+// OCR engine reports unavailable (option hidden) rather than falling back to a python
+// that can't import torch.
+function resolveOcrPython() {
+  if (process.env.UNLIMITED_OCR_PYTHON) return process.env.UNLIMITED_OCR_PYTHON;
+  const win = process.platform === "win32";
+  const sub = win ? ["Scripts", "python.exe"] : ["bin", "python"];
+  const guess = path.join(os.homedir(), "venv", "unlimited-ocr", ...sub);
+  try { if (fs.existsSync(guess)) return guess; } catch { /* ignore */ }
+  return "";
+}
+
 // App data home: everything the server persists (chat archives, knowledge library,
 // background-job queue) plus the cloud-backend config files (claude.json/openai.json)
 // lives under this one directory. HEYKOKO_DIR overrides it — point a throwaway/test
@@ -78,6 +92,13 @@ const config = {
   // to import are reported unavailable rather than breaking the daemon.
   ttsPython: resolveVenvPython("TTS_PYTHON"),
   umapPython: resolveVenvPython("UMAP_PYTHON"),
+  // Local PDF OCR engine (baidu/Unlimited-OCR) interpreter; "" when not installed.
+  ocrPython: resolveOcrPython(),
+  // MinerU backend passed as `-b`. Default "pipeline" (ONNX/torch, dependency-light,
+  // works without vLLM). MinerU's own default (hybrid-engine/VLM) needs vLLM, which
+  // JIT-compiles CUDA and requires python3-dev headers + a supported GPU — set
+  // MINERU_BACKEND=hybrid-engine (etc.) to opt into it. "" → let MinerU pick.
+  mineruBackend: process.env.MINERU_BACKEND || "pipeline",
   WHISPER_MODEL_SEARCH_PATHS: [
     path.join(os.homedir(), ".local", "share", "whisper-cpp"),
     path.join(os.homedir(), "whisper.cpp", "models"),

@@ -396,6 +396,9 @@ if (dom.numCtxSelect) {
     renderContextMeter();
   });
 }
+if (dom.pdfEngineSelect) {
+  dom.pdfEngineSelect.addEventListener("change", saveCurrentSettings);
+}
 if (dom.embedModelSelect) {
   // Capture the value before the user opens the dropdown (options load async).
   let prevEmbedModel = dom.embedModelSelect.value;
@@ -1262,12 +1265,13 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
 const DOC_EXTENSIONS = [".pdf", ".docx", ".pptx", ".eml", ".txt", ".md", ".markdown"];
 
 // Server-side parsing capabilities (detected at startup)
-let serverCapabilities = { pandoc: false, mineru: false };
+let serverCapabilities = { pandoc: false, mineru: false, unlimitedOcr: false };
 async function fetchCapabilities() {
   try {
     const r = await fetch("/api/parse-file/capabilities");
     const caps = await r.json();
     serverCapabilities = caps;
+    syncPdfEngineOptions();
     if (!caps.ready) {
       // Server still detecting tools, retry after a few seconds
       setTimeout(fetchCapabilities, 5000);
@@ -1275,6 +1279,38 @@ async function fetchCapabilities() {
   } catch {}
 }
 fetchCapabilities();
+
+// Show the "PDF import engine" picker only when a server-side PDF engine exists, and
+// reveal each engine option per capability. With no server engine there's only pdf.js
+// (client fallback) → nothing to choose, so the whole control stays hidden.
+function syncPdfEngineOptions() {
+  const m = !!serverCapabilities.mineru, u = !!serverCapabilities.unlimitedOcr;
+  if (dom.pdfEngineOptMineru) dom.pdfEngineOptMineru.hidden = !m;
+  if (dom.pdfEngineOptUnlimited) dom.pdfEngineOptUnlimited.hidden = !u;
+  if (dom.pdfEngineLabel) dom.pdfEngineLabel.hidden = !(m || u);
+  // If the selected engine is unavailable (e.g. an old saved pref, or MinerU absent),
+  // fall back to the first available option so the dropdown never shows a hidden choice.
+  if (dom.pdfEngineSelect) {
+    const v = dom.pdfEngineSelect.value;
+    const ok = (v === "mineru" && m) || (v === "unlimited" && u) || v === "pdfjs";
+    if (!ok) dom.pdfEngineSelect.value = m ? "mineru" : (u ? "unlimited" : "pdfjs");
+  }
+}
+
+// Resolve the user's PDF-engine preference against what the server actually offers.
+// Default (and unknown prefs, e.g. a legacy "auto") behave as MinerU.
+function pickPdfEngine(pref, caps) {
+  const m = !!caps.mineru, u = !!caps.unlimitedOcr;
+  switch (pref) {
+    case "unlimited": return u ? "unlimited" : "pdfjs";
+    case "pdfjs":     return "pdfjs";
+    case "mineru":
+    default:          return m ? "mineru" : "pdfjs";
+  }
+}
+function currentPdfEngine() {
+  return pickPdfEngine(dom.pdfEngineSelect?.value || "mineru", serverCapabilities);
+}
 
 function getFileExtension(name) {
   const dot = name.lastIndexOf(".");
@@ -1763,11 +1799,14 @@ async function selectMultipleFiles(files) {
   }
 }
 
-async function tryServerParse(file, onProgress = null) {
+async function tryServerParse(file, onProgress = null, pdfEngine = null) {
   try {
     const formData = new FormData();
     formData.append("file", file);
-    const response = await fetch("/api/parse-file", { method: "POST", body: formData });
+    // Tell the server which PDF engine to use (mineru | unlimited); absent → server default.
+    const headers = (pdfEngine === "mineru" || pdfEngine === "unlimited")
+      ? { "x-pdf-engine": pdfEngine } : {};
+    const response = await fetch("/api/parse-file", { method: "POST", body: formData, headers });
 
     const contentType = response.headers.get("content-type") || "";
 
@@ -1885,12 +1924,15 @@ async function parseAndSendFile(content, fileInfo) {
         text = result.text;
       }
     } else {
-      const canServer = (ext === ".pdf" && serverCapabilities.mineru) ||
-                        (ext === ".docx" && serverCapabilities.pandoc) ||
-                        (ext === ".pptx" && serverCapabilities.pandoc);
       let serverResult = null;
 
-      if (canServer) {
+      if (ext === ".pdf") {
+        // pdfjs → client fallback below; mineru/unlimited → server parse.
+        const engine = currentPdfEngine();
+        if (engine === "mineru" || engine === "unlimited") {
+          serverResult = await tryServerParse(rawFile, null, engine);
+        }
+      } else if ((ext === ".docx" || ext === ".pptx") && serverCapabilities.pandoc) {
         serverResult = await tryServerParse(rawFile);
       }
 
@@ -1984,11 +2026,15 @@ async function parseDocumentHeadless(fileB64, name, ext, content, onProgress) {
       } catch { text = result.text; }
     } else text = result.text;
   } else {
-    const canServer = (ext === ".pdf" && serverCapabilities.mineru) ||
-                      (ext === ".docx" && serverCapabilities.pandoc) ||
-                      (ext === ".pptx" && serverCapabilities.pandoc);
     let serverResult = null;
-    if (canServer) serverResult = await tryServerParse(rawFile, onProgress);
+    if (ext === ".pdf") {
+      const engine = currentPdfEngine();
+      if (engine === "mineru" || engine === "unlimited") {
+        serverResult = await tryServerParse(rawFile, onProgress, engine);
+      }
+    } else if ((ext === ".docx" || ext === ".pptx") && serverCapabilities.pandoc) {
+      serverResult = await tryServerParse(rawFile, onProgress);
+    }
     if (serverResult) {
       text = serverResult.text;
       images = serverResult.images || [];

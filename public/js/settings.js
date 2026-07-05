@@ -75,6 +75,7 @@ export function saveCurrentSettings() {
       sendTime: dom.sendTimeToggle?.checked ?? true,
       tools: dom.toolsToggle?.checked || false,
       numCtx: dom.numCtxSelect?.value || "32768",
+      pdfEngine: dom.pdfEngineSelect?.value || "mineru",
       embedModel: dom.embedModelSelect?.value || "qwen3-embedding:8b",
       libraryDistill: dom.libraryDistillToggle?.checked ?? true,
       libraryRerank: dom.libraryRerankToggle?.checked || false,
@@ -248,6 +249,7 @@ export function loadSavedSettings() {
   if (dom.toolsToggle) dom.toolsToggle.checked = savedSettings.tools !== undefined ? !!savedSettings.tools : true;
   // Context window
   if (savedSettings.numCtx && dom.numCtxSelect) dom.numCtxSelect.value = savedSettings.numCtx;
+  if (savedSettings.pdfEngine && dom.pdfEngineSelect) dom.pdfEngineSelect.value = savedSettings.pdfEngine;
   // Embedding model selection is applied by loadEmbedModels (after options load).
   // Library distill card defaults to ON; respect an explicit saved off-choice.
   if (dom.libraryDistillToggle) dom.libraryDistillToggle.checked = savedSettings.libraryDistill !== undefined ? !!savedSettings.libraryDistill : true;

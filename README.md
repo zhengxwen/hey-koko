@@ -15,7 +15,7 @@ Hey-Koko gives you a personal AI chat experience without sending a single byte t
 - **Local & private** — conversations, memory, and archives stay on your device. Nothing leaves your machine.
 - **Customizable companion** — set the name, personality (system prompt), and default voice.
 - **Multi-tab chats** — run several independent conversations side by side, each with its own context.
-- **File understanding** — drag in PDF, DOCX, PPTX, EML, images, or plain text; they're parsed and fed to the model.
+- **File understanding** — drag in PDF, DOCX, PPTX, EML, images, or plain text; they're parsed and fed to the model. PDFs can use a selectable local engine — [MinerU](docs/optional-tools.md#mineru) or [Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) (GPU, great on scans) — falling back to fast built-in text extraction.
 - **Vision analysis** — `/analyze` an attached image or video (sampled into frames) with a local vision model.
 - **Web & YouTube** — `/url` fetches and summarizes a web page, or transcribes and tidies up a YouTube video.
 - **Web search** — `/search` queries DuckDuckGo, optionally reading the top results in depth.
@@ -129,6 +129,7 @@ Hey-Koko works with just Ollama. Each helper below unlocks an extra capability w
 |------------|--------|-------------|
 | Better DOCX/PPTX parsing | Pandoc | [optional-tools.md → Pandoc](docs/optional-tools.md#pandoc) |
 | High-quality PDF parsing | MinerU | [optional-tools.md → MinerU](docs/optional-tools.md#mineru) |
+| Local GPU PDF OCR (scans) | Unlimited-OCR | [optional-tools.md → Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) |
 | YouTube support (`/url`) | yt-dlp & ffmpeg | [optional-tools.md → yt-dlp](docs/optional-tools.md#yt-dlp--ffmpeg) |
 | Speech-to-text for videos without subtitles | whisper.cpp | [optional-tools.md → whisper.cpp](docs/optional-tools.md#whispercpp) |
 | Simplified/Traditional Chinese normalization | OpenCC | [optional-tools.md → OpenCC](docs/optional-tools.md#opencc) |

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Selectable local PDF import engine (settings → **PDF import**): MinerU (default), Baidu [Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) (local GPU, strong on scans), or fast built-in text extraction. See [Optional Tools](docs/optional-tools.md).
+- `MINERU_BACKEND` env var to choose MinerU's backend (defaults to the dependency-light `pipeline`).
+
 ## v0.9.0 (2026-06-11)
 
 ### Added

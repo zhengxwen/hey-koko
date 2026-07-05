@@ -6,13 +6,19 @@ const path = require("path");
 const os = require("os");
 const { execFile, execFileSync, spawn } = require("child_process");
 const { sendJson } = require("./utils");
+const config = require("./config");
 
 // Detect tool availability (async, non-blocking)
 let hasPandoc = false;
 let hasMinerU = false;
+let hasUnlimitedOcr = false;
 let detectDone = false;
 let pandocPath = "pandoc";
 let mineruPath = "mineru";
+// Baidu Unlimited-OCR: a local GPU PDF→markdown engine, spawned like MinerU via a
+// thin Python wrapper we ship. Available when its venv python (config.ocrPython) and
+// the wrapper both exist — a cheap file check, no slow torch import at startup.
+const unlimitedOcrScript = path.join(__dirname, "unlimited_ocr.py");
 
 // Find executable in PATH or common locations
 function findExecutable(name) {
@@ -68,11 +74,21 @@ function findExecutable(name) {
   } catch (err) {
     console.log(`[parse-file] MinerU not found (${err && err.message ? err.message : err}), PDF will use client-side fallback`);
   }
+
+  try {
+    if (config.ocrPython && fs.existsSync(config.ocrPython) && fs.existsSync(unlimitedOcrScript)) {
+      hasUnlimitedOcr = true;
+      console.log(`[parse-file] Unlimited-OCR available (python ${config.ocrPython})`);
+    } else {
+      console.log(`[parse-file] Unlimited-OCR not configured (set UNLIMITED_OCR_PYTHON or install ~/venv/unlimited-ocr)`);
+    }
+  } catch { /* leave hasUnlimitedOcr false */ }
+
   detectDone = true;
 })();
 
 function getCapabilities(res) {
-  sendJson(res, 200, { pandoc: hasPandoc, mineru: hasMinerU, ready: detectDone });
+  sendJson(res, 200, { pandoc: hasPandoc, mineru: hasMinerU, unlimitedOcr: hasUnlimitedOcr, ready: detectDone });
 }
 
 // Parse multipart form data (simple single-file parser)
@@ -133,11 +149,18 @@ async function parseFile(req, res) {
     if (ext === ".docx" || ext === ".pptx") {
       await parseDocx(inputPath, tmpDir, res);
     } else if (ext === ".pdf") {
-      // MinerU kill timer follows the caller's ⚙ timeout (x-parse-timeout-s, seconds),
+      // The kill timer follows the caller's ⚙ timeout (x-parse-timeout-s, seconds),
       // floored at 5 min — the chat slider bottoms out at 60s, which would kill any
-      // real PDF; long/OCR-heavy papers need the headroom.
+      // real PDF; long/OCR-heavy papers (and Unlimited-OCR's ~2 min model load) need
+      // the headroom.
       const timeoutMs = Math.max(parseInt(req.headers["x-parse-timeout-s"], 10) || 0, 300) * 1000;
-      await parsePdf(inputPath, tmpDir, res, timeoutMs);
+      // Engine chosen client-side (x-pdf-engine); default MinerU preserves prior behavior.
+      const engine = String(req.headers["x-pdf-engine"] || "mineru").toLowerCase();
+      if (engine === "unlimited") {
+        await parseUnlimitedOcr(inputPath, tmpDir, res, timeoutMs);
+      } else {
+        await parsePdf(inputPath, tmpDir, res, timeoutMs);
+      }
     }
   } catch (error) {
     sendJson(res, 500, { error: error.message });
@@ -209,27 +232,22 @@ function parseDocx(inputPath, tmpDir, res) {
   });
 }
 
-function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000) {
+// PDF → Markdown via a local, GPU-backed model spawned as a subprocess. MinerU and
+// Unlimited-OCR both fit this shape (spawn a tool, stream progress, read a result.md +
+// images/ from an output dir), so they share this core; only the command and label
+// differ. Streams ndjson progress and a final {text, images, tool}.
+function runPdfTool({ cmd, args, tool, label, outputDir, res, timeoutMs }) {
   return new Promise((resolve) => {
-    if (!hasMinerU) {
-      sendJson(res, 501, { error: "mineru_unavailable", fallback: true });
-      resolve();
-      return;
-    }
-
-    const outputDir = path.join(tmpDir, "output");
-    fs.mkdirSync(outputDir, { recursive: true });
-
     // Use spawn for streaming progress
     res.writeHead(200, {
       "Content-Type": "application/x-ndjson; charset=utf-8",
       "Cache-Control": "no-store",
     });
 
-    // detached → MinerU becomes its own process-group leader, so a canceled import
-    // can kill the whole tree (MinerU forks torch/OCR workers a bare proc.kill would
+    // detached → the tool becomes its own process-group leader, so a canceled import
+    // can kill the whole tree (these fork torch/OCR workers a bare proc.kill would
     // orphan). On Windows there are no process groups, so fall back to a plain spawn.
-    const proc = spawn(mineruPath, ["-p", inputPath, "-o", outputDir], {
+    const proc = spawn(cmd, args, {
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
       detached: process.platform !== "win32",
     });
@@ -247,12 +265,12 @@ function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000) {
     };
     const timeout = setTimeout(() => {
       killTree();
-      try { res.write(JSON.stringify({ error: `MinerU timeout (${Math.round(timeoutMs / 60000)} min)` }) + "\n"); res.end(); } catch {}
+      try { res.write(JSON.stringify({ error: `${label} timeout (${Math.round(timeoutMs / 60000)} min)` }) + "\n"); res.end(); } catch {}
       finish();
     }, timeoutMs);
 
     // The libimport job canceled → its loopback request drops and this response
-    // socket closes while MinerU is still churning. Kill the process tree so a
+    // socket closes while the tool is still churning. Kill the process tree so a
     // canceled import doesn't leave Python (+ torch/OCR workers) running to
     // completion in the background. Fires on normal end too — the settled guard
     // makes that a no-op.
@@ -263,7 +281,7 @@ function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000) {
     const isProgressLine = (line) => /\d+%|█|▓|░|page|pages|进度/i.test(line);
 
     proc.on("error", (err) => {
-      try { res.write(JSON.stringify({ error: `MinerU spawn failed: ${err.message}` }) + "\n"); res.end(); } catch {}
+      try { res.write(JSON.stringify({ error: `${label} spawn failed: ${err.message}` }) + "\n"); res.end(); } catch {}
       finish();
     });
 
@@ -292,84 +310,123 @@ function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000) {
       if (settled) return;   // already timed out or canceled (killTree fired) → don't emit a result
 
       if (code !== 0) {
-        res.write(JSON.stringify({ error: `MinerU exited with code ${code}: ${stderrBuf.slice(-500)}` }) + "\n");
+        res.write(JSON.stringify({ error: `${label} exited with code ${code}: ${stderrBuf.slice(-500)}` }) + "\n");
         res.end();
         finish();
         return;
       }
 
-      // Find the generated .md file
       const mdFile = findFile(outputDir, ".md");
       if (!mdFile) {
-        res.write(JSON.stringify({ error: "MinerU produced no markdown output" }) + "\n");
+        res.write(JSON.stringify({ error: `${label} produced no markdown output` }) + "\n");
         res.end();
         finish();
         return;
       }
 
-      let markdown = fs.readFileSync(mdFile, "utf-8");
-      const images = [];
-      const seenHashes = new Map();
-      let imageCounter = 0;
-
-      // Find images directory (MinerU puts images in an "images" subfolder)
-      const imagesDir = path.join(path.dirname(mdFile), "images");
-      if (fs.existsSync(imagesDir)) {
-        // First pass: find all image filenames referenced in the markdown (in order of appearance)
-        const imageFiles = collectImageFiles(imagesDir);
-        const basenameToPath = new Map();
-        for (const imgPath of imageFiles) {
-          basenameToPath.set(path.basename(imgPath), imgPath);
-        }
-
-        // Extract image references from markdown in order of appearance
-        const imgRefRegex = /!\[[^\]]*\]\(([^)]+)\)/g;
-        let match;
-        const referencedBasenames = [];
-        while ((match = imgRefRegex.exec(markdown)) !== null) {
-          const src = match[1];
-          const basename = path.basename(src);
-          if (basenameToPath.has(basename) && !referencedBasenames.includes(basename)) {
-            referencedBasenames.push(basename);
-          }
-        }
-
-        // Second pass: rename only referenced images in order of appearance, deduplicate
-        for (const basename of referencedBasenames) {
-          const imgPath = basenameToPath.get(basename);
-          const imgData = fs.readFileSync(imgPath);
-          const hashKey = imgData.length + ":" + imgData.slice(0, 64).toString("hex");
-
-          let name;
-          if (seenHashes.has(hashKey)) {
-            name = seenHashes.get(hashKey);
-          } else {
-            imageCounter++;
-            const imgExt = path.extname(imgPath).toLowerCase();
-            name = `image_${String(imageCounter).padStart(2, "0")}${imgExt}`;
-            seenHashes.set(hashKey, name);
-            const mime = imgExt === ".png" ? "image/png" : imgExt === ".gif" ? "image/gif" : "image/jpeg";
-            images.push({ name, base64: imgData.toString("base64"), mime });
-          }
-
-          // Replace the image basename in markdown with the new name
-          markdown = markdown.split(basename).join(name);
-        }
-
-        // Remove image references not in the referenced set (unreferenced images)
-        // They won't appear since we only replaced referenced ones
-      }
-
-      // Normalize image markdown to ![](image_XX.ext)
-      markdown = markdown.replace(/!\[[^\]]*\]\(([^)]*image_\d+[^)]*)\)/g, (_, src) => {
-        const match = src.match(/image_\d+\.[a-z]+/i);
-        return match ? `![](${match[0]})` : `![](${src})`;
-      });
-
-      res.write(JSON.stringify({ text: markdown, images, tool: "mineru" }) + "\n");
+      const { text, images } = collectMarkdownOutput(mdFile);
+      res.write(JSON.stringify({ text, images, tool }) + "\n");
       res.end();
       finish();
     });
+  });
+}
+
+// Read a tool's result .md, inline the images it references (from a sibling images/
+// subfolder) as deduped base64 attachments renamed image_NN.ext, and normalize the
+// refs. Shared by every spawn-a-tool PDF engine. Returns { text, images }.
+function collectMarkdownOutput(mdFile) {
+  let markdown = fs.readFileSync(mdFile, "utf-8");
+  const images = [];
+  const seenHashes = new Map();
+  let imageCounter = 0;
+
+  // Images live in an "images" subfolder next to the .md (MinerU and Unlimited-OCR both).
+  const imagesDir = path.join(path.dirname(mdFile), "images");
+  if (fs.existsSync(imagesDir)) {
+    // First pass: find all image filenames referenced in the markdown (in order of appearance)
+    const imageFiles = collectImageFiles(imagesDir);
+    const basenameToPath = new Map();
+    for (const imgPath of imageFiles) {
+      basenameToPath.set(path.basename(imgPath), imgPath);
+    }
+
+    // Extract image references from markdown in order of appearance
+    const imgRefRegex = /!\[[^\]]*\]\(([^)]+)\)/g;
+    let match;
+    const referencedBasenames = [];
+    while ((match = imgRefRegex.exec(markdown)) !== null) {
+      const src = match[1];
+      const basename = path.basename(src);
+      if (basenameToPath.has(basename) && !referencedBasenames.includes(basename)) {
+        referencedBasenames.push(basename);
+      }
+    }
+
+    // Second pass: rename only referenced images in order of appearance, deduplicate
+    for (const basename of referencedBasenames) {
+      const imgPath = basenameToPath.get(basename);
+      const imgData = fs.readFileSync(imgPath);
+      const hashKey = imgData.length + ":" + imgData.slice(0, 64).toString("hex");
+
+      let name;
+      if (seenHashes.has(hashKey)) {
+        name = seenHashes.get(hashKey);
+      } else {
+        imageCounter++;
+        const imgExt = path.extname(imgPath).toLowerCase();
+        name = `image_${String(imageCounter).padStart(2, "0")}${imgExt}`;
+        seenHashes.set(hashKey, name);
+        const mime = imgExt === ".png" ? "image/png" : imgExt === ".gif" ? "image/gif" : "image/jpeg";
+        images.push({ name, base64: imgData.toString("base64"), mime });
+      }
+
+      // Replace the image basename in markdown with the new name
+      markdown = markdown.split(basename).join(name);
+    }
+  }
+
+  // Normalize image markdown to ![](image_XX.ext)
+  markdown = markdown.replace(/!\[[^\]]*\]\(([^)]*image_\d+[^)]*)\)/g, (_, src) => {
+    const m = src.match(/image_\d+\.[a-z]+/i);
+    return m ? `![](${m[0]})` : `![](${src})`;
+  });
+
+  return { text: markdown, images };
+}
+
+function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000) {
+  return new Promise((resolve) => {
+    if (!hasMinerU) {
+      sendJson(res, 501, { error: "mineru_unavailable", fallback: true });
+      resolve();
+      return;
+    }
+    const outputDir = path.join(tmpDir, "output");
+    fs.mkdirSync(outputDir, { recursive: true });
+    const backendArgs = config.mineruBackend ? ["-b", config.mineruBackend] : [];
+    runPdfTool({
+      cmd: mineruPath, args: [...backendArgs, "-p", inputPath, "-o", outputDir],
+      tool: "mineru", label: "MinerU", outputDir, res, timeoutMs,
+    }).then(resolve);
+  });
+}
+
+// Baidu Unlimited-OCR via the shipped Python wrapper (server/unlimited_ocr.py), which
+// rasterizes the PDF and runs the local model, writing result.md + images/ into outputDir.
+function parseUnlimitedOcr(inputPath, tmpDir, res, timeoutMs = 300000) {
+  return new Promise((resolve) => {
+    if (!hasUnlimitedOcr) {
+      sendJson(res, 501, { error: "unlimited_ocr_unavailable", fallback: true });
+      resolve();
+      return;
+    }
+    const outputDir = path.join(tmpDir, "output");
+    fs.mkdirSync(outputDir, { recursive: true });
+    runPdfTool({
+      cmd: config.ocrPython, args: [unlimitedOcrScript, "-p", inputPath, "-o", outputDir],
+      tool: "unlimited-ocr", label: "Unlimited-OCR", outputDir, res, timeoutMs,
+    }).then(resolve);
   });
 }
 
