@@ -52,6 +52,7 @@ macOS steps below — for **Linux** and **Windows** see [docs/install.md](docs/i
    ```bash
    ollama pull gemma4:12b-it-qat   # chat model
    ollama pull x/flux2-klein:9b    # image generation model (optional)
+   ollama pull qwen3-embedding:8b  # embedding model for semantic search & knowledge library (optional)
    ```
 
 5. Start the server:

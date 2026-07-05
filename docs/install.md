@@ -31,6 +31,7 @@ The macOS quick start lives in the [README](../README.md#quick-start). This page
    ```bash
    ollama pull gemma4:12b-it-qat   # chat model
    ollama pull x/flux2-klein:9b    # image generation model (optional)
+   ollama pull qwen3-embedding:8b  # embedding model for semantic search & knowledge library (optional)
    ```
 
 4. Start the server:
@@ -72,6 +73,7 @@ Windows uses [winget](https://learn.microsoft.com/windows/package-manager/winget
    ```powershell
    ollama pull gemma4:12b-it-qat   # chat model
    ollama pull x/flux2-klein:9b    # image generation model (optional)
+   ollama pull qwen3-embedding:8b  # embedding model for semantic search & knowledge library (optional)
    ```
 
 4. Start the server (open a **new** terminal after installing tools so the updated PATH is picked up):
