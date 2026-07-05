@@ -481,30 +481,43 @@ async function triggerBuild(which, folders = scopeFolders) {
   scopeFolders = scope;
   setStatus(t("star_building"), true);
   if (el.rebuildBtn) { el.rebuildBtn.disabled = true; el.rebuildBtn.classList.remove("isOutdated"); }
+  // Snapshot the pre-build builtAt BEFORE enqueuing. A small scope can finish building
+  // before pollBuild even starts; capturing base here (not inside the poll) guarantees
+  // the fresh build's newer builtAt still differs from base, so it's detected as landed
+  // instead of looking like "job gone, no new cache" → a spurious error.
+  let base = null;
+  try { base = (await post("/api/library/starmap", { source: which, folders: scope })).builtAt || null; } catch { /* keep null */ }
   // Already building (e.g. clicked from the stale prompt while a job runs) → just attach.
   if (!activeServerJob("starmap", which, scope)) {
     try { await post("/api/jobs", { kind: "starmap", payload: { source: which, folders: scope }, label: "star map" }); }
     catch { setStatus(t("star_error")); if (el.rebuildBtn) el.rebuildBtn.disabled = false; return; }
   }
-  pollBuild(which, scope);
+  pollBuild(which, scope, base);
 }
 
 // Poll until the in-flight build lands (builtAt changes), then reload. One loop at a
 // time (pollSeq); bails when the overlay closes or the user switches source/scope.
 let pollSeq = 0;
-async function pollBuild(which, folders = scopeFolders) {
+async function pollBuild(which, folders = scopeFolders, base) {
   const scope = which === "archive" ? [] : normScope(folders);
   const seq = ++pollSeq;
-  let base = null;
-  try { base = (await post("/api/library/starmap", { source: which, folders: scope })).builtAt || null; } catch { /* keep null */ }
+  // Caller may hand us the pre-build builtAt (triggerBuild); otherwise capture it now.
+  if (base === undefined) {
+    try { base = (await post("/api/library/starmap", { source: which, folders: scope })).builtAt || null; } catch { base = null; }
+  }
+  let sawActive = false;
   for (let i = 0; i < 600; i++) {
     await new Promise((r) => setTimeout(r, 1000));
     if (seq !== pollSeq || source !== which || !sameScope(scope, scopeFolders) || !el.overlay.classList.contains("isOpen")) return;
     let map; try { map = await post("/api/library/starmap", { source: which, folders: scope }); } catch { continue; }
     const landed = (map.tooFew || (!map.stale && map.docs && map.docs.length)) && (map.builtAt || null) !== base;
     if (landed) { load(which, scope); return; }
-    // Job left the queue without producing a new cache → it failed.
-    if (!activeServerJob("starmap", which, scope)) {
+    // Failure = the job VANISHED without producing a new cache. Only trust "gone" after
+    // we've actually SEEN it active — just after enqueue it may not be in the SSE
+    // snapshot yet, and treating that startup gap as failure is the spurious "出错了".
+    const active = !!activeServerJob("starmap", which, scope);
+    if (active) sawActive = true;
+    else if (sawActive) {
       setStatus(t("star_error"));
       if (el.rebuildBtn) el.rebuildBtn.disabled = false;
       return;
