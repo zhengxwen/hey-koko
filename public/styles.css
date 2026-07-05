@@ -1952,7 +1952,15 @@ button.secondary:disabled {
 .plainBody ul,
 .plainBody ol {
   margin: 0 0 6px;
-  padding-left: 20px;
+  padding-left: 16px;
+}
+
+/* 顶层列表整体再缩进 20px，与正文拉开层次（嵌套层级在此基础上每层再 +20） */
+.markdownBody > ul,
+.markdownBody > ol,
+.plainBody > ul,
+.plainBody > ol {
+  margin-left: 20px;
 }
 
 .markdownBody li + li,
@@ -1963,7 +1971,7 @@ button.secondary:disabled {
 .markdownBody li.task-list-item,
 .plainBody li.task-list-item {
   list-style: none;
-  margin-left: -20px;
+  margin-left: -16px;
 }
 
 .markdownBody li.task-list-item input[type="checkbox"],

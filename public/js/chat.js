@@ -1256,7 +1256,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
         if (!firstChunkReceived) {
           firstChunkReceived = true;
           if (state.streamingInfo) state.streamingInfo.phase = 'streaming';
-          if (!bg) setAvatarState("talking");
+          setAvatarState("talking");   // /0,/1 isolated replies are always foreground (no bg job)
           if (state.activeTabId === tabId) {
             const bubble = dom.messagesEl.querySelector('.streaming-bubble');
             if (bubble) {
@@ -1301,7 +1301,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
         if (!firstChunkReceived) {
           firstChunkReceived = true;
           if (state.streamingInfo) state.streamingInfo.phase = 'streaming';
-          if (!bg) setAvatarState("talking");
+          setAvatarState("talking");   // /0,/1 isolated replies are always foreground (no bg job)
           if (state.activeTabId === tabId) {
             const bubble = dom.messagesEl.querySelector('.streaming-bubble');
             if (bubble) {
@@ -1479,7 +1479,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
         if (!firstChunkReceived) {
           firstChunkReceived = true;
           if (state.streamingInfo) state.streamingInfo.phase = 'streaming';
-          if (!bg) setAvatarState("talking");
+          setAvatarState("talking");   // /0,/1 isolated replies are always foreground (no bg job)
           if (state.activeTabId === tabId) {
             const bubble = dom.messagesEl.querySelector('.streaming-bubble');
             if (bubble) {
@@ -1525,7 +1525,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
         if (!firstChunkReceived) {
           firstChunkReceived = true;
           if (state.streamingInfo) state.streamingInfo.phase = 'streaming';
-          if (!bg) setAvatarState("talking");
+          setAvatarState("talking");   // /0,/1 isolated replies are always foreground (no bg job)
           if (state.activeTabId === tabId) {
             const bubble = dom.messagesEl.querySelector('.streaming-bubble');
             if (bubble) {

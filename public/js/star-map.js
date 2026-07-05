@@ -53,14 +53,14 @@ let matched = null;    // Set<doc index> while a search query is active; null = 
 let folderFilter = null;
 let scopeFolders = [];
 let allDirs = null;    // ["", "papers", "papers/ml", …] fetched once from /api/library/dirs
+let folderCounts = null; // Map<dir, exact doc count> (whole library) — filters empty folders out of the panel
+let panelDirs = [];    // the dirs actually shown in the panel (empty subtrees excluded)
 // A doc is visible iff its own folder's box is ticked (exact match — every doc maps to
 // exactly one row, so boxes are independent, no parent/child cross-talk). null = show all.
 function folderMatch(folder) {
   if (!folderFilter) return true;
   return folderFilter.has(folder || "");
 }
-// First panel open: tick every folder so "default = everything visible" is literal.
-function ensureFilterSet() { if (!folderFilter) folderFilter = new Set(allDirs || [""]); }
 let anim = null;       // in-flight camera animation { from, to, t0, ms }
 // Timeline scrubber: show only docs published on/before `timeCut`. null = show all.
 let timeCut = null, timeMin = 0, timeMax = 0;
@@ -539,25 +539,33 @@ function sameScope(a, b) { const A = normScope(a), B = normScope(b); return A.le
 function returnToFull() { folderFilter = null; load(source, []); if (el.folderMenu && !el.folderMenu.hidden) buildFolderMenu(); }
 
 // ---- folder scoping panel (📁) -------------------------------------------
-// Fetch the library's folder tree once per open. Archive has no folders.
+// Fetch the library's folder tree + per-folder doc counts once per open (archive has
+// no folders). Counts come from the whole-library index, not the currently loaded map,
+// so they stay correct even inside a folder-scoped (B) view.
 async function ensureDirs() {
-  if (allDirs) return allDirs;
+  if (allDirs && folderCounts) return allDirs;
   try { allDirs = (await post("/api/library/dirs", {})).dirs || [""]; }
   catch { allDirs = [""]; }
   if (!allDirs.length) allDirs = [""];
+  folderCounts = new Map();
+  try {
+    const docs = (await post("/api/library/list", {})).docs || [];
+    for (const d of docs) { const f = d.folder || ""; folderCounts.set(f, (folderCounts.get(f) || 0) + 1); }
+  } catch { /* counts stay empty → nothing excluded */ }
   return allDirs;
 }
-// How many loaded docs live directly in a folder — the count the box controls (exact,
-// so each doc is counted under exactly one row, matching the exact-match visibility).
-function countInDir(dir) {
-  if (!DATA || !DATA.docs) return null;
-  return DATA.docs.reduce((n, d) => n + ((d.folder || "") === dir ? 1 : 0), 0);
-}
+// Docs directly in a folder (exact — what its own box toggles).
+function dirExact(dir) { return (folderCounts && folderCounts.get(dir)) || 0; }
 function buildFolderMenu() {
   const m = el.folderMenu; if (!m) return;
-  ensureFilterSet();
+  // Only folders that directly hold ≥1 document — empty dirs (incl. a doc-less root) are
+  // noise, and every doc's own folder always qualifies so nothing is ever fully hidden.
+  // (No count data yet → show everything rather than risk a blank panel.)
+  panelDirs = (allDirs || [""]).filter((d) => !folderCounts || folderCounts.size === 0 || dirExact(d) > 0);
+  if (!panelDirs.length) panelDirs = [""];
+  if (!folderFilter) folderFilter = new Set(panelDirs);
   m.innerHTML = "";
-  const dirs = (allDirs || [""]).filter((d) => d !== "");   // root handled separately below
+  const dirs = panelDirs.filter((d) => d !== "");   // root handled separately below
   // header + A/B explainer
   const head = document.createElement("div"); head.className = "starMapFolderHead";
   head.textContent = t("star_folderTitle"); m.appendChild(head);
@@ -567,12 +575,12 @@ function buildFolderMenu() {
   const bar = document.createElement("div"); bar.className = "starMapFolderBar";
   const allBtn = document.createElement("button"); allBtn.type = "button"; allBtn.textContent = t("star_folderAll");
   const clrBtn = document.createElement("button"); clrBtn.type = "button"; clrBtn.textContent = t("star_folderClear");
-  allBtn.addEventListener("click", () => { folderFilter = new Set(allDirs || [""]); applyFolderFilter(); buildFolderMenu(); });
+  allBtn.addEventListener("click", () => { folderFilter = new Set(panelDirs); applyFolderFilter(); buildFolderMenu(); });
   clrBtn.addEventListener("click", () => { folderFilter = new Set(); applyFolderFilter(); buildFolderMenu(); });
   bar.append(allBtn, clrBtn); m.appendChild(bar);
   // checkbox list (root first, then folders — nested ones indented)
   const list = document.createElement("div"); list.className = "starMapFolderList";
-  const rows = allDirs.includes("") ? ["", ...dirs] : dirs;
+  const rows = panelDirs.includes("") ? ["", ...dirs] : dirs;
   for (const dir of rows) {
     const lab = document.createElement("label"); lab.className = "checkboxLabel starMapFolderRow";
     const depth = dir ? dir.split("/").length : 0;
@@ -582,7 +590,7 @@ function buildFolderMenu() {
     const nm = document.createElement("span"); nm.className = "starMapFolderNm";
     nm.textContent = dir ? dir.split("/").pop() : t("star_folderRoot");
     const ct = document.createElement("span"); ct.className = "starMapFolderCt";
-    const c = countInDir(dir); if (c != null) ct.textContent = c;
+    if (folderCounts && folderCounts.size) ct.textContent = dirExact(dir);
     lab.append(cb, nm, ct); list.appendChild(lab);
   }
   m.appendChild(list);
@@ -598,7 +606,7 @@ function buildFolderMenu() {
 function updateReprojectBtn() {
   const rep = el.folderMenu && el.folderMenu.querySelector("#starMapReprojectBtn"); if (!rep) return;
   const checked = folderFilter ? folderFilter.size : 0;
-  const total = (allDirs || []).length;
+  const total = (panelDirs || []).length;
   // Re-projecting only makes sense for a proper, non-empty subset: ALL ticked = the
   // whole-library map you already have; n===0 = nothing re-projectable (e.g. only the
   // root ticked, which isn't a re-projectable sub-folder). Gate on the normalized n so
@@ -635,7 +643,7 @@ function updateFolderBtn() {
   const show = source !== "archive";
   el.folderBtn.style.display = show ? "" : "none";
   // "active" = the view is actually narrowed: a B scope, or some folders un-ticked.
-  const filtering = folderFilter && folderFilter.size < (allDirs || []).length;
+  const filtering = folderFilter && folderFilter.size < (panelDirs || []).length;
   const active = scopeFolders.length > 0 || filtering;
   el.folderBtn.classList.toggle("isActive", !!(show && active));
 }

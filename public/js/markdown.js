@@ -112,7 +112,7 @@ export function markdownToHtml(markdown) {
   let codeLines = [];
   let inMathBlock = false;
   let mathLines = [];
-  let listType = null;
+  let listStack = []; // nested lists: each level = { tag: "ul"|"ol", indent }
   let inTable = false;
   let tableRows = [];
   let inHtmlTable = false;
@@ -121,9 +121,10 @@ export function markdownToHtml(markdown) {
   let quoteLines = [];
 
   function closeList() {
-    if (!listType) return;
-    html.push(`</${listType}>`);
-    listType = null;
+    while (listStack.length) {
+      const lvl = listStack.pop();
+      html.push(`</li></${lvl.tag}>`);
+    }
   }
 
   function closeQuote() {
@@ -346,31 +347,43 @@ export function markdownToHtml(markdown) {
       continue;
     }
 
-    const listItem = line.match(/^\s*[-*+]\s+(.+)$/);
+    // List item (nested by leading indent). <li> is left open so a deeper list
+    // can be nested inside it; closed lazily on the next sibling / dedent / close.
+    const listItem = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.+)$/);
     if (listItem) {
-      if (listType !== "ul") {
-        closeList();
-        html.push("<ul>");
-        listType = "ul";
+      if (inTable) closeTable();
+      const indent = listItem[1].replace(/\t/g, "    ").length;
+      const tag = /\d/.test(listItem[2]) ? "ol" : "ul";
+      const content = listItem[3];
+
+      // Dedent: close any deeper levels than this item.
+      while (listStack.length && indent < listStack[listStack.length - 1].indent) {
+        const lvl = listStack.pop();
+        html.push(`</li></${lvl.tag}>`);
       }
-      const checkboxMatch = listItem[1].match(/^\[([ xX])\]\s*(.*)/);
+
+      const top = listStack[listStack.length - 1];
+      if (top && indent === top.indent) {
+        if (top.tag !== tag) {            // same level but list type switched
+          html.push(`</li></${top.tag}>`);
+          listStack.pop();
+          html.push(`<${tag}>`);
+          listStack.push({ tag, indent });
+        } else {
+          html.push("</li>");             // sibling: close previous item
+        }
+      } else {                            // deeper (or first) level: open a list
+        html.push(`<${tag}>`);
+        listStack.push({ tag, indent });
+      }
+
+      const checkboxMatch = tag === "ul" && content.match(/^\[([ xX])\]\s*(.*)/);
       if (checkboxMatch) {
         const checked = checkboxMatch[1] !== " " ? " checked disabled" : " disabled";
-        html.push(`<li class="task-list-item"><input type="checkbox"${checked}> ${renderInlineMarkdown(checkboxMatch[2])}</li>`);
+        html.push(`<li class="task-list-item"><input type="checkbox"${checked}> ${renderInlineMarkdown(checkboxMatch[2])}`);
       } else {
-        html.push(`<li>${renderInlineMarkdown(listItem[1])}</li>`);
+        html.push(`<li>${renderInlineMarkdown(content)}`);
       }
-      continue;
-    }
-
-    const orderedItem = line.match(/^\s*\d+\.\s+(.+)$/);
-    if (orderedItem) {
-      if (listType !== "ol") {
-        closeList();
-        html.push("<ol>");
-        listType = "ol";
-      }
-      html.push(`<li>${renderInlineMarkdown(orderedItem[1])}</li>`);
       continue;
     }
 
