@@ -21,6 +21,7 @@ import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup,
 import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
 import { initLibrary, runLibraryImport, notifyLibraryJobsChanged, openLibraryPanel } from './library.js';
+import { initAsk } from './ask.js';
 import { renderPersonalityOptions, saveCurrentPersonaAsPreset, renameCurrentPreset, deleteCurrentPreset, writeBackPersonaToPreset, isBuiltinKey, getCustomPreset, resolveImportedPersonality, resolvePersonaText } from './presets.js';
 import { applyUILanguage, t, getPrompt } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
@@ -2401,6 +2402,7 @@ initArchive();
 // Initialize knowledge library (imports run as SERVER-side libimport jobs; local-doc
 // parsing happens server-side via MinerU/Pandoc, no in-browser parser involved)
 initLibrary();
+initAsk();               // /ask ⚙ params modal + #libsrc source-link click delegation
 loadMentionDocs();       // prime the /ask @mention doc list
 loadMentionArchives();   // prime the /ask #mention conversation-archive list
 

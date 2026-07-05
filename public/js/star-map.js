@@ -12,7 +12,8 @@
 // per-frame buffer upload). Cluster labels are overlaid HTML (WebGL can't draw text).
 // Falls back to Canvas2D where WebGL is unavailable.
 
-import { handleAskCommand, openLibraryDoc, openLibraryPanel } from "./library.js";
+import { openLibraryDoc, openLibraryPanel } from "./library.js";
+import { handleAskCommand } from "./ask.js";
 import { openArchivedChat, openArchivePanel } from "./archive.js";
 import { markdownToHtml } from "./markdown.js";
 import { getActiveTab, createTab, switchTab } from "./tabs.js";

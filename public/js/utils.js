@@ -10,6 +10,24 @@ export function genId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+// POST JSON and parse the response as JSON, via text so a NON-JSON body gives a clear
+// error instead of the browser's cryptic "did not match the expected pattern". The
+// usual cause: a newly-added route whose server wasn't restarted → serveStatic returns
+// a 404 "Not found" (plain text).
+export async function postJson(url, body, signal = null) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+    signal,
+  });
+  const text = await res.text();
+  try { return text ? JSON.parse(text) : {}; }
+  catch {
+    throw new Error(res.ok ? "服务端返回了非 JSON 响应" : `请求失败（${res.status}）——服务端可能需要重启`);
+  }
+}
+
 // Build a chat message, guaranteeing a stable `id`. Use at message-construction
 // sites that the background-jobs queue needs to locate later (placeholders +
 // their results). Spreads the caller's fields over the generated id so an
