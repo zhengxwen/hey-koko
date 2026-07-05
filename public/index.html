@@ -348,6 +348,12 @@
             <button id="bgJobsCloseBtn" type="button" class="bgJobsCloseBtn" aria-label="关闭">×</button>
           </div>
           <div id="bgJobsList" class="bgJobsList"></div>
+          <!-- Wait overlay for a slow bulk delete (cancelling many server jobs + removing
+               their bubbles). Three bouncing dots, animated on the compositor so they keep
+               moving even while the main thread is busy clearing. -->
+          <div id="bgJobsLoading" class="chatLoading" role="status" aria-label="处理中" hidden>
+            <span class="chatLoadingDots"><span></span><span></span><span></span></span>
+          </div>
         </aside>
         <div class="messagesWrap">
           <div id="messages" class="messages" aria-live="polite"></div>
@@ -812,6 +818,11 @@
             <button id="libraryYtCancel" type="button" class="secondary">取消</button>
             <button id="libraryYtConfirm" type="button">导入所选</button>
           </div>
+        </div>
+        <!-- Wait overlay while queuing the selected videos (many at once can freeze the
+             thread for a beat). Three bouncing dots, compositor-animated through the freeze. -->
+        <div id="libraryYtLoading" class="chatLoading" role="status" aria-label="处理中" hidden>
+          <span class="chatLoadingDots"><span></span><span></span><span></span></span>
         </div>
       </div>
     </div>

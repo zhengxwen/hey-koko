@@ -714,20 +714,30 @@ function refreshPlaceholders() {
 // ---- cancel / retry --------------------------------------------------------
 
 // Cancel & remove a job: abort if running, drop its placeholder (or result) bubble.
-export function cancelBgJob(jobId) {
-  const job = state.bgJobs.find((j) => j.id === jobId);
-  if (!job) return;
-  const ctrl = jobControllers.get(jobId);
-  if (ctrl) { try { ctrl.abort(); } catch {} jobControllers.delete(jobId); }
+// Cancel + remove ONE job in memory (abort runner, free the submit gate, cancel the
+// server job, drop its bubble, splice it out) WITHOUT the saveChat/persist/refresh side
+// effects — so a bulk clear can do those ONCE at the end instead of per job (which, over a
+// big queue, re-renders the whole chat N times and freezes the drawer). Returns whether a
+// chat bubble was removed (→ the caller must saveChat).
+function removeJobInMemory(job) {
+  const ctrl = jobControllers.get(job.id);
+  if (ctrl) { try { ctrl.abort(); } catch {} jobControllers.delete(job.id); }
   // If it was parked at the lane submit-gate, free the slot so later video jobs aren't blocked
   // behind a job that's now gone.
   if (job._submitRelease) { job._submitRelease(); job._submitRelease = null; }
   if (job.serverJobId) cancelServerJob(job.serverJobId);   // Option B: cancel it on the server too
   // Remove the bubble (placeholder or already-finished result) from its tab.
   const found = findMsg(job.msgId);
-  if (found) { found.tab.messages.splice(found.index, 1); saveChat(); }
+  let removedBubble = false;
+  if (found) { found.tab.messages.splice(found.index, 1); removedBubble = true; }
   const idx = state.bgJobs.indexOf(job);
   if (idx >= 0) state.bgJobs.splice(idx, 1);
+  return removedBubble;
+}
+export function cancelBgJob(jobId) {
+  const job = state.bgJobs.find((j) => j.id === jobId);
+  if (!job) return;
+  if (removeJobInMemory(job)) saveChat();
   persist();
   refreshPlaceholders();
 }
@@ -834,22 +844,34 @@ function finalizeErrorBubble(job) {
 // KEEP their bubble in the chat — the placeholder is finalized into a permanent error note;
 // only the drawer entry is removed. Everything else (running/queued/paused) is canceled via
 // cancelBgJob, which drops its placeholder. (Done jobs already auto-removed.)
-export function clearAllJobs() {
+export async function clearAllJobs() {
   if (!state.bgJobs.length) return;
   const n = state.bgJobs.length;
   if (!confirm(t('bg_clearAllConfirm', { n }))) return;
-  for (const job of [...state.bgJobs]) {
-    if (job.status === 'error' || job.status === 'interrupted') {
-      finalizeErrorBubble(job);
-      const idx = state.bgJobs.indexOf(job);
-      if (idx >= 0) state.bgJobs.splice(idx, 1);
-    } else {
-      cancelBgJob(job.id);   // aborts runner + cancels server job + removes placeholder
+  // Clearing a big queue cancels every server job + strips its bubble — enough work to
+  // freeze the drawer for a beat. Show the three-dots wait overlay (compositor-animated,
+  // so it keeps bouncing through the freeze) and let it PAINT before the blocking loop.
+  const overlay = document.querySelector('#bgJobsLoading');
+  if (overlay) overlay.hidden = false;
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    for (const job of [...state.bgJobs]) {
+      if (job.status === 'error' || job.status === 'interrupted') {
+        // Keep the error bubble in the chat (finalize → permanent), just drop the job.
+        finalizeErrorBubble(job);
+        const idx = state.bgJobs.indexOf(job);
+        if (idx >= 0) state.bgJobs.splice(idx, 1);
+      } else {
+        removeJobInMemory(job);   // aborts runner + cancels server job + removes placeholder
+      }
     }
+    // Persist + re-render ONCE for the whole batch (not per job).
+    saveChat();
+    persist();
+    refreshPlaceholders();
+  } finally {
+    if (overlay) overlay.hidden = true;
   }
-  saveChat();
-  persist();
-  refreshPlaceholders();
 }
 
 // ---- navigation ------------------------------------------------------------

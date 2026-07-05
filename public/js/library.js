@@ -858,12 +858,23 @@ export function initLibrary() {
   });
   // Reverse the list order → flips the import sequence (e.g. oldest-first for a channel).
   ytReverse.addEventListener("click", () => { ytRows.reverse(); renderYtList(); });
-  function confirmYtModal() {
+  async function confirmYtModal() {
     const auto = ytAutoFolder && ytAutoFolder.checked;
     const picked = ytRows.filter((r) => r.checked)
       .map((r) => auto ? { url: r.url, folder: channelFolderFor(r.channelSlug) } : r.url);
-    closeYtModal();
-    if (picked.length) enqueueUrlImports(picked);
+    if (!picked.length) { closeYtModal(); return; }
+    // Queuing many videos (a whole channel) means N× enqueue → a brief main-thread freeze.
+    // Show the three-dots wait overlay (compositor-animated, keeps bouncing through the
+    // freeze) and let it PAINT before the blocking enqueue loop; then close the modal.
+    const overlay = document.querySelector("#libraryYtLoading");
+    if (overlay) overlay.hidden = false;
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    try {
+      enqueueUrlImports(picked);
+    } finally {
+      if (overlay) overlay.hidden = true;
+      closeYtModal();
+    }
   }
   ytClose.addEventListener("click", closeYtModal);
   ytCancel.addEventListener("click", closeYtModal);

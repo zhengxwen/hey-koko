@@ -717,6 +717,9 @@ p {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
   overflow: hidden;
 }
+/* Positioned so the "queuing selected videos" three-dots overlay (.chatLoading, absolute
+   inset:0) covers just this modal box rather than escaping to the fixed backdrop. */
+.scanModal.libraryYtModal { position: relative; }
 
 .scanModalHeader {
   display: flex;
