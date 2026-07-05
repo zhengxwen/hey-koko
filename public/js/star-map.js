@@ -661,13 +661,22 @@ function setStatus(text, busy = false) {
 }
 
 // ---- geometry ------------------------------------------------------------
-function resize() {
+// Keep the canvas BACKING STORE (bitmap) in lockstep with its CSS display size. The
+// canvas is width/height:100%, so a window resize stretches the element instantly while
+// the bitmap keeps its old dimensions — the browser then rescales that bitmap to fit,
+// turning square points into ellipses. Called every frame (cheap: usually a no-op
+// comparison) so the bitmap is corrected before the stretch is ever visible.
+function syncCanvasSize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
-  const w = el.canvas.clientWidth, h = el.canvas.clientHeight;
-  el.canvas.width = Math.max(1, Math.round(w * DPR)); el.canvas.height = Math.max(1, Math.round(h * DPR));
-  if (usingGL && G) G.gl.viewport(0, 0, el.canvas.width, el.canvas.height);
+  const cw = Math.max(1, Math.round(el.canvas.clientWidth * DPR));
+  const ch = Math.max(1, Math.round(el.canvas.clientHeight * DPR));
+  if (el.canvas.width === cw && el.canvas.height === ch) return false;
+  el.canvas.width = cw; el.canvas.height = ch;
+  if (usingGL && G) G.gl.viewport(0, 0, cw, ch);
   computeFit();
+  return true;
 }
+function resize() { syncCanvasSize(); }
 function computeFit() {
   if (!DATA || !DATA.docs.length) return;
   const pad = 120, w = el.canvas.clientWidth, h = el.canvas.clientHeight;
@@ -1114,7 +1123,7 @@ function draw2d() {
 }
 
 // ---- loop ----------------------------------------------------------------
-function loop() { twinkle += 0.02; stepAnim(); stepPlay(); if (usingGL) drawGL(); else draw2d(); positionLabels(); raf = requestAnimationFrame(loop); }
+function loop() { syncCanvasSize(); twinkle += 0.02; stepAnim(); stepPlay(); if (usingGL) drawGL(); else draw2d(); positionLabels(); raf = requestAnimationFrame(loop); }
 
 // ---- camera --------------------------------------------------------------
 // The camera animates in (data-space centre, log scale) so a combined pan+zoom
