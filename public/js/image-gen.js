@@ -695,11 +695,17 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     const vmime = lastData.videoMime || "video/mp4";
     // "Video generated (W×H, Ns)", suffixed with ×N when a batch, then the model.
     // Duration = frame count / fps (both resolved server-side); omitted if unknown.
-    let dur = "";
+    // Meta after the W×H: duration (frames ÷ fps) then the fps itself — each shown only when known.
+    const metaParts = [];
     if (lastData.length && lastData.fps) {
       const r = Math.round((lastData.length / lastData.fps) * 10) / 10;
-      dur = `, ${Number.isInteger(r) ? r : r.toFixed(1)}s`;
+      metaParts.push(`${Number.isInteger(r) ? r : r.toFixed(1)}s`);
     }
+    if (lastData.fps) {
+      const f = lastData.fps;
+      metaParts.push(`${Number.isInteger(f) ? f : Math.round(f * 100) / 100}fps`);
+    }
+    const dur = metaParts.length ? `, ${metaParts.join(", ")}` : "";
     const sizeLine = t("msg_videoDone", { w: lastData.width || "?", h: lastData.height || "?", dur }, plang);
     let doneLine = (count > 1 ? `${sizeLine} ×${allVideos.length}${allVideos.length < count ? `/${count}` : ""}` : sizeLine)
       + (vidModel ? ` · ${vidModel}` : "");
