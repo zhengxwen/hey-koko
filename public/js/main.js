@@ -33,6 +33,17 @@ import { setBgDeps, restoreBgJobsOnLoad, restoreBgWorkersOnLoad, toggleBgDrawer,
 import { connectServerQueue } from './server-queue.js';   // Option B: SSE stream of server-side gen jobs
 import { initTabGuard } from './tab-guard.js';   // warn when hey-koko is open in 2+ tabs (shared IndexedDB, last save wins)
 
+// Safety net: #chatLoading starts VISIBLE to cover the startup freeze and is hidden
+// after the first render below. If ANY startup step throws before that (top-level
+// module abort), the overlay would otherwise stay up forever with its bouncing dots
+// covering the chat. This timer is registered before all the awaits, so it fires no
+// matter what and force-hides the overlay. It can't hide it early during a real
+// synchronous freeze (single-threaded), so it only ever kicks in on failure.
+setTimeout(() => {
+  const el = document.querySelector("#chatLoading");
+  if (el && !el.hidden) el.hidden = true;
+}, 8000);
+
 // Wire up circular dependencies
 tabsSetRenderChat(renderChat);
 tabsSetRenderAttachments(renderStagedAttachments);
@@ -2468,7 +2479,9 @@ initHighlightUI();
 saveTabs();
 renderTabs();
 updateLockedState();
-renderChat();
+// A render error must NOT skip hiding the overlay (that would leave the bouncing
+// dots stuck over the chat) nor abort the rest of startup — catch and carry on.
+try { renderChat(); } catch (e) { console.error("[startup] initial renderChat failed:", e); }
 // The first render is done — drop the loading overlay that covered the freeze.
 {
   const el = document.querySelector("#chatLoading");

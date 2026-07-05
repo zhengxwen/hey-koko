@@ -91,15 +91,26 @@ function gather(source, folders = []) {
   for (const [, c] of cents) counts.set(c.model, (counts.get(c.model) || 0) + 1);
   let model = "";
   for (const [m, n] of counts) if (!model || n > (counts.get(model) || 0)) model = m;
+  // A corrupt .vec file can decode to a vector of the WRONG length or one holding NaN/Inf
+  // (a bad header that still "fits" won't throw in decodeVectors). Feeding either to UMAP
+  // makes the whole build crash or hang, so pin the expected dimension (the most common
+  // among the majority model's docs) and drop anything that doesn't match — one bad file
+  // no longer takes down the map.
+  const dimCounts = new Map();
+  for (const [, c] of cents) if (c.model === model && c.vec) dimCounts.set(c.vec.length, (dimCounts.get(c.vec.length) || 0) + 1);
+  let dim = 0;
+  for (const [d, n] of dimCounts) if (d && (!dim || n > (dimCounts.get(dim) || 0))) dim = d;
   const items = [];
-  let excluded = 0;
+  let excluded = 0, corrupt = 0;
   for (const [docId, c] of cents) {
     if (c.model !== model) { excluded++; continue; }
+    if (!isCleanVec(c.vec, dim)) { corrupt++; continue; }   // wrong-dim / NaN / Inf → skip
     const folder = library.locOf(docId) || "";
     if (!inScope(folder, scope)) continue;   // B: restrict to the chosen folders
     items.push({ id: docId, vec: c.vec, title: c.title || docId, kind: c.docKind || "doc", snippet: "", blocks: c.blocks || 0, folder });
   }
   if (excluded) console.warn(`[starmap] ${excluded} doc(s) excluded: embedding model ≠ ${model}`);
+  if (corrupt) console.warn(`[starmap] ${corrupt} doc(s) excluded: corrupt vector (wrong dim ≠ ${dim}, or NaN/Inf) — re-embed to restore`);
   const tags = new Map();
   const years = new Map();   // docId → content YEAR (publishedAt date > year field), for the timeline
   try {
@@ -112,6 +123,13 @@ function gather(source, folders = []) {
   } catch { /* no index yet */ }
   for (const it of items) { const y = years.get(it.id); if (y) it.year = y; }
   return { items, model, tags };
+}
+
+// A vector is usable only if it's the expected length and every component is finite.
+function isCleanVec(v, dim) {
+  if (!v || dim === 0 || v.length !== dim) return false;
+  for (let i = 0; i < v.length; i++) if (!Number.isFinite(v[i])) return false;
+  return true;
 }
 
 // First 4-digit year in a date/year string ("2024-01-15" / "2024" / 2024) → int or null.
@@ -296,4 +314,4 @@ async function serveStarmap(req, res) {
   }
 }
 
-module.exports = { computeStarmap, serveStarmap, starmapPath, SOURCES, _test: { normFolders, inScope, hashScope } };
+module.exports = { computeStarmap, serveStarmap, starmapPath, SOURCES, _test: { normFolders, inScope, hashScope, isCleanVec, gather } };

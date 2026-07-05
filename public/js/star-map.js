@@ -505,25 +505,25 @@ async function pollBuild(which, folders = scopeFolders, base) {
   if (base === undefined) {
     try { base = (await post("/api/library/starmap", { source: which, folders: scope })).builtAt || null; } catch { base = null; }
   }
-  let sawActive = false;
+  let sawActive = false, goneStreak = 0;
+  const fail = () => { setStatus(t("star_error")); if (el.rebuildBtn) el.rebuildBtn.disabled = false; };
   for (let i = 0; i < 600; i++) {
     await new Promise((r) => setTimeout(r, 1000));
     if (seq !== pollSeq || source !== which || !sameScope(scope, scopeFolders) || !el.overlay.classList.contains("isOpen")) return;
     let map; try { map = await post("/api/library/starmap", { source: which, folders: scope }); } catch { continue; }
     const landed = (map.tooFew || (!map.stale && map.docs && map.docs.length)) && (map.builtAt || null) !== base;
     if (landed) { load(which, scope); return; }
-    // Failure = the job VANISHED without producing a new cache. Only trust "gone" after
-    // we've actually SEEN it active — just after enqueue it may not be in the SSE
-    // snapshot yet, and treating that startup gap as failure is the spurious "出错了".
+    // Failure = the job VANISHED without producing a new cache. Trust "gone" once we've
+    // SEEN it active (its SSE update arrived, then it left) — but ALSO give up if it never
+    // shows up as active within ~20s. Without that fallback, a build that dies instantly
+    // (e.g. a corrupt .vec crashes the job before its "running" event is seen) would spin
+    // the full 10 minutes showing "building…" instead of failing fast.
     const active = !!activeServerJob("starmap", which, scope);
-    if (active) sawActive = true;
-    else if (sawActive) {
-      setStatus(t("star_error"));
-      if (el.rebuildBtn) el.rebuildBtn.disabled = false;
-      return;
-    }
+    if (active) { sawActive = true; goneStreak = 0; continue; }
+    goneStreak++;
+    if (sawActive || goneStreak >= 20) { fail(); return; }
   }
-  setStatus(t("star_error"));
+  fail();
 }
 // Normalize a folder scope the SAME way the server does (strip slashes, dedup, collapse
 // nested, sort) so cache keys / job-dedup line up on both sides.
