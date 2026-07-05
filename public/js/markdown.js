@@ -259,6 +259,16 @@ export function markdownToHtml(markdown) {
       continue;
     }
 
+    // <details>/<summary> passthrough for collapsible blocks (e.g. the /ask -a
+    // retrieval-notes sub-bubble). Only these two tags are let through raw; the body
+    // lines between them keep rendering as normal markdown. <summary>…</summary>'s
+    // inner text is rendered inline so links/emphasis inside it still work.
+    const detailsOpen = line.trim().match(/^<details(\s+open)?\s*>$/i);
+    if (detailsOpen) { closeList(); if (inTable) closeTable(); html.push(`<details${detailsOpen[1] ? " open" : ""}>`); continue; }
+    if (/^<\/details>\s*$/i.test(line.trim())) { closeList(); html.push("</details>"); continue; }
+    const summaryLine = line.trim().match(/^<summary>([\s\S]*?)<\/summary>$/i);
+    if (summaryLine) { closeList(); html.push(`<summary>${renderInlineMarkdown(summaryLine[1])}</summary>`); continue; }
+
     if (line.trim() === "$$") {
       if (inMathBlock) {
         closeMathBlock();

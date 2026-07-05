@@ -350,22 +350,29 @@ export function parseAskCommand(content) {
   if (!/^\/ask(\s|$)/.test(content || "")) return null;
   let rest = content.replace(/^\/ask\s*/, "");
   const docIds = [], folders = [], archives = [];
-  let topK = null, short = false;
+  let topK = null, short = false, auto = false, dims = null;
   let m;
   // Leading tokens: @doc / @folder/ / #archive mentions, "-n K" (per-ask top-K
-  // override, also "-nK"), "-s"/"--short" (answer from retrieved snippets only —
-  // the DEFAULT is to read the docs behind the hits in full).
-  while ((m = rest.match(/^(?:([@#])(\S+)|-n\s*(\d+)|(--short|-s))(\s+|$)/))) {
+  // override, also "-nK"), "-a"/"--auto" (agentic auto-retrieval), "-s"/"--short"
+  // (snippet-only), '--dims "a, b"|a,b' (comparison columns for auto mode; quoted
+  // form — straight "…" or CJK-IME curly “…” — admits spaces). Captures:
+  //   1 mention sigil, 2 mention tok, 3 -n digits, 4/5/6 --dims value (quoted "/
+  //   curly “ / bare), 7 --auto|-a, 8 --short|-s.
+  while ((m = rest.match(/^(?:([@#])(\S+)|-n\s*(\d+)|--dims\s+(?:"([^"]*)"|“([^”]*)”|(\S+))|(--auto|-a)|(--short|-s))(\s+|$)/))) {
     const sig = m[1], tok = m[2];
+    const dimsVal = m[4] ?? m[5] ?? m[6];
     if (sig === "#") archives.push(tok);                     // "#archive" → scope to a conversation archive (read whole)
     else if (sig === "@") {
       if (tok.endsWith("/")) folders.push(tok.slice(0, -1));   // "@folder/" → scope to a sub-folder (+ nested)
       else docIds.push(tok);                                    // "@docId"   → scope to one doc (read whole)
     } else if (m[3]) topK = Math.min(50, Math.max(1, parseInt(m[3], 10)));
+    else if (dimsVal != null) dims = dimsVal.split(/[,，、]/).map((s) => s.trim()).filter(Boolean).slice(0, 12);
+    else if (m[7]) auto = true;
     else short = true;
     rest = rest.slice(m[0].length);
   }
-  return { docIds, folders, archives, topK, short, query: rest.trim() };
+  if (dims && !dims.length) dims = null;
+  return { docIds, folders, archives, topK, short, auto, dims, query: rest.trim() };
 }
 
 // scope: { docIds:[], folders:[], archives:[] }. A folder mention (@folder/) scopes
@@ -468,6 +475,314 @@ export async function handleAskCommand(query, tab, scope = {}, insertAt = null) 
     if (state.currentAbortController === abort) setGenerating(false);
   }
   await rerender();
+}
+
+// ======================================================================
+// Auto mode (/ask -a) — agentic auto-retrieval. The model plans its own search
+// keywords, searches the library over one or more rounds, reads what it finds, and
+// answers. Context-safe: if the matched docs fit num_ctx they're read in one shot
+// (fast path); if not, each is read alone into a compact note and the answer is
+// synthesized from the notes (slow / map-reduce path). See docs/plans/auto-ask.md.
+// ======================================================================
+
+const AUTO_ROUNDS = 3;    // max planning rounds (loop-until-dry)
+const AUTO_MAXDOCS = 12;  // hard cap on docs read per run
+
+// Prompt fragments, per PROMPT-LANGUAGE setting (like ASK_I18N). Functions take
+// interpolation args. Kept terse; the model does the work.
+const AUTO_PROMPTS = {
+  zh: {
+    planSys: '你是知识库检索规划助手。根据用户任务，生成 1-5 个用于向量检索的简短查询（关键词或短语，覆盖任务的不同方面）。再判断这是否是需要跨多篇文档对比的任务；若是且用户未给出对比维度，提出 2-6 个对比维度。只输出 JSON，不要任何解释或代码块：{"queries":["…"],"isCompare":true或false,"dims":["…"]}',
+    planMoreSys: '你是知识库检索规划助手。下面是已从知识库读到的文档笔记。判断现有信息是否足以回答任务：足够则 done 置 true；不够则给出 1-3 个补充检索查询以覆盖缺失的方面。只输出 JSON：{"done":true或false,"queries":["…"]}',
+    readSys: '阅读下面这篇文档，抽取与任务最相关的要点，用简洁的要点列表（每行以 - 开头）输出，忽略无关内容。',
+    readSchemaSys: (dims) => `阅读下面这篇文档，针对以下每个维度用一两句话总结该文档的情况。维度：${dims}。用 markdown 输出，每个维度一行，格式「**维度名**：内容」。`,
+    synthFull: '你是知识库助手。下面是检索到并通读的多篇文档全文，请据此完成任务（如总结、生成表格）。',
+    synthFullCompare: (dims) => `你是知识库助手。下面是检索到的多篇文档全文。请就任务对这些文档进行跨文档对比，按维度（${dims}）组织成一个 markdown 对比表格（列＝维度，行＝文档），并在表格后给出简要差异分析。`,
+    synthNotes: '你是知识库助手。下面是从多篇文档中提取的笔记，请据此完成任务，并注明结论来自哪篇（用文档标题）。',
+    synthNotesCompare: (dims) => `你是知识库助手。下面是从多篇文档中按维度提取的笔记。请生成一个 markdown 对比表格（列＝维度：${dims}，行＝各文档标题），并在表格后给出差异分析。`,
+    taskLabel: '任务：', docLabel: (t) => `文档标题：${t}\n\n正文：\n`, notesLabel: '已读文档笔记：\n', fullLabel: '文档全文：\n',
+  },
+  'zh-Hant': {
+    planSys: '你是知識庫檢索規劃助手。根據用戶任務，生成 1-5 個用於向量檢索的簡短查詢（關鍵詞或短語，覆蓋任務的不同方面）。再判斷這是否是需要跨多篇文件對比的任務；若是且用戶未給出對比維度，提出 2-6 個對比維度。只輸出 JSON，不要任何解釋或代碼塊：{"queries":["…"],"isCompare":true或false,"dims":["…"]}',
+    planMoreSys: '你是知識庫檢索規劃助手。下面是已從知識庫讀到的文件筆記。判斷現有資訊是否足以回答任務：足夠則 done 置 true；不夠則給出 1-3 個補充檢索查詢以覆蓋缺失的方面。只輸出 JSON：{"done":true或false,"queries":["…"]}',
+    readSys: '閱讀下面這篇文件，抽取與任務最相關的要點，用簡潔的要點列表（每行以 - 開頭）輸出，忽略無關內容。',
+    readSchemaSys: (dims) => `閱讀下面這篇文件，針對以下每個維度用一兩句話總結該文件的情況。維度：${dims}。用 markdown 輸出，每個維度一行，格式「**維度名**：內容」。`,
+    synthFull: '你是知識庫助手。下面是檢索到並通讀的多篇文件全文，請據此完成任務（如總結、生成表格）。',
+    synthFullCompare: (dims) => `你是知識庫助手。下面是檢索到的多篇文件全文。請就任務對這些文件進行跨文件對比，按維度（${dims}）組織成一個 markdown 對比表格（列＝維度，行＝文件），並在表格後給出簡要差異分析。`,
+    synthNotes: '你是知識庫助手。下面是從多篇文件中提取的筆記，請據此完成任務，並註明結論來自哪篇（用文件標題）。',
+    synthNotesCompare: (dims) => `你是知識庫助手。下面是從多篇文件中按維度提取的筆記。請生成一個 markdown 對比表格（列＝維度：${dims}，行＝各文件標題），並在表格後給出差異分析。`,
+    taskLabel: '任務：', docLabel: (t) => `文件標題：${t}\n\n正文：\n`, notesLabel: '已讀文件筆記：\n', fullLabel: '文件全文：\n',
+  },
+  en: {
+    planSys: 'You are a knowledge-library retrieval planner. From the user\'s task, produce 1-5 short vector-search queries (keywords/phrases covering different facets). Also judge whether this is a task that compares MULTIPLE documents; if so and the user gave no comparison dimensions, propose 2-6 dimensions. Output ONLY JSON, no prose or code fences: {"queries":["…"],"isCompare":true or false,"dims":["…"]}',
+    planMoreSys: 'You are a knowledge-library retrieval planner. Below are notes already read from the library. Decide whether the info suffices to answer the task: set done=true if so; otherwise give 1-3 additional search queries covering the missing facets. Output ONLY JSON: {"done":true or false,"queries":["…"]}',
+    readSys: 'Read the document below and extract the points most relevant to the task as a concise bullet list (each line starting with -), ignoring irrelevant content.',
+    readSchemaSys: (dims) => `Read the document below and summarize it against EACH of these dimensions in a sentence or two. Dimensions: ${dims}. Output markdown, one line per dimension as "**dimension**: …".`,
+    synthFull: 'You are a knowledge-library assistant. Below is the full text of several retrieved documents; use it to carry out the task (summarize, build a table, …).',
+    synthFullCompare: (dims) => `You are a knowledge-library assistant. Below is the full text of several retrieved documents. Compare them across the task, organized as a markdown comparison table (columns = dimensions: ${dims}, rows = documents), followed by a brief difference analysis.`,
+    synthNotes: 'You are a knowledge-library assistant. Below are notes extracted from several documents; use them to carry out the task and attribute conclusions to the document (by title) they came from.',
+    synthNotesCompare: (dims) => `You are a knowledge-library assistant. Below are per-dimension notes from several documents. Produce a markdown comparison table (columns = dimensions: ${dims}, rows = document titles), followed by a difference analysis.`,
+    taskLabel: 'Task: ', docLabel: (t) => `Document title: ${t}\n\nBody:\n`, notesLabel: 'Notes read so far:\n', fullLabel: 'Full text:\n',
+  },
+};
+const autoL = () => AUTO_PROMPTS[getPromptLanguage()] || AUTO_PROMPTS.en;
+
+// Lenient JSON extraction for the planner's output: pull the first {...}, strip a
+// trailing comma, JSON.parse. Auto-mode planning JSON has no LaTeX so this is far
+// simpler than the server's parseJsonLoose.
+function lightParseJson(s) {
+  const m = String(s || "").match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try { return JSON.parse(m[0]); } catch { /* try repair */ }
+  try { return JSON.parse(m[0].replace(/,\s*([}\]])/g, "$1")); } catch { return null; }
+}
+
+// One /api/chat turn, accumulating the streamed reply into a string. Reused for the
+// planning / per-doc read / synthesis calls. onToken(acc) streams the synthesis; the
+// others omit it and just await the full text. Mirrors runLibraryQuery's error and
+// stream handling (429 body surfaced, inline {"error"} line surfaced).
+async function chatOnce(messages, { signal = null, onToken = null, temperature = 0.3 } = {}) {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: dom.modelSelect.value, messages, stream: true, options: { temperature, num_ctx: getNumCtx() } }),
+    signal,
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { const j = JSON.parse(await res.text()); msg = cleanErrorMessage(j.error ?? j) || msg; } catch { /* keep status */ }
+    throw new Error(msg);
+  }
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "", out = "", streamErr = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const m = JSON.parse(line);
+        if (m.error && !out) streamErr = cleanErrorMessage(m.error);
+        const tok = (m.message && m.message.content) || "";
+        if (tok) { out += tok; if (onToken) onToken(out); }
+      } catch { /* ignore partial / non-JSON lines */ }
+    }
+  }
+  if (!out && streamErr) throw new Error(streamErr);
+  return out;
+}
+
+// Run each query through /api/library/retrieve and union the hit docIds (first-seen
+// order, best score first within a query), skipping anything already in `seen` or in
+// this batch. Returns [{docId,title,docKind}]. Folder-scoped when folders given.
+async function retrieveUnion(queries, { folders = [], seen = new Set(), signal = null } = {}) {
+  const out = [], batch = new Set();
+  for (const q of queries) {
+    let r;
+    try {
+      r = await postJson("/api/library/retrieve", {
+        query: q, model: embedModel(),
+        folder: folders[0] || null, folders,
+        topK: askTopK(), attachImages: false,
+        rerank: dom.libraryRerankToggle && dom.libraryRerankToggle.checked ? dom.modelSelect.value : "",
+        language: getPromptLanguage(),
+      }, signal);
+    } catch (e) { if (e && e.name === "AbortError") throw e; continue; }
+    for (const h of (r.hits || [])) {
+      if (!h.docId || seen.has(h.docId) || batch.has(h.docId)) continue;
+      batch.add(h.docId);
+      out.push({ docId: h.docId, title: h.title, docKind: h.docKind });
+    }
+  }
+  return out;
+}
+
+// Planner call. round 1: returns {queries, isCompare, dims}. Later rounds (with
+// accumulated notes): returns {done, queries}. Any failure → a safe fallback so the
+// run degrades to a single-round plain retrieval instead of erroring out.
+async function planQueries(task, { notes = [], round = 1, signal = null } = {}) {
+  const L = autoL();
+  let messages;
+  if (round === 1 || !notes.length) {
+    messages = [{ role: "system", content: L.planSys }, { role: "user", content: L.taskLabel + task }];
+  } else {
+    const notesText = notes.map((n) => `【${n.title}】\n${n.note}`).join("\n\n");
+    messages = [{ role: "system", content: L.planMoreSys }, { role: "user", content: L.taskLabel + task + "\n\n" + L.notesLabel + notesText }];
+  }
+  let j = null;
+  try { j = lightParseJson(await chatOnce(messages, { signal, temperature: 0.2 })); }
+  catch (e) { if (e && e.name === "AbortError") throw e; }
+  if (!j) return round === 1 ? { queries: [task], isCompare: false, dims: null } : { done: true, queries: [] };
+  const queries = Array.isArray(j.queries) ? j.queries.filter((q) => typeof q === "string" && q.trim()).slice(0, 5) : [];
+  const dims = Array.isArray(j.dims) ? j.dims.filter((d) => typeof d === "string" && d.trim()).slice(0, 8) : null;
+  return { queries: queries.length ? queries : (round === 1 ? [task] : []), isCompare: !!j.isCompare, dims, done: !!j.done };
+}
+
+// Fetch ONE doc's full body text (reusing fullDocsContext, which skips conversation
+// blocks + video images and truncates to the budget). → {title, docKind, text, truncated}.
+async function fetchDocText(docId, budget, signal) {
+  const r = await fullDocsContext([docId], budget, signal, 0);
+  const meta = (r.docs && r.docs[0]) || { title: docId, docKind: "doc" };
+  return { docId, title: meta.title, docKind: meta.docKind, text: r.text, truncated: r.truncated };
+}
+
+// Read ONE doc into a compact note (map-reduce map step). Schema-first when dims given
+// (aligned per-dimension note for comparison); free-form bullets otherwise.
+async function readDocNote(task, doc, dims, signal) {
+  const L = autoL();
+  const sys = dims && dims.length ? L.readSchemaSys(dims.join(" / ")) + "\n\n" + L.taskLabel + task
+                                   : L.readSys + "\n\n" + L.taskLabel + task;
+  const user = L.docLabel(doc.title) + doc.text;
+  return chatOnce([{ role: "system", content: sys }, { role: "user", content: user }], { signal, temperature: 0.2 });
+}
+
+// The collapsible retrieval-notes sub-bubble (markdown <details>). Each note header is
+// a clickable #libsrc link to its doc; the body is the note's markdown.
+function notesDetails(notes) {
+  if (!notes || !notes.length) return "";
+  const body = notes.map((n) =>
+    `${srcLinkMd(`${kindIcon(n.docKind)} ${n.title}`, { docId: n.docId })}\n\n${n.note}`
+  ).join("\n\n");
+  return `\n\n<details>\n<summary>${t("auto_notesHeader", { n: notes.length })}</summary>\n\n${body}\n\n</details>`;
+}
+
+
+// Orchestrator for "/ask -a …". Same bubble/abort/setGenerating plumbing as
+// handleAskCommand. scope may carry { folders, dims }. insertAt like handleAskCommand.
+export async function handleAutoAsk(task, tab, scope = {}, insertAt = null) {
+  const folders = (scope && scope.folders) || [];
+  const explicitDims = (scope && scope.dims && scope.dims.length) ? scope.dims : null;
+  const { renderChat, setGenerating } = await import('./chat.js');
+  const rerender = async () => { saveTabs(); renderChat(); };
+  const now = Date.now();
+  const amsg = { id: genId(), role: "assistant", content: t("auto_planning", { round: 1 }), searching: true, timestamp: now + 1 };
+  if (insertAt == null) {
+    const toks = ["-a", ...folders.map((f) => `@${f}/`)];
+    if (explicitDims) toks.push(`--dims "${explicitDims.join(", ")}"`);
+    tab.messages.push({ id: genId(), role: "user", content: `/ask ${toks.join(" ")} ${task}`, timestamp: now });
+    tab.messages.push(amsg);
+  } else {
+    tab.messages.splice(insertAt, 0, amsg);
+  }
+  const abort = new AbortController();
+  state.currentAbortController = abort;
+  setGenerating(true);
+  await rerender();
+  const started = Date.now();
+  let streamed = false;
+  const signal = abort.signal;
+  // Live process trace: `log` = persisted step lines (queries, dims, docs found —
+  // shown live AND kept as the final "search process" collapsible); `status` = the
+  // transient current-activity line (reading X / synthesizing). The bubble shows both.
+  const log = [];
+  let status = "";
+  const showTrace = () => { amsg.content = [log.join("\n\n"), status].filter(Boolean).join("\n\n"); rerender(); };
+  const addLog = (line) => { log.push(line); status = ""; showTrace(); };
+  const setStatus = (s) => { status = s; showTrace(); };
+  let lastPaint = 0;
+  const paint = () => { const n = Date.now(); if (n - lastPaint > 120) { lastPaint = n; rerender(); } };
+  try {
+    let dims = explicitDims, wantCompare = !!explicitDims, dimsDecided = !!explicitDims;
+    const seen = new Set(), notes = [], docMeta = [];
+    let truncatedAny = false;
+    const budget = Math.max(2000, getNumCtx() - 8192);   // synth/read token budget
+    if (explicitDims) addLog(t("auto_dims", { dims: explicitDims.join(" / ") }));
+
+    // ---- GATHER: plan → retrieve → read, looping until done / dry / caps ----
+    for (let round = 1; round <= AUTO_ROUNDS && seen.size < AUTO_MAXDOCS; round++) {
+      setStatus(t("auto_planning", { round }));
+      const plan = await planQueries(task, { notes, round, signal });
+      if (round === 1 && !dimsDecided) {
+        wantCompare = plan.isCompare;
+        if (wantCompare && plan.dims && plan.dims.length) dims = plan.dims;
+        dimsDecided = true;
+        if (dims && dims.length) addLog(t("auto_dims", { dims: dims.join(" / ") }));
+      }
+      if (plan.done && round > 1) break;
+      const queries = plan.queries && plan.queries.length ? plan.queries : [task];
+      // Show the ACTUAL queries the model chose (backticked so they read as terms).
+      addLog(t("auto_traceRound", { round }) + queries.map((q) => "`" + q + "`").join(" / "));
+      setStatus(t("auto_searching", { n: queries.length }));
+      const fresh = await retrieveUnion(queries, { folders, seen, signal });
+      if (!fresh.length) { addLog(t("auto_traceDry")); break; }   // dry
+      const take = fresh.slice(0, AUTO_MAXDOCS - seen.size);
+      // Show which docs surfaced, one per bullet line, each a clickable library link.
+      addLog(t("auto_traceFound", { n: take.length }) + "\n" +
+        take.map((d) => `* ${srcLinkMd(`${kindIcon(d.docKind)} ${d.title}`, { docId: d.docId })}`).join("\n"));
+
+      // FAST PATH (round 1 only): if all fresh docs fit the window and it's not a
+      // comparison, read them together in one call — cheapest, most faithful, and
+      // avoids per-doc notes entirely.
+      if (round === 1 && !wantCompare) {
+        const full = await fullDocsContext(take.map((d) => d.docId), askFullBudget(), signal, 0);
+        if (full.text && estimateTokens(full.text) <= budget) {
+          // Promote the live trace to the top "search process" block; body streams answer.
+          amsg.autoProcess = log.join("\n\n");
+          amsg.content = t("auto_synth");
+          rerender();
+          const L = autoL();
+          const sys = L.synthFull + "\n\n" + L.fullLabel + full.text;
+          const answer = await chatOnce([{ role: "system", content: sys }, { role: "user", content: L.taskLabel + task }],
+            { signal, temperature: 0.3, onToken: (acc) => { streamed = true; amsg.searching = false; amsg.content = acc; paint(); } });
+          amsg.searching = false;
+          amsg.content = (answer || t("lib_noAnswer")) + sourcesMarkdown(full.docs) + (full.truncated ? `\n\n${t("lib_truncatedNote")}` : "");
+          return;   // done — finally block still runs (paints via rerender)
+        }
+      }
+
+      // SLOW PATH: read each fresh doc alone into a compact note (map-reduce).
+      let i = 0;
+      for (const d of take) {
+        i++;
+        setStatus(t("auto_traceReading", { i: seen.size + i, n: Math.min(AUTO_MAXDOCS, seen.size + take.length), title: d.title }));
+        seen.add(d.docId);
+        let info;
+        try { info = await fetchDocText(d.docId, askFullBudget(), signal); }   // per-doc read budget (chars), reuses the ⚙/auto budget
+        catch (e) { if (e && e.name === "AbortError") throw e; continue; }
+        if (!info.text) continue;
+        truncatedAny = truncatedAny || info.truncated;
+        const note = await readDocNote(task, info, dims, signal);
+        if (!note.trim()) continue;
+        notes.push({ docId: d.docId, title: info.title, docKind: info.docKind, note: note.trim() });
+        docMeta.push({ docId: d.docId, title: info.title, docKind: info.docKind });
+      }
+    }
+
+    if (!notes.length) { amsg.searching = false; amsg.content = t("lib_noResults"); return; }
+
+    // ---- SYNTHESIZE from the accumulated notes ----
+    // Promote the live trace to the top "search process" block; body streams the answer.
+    amsg.autoProcess = log.join("\n\n");
+    amsg.content = t("auto_synth");
+    rerender();
+    const L = autoL();
+    const notesText = notes.map((n) => `【${n.title}】\n${n.note}`).join("\n\n");
+    const sys = (wantCompare && dims && dims.length ? L.synthNotesCompare(dims.join(" / ")) : L.synthNotes)
+      + "\n\n" + L.notesLabel + notesText;
+    const answer = await chatOnce([{ role: "system", content: sys }, { role: "user", content: L.taskLabel + task }],
+      { signal, temperature: 0.3, onToken: (acc) => { streamed = true; amsg.searching = false; amsg.content = acc; paint(); } });
+    amsg.searching = false;
+    amsg.content = (answer || t("lib_noAnswer")) + notesDetails(notes) + sourcesMarkdown(docMeta)
+      + (truncatedAny ? `\n\n${t("lib_truncatedNote")}` : "");
+  } catch (e) {
+    amsg.searching = false;
+    // Keep the streamed partial answer if any; the process trace lives in autoProcess
+    // (set in `finally`) so it survives even an abort during the gather phase.
+    const kept = streamed && amsg.content ? amsg.content + "\n\n" : "";
+    amsg.content = kept + (e && e.name === "AbortError" ? t("lib_askStopped") : t("lib_askFailed") + e.message);
+  } finally {
+    // Backstop: ensure the search-process trace is captured at the top even on the
+    // no-results / abort-during-gather paths (the synth paths already set it).
+    if (log.length && !amsg.autoProcess) amsg.autoProcess = log.join("\n\n");
+    amsg.genMs = Date.now() - started;
+    if (state.currentAbortController === abort) setGenerating(false);
+    await rerender();   // in finally so the fast-path `return` still paints the result
+  }
 }
 
 // Wire the ⚙ /ask-params modal (gear next to the embedding-model select) and the

@@ -146,6 +146,7 @@ function saveChatMessage(message) {
   // User text highlights / annotations (content-anchored display decorations).
   if (message.highlights && message.highlights.length) stored.highlights = message.highlights;
   if (message.thinking) stored.thinking = message.thinking;
+  if (message.autoProcess) stored.autoProcess = message.autoProcess;   // /ask -a search-process trace
   if (message.toolSteps && message.toolSteps.length) stored.toolSteps = message.toolSteps;
   // A background-job placeholder must survive a reload as a placeholder (not a blank
   // bubble): persist its id (the job's reattach anchor) + the placeholder fields so

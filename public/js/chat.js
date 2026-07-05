@@ -16,7 +16,7 @@ import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
 import { isTranscriptSection, transcriptMark, cardMark } from './library.js';
-import { parseAskCommand, handleAskCommand } from './ask.js';
+import { parseAskCommand, handleAskCommand, handleAutoAsk } from './ask.js';
 import { kindIcon } from './mentions.js';
 import { buildPendingGenBubble } from './pending-gen.js';
 import { enqueueBgJob, releaseEnhancingJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
@@ -620,7 +620,12 @@ function resendChatMessage(index) {
   // /ask on resend / edit-then-enter: regenerate the library answer in place (the old
   // answer at index+1 was already removed above). The user bubble stays at `index`.
   const askResend = parseAskCommand(message.content);
-  if (askResend && (askResend.query ||
+  if (askResend && askResend.auto && askResend.query) {
+    // Auto mode regenerates in place — re-plans + re-searches (may differ run to run).
+    handleAutoAsk(askResend.query, tab, { folders: askResend.folders, dims: askResend.dims }, index + 1);
+    return;
+  }
+  if (askResend && !askResend.auto && (askResend.query ||
       ((askResend.docIds.length || askResend.archives.length) && !askResend.folders.length))) {
     // Question-less but doc/archive-scoped asks regenerate too (default summary).
     handleAskCommand(askResend.query, tab, { docIds: askResend.docIds, folders: askResend.folders, archives: askResend.archives, topK: askResend.topK, short: askResend.short }, index + 1);
@@ -2366,6 +2371,19 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   // Supports "/ask @docId1 @docId2 question" to scope the search to specific docs.
   const ask = parseAskCommand(content);
   if (ask !== null) {
+    // Auto mode (-a): the assistant plans its own keywords, searches, reads, answers.
+    // Needs a real task to plan from.
+    if (ask.auto) {
+      if (!ask.query) {
+        tab.messages.push({ role: "user", content, timestamp: Date.now() });
+        tab.messages.push({ role: "assistant", content: t("auto_usage"), timestamp: Date.now() });
+        saveChat();
+        if (state.activeTabId === tabId) renderChat();
+        return;
+      }
+      await handleAutoAsk(ask.query, tab, { folders: ask.folders, dims: ask.dims });
+      return;
+    }
     // No question is fine when whole docs/archives are mentioned (defaults to a
     // summary); folder scope still needs a real question (retrieval must embed it).
     const askCanDefault = (ask.docIds.length || ask.archives.length) && !ask.folders.length;
@@ -3503,6 +3521,19 @@ export function renderChat() {
       const markdownBody = el.querySelector(".markdownBody");
       const details = buildThinkingDetails(message.thinking, message.thinkingFrames);
       if (markdownBody && details) el.insertBefore(details, markdownBody);
+    }
+    // Insert the /ask -a "search process" block (queries/dims/docs) — rendered like the
+    // thinking block (collapsed, above the answer) and, like thinking, kept OUT of the
+    // message content so it never re-enters the conversation context (buildMessages
+    // sends only content). Same pattern as the tool-steps block below.
+    if (el && message.autoProcess) {
+      const markdownBody = el.querySelector(".markdownBody");
+      if (markdownBody) {
+        const details = document.createElement("details");
+        details.className = "thinking-details";
+        details.innerHTML = `<summary>${t("auto_processHeader")}</summary><div class="thinking-content markdownBody">${markdownToHtml(message.autoProcess)}</div>`;
+        el.insertBefore(details, markdownBody);
+      }
     }
     // Insert tool-call details block (which tools the AI used, args + results)
     if (el && message.toolSteps && message.toolSteps.length) {
