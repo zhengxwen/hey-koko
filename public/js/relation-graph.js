@@ -156,10 +156,13 @@ function buildGraphSvg(rels, { full = false } = {}) {
   const P = (nm) => pos.get(nm);
   const nTrunc = full ? 28 : 11, eTrunc = full ? 30 : 18;
   const svgAttrs = { viewBox: `0 0 ${W} ${H}`, class: "relGraphSvg" + (full ? " relGraphSvgFull" : ""), preserveAspectRatio: "xMidYMid meet" };
-  // Full-screen: give the SVG an explicit ~1.3× natural pixel size so it stops enlarging
-  // past a comfortable point (a single small component would otherwise scale to fill the
-  // whole modal and blow the text up). CSS max-width caps it for genuinely big graphs.
-  if (full) { svgAttrs.width = Math.round(W * 1.3); svgAttrs.height = Math.round(H * 1.3); }
+  // Give the SVG an explicit natural pixel size so it stops enlarging past a comfortable
+  // point (with only width:100% the whole viewBox — text included — scales up to fill a wide
+  // pane). CSS max-width caps it for genuinely big graphs; small graphs render at 1:1 and
+  // center. Full-screen gets a slightly bigger 1.3× so it fills more of the modal.
+  const scale = full ? 1.3 : 1.15;
+  svgAttrs.width = Math.round(W * scale);
+  svgAttrs.height = Math.round(H * scale);
   const svg = el("svg", svgAttrs);
   const defs = el("defs");
   const marker = el("marker", { id: "relArrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });

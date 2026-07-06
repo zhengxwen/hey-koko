@@ -23,6 +23,9 @@ import { libImportFetch } from './server-queue.js';
 import { runLibraryQuery, setAskDeps } from './ask.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", video: "📺", doc: "📝", chat: "💬", other: "📎" };
+// The relation graph's open/collapsed state persists across articles: once the user opens it,
+// switching to another doc keeps it open (and vice-versa). Module-scoped so it survives re-renders.
+let relGraphOpenPref = false;
 const genId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const isYoutubeUrl = (u) => /youtube\.com|youtu\.be/.test(u || "");
 // Set by initLibrary so the background import jobs can refresh the list / task count.
@@ -1495,8 +1498,9 @@ export function initLibrary() {
           const bodyEl = div.querySelector(".markdownBody");
           if (bodyEl) applyHighlights(bodyEl, b.highlights);
         }
-        // Distill card: visualize its «§ 关系» section as a node-link graph below the text.
-        if (b.kind === "card") { try { const g = renderRelationGraph(b.content || "", { open: false }); if (g) div.appendChild(g); } catch (e) { console.warn("[relGraph]", e); } }
+        // Distill card: visualize its «§ 关系» section as a node-link graph ABOVE the card text
+        // (above «§ 摘要»). Open/collapse state persists across articles via relGraphOpenPref.
+        if (b.kind === "card") { try { const g = renderRelationGraph(b.content || "", { open: relGraphOpenPref }); if (g) { g.addEventListener("toggle", () => { relGraphOpenPref = g.open; }); div.insertBefore(g, div.firstChild); } } catch (e) { console.warn("[relGraph]", e); } }
         attachEdit(div, doc, idx);
       }
       previewContent.appendChild(div);

@@ -5480,7 +5480,7 @@ button.secondary:disabled {
 .relGraphSummary::-webkit-details-marker { display: none; }
 .relGraphSummary:hover { color: var(--ink); }
 .relGraphStage { padding: 4px 6px 8px; }
-.relGraphSvg { display: block; width: 100%; height: auto; max-height: 520px; }
+.relGraphSvg { display: block; width: auto; max-width: 100%; height: auto; max-height: 520px; margin-inline: auto; }
 .relGraphSvg .relEdge { stroke: var(--line); stroke-width: 1.3; }
 .relGraphSvg .relEdgeHit { stroke: transparent; stroke-width: 14; cursor: help; pointer-events: stroke; }
 .relGraphSvg .relEdge { pointer-events: none; }
