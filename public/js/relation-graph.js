@@ -315,7 +315,8 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, ra
     const ux = dx / d, uy = dy / d;
     const x1 = a.x + ux * (NR + 1), y1 = a.y + uy * (NR + 1);
     const x2 = b.x - ux * (NR + 6), y2 = b.y - uy * (NR + 6);
-    const label = r.qual ? `${r.rel} (${r.qual})` : r.rel;
+    const yr = r.time ? String(r.time).slice(0, 4) : "";   // timeline layer: year on timed relations
+    const label = r.qual ? `${r.rel} (${r.qual})` : (r.time ? `${r.rel} (${r.time})` : r.rel);
     // co-occurrence edges are undirected (no arrow, dashed) — "share a document", not a relation
     let tip = r.cooc ? `${r.head} ⟷ ${r.tail}${label ? ` · ${label}` : ""}` : `${r.head} —${label}→ ${r.tail}`;
     if (docTitle && r.docIds && r.docIds.length) {   // which document(s) this edge comes from
@@ -341,6 +342,17 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, ra
       tx.setAttribute("paint-order", "stroke");   // halo for legibility over edges
       tx.appendChild(el("title", {}, tip));   // tooltip on the relation text (esp. when truncated)
       svg.appendChild(tx);
+    } else if (yr && f.years !== false) {
+      // Radial: full relation labels would mush, but a bare 4-digit YEAR is short + sparse. Place
+      // it at the edge MIDPOINT, nudged PERPENDICULAR to the line so it sits beside the spoke —
+      // clear of the arrowhead (at the leaf end) and off the line itself.
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, px = -uy, py = ux;
+      const yx = mx + px * 9, yy = my + py * 9;
+      const yt = el("text", { x: yx, y: yy, class: "relEdgeYear", "text-anchor": "middle", "dominant-baseline": "middle" }, yr);
+      yt.setAttribute("paint-order", "stroke");
+      if (ec) yt.style.fill = ec;
+      yt.appendChild(el("title", {}, tip));
+      svg.appendChild(yt);
     }
   }
   for (const nm of names) {   // nodes
@@ -425,7 +437,7 @@ function openGraphModal(rels, { title = "", center = "", onNodeClick = null, rad
   const updateHint = () => { if (hint) hint.hidden = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 8; };
 
   // Per-modal state that survives recenters/zooms.
-  const filter = { rel: true, cooc: true, shared: true, hiddenCenters: new Set() };
+  const filter = { rel: true, cooc: true, shared: true, years: true, hiddenCenters: new Set() };
   let spread = 1;
   let curRels = rels, curCenter = center, curOnClick = onNodeClick, curDocTitle = null;
 
@@ -452,6 +464,7 @@ function openGraphModal(rels, { title = "", center = "", onNodeClick = null, rad
       if (color) cir.style.fill = color;
       s.appendChild(cir); return s;
     };
+    const yearSwatch = () => { const s = el("svg", { viewBox: "0 0 26 10", class: "relGraphLegendSwatch" }); s.appendChild(el("text", { x: 13, y: 8, class: "relEdgeYear", "text-anchor": "middle" }, "1905")); return s; };
     const row = (swatch, label, off, toggle) => {
       const r = document.createElement("div"); r.className = "relGraphLegendRow" + (off ? " isOff" : "");
       r.append(swatch, Object.assign(document.createElement("span"), { textContent: label }));
@@ -462,6 +475,7 @@ function openGraphModal(rels, { title = "", center = "", onNodeClick = null, rad
       row(lineSwatch(false), t("relGraphLegendRel"), !filter.rel, () => { filter.rel = !filter.rel; }),
       row(lineSwatch(true), t("relGraphLegendCooc"), !filter.cooc, () => { filter.cooc = !filter.cooc; }),
     );
+    if (curRels.some((r) => r.time)) legend.append(row(yearSwatch(), t("relGraphLegendYears"), !filter.years, () => { filter.years = !filter.years; }));
     const centersArr = [...new Set(curRels.flatMap((r) => [r.head, r.tail]))].filter((n) => csetOf().has(n));
     if (centersArr.length >= 2) {
       const cc = centerColorMap(centersArr);
@@ -505,7 +519,7 @@ function openGraphModal(rels, { title = "", center = "", onNodeClick = null, rad
     if (opts.docTitle !== undefined) curDocTitle = opts.docTitle;
     if (titleEl && opts.title != null) titleEl.textContent = opts.title;
     if (opts.docs !== undefined) renderDocs(opts.docs);
-    spread = 1; filter.rel = filter.cooc = filter.shared = true; filter.hiddenCenters.clear();
+    spread = 1; filter.rel = filter.cooc = filter.shared = filter.years = true; filter.hiddenCenters.clear();
     draw(true);
   };
   render(rels, { title, center, onNodeClick, docTitle: null, docs: null });
@@ -549,7 +563,7 @@ function openGraphModal(rels, { title = "", center = "", onNodeClick = null, rad
 // Reuses the exact per-doc graph renderer + modal chrome.
 export function openEntityGraphModal({ data, title = () => "", fetchNeighborhood = null, onOpenDoc = null } = {}) {
   const toRels = (d) => (d.edges || []).map((e) => ({
-    head: e.head, tail: e.tail, qual: e.qual || "", cooc: !!e.cooc, count: e.count, docIds: e.docIds || [],
+    head: e.head, tail: e.tail, qual: e.qual || "", cooc: !!e.cooc, count: e.count, docIds: e.docIds || [], time: e.time || "",
     rel: e.cooc ? (t("relGraphCooc") + (e.count > 1 ? ` ·${e.count}` : "")) : (e.label || e.rel || ""),
   })).filter((r) => r.head && r.tail && r.head !== r.tail);
   const centersOf = (d) => new Set((d.centers || (d.center ? [d.center] : [])).map((c) => c.name));

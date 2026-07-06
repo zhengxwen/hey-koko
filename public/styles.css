@@ -5532,6 +5532,9 @@ button.secondary:disabled {
 .relGraphLegend .relNode.relNodeShared { fill: var(--panel); stroke: var(--ink); stroke-width: 2; stroke-dasharray: 2.5 2; }
 /* Co-occurrence edges (share a doc, no explicit relation): dashed + muted, undirected */
 .relGraphSvg .relEdgeCooc { stroke-dasharray: 4 3; opacity: 0.6; }
+/* Timeline layer: the year on a timed relation edge (small, on a halo so it reads over the line) */
+.relGraphSvg .relEdgeYear { font-size: 11px; font-weight: 600; fill: var(--muted); stroke: var(--panel-alpha, var(--panel)); stroke-width: 3px; pointer-events: none; }
+.relGraphLegend .relEdgeYear { font-size: 9px; font-weight: 600; fill: var(--muted); stroke: none; }
 .relGraphModalTitle { flex: none; text-align: center; font-size: 13.5px; font-weight: 600; color: var(--ink); padding: 2px 40px 6px; }
 /* Legend (top-left) — each row is a TOGGLE (click to hide/show that category) */
 .relGraphLegend { position: absolute; top: 12px; left: 14px; z-index: 2; display: flex; flex-direction: column; gap: 2px; padding: 6px 9px; background: var(--panel-alpha, var(--panel)); border: 1px solid var(--line); border-radius: 8px; font-size: 11.5px; color: var(--muted); max-width: 220px; }

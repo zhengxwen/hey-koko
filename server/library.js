@@ -1359,9 +1359,12 @@ function entityGraph() {
       const label = String(r[1] || "").trim();
       const ekey = `${hk}\t${tk}`;
       let ed = edges.get(ekey);
-      if (!ed) { ed = { head: hk, tail: tk, labels: new Map(), docs: new Set() }; edges.set(ekey, ed); }
+      if (!ed) { ed = { head: hk, tail: tk, labels: new Map(), docs: new Set(), times: new Map() }; edges.set(ekey, ed); }
       ed.labels.set(label, (ed.labels.get(label) || 0) + 1);
       ed.docs.add(e.docId);
+      const q = r[3];
+      const time = (q && typeof q === "object" && !Array.isArray(q)) ? String(q.time || "").trim() : "";
+      if (time) ed.times.set(time, (ed.times.get(time) || 0) + 1);   // time qualifier for the timeline layer
     }
   }
   _entityGraph = { nodes, edges, byDoc };
@@ -1430,7 +1433,9 @@ function entityNeighborhoodLibrary(req, res) {
     for (const ed of edges.values()) {
       if (!keep.has(ed.head) || !keep.has(ed.tail)) continue;
       const label = [...ed.labels.entries()].sort((a, b) => b[1] - a[1])[0][0];   // most-common label wins
-      outEdges.push({ head: nameOf(ed.head), tail: nameOf(ed.tail), label, count: ed.docs.size, docIds: [...ed.docs].slice(0, 6) });
+      // representative time qualifier: most frequent, ties broken by earliest (timeline layer)
+      const time = ed.times && ed.times.size ? [...ed.times.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0] : "";
+      outEdges.push({ head: nameOf(ed.head), tail: nameOf(ed.tail), label, count: ed.docs.size, docIds: [...ed.docs].slice(0, 6), time });
       relPairs.add(pk(ed.head, ed.tail));
       for (const d of ed.docs) docSet.add(d);
     }
