@@ -376,7 +376,7 @@ async function runLibImportJob(job, signal) {
     const r = await loopbackPost("/api/fetch-url", { url: p.url }, signal);
     let d = {}; try { d = JSON.parse(r.text); } catch {}
     if (!r.ok || d.type === "error" || d.type === "unsupported" || !d.content) throw new Error(d.content || `fetch failed (${r.status})`);
-    source = `url:${p.url}`; docKind = docKind || "blog"; title = d.title || p.url; text = d.content;
+    source = `url:${p.url}`; docKind = docKind || "blog"; title = d.title || p.url; text = d.content; publishedAt = d.publishedAt || "";
   } else if (p.type === "text") {
     source = `file:${p.name}`; docKind = docKind || "other"; title = p.title || p.name; text = p.text;
   } else if (p.type === "file") {

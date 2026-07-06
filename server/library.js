@@ -178,7 +178,31 @@ async function embedDocVectors(doc, id, folder, model) {
 
 // ---- index.json (lightweight per-doc metadata for the list view) ----------
 function loadIndex() { try { return JSON.parse(fs.readFileSync(indexFile(), "utf-8")); } catch { return []; } }
-function saveIndex(arr) { ensureDir(); fs.writeFileSync(indexFile(), JSON.stringify(arr)); }
+let _entityIdx = null;   // { byName: Map<normName,{display,docs:Set}>, byDoc: Map<docId,Set<normName>> }
+function saveIndex(arr) { ensureDir(); fs.writeFileSync(indexFile(), JSON.stringify(arr)); _entityIdx = null; }
+// Entity inverted index (structure layer): built lazily from index.json's `entities`
+// projection, cached until any saveIndex() (index is small → rebuild is ms, no incremental
+// maintenance). Powers entity-lookup, shared-entity related, and /ask -a's entity path.
+function entityIndex() {
+  if (_entityIdx) return _entityIdx;
+  const byName = new Map(), byDoc = new Map();
+  for (const d of loadIndex()) {
+    const names = d.entities || [];
+    if (!names.length) continue;
+    const set = new Set();
+    for (const nm of names) {
+      const key = normalizeEntity(nm);
+      if (!key) continue;
+      set.add(key);
+      let e = byName.get(key);
+      if (!e) { e = { display: nm, docs: new Set() }; byName.set(key, e); }
+      e.docs.add(d.docId);
+    }
+    if (set.size) byDoc.set(d.docId, set);
+  }
+  _entityIdx = { byName, byDoc };
+  return _entityIdx;
+}
 function indexEntryOf(doc) {
   return {
     docId: doc.docId, type: doc.type, docKind: doc.docKind, source: doc.source,
@@ -195,6 +219,11 @@ function indexEntryOf(doc) {
     publishedAt: doc.publishedAt || undefined,
     rating: doc.rating || undefined,           // manual 1-5 ★ (absent = unrated)
     hasCard: (doc.blocks || []).some(b => b.kind === "card") || undefined,
+    // Entity NAMES only (cap 15, ~300B/doc) — the structure layer's index projection.
+    // Powers the entity inverted index, shared-entity related, star-map edges, /ask -a.
+    // Types/aliases/relations stay in the full doc (readDoc when detail is needed).
+    entities: (doc.entities && doc.entities.length)
+      ? doc.entities.slice(0, 15).map(e => e.name) : undefined,
   };
 }
 function upsertIndex(doc) {
@@ -834,6 +863,16 @@ async function getLibraryDoc(req, res) {
 async function saveDocInternal(doc, model) {
   if (!doc || doc.type !== "libdoc" || !doc.docId) throw new Error("无效的文档");
 
+  // Structure layer is REBUILT from the card text on every save — the card is
+  // authoritative, so a user hand-editing the **实体**/**关系** sections (or the distill
+  // render) is the single source of truth. A card with no such sections clears the layer.
+  const cardBlock = (doc.blocks || []).find((b) => b.kind === "card");
+  if (cardBlock) {
+    const s = cleanStructure(parseStructureSections(cardBlock.content));
+    if (s.entities.length) doc.entities = s.entities; else delete doc.entities;
+    if (s.relations.length) doc.relations = s.relations; else delete doc.relations;
+  }
+
   const old = readDoc(doc.docId);
   const oldMap = new Map();
   if (old && old.blocks) {
@@ -964,13 +1003,75 @@ async function relatedLibraryDocs(req, res) {
     const body = await readBody(req);
     const cents = docCentroids();
     const me = cents.get(body.docId);
-    if (!me) { sendJson(res, 200, { related: [] }); return; }
-    const related = [...cents.entries()]
+    // Centroid path: top-5 by cosine (embedding "feels close").
+    const related = me ? [...cents.entries()]
       .filter(([id, c]) => id !== body.docId && c.model === me.model)
       .map(([id, c]) => ({ docId: id, title: c.title, docKind: c.docKind, score: cosine(me.vec, c.vec) }))
       .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
-    sendJson(res, 200, { related });
+      .slice(0, 5) : [];
+    // Shared-entity path: docs sharing >=2 entities (explainable "why related").
+    const { byName, byDoc } = entityIndex();
+    const mine = byDoc.get(body.docId);
+    const shared = [];
+    if (mine && mine.size) {
+      const metaById = new Map(loadIndex().map((d) => [d.docId, d]));
+      const counts = new Map();
+      for (const key of mine) {
+        const e = byName.get(key);
+        if (!e) continue;
+        for (const other of e.docs) if (other !== body.docId) counts.set(other, (counts.get(other) || 0) + 1);
+      }
+      for (const [docId, n] of counts) {
+        if (n < 2) continue;
+        const m = metaById.get(docId) || {};
+        const names = [];
+        const otherSet = byDoc.get(docId) || new Set();
+        for (const key of mine) if (otherSet.has(key)) { const e = byName.get(key); names.push(e ? e.display : key); }
+        shared.push({ docId, title: m.title || docId, docKind: m.docKind || "doc", sharedEntities: names.slice(0, 6), sharedCount: n });
+      }
+      shared.sort((a, b) => b.sharedCount - a.sharedCount);
+    }
+    // Merge: annotate centroid hits that also share entities, then append shared-only. Cap 8.
+    const merged = new Map();
+    for (const r of related) merged.set(r.docId, r);
+    for (const s of shared) {
+      const ex = merged.get(s.docId);
+      if (ex) { ex.sharedEntities = s.sharedEntities; ex.sharedCount = s.sharedCount; }
+      else merged.set(s.docId, s);
+    }
+    sendJson(res, 200, { related: [...merged.values()].slice(0, 8) });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+// POST /api/library/entity-lookup { names:[...], folders? } →
+//   { docs:[{docId,title,docKind,folder,matched:[displayName]}] }
+// Exact inverted-index lookup (normalized): the precise counterpart to embedding search
+// for "which docs mention X" — used by /ask -a's entity path and future entity chips.
+async function entityLookupLibrary(req, res) {
+  try {
+    const body = await readBody(req);
+    const names = (Array.isArray(body.names) ? body.names : []).map((n) => normalizeEntity(n)).filter(Boolean);
+    if (!names.length) { sendJson(res, 200, { docs: [] }); return; }
+    const { byName } = entityIndex();
+    const metaById = new Map(loadIndex().map((d) => [d.docId, d]));
+    const folders = Array.isArray(body.folders) && body.folders.length ? body.folders : null;
+    const hits = new Map();   // docId -> Set(matched display names)
+    for (const key of names) {
+      const e = byName.get(key);
+      if (!e) continue;
+      for (const docId of e.docs) {
+        let s = hits.get(docId);
+        if (!s) { s = new Set(); hits.set(docId, s); }
+        s.add(e.display);
+      }
+    }
+    let docs = [...hits.entries()].map(([docId, matched]) => {
+      const m = metaById.get(docId) || {};
+      return { docId, title: m.title || docId, docKind: m.docKind || "doc", folder: locOf(docId), matched: [...matched] };
+    });
+    if (folders) docs = docs.filter((d) => folders.includes(d.folder));
+    docs.sort((a, b) => b.matched.length - a.matched.length);
+    sendJson(res, 200, { docs });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
@@ -1109,6 +1210,183 @@ function distillSample(doc, tocLabel, budget = DISTILL_BUDGET) {
   return (out.slice(0, Math.max(0, budget - tail.length)) + tail).slice(0, budget);
 }
 
+// ---- Structure card: entity/relation layer (see docs/plans/structure-card.md) ----
+// The distill card's **实体**/**关系** sections are a ROUND-TRIP syntax, not a one-way
+// render: renderStructure() emits them, parseStructureSections() reads them back, and
+// saveDocInternal re-parses on every save so the CARD TEXT is authoritative (a user can
+// hand-edit an entity in and have it become retrievable). doc.entities/doc.relations are
+// rebuilt from the text; the index projects entity names only.
+const ENTITY_TYPES = ["person", "org", "place", "event", "method", "dataset", "concept", "tool", "product", "work", "policy"];
+const TYPE_LABELS = {
+  zh:        { person: "人物", org: "机构", place: "地点", event: "事件", method: "方法", dataset: "数据集", concept: "概念", tool: "工具", product: "产品", work: "作品", policy: "政策" },
+  "zh-Hant": { person: "人物", org: "機構", place: "地點", event: "事件", method: "方法", dataset: "資料集", concept: "概念", tool: "工具", product: "產品", work: "作品", policy: "政策" },
+  en:        { person: "person", org: "org", place: "place", event: "event", method: "method", dataset: "dataset", concept: "concept", tool: "tool", product: "product", work: "work", policy: "policy" },
+};
+// Reverse map (all languages' labels + the canonical english token) → canonical type,
+// so a card distilled in Chinese still parses after the UI is switched to English.
+const TYPE_FROM_LABEL = (() => {
+  const m = new Map();
+  for (const lang of Object.keys(TYPE_LABELS))
+    for (const [canon, label] of Object.entries(TYPE_LABELS[lang])) m.set(String(label).toLowerCase(), canon);
+  for (const t of ENTITY_TYPES) m.set(t, t);
+  return m;
+})();
+// NFKC + lowercase + trim: folds full/half-width and case so "GraphRAG" == "graphrag".
+// CJK internal spaces are meaningful-free (Chinese entities have none) so we don't strip
+// them; english spaces ARE significant and preserved. Storage keeps original casing;
+// only indexing/matching normalizes.
+function normalizeEntity(s) { return String(s || "").normalize("NFKC").toLowerCase().trim(); }
+
+// Validate + canonicalize a raw {entities, relations} (from LLM JSON OR from parsing the
+// card text). Dedupe entities by normalized name (cap 20), coerce unknown types to
+// concept, cap aliases at 5. Relations: keep [head, rel, tail] triples with an optional
+// {time?, place?} qualifier (time must be an ISO YYYY[-MM[-DD]] prefix), cap 15. Lenient
+// backfill: a relation endpoint absent from the entity list is appended as a concept
+// entity (the LLM often ignores the "names must match" rule — dropping the relation would
+// waste it).
+function cleanStructure(raw) {
+  const ents = [], seen = new Set();
+  for (const e of (raw && Array.isArray(raw.entities) ? raw.entities : [])) {
+    if (ents.length >= 20) break;
+    const name = String((e && e.name) || "").trim();
+    if (!name) continue;
+    const key = normalizeEntity(name);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const type = ENTITY_TYPES.includes(e && e.type) ? e.type : "concept";
+    const aliases = [...new Set((Array.isArray(e && e.aliases) ? e.aliases : [])
+      .map((a) => String(a || "").trim()).filter(Boolean))].slice(0, 5);
+    ents.push({ name, type, aliases });
+  }
+  const rels = [];
+  for (const r of (raw && Array.isArray(raw.relations) ? raw.relations : [])) {
+    if (rels.length >= 15) break;
+    if (!Array.isArray(r) || r.length < 3) continue;
+    const head = String(r[0] || "").trim(), rel = String(r[1] || "").trim(), tail = String(r[2] || "").trim();
+    if (!head || !rel || !tail) continue;
+    const out = [head, rel, tail];
+    const q = r[3];
+    if (q && typeof q === "object" && !Array.isArray(q)) {
+      const qual = {};
+      const time = String(q.time || "").trim();
+      if (/^\d{4}(-\d{2}){0,2}$/.test(time)) qual.time = time;
+      const place = String(q.place || "").trim();
+      if (place) qual.place = place;
+      if (Object.keys(qual).length) out.push(qual);
+    }
+    rels.push(out);
+  }
+  for (const r of rels) {
+    for (const endpoint of [r[0], r[2]]) {
+      const key = normalizeEntity(endpoint);
+      if (key && !seen.has(key)) { seen.add(key); ents.push({ name: endpoint, type: "concept", aliases: [] }); }
+    }
+  }
+  return { entities: ents, relations: rels };
+}
+
+// Render the two card sections from cleaned data. Entities inline (one line, ｜-joined,
+// aliases in （=…）); relations one-per-line as `- \`head\` —rel(qual)→ \`tail\``. Names are
+// backtick-wrapped so ·/｜/spaces inside a name never break the parse. Returns "" when
+// there is nothing to render (old cards stay unchanged).
+function renderStructure(data, L) {
+  const ents = (data && data.entities) || [], rels = (data && data.relations) || [];
+  if (!ents.length && !rels.length) return "";
+  const typeLabel = (t) => (L.typeLabels && L.typeLabels[t]) || t;
+  const parts = [];
+  // Alias punctuation follows the language: full-width （=…、…） reads naturally in CJK,
+  // half-width (=…, …) in English. Parsing accepts both, so only rendering is localized.
+  const aw = L.aliasWrap || ["（", "）"], asep = L.aliasSep || "、";
+  if (ents.length) {
+    const items = ents.map((e) => {
+      const al = (e.aliases && e.aliases.length) ? `${aw[0]}=${e.aliases.join(asep)}${aw[1]}` : "";
+      return `\`${e.name}\`·${typeLabel(e.type)}${al}`;
+    });
+    parts.push(`${L.entitiesHead} ${items.join(" ｜ ")}`);
+  }
+  if (rels.length) {
+    const items = rels.map((r) => {
+      const [head, rel, tail, q] = r;
+      const qs = (q && (q.time || q.place)) ? "(" + [q.time, q.place].filter(Boolean).join(" · ") + ")" : "";
+      return `- \`${head}\` —${rel}${qs}→ \`${tail}\``;
+    });
+    parts.push(`${L.relationsHead}\n${items.join("\n")}`);
+  }
+  return parts.join("\n\n");
+}
+
+// Parse the **实体**/**关系** sections back out of a card's markdown → {entities, relations}
+// (uncleaned — callers pass through cleanStructure). Heads are matched across all three
+// languages. Lines that don't fit the syntax are skipped (a hand-edit must never make a
+// save throw or swallow text); a missing section → that layer is empty (deleting the
+// section is how a user clears it — the text is authoritative).
+// Heads carry an optional §-prefix (new cards) — accepted but not required so cards
+// distilled before the §-prefix change still parse.
+const ENT_HEAD_RE = /^\*\*\s*§?\s*(?:实体|實體|Entities)\s*\*\*/i;
+const REL_HEAD_RE = /^\*\*\s*§?\s*(?:关系|關係|Relations)\s*\*\*/i;
+const ANY_HEAD_RE = /^\*\*[^*]+\*\*/;
+function parseEntityChunk(chunk) {
+  const nameM = chunk.match(/`([^`]+)`/);
+  if (!nameM) return null;
+  const name = nameM[1].trim();
+  if (!name) return null;
+  let rest = chunk.slice(chunk.indexOf(nameM[0]) + nameM[0].length).trim();
+  let aliases = [];
+  const aliasM = rest.match(/[（(]\s*=\s*([^）)]+)[）)]/);
+  if (aliasM) {
+    aliases = aliasM[1].split(/[、,，;；]/).map((s) => s.trim()).filter(Boolean);
+    rest = (rest.slice(0, aliasM.index) + rest.slice(aliasM.index + aliasM[0].length)).trim();
+  }
+  let type = "concept";
+  const typeM = rest.match(/^[·・:：]\s*(.+)$/);
+  if (typeM) type = TYPE_FROM_LABEL.get(typeM[1].trim().toLowerCase()) || "concept";
+  return { name, type, aliases };
+}
+function parseRelationLine(line) {
+  const t = line.replace(/^[-*]\s*/, "").trim();
+  const ticks = [...t.matchAll(/`([^`]+)`/g)];
+  if (ticks.length < 2) return null;
+  const head = ticks[0][1].trim(), tail = ticks[ticks.length - 1][1].trim();
+  let mid = t.slice(ticks[0].index + ticks[0][0].length, ticks[ticks.length - 1].index);
+  mid = mid.replace(/^\s*[—–-]\s*/, "").replace(/\s*[→>]+\s*$/, "").trim();
+  let time = "", place = "";
+  const qM = mid.match(/[（(]([^）)]+)[）)]\s*$/);
+  if (qM) {
+    mid = mid.slice(0, qM.index).trim();
+    for (const part of qM[1].split(/[·・|｜]/).map((s) => s.trim()).filter(Boolean)) {
+      if (/^\d{4}(-\d{2}){0,2}/.test(part)) time = part; else place = part;
+    }
+  }
+  const rel = mid.trim();
+  if (!head || !rel || !tail) return null;
+  const qual = {};
+  if (time) qual.time = time;
+  if (place) qual.place = place;
+  return Object.keys(qual).length ? [head, rel, tail, qual] : [head, rel, tail];
+}
+function parseStructureSections(cardContent) {
+  const lines = String(cardContent || "").split("\n");
+  const entities = [], relations = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i], trimmed = line.trim();
+    if (ENT_HEAD_RE.test(trimmed)) {
+      const rest = trimmed.replace(ENT_HEAD_RE, "").trim();
+      for (const chunk of rest.split("｜")) {
+        const e = parseEntityChunk(chunk.trim());
+        if (e) entities.push(e);
+      }
+    } else if (REL_HEAD_RE.test(trimmed)) {
+      for (let j = i + 1; j < lines.length; j++) {
+        const t = lines[j].trim();
+        if (!t || ANY_HEAD_RE.test(t)) break;   // blank or next section ends the list
+        if (/^[-*]\s/.test(t)) { const r = parseRelationLine(t); if (r) relations.push(r); }
+        else break;
+      }
+    }
+  }
+  return { entities, relations };
+}
+
 // Distill & rerank prompts follow the user's PROMPT-LANGUAGE setting (en / zh /
 // zh-Hant, dom.promptLanguageSelect) — snapshotted into the job payload at enqueue
 // and passed down as `language`. Unknown/missing → zh. The card scaffold (section
@@ -1122,7 +1400,7 @@ const DISTILL_I18N = {
       "1) 抽取元数据：标题、作者、发表年份；\n" +
       "2) 写一张\"蒸馏卡\"：3-5 句话的摘要（说清这篇讲什么、方法或立场、结论），4-8 条关键要点（各一句话，能带具体结论或数字更好），以及 3-6 个简短主题标签。\n" +
       "只输出 JSON，不要任何解释或代码块标记：\n" +
-      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "作者只保留人名、去掉机构编号和上标数字，多个作者用英文逗号分隔；年份只要 4 位数字，没有就空字符串；标签用简短名词短语；摘要和要点用中文写（专有名词保留原文）。",
     paper: "你是学术论文蒸馏助手。给你的是一篇论文的抽样（目录 + 各章节开头）。完成两件事：\n" +
       "1) 抽取元数据：论文标题、作者、发表年份；\n" +
@@ -1132,7 +1410,7 @@ const DISTILL_I18N = {
       "- 3-6 个简短主题标签。\n" +
       "数学公式一律用 $...$ 包裹，不要用 \\(...\\) 或 \\[...\\]。\n" +
       "只输出 JSON，不要任何解释或代码块标记：\n" +
-      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "作者只保留人名、去掉机构编号和上标数字，多个作者用英文逗号分隔；年份只要 4 位数字，没有就空字符串；标签用简短名词短语；摘要和要点用中文写（专有名词、方法名保留原文）。",
     video: "你是视频内容蒸馏助手。给你的是一个视频的字幕抽样（自动语音转写的口语文本，可能有识别错误，抽样取自开头/中间/结尾）。请写一张\"蒸馏卡\"：\n" +
       "1) 3-5 句话的摘要：视频讲了什么主题、讲者的核心观点或演示了什么、结论或建议；\n" +
@@ -1140,9 +1418,24 @@ const DISTILL_I18N = {
       "3) 3-6 个简短主题标签。\n" +
       "忽略寒暄、求订阅、广告和赞助商口播等与内容无关的部分。\n" +
       "只输出 JSON，不要任何解释或代码块标记：\n" +
-      "{\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "{\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "摘要和要点用中文写（专有名词保留原文）。",
-    cardSection: "«蒸馏卡»", summaryHead: "**摘要**", claimsHead: "**要点**", toc: "目录：", transcriptHeading: "«字幕整理»",
+    news: "你是新闻/资讯文章蒸馏助手。给你的是一篇新闻或博客文章（文档顶部标注了发布日期）。完成两件事：\n" +
+      "1) 抽取元数据：标题、作者（署名记者或来源媒体）、发表年份；\n" +
+      "2) 写一张\"蒸馏卡\"：\n" +
+      "- 摘要：3-5 句话，说清「谁、在何时何地、做了或发生了什么、各方反应或影响」；\n" +
+      "- 关键要点：4-8 条，各一句话，保留具体人物、机构、地点、数字和时间节点；\n" +
+      "- 3-6 个简短主题标签。\n" +
+      "只输出 JSON，不要任何解释或代码块标记：\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
+      "年份只要 4 位数字，没有就空字符串；标签用简短名词短语；摘要和要点用中文写（人名、机构名、地名保留原文）。",
+    structAsk: "\n此外，在上面同一个 JSON 对象里再补充两个字段：\n" +
+      "\"entities\": 8-15 个本文涉及的具体实体，每个形如 {\"name\":\"规范名\",\"type\":\"类型\",\"aliases\":[\"别名\"]}；类型只能取 person(人物)/org(机构)/place(地点)/event(事件)/method(方法或模型)/dataset(数据集或基准)/concept(概念)/tool(工具)/product(产品)/work(作品)/policy(政策法规) 之一；名字用规范全称，有通用缩写就用缩写，没有别名就给空数组 []。\n" +
+      "\"relations\": 5-10 条实体关系三元组 [\"头\",\"关系\",\"尾\"]，关系用简短动词短语（如 提出/改进/基于/评测于/对比/收购/发布/位于）；头尾实体名必须出现在 entities 列表里；若这条关系有明确的时间或地点，追加第四项对象 {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}。\n" +
+      "时间一律用绝对日期：文档顶部给出了发布日期，正文里的相对时间（如「上周三」「本月初」「去年」）请据此换算成绝对日期，换算不出就省略 time 字段。",
+    videoStrict: "\n注意：字幕来自自动语音转写、可能有识别错误——只抽取字幕中明确清楚说出的具体名称，拿不准的宁可不抽，不要臆造实体或关系。",
+    cardSection: "«蒸馏卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要点**", toc: "目录：", transcriptHeading: "«字幕整理»",
+    entitiesHead: "**§ 实体**", relationsHead: "**§ 关系**", pubDateHead: "发布日期：", typeLabels: TYPE_LABELS.zh, aliasWrap: ["（", "）"], aliasSep: "、",
     vTitle: "视频标题：", vChannel: "频道：", vSample: "字幕抽样：",
     rerank: "你是检索精排助手。给定一个查询和编号片段列表，按与查询的相关度从高到低输出片段编号。只输出 JSON，不要任何解释或代码块标记：{\"order\":[编号,…]}。明显不相关的编号可以省略。",
     rerankQuery: "查询：", rerankSnippets: "片段：",
@@ -1152,7 +1445,7 @@ const DISTILL_I18N = {
       "1) 抽取元數據：標題、作者、發表年份；\n" +
       "2) 寫一張\"蒸餾卡\"：3-5 句話的摘要（說清這篇講什麼、方法或立場、結論），4-8 條關鍵要點（各一句話，能帶具體結論或數字更好），以及 3-6 個簡短主題標籤。\n" +
       "只輸出 JSON，不要任何解釋或代碼塊標記：\n" +
-      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "作者只保留人名、去掉機構編號和上標數字，多個作者用英文逗號分隔；年份只要 4 位數字，沒有就空字符串；標籤用簡短名詞短語；摘要和要點用繁體中文寫（專有名詞保留原文）。",
     paper: "你是學術論文蒸餾助手。給你的是一篇論文的抽樣（目錄 + 各章節開頭）。完成兩件事：\n" +
       "1) 抽取元數據：論文標題、作者、發表年份；\n" +
@@ -1162,7 +1455,7 @@ const DISTILL_I18N = {
       "- 3-6 個簡短主題標籤。\n" +
       "數學公式一律用 $...$ 包裹，不要用 \\(...\\) 或 \\[...\\]。\n" +
       "只輸出 JSON，不要任何解釋或代碼塊標記：\n" +
-      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "作者只保留人名、去掉機構編號和上標數字，多個作者用英文逗號分隔；年份只要 4 位數字，沒有就空字符串；標籤用簡短名詞短語；摘要和要點用繁體中文寫（專有名詞、方法名保留原文）。",
     video: "你是影片內容蒸餾助手。給你的是一個影片的字幕抽樣（自動語音轉寫的口語文本，可能有識別錯誤，抽樣取自開頭/中間/結尾）。請寫一張\"蒸餾卡\"：\n" +
       "1) 3-5 句話的摘要：影片講了什麼主題、講者的核心觀點或演示了什麼、結論或建議；\n" +
@@ -1170,9 +1463,24 @@ const DISTILL_I18N = {
       "3) 3-6 個簡短主題標籤。\n" +
       "忽略寒暄、求訂閱、廣告和贊助商口播等與內容無關的部分。\n" +
       "只輸出 JSON，不要任何解釋或代碼塊標記：\n" +
-      "{\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "{\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "摘要和要點用繁體中文寫（專有名詞保留原文）。",
-    cardSection: "«蒸餾卡»", summaryHead: "**摘要**", claimsHead: "**要點**", toc: "目錄：", transcriptHeading: "«字幕整理»",
+    news: "你是新聞/資訊文章蒸餾助手。給你的是一篇新聞或部落格文章（文件頂部標註了發表日期）。完成兩件事：\n" +
+      "1) 抽取元數據：標題、作者（署名記者或來源媒體）、發表年份；\n" +
+      "2) 寫一張\"蒸餾卡\"：\n" +
+      "- 摘要：3-5 句話，說清「誰、在何時何地、做了或發生了什麼、各方反應或影響」；\n" +
+      "- 關鍵要點：4-8 條，各一句話，保留具體人物、機構、地點、數字和時間節點；\n" +
+      "- 3-6 個簡短主題標籤。\n" +
+      "只輸出 JSON，不要任何解釋或代碼塊標記：\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
+      "年份只要 4 位數字，沒有就空字符串；標籤用簡短名詞短語；摘要和要點用繁體中文寫（人名、機構名、地名保留原文）。",
+    structAsk: "\n此外，在上面同一個 JSON 物件裡再補充兩個欄位：\n" +
+      "\"entities\": 8-15 個本文涉及的具體實體，每個形如 {\"name\":\"規範名\",\"type\":\"類型\",\"aliases\":[\"別名\"]}；類型只能取 person(人物)/org(機構)/place(地點)/event(事件)/method(方法或模型)/dataset(資料集或基準)/concept(概念)/tool(工具)/product(產品)/work(作品)/policy(政策法規) 之一；名字用規範全稱，有通用縮寫就用縮寫，沒有別名就給空陣列 []。\n" +
+      "\"relations\": 5-10 條實體關係三元組 [\"頭\",\"關係\",\"尾\"]，關係用簡短動詞短語（如 提出/改進/基於/評測於/對比/收購/發布/位於）；頭尾實體名必須出現在 entities 列表裡；若這條關係有明確的時間或地點，追加第四項物件 {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}。\n" +
+      "時間一律用絕對日期：文件頂部給出了發表日期，正文裡的相對時間（如「上週三」「本月初」「去年」）請據此換算成絕對日期，換算不出就省略 time 欄位。",
+    videoStrict: "\n注意：字幕來自自動語音轉寫、可能有識別錯誤——只抽取字幕中明確清楚說出的具體名稱，拿不準的寧可不抽，不要臆造實體或關係。",
+    cardSection: "«蒸餾卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要點**", toc: "目錄：", transcriptHeading: "«字幕整理»",
+    entitiesHead: "**§ 實體**", relationsHead: "**§ 關係**", pubDateHead: "發表日期：", typeLabels: TYPE_LABELS["zh-Hant"], aliasWrap: ["（", "）"], aliasSep: "、",
     vTitle: "影片標題：", vChannel: "頻道：", vSample: "字幕抽樣：",
     rerank: "你是檢索精排助手。給定一個查詢和編號片段列表，按與查詢的相關度從高到低輸出片段編號。只輸出 JSON，不要任何解釋或代碼塊標記：{\"order\":[編號,…]}。明顯不相關的編號可以省略。",
     rerankQuery: "查詢：", rerankSnippets: "片段：",
@@ -1182,7 +1490,7 @@ const DISTILL_I18N = {
       "1) Extract metadata: title, authors, publication year.\n" +
       "2) Write a distillation card: a 3-5 sentence summary (what it is about, its method or stance, its conclusions), 4-8 key claims (one sentence each, keeping concrete findings and numbers), and 3-6 short topic tags.\n" +
       "Output ONLY JSON, no explanation or code fences:\n" +
-      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "Authors: names only, strip affiliation numbers and superscripts, comma-separated. Year: 4 digits, or empty if unknown. Tags: short noun phrases. Write the summary and claims in English (keep proper nouns as-is).",
     paper: "You are an academic-paper distillation assistant. You are given a sample of a paper (TOC + the opening of each section). Do two things:\n" +
       "1) Extract metadata: title, authors, publication year.\n" +
@@ -1192,7 +1500,7 @@ const DISTILL_I18N = {
       "- 3-6 short topic tags.\n" +
       "Wrap ALL math in $...$ — never use \\(...\\) or \\[...\\].\n" +
       "Output ONLY JSON, no explanation or code fences:\n" +
-      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "Authors: names only, strip affiliation numbers and superscripts, comma-separated. Year: 4 digits, or empty if unknown. Tags: short noun phrases. Write the summary and claims in English (keep proper nouns and method names as-is).",
     video: "You are a video-content distillation assistant. You are given a sampled transcript of a video (automatic speech-to-text, may contain recognition errors; sampled from the beginning/middle/end). Write a distillation card:\n" +
       "1) A 3-5 sentence summary: the video's topic, the speaker's core points or what was demonstrated, and the conclusions or recommendations.\n" +
@@ -1200,9 +1508,24 @@ const DISTILL_I18N = {
       "3) 3-6 short topic tags.\n" +
       "Ignore greetings, subscribe reminders, ads and sponsor reads.\n" +
       "Output ONLY JSON, no explanation or code fences:\n" +
-      "{\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"]}\n" +
+      "{\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "Write in English (keep proper nouns as-is).",
-    cardSection: "«Distill Card»", summaryHead: "**Summary**", claimsHead: "**Key points**", toc: "TOC: ", transcriptHeading: "«Transcript»",
+    news: "You are a news/article distillation assistant. You are given a news or blog article (its publication date is noted at the top). Do two things:\n" +
+      "1) Extract metadata: title, author (bylined reporter or source outlet), publication year.\n" +
+      "2) Write a distillation card:\n" +
+      "- Summary: 3-5 sentences covering who, when and where, what was done or happened, and the reactions or impact.\n" +
+      "- Key claims: 4-8, one sentence each, keeping the specific people, organizations, places, numbers and dates.\n" +
+      "- 3-6 short topic tags.\n" +
+      "Output ONLY JSON, no explanation or code fences:\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
+      "Year: 4 digits, or empty if unknown. Tags: short noun phrases. Write in English (keep names, orgs and places as-is).",
+    structAsk: "\nAdditionally, add two more fields to the SAME JSON object:\n" +
+      "\"entities\": 8-15 concrete entities the text is about, each as {\"name\":\"canonical name\",\"type\":\"type\",\"aliases\":[\"alias\"]}; type must be one of person/org/place/event/method/dataset/concept/tool/product/work/policy; use the canonical full name (or the common abbreviation if there is one); empty array [] when there are no aliases.\n" +
+      "\"relations\": 5-10 entity triples [\"head\",\"relation\",\"tail\"], relation a short verb phrase (e.g. proposes/improves/based-on/evaluated-on/compared-with/acquires/releases/located-in); head and tail names MUST appear in the entities list; if the relation has a clear time or place, append a fourth object {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}.\n" +
+      "Always use absolute dates: the publication date is given at the top, so convert relative times in the body (\"last Wednesday\", \"earlier this month\", \"last year\") into absolute dates; if you cannot, omit the time field.",
+    videoStrict: "\nNote: the transcript is automatic speech-to-text and may contain errors — extract ONLY names clearly and explicitly spoken; when unsure, leave it out rather than inventing entities or relations.",
+    cardSection: "«Distill Card»", summaryHead: "**§ Summary**", claimsHead: "**§ Key points**", toc: "TOC: ", transcriptHeading: "«Transcript»",
+    entitiesHead: "**§ Entities**", relationsHead: "**§ Relations**", pubDateHead: "Published: ", typeLabels: TYPE_LABELS.en, aliasWrap: ["(", ")"], aliasSep: ", ",
     vTitle: "Video title: ", vChannel: "Channel: ", vSample: "Transcript sample:",
     rerank: "You are a retrieval reranker. Given a query and a numbered list of snippets, output the snippet indices ordered from most to least relevant to the query. Output ONLY JSON, no explanation or code fences: {\"order\":[index,…]}. Clearly irrelevant indices may be omitted.",
     rerankQuery: "Query: ", rerankSnippets: "Snippets:",
@@ -1227,9 +1550,17 @@ async function distillDocInternal(docId, { metadata = false, model, language = "
   // significance, claims required to carry the quantitative results and limitations,
   // and math pinned to $...$ delimiters (the only span parseJsonLoose repairs).
   const isVideo = doc.docKind === "video";
+  // The doc's own date (publishedAt, else year) is fed IN so the structure layer can
+  // resolve relative times ("last Wednesday") into absolute dates (structAsk instruction).
+  const pubDate = String(doc.publishedAt || doc.year || "").trim();
+  const dateLine = pubDate ? `${L.pubDateHead}${pubDate}` : "";
   const user = isVideo
-    ? [`${L.vTitle}${doc.title || ""}`, doc.authors ? `${L.vChannel}${doc.authors}` : "", "", L.vSample, sample].filter(s => s !== "").join("\n")
-    : sample;
+    ? [`${L.vTitle}${doc.title || ""}`, doc.authors ? `${L.vChannel}${doc.authors}` : "", dateLine, "", L.vSample, sample].filter(s => s !== "").join("\n")
+    : (dateLine ? `${dateLine}\n\n${sample}` : sample);
+  // Base template by kind; then append the shared entity/relation ask (structAsk) and,
+  // for videos, the stricter "don't invent from ASR noise" note.
+  const base = isVideo ? L.video : (doc.docKind === "paper" ? L.paper : (doc.docKind === "blog" ? L.news : L.doc));
+  const systemPrompt = base + L.structAsk + (isVideo ? L.videoStrict : "");
   // Per-call budget follows the UI "timeout (s)" slider (snapshotted into the job
   // payload at enqueue) so slow machines can raise it — but never below 300s: the
   // slider bottoms out at 60s (fine for chat), which would starve a distill call
@@ -1238,7 +1569,7 @@ async function distillDocInternal(docId, { metadata = false, model, language = "
   let out;
   try {
     out = await llmComplete(model, [
-      { role: "system", content: isVideo ? L.video : (doc.docKind === "paper" ? L.paper : L.doc) },
+      { role: "system", content: systemPrompt },
       { role: "user", content: user },
     ], { timeoutMs, signal });
   } catch (e) {
@@ -1263,9 +1594,14 @@ async function distillDocInternal(docId, { metadata = false, model, language = "
   }
   const summary = String(j.summary || "").trim();
   const claims = (Array.isArray(j.claims) ? j.claims : []).map(c => String(c).trim()).filter(Boolean).slice(0, 10);
+  // Entity/relation layer: clean the LLM's JSON then RENDER it into the card text. The
+  // card is authoritative — saveDocInternal (below) parses these sections back into
+  // doc.entities/doc.relations, so hand-edits and this render share one write path.
+  const structure = renderStructure(cleanStructure(j), L);
   const content = [
     summary ? `${L.summaryHead} ${summary}` : "",
     claims.length ? `${L.claimsHead}\n` + claims.map(c => `- ${c}`).join("\n") : "",
+    structure,
   ].filter(Boolean).join("\n\n");
   if (!content) throw new Error("蒸馏输出为空");
   // Replace any existing card, always at blocks[0]. Embed with the DOC's own vector
@@ -1470,4 +1806,7 @@ module.exports = {
   importDocInternal, distillDocInternal, distillLibraryDoc, buildYoutubeDoc, llmComplete,
   relatedLibraryDocs, docCentroids, lookupPaperMeta, extractKeywords,
   locOf,   // docId → on-disk folder ("" = root); used by the star map for folder scoping
+  // structure-card entity/relation layer (docs/plans/structure-card.md)
+  entityLookupLibrary, entityIndex,
+  cleanStructure, renderStructure, parseStructureSections, normalizeEntity,   // exported for testing
 };

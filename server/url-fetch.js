@@ -77,10 +77,11 @@ async function fetchUrlContent(req, res) {
 
     const html = await response.text();
     const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim() || "";
+    const publishedAt = extractPublishedDate(html);
     const { text, imageUrls } = await extractCleanContent(html, url);
     const images = await downloadImages(imageUrls, url, 8);
     const truncated = truncateContent(text, config.URL_CONTENT_MAX_CHARS);
-    sendJson(res, 200, { type: "webpage", title, url, content: truncated, images });
+    sendJson(res, 200, { type: "webpage", title, url, content: truncated, images, publishedAt });
   } catch (error) {
     if (error.name === "AbortError") {
       sendJson(res, 200, { type: "error", content: "请求超时" });
@@ -104,6 +105,34 @@ function truncateContent(text, max) {
     else { const sp = cut.lastIndexOf(" "); if (sp > 0) cut = cut.slice(0, sp); }
   }
   return cut.trimEnd() + "\n\n…（内容较长，已截断）";
+}
+
+// Extract an article's publication date from page HTML → "YYYY-MM-DD" or "".
+// Priority: JSON-LD datePublished → OpenGraph article:published_time → itemprop
+// datePublished → generic <meta name=date/pubdate/publishdate> → first <time datetime>.
+// Structure cards use this to resolve relative dates ("last Wednesday") into absolute
+// ones at distill time (only video docs carried a date before). Zero-dependency: HTML
+// is never fully parsed, we just scan for the well-known date carriers by regex.
+function extractPublishedDate(html) {
+  if (!html) return "";
+  const iso = (s) => {
+    const m = String(s || "").match(/\d{4}-\d{2}-\d{2}/);
+    return m ? m[0] : "";
+  };
+  // 1) JSON-LD blocks: pull the first "datePublished":"..." across all ld+json scripts.
+  const ld = html.match(/"datePublished"\s*:\s*"([^"]+)"/);
+  if (ld) { const d = iso(ld[1]); if (d) return d; }
+  // 2) <meta property="article:published_time" content="..."> (content may precede property).
+  const metaOG = html.match(/<meta[^>]+(?:property|name)=["']article:published_time["'][^>]*>/i)
+    || html.match(/<meta[^>]+content=["'][^"']*["'][^>]*(?:property|name)=["']article:published_time["'][^>]*>/i);
+  if (metaOG) { const c = metaOG[0].match(/content=["']([^"']+)["']/i); if (c) { const d = iso(c[1]); if (d) return d; } }
+  // 3) itemprop / generic name-based date metas.
+  const metaGeneric = html.match(/<meta[^>]+(?:itemprop=["']datePublished["']|name=["'](?:date|pubdate|publishdate|publish-date|dc\.date)["'])[^>]*>/i);
+  if (metaGeneric) { const c = metaGeneric[0].match(/content=["']([^"']+)["']/i); if (c) { const d = iso(c[1]); if (d) return d; } }
+  // 4) <time datetime="...">, the first one on the page.
+  const timeEl = html.match(/<time[^>]+datetime=["']([^"']+)["']/i);
+  if (timeEl) { const d = iso(timeEl[1]); if (d) return d; }
+  return "";
 }
 
 // ---- Main-content extraction (readability-style heuristic, zero-dependency) ----

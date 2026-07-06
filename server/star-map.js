@@ -113,15 +113,20 @@ function gather(source, folders = []) {
   if (corrupt) console.warn(`[starmap] ${corrupt} doc(s) excluded: corrupt vector (wrong dim ≠ ${dim}, or NaN/Inf) — re-embed to restore`);
   const tags = new Map();
   const years = new Map();   // docId → content YEAR (publishedAt date > year field), for the timeline
+  const entities = new Map();   // docId → entity names (structure layer) → shared-entity edges
   try {
     const index = JSON.parse(fs.readFileSync(path.join(library.LIBRARY_DIR, "index.json"), "utf-8"));
     for (const e of index) {
       tags.set(e.docId, (e.tags || []).map((t) => (typeof t === "string" ? t : t.name)));
       const y = yearOf(e.publishedAt) || yearOf(e.year);
       if (y) years.set(e.docId, y);
+      if (e.entities && e.entities.length) entities.set(e.docId, e.entities);
     }
   } catch { /* no index yet */ }
-  for (const it of items) { const y = years.get(it.id); if (y) it.year = y; }
+  for (const it of items) {
+    const y = years.get(it.id); if (y) it.year = y;
+    const ents = entities.get(it.id); if (ents) it.entities = ents;
+  }
   return { items, model, tags };
 }
 
@@ -266,6 +271,10 @@ async function computeStarmap(job, signal, emitUpdate) {
       // top-3 semantic neighbours (indices into docs) — the frontend draws these
       // as constellation edges on hover/selection and as "related" chips.
       ...(nn && nn[i] && nn[i].length ? { nn: nn[i] } : {}),
+      // structure-layer entity names (cap 15) — the frontend derives shared-entity
+      // edges (a doc PAIR sharing >=2 entities gets a distinct edge). Old caches lack
+      // this → no entity edges until rebuilt (same graceful-degradation as nn).
+      ...(it.entities && it.entities.length ? { entities: it.entities } : {}),
     }));
     const result = { source, ...(scoped ? { folders: scope } : {}), n: docs.length, model, builtAt: Date.now(), clusters, docs };
     fs.writeFileSync(outPath, JSON.stringify(result));

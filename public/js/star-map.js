@@ -71,7 +71,7 @@ let playing = false, playT0 = 0;   // ▶ auto-advance state
 const DISP_KEY = "heykoko-starmap-display";
 // glow defaults OFF (user preference): crisp dots by default; the SELECTED star still
 // gets its standing halo regardless of this toggle.
-let disp = { glow: false, twinkle: true, spokes: true, edges: false, cb: false, labels: true };
+let disp = { glow: false, twinkle: true, spokes: true, edges: false, sedges: false, cb: false, labels: true };
 function loadDisp() {
   if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) disp.twinkle = false;
   try { Object.assign(disp, JSON.parse(localStorage.getItem(DISP_KEY) || "{}")); } catch { /* defaults */ }
@@ -280,7 +280,7 @@ function applyText() {
   if (el.dispMenu) {
     el.dispMenu.innerHTML = "";
     for (const [key, tkey] of [["glow", "star_dispGlow"], ["twinkle", "star_dispTwinkle"], ["spokes", "star_dispSpokes"],
-      ["edges", "star_dispEdges"], ["cb", "star_dispCb"], ["labels", "star_dispLabels"]]) {
+      ["edges", "star_dispEdges"], ["sedges", "star_dispSedges"], ["cb", "star_dispCb"], ["labels", "star_dispLabels"]]) {
       const lab = document.createElement("label"); lab.className = "checkboxLabel";
       lab.title = t(tkey + "Tip");
       const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = !!disp[key];
@@ -783,6 +783,7 @@ function initGL(gl) {
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   for (const k of ["pos", "size", "color", "shown", "lpos", "loth", "lside", "lcolor", "lshown",
     "epos", "eoth", "eside", "ecolor", "eshown",
+    "snpos", "snoth", "snside", "sncolor", "snshown",
     "hlpos", "hloth", "hlside", "hlcolor", "hlshown", "hppos", "hpsize", "hpcolor", "hpshown",
     "spos", "ssize", "scolor", "sshown"]) G.buf[k] = gl.createBuffer();
   G.hkey = -1; G.hln = 0; G.hpn = 0;   // hover/selection highlight state
@@ -821,8 +822,36 @@ function buildGLBuffers() {
   const eq = buildEdgeQuads(G.edges.map(([i, j]) => [docs[i], docs[j]]));
   upload(gl, G.buf.epos, eq.pos); upload(gl, G.buf.eoth, eq.oth); upload(gl, G.buf.eside, eq.side);
   G._eshown = new Float32Array(G.edges.length * 6);
+  // structure-layer shared-entity edges (🎛 toggle, distinct teal) — a doc PAIR sharing
+  // ≥2 entities. Only present when the cache carries `entities` (rebuilt after distill).
+  G.sedges = computeEntityEdges(docs);
+  const seq = buildEdgeQuads(G.sedges.map(([i, j]) => [docs[i], docs[j]]));
+  upload(gl, G.buf.snpos, seq.pos); upload(gl, G.buf.snoth, seq.oth); upload(gl, G.buf.snside, seq.side);
+  G._snshown = new Float32Array(G.sedges.length * 6);
   uploadEdgeColors();
   updateEdgeVisibility();
+}
+// Doc PAIRS sharing ≥2 entities (normalized). Built via an entity→docs inverted map so it's
+// O(Σ pairs) not O(n²); a hub entity present in >12 docs is skipped (it would explode into
+// O(m²) meaningless edges — "AI" linking everything says nothing).
+function computeEntityEdges(docs) {
+  const norm = (s) => String(s || "").normalize("NFKC").toLowerCase().trim();
+  const byEnt = new Map();
+  docs.forEach((d, i) => {
+    for (const nm of (d.entities || [])) { const k = norm(nm); if (!k) continue; (byEnt.get(k) || byEnt.set(k, []).get(k)).push(i); }
+  });
+  const pairCount = new Map();
+  for (const [, arr] of byEnt) {
+    if (arr.length < 2 || arr.length > 12) continue;
+    for (let a = 0; a < arr.length; a++)
+      for (let b = a + 1; b < arr.length; b++) {
+        const key = arr[a] < arr[b] ? arr[a] + "," + arr[b] : arr[b] + "," + arr[a];
+        pairCount.set(key, (pairCount.get(key) || 0) + 1);
+      }
+  }
+  const edges = [];
+  for (const [key, cnt] of pairCount) if (cnt >= 2) { const [i, j] = key.split(",").map(Number); edges.push([i, j]); }
+  return edges;
 }
 // 6 verts per edge quad: A(p1,+1) B(p1,-1) C(p2,+1eff) + B D(p2,-1eff) C. A vertex
 // anchored at p2 computes its normal from (p1-p2) — flipped — so its side is negated
@@ -853,6 +882,15 @@ function uploadEdgeColors() {
     for (let v = 0; v < 6; v++) { ecol[k * 18 + v * 3] = rgb[0]; ecol[k * 18 + v * 3 + 1] = rgb[1]; ecol[k * 18 + v * 3 + 2] = rgb[2]; }
   });
   upload(G.gl, G.buf.ecolor, ecol);
+  // shared-entity edges: one flat teal, independent of cluster palette (a knowledge-graph
+  // relation, not a similarity link) — reads distinctly against the amber cross-cluster edges.
+  if (G.sedges) {
+    const teal = [0.36, 0.8, 0.78];
+    const sncol = new Float32Array(G.sedges.length * 18);
+    for (let k = 0; k < G.sedges.length; k++)
+      for (let v = 0; v < 6; v++) { sncol[k * 18 + v * 3] = teal[0]; sncol[k * 18 + v * 3 + 1] = teal[1]; sncol[k * 18 + v * 3 + 2] = teal[2]; }
+    upload(G.gl, G.buf.sncolor, sncol);
+  }
 }
 function updateEdgeVisibility() {
   if (!G || !DATA || !G.edges) return;
@@ -862,6 +900,13 @@ function updateEdgeVisibility() {
     for (let v = 0; v < 6; v++) G._eshown[k * 6 + v] = a;
   });
   upload(G.gl, G.buf.eshown, G._eshown);
+  if (G.sedges && G._snshown) {
+    G.sedges.forEach(([i, j], k) => {
+      const a = Math.min(alphaOf(docs[i], i), alphaOf(docs[j], j));
+      for (let v = 0; v < 6; v++) G._snshown[k * 6 + v] = a;
+    });
+    upload(G.gl, G.buf.snshown, G._snshown);
+  }
 }
 function rebuildColors() {
   if (!G || !DATA) return;
@@ -931,6 +976,13 @@ function drawGL() {
     attrib(gl, G.lw, "a_pos", G.buf.epos, 2); attrib(gl, G.lw, "a_other", G.buf.eoth, 2); attrib(gl, G.lw, "a_side", G.buf.eside, 1);
     attrib(gl, G.lw, "a_color", G.buf.ecolor, 3); attrib(gl, G.lw, "a_shown", G.buf.eshown, 1);
     gl.drawArrays(gl.TRIANGLES, 0, G.edges.length * 6);
+  }
+  // shared-entity edges (🎛 toggle, teal knowledge-graph mesh)
+  if (disp.sedges && G.sedges && G.sedges.length) {
+    setLw(0.34, 0.85);
+    attrib(gl, G.lw, "a_pos", G.buf.snpos, 2); attrib(gl, G.lw, "a_other", G.buf.snoth, 2); attrib(gl, G.lw, "a_side", G.buf.snside, 1);
+    attrib(gl, G.lw, "a_color", G.buf.sncolor, 3); attrib(gl, G.lw, "a_shown", G.buf.snshown, 1);
+    gl.drawArrays(gl.TRIANGLES, 0, G.sedges.length * 6);
   }
   // semantic-neighbour edges of the hovered/selected star, drawn much brighter
   syncHighlight();
@@ -1085,6 +1137,19 @@ function draw2d() {
       ctx.globalAlpha = 1; ctx.lineWidth = 1;
     }
   });
+  // shared-entity edges (2D fallback) — teal knowledge-graph mesh. Computed lazily once
+  // and cached on DATA (docs are static between rebuilds).
+  if (disp.sedges) {
+    if (!DATA._sedges) DATA._sedges = computeEntityEdges(DATA.docs);
+    for (const [i, j] of DATA._sedges) {
+      const d = DATA.docs[i], nb = DATA.docs[j]; if (!d || !nb) continue;
+      const a = Math.min(alphaOf(d, i), alphaOf(nb, j)); if (a <= 0.03) continue;
+      const [x, y] = toScreen(d), [nx, ny] = toScreen(nb);
+      ctx.lineWidth = 1.7; ctx.strokeStyle = "rgb(92,204,199)"; ctx.globalAlpha = 0.4 * a;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(nx, ny); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.lineWidth = 1;
+    }
+  }
   DATA.docs.forEach((d, i) => {
     const a = alphaOf(d, i); if (a <= 0.03) return;
     const [x, y] = toScreen(d), r = d._r * Math.max(0.6, Math.min(cam.scale, 2.4)), col = clusterColor(d.cluster, DATA.clusters.length);

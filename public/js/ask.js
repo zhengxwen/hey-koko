@@ -492,7 +492,7 @@ const AUTO_MAXDOCS = 12;  // hard cap on docs read per run
 // interpolation args. Kept terse; the model does the work.
 const AUTO_PROMPTS = {
   zh: {
-    planSys: '你是知识库检索规划助手。根据用户任务，生成 1-5 个用于向量检索的简短查询（关键词或短语，覆盖任务的不同方面）。再判断这是否是需要跨多篇文档对比的任务；若是且用户未给出对比维度，提出 2-6 个对比维度。只输出 JSON，不要任何解释或代码块：{"queries":["…"],"isCompare":true或false,"dims":["…"]}',
+    planSys: '你是知识库检索规划助手。根据用户任务，生成 1-5 个用于向量检索的简短查询（关键词或短语，覆盖任务的不同方面）。若任务涉及具体命名实体（人名、机构、方法/模型名、数据集、地点等），把它们列进 entities 做精确查找（没有就空数组）。再判断这是否是需要跨多篇文档对比的任务；若是且用户未给出对比维度，提出 2-6 个对比维度。只输出 JSON，不要任何解释或代码块：{"queries":["…"],"entities":["…"],"isCompare":true或false,"dims":["…"]}',
     planMoreSys: '你是知识库检索规划助手。下面是已从知识库读到的文档笔记。判断现有信息是否足以回答任务：足够则 done 置 true；不够则给出 1-3 个补充检索查询以覆盖缺失的方面。只输出 JSON：{"done":true或false,"queries":["…"]}',
     readSys: '阅读下面这篇文档，抽取与任务最相关的要点，用简洁的要点列表（每行以 - 开头）输出，忽略无关内容。',
     readSchemaSys: (dims) => `阅读下面这篇文档，针对以下每个维度用一两句话总结该文档的情况。维度：${dims}。用 markdown 输出，每个维度一行，格式「**维度名**：内容」。`,
@@ -503,7 +503,7 @@ const AUTO_PROMPTS = {
     taskLabel: '任务：', docLabel: (t) => `文档标题：${t}\n\n正文：\n`, notesLabel: '已读文档笔记：\n', fullLabel: '文档全文：\n',
   },
   'zh-Hant': {
-    planSys: '你是知識庫檢索規劃助手。根據用戶任務，生成 1-5 個用於向量檢索的簡短查詢（關鍵詞或短語，覆蓋任務的不同方面）。再判斷這是否是需要跨多篇文件對比的任務；若是且用戶未給出對比維度，提出 2-6 個對比維度。只輸出 JSON，不要任何解釋或代碼塊：{"queries":["…"],"isCompare":true或false,"dims":["…"]}',
+    planSys: '你是知識庫檢索規劃助手。根據用戶任務，生成 1-5 個用於向量檢索的簡短查詢（關鍵詞或短語，覆蓋任務的不同方面）。若任務涉及具體命名實體（人名、機構、方法/模型名、資料集、地點等），把它們列進 entities 做精確查找（沒有就空陣列）。再判斷這是否是需要跨多篇文件對比的任務；若是且用戶未給出對比維度，提出 2-6 個對比維度。只輸出 JSON，不要任何解釋或代碼塊：{"queries":["…"],"entities":["…"],"isCompare":true或false,"dims":["…"]}',
     planMoreSys: '你是知識庫檢索規劃助手。下面是已從知識庫讀到的文件筆記。判斷現有資訊是否足以回答任務：足夠則 done 置 true；不夠則給出 1-3 個補充檢索查詢以覆蓋缺失的方面。只輸出 JSON：{"done":true或false,"queries":["…"]}',
     readSys: '閱讀下面這篇文件，抽取與任務最相關的要點，用簡潔的要點列表（每行以 - 開頭）輸出，忽略無關內容。',
     readSchemaSys: (dims) => `閱讀下面這篇文件，針對以下每個維度用一兩句話總結該文件的情況。維度：${dims}。用 markdown 輸出，每個維度一行，格式「**維度名**：內容」。`,
@@ -514,7 +514,7 @@ const AUTO_PROMPTS = {
     taskLabel: '任務：', docLabel: (t) => `文件標題：${t}\n\n正文：\n`, notesLabel: '已讀文件筆記：\n', fullLabel: '文件全文：\n',
   },
   en: {
-    planSys: 'You are a knowledge-library retrieval planner. From the user\'s task, produce 1-5 short vector-search queries (keywords/phrases covering different facets). Also judge whether this is a task that compares MULTIPLE documents; if so and the user gave no comparison dimensions, propose 2-6 dimensions. Output ONLY JSON, no prose or code fences: {"queries":["…"],"isCompare":true or false,"dims":["…"]}',
+    planSys: 'You are a knowledge-library retrieval planner. From the user\'s task, produce 1-5 short vector-search queries (keywords/phrases covering different facets). If the task involves specific named entities (people, orgs, method/model names, datasets, places), list them in `entities` for exact lookup (empty array if none). Also judge whether this is a task that compares MULTIPLE documents; if so and the user gave no comparison dimensions, propose 2-6 dimensions. Output ONLY JSON, no prose or code fences: {"queries":["…"],"entities":["…"],"isCompare":true or false,"dims":["…"]}',
     planMoreSys: 'You are a knowledge-library retrieval planner. Below are notes already read from the library. Decide whether the info suffices to answer the task: set done=true if so; otherwise give 1-3 additional search queries covering the missing facets. Output ONLY JSON: {"done":true or false,"queries":["…"]}',
     readSys: 'Read the document below and extract the points most relevant to the task as a concise bullet list (each line starting with -), ignoring irrelevant content.',
     readSchemaSys: (dims) => `Read the document below and summarize it against EACH of these dimensions in a sentence or two. Dimensions: ${dims}. Output markdown, one line per dimension as "**dimension**: …".`,
@@ -580,8 +580,21 @@ async function chatOnce(messages, { signal = null, onToken = null, temperature =
 // Run each query through /api/library/retrieve and union the hit docIds (first-seen
 // order, best score first within a query), skipping anything already in `seen` or in
 // this batch. Returns [{docId,title,docKind}]. Folder-scoped when folders given.
-async function retrieveUnion(queries, { folders = [], seen = new Set(), signal = null } = {}) {
+async function retrieveUnion(queries, { folders = [], seen = new Set(), signal = null, entities = [] } = {}) {
   const out = [], batch = new Set();
+  // Entity path FIRST: exact inverted-index lookup for the planner's named entities —
+  // the precise complement to embedding search ("which docs mention X"). These are
+  // high-confidence hits, so they lead the union.
+  if (entities && entities.length) {
+    try {
+      const r = await postJson("/api/library/entity-lookup", { names: entities, folders }, signal);
+      for (const d of (r.docs || [])) {
+        if (!d.docId || seen.has(d.docId) || batch.has(d.docId)) continue;
+        batch.add(d.docId);
+        out.push({ docId: d.docId, title: d.title, docKind: d.docKind });
+      }
+    } catch (e) { if (e && e.name === "AbortError") throw e; /* entity path is additive */ }
+  }
   for (const q of queries) {
     let r;
     try {
@@ -617,10 +630,11 @@ async function planQueries(task, { notes = [], round = 1, signal = null } = {}) 
   let j = null;
   try { j = lightParseJson(await chatOnce(messages, { signal, temperature: 0.2 })); }
   catch (e) { if (e && e.name === "AbortError") throw e; }
-  if (!j) return round === 1 ? { queries: [task], isCompare: false, dims: null } : { done: true, queries: [] };
+  if (!j) return round === 1 ? { queries: [task], entities: [], isCompare: false, dims: null } : { done: true, queries: [], entities: [] };
   const queries = Array.isArray(j.queries) ? j.queries.filter((q) => typeof q === "string" && q.trim()).slice(0, 5) : [];
   const dims = Array.isArray(j.dims) ? j.dims.filter((d) => typeof d === "string" && d.trim()).slice(0, 8) : null;
-  return { queries: queries.length ? queries : (round === 1 ? [task] : []), isCompare: !!j.isCompare, dims, done: !!j.done };
+  const entities = Array.isArray(j.entities) ? j.entities.filter((e) => typeof e === "string" && e.trim()).slice(0, 8) : [];
+  return { queries: queries.length ? queries : (round === 1 ? [task] : []), entities, isCompare: !!j.isCompare, dims, done: !!j.done };
 }
 
 // Fetch ONE doc's full body text (reusing fullDocsContext, which skips conversation
@@ -705,10 +719,12 @@ export async function handleAutoAsk(task, tab, scope = {}, insertAt = null) {
       }
       if (plan.done && round > 1) break;
       const queries = plan.queries && plan.queries.length ? plan.queries : [task];
+      const planEntities = plan.entities || [];
       // Show the ACTUAL queries the model chose (backticked so they read as terms).
       addLog(t("auto_traceRound", { round }) + queries.map((q) => "`" + q + "`").join(" / "));
+      if (planEntities.length) addLog(t("auto_traceEntities") + planEntities.map((e) => "`" + e + "`").join(" / "));
       setStatus(t("auto_searching", { n: queries.length }));
-      const fresh = await retrieveUnion(queries, { folders, seen, signal });
+      const fresh = await retrieveUnion(queries, { folders, seen, signal, entities: planEntities });
       if (!fresh.length) { addLog(t("auto_traceDry")); break; }   // dry
       const take = fresh.slice(0, AUTO_MAXDOCS - seen.size);
       // Show which docs surfaced, one per bullet line, each a clickable library link.

@@ -1339,8 +1339,14 @@ export function initLibrary() {
         const chip = document.createElement("button");
         chip.type = "button";
         chip.className = "libRelatedChip";
-        chip.textContent = `${kindIcon(r.docKind)} ${r.title} ${Math.round(r.score * 100)}%`;
-        chip.title = r.title;
+        // score = embedding centroid cosine (may be absent for shared-entity-only hits);
+        // sharedCount/sharedEntities = explainable "why related" from the structure layer.
+        const scoreTxt = typeof r.score === "number" ? ` ${Math.round(r.score * 100)}%` : "";
+        const sharedTxt = r.sharedCount ? ` 🔗${r.sharedCount}` : "";
+        chip.textContent = `${kindIcon(r.docKind)} ${r.title}${scoreTxt}${sharedTxt}`;
+        chip.title = r.sharedEntities && r.sharedEntities.length
+          ? `${r.title}\n${r.sharedCount} ${t("lib_sharedEntities")}: ${r.sharedEntities.join("、")}`
+          : r.title;
         chip.addEventListener("click", () => openDoc(r.docId));
         row.appendChild(chip);
       }
