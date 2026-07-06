@@ -1938,10 +1938,23 @@ async function parseAndSendFile(content, fileInfo) {
       let serverResult = null;
 
       if (ext === ".pdf") {
-        // pdfjs → client fallback below; mineru/unlimited → server parse.
+        // pdfjs → client text-only fallback below; mineru/unlimited → server parse.
         const engine = currentPdfEngine();
         if (engine === "mineru" || engine === "unlimited") {
           serverResult = await tryServerParse(rawFile, null, engine);
+          // The user explicitly chose an OCR engine (MinerU / Unlimited-OCR). On failure
+          // or timeout, DON'T silently fall back to pdf.js text-only — that drops every
+          // figure and hides the failure. Surface the error and stop.
+          if (!serverResult) {
+            pending.remove();
+            const label = engine === "mineru" ? "MinerU" : "Unlimited-OCR";
+            const msgEl = document.createElement("div");
+            msgEl.className = "message system";
+            msgEl.textContent = `❌ ${label} 解析失败或超时，已停止（未回退纯文本）。请重试，或在「模型设定」里改用其他 PDF 引擎。`;
+            dom.messagesEl.appendChild(msgEl);
+            dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+            return;
+          }
         }
       } else if ((ext === ".docx" || ext === ".pptx") && serverCapabilities.pandoc) {
         serverResult = await tryServerParse(rawFile);
@@ -2038,9 +2051,11 @@ async function parseDocumentHeadless(fileB64, name, ext, content, onProgress) {
     } else text = result.text;
   } else {
     let serverResult = null;
+    let chosenOcr = "";
     if (ext === ".pdf") {
       const engine = currentPdfEngine();
       if (engine === "mineru" || engine === "unlimited") {
+        chosenOcr = engine === "mineru" ? "MinerU" : "Unlimited-OCR";
         serverResult = await tryServerParse(rawFile, onProgress, engine);
       }
     } else if ((ext === ".docx" || ext === ".pptx") && serverCapabilities.pandoc) {
@@ -2050,6 +2065,10 @@ async function parseDocumentHeadless(fileB64, name, ext, content, onProgress) {
       text = serverResult.text;
       images = serverResult.images || [];
       tool = serverResult.tool || (ext === ".pdf" ? "MinerU" : "Pandoc");
+    } else if (chosenOcr) {
+      // User explicitly chose an OCR engine — fail the job instead of silently
+      // degrading to pdf.js text-only (which would drop all figures).
+      throw new Error(`${chosenOcr} 解析失败或超时（未回退纯文本）。请重试或改用其他 PDF 引擎。`);
     } else if (ext === ".pdf") {
       text = await extractPdfText(rawFile); tool = "pdf.js";
     } else if (ext === ".pptx") {

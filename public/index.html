@@ -232,6 +232,15 @@
             <span id="libraryRerankLabelText">Rerank /ask retrieval</span>
           </label>
           <p class="hint" id="libraryRerankHint">One extra chat-model call per /ask reorders the retrieved snippets — more accurate, but slower.</p>
+
+          <label class="pdfEngineLabel" id="pdfEngineLabel" hidden>
+            <span id="pdfEngineLabelText">PDF import</span>
+            <select id="pdfEngineSelect">
+              <option value="mineru" id="pdfEngineOptMineru" selected hidden>MinerU</option>
+              <option value="unlimited" id="pdfEngineOptUnlimited" hidden>Unlimited-OCR</option>
+              <option value="pdfjs" id="pdfEngineOptPdfjs">Fast (text only)</option>
+            </select>
+          </label>
         </div>
 
         <div class="panelTabContent" data-panel-content="extra">
@@ -327,17 +336,6 @@
             </label>
             <div id="reminderList" class="reminderList"></div>
           </div>
-
-          <hr class="settingDivider" />
-
-          <label class="pdfEngineLabel" id="pdfEngineLabel" hidden>
-            <span id="pdfEngineLabelText">PDF import</span>
-            <select id="pdfEngineSelect">
-              <option value="mineru" id="pdfEngineOptMineru" selected hidden>MinerU</option>
-              <option value="unlimited" id="pdfEngineOptUnlimited" hidden>Unlimited-OCR</option>
-              <option value="pdfjs" id="pdfEngineOptPdfjs">Fast (text only)</option>
-            </select>
-          </label>
         </div>
       </aside>
 
