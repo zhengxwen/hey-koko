@@ -180,7 +180,7 @@ async function embedDocVectors(doc, id, folder, model) {
 function loadIndex() { try { return JSON.parse(fs.readFileSync(indexFile(), "utf-8")); } catch { return []; } }
 let _entityIdx = null;   // { byName: Map<normName,{display,docs:Set}>, byDoc: Map<docId,Set<normName>> }
 let _entityFacets = null; // { facets:[{type,entities:[{name,count,docIds}]}] } — type-aware, reads docs
-function saveIndex(arr) { ensureDir(); fs.writeFileSync(indexFile(), JSON.stringify(arr)); _entityIdx = null; _entityFacets = null; _aliasMap = null; }
+function saveIndex(arr) { ensureDir(); fs.writeFileSync(indexFile(), JSON.stringify(arr)); _entityIdx = null; _entityFacets = null; _aliasMap = null; _entityGraph = null; }
 
 // ---- entity alias unification (structure layer) ---------------------------
 // Cross-doc entities fragment ("毕导" vs "毕导THU"; "GraphRAG" vs "Graph RAG"). aliases.json
@@ -200,7 +200,7 @@ function loadAliasStore() {
 function saveAliasStore(store) {
   ensureDir();
   fs.writeFileSync(aliasFile(), JSON.stringify(store));
-  _aliasStore = store; _aliasMap = null; _entityIdx = null; _entityFacets = null;
+  _aliasStore = store; _aliasMap = null; _entityIdx = null; _entityFacets = null; _entityGraph = null;
 }
 // Stable order-independent key for a pair of normalized names (rejected-suggestion set).
 // Tab-joined (never a NUL byte, which corrupts grep/tooling).
@@ -1322,6 +1322,128 @@ async function aliasEditLibrary(req, res) {
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
+// ---- cross-doc entity graph (structure layer) -----------------------------
+// The whole library's entities/relations folded into ONE network: alias-canonicalized nodes
+// (with type + doc set) and aggregated directed edges (a head→tail pair carries a label→count
+// map + the docs it came from). Reads every doc once; cached until any index/alias write.
+let _entityGraph = null;
+function entityGraph() {
+  if (_entityGraph) return _entityGraph;
+  const nodes = new Map();   // canonKey -> { name, type, docs:Set }
+  const edges = new Map();   // `${headKey}\t${tailKey}` -> { head, tail, labels:Map<label,count>, docs:Set }
+  const byDoc = new Map();   // docId -> Set(entityKey) — powers the co-occurrence neighborhood
+  const touch = (rawName, type, docId) => {
+    const raw = normalizeEntity(rawName);
+    if (!raw) return null;
+    const key = canonEntity(raw);
+    let n = nodes.get(key);
+    if (!n) { n = { name: canonDisplay(raw), type: type || "concept", docs: new Set() }; nodes.set(key, n); }
+    else if (type && type !== "concept" && n.type === "concept") n.type = type;   // upgrade from backfill default
+    if (docId) { n.docs.add(docId); let s = byDoc.get(docId); if (!s) { s = new Set(); byDoc.set(docId, s); } s.add(key); }
+    return key;
+  };
+  for (const e of loadIndex()) {
+    const doc = readDoc(e.docId);
+    if (!doc) continue;
+    const typeByKey = new Map();
+    for (const ent of (doc.entities || [])) {
+      const raw = normalizeEntity(ent && ent.name);
+      if (raw) typeByKey.set(canonEntity(raw), ENTITY_TYPES.includes(ent && ent.type) ? ent.type : "concept");
+    }
+    for (const ent of (doc.entities || [])) touch(ent && ent.name, typeByKey.get(canonEntity(normalizeEntity(ent && ent.name))), e.docId);
+    for (const r of (doc.relations || [])) {
+      if (!Array.isArray(r) || r.length < 3) continue;
+      const hk = touch(r[0], typeByKey.get(canonEntity(normalizeEntity(r[0]))), e.docId);
+      const tk = touch(r[2], typeByKey.get(canonEntity(normalizeEntity(r[2]))), e.docId);
+      if (!hk || !tk || hk === tk) continue;
+      const label = String(r[1] || "").trim();
+      const ekey = `${hk}\t${tk}`;
+      let ed = edges.get(ekey);
+      if (!ed) { ed = { head: hk, tail: tk, labels: new Map(), docs: new Set() }; edges.set(ekey, ed); }
+      ed.labels.set(label, (ed.labels.get(label) || 0) + 1);
+      ed.docs.add(e.docId);
+    }
+  }
+  _entityGraph = { nodes, edges, byDoc };
+  return _entityGraph;
+}
+// POST /api/library/entity-neighborhood { name, hops? } →
+//   { center, nodes:[{key,name,type,count}], edges:[{head,tail,label,count}], docs:[{docId,title,docKind}] }
+// BFS `hops` (1-2) out from the entity, capped for readability. `head`/`tail` on edges are the
+// nodes' DISPLAY names (so the client graph reuses the per-doc renderer directly).
+function entityNeighborhoodLibrary(req, res) {
+  readBody(req).then((body) => {
+    const { nodes, edges, byDoc } = entityGraph();
+    // Accept one `name` or several `names` (multi-select) — seed the traversal from all of them.
+    const rawNames = Array.isArray(body.names) && body.names.length ? body.names : [body.name];
+    const seeds = [...new Set(rawNames.map((n) => canonEntity(normalizeEntity(n))).filter((k) => k && nodes.has(k)))];
+    if (!seeds.length) { sendJson(res, 200, { center: null, centers: [], nodes: [], edges: [], docs: [] }); return; }
+    const hops = Math.min(2, Math.max(1, parseInt(body.hops, 10) || 1));
+    const NODE_CAP = 60;
+    // relation adjacency (undirected for traversal)
+    const adj = new Map();
+    for (const ed of edges.values()) {
+      if (!adj.has(ed.head)) adj.set(ed.head, new Set());
+      if (!adj.has(ed.tail)) adj.set(ed.tail, new Set());
+      adj.get(ed.head).add(ed.tail); adj.get(ed.tail).add(ed.head);
+    }
+    const keep = new Set(seeds);
+    let frontier = [...seeds];
+    for (let h = 0; h < hops && keep.size < NODE_CAP; h++) {
+      const next = [];
+      for (const k of frontier) for (const nb of (adj.get(k) || [])) {
+        if (keep.has(nb)) continue;
+        if (keep.size >= NODE_CAP) break;
+        keep.add(nb); next.push(nb);
+      }
+      frontier = next;
+    }
+    // Co-occurrence: many entities never appear in an explicit «§ 关系» triple (so they'd look
+    // isolated). Pull in entities that SHARE A DOCUMENT with a seed — { otherKey -> Set(sharedDoc) },
+    // most-shared first — so the neighborhood is meaningful even without relations.
+    const cooc = new Map();
+    for (const seed of seeds) for (const docId of nodes.get(seed).docs) {
+      for (const other of (byDoc.get(docId) || [])) {
+        if (other === seed || seeds.includes(other)) continue;
+        let s = cooc.get(other); if (!s) { s = new Set(); cooc.set(other, s); } s.add(docId);
+      }
+    }
+    for (const [k] of [...cooc.entries()].sort((a, b) => b[1].size - a[1].size)) {
+      if (keep.size >= NODE_CAP) break;
+      keep.add(k);
+    }
+    const outNodes = [...keep].map((k) => { const n = nodes.get(k); return { key: k, name: n.name, type: n.type, count: n.docs.size }; });
+    const nameOf = (k) => nodes.get(k).name;
+    const pk = (a, b) => (a < b ? `${a}\t${b}` : `${b}\t${a}`);
+    const outEdges = [];
+    const docSet = new Set();
+    const relPairs = new Set();   // dedupe co-occurrence against real relations
+    for (const ed of edges.values()) {
+      if (!keep.has(ed.head) || !keep.has(ed.tail)) continue;
+      const label = [...ed.labels.entries()].sort((a, b) => b[1] - a[1])[0][0];   // most-common label wins
+      outEdges.push({ head: nameOf(ed.head), tail: nameOf(ed.tail), label, count: ed.docs.size });
+      relPairs.add(pk(ed.head, ed.tail));
+      for (const d of ed.docs) docSet.add(d);
+    }
+    // seed → co-occurring entity edges (only where no relation already links the pair)
+    for (const seed of seeds) {
+      const shared = new Map();   // other -> Set(doc)
+      for (const docId of nodes.get(seed).docs) for (const other of (byDoc.get(docId) || [])) {
+        if (other === seed || !keep.has(other) || relPairs.has(pk(seed, other))) continue;
+        let s = shared.get(other); if (!s) { s = new Set(); shared.set(other, s); } s.add(docId);
+      }
+      for (const [other, ds] of shared) {
+        outEdges.push({ head: nameOf(seed), tail: nameOf(other), label: "", count: ds.size, cooc: true });
+        for (const d of ds) docSet.add(d);
+      }
+    }
+    const metaById = new Map(loadIndex().map((d) => [d.docId, d]));
+    const docs = [...docSet].map((id) => { const m = metaById.get(id) || {}; return { docId: id, title: m.title || id, docKind: m.docKind || "doc" }; });
+    const centers = seeds.map((k) => { const n = nodes.get(k); return { key: k, name: n.name, type: n.type, count: n.docs.size }; });
+    sendJson(res, 200, { center: centers[0], centers, nodes: outNodes, edges: outEdges, docs });
+  }).catch((e) => sendJson(res, 500, { error: e.message }));
+}
+
 // A conversation/annotation block (question, reply, or /note) — carries a role and
 // renders as a chat bubble. NOT part of the document body, so it must survive a
 // reparse intact instead of being re-chunked into role-less text.
@@ -2056,5 +2178,6 @@ module.exports = {
   // structure-card entity/relation layer (docs/plans/structure-card.md)
   entityLookupLibrary, entityIndex, entityFacetsLibrary, entityFacets,
   aliasesLibrary, aliasEditLibrary, aliasResolver, aliasSuggestions,   // entity alias unification
+  entityNeighborhoodLibrary, entityGraph,   // cross-doc entity network graph
   cleanStructure, renderStructure, parseStructureSections, normalizeEntity,   // exported for testing
 };

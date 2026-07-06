@@ -16,7 +16,7 @@ import { openLibraryDoc, openLibraryPanel } from "./library.js";
 import { handleAskCommand } from "./ask.js";
 import { openArchivedChat, openArchivePanel } from "./archive.js";
 import { markdownToHtml } from "./markdown.js";
-import { renderRelationGraph } from "./relation-graph.js";
+import { renderRelationGraph, openEntityGraphModal } from "./relation-graph.js";
 import { getActiveTab, createTab, switchTab } from "./tabs.js";
 import { t, getUILanguage } from "./i18n.js";
 import { dom, state } from "./state.js";
@@ -1394,23 +1394,56 @@ function buildEntityMenu() {
   bar.append(orBtn, andBtn, clr, aliasBtn); m.appendChild(bar);
   const sel = document.createElement("div"); sel.className = "starMapFolderHint"; sel.id = "starMapEntitySel";
   sel.textContent = t("star_entitySelected", { n: entSel.size }); m.appendChild(sel);
-  // Merge the currently-selected entities into one alias group (highest-count = canonical).
-  if (entSel.size >= 2) {
+  // Selection-dependent action buttons live in their own container so renderEntityList (which
+  // runs on every chip click) can refresh them WITHOUT rebuilding the whole menu.
+  const actions = document.createElement("div"); actions.id = "starMapEntityActions"; m.appendChild(actions);
+  if (aliasOpen) m.appendChild(renderAliasPanel());
+  const list = document.createElement("div"); list.className = "starMapFolderList starMapEntityList"; list.id = "starMapEntityList";
+  m.appendChild(list);
+  renderEntityActions();
+  renderEntityList();
+}
+// The neighborhood (>=1 selected) + merge (>=2 selected, alias mode) buttons — rebuilt whenever
+// the selection changes. Both can appear together (view the neighborhood AND offer a merge).
+function renderEntityActions() {
+  const box = el.entityMenu && el.entityMenu.querySelector("#starMapEntityActions"); if (!box) return;
+  box.innerHTML = "";
+  const selNames = [...entSel.keys()].map((k) => k.slice(k.indexOf(" ") + 1));
+  if (selNames.length >= 1) {
+    const nbBtn = document.createElement("button"); nbBtn.type = "button";
+    nbBtn.className = "starMapAliasMergeSel starMapNeighborBtn";
+    nbBtn.textContent = selNames.length === 1 ? t("star_entityNeighbor", { name: selNames[0] }) : t("star_entityNeighborN", { n: selNames.length });
+    nbBtn.addEventListener("click", () => showEntityNeighborhood(selNames));
+    box.appendChild(nbBtn);
+  }
+  if (entSel.size >= 2 && aliasOpen) {
+    // Merge is only offered while the 🔗 alias panel is open — otherwise a multi-select is just
+    // doc filtering (AND/OR) and a "merge these" button would be nonsensical.
     const mergeBtn = document.createElement("button"); mergeBtn.type = "button";
     mergeBtn.className = "starMapAliasMergeSel"; mergeBtn.textContent = t("star_aliasMergeSel", { n: entSel.size });
     mergeBtn.addEventListener("click", () => {
-      // key = "type name"; value = docIds → most-covered entity becomes the canonical name.
       const entries = [...entSel.entries()].map(([k, docIds]) => ({ name: k.slice(k.indexOf(" ") + 1), n: (docIds || []).length }));
       const names = entries.map((e) => e.name);
       const canonical = entries.slice().sort((a, b) => b.n - a.n)[0].name;
       applyAliasEdit({ action: "merge", names, canonical });
     });
-    m.appendChild(mergeBtn);
+    box.appendChild(mergeBtn);
   }
-  if (aliasOpen) m.appendChild(renderAliasPanel());
-  const list = document.createElement("div"); list.className = "starMapFolderList starMapEntityList"; list.id = "starMapEntityList";
-  m.appendChild(list);
-  renderEntityList();
+}
+// Open the combined cross-doc neighborhood of the selected entities as an INTERACTIVE full-screen
+// network graph — clicking any node recenters the graph on it (re-fetches its neighborhood).
+async function showEntityNeighborhood(names) {
+  const seeds = Array.isArray(names) ? names : [names];
+  const fetchN = (ns) => post("/api/library/entity-neighborhood", { names: ns, hops: 1 });
+  let data;
+  try { data = await fetchN(seeds); } catch { return; }
+  if (!data || !data.edges || !data.edges.length) { alert(t("star_entityNoLinks", { name: seeds.join("、") })); return; }
+  const titleOf = (d) => {
+    const cs = d.centers || (d.center ? [d.center] : []);
+    const focus = cs.length === 1 ? cs[0].name : t("star_entityNeighborMulti", { n: cs.length });
+    return t("star_entityNeighborTitle", { name: focus, n: d.nodes.length, d: d.docs.length });
+  };
+  openEntityGraphModal({ data, title: titleOf, fetchNeighborhood: fetchN });
 }
 // The 🔗 alias sub-panel: fuzzy merge suggestions (合并 / 忽略) + confirmed groups (拆分).
 function renderAliasPanel() {
@@ -1453,6 +1486,7 @@ function renderAliasPanel() {
 function renderEntityList() {
   const list = el.entityMenu && el.entityMenu.querySelector("#starMapEntityList"); if (!list) return;
   const selCt = el.entityMenu.querySelector("#starMapEntitySel"); if (selCt) selCt.textContent = t("star_entitySelected", { n: entSel.size });
+  renderEntityActions();   // selection changed → refresh the neighborhood/merge buttons
   list.innerHTML = "";
   const CAP = 60;
   for (const g of (entFacets || [])) {

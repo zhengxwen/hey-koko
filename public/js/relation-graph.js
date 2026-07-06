@@ -150,7 +150,8 @@ const trunc = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
 // Build the SVG for a set of relations. `full` = full-screen mode: bigger layout, longer
 // labels, and a wider stroke class so text stays readable when the graph fills the screen.
-function buildGraphSvg(rels, { full = false } = {}) {
+function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null } = {}) {
+  const centerSet = center instanceof Set ? center : new Set(center ? [center] : []);
   const names = [...new Set(rels.flatMap((r) => [r.head, r.tail]))];
   const { pos, W, H } = packedLayout(names, rels, { full });
   const P = (nm) => pos.get(nm);
@@ -176,9 +177,12 @@ function buildGraphSvg(rels, { full = false } = {}) {
     const x1 = a.x + ux * (NR + 1), y1 = a.y + uy * (NR + 1);
     const x2 = b.x - ux * (NR + 6), y2 = b.y - uy * (NR + 6);
     const label = r.qual ? `${r.rel} (${r.qual})` : r.rel;
-    const tip = `${r.head} —${label}→ ${r.tail}`;   // full triple, for the hover tooltip
+    // co-occurrence edges are undirected (no arrow, dashed) — "share a document", not a relation
+    const tip = r.cooc ? `${r.head} ⟷ ${r.tail}${label ? ` · ${label}` : ""}` : `${r.head} —${label}→ ${r.tail}`;
     // wider transparent hit-line so the edge is easy to hover, both carrying the tooltip
-    const line = el("line", { x1, y1, x2, y2, class: "relEdge", "marker-end": "url(#relArrow)" });
+    const lineAttrs = { x1, y1, x2, y2, class: "relEdge" + (r.cooc ? " relEdgeCooc" : "") };
+    if (!r.cooc) lineAttrs["marker-end"] = "url(#relArrow)";
+    const line = el("line", lineAttrs);
     line.appendChild(el("title", {}, tip));
     svg.appendChild(line);
     const hit = el("line", { x1, y1, x2, y2, class: "relEdgeHit" });
@@ -192,10 +196,23 @@ function buildGraphSvg(rels, { full = false } = {}) {
   }
   for (const nm of names) {   // nodes
     const q = P(nm);
-    svg.appendChild(el("circle", { cx: q.x, cy: q.y, r: NR, class: "relNode" }));
-    const label = el("text", { x: q.x, y: q.y - NR - 5, class: "relNodeLabel", "text-anchor": "middle" }, trunc(nm, nTrunc));
+    const isCenter = centerSet.has(nm);   // neighborhood view: highlight the focus entity/entities
+    const clk = onNodeClick ? " relNodeClickable" : "";
+    const circle = el("circle", { cx: q.x, cy: q.y, r: isCenter ? NR + 3 : NR, class: "relNode" + (isCenter ? " relNodeCenter" : "") + clk });
+    const label = el("text", { x: q.x, y: q.y - (isCenter ? NR + 3 : NR) - 5, class: "relNodeLabel" + (isCenter ? " relNodeLabelCenter" : "") + clk, "text-anchor": "middle" }, trunc(nm, nTrunc));
     label.setAttribute("paint-order", "stroke");
-    label.appendChild(el("title", {}, nm));
+    const tipText = onNodeClick ? `${nm}\n${t("relGraphRecenter")}` : nm;
+    circle.appendChild(el("title", {}, tipText));
+    label.appendChild(el("title", {}, tipText));
+    if (onNodeClick) {
+      // generous invisible hit-target so small nodes are easy to click
+      const hit = el("circle", { cx: q.x, cy: q.y, r: NR + 10, class: "relNodeHit" });
+      hit.appendChild(el("title", {}, tipText));
+      const go = (e) => { e.stopPropagation(); onNodeClick(nm); };
+      hit.addEventListener("click", go); circle.addEventListener("click", go); label.addEventListener("click", go);
+      svg.appendChild(hit);
+    }
+    svg.appendChild(circle);
     svg.appendChild(label);
   }
   return svg;
@@ -205,16 +222,27 @@ function buildGraphSvg(rels, { full = false } = {}) {
 // enlarged, not shrunk to fit) and the box scrolls if it's taller than the viewport. A
 // semi-transparent ⌄ hint appears whenever more graph is hidden below the fold, and hides
 // once you reach the bottom. Backdrop click / × / Esc close it.
-function openGraphModal(rels) {
+function openGraphModal(rels, { title = "", center = "", onNodeClick = null } = {}) {
   const overlay = document.createElement("div"); overlay.className = "relGraphModal";
   const inner = document.createElement("div"); inner.className = "relGraphModalInner";
   const close = document.createElement("button"); close.type = "button"; close.className = "relGraphModalClose";
   close.setAttribute("aria-label", "×"); close.textContent = "×";
+  // Title element is always present when interactive (it updates as you recenter).
+  const titleEl = (title || onNodeClick) ? document.createElement("div") : null;
+  if (titleEl) { titleEl.className = "relGraphModalTitle"; titleEl.textContent = title; }
   const scroll = document.createElement("div"); scroll.className = "relGraphModalScroll";
-  scroll.appendChild(buildGraphSvg(rels, { full: true }));
   const hint = document.createElement("div"); hint.className = "relGraphScrollHint"; hint.textContent = "⌄"; hint.hidden = true;
   hint.title = t("relGraphMore");
   const updateHint = () => { hint.hidden = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 8; };
+  // (Re)draw the graph — the neighborhood view calls this again to recenter on a clicked node.
+  const render = (rels2, opts = {}) => {
+    scroll.innerHTML = "";
+    scroll.appendChild(buildGraphSvg(rels2, { full: true, center: opts.center ?? center, onNodeClick: opts.onNodeClick ?? onNodeClick }));
+    if (titleEl && opts.title != null) titleEl.textContent = opts.title;
+    scroll.scrollTop = 0;
+    requestAnimationFrame(updateHint);
+  };
+  render(rels, { title, center, onNodeClick });
   hint.addEventListener("click", () => scroll.scrollBy({ top: Math.round(scroll.clientHeight * 0.8), behavior: "smooth" }));
   scroll.addEventListener("scroll", updateHint);
   const shut = () => { overlay.remove(); document.removeEventListener("keydown", onKey); window.removeEventListener("resize", updateHint); };
@@ -223,10 +251,32 @@ function openGraphModal(rels) {
   overlay.addEventListener("click", (e) => { if (e.target === overlay) shut(); });
   document.addEventListener("keydown", onKey);
   window.addEventListener("resize", updateHint);
-  inner.append(close, scroll, hint);
+  inner.append(close, ...(titleEl ? [titleEl] : []), scroll, hint);
   overlay.appendChild(inner);
   document.body.appendChild(overlay);
   requestAnimationFrame(updateHint);   // after layout settles, decide if the hint is needed
+  return { render, shut };
+}
+
+// Public entry for the cross-doc entity neighborhood (star map). `data` = the neighborhood
+// payload ({edges,center,centers}); `title(data)` builds the header; `fetchNeighborhood(names)`
+// (optional) lets the modal RECENTER on a clicked node by fetching that node's neighborhood.
+// Reuses the exact per-doc graph renderer + modal chrome.
+export function openEntityGraphModal({ data, title = () => "", fetchNeighborhood = null } = {}) {
+  const toRels = (d) => (d.edges || []).map((e) => ({
+    head: e.head, tail: e.tail, qual: e.qual || "", cooc: !!e.cooc,
+    rel: e.cooc ? (t("relGraphCooc") + (e.count > 1 ? ` ·${e.count}` : "")) : (e.label || e.rel || ""),
+  })).filter((r) => r.head && r.tail && r.head !== r.tail);
+  const centersOf = (d) => new Set((d.centers || (d.center ? [d.center] : [])).map((c) => c.name));
+  const first = toRels(data);
+  if (!first.length) return false;
+  let ctrl;
+  const onNodeClick = fetchNeighborhood ? async (name) => {
+    let d; try { d = await fetchNeighborhood([name]); } catch { return; }
+    if (d && toRels(d).length) ctrl.render(toRels(d), { title: title(d), center: centersOf(d), onNodeClick });
+  } : null;
+  ctrl = openGraphModal(first, { title: title(data), center: centersOf(data), onNodeClick });
+  return true;
 }
 
 // The card's relation graph as a collapsible <details>. `open` = initial state. Double-click

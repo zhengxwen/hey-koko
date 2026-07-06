@@ -5492,11 +5492,11 @@ button.secondary:disabled {
 .relGraphStage { cursor: zoom-in; }
 /* full-screen relation graph (double-click the inline graph) */
 .relGraphModal { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.72); display: flex; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(3px); }
-.relGraphModalInner { position: relative; width: min(96vw, 1240px); height: 90vh; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 44px 10px 10px; box-shadow: var(--shadow); box-sizing: border-box; }
+.relGraphModalInner { position: relative; display: flex; flex-direction: column; width: min(96vw, 1240px); height: 90vh; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 44px 10px 10px; box-shadow: var(--shadow); box-sizing: border-box; }
 /* the graph is centered when it fits, and scrolls if taller than the box. flex + child
    margin:auto centers both axes AND keeps the top reachable when overflowing (align-items:
    center would clip the top of a too-tall graph). */
-.relGraphModalScroll { width: 100%; height: 100%; overflow-y: auto; overflow-x: hidden; display: flex; }
+.relGraphModalScroll { width: 100%; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; }
 /* natural ~1.3× size (from the width/height attrs), centered, capped at the modal width so
    the font stops growing past a comfortable point */
 .relGraphSvgFull { display: block; width: auto; max-width: 100%; height: auto; max-height: none; margin: auto; }
@@ -5511,6 +5511,16 @@ button.secondary:disabled {
 .relGraphSvgFull .relNodeLabel { font-size: 15px; stroke-width: 4px; }
 .relGraphSvgFull .relEdgeLabel { font-size: 12px; stroke-width: 4px; }
 .relGraphSvgFull .relEdge { stroke-width: 1.8; }
+/* Cross-doc neighborhood: emphasize the focus (center) entity */
+.relGraphSvg .relNodeCenter { fill: var(--accent); stroke: var(--accent); stroke-width: 2.5; }
+.relGraphSvg .relNodeLabelCenter { font-weight: 700; fill: var(--accent); }
+/* Interactive neighborhood: nodes are clickable (recenter) */
+.relGraphSvg .relNodeClickable { cursor: pointer; }
+.relGraphSvg .relNodeHit { fill: transparent; cursor: pointer; }
+.relGraphSvg .relNode.relNodeClickable:hover { stroke: var(--accent); stroke-width: 2.5; }
+/* Co-occurrence edges (share a doc, no explicit relation): dashed + muted, undirected */
+.relGraphSvg .relEdgeCooc { stroke-dasharray: 4 3; opacity: 0.6; }
+.relGraphModalTitle { flex: none; text-align: center; font-size: 13.5px; font-weight: 600; color: var(--ink); padding: 2px 40px 6px; }
 /* User (question) bubbles written back into the doc: right-aligned, tinted.
    Container is a flex column (.archivePreviewContent) so use align-self: flex-end
    (same idiom as .archivePreviewMsg.user) — margin-left:auto is unreliable here. */
