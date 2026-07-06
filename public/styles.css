@@ -5562,6 +5562,32 @@ button.secondary:disabled {
 .relGraphDocs.isCollapsed .relGraphDocsList { display: none; }
 .relGraphDocRow { text-align: left; min-height: 0; padding: 3px 6px; font-size: 11.5px; font-weight: 400; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--ink); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 282px; }
 .relGraphDocRow:hover { background: var(--surface); border-color: var(--accent); }
+
+/* ---- Timeline view (dedicated) ------------------------------------------- */
+.timelineModal { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.72); display: flex; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(3px); }
+.timelineInner { position: relative; display: flex; flex-direction: column; width: min(96vw, 1400px); height: 88vh; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px 12px 8px; box-shadow: var(--shadow); box-sizing: border-box; }
+.timelineClose { position: absolute; top: 8px; right: 10px; z-index: 3; min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; padding: 0; font-size: 20px; line-height: 1; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.timelineClose:hover { background: var(--surface); border-color: var(--accent); color: var(--accent); }
+.timelineHead { flex: none; display: flex; align-items: center; gap: 12px; padding: 2px 44px 8px 4px; }
+.timelineTitle { font-size: 13.5px; font-weight: 600; color: var(--ink); white-space: nowrap; }
+.timelineFilter { flex: 1; max-width: 280px; min-height: 0; padding: 5px 10px; font-size: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.timelineZoom { display: flex; gap: 4px; margin-left: auto; }
+.timelineZoomBtn { min-width: 28px; min-height: 26px; padding: 0; font-size: 16px; line-height: 1; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.timelineZoomBtn:hover { background: var(--surface); border-color: var(--accent); color: var(--accent); }
+.timelineScroll { flex: 1; min-height: 0; overflow: auto; }
+.timelineEmpty { padding: 40px; text-align: center; color: var(--muted); }
+.timelineEmptyNote { fill: var(--muted); font-size: 13px; font-style: italic; }
+.timelineSvg { display: block; }
+.timelineSvg .timelineAxis { stroke: var(--line); stroke-width: 1.5; }
+.timelineSvg .timelineGrid { stroke: var(--line); stroke-width: 1; opacity: 0.35; }
+.timelineSvg .timelineTick { font-size: 11px; fill: var(--muted); }
+.timelineSvg .timelineConnector { stroke: var(--line); stroke-width: 1; opacity: 0.4; }
+.timelineSvg .timelineDot { fill: var(--accent); stroke: var(--panel); stroke-width: 1.5; }
+.timelineSvg .timelineLabel { font-size: 12.5px; fill: var(--ink); }
+.timelineSvg .timelineYear { fill: var(--accent); font-weight: 600; }
+.timelineSvg .timelineEvent.isClickable { cursor: pointer; }
+.timelineSvg .timelineEvent.isClickable:hover .timelineLabel { fill: var(--accent); text-decoration: underline; }
+.timelineSvg .timelineEvent.isClickable:hover .timelineDot { r: 5.5; }
 /* User (question) bubbles written back into the doc: right-aligned, tinted.
    Container is a flex column (.archivePreviewContent) so use align-self: flex-end
    (same idiom as .archivePreviewMsg.user) — margin-left:auto is unreliable here. */

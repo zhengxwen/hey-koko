@@ -1458,6 +1458,38 @@ function entityNeighborhoodLibrary(req, res) {
   }).catch((e) => sendJson(res, 500, { error: e.message }));
 }
 
+// Every time-qualified relation across the library as one flat, time-sorted EVENT list — the
+// data behind the dedicated timeline view. Endpoints/names are alias-canonicalized; each event
+// keeps its source doc so the view can open it. Optional { names, folders } narrow the scope.
+function timelineLibrary(req, res) {
+  readBody(req).then((body) => {
+    const names = (Array.isArray(body.names) ? body.names : []).map((n) => canonEntity(normalizeEntity(n))).filter(Boolean);
+    const nameSet = names.length ? new Set(names) : null;
+    const folders = Array.isArray(body.folders) && body.folders.length ? new Set(body.folders) : null;
+    const events = [];
+    for (const it of loadIndex()) {
+      if (folders && !folders.has(locOf(it.docId))) continue;
+      const doc = readDoc(it.docId);
+      for (const r of ((doc && doc.relations) || [])) {
+        if (!Array.isArray(r) || r.length < 3) continue;
+        const q = r[3];
+        const time = (q && typeof q === "object" && !Array.isArray(q)) ? String(q.time || "").trim() : "";
+        if (!/^\d{4}(-\d{2}){0,2}$/.test(time)) continue;
+        const hk = canonEntity(normalizeEntity(r[0])), tk = canonEntity(normalizeEntity(r[2]));
+        if (nameSet && !nameSet.has(hk) && !nameSet.has(tk)) continue;
+        events.push({
+          time, head: canonDisplay(normalizeEntity(r[0])), rel: String(r[1] || "").trim(), tail: canonDisplay(normalizeEntity(r[2])),
+          place: (q.place ? String(q.place).trim() : ""), docId: it.docId, title: it.title || it.docId, docKind: it.docKind || "doc",
+        });
+      }
+    }
+    events.sort((a, b) => a.time.localeCompare(b.time));
+    const years = events.map((e) => parseInt(e.time.slice(0, 4), 10)).filter(Number.isFinite);
+    const span = years.length ? { min: Math.min(...years), max: Math.max(...years) } : null;
+    sendJson(res, 200, { events, span, total: events.length });
+  }).catch((e) => sendJson(res, 500, { error: e.message }));
+}
+
 // A conversation/annotation block (question, reply, or /note) — carries a role and
 // renders as a chat bubble. NOT part of the document body, so it must survive a
 // reparse intact instead of being re-chunked into role-less text.
@@ -2193,5 +2225,6 @@ module.exports = {
   entityLookupLibrary, entityIndex, entityFacetsLibrary, entityFacets,
   aliasesLibrary, aliasEditLibrary, aliasResolver, aliasSuggestions,   // entity alias unification
   entityNeighborhoodLibrary, entityGraph,   // cross-doc entity network graph
+  timelineLibrary,   // dedicated timeline view (time-qualified relations)
   cleanStructure, renderStructure, parseStructureSections, normalizeEntity,   // exported for testing
 };

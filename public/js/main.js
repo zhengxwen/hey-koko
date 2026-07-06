@@ -20,7 +20,7 @@ import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveC
 import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup, hideMentionPopup, moveMentionSelection, selectActiveMention, isMentionPopupOpen } from './mentions.js';
 import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
-import { initLibrary, runLibraryImport, notifyLibraryJobsChanged, openLibraryPanel } from './library.js';
+import { initLibrary, runLibraryImport, notifyLibraryJobsChanged, openLibraryPanel, openLibraryDoc } from './library.js';
 import { initAsk } from './ask.js';
 import { renderPersonalityOptions, saveCurrentPersonaAsPreset, renameCurrentPreset, deleteCurrentPreset, writeBackPersonaToPreset, isBuiltinKey, getCustomPreset, resolveImportedPersonality, resolvePersonaText } from './presets.js';
 import { applyUILanguage, t, getPrompt } from './i18n.js';
@@ -2486,6 +2486,19 @@ loadMentionArchives();   // prime the /ask #mention conversation-archive list
 // chat-only users never download it. Entrance lives inside the library panel.
 document.querySelector("#starMapBtn")?.addEventListener("click", () => {
   import("./star-map.js").then((m) => m.openStarMap()).catch((e) => console.error("star map failed to load", e));
+});
+
+// ⏱ Timeline: library-wide view of every time-qualified relation on one year axis. Lives in the
+// library header (it's a whole-library analysis, unrelated to the star map's spatial layout).
+document.querySelector("#libraryTimelineBtn")?.addEventListener("click", async () => {
+  try {
+    const [{ openTimeline }, data] = await Promise.all([
+      import("./timeline.js"),
+      fetch("/api/library/timeline", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()),
+    ]);
+    if (!data || !data.events || !data.events.length) { alert(t("timelineEmpty")); return; }
+    openTimeline(data.events, { onOpenDoc: (docId) => openLibraryDoc(docId) });
+  } catch (e) { console.error("timeline failed", e); }
 });
 
 // Enable drag-to-resize / auto-collapse for the settings panel.
