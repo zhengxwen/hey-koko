@@ -5755,6 +5755,17 @@ button.secondary:disabled {
 .starMapEntityChip.isActive { border-color: var(--accent); background: var(--accent); color: var(--on-accent, #fff); }
 .starMapEntityMore { width: 100%; font-size: 11px; color: var(--muted); padding: 2px 4px; }
 #starMapEntityBtn.isActive { border-color: var(--accent); color: var(--accent); }
+/* Alias unification sub-panel (🔗) */
+.starMapAliasMergeSel { display: block; width: 100%; min-height: 0; margin: 2px 0 4px; padding: 5px 10px; font-size: 12px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--on-accent, #fff); cursor: pointer; }
+.starMapAliasMergeSel:hover { filter: brightness(1.08); }
+.starMapAliasPanel { border: 1px solid var(--line); border-radius: 9px; padding: 5px 6px; margin-bottom: 6px; background: var(--surface); max-height: 240px; overflow-y: auto; }
+.starMapAliasHead { font-size: 11px; font-weight: 600; color: var(--muted); padding: 4px 4px 2px; }
+.starMapAliasRow { display: flex; align-items: center; gap: 5px; padding: 3px 4px; }
+.starMapAliasPair { flex: 1; min-width: 0; font-size: 11.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.starMapAliasRow button { min-height: 0; min-width: 0; flex: none; padding: 2px 9px; font-size: 11px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.starMapAliasYes { border-color: var(--accent) !important; color: var(--accent) !important; }
+.starMapAliasYes:hover { background: var(--accent) !important; color: var(--on-accent, #fff) !important; }
+.starMapAliasNo:hover { background: var(--line); }
 #starMapCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .starMapLabels { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
 /* Labels are clickable (zoom to their cluster) even though the layer itself is not */

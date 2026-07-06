@@ -50,6 +50,9 @@ let matched = null;    // Set<doc index> while a search query OR entity selectio
 // drives the SAME `matched` dimming as search. entSel: key `type\u0000name` → docIds[]. entMode:
 // "or" (any selected entity) | "and" (all). entExpanded: which type groups are open.
 let entFacets = null, entSel = new Map(), entMode = "or", entExpanded = new Set(), entFilter = "";
+// Alias unification: { groups:[{canonical,members,count}], suggestions:[{type,reason,canonical,other,...}] }.
+// aliasOpen toggles the "别名管理" sub-panel (suggestions + confirmed groups + merge-selected).
+let aliasData = null, aliasOpen = false;
 const ENT_TYPE_LABELS = {
   zh:        { person: "人物", org: "机构", place: "地点", event: "事件", method: "方法", dataset: "数据集", concept: "概念", tool: "工具", product: "产品", work: "作品", policy: "政策" },
   "zh-Hant": { person: "人物", org: "機構", place: "地點", event: "事件", method: "方法", dataset: "資料集", concept: "概念", tool: "工具", product: "產品", work: "作品", policy: "政策" },
@@ -241,7 +244,7 @@ function ensureDom() {
   el.entityBtn = document.querySelector("#starMapEntityBtn");
   el.entityBtn.addEventListener("click", async () => {
     if (!el.entityMenu.hidden) { el.entityMenu.hidden = true; return; }
-    await ensureFacets(); buildEntityMenu(); el.entityMenu.hidden = false; el.dispMenu.hidden = true; el.folderMenu.hidden = true;
+    await ensureFacets(); await ensureAliases(); buildEntityMenu(); el.entityMenu.hidden = false; el.dispMenu.hidden = true; el.folderMenu.hidden = true;
   });
   document.querySelector("#starMapExportBtn").addEventListener("click", exportPng);
   // Timeline scrubber: drag ghosts docs published after the thumb's year; ▶ animates
@@ -1333,6 +1336,20 @@ async function ensureFacets() {
   try { const r = await post("/api/library/entity-facets", {}); entFacets = (r && r.facets) || []; }
   catch { entFacets = []; }
 }
+async function ensureAliases() {
+  if (aliasData) return;
+  try { const r = await post("/api/library/aliases", {}); aliasData = { groups: (r && r.groups) || [], suggestions: (r && r.suggestions) || [] }; }
+  catch { aliasData = { groups: [], suggestions: [] }; }
+}
+// After any alias edit the facet doc-lists change and selection keys may vanish → drop both
+// caches, clear the entity selection, re-fetch, and rebuild the menu.
+async function applyAliasEdit(payload) {
+  try { await post("/api/library/alias-edit", payload); } catch { return; }
+  entFacets = null; aliasData = null;
+  entSel.clear(); applyEntitySelection();
+  await ensureFacets(); await ensureAliases();
+  buildEntityMenu();
+}
 const entKey = (type, name) => type + " " + name;
 // Selected entities → `matched` set (docs to keep bright). OR = docs with ANY selected
 // entity, AND = docs with ALL. Reuses the exact search-dimming path (updateVisibilityGL).
@@ -1368,12 +1385,69 @@ function buildEntityMenu() {
   andBtn.addEventListener("click", () => { entMode = "and"; applyEntitySelection(); buildEntityMenu(); });
   const clr = document.createElement("button"); clr.type = "button"; clr.textContent = t("star_entityClear");
   clr.addEventListener("click", () => { entSel.clear(); applyEntitySelection(); buildEntityMenu(); });
-  bar.append(orBtn, andBtn, clr); m.appendChild(bar);
+  const aliasBtn = document.createElement("button"); aliasBtn.type = "button";
+  const nSugg = (aliasData && aliasData.suggestions.length) || 0;
+  aliasBtn.textContent = "🔗" + (nSugg ? ` ${nSugg}` : "");
+  aliasBtn.title = t("star_aliasManage");
+  aliasBtn.className = aliasOpen ? "isActive" : "";
+  aliasBtn.addEventListener("click", () => { aliasOpen = !aliasOpen; buildEntityMenu(); });
+  bar.append(orBtn, andBtn, clr, aliasBtn); m.appendChild(bar);
   const sel = document.createElement("div"); sel.className = "starMapFolderHint"; sel.id = "starMapEntitySel";
   sel.textContent = t("star_entitySelected", { n: entSel.size }); m.appendChild(sel);
+  // Merge the currently-selected entities into one alias group (highest-count = canonical).
+  if (entSel.size >= 2) {
+    const mergeBtn = document.createElement("button"); mergeBtn.type = "button";
+    mergeBtn.className = "starMapAliasMergeSel"; mergeBtn.textContent = t("star_aliasMergeSel", { n: entSel.size });
+    mergeBtn.addEventListener("click", () => {
+      // key = "type name"; value = docIds → most-covered entity becomes the canonical name.
+      const entries = [...entSel.entries()].map(([k, docIds]) => ({ name: k.slice(k.indexOf(" ") + 1), n: (docIds || []).length }));
+      const names = entries.map((e) => e.name);
+      const canonical = entries.slice().sort((a, b) => b.n - a.n)[0].name;
+      applyAliasEdit({ action: "merge", names, canonical });
+    });
+    m.appendChild(mergeBtn);
+  }
+  if (aliasOpen) m.appendChild(renderAliasPanel());
   const list = document.createElement("div"); list.className = "starMapFolderList starMapEntityList"; list.id = "starMapEntityList";
   m.appendChild(list);
   renderEntityList();
+}
+// The 🔗 alias sub-panel: fuzzy merge suggestions (合并 / 忽略) + confirmed groups (拆分).
+function renderAliasPanel() {
+  const box = document.createElement("div"); box.className = "starMapAliasPanel";
+  const suggestions = (aliasData && aliasData.suggestions) || [];
+  const groups = (aliasData && aliasData.groups) || [];
+  if (suggestions.length) {
+    const h = document.createElement("div"); h.className = "starMapAliasHead"; h.textContent = t("star_aliasSuggest", { n: suggestions.length }); box.appendChild(h);
+    for (const s of suggestions.slice(0, 12)) {
+      const row = document.createElement("div"); row.className = "starMapAliasRow";
+      const txt = document.createElement("span"); txt.className = "starMapAliasPair";
+      txt.textContent = `${s.canonical} · ${s.canonicalCount} ⟷ ${s.other} · ${s.otherCount}`;
+      // Full (untruncated) names in the tooltip, plus why they were suggested.
+      txt.title = `${s.canonical} ⟷ ${s.other}\n${entTypeLabel(s.type)} · ${s.reason === "typo" ? t("star_aliasWhyTypo") : t("star_aliasWhySubstr")}`;
+      const yes = document.createElement("button"); yes.type = "button"; yes.className = "starMapAliasYes"; yes.textContent = t("star_aliasDoMerge");
+      yes.addEventListener("click", () => applyAliasEdit({ action: "merge", names: [s.canonical, s.other], canonical: s.canonical }));
+      const no = document.createElement("button"); no.type = "button"; no.className = "starMapAliasNo"; no.textContent = t("star_aliasIgnore");
+      no.addEventListener("click", () => applyAliasEdit({ action: "reject", a: s.canonical, b: s.other }));
+      row.append(txt, yes, no); box.appendChild(row);
+    }
+  }
+  if (groups.length) {
+    const h = document.createElement("div"); h.className = "starMapAliasHead"; h.textContent = t("star_aliasGroups", { n: groups.length }); box.appendChild(h);
+    for (const g of groups) {
+      const row = document.createElement("div"); row.className = "starMapAliasRow";
+      const txt = document.createElement("span"); txt.className = "starMapAliasPair";
+      txt.textContent = `${g.canonical} · ${g.count}`;
+      txt.title = (g.members || []).length ? `${g.canonical} = ${(g.members || []).join(" · ")}` : g.canonical;
+      const split = document.createElement("button"); split.type = "button"; split.className = "starMapAliasNo"; split.textContent = t("star_aliasSplit");
+      split.addEventListener("click", () => applyAliasEdit({ action: "unmerge", canonical: g.canonical }));
+      row.append(txt, split); box.appendChild(row);
+    }
+  }
+  if (!suggestions.length && !groups.length) {
+    const empty = document.createElement("div"); empty.className = "starMapFolderHint"; empty.textContent = t("star_aliasNone"); box.appendChild(empty);
+  }
+  return box;
 }
 // List body only — split out so typing in the filter box doesn't rebuild (and blur) the input.
 function renderEntityList() {

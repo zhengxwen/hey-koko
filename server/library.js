@@ -180,7 +180,102 @@ async function embedDocVectors(doc, id, folder, model) {
 function loadIndex() { try { return JSON.parse(fs.readFileSync(indexFile(), "utf-8")); } catch { return []; } }
 let _entityIdx = null;   // { byName: Map<normName,{display,docs:Set}>, byDoc: Map<docId,Set<normName>> }
 let _entityFacets = null; // { facets:[{type,entities:[{name,count,docIds}]}] } — type-aware, reads docs
-function saveIndex(arr) { ensureDir(); fs.writeFileSync(indexFile(), JSON.stringify(arr)); _entityIdx = null; _entityFacets = null; }
+function saveIndex(arr) { ensureDir(); fs.writeFileSync(indexFile(), JSON.stringify(arr)); _entityIdx = null; _entityFacets = null; _aliasMap = null; }
+
+// ---- entity alias unification (structure layer) ---------------------------
+// Cross-doc entities fragment ("毕导" vs "毕导THU"; "GraphRAG" vs "Graph RAG"). aliases.json
+// holds user-confirmed merge groups + rejected pair suggestions; the resolver folds those
+// plus the LLM's own per-doc `aliases` into a canonical-key map so the index/facets/lookup
+// all collapse the fragments into one entity. Zero-dep, JSON-backed, editable by hand.
+let _aliasStore = null, _aliasMap = null;
+function aliasFile() { return path.join(LIBRARY_DIR, "aliases.json"); }
+function loadAliasStore() {
+  if (_aliasStore) return _aliasStore;
+  try {
+    const j = JSON.parse(fs.readFileSync(aliasFile(), "utf-8"));
+    _aliasStore = { version: 1, groups: Array.isArray(j.groups) ? j.groups : [], rejected: Array.isArray(j.rejected) ? j.rejected : [] };
+  } catch { _aliasStore = { version: 1, groups: [], rejected: [] }; }
+  return _aliasStore;
+}
+function saveAliasStore(store) {
+  ensureDir();
+  fs.writeFileSync(aliasFile(), JSON.stringify(store));
+  _aliasStore = store; _aliasMap = null; _entityIdx = null; _entityFacets = null;
+}
+// Stable order-independent key for a pair of normalized names (rejected-suggestion set).
+// Tab-joined (never a NUL byte, which corrupts grep/tooling).
+function aliasPairKey(a, b) { return a < b ? `${a}\t${b}` : `${b}\t${a}`; }
+
+// Build normKey → {canonicalKey, display}. Union-find over: (1) confirmed groups in
+// aliases.json (authoritative, they set the canonical display); (2) each doc entity's own
+// `aliases` (LLM-asserted equivalence). `rejected` pairs are never unioned. Canonical display
+// for an unforced component = the member seen in the most docs (tie → longer name, so the
+// superset "毕导THU" wins over "毕导"). Cached until any index/alias write.
+function aliasResolver() {
+  if (_aliasMap) return _aliasMap;
+  const store = loadAliasStore();
+  const rejected = new Set(store.rejected || []);
+  const parent = new Map();
+  const find = (x) => {
+    if (!parent.has(x)) { parent.set(x, x); return x; }
+    let r = x; while (parent.get(r) !== r) r = parent.get(r);
+    while (parent.get(x) !== r) { const n = parent.get(x); parent.set(x, r); x = n; }
+    return r;
+  };
+  const union = (a, b) => {
+    if (!a || !b || a === b) return;
+    if (rejected.has(aliasPairKey(a, b))) return;
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  const freq = new Map();       // normKey -> #docs it appears in
+  const dispSeen = new Map();   // normKey -> a representative original-cased display
+  const forced = new Map();     // rootKey (post-union) -> forced canonical display (confirmed group)
+  const groupSeeds = [];        // [{canonical, keys:[normKey...]}] — re-resolve roots after all unions
+  for (const g of (store.groups || [])) {
+    const displays = [g.canonical, ...(Array.isArray(g.members) ? g.members : [])].filter(Boolean);
+    const keys = displays.map(normalizeEntity).filter(Boolean);
+    for (let i = 1; i < keys.length; i++) union(keys[0], keys[i]);
+    displays.forEach((d) => { const k = normalizeEntity(d); if (k && !dispSeen.has(k)) dispSeen.set(k, d); });
+    if (keys.length) groupSeeds.push({ canonical: g.canonical, key: keys[0] });
+  }
+  for (const e of loadIndex()) {
+    const doc = readDoc(e.docId);
+    for (const ent of ((doc && doc.entities) || [])) {
+      const nm = String((ent && ent.name) || "").trim();
+      const k = normalizeEntity(nm);
+      if (!k) continue;
+      freq.set(k, (freq.get(k) || 0) + 1);
+      if (!dispSeen.has(k)) dispSeen.set(k, nm);
+      for (const a of (Array.isArray(ent && ent.aliases) ? ent.aliases : [])) {
+        const ak = normalizeEntity(a);
+        if (!ak) continue;
+        if (!dispSeen.has(ak)) dispSeen.set(ak, String(a).trim());
+        union(k, ak);
+      }
+    }
+  }
+  for (const g of groupSeeds) forced.set(find(g.key), g.canonical);
+  const allKeys = new Set([...parent.keys(), ...freq.keys(), ...dispSeen.keys()]);
+  const best = new Map();   // root -> {disp, f, len}
+  for (const k of allKeys) {
+    const r = find(k);
+    if (forced.has(r)) continue;
+    const f = freq.get(k) || 0, d = dispSeen.get(k) || k;
+    const cur = best.get(r);
+    if (!cur || f > cur.f || (f === cur.f && d.length > cur.len)) best.set(r, { disp: d, f, len: d.length });
+  }
+  const map = new Map();
+  for (const k of allKeys) {
+    const r = find(k);
+    const disp = forced.has(r) ? forced.get(r) : ((best.get(r) && best.get(r).disp) || dispSeen.get(r) || r);
+    map.set(k, { canonicalKey: r, display: disp });
+  }
+  _aliasMap = map;
+  return _aliasMap;
+}
+function canonEntity(normKey) { const m = aliasResolver().get(normKey); return m ? m.canonicalKey : normKey; }
+function canonDisplay(normKey) { const m = aliasResolver().get(normKey); return m ? m.display : normKey; }
 // Entity inverted index (structure layer): built lazily from index.json's `entities`
 // projection, cached until any saveIndex() (index is small → rebuild is ms, no incremental
 // maintenance). Powers entity-lookup, shared-entity related, and /ask -a's entity path.
@@ -192,11 +287,12 @@ function entityIndex() {
     if (!names.length) continue;
     const set = new Set();
     for (const nm of names) {
-      const key = normalizeEntity(nm);
-      if (!key) continue;
+      const raw = normalizeEntity(nm);
+      if (!raw) continue;
+      const key = canonEntity(raw);   // fold aliases → canonical
       set.add(key);
       let e = byName.get(key);
-      if (!e) { e = { display: nm, docs: new Set() }; byName.set(key, e); }
+      if (!e) { e = { display: canonDisplay(raw), docs: new Set() }; byName.set(key, e); }
       e.docs.add(d.docId);
     }
     if (set.size) byDoc.set(d.docId, set);
@@ -216,13 +312,14 @@ function entityFacets() {
     const doc = readDoc(e.docId);
     for (const ent of ((doc && doc.entities) || [])) {
       const name = String((ent && ent.name) || "").trim();
-      const key = normalizeEntity(name);
-      if (!key) continue;
+      const raw = normalizeEntity(name);
+      if (!raw) continue;
+      const key = canonEntity(raw);   // collapse aliases into one canonical row
       const type = ENTITY_TYPES.includes(ent && ent.type) ? ent.type : "concept";
       let m = byType.get(type);
       if (!m) { m = new Map(); byType.set(type, m); }
       let rec = m.get(key);
-      if (!rec) { rec = { name, docs: new Set() }; m.set(key, rec); }
+      if (!rec) { rec = { name: canonDisplay(raw), docs: new Set() }; m.set(key, rec); }
       rec.docs.add(e.docId);
     }
   }
@@ -1085,7 +1182,7 @@ async function relatedLibraryDocs(req, res) {
 async function entityLookupLibrary(req, res) {
   try {
     const body = await readBody(req);
-    const names = (Array.isArray(body.names) ? body.names : []).map((n) => normalizeEntity(n)).filter(Boolean);
+    const names = (Array.isArray(body.names) ? body.names : []).map((n) => canonEntity(normalizeEntity(n))).filter(Boolean);
     if (!names.length) { sendJson(res, 200, { docs: [] }); return; }
     const { byName } = entityIndex();
     const metaById = new Map(loadIndex().map((d) => [d.docId, d]));
@@ -1116,6 +1213,113 @@ async function entityLookupLibrary(req, res) {
 function entityFacetsLibrary(req, res) {
   try { sendJson(res, 200, entityFacets()); }
   catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+// Bounded Levenshtein (early-exit once a row's min exceeds `max`): only used to spot near-typo
+// duplicates, so we never need the exact distance beyond the cutoff.
+function editDistWithin(a, b, max) {
+  const m = a.length, n = b.length;
+  if (Math.abs(m - n) > max) return max + 1;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i]; let rowMin = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (cur[j] < rowMin) rowMin = cur[j];
+    }
+    if (rowMin > max) return max + 1;
+    prev = cur;
+  }
+  return prev[n];
+}
+// Are two normalized entity keys likely the same entity? Conservative to avoid false merges:
+//  (1) one is a prefix/suffix of the other, both length >= 2, gap <= 4 chars ("毕导" ⊂ "毕导thu");
+//  (2) edit distance <= 1 for keys of length >= 5 (typo / one-space variants like "graph rag").
+function aliasSimilar(a, b) {
+  if (a === b) return null;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  if (short.length >= 2 && long.length - short.length <= 4 && (long.startsWith(short) || long.endsWith(short))) return "substr";
+  if (short.length >= 5 && editDistWithin(a, b, 1) <= 1) return "typo";
+  return null;
+}
+// Candidate merges the user hasn't confirmed or rejected yet: pairs within the same TYPE that
+// look alike (aliasSimilar) but resolve to different canonical entities. Capped; each carries
+// the doc counts so the UI can present the bigger one as the default canonical.
+function aliasSuggestions(limit = 80) {
+  const store = loadAliasStore();
+  const rejected = new Set(store.rejected || []);
+  const out = [];
+  for (const f of entityFacets().facets) {
+    const ents = f.entities;   // already canonicalized, sorted by count desc
+    for (let i = 0; i < ents.length && out.length < limit; i++) {
+      for (let j = i + 1; j < ents.length && out.length < limit; j++) {
+        const ka = normalizeEntity(ents[i].name), kb = normalizeEntity(ents[j].name);
+        const ca = canonEntity(ka), cb = canonEntity(kb);
+        if (ca === cb) continue;                                  // already merged
+        if (rejected.has(aliasPairKey(ca, cb))) continue;         // user dismissed this pair
+        const why = aliasSimilar(ka, kb);
+        if (!why) continue;
+        const [big, small] = ents[i].count >= ents[j].count ? [ents[i], ents[j]] : [ents[j], ents[i]];
+        out.push({ type: f.type, reason: why, canonical: big.name, other: small.name, canonicalCount: big.count, otherCount: small.count });
+      }
+    }
+  }
+  return out;
+}
+// GET /api/library/aliases → { groups:[{canonical,members,count}], suggestions:[...] }
+// The confirmed merge groups (with live doc counts) plus fresh fuzzy candidates for the picker.
+function aliasesLibrary(req, res) {
+  try {
+    const store = loadAliasStore();
+    const { byName } = entityIndex();
+    const groups = (store.groups || []).map((g) => {
+      const key = canonEntity(normalizeEntity(g.canonical));
+      const e = byName.get(key);
+      return { canonical: g.canonical, members: Array.isArray(g.members) ? g.members : [], count: e ? e.docs.size : 0 };
+    });
+    sendJson(res, 200, { groups, suggestions: aliasSuggestions() });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+// POST /api/library/alias-edit { action, ... } → mutate aliases.json, invalidate caches.
+//   merge:   { names:[display...], canonical? }  union all names into one group (extends an
+//            existing group if any name already belongs to one); canonical defaults to names[0].
+//   unmerge: { canonical }                       delete the group (fragments split apart again).
+//   reject:  { a, b }                            never suggest merging this pair again.
+async function aliasEditLibrary(req, res) {
+  try {
+    const body = await readBody(req);
+    const store = loadAliasStore();
+    store.groups = Array.isArray(store.groups) ? store.groups : [];
+    store.rejected = Array.isArray(store.rejected) ? store.rejected : [];
+    const action = body.action;
+    if (action === "merge") {
+      const names = [...new Set((Array.isArray(body.names) ? body.names : []).map((s) => String(s || "").trim()).filter(Boolean))];
+      if (names.length < 2) { sendJson(res, 400, { error: "need >=2 names" }); return; }
+      const keys = new Set(names.map(normalizeEntity));
+      // absorb any existing group that overlaps these names, then rebuild one merged group
+      const kept = [], absorbed = [];
+      for (const g of store.groups) {
+        const gk = [g.canonical, ...(g.members || [])].map(normalizeEntity);
+        (gk.some((k) => keys.has(k)) ? absorbed : kept).push(g);
+      }
+      const all = new Map();   // normKey -> display (first seen wins)
+      for (const g of absorbed) for (const d of [g.canonical, ...(g.members || [])]) { const k = normalizeEntity(d); if (k && !all.has(k)) all.set(k, d); }
+      for (const d of names) { const k = normalizeEntity(d); if (k && !all.has(k)) all.set(k, d); }
+      const canonical = String(body.canonical || names[0]).trim();
+      const members = [...all.values()].filter((d) => normalizeEntity(d) !== normalizeEntity(canonical));
+      kept.push({ canonical, members });
+      store.groups = kept;
+    } else if (action === "unmerge") {
+      const ck = normalizeEntity(body.canonical);
+      store.groups = store.groups.filter((g) => normalizeEntity(g.canonical) !== ck);
+    } else if (action === "reject") {
+      const a = canonEntity(normalizeEntity(body.a)), b = canonEntity(normalizeEntity(body.b));
+      if (a && b && a !== b) { const k = aliasPairKey(a, b); if (!store.rejected.includes(k)) store.rejected.push(k); }
+    } else { sendJson(res, 400, { error: "unknown action" }); return; }
+    saveAliasStore(store);
+    sendJson(res, 200, { ok: true, groups: store.groups.length });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
 // A conversation/annotation block (question, reply, or /note) — carries a role and
@@ -1851,5 +2055,6 @@ module.exports = {
   locOf,   // docId → on-disk folder ("" = root); used by the star map for folder scoping
   // structure-card entity/relation layer (docs/plans/structure-card.md)
   entityLookupLibrary, entityIndex, entityFacetsLibrary, entityFacets,
+  aliasesLibrary, aliasEditLibrary, aliasResolver, aliasSuggestions,   // entity alias unification
   cleanStructure, renderStructure, parseStructureSections, normalizeEntity,   // exported for testing
 };

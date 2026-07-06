@@ -315,8 +315,9 @@ export function initLibrary() {
   const askSend = document.querySelector("#libraryAskSend");
   const askScoped = document.querySelector("#libraryAskScoped");
   // "This doc only" and the folder scope are mutually exclusive — checking the former
-  // makes the folder dropdown moot, so grey it out while it's on.
-  askScoped.addEventListener("change", () => { askFolderSel.disabled = askScoped.checked; });
+  // makes the folder dropdown moot, so hide it while it's on (display, not [hidden], to
+  // dodge the global-CSS override and drop it out of the flex row cleanly).
+  askScoped.addEventListener("change", () => { askFolderSel.style.display = askScoped.checked ? "none" : ""; });
   const urlModal = document.querySelector("#libraryUrlModal");
   const urlTextarea = document.querySelector("#libraryUrlTextarea");
   const urlHint = document.querySelector("#libraryUrlHint");
@@ -392,7 +393,7 @@ export function initLibrary() {
     previewEmpty.style.display = "";
     askScoped.checked = false;
     askScoped.disabled = true;
-    askFolderSel.disabled = false;   // no doc open → folder scope is usable again
+    askFolderSel.style.display = "";   // no doc open → folder scope is shown again
   };
 
   // ---- open / close ----
@@ -877,8 +878,15 @@ export function initLibrary() {
     ytRows.forEach((r) => { if (r.memberOnly) r.checked = ytMemberToggle.checked; });
     renderYtList();
   });
-  // Reverse the list order → flips the import sequence (e.g. oldest-first for a channel).
-  ytReverse.addEventListener("click", () => { ytRows.reverse(); renderYtList(); });
+  // Reverse only the CHECKED videos' order (flips their import sequence, e.g. oldest-first)
+  // and push every UNCHECKED video to the bottom — the ordering only matters for what's
+  // actually being imported, so unchecked rows get out of the way.
+  ytReverse.addEventListener("click", () => {
+    const checked = ytRows.filter((r) => r.checked).reverse();
+    const unchecked = ytRows.filter((r) => !r.checked);
+    ytRows = checked.concat(unchecked);
+    renderYtList();
+  });
   async function confirmYtModal() {
     const auto = ytAutoFolder && ytAutoFolder.checked;
     const picked = ytRows.filter((r) => r.checked)
@@ -1324,8 +1332,8 @@ export function initLibrary() {
       previewEmpty.style.display = "none";
       preview.classList.add("isOpen");
       askScoped.disabled = false;   // enable "this doc only" scoping
-      askScoped.checked = true;     // …and default to it (folder scope disabled below)
-      askFolderSel.disabled = true;
+      askScoped.checked = true;     // …and default to it (folder scope hidden below)
+      askFolderSel.style.display = "none";
       renderBlocks(doc);
       renderRelated(docId);   // async — fills in below the toolbar when ready
     } catch (e) { alert(t("lib_loadFailed") + " " + e.message); }
