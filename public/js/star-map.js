@@ -17,7 +17,7 @@ import { handleAskCommand } from "./ask.js";
 import { openArchivedChat, openArchivePanel } from "./archive.js";
 import { markdownToHtml } from "./markdown.js";
 import { getActiveTab, createTab, switchTab } from "./tabs.js";
-import { t } from "./i18n.js";
+import { t, getUILanguage } from "./i18n.js";
 import { dom, state } from "./state.js";
 import { saveTabs } from "./settings.js";
 import { activeServerJob } from "./server-queue.js";
@@ -44,7 +44,17 @@ let drag = null;
 let usingGL = false;
 let G = null;          // WebGL state: { gl, pt, ln, bg, buf, n }
 let labelEls = [];
-let matched = null;    // Set<doc index> while a search query is active; null = no query
+let matched = null;    // Set<doc index> while a search query OR entity selection is active; null = none
+// Entity picker (multi-select): highlight docs that contain the chosen entities. Selection
+// drives the SAME `matched` dimming as search. entSel: key `type\u0000name` → docIds[]. entMode:
+// "or" (any selected entity) | "and" (all). entExpanded: which type groups are open.
+let entFacets = null, entSel = new Map(), entMode = "or", entExpanded = new Set(), entFilter = "";
+const ENT_TYPE_LABELS = {
+  zh:        { person: "人物", org: "机构", place: "地点", event: "事件", method: "方法", dataset: "数据集", concept: "概念", tool: "工具", product: "产品", work: "作品", policy: "政策" },
+  "zh-Hant": { person: "人物", org: "機構", place: "地點", event: "事件", method: "方法", dataset: "資料集", concept: "概念", tool: "工具", product: "產品", work: "作品", policy: "政策" },
+  en:        { person: "People", org: "Orgs", place: "Places", event: "Events", method: "Methods", dataset: "Datasets", concept: "Concepts", tool: "Tools", product: "Products", work: "Works", policy: "Policies" },
+};
+const entTypeLabel = (ty) => (ENT_TYPE_LABELS[getUILanguage()] || ENT_TYPE_LABELS.en)[ty] || ty;
 // Folder scoping. folderFilter = the SET of folders whose docs are shown. One rule,
 // no mode flip: a folder is visible iff its box is ticked. null = untouched → show all
 // (the panel ticks every box the first time it opens, so the default reads as "all on").
@@ -140,6 +150,7 @@ function closeStarMap() {
   hideTip();
   if (el.folderMenu) el.folderMenu.hidden = true;
   if (el.dispMenu) el.dispMenu.hidden = true;
+  if (el.entityMenu) el.entityMenu.hidden = true;
 }
 
 function ensureDom() {
@@ -222,7 +233,14 @@ function ensureDom() {
   el.folderBtn = document.querySelector("#starMapFolderBtn");
   el.folderBtn.addEventListener("click", async () => {
     if (!el.folderMenu.hidden) { el.folderMenu.hidden = true; return; }
-    await ensureDirs(); buildFolderMenu(); el.folderMenu.hidden = false; el.dispMenu.hidden = true;
+    await ensureDirs(); buildFolderMenu(); el.folderMenu.hidden = false; el.dispMenu.hidden = true; el.entityMenu.hidden = true;
+  });
+  // 🏷️ entity picker: multi-select entities (grouped by type) → highlight docs containing them.
+  el.entityMenu = document.querySelector("#starMapEntityMenu");
+  el.entityBtn = document.querySelector("#starMapEntityBtn");
+  el.entityBtn.addEventListener("click", async () => {
+    if (!el.entityMenu.hidden) { el.entityMenu.hidden = true; return; }
+    await ensureFacets(); buildEntityMenu(); el.entityMenu.hidden = false; el.dispMenu.hidden = true; el.folderMenu.hidden = true;
   });
   document.querySelector("#starMapExportBtn").addEventListener("click", exportPng);
   // Timeline scrubber: drag ghosts docs published after the thumb's year; ▶ animates
@@ -276,6 +294,7 @@ function applyText() {
   }
   const db = el.overlay.querySelector("#starMapDispBtn"); if (db) db.title = t("star_display");
   const fb = el.overlay.querySelector("#starMapFolderBtn"); if (fb) fb.title = t("star_folder");
+  const eb = el.overlay.querySelector("#starMapEntityBtn"); if (eb) eb.title = t("star_entityTitle");
   if (el.folderMenu && !el.folderMenu.hidden) buildFolderMenu();
   if (el.dispMenu) {
     el.dispMenu.innerHTML = "";
@@ -398,6 +417,7 @@ async function load(which, folders = scopeFolders) {
   DATA._hubbed = anyNN;
   hidden.clear(); selected = null; hover = null; cam = { x: 0, y: 0, scale: 1 };
   anim = null; matched = null; if (el.search) el.search.value = "";
+  entSel.clear(); entFilter = ""; entExpanded.clear();   // reset entity picker on (re)load
   setupTimeline();
   closeInspector();
   // Rebuilding over an existing cache: keep the old map visible under the hint.
@@ -1306,11 +1326,94 @@ function hopTowards(v) {
   if (best) { flyToDoc(best); openInspector(best); }
 }
 
+// ---- entity picker (multi-select, grouped by type) ------------------------
+async function ensureFacets() {
+  if (entFacets) return;
+  try { const r = await post("/api/library/entity-facets", {}); entFacets = (r && r.facets) || []; }
+  catch { entFacets = []; }
+}
+const entKey = (type, name) => type + " " + name;
+// Selected entities → `matched` set (docs to keep bright). OR = docs with ANY selected
+// entity, AND = docs with ALL. Reuses the exact search-dimming path (updateVisibilityGL).
+function applyEntitySelection() {
+  if (!DATA) return;
+  if (!entSel.size) { matched = null; if (usingGL) updateVisibilityGL(); return; }
+  const idxOf = new Map(); DATA.docs.forEach((d, i) => idxOf.set(d.id, i));
+  const sets = [...entSel.values()].map((docIds) => {
+    const s = new Set();
+    for (const id of docIds) { const i = idxOf.get(id); if (i != null) s.add(i); }
+    return s;
+  });
+  let m;
+  if (entMode === "and") m = sets.reduce((acc, s) => acc === null ? s : new Set([...acc].filter((x) => s.has(x))), null) || new Set();
+  else { m = new Set(); for (const s of sets) for (const x of s) m.add(x); }
+  matched = m;
+  if (usingGL) updateVisibilityGL();   // 2D path: the rAF loop reads `matched` live via alphaOf
+}
+function buildEntityMenu() {
+  const m = el.entityMenu; if (!m) return;
+  m.innerHTML = "";
+  const head = document.createElement("div"); head.className = "starMapFolderHead";
+  head.textContent = t("star_entityTitle"); m.appendChild(head);
+  const filt = document.createElement("input"); filt.type = "search"; filt.className = "starMapEntityFilter";
+  filt.placeholder = t("star_entityFilter"); filt.value = entFilter;
+  filt.addEventListener("input", () => { entFilter = filt.value.trim().toLowerCase(); renderEntityList(); });
+  m.appendChild(filt);
+  const bar = document.createElement("div"); bar.className = "starMapFolderBar";
+  const orBtn = document.createElement("button"); orBtn.type = "button"; orBtn.textContent = t("star_entityOr");
+  const andBtn = document.createElement("button"); andBtn.type = "button"; andBtn.textContent = t("star_entityAnd");
+  orBtn.className = entMode === "or" ? "isActive" : ""; andBtn.className = entMode === "and" ? "isActive" : "";
+  orBtn.addEventListener("click", () => { entMode = "or"; applyEntitySelection(); buildEntityMenu(); });
+  andBtn.addEventListener("click", () => { entMode = "and"; applyEntitySelection(); buildEntityMenu(); });
+  const clr = document.createElement("button"); clr.type = "button"; clr.textContent = t("star_entityClear");
+  clr.addEventListener("click", () => { entSel.clear(); applyEntitySelection(); buildEntityMenu(); });
+  bar.append(orBtn, andBtn, clr); m.appendChild(bar);
+  const sel = document.createElement("div"); sel.className = "starMapFolderHint"; sel.id = "starMapEntitySel";
+  sel.textContent = t("star_entitySelected", { n: entSel.size }); m.appendChild(sel);
+  const list = document.createElement("div"); list.className = "starMapFolderList starMapEntityList"; list.id = "starMapEntityList";
+  m.appendChild(list);
+  renderEntityList();
+}
+// List body only — split out so typing in the filter box doesn't rebuild (and blur) the input.
+function renderEntityList() {
+  const list = el.entityMenu && el.entityMenu.querySelector("#starMapEntityList"); if (!list) return;
+  const selCt = el.entityMenu.querySelector("#starMapEntitySel"); if (selCt) selCt.textContent = t("star_entitySelected", { n: entSel.size });
+  list.innerHTML = "";
+  const CAP = 60;
+  for (const g of (entFacets || [])) {
+    const ents = entFilter ? g.entities.filter((e) => e.name.toLowerCase().includes(entFilter)) : g.entities;
+    if (!ents.length) continue;
+    const open = entExpanded.has(g.type) || !!entFilter;   // an active filter auto-expands
+    const gh = document.createElement("div"); gh.className = "starMapEntityGroup";
+    gh.textContent = `${open ? "▾" : "▸"} ${entTypeLabel(g.type)} (${g.entities.length})`;
+    gh.addEventListener("click", () => { if (entExpanded.has(g.type)) entExpanded.delete(g.type); else entExpanded.add(g.type); renderEntityList(); });
+    list.appendChild(gh);
+    if (!open) continue;
+    const wrap = document.createElement("div"); wrap.className = "starMapEntityChips";
+    for (const e of ents.slice(0, CAP)) {
+      const key = entKey(g.type, e.name);
+      const chip = document.createElement("button"); chip.type = "button";
+      chip.className = "starMapEntityChip" + (entSel.has(key) ? " isActive" : "");
+      chip.textContent = `${e.name} · ${e.count}`;
+      chip.title = e.name;
+      chip.addEventListener("click", () => {
+        if (entSel.has(key)) entSel.delete(key); else entSel.set(key, e.docIds);
+        applyEntitySelection(); renderEntityList();
+      });
+      wrap.appendChild(chip);
+    }
+    if (ents.length > CAP) { const more = document.createElement("div"); more.className = "starMapEntityMore"; more.textContent = t("star_entityMore", { n: ents.length - CAP }); wrap.appendChild(more); }
+    list.appendChild(wrap);
+  }
+  if (!list.children.length) { const empty = document.createElement("div"); empty.className = "starMapFolderHint"; empty.textContent = t("star_entityEmpty"); list.appendChild(empty); }
+}
+
 // ---- search --------------------------------------------------------------
 function setSearch(v) { if (el.search) el.search.value = v; applySearch(v); }
 function applySearch(q) {
   q = (q || "").trim().toLowerCase();
-  if (!DATA || !q) { matched = null; if (usingGL) updateVisibilityGL(); return; }
+  // Empty query: fall back to the entity-picker highlight if one is active, else clear.
+  if (!DATA || !q) { if (entSel.size) { applyEntitySelection(); return; } matched = null; if (usingGL) updateVisibilityGL(); return; }
   matched = new Set();
   DATA.docs.forEach((d, i) => {
     const cl = DATA.clusters[d.cluster];

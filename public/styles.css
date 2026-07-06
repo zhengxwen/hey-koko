@@ -5703,6 +5703,19 @@ button.secondary:disabled {
 .starMapFolderReproject:disabled { opacity: 0.45; cursor: default; border-color: var(--line); background: var(--surface); color: var(--muted); }
 .starMapFolderReturn { min-height: 0; }
 #starMapFolderBtn.isActive { border-color: var(--accent); color: var(--accent); }
+/* entity picker panel */
+.starMapEntityMenu { width: 288px; }
+.starMapEntityFilter { min-height: 0; padding: 5px 9px; font-size: 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.starMapFolderBar button.isActive { border-color: var(--accent); color: var(--accent); background: var(--surface); }
+.starMapEntityList { max-height: 46vh; }
+.starMapEntityGroup { cursor: pointer; padding: 4px 6px; border-radius: 7px; font-weight: 600; color: var(--ink); user-select: none; }
+.starMapEntityGroup:hover { background: var(--surface); }
+.starMapEntityChips { display: flex; flex-wrap: wrap; gap: 4px; padding: 3px 4px 7px; }
+.starMapEntityChip { min-height: 0; max-width: 100%; padding: 2px 8px; font-size: 11.5px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.starMapEntityChip:hover { background: var(--line); }
+.starMapEntityChip.isActive { border-color: var(--accent); background: var(--accent); color: var(--on-accent, #fff); }
+.starMapEntityMore { width: 100%; font-size: 11px; color: var(--muted); padding: 2px 4px; }
+#starMapEntityBtn.isActive { border-color: var(--accent); color: var(--accent); }
 #starMapCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .starMapLabels { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
 /* Labels are clickable (zoom to their cluster) even though the layer itself is not */

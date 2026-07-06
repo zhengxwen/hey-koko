@@ -179,7 +179,8 @@ async function embedDocVectors(doc, id, folder, model) {
 // ---- index.json (lightweight per-doc metadata for the list view) ----------
 function loadIndex() { try { return JSON.parse(fs.readFileSync(indexFile(), "utf-8")); } catch { return []; } }
 let _entityIdx = null;   // { byName: Map<normName,{display,docs:Set}>, byDoc: Map<docId,Set<normName>> }
-function saveIndex(arr) { ensureDir(); fs.writeFileSync(indexFile(), JSON.stringify(arr)); _entityIdx = null; }
+let _entityFacets = null; // { facets:[{type,entities:[{name,count,docIds}]}] } — type-aware, reads docs
+function saveIndex(arr) { ensureDir(); fs.writeFileSync(indexFile(), JSON.stringify(arr)); _entityIdx = null; _entityFacets = null; }
 // Entity inverted index (structure layer): built lazily from index.json's `entities`
 // projection, cached until any saveIndex() (index is small → rebuild is ms, no incremental
 // maintenance). Powers entity-lookup, shared-entity related, and /ask -a's entity path.
@@ -202,6 +203,40 @@ function entityIndex() {
   }
   _entityIdx = { byName, byDoc };
   return _entityIdx;
+}
+// Type-aware facet aggregate for the star map's entity picker: entities grouped by TYPE,
+// each with its docIds and a count. Types live only in the full docs (index.json projects
+// names only), so this reads each doc once — cached until any saveIndex (panel is opened
+// occasionally, so the ~one-time decompress pass is fine). ENTITY_TYPES order is preserved;
+// entities within a type are sorted by count desc.
+function entityFacets() {
+  if (_entityFacets) return _entityFacets;
+  const byType = new Map();   // type -> Map<normName,{name,docs:Set}>
+  for (const e of loadIndex()) {
+    const doc = readDoc(e.docId);
+    for (const ent of ((doc && doc.entities) || [])) {
+      const name = String((ent && ent.name) || "").trim();
+      const key = normalizeEntity(name);
+      if (!key) continue;
+      const type = ENTITY_TYPES.includes(ent && ent.type) ? ent.type : "concept";
+      let m = byType.get(type);
+      if (!m) { m = new Map(); byType.set(type, m); }
+      let rec = m.get(key);
+      if (!rec) { rec = { name, docs: new Set() }; m.set(key, rec); }
+      rec.docs.add(e.docId);
+    }
+  }
+  const facets = [];
+  for (const type of ENTITY_TYPES) {
+    const m = byType.get(type);
+    if (!m || !m.size) continue;
+    const entities = [...m.values()]
+      .map((r) => ({ name: r.name, count: r.docs.size, docIds: [...r.docs] }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    facets.push({ type, entities });
+  }
+  _entityFacets = { facets };
+  return _entityFacets;
 }
 function indexEntryOf(doc) {
   return {
@@ -1075,6 +1110,14 @@ async function entityLookupLibrary(req, res) {
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
+// GET/POST /api/library/entity-facets → { facets:[{type, entities:[{name,count,docIds}]}] }
+// Powers the star map's multi-select entity picker (group by type → click to highlight the
+// docs containing the selected entities).
+function entityFacetsLibrary(req, res) {
+  try { sendJson(res, 200, entityFacets()); }
+  catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
 // A conversation/annotation block (question, reply, or /note) — carries a role and
 // renders as a chat bubble. NOT part of the document body, so it must survive a
 // reparse intact instead of being re-chunked into role-less text.
@@ -1807,6 +1850,6 @@ module.exports = {
   relatedLibraryDocs, docCentroids, lookupPaperMeta, extractKeywords,
   locOf,   // docId → on-disk folder ("" = root); used by the star map for folder scoping
   // structure-card entity/relation layer (docs/plans/structure-card.md)
-  entityLookupLibrary, entityIndex,
+  entityLookupLibrary, entityIndex, entityFacetsLibrary, entityFacets,
   cleanStructure, renderStructure, parseStructureSections, normalizeEntity,   // exported for testing
 };
