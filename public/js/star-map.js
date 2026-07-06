@@ -16,6 +16,7 @@ import { openLibraryDoc, openLibraryPanel } from "./library.js";
 import { handleAskCommand } from "./ask.js";
 import { openArchivedChat, openArchivePanel } from "./archive.js";
 import { markdownToHtml } from "./markdown.js";
+import { renderRelationGraph } from "./relation-graph.js";
 import { getActiveTab, createTab, switchTab } from "./tabs.js";
 import { t, getUILanguage } from "./i18n.js";
 import { dom, state } from "./state.js";
@@ -1738,6 +1739,9 @@ function openInspector(d) {
       prev.textContent = "";
       let lastSec = null, any = false;
       for (const b of (doc.blocks || [])) {
+        // Distill card: put the relation graph (open by default here) ABOVE the «蒸馏卡»
+        // section, so the star's launchpad leads with its entity relationships.
+        if (b.kind === "card") { try { const g = renderRelationGraph(b.content || "", { open: true }); if (g) { prev.appendChild(g); any = true; } } catch (e) { console.warn("[relGraph]", e); } }
         if (b.section && b.section !== lastSec) {
           lastSec = b.section;
           const h = document.createElement("div"); h.className = "starMapPrevSection"; h.textContent = b.section;

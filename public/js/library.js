@@ -11,6 +11,7 @@
 import { dom, state } from './state.js';
 import { escapeHtml, postJson } from './utils.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './markdown.js';
+import { renderRelationGraph } from './relation-graph.js';
 import { applyHighlights, registerHighlightHost } from './highlight.js';
 import { saveTabs } from './settings.js';
 import { createTab, switchTab } from './tabs.js';
@@ -1494,6 +1495,8 @@ export function initLibrary() {
           const bodyEl = div.querySelector(".markdownBody");
           if (bodyEl) applyHighlights(bodyEl, b.highlights);
         }
+        // Distill card: visualize its «§ 关系» section as a node-link graph below the text.
+        if (b.kind === "card") { try { const g = renderRelationGraph(b.content || "", { open: false }); if (g) div.appendChild(g); } catch (e) { console.warn("[relGraph]", e); } }
         attachEdit(div, doc, idx);
       }
       previewContent.appendChild(div);

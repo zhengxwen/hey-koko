@@ -6,6 +6,7 @@ import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollStat
 import { TAG_COLORS } from './constants.js';
 import { escapeHtml, formatTimestamp, formatDuration, mediaFilename } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
+import { renderRelationGraph } from './relation-graph.js';
 import { setAvatarState, showExpression, detectExpression, isCloudModel } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
@@ -3126,6 +3127,11 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     }
     item.appendChild(text);
     textEl = text;
+    // Distill-card bubble: visualize its «§ 关系» section as a node-link relation graph
+    // below the text (parsed from the card markdown; null when the card has no relations).
+    if (_libMsg?.libraryKind === "card") {
+      try { const g = renderRelationGraph(content, { open: false }); if (g) item.appendChild(g); } catch (e) { console.warn("[relGraph]", e); }
+    }
   }
 
   // Inline grid shows the light 480px generatedThumbnails; the full-res generatedImages
