@@ -852,8 +852,10 @@ export function initLibrary() {
   }
 
   function updateYtCount() {
-    const n = ytRows.filter((r) => r.checked).length;
     const vis = ytFilterQ ? ytRows.filter(ytMatch) : ytRows;
+    // A filter now gates the import too, so "selected" counts only rows that will actually
+    // import (checked AND visible) — same visible-scoping as select-all. No filter → all rows.
+    const n = vis.filter((r) => r.checked).length;
     ytCount.textContent = t("lib_ytSelectedCount", { n, total: ytRows.length })
       + (ytFilterQ ? t("lib_ytFilterMatch", { m: vis.length }) : "");
     // With a filter active, the select-all box mirrors the VISIBLE rows only.
@@ -889,7 +891,10 @@ export function initLibrary() {
   });
   async function confirmYtModal() {
     const auto = ytAutoFolder && ytAutoFolder.checked;
-    const picked = ytRows.filter((r) => r.checked)
+    // The active "filter videos" query gates the import too: only checked rows that ALSO
+    // match the current filter get queued (a checked-but-filtered-out row is skipped).
+    // ytMatch is true when no filter is set, so this is a no-op without a filter.
+    const picked = ytRows.filter((r) => r.checked && ytMatch(r))
       .map((r) => auto ? { url: r.url, folder: channelFolderFor(r.channelSlug) } : r.url);
     if (!picked.length) { closeYtModal(); return; }
     // Queuing many videos (a whole channel) means N× enqueue → a brief main-thread freeze.
