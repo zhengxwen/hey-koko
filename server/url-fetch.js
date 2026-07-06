@@ -76,7 +76,7 @@ async function fetchUrlContent(req, res) {
     }
 
     const html = await response.text();
-    const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim() || "";
+    const title = decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim() || "");
     const publishedAt = extractPublishedDate(html);
     const { text, imageUrls } = await extractCleanContent(html, url);
     const images = await downloadImages(imageUrls, url, 8);
@@ -259,8 +259,12 @@ async function htmlToMarkdown(html) {
 
 function decodeEntities(s) {
   return s
-    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+    // Numeric entities first (&#26377; / &#x6709;) — before &amp; so a literal
+    // "&amp;#39;" in the source decodes to "&#39;", not all the way to "'".
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return _; } })
+    .replace(/&#(\d+);/g, (_, d) => { try { return String.fromCodePoint(Number(d)); } catch { return _; } })
+    .replace(/&nbsp;/g, " ").replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
 }
 
 function stripTags(html) {
@@ -541,7 +545,9 @@ async function fetchYouTubeTranscript(videoId, language) {
     });
     const pageHtml = await pageRes.text();
 
-    const title = (pageHtml.match(/<title>(.*?)<\/title>/) || [])[1]?.replace(" - YouTube", "").trim() || "";
+    // <title> tag text carries HTML entities (&quot; &amp; &#39;) — decode them. Only a
+    // fallback: videoDetails.title below is JSON-parsed and entity-free, prefer it.
+    const pageTitle = decodeEntities((pageHtml.match(/<title>(.*?)<\/title>/) || [])[1]?.replace(" - YouTube", "").trim() || "");
 
     // Extract ytInitialPlayerResponse JSON using brace counting
     let playerData = null;
@@ -567,6 +573,7 @@ async function fetchYouTubeTranscript(videoId, language) {
     // Extract metadata from videoDetails
     const vd = playerData?.videoDetails || {};
     const mf = playerData?.microformat?.playerMicroformatRenderer || {};
+    const title = vd.title || pageTitle;
     const channel = vd.author || "";
     const viewCount = vd.viewCount || "";
     const lengthSeconds = parseInt(vd.lengthSeconds || "0", 10);
