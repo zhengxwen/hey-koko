@@ -1216,6 +1216,10 @@ async function youtubeJob(req, res) {
       const hasReal = meta && meta.text && !meta.noTranscript;
       if (hasReal) { rawTranscript = meta.text; source = "subtitle"; }
     }
+    // Surface the video title the moment it's known — BEFORE the (possibly hour-long)
+    // whisper pass — so a running library-import task can show it on its drawer row
+    // instead of the raw URL. A distinct event so it never disturbs stage/progress.
+    if (meta && meta.title) send({ type: "title", title: meta.title });
     if (!rawTranscript) {
       rawTranscript = await transcribeYouTubeAudioCore(videoId, { onProgress, signal: ctrl.signal, language: (meta && meta.language) || "" });
       source = "whisper";

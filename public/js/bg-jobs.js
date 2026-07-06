@@ -98,6 +98,9 @@ setServerQueueDeps({
     const lbl = bgProgressLabel(sjob.label, sjob.progress);
     if (lbl) job.label = lbl;
     job.progress = sjob.progress || null;
+    // A YouTube library-import job fetches the video title early (before the long
+    // whisper pass) — show it on the drawer row's context line in place of the URL.
+    if (sjob.videoTitle && job.videoTitle !== sjob.videoTitle) job.videoTitle = sjob.videoTitle;
     if (becameRunning) { persist(); refreshPlaceholders(); }
     else { renderDrawer(); updatePlaceholderBar(job); }
   },
@@ -1203,6 +1206,8 @@ function buildLaneHeader(wid, jobs) {
 // One-line fine print above the label: WHERE the job came from (source tab / the
 // library) + WHAT it works on when the label alone doesn't say (URL, doc name,
 // analysis instruction, target model). Answers "which job is whose" in a long queue.
+// Returns { text, tip }: `text` is the (truncated) display string, `tip` the hover title —
+// which appends the FULL source URL so a shortened title/URL is still readable on hover.
 function jobContext(job) {
   const parts = [];
   if (job.kind === 'libimport') {
@@ -1213,7 +1218,18 @@ function jobContext(job) {
   }
   const detail = jobDetail(job);
   if (detail) parts.push(detail);
-  return parts.join(' · ');
+  const text = parts.join(' · ');
+  const url = jobSourceUrl(job);
+  const tip = url ? (text ? text + '\n' + url : url) : text;
+  return { text, tip };
+}
+// The full source URL behind a job, for the row's hover tooltip — a library web/YouTube
+// import (payload.url) or a /url job (first entry). '' when the job has no URL source.
+function jobSourceUrl(job) {
+  const p = job.payload || {};
+  if (job.kind === 'libimport' && p.url) return p.url;
+  if (job.kind === 'url') { const e = (p.entries || [])[0]; return (e && e.url) || ''; }
+  return '';
 }
 function clipCtx(s, n) { s = String(s || '').trim(); return s.length > n ? s.slice(0, n) + '…' : s; }
 function shortUrl(u) { return clipCtx(String(u || '').replace(/^https?:\/\/(www\.)?/, ''), 44); }
@@ -1244,6 +1260,9 @@ function jobDetail(job) {
     const m = p.modelOverride || {};
     return clipCtx(m.comfyModel || m.imageModel || '', 44);
   } else if (job.kind === 'libimport') {
+    // Once a YouTube import has fetched the video title (early, before the whisper pass),
+    // show "YouTube · <视频标题>" in place of the URL (the full URL stays in the tooltip).
+    if (job.videoTitle) return 'YouTube · ' + clipCtx(job.videoTitle, 44);
     // file / text imports (a paper's PDF, a .txt): the stage label ("parsing"/"importing"/
     // "distilling") overwrites job.label mid-run, so surface the source filename HERE — it
     // keeps "知识库 · <文件名>" visible on the top line for the whole job.
@@ -1317,9 +1336,9 @@ function buildJobRow(job) {
     const icon = `<span class="bgJobIcon">${KIND_ICON[job.kind] || '⚙'}</span>`;
     // Top line: source/detail context (left, truncates) + submission time (right, always
     // shown so the user can see WHEN each queued task was submitted).
-    const ctx = jobContext(job);
+    const ctx = jobContext(job);   // { text, tip } — tip carries the full source URL
     const sub = bgSubmitTime(job);
-    const ctxText = ctx ? `<span class="bgJobCtxText" title="${escapeText(ctx)}">${escapeText(ctx)}</span>` : '<span class="bgJobCtxText"></span>';
+    const ctxText = ctx.text ? `<span class="bgJobCtxText" title="${escapeText(ctx.tip)}">${escapeText(ctx.text)}</span>` : '<span class="bgJobCtxText"></span>';
     const timeEl = sub.short ? `<span class="bgJobTime" title="${escapeText(t('bg_submittedAt', { time: sub.full }))}">${escapeText(sub.short)}</span>` : '';
     const ctxLine = `<div class="bgJobCtx">${ctxText}${timeEl}</div>`;
     const label = `<span class="bgJobLabel">${escapeText(job.label || job.kind)}</span>`;

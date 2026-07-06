@@ -361,6 +361,7 @@ async function runLibImportJob(job, signal) {
     await loopbackStream("/api/youtube-job", { url: p.url, language: p.language, model: p.chatModel }, signal, (line) => {
       let o; try { o = JSON.parse(line); } catch { return; }
       if (o.type === "progress") stage(o.stage || "fetching", o.progress || null);
+      else if (o.type === "title") { if (o.title) { job.videoTitle = o.title; emitUpdate(job); } }   // early video title → drawer row
       else if (o.type === "done") data = o.result;
       else if (o.type === "error") errored = o.error;
     });
