@@ -5714,9 +5714,11 @@ button.secondary:disabled {
 }
 /* Search sits right of the title; it takes over the auto margin from the toggle.
    Explicit width — the global input{width:100%} would stretch it across the header. */
-.starMapSearch { margin-left: auto; width: 220px; min-height: 32px; padding: 0 12px; font: inherit; font-size: 12.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; color: var(--ink); }
+.starMapSearch { margin-left: 0; width: 220px; min-height: 32px; padding: 0 12px; font: inherit; font-size: 12.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; color: var(--ink); }
 .starMapSearch:focus { outline: none; border-color: var(--accent); }
 .starMapHeader .starMapSourceToggle { margin-left: 0; }
+/* Export PNG starts the right-aligned cluster → it sits immediately left of the search box */
+#starMapExportBtn { margin-left: auto; }
 .starMapStage { position: relative; flex: 1; overflow: hidden; }
 /* 🎛 display menu — dropdown pinned under the header, above the canvas */
 .starMapDispMenu { position: absolute; right: 16px; top: 10px; z-index: 7; display: flex; flex-direction: column; gap: 6px; background: var(--panel-alpha, var(--panel)); border: 1px solid var(--line); border-radius: 11px; padding: 10px 14px; box-shadow: var(--shadow); backdrop-filter: blur(8px); font-size: 12.5px; }

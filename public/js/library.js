@@ -314,6 +314,9 @@ export function initLibrary() {
   const askInput = document.querySelector("#libraryAskInput");
   const askSend = document.querySelector("#libraryAskSend");
   const askScoped = document.querySelector("#libraryAskScoped");
+  // "This doc only" and the folder scope are mutually exclusive — checking the former
+  // makes the folder dropdown moot, so grey it out while it's on.
+  askScoped.addEventListener("change", () => { askFolderSel.disabled = askScoped.checked; });
   const urlModal = document.querySelector("#libraryUrlModal");
   const urlTextarea = document.querySelector("#libraryUrlTextarea");
   const urlHint = document.querySelector("#libraryUrlHint");
@@ -389,6 +392,7 @@ export function initLibrary() {
     previewEmpty.style.display = "";
     askScoped.checked = false;
     askScoped.disabled = true;
+    askFolderSel.disabled = false;   // no doc open → folder scope is usable again
   };
 
   // ---- open / close ----
@@ -1320,6 +1324,8 @@ export function initLibrary() {
       previewEmpty.style.display = "none";
       preview.classList.add("isOpen");
       askScoped.disabled = false;   // enable "this doc only" scoping
+      askScoped.checked = true;     // …and default to it (folder scope disabled below)
+      askFolderSel.disabled = true;
       renderBlocks(doc);
       renderRelated(docId);   // async — fills in below the toolbar when ready
     } catch (e) { alert(t("lib_loadFailed") + " " + e.message); }
