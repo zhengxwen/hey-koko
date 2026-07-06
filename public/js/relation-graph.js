@@ -5,6 +5,7 @@
 import { t } from "./i18n.js";
 
 const SVGNS = "http://www.w3.org/2000/svg";
+const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", video: "📺", doc: "📝", chat: "💬", other: "📎" };
 const REL_HEAD_RE = /^\*\*\s*§?\s*(?:关系|關係|Relations)\s*\*\*/i;
 const ANY_HEAD_RE = /^\*\*[^*]+\*\*/;
 
@@ -140,6 +141,101 @@ function packedLayout(names, edges, { full = false } = {}) {
   return { pos, W: Math.max(300, totalW), H: y + rowH };
 }
 
+// Radial layout for the entity NEIGHBORHOOD (one/few centers + many neighbors). A force field
+// turns that star into an unreadable hairball, so instead: center(s) in the middle, neighbors
+// evenly spaced on a ring. Labels sit OUTSIDE their node, anchored away from the hub (right
+// half → start, left half → end) so they radiate outward and never cross the center. Ring
+// radius is set so consecutive nodes are at least one line-height apart (no vertical overlap).
+function radialLayout(names, rels, centerSet, spread = 1) {
+  const fs = 15, charW = 15, nTr = 22;
+  const labelW = (nm) => charW * Math.min(nm.length, nTr);
+  const centers = names.filter((n) => centerSet.has(n));
+  const leaves = names.filter((n) => !centerSet.has(n));
+  const N = Math.max(1, leaves.length);
+  const lineH = fs + 9;
+  const R = Math.max(200, (N * lineH) / (2 * Math.PI)) * spread;   // ring radius × zoom (spacing only)
+  const maxLabel = Math.max(60, ...names.map(labelW));
+  const margin = maxLabel + 34;
+  const cx = R + margin, cy = R + margin;
+  const pos = new Map();
+  if (centers.length <= 1) { pos.set(centers[0] || leaves[0], { x: cx, y: cy }); }
+  else centers.forEach((nm, i) => {          // multiple seeds → small inner cluster
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / centers.length, r = Math.min(80, 30 + centers.length * 12);
+    pos.set(nm, { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+  });
+  leaves.forEach((nm, i) => {
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / N;
+    pos.set(nm, { x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R });
+  });
+  return { pos, W: Math.round(cx * 2), H: Math.round(cy * 2), cx, cy };
+}
+
+// Distinct, white-background-legible hues — one per center (seed) in a multi-entity view.
+const CENTER_PALETTE = ["#0d9488", "#e07b00", "#7c3aed", "#c026a3", "#2563eb", "#dc2626"];
+// centers → Map(name → color), assigned in center order (stable, so legend matches the graph).
+function centerColorMap(centers) {
+  const m = new Map();
+  centers.forEach((c, i) => m.set(c, CENTER_PALETTE[i % CENTER_PALETTE.length]));
+  return m;
+}
+// For each non-center node, WHICH centers it links to (via any edge). size 1 = exclusive to one
+// center, size >=2 = shared (the intersection — the whole point of selecting several entities).
+function membershipOf(names, rels, centers) {
+  const cset = new Set(centers), memb = new Map();
+  for (const nm of names) if (!cset.has(nm)) memb.set(nm, new Set());
+  for (const r of rels) {
+    if (cset.has(r.head) && memb.has(r.tail)) memb.get(r.tail).add(r.head);
+    if (cset.has(r.tail) && memb.has(r.head)) memb.get(r.head).add(r.tail);
+  }
+  return memb;
+}
+// Largest number of centers any single neighbor links to (>=2 means there's an intersection).
+function membershipMax(rels, centers) {
+  const names = [...new Set(rels.flatMap((r) => [r.head, r.tail]))];
+  let mx = 0;
+  for (const s of membershipOf(names, rels, centers).values()) mx = Math.max(mx, s.size);
+  return mx;
+}
+// Multi-center radial: each center owns an angular SECTOR (its exclusive neighbors fan out inside
+// it, and the center dot is nudged toward that sector so its edges don't cross the whole graph);
+// SHARED neighbors sit on an inner ring in the middle. Returns positions + the shared set.
+function multiRadialLayout(names, rels, centers, memb, spread = 1) {
+  const fs = 15, charW = 15, nTr = 22, lineH = fs + 9;
+  const labelW = (nm) => charW * Math.min(nm.length, nTr);
+  const N = centers.length;
+  const exclusive = new Map(centers.map((c) => [c, []]));
+  const shared = [];
+  for (const [leaf, set] of memb) {
+    if (set.size >= 2) shared.push(leaf);
+    else if (set.size === 1) exclusive.get([...set][0]).push(leaf);
+    else exclusive.get(centers[0]).push(leaf);   // orphan (only leaf-leaf links) → first sector
+  }
+  const gap = 0.16;                              // radians of blank between adjacent sectors
+  const sectorW = (2 * Math.PI) / N - gap;
+  let outerR = 210;
+  for (const c of centers) { const k = exclusive.get(c).length; if (k > 1) outerR = Math.max(outerR, (k * lineH) / sectorW); }
+  const innerR = Math.max(120, outerR * 0.42) * spread;   // shared ring × zoom (spacing only)
+  const centersR = Math.min(Math.max(120, outerR * 0.42) * 0.55, 100) * spread;
+  outerR *= spread;
+  const maxLabel = Math.max(60, ...names.map(labelW));
+  const margin = maxLabel + 34, cx = outerR + margin, cy = outerR + margin;
+  const pos = new Map();
+  centers.forEach((c, ci) => {
+    const theta = -Math.PI / 2 + (ci * 2 * Math.PI) / N;
+    pos.set(c, { x: cx + Math.cos(theta) * centersR, y: cy + Math.sin(theta) * centersR });
+    const list = exclusive.get(c), k = list.length;
+    list.forEach((leaf, i) => {
+      const a = k === 1 ? theta : theta - sectorW / 2 + (i / (k - 1)) * sectorW;
+      pos.set(leaf, { x: cx + Math.cos(a) * outerR, y: cy + Math.sin(a) * outerR });
+    });
+  });
+  shared.forEach((leaf, i) => {
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / Math.max(1, shared.length);
+    pos.set(leaf, { x: cx + Math.cos(a) * innerR, y: cy + Math.sin(a) * innerR });
+  });
+  return { pos, W: Math.round(cx * 2), H: Math.round(cy * 2), cx, cy, shared: new Set(shared) };
+}
+
 const el = (tag, attrs, text) => {
   const e = document.createElementNS(SVGNS, tag);
   for (const k in attrs) e.setAttribute(k, attrs[k]);
@@ -150,18 +246,60 @@ const trunc = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
 // Build the SVG for a set of relations. `full` = full-screen mode: bigger layout, longer
 // labels, and a wider stroke class so text stays readable when the graph fills the screen.
-function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null } = {}) {
+function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, radial = false, filter = null, spread = 1, docTitle = null } = {}) {
   const centerSet = center instanceof Set ? center : new Set(center ? [center] : []);
   const names = [...new Set(rels.flatMap((r) => [r.head, r.tail]))];
-  const { pos, W, H } = packedLayout(names, rels, { full });
+  // Multi-center (>=2 seeds): sectors + per-center colors + a shared inner ring, so you can tell
+  // whose neighbor is whose and see the intersection. One center → the plain radial hub.
+  const centersArr = names.filter((n) => centerSet.has(n));
+  const colored = radial && centersArr.length >= 1;   // colour by center — even a single one (green)
+  const sectors = radial && centersArr.length >= 2;    // sector layout only when there are several
+  const colorOfCenter = colored ? centerColorMap(centersArr) : null;
+  const memb = colored ? membershipOf(names, rels, centersArr) : null;
+  const lay = sectors ? multiRadialLayout(names, rels, centersArr, memb, spread)
+    : radial ? radialLayout(names, rels, centerSet, spread) : packedLayout(names, rels, { full });
+  const { pos, W, H } = lay;
+  const cx = lay.cx;   // radial: hub x — labels flip side across it
+  const sharedSet = (sectors && lay.shared) || new Set();
+  // A node's color: center → its own hue; a leaf exclusive to one center → that hue; shared/other → none.
+  const nodeColor = (nm) => {
+    if (!colored) return null;
+    if (colorOfCenter.has(nm)) return colorOfCenter.get(nm);
+    const s = memb.get(nm);
+    return s && s.size === 1 ? colorOfCenter.get([...s][0]) : null;
+  };
+  // An edge takes the colour of whichever endpoint is a center (leaf-leaf edges stay neutral).
+  const edgeColor = (r) => {
+    if (!colored) return null;
+    if (colorOfCenter.has(r.head)) return colorOfCenter.get(r.head);
+    if (colorOfCenter.has(r.tail)) return colorOfCenter.get(r.tail);
+    return null;
+  };
+  // Legend toggles: hide whole categories. A node is hidden if it's a hidden center, a hidden
+  // shared node, or a leaf whose every owning center is hidden. An edge hides with its type
+  // toggle or with either endpoint. Filter is {rel,cooc,shared,hiddenCenters:Set}.
+  const f = filter || {};
+  const hiddenCenters = f.hiddenCenters || new Set();
+  const nodeVisible = (nm) => {
+    if (centerSet.has(nm)) return !hiddenCenters.has(nm);
+    if (sharedSet.has(nm)) return f.shared !== false;
+    const s = memb && memb.get(nm);
+    if (s && s.size) { for (const c of s) if (!hiddenCenters.has(c)) return true; return false; }
+    return true;
+  };
+  const edgeVisible = (r) => {
+    if (r.cooc && f.cooc === false) return false;
+    if (!r.cooc && f.rel === false) return false;
+    return nodeVisible(r.head) && nodeVisible(r.tail);
+  };
   const P = (nm) => pos.get(nm);
-  const nTrunc = full ? 28 : 11, eTrunc = full ? 30 : 18;
-  const svgAttrs = { viewBox: `0 0 ${W} ${H}`, class: "relGraphSvg" + (full ? " relGraphSvgFull" : ""), preserveAspectRatio: "xMidYMid meet" };
+  const nTrunc = radial ? 22 : full ? 28 : 11, eTrunc = full ? 30 : 18;
+  const svgAttrs = { viewBox: `0 0 ${W} ${H}`, class: "relGraphSvg" + (full ? " relGraphSvgFull" : "") + (radial ? " relGraphSvgRadial" : ""), preserveAspectRatio: "xMidYMid meet" };
   // Give the SVG an explicit natural pixel size so it stops enlarging past a comfortable
   // point (with only width:100% the whole viewBox — text included — scales up to fill a wide
   // pane). CSS max-width caps it for genuinely big graphs; small graphs render at 1:1 and
-  // center. Full-screen gets a slightly bigger 1.3× so it fills more of the modal.
-  const scale = full ? 1.3 : 1.15;
+  // center. Full-screen gets a slightly bigger 1.3×; radial is already large → 1×.
+  const scale = radial ? 1 : full ? 1.3 : 1.15;
   svgAttrs.width = Math.round(W * scale);
   svgAttrs.height = Math.round(H * scale);
   const svg = el("svg", svgAttrs);
@@ -171,6 +309,7 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null } =
   defs.appendChild(marker); svg.appendChild(defs);
   const NR = full ? 6 : 5;   // node radius
   for (const r of rels) {   // edges first (under nodes)
+    if (!edgeVisible(r)) continue;   // legend toggle hid this edge's category
     const a = P(r.head), b = P(r.tail);
     const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
     const ux = dx / d, uy = dy / d;
@@ -178,29 +317,52 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null } =
     const x2 = b.x - ux * (NR + 6), y2 = b.y - uy * (NR + 6);
     const label = r.qual ? `${r.rel} (${r.qual})` : r.rel;
     // co-occurrence edges are undirected (no arrow, dashed) — "share a document", not a relation
-    const tip = r.cooc ? `${r.head} ⟷ ${r.tail}${label ? ` · ${label}` : ""}` : `${r.head} —${label}→ ${r.tail}`;
+    let tip = r.cooc ? `${r.head} ⟷ ${r.tail}${label ? ` · ${label}` : ""}` : `${r.head} —${label}→ ${r.tail}`;
+    if (docTitle && r.docIds && r.docIds.length) {   // which document(s) this edge comes from
+      const titles = r.docIds.map((id) => docTitle.get(id)).filter(Boolean);
+      if (titles.length) tip += `\n${t("relGraphFrom")}: ${titles.slice(0, 4).join(" · ")}${r.docIds.length > 4 ? " …" : ""}`;
+    }
     // wider transparent hit-line so the edge is easy to hover, both carrying the tooltip
     const lineAttrs = { x1, y1, x2, y2, class: "relEdge" + (r.cooc ? " relEdgeCooc" : "") };
     if (!r.cooc) lineAttrs["marker-end"] = "url(#relArrow)";
     const line = el("line", lineAttrs);
+    const ec = edgeColor(r);
+    if (ec) line.style.stroke = ec;   // inline style (beats the CSS stroke) — colour by center
     line.appendChild(el("title", {}, tip));
     svg.appendChild(line);
     const hit = el("line", { x1, y1, x2, y2, class: "relEdgeHit" });
     hit.appendChild(el("title", {}, tip));
     svg.appendChild(hit);
-    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-    const tx = el("text", { x: mx, y: my - 2, class: "relEdgeLabel", "text-anchor": "middle" }, trunc(label, eTrunc));
-    tx.setAttribute("paint-order", "stroke");   // halo for legibility over edges
-    tx.appendChild(el("title", {}, tip));   // tooltip on the relation text (esp. when truncated)
-    svg.appendChild(tx);
+    // Radial (neighborhood): NO edge labels — a hub has dozens of edges and their labels pile
+    // into an unreadable mush at the center. The relation is in the hover tooltip instead.
+    if (!radial) {
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      const tx = el("text", { x: mx, y: my - 2, class: "relEdgeLabel", "text-anchor": "middle" }, trunc(label, eTrunc));
+      tx.setAttribute("paint-order", "stroke");   // halo for legibility over edges
+      tx.appendChild(el("title", {}, tip));   // tooltip on the relation text (esp. when truncated)
+      svg.appendChild(tx);
+    }
   }
   for (const nm of names) {   // nodes
+    if (!nodeVisible(nm)) continue;   // legend toggle hid this node's category
     const q = P(nm);
     const isCenter = centerSet.has(nm);   // neighborhood view: highlight the focus entity/entities
+    const isShared = sharedSet.has(nm);   // multi-center: belongs to >=2 centers (the intersection)
     const clk = onNodeClick ? " relNodeClickable" : "";
-    const circle = el("circle", { cx: q.x, cy: q.y, r: isCenter ? NR + 3 : NR, class: "relNode" + (isCenter ? " relNodeCenter" : "") + clk });
-    const label = el("text", { x: q.x, y: q.y - (isCenter ? NR + 3 : NR) - 5, class: "relNodeLabel" + (isCenter ? " relNodeLabelCenter" : "") + clk, "text-anchor": "middle" }, trunc(nm, nTrunc));
+    const circle = el("circle", { cx: q.x, cy: q.y, r: isCenter ? NR + 3 : isShared ? NR + 2 : NR, class: "relNode" + (isCenter ? " relNodeCenter" : "") + (isShared ? " relNodeShared" : "") + clk });
+    const col = nodeColor(nm);   // multi-center: tint the node by its owning center (inline style beats CSS)
+    if (col && !isShared) { circle.style.fill = col; if (isCenter) circle.style.stroke = col; }
+    // Radial: label sits to the SIDE (out from the hub) and is anchored away from center, so
+    // labels radiate outward without crossing the hub. Non-radial: label sits above the node.
+    let label;
+    if (radial && !isCenter) {
+      const right = q.x >= cx;
+      label = el("text", { x: right ? q.x + NR + 6 : q.x - NR - 6, y: q.y + 5, class: "relNodeLabel" + clk, "text-anchor": right ? "start" : "end" }, trunc(nm, nTrunc));
+    } else {
+      label = el("text", { x: q.x, y: q.y - (isCenter ? NR + 3 : NR) - 5, class: "relNodeLabel" + (isCenter ? " relNodeLabelCenter" : "") + clk, "text-anchor": "middle" }, trunc(nm, nTrunc));
+    }
     label.setAttribute("paint-order", "stroke");
+    if (col && isCenter) label.style.fill = col;   // center label in its own hue (inline beats CSS)
     const tipText = onNodeClick ? `${nm}\n${t("relGraphRecenter")}` : nm;
     circle.appendChild(el("title", {}, tipText));
     label.appendChild(el("title", {}, tipText));
@@ -222,60 +384,200 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null } =
 // enlarged, not shrunk to fit) and the box scrolls if it's taller than the viewport. A
 // semi-transparent ⌄ hint appears whenever more graph is hidden below the fold, and hides
 // once you reach the bottom. Backdrop click / × / Esc close it.
-function openGraphModal(rels, { title = "", center = "", onNodeClick = null } = {}) {
+function openGraphModal(rels, { title = "", center = "", onNodeClick = null, radial = false, onBack = null, onForward = null, onOpenDoc = null } = {}) {
   const overlay = document.createElement("div"); overlay.className = "relGraphModal";
   const inner = document.createElement("div"); inner.className = "relGraphModalInner";
   const close = document.createElement("button"); close.type = "button"; close.className = "relGraphModalClose";
   close.setAttribute("aria-label", "×"); close.textContent = "×";
-  // Title element is always present when interactive (it updates as you recenter).
   const titleEl = (title || onNodeClick) ? document.createElement("div") : null;
   if (titleEl) { titleEl.className = "relGraphModalTitle"; titleEl.textContent = title; }
-  const scroll = document.createElement("div"); scroll.className = "relGraphModalScroll";
-  const hint = document.createElement("div"); hint.className = "relGraphScrollHint"; hint.textContent = "⌄"; hint.hidden = true;
-  hint.title = t("relGraphMore");
-  const updateHint = () => { hint.hidden = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 8; };
-  // (Re)draw the graph — the neighborhood view calls this again to recenter on a clicked node.
-  const render = (rels2, opts = {}) => {
-    scroll.innerHTML = "";
-    scroll.appendChild(buildGraphSvg(rels2, { full: true, center: opts.center ?? center, onNodeClick: opts.onNodeClick ?? onNodeClick }));
-    if (titleEl && opts.title != null) titleEl.textContent = opts.title;
-    scroll.scrollTop = 0;
-    requestAnimationFrame(updateHint);
+  // Top-left control bar: back/forward history (‹ ›) + zoom (+ − ⌂). Zoom controls exist for
+  // any radial neighborhood; the history arrows only when recenter navigation is wired up.
+  let navEl = null, backBtn = null, fwdBtn = null;
+  const mkBtn = (txt, title) => { const b = document.createElement("button"); b.type = "button"; b.className = "relGraphNavBtn"; b.textContent = txt; b.title = title; return b; };
+  if (radial || onBack || onForward) {
+    navEl = document.createElement("div"); navEl.className = "relGraphNav";
+    if (onBack || onForward) {
+      backBtn = mkBtn("‹", t("relGraphBack")); backBtn.disabled = true;
+      fwdBtn = mkBtn("›", t("relGraphForward")); fwdBtn.disabled = true;
+      backBtn.addEventListener("click", () => onBack && onBack());
+      fwdBtn.addEventListener("click", () => onForward && onForward());
+      navEl.append(backBtn, fwdBtn);
+    }
+    if (radial) {
+      const zin = mkBtn("+", t("relGraphZoomIn")), zout = mkBtn("−", t("relGraphZoomOut")), zres = mkBtn("⌂", t("relGraphZoomReset"));
+      zin.addEventListener("click", () => { spread = Math.min(4, spread * 1.2); draw(true); });
+      zout.addEventListener("click", () => { spread = Math.max(0.4, spread * 0.83); draw(true); });
+      zres.addEventListener("click", () => { spread = 1; draw(true); });
+      navEl.append(zin, zout, zres);
+    }
+  }
+  const scroll = document.createElement("div"); scroll.className = "relGraphModalScroll" + (radial ? " isRadial" : "");
+  const legend = radial ? document.createElement("div") : null;
+  if (legend) { legend.className = "relGraphLegend"; legend.title = t("relGraphLegendHint"); }
+  // Source-documents panel (bottom-left): which docs this neighborhood is drawn from; click to open.
+  const docsEl = (radial && onOpenDoc) ? document.createElement("div") : null;
+  if (docsEl) docsEl.className = "relGraphDocs";
+  // Floating ⌄ "more below" hint — only for the non-radial per-doc modal; the radial neighborhood
+  // has real scrollbars (+ drag-pan), so the hint is redundant there.
+  const hint = radial ? null : document.createElement("div");
+  if (hint) { hint.className = "relGraphScrollHint"; hint.textContent = "⌄"; hint.hidden = true; hint.title = t("relGraphMore"); }
+  const updateHint = () => { if (hint) hint.hidden = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 8; };
+
+  // Per-modal state that survives recenters/zooms.
+  const filter = { rel: true, cooc: true, shared: true, hiddenCenters: new Set() };
+  let spread = 1;
+  let curRels = rels, curCenter = center, curOnClick = onNodeClick, curDocTitle = null;
+
+  const centerScroll = () => { if (!radial) return; scroll.scrollLeft = Math.max(0, (scroll.scrollWidth - scroll.clientWidth) / 2); scroll.scrollTop = Math.max(0, (scroll.scrollHeight - scroll.clientHeight) / 2); };
+  const csetOf = () => (curCenter instanceof Set ? curCenter : new Set(curCenter ? [curCenter] : []));
+
+  // Legend rows are TOGGLES: click one to hide/show that category. Rebuilt each draw so the
+  // dim (off) state and the per-center colour chips stay in sync with the current graph.
+  const renderLegend = () => {
+    if (!legend) return;
+    legend.innerHTML = "";
+    const lineSwatch = (dashed) => {
+      const s = el("svg", { viewBox: "0 0 26 8", class: "relGraphLegendSwatch" });
+      const mk = el("marker", { id: "relArrowLegend", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
+      mk.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", class: "relArrowHead" }));
+      const defs = el("defs"); defs.appendChild(mk); s.appendChild(defs);
+      const ln = el("line", { x1: 1, y1: 4, x2: dashed ? 25 : 19, y2: 4, class: "relEdge" + (dashed ? " relEdgeCooc" : "") });
+      if (!dashed) ln.setAttribute("marker-end", "url(#relArrowLegend)");
+      s.appendChild(ln); return s;
+    };
+    const dotSwatch = (color, ring) => {
+      const s = el("svg", { viewBox: "0 0 14 14", class: "relGraphLegendSwatch" });
+      const cir = el("circle", { cx: 7, cy: 7, r: 5, class: "relNode" + (ring ? " relNodeShared" : "") });
+      if (color) cir.style.fill = color;
+      s.appendChild(cir); return s;
+    };
+    const row = (swatch, label, off, toggle) => {
+      const r = document.createElement("div"); r.className = "relGraphLegendRow" + (off ? " isOff" : "");
+      r.append(swatch, Object.assign(document.createElement("span"), { textContent: label }));
+      r.addEventListener("click", () => { toggle(); draw(false); });
+      return r;
+    };
+    legend.append(
+      row(lineSwatch(false), t("relGraphLegendRel"), !filter.rel, () => { filter.rel = !filter.rel; }),
+      row(lineSwatch(true), t("relGraphLegendCooc"), !filter.cooc, () => { filter.cooc = !filter.cooc; }),
+    );
+    const centersArr = [...new Set(curRels.flatMap((r) => [r.head, r.tail]))].filter((n) => csetOf().has(n));
+    if (centersArr.length >= 2) {
+      const cc = centerColorMap(centersArr);
+      for (const c of centersArr) legend.append(row(dotSwatch(cc.get(c), false), c, filter.hiddenCenters.has(c), () => { filter.hiddenCenters.has(c) ? filter.hiddenCenters.delete(c) : filter.hiddenCenters.add(c); }));
+      if (membershipMax(curRels, centersArr) >= 2) legend.append(row(dotSwatch(null, true), t("relGraphLegendShared"), !filter.shared, () => { filter.shared = !filter.shared; }));
+    }
   };
-  render(rels, { title, center, onNodeClick });
-  hint.addEventListener("click", () => scroll.scrollBy({ top: Math.round(scroll.clientHeight * 0.8), behavior: "smooth" }));
+  const renderDocs = (docs) => {
+    if (!docsEl) return;
+    docsEl.innerHTML = "";
+    if (!docs || !docs.length) { docsEl.hidden = true; return; }
+    docsEl.hidden = false; docsEl.classList.remove("isCollapsed");
+    const h = document.createElement("div"); h.className = "relGraphDocsHead";
+    h.appendChild(Object.assign(document.createElement("span"), { textContent: t("relGraphDocs", { n: docs.length }) }));
+    const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "relGraphDocsToggle"; toggle.textContent = "×"; toggle.title = t("relGraphDocsCollapse");
+    toggle.addEventListener("click", () => { const c = docsEl.classList.toggle("isCollapsed"); toggle.textContent = c ? "▼" : "×"; toggle.title = c ? t("relGraphDocsExpand") : t("relGraphDocsCollapse"); });
+    h.appendChild(toggle);
+    docsEl.appendChild(h);
+    const list = document.createElement("div"); list.className = "relGraphDocsList";
+    for (const d of docs) {
+      const b = document.createElement("button"); b.type = "button"; b.className = "relGraphDocRow"; b.title = t("relGraphOpenDoc");
+      b.textContent = `${KIND_ICON[d.docKind] || "📄"} ${d.title}`;
+      b.addEventListener("click", () => { onOpenDoc(d.docId); shut(); });
+      list.appendChild(b);
+    }
+    docsEl.appendChild(list);
+  };
+  // recenter=true keeps the hub centered (initial / recenter / zoom); a legend toggle passes
+  // false so it doesn't yank the view back while you're panning.
+  const draw = (recenter = false) => {
+    scroll.innerHTML = "";
+    scroll.appendChild(buildGraphSvg(curRels, { full: true, radial, spread, filter, docTitle: curDocTitle, center: curCenter, onNodeClick: curOnClick }));
+    renderLegend();
+    requestAnimationFrame(() => { updateHint(); if (recenter) centerScroll(); });
+  };
+  // Recenter / initial: reset zoom + filters (new center set), then draw + center.
+  const render = (rels2, opts = {}) => {
+    curRels = rels2;
+    if (opts.center !== undefined) curCenter = opts.center;
+    if (opts.onNodeClick !== undefined) curOnClick = opts.onNodeClick;
+    if (opts.docTitle !== undefined) curDocTitle = opts.docTitle;
+    if (titleEl && opts.title != null) titleEl.textContent = opts.title;
+    if (opts.docs !== undefined) renderDocs(opts.docs);
+    spread = 1; filter.rel = filter.cooc = filter.shared = true; filter.hiddenCenters.clear();
+    draw(true);
+  };
+  render(rels, { title, center, onNodeClick, docTitle: null, docs: null });
+  // Scroll wheel = ZOOM by changing entity SPACING (font stays constant); re-layout, re-center.
+  if (radial) scroll.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    spread = Math.min(4, Math.max(0.4, spread * (e.deltaY < 0 ? 1.12 : 0.89)));
+    draw(true);
+  }, { passive: false });
+  // Drag the empty background to pan (grab cursor). Node/edge hits keep their own click.
+  let panning = false, panSX = 0, panSY = 0, panSL = 0, panST = 0;
+  const onPanDown = (e) => {
+    if (!radial || e.button !== 0) return;
+    const cl = e.target.classList;
+    if (cl && (cl.contains("relNodeHit") || cl.contains("relNodeClickable"))) return;   // let node clicks through
+    panning = true; panSX = e.clientX; panSY = e.clientY; panSL = scroll.scrollLeft; panST = scroll.scrollTop;
+    scroll.classList.add("isPanning");
+  };
+  const onPanMove = (e) => { if (!panning) return; scroll.scrollLeft = panSL - (e.clientX - panSX); scroll.scrollTop = panST - (e.clientY - panSY); };
+  const onPanUp = () => { if (panning) { panning = false; scroll.classList.remove("isPanning"); } };
+  if (radial) { scroll.addEventListener("mousedown", onPanDown); window.addEventListener("mousemove", onPanMove); window.addEventListener("mouseup", onPanUp); }
+  if (hint) hint.addEventListener("click", () => scroll.scrollBy({ top: Math.round(scroll.clientHeight * 0.8), behavior: "smooth" }));
   scroll.addEventListener("scroll", updateHint);
-  const shut = () => { overlay.remove(); document.removeEventListener("keydown", onKey); window.removeEventListener("resize", updateHint); };
+  const shut = () => { overlay.remove(); document.removeEventListener("keydown", onKey); window.removeEventListener("resize", updateHint); window.removeEventListener("mousemove", onPanMove); window.removeEventListener("mouseup", onPanUp); };
   const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); shut(); } };
   close.addEventListener("click", shut);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) shut(); });
   document.addEventListener("keydown", onKey);
   window.addEventListener("resize", updateHint);
-  inner.append(close, ...(titleEl ? [titleEl] : []), scroll, hint);
+  inner.append(close, ...(navEl ? [navEl] : []), ...(titleEl ? [titleEl] : []), ...(legend ? [legend] : []), ...(docsEl ? [docsEl] : []), scroll, ...(hint ? [hint] : []));
   overlay.appendChild(inner);
   document.body.appendChild(overlay);
-  requestAnimationFrame(updateHint);   // after layout settles, decide if the hint is needed
-  return { render, shut };
+  requestAnimationFrame(updateHint);
+  const setNav = (canBack, canFwd) => { if (backBtn) backBtn.disabled = !canBack; if (fwdBtn) fwdBtn.disabled = !canFwd; };
+  return { render, shut, setNav };
 }
 
 // Public entry for the cross-doc entity neighborhood (star map). `data` = the neighborhood
 // payload ({edges,center,centers}); `title(data)` builds the header; `fetchNeighborhood(names)`
 // (optional) lets the modal RECENTER on a clicked node by fetching that node's neighborhood.
 // Reuses the exact per-doc graph renderer + modal chrome.
-export function openEntityGraphModal({ data, title = () => "", fetchNeighborhood = null } = {}) {
+export function openEntityGraphModal({ data, title = () => "", fetchNeighborhood = null, onOpenDoc = null } = {}) {
   const toRels = (d) => (d.edges || []).map((e) => ({
-    head: e.head, tail: e.tail, qual: e.qual || "", cooc: !!e.cooc,
+    head: e.head, tail: e.tail, qual: e.qual || "", cooc: !!e.cooc, count: e.count, docIds: e.docIds || [],
     rel: e.cooc ? (t("relGraphCooc") + (e.count > 1 ? ` ·${e.count}` : "")) : (e.label || e.rel || ""),
   })).filter((r) => r.head && r.tail && r.head !== r.tail);
   const centersOf = (d) => new Set((d.centers || (d.center ? [d.center] : [])).map((c) => c.name));
+  const seedsOf = (d) => (d.centers || (d.center ? [d.center] : [])).map((c) => c.name);
+  const docTitleOf = (d) => new Map((d.docs || []).map((x) => [x.docId, x.title]));
   const first = toRels(data);
   if (!first.length) return false;
   let ctrl;
-  const onNodeClick = fetchNeighborhood ? async (name) => {
-    let d; try { d = await fetchNeighborhood([name]); } catch { return; }
-    if (d && toRels(d).length) ctrl.render(toRels(d), { title: title(d), center: centersOf(d), onNodeClick });
-  } : null;
-  ctrl = openGraphModal(first, { title: title(data), center: centersOf(data), onNodeClick });
+  // Recenter history: each entry is the seed set that produced that view; ‹ / › walk it.
+  const hist = [seedsOf(data)]; let hi = 0;
+  const apply = (d) => {
+    ctrl.render(toRels(d), { title: title(d), center: centersOf(d), onNodeClick, docTitle: docTitleOf(d), docs: d.docs || [] });
+    ctrl.setNav(hi > 0, hi < hist.length - 1);
+  };
+  const load = async (seeds, push) => {
+    let d; try { d = await fetchNeighborhood(seeds); } catch { return; }
+    if (!d || !toRels(d).length) return;
+    if (push) { hist.length = hi + 1; hist.push(seeds); hi = hist.length - 1; }
+    apply(d);
+  };
+  const onNodeClick = fetchNeighborhood ? (name) => load([name], true) : null;
+  ctrl = openGraphModal(first, {
+    title: title(data), center: centersOf(data), onNodeClick, radial: true, onOpenDoc,
+    onBack: fetchNeighborhood ? () => { if (hi > 0) { hi--; load(hist[hi], false); } } : null,
+    onForward: fetchNeighborhood ? () => { if (hi < hist.length - 1) { hi++; load(hist[hi], false); } } : null,
+  });
+  ctrl.render(first, { title: title(data), center: centersOf(data), onNodeClick, docTitle: docTitleOf(data), docs: data.docs || [] });
+  ctrl.setNav(false, false);
   return true;
 }
 

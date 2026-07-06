@@ -1379,7 +1379,7 @@ function entityNeighborhoodLibrary(req, res) {
     const seeds = [...new Set(rawNames.map((n) => canonEntity(normalizeEntity(n))).filter((k) => k && nodes.has(k)))];
     if (!seeds.length) { sendJson(res, 200, { center: null, centers: [], nodes: [], edges: [], docs: [] }); return; }
     const hops = Math.min(2, Math.max(1, parseInt(body.hops, 10) || 1));
-    const NODE_CAP = 60;
+    const NODE_CAP = 36;   // a ring stays readable up to a few dozen; keep the STRONGEST links
     // relation adjacency (undirected for traversal)
     const adj = new Map();
     for (const ed of edges.values()) {
@@ -1388,8 +1388,17 @@ function entityNeighborhoodLibrary(req, res) {
       adj.get(ed.head).add(ed.tail); adj.get(ed.tail).add(ed.head);
     }
     const keep = new Set(seeds);
-    let frontier = [...seeds];
-    for (let h = 0; h < hops && keep.size < NODE_CAP; h++) {
+    // Hop 1: add the seeds' relation neighbors STRONGEST-FIRST (edge weight = total docs on the
+    // connecting edges), so a capped graph keeps the most important links, not arbitrary ones.
+    const relW = new Map();
+    for (const ed of edges.values()) {
+      if (seeds.includes(ed.head) && !seeds.includes(ed.tail)) relW.set(ed.tail, (relW.get(ed.tail) || 0) + ed.docs.size);
+      if (seeds.includes(ed.tail) && !seeds.includes(ed.head)) relW.set(ed.head, (relW.get(ed.head) || 0) + ed.docs.size);
+    }
+    for (const [k] of [...relW.entries()].sort((a, b) => b[1] - a[1])) { if (keep.size >= NODE_CAP) break; keep.add(k); }
+    // Further hops: plain BFS from what we have so far.
+    let frontier = [...keep];
+    for (let h = 1; h < hops && keep.size < NODE_CAP; h++) {
       const next = [];
       for (const k of frontier) for (const nb of (adj.get(k) || [])) {
         if (keep.has(nb)) continue;
@@ -1421,7 +1430,7 @@ function entityNeighborhoodLibrary(req, res) {
     for (const ed of edges.values()) {
       if (!keep.has(ed.head) || !keep.has(ed.tail)) continue;
       const label = [...ed.labels.entries()].sort((a, b) => b[1] - a[1])[0][0];   // most-common label wins
-      outEdges.push({ head: nameOf(ed.head), tail: nameOf(ed.tail), label, count: ed.docs.size });
+      outEdges.push({ head: nameOf(ed.head), tail: nameOf(ed.tail), label, count: ed.docs.size, docIds: [...ed.docs].slice(0, 6) });
       relPairs.add(pk(ed.head, ed.tail));
       for (const d of ed.docs) docSet.add(d);
     }
@@ -1433,7 +1442,7 @@ function entityNeighborhoodLibrary(req, res) {
         let s = shared.get(other); if (!s) { s = new Set(); shared.set(other, s); } s.add(docId);
       }
       for (const [other, ds] of shared) {
-        outEdges.push({ head: nameOf(seed), tail: nameOf(other), label: "", count: ds.size, cooc: true });
+        outEdges.push({ head: nameOf(seed), tail: nameOf(other), label: "", count: ds.size, cooc: true, docIds: [...ds].slice(0, 6) });
         for (const d of ds) docSet.add(d);
       }
     }
