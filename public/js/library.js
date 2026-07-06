@@ -683,9 +683,14 @@ export function initLibrary() {
   urlClose.addEventListener("click", closeUrlModal);
   urlCancel.addEventListener("click", closeUrlModal);
   urlConfirm.addEventListener("click", confirmUrlModal);
-  urlModal.addEventListener("click", (e) => { if (e.target === urlModal) closeUrlModal(); });
+  // Deliberately NO backdrop-click-to-close: the "import URL" modal dismisses ONLY via the
+  // ✕ button, the 取消 button, or Esc — so a stray click on the dimmed area never discards a
+  // half-typed list of URLs. Esc is handled at the document level so it works regardless of
+  // which control (or none) holds focus, not just while the textarea is focused.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !urlModal.hidden) { e.preventDefault(); closeUrlModal(); }
+  });
   urlTextarea.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { e.preventDefault(); closeUrlModal(); }
     // Enter inserts a newline (multi-line input); Cmd/Ctrl+Enter submits.
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); confirmUrlModal(); }
   });
