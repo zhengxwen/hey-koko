@@ -2,22 +2,42 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // P3 slides visual layer: render each slide page to a whole-page JPEG so /ask can feed a
-// vision model the real page (charts, layout, SmartArt), not just the terse text. Two
-// backends, both best-effort (a failure returns [] → the deck keeps its text + crop
-// figures): PDFs via pypdfium2 (server/render_slides.py, run with config.slidesPython —
-// MinerU's venv); pptx via PowerPoint driven by AppleScript (macOS). Opt-in behind
-// config.slidesRender. See docs/plans/slides-library.md P3.
+// vision model the real page (charts, layout, SmartArt), not just the terse text. All
+// backends are best-effort (a failure returns [] → the deck keeps its text + crop figures).
+//   PDF  → pypdfium2 (server/render_slides.py, run with config.slidesPython — MinerU's venv).
+//   pptx → LibreOffice `soffice --convert-to pdf` then the SAME pypdfium2 path (reliable,
+//          reused). PowerPoint via AppleScript is a last-resort fallback: on recent macOS
+//          builds its sandbox silently drops AppleScript `save`/export (verified: open+read
+//          work, but JPG/PDF/copy saves all write nothing), so it usually yields nothing.
+// Opt-in behind config.slidesRender. See docs/plans/slides-library.md P3.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFile, spawn } = require("child_process");
+const { execFile, spawn, execFileSync } = require("child_process");
 const config = require("./config");
 
 const renderScript = path.join(__dirname, "render_slides.py");
 const POWERPOINT_APP = "/Applications/Microsoft PowerPoint.app";
 
+function findSoffice() {
+  const candidates = [
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    "/opt/homebrew/bin/soffice", "/usr/local/bin/soffice", "/usr/bin/soffice",
+    "/opt/libreoffice/program/soffice",
+  ];
+  for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch {} }
+  try {
+    const finder = process.platform === "win32" ? "where" : "which";
+    const first = execFileSync(finder, ["soffice"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().split(/\r?\n/)[0];
+    if (first) return first;
+  } catch {}
+  return "";
+}
+
 let hasPdfRender = false;
 let hasPptxRender = false;
+let sofficePath = "";
+let hasPowerPoint = false;
 let detectDone = false;
 
 (async function detect() {
@@ -36,9 +56,15 @@ let detectDone = false;
       console.log(`[render-slides] PDF page-render unavailable (${err && err.message}); pypdfium2/PIL not importable`);
     }
   }
-  // pptx: PowerPoint app present (macOS only; AppleScript-driven).
-  hasPptxRender = process.platform === "darwin" && fs.existsSync(POWERPOINT_APP);
-  if (hasPptxRender) console.log(`[render-slides] pptx page-render available (Microsoft PowerPoint)`);
+  // pptx: LibreOffice (reliable, preferred) → PowerPoint (fallback). Both ultimately need
+  // the PDF renderer (LibreOffice makes a PDF; PowerPoint would export images directly but
+  // usually can't — see header). So pptx render also requires hasPdfRender for the LO path.
+  sofficePath = findSoffice();
+  hasPowerPoint = process.platform === "darwin" && fs.existsSync(POWERPOINT_APP);
+  hasPptxRender = (!!sofficePath && hasPdfRender) || hasPowerPoint;
+  if (sofficePath && hasPdfRender) console.log(`[render-slides] pptx page-render available (LibreOffice ${sofficePath} → PDF → pypdfium2)`);
+  else if (hasPowerPoint) console.log(`[render-slides] pptx page-render: only PowerPoint found — its AppleScript export is unreliable on recent macOS; install LibreOffice for reliable pptx rendering`);
+  else if (config.slidesRender) console.log(`[render-slides] pptx page-render unavailable (no LibreOffice; PowerPoint absent)`);
   detectDone = true;
 })();
 
@@ -102,40 +128,76 @@ function renderPdfPages(buf, { scale, quality, maxPages, timeoutMs = 300000 } = 
   });
 }
 
-// Render a pptx buffer → [{page, base64, mime}] by driving PowerPoint (AppleScript
-// "save as JPG" exports one image per slide into a folder). [] on any failure — the
-// first run also triggers a one-time macOS Automation permission prompt.
-function renderPptxPages(buf, { maxPages, timeoutMs = 300000 } = {}) {
+// Convert a pptx buffer to a PDF buffer via LibreOffice headless. Returns null on any
+// failure. LibreOffice is NOT sandboxed, so it reads/writes our temp dir freely (unlike
+// PowerPoint). --convert-to writes "<basename>.pdf" into --outdir.
+function pptxToPdfViaLibreOffice(buf, timeoutMs) {
   return new Promise((resolve) => {
-    if (!hasPptxRender) return resolve([]);
+    if (!sofficePath) return resolve(null);
+    let tmp;
+    try { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pptx2pdf-")); } catch { return resolve(null); }
+    const inPath = path.join(tmp, "in.pptx");
+    const cleanup = () => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} };
+    try { fs.writeFileSync(inPath, buf); } catch { cleanup(); return resolve(null); }
+    // A dedicated -env:UserInstallation keeps this run from colliding with a real
+    // LibreOffice GUI profile (headless conversions can deadlock on a shared profile lock).
+    const profile = "file://" + path.join(tmp, "loprofile");
+    execFile(sofficePath, [
+      "--headless", "--norestore", `-env:UserInstallation=${profile}`,
+      "--convert-to", "pdf", "--outdir", tmp, inPath,
+    ], { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err) => {
+      let pdf = null;
+      if (!err) { try { pdf = fs.readFileSync(path.join(tmp, "in.pdf")); } catch { pdf = null; } }
+      else console.log(`[render-slides] LibreOffice pptx→pdf failed: ${err.message}`);
+      cleanup();
+      resolve(pdf);
+    });
+  });
+}
+
+// Drive PowerPoint via AppleScript to export slides as JPGs (macOS fallback). On recent
+// PowerPoint builds the sandbox silently drops the save (verified: nothing is written),
+// so this usually returns [] — LibreOffice is the real backend. Kept as a best-effort
+// last resort for setups where it does work. Uses the correct EPPSaveAsFileType enum.
+function renderPptxViaPowerPoint(buf, { maxPages, timeoutMs = 300000 } = {}) {
+  return new Promise((resolve) => {
+    if (!hasPowerPoint) return resolve([]);
     let tmp;
     try { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "slides-render-")); } catch { return resolve([]); }
     const inPath = path.join(tmp, "in.pptx");
     const outDir = path.join(tmp, "out");
     const cleanup = () => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} };
     try { fs.writeFileSync(inPath, buf); fs.mkdirSync(outDir); } catch { cleanup(); return resolve([]); }
-    // Export every slide as JPG into outDir, then quit the doc without saving. PowerPoint
-    // versions differ on output naming/subfoldering — collectPageImages walks recursively
-    // and orders by the trailing slide number, so we don't depend on the exact layout.
     const script = [
       'on run argv',
-      '  set inPath to item 1 of argv',
-      '  set outPath to item 2 of argv',
       '  tell application "Microsoft PowerPoint"',
-      '    set pres to open inPath',
-      '    save pres in outPath as save as JPG file format',
-      '    close pres saving no',
+      '    open (POSIX file (item 1 of argv))',
+      '    save active presentation in (item 2 of argv) as save as JPG',
+      '    close active presentation saving no',
       '  end tell',
       'end run',
     ].join("\n");
     execFile("osascript", ["-e", script, inPath, outDir], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err) => {
       let images = [];
       if (!err) { try { images = collectPageImages(outDir, maxPages || config.slidesRenderMaxPages); } catch { images = []; } }
-      else console.log(`[render-slides] pptx render failed: ${err.message}`);
+      else console.log(`[render-slides] PowerPoint render failed: ${err.message}`);
       cleanup();
       resolve(images);
     });
   });
+}
+
+// Render a pptx buffer → [{page, base64, mime}]. Prefer LibreOffice→PDF→pypdfium2 (reliable);
+// fall back to PowerPoint (usually a no-op on recent macOS). [] on any failure.
+async function renderPptxPages(buf, opts = {}) {
+  if (sofficePath && hasPdfRender) {
+    const pdf = await pptxToPdfViaLibreOffice(buf, opts.timeoutMs || 300000);
+    if (pdf && pdf.length) {
+      const imgs = await renderPdfPages(pdf, opts);
+      if (imgs.length) return imgs;
+    }
+  }
+  return renderPptxViaPowerPoint(buf, opts);
 }
 
 // Dispatch by extension. Returns [] (never throws) when rendering is off, unavailable,

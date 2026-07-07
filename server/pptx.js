@@ -8,6 +8,7 @@
 // NOT extracted here by design (docs/plans/slides-library.md §0.3, Rev1): pictures /
 // charts / SmartArt become `［图 N］` / `［图表：…］` placeholders, and visual fidelity
 // is P3's whole-slide render. Tables keep their cell text (cheap, lossless-enough).
+// Non-text objects leave English placeholders: `[image]` / `[chart]` / `[figure]`.
 // parse-file.js falls back to Pandoc if this throws on a malformed/odd deck.
 const zlib = require("zlib");
 
@@ -104,9 +105,9 @@ function parseSlideXml(xml) {
     if (isTitlePh(sp) && !title) { title = lines.join(" — "); continue; }
     body.push(...lines);
   }
-  // Pictures → placeholder (no extraction in P0).
+  // Pictures → placeholder (no extraction in P0). English labels by request.
   const picCount = (xml.match(/<p:pic>/g) || []).length;
-  for (let i = 0; i < picCount; i++) figs.push("［图］");
+  for (let i = 0; i < picCount; i++) figs.push("[image]");
   // Graphic frames: table (extract cell text) vs chart / SmartArt (placeholder).
   const gfRe = /<p:graphicFrame>([\s\S]*?)<\/p:graphicFrame>/g;
   while ((m = gfRe.exec(xml)) !== null) {
@@ -114,9 +115,9 @@ function parseSlideXml(xml) {
     if (/<a:tbl>/.test(gf)) {
       for (const row of tableRows(gf)) body.push(row);
     } else if (/chart/i.test(gf)) {
-      figs.push("［图表］");
+      figs.push("[chart]");
     } else {
-      figs.push("［图形］");
+      figs.push("[figure]");
     }
   }
   return { title, body, figs };
