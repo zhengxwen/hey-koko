@@ -126,6 +126,8 @@ function bgProgressLabel(stage, progress) {
     case 'rendering': return t('bg_rendering');
     case 'importing': return t('lib_importing');
     case 'distilling': return t('bg_distilling');
+    // news-feeds.md: whole-history backfill of one subscription
+    case 'backfilling': return progress ? t('bg_backfilling', { i: progress.value, n: progress.max }) : t('bg_backfillingStart');
     default: return '';
   }
 }

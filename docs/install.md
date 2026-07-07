@@ -144,6 +144,10 @@ $env:OLLAMA_URL = "http://127.0.0.1:11434"; $env:HEYKOKO_PORT = "1314"; node ser
 | `URL_CONTENT_MAX_CHARS` | `40000` | Max characters kept from a fetched webpage (`/url`); `0` = unlimited. YouTube transcripts are never truncated |
 | `WHISPER_MODEL` | auto-detect | Path to whisper.cpp model file |
 | `TTS_PYTHON` | auto-detect | Python with kokoro for `/voice` (default: `~/venv/tts` venv if present, else `python3`/`python`) |
+| `HEYKOKO_SLIDES_RENDER` | `0` | Set to `1` to render whole-slide page images for imported decks (needs [LibreOffice](optional-tools.md#libreoffice) for `.pptx`; MinerU's `pypdfium2` for PDFs). Off by default — page rasters add ~200–350 KB/page |
+| `SLIDES_PYTHON` | auto-detect | Python with `pypdfium2` + `Pillow` for slide page rendering (default: derived from the `mineru` launcher) |
+| `HEYKOKO_SLIDES_RENDER_SCALE` | `2.0` | Slide render resolution multiplier — raise for sharper small text (larger files) |
+| `HEYKOKO_SLIDES_RENDER_MAXPAGES` | `80` | Max slides page-rendered per deck |
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Claude API origin (overrides `claude.json`) |
 | `ANTHROPIC_API_KEY` | — | Claude API key (overrides `claude.json`; enables cloud models) |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI API origin (overrides `openai.json`) |

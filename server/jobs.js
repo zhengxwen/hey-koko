@@ -25,6 +25,7 @@ const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const library = require("./library");
 const zotero = require("./zotero");
+const feeds = require("./feeds");
 const renderSlides = require("./render-slides");
 
 const JOBS_FILE = path.join(config.JOBS_DIR, "jobs.json");
@@ -359,6 +360,32 @@ async function runLibImportJob(job, signal) {
     stage("distilling");               // reuse a drawer-known stage label
     const r = await library.computeLibraryCitations(p.docIds);
     return { citations: r.edges, scanned: r.scanned };
+  }
+  // News feeds (news-feeds.md). feeditem: one blog post from a poll (no html → fetch-url).
+  // backfill: one feed's whole history, imported directly by feeds.runBackfill (no sub-jobs).
+  if (p.type === "feeditem") {
+    stage("fetching");
+    let text = "", title = p.title || p.url, publishedAt = p.publishedAt || "";
+    if (p.html) {
+      ({ text } = await require("./url-fetch").extractCleanContent(p.html, p.url));
+    } else {
+      const r = await loopbackPost("/api/fetch-url", { url: p.url }, signal);
+      let d = {}; try { d = JSON.parse(r.text); } catch {}
+      if (!r.ok || d.type === "error" || d.type === "unsupported" || !d.content) throw new Error(d.content || `fetch failed (${r.status})`);
+      text = d.content; if (d.title) title = d.title; if (!publishedAt && d.publishedAt) publishedAt = d.publishedAt;
+    }
+    if (!text || !String(text).trim()) throw new Error("empty document");
+    stage("importing");
+    const card = library.excerptCard(p.excerpt, p.language);
+    const imp = await library.importDocInternal({ source: `url:${p.url}`, docKind: "blog", folder: p.folder, title, publishedAt, text, model: p.embedModel, extraBlocks: card ? [card] : undefined });
+    return { docId: imp.docId, blockCount: imp.blockCount, folder: imp.folder, distilled: false };
+  }
+  if (p.type === "backfill") {
+    stage("backfilling");
+    return feeds.runBackfill(p.feedId, {
+      signal, embedModel: p.embedModel, language: p.language,
+      onProgress: (value, max) => stage("backfilling", (max ? { value, max } : null)),
+    });
   }
 
   let source, docKind = p.docKind, title, authors = "", year = "", publishedAt = "", doi = "", citation = null, keywords = [], tags = [], zoteroObj = null, zoteroAbstract = null, zoteroAnnots = [], exactMeta = false, text, images = [], pageImages = [];

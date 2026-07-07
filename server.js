@@ -32,6 +32,7 @@ const { zoteroCollectionsHandler, zoteroItemsHandler, zoteroSyncAnnotationsHandl
 const { serveStarmap } = require("./server/star-map");
 const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file");
 const bgQueue = require("./server/jobs");   // Option B: server-side background job queue
+const feeds = require("./server/feeds");    // news-feeds.md: news subscription library
 
 console.log("[hey-koko] All modules loaded, starting server...");
 
@@ -409,6 +410,14 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // News subscription library (news-feeds.md) — feed CRUD + poll + backfill.
+  if ((req.method === "GET" || req.method === "POST") && req.url === "/api/feeds/list") { feeds.feedsListHandler(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/feeds/add") { feeds.feedsAddHandler(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/feeds/edit") { feeds.feedsEditHandler(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/feeds/delete") { feeds.feedsDeleteHandler(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/feeds/poll-now") { feeds.feedsPollNowHandler(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/feeds/backfill") { feeds.feedsBackfillHandler(req, res); return; }
+
   if (req.method === "GET" && req.url === "/api/parse-file/capabilities") {
     getCapabilities(res);
     return;
@@ -436,4 +445,5 @@ const server = http.createServer((req, res) => {
 server.listen(config.PORT, "127.0.0.1", () => {
   console.log(`Local AI companion: http://127.0.0.1:${config.PORT}`);
   console.log(`Ollama endpoint: ${config.ollamaUrl}`);
+  feeds.startPolling();   // news-feeds.md: begin the subscription poll timer
 });

@@ -46,6 +46,12 @@ function ensureCategoryDirs() {
 
 // Auto-classify a NEW import into a top-level folder by its source type:
 // YouTube links → youtube, other web URLs → url, PDFs → pdf, everything else → doc.
+// Tier-2 news library (news-feeds.md D1): a top-level `news/` directory holds daily blog
+// posts, one sub-folder per source (`news/<slug>/`). Membership is BY LOCATION — no index
+// field. retrieve/star-map/related default-exclude it; `@news/` scope opts back in.
+const NEWS_DIR = "news";
+function inNewsDir(folder) { const f = String(folder || ""); return f === NEWS_DIR || f.startsWith(NEWS_DIR + "/"); }
+
 function classifyFolder(source) {
   const s = String(source || "");
   if (s.startsWith("url:")) {
@@ -705,11 +711,17 @@ async function retrieve(query, model, { docId = null, docIds = null, folder = nu
   const set = (docIds && docIds.length) ? new Set(docIds) : null;
   const flist = (folders && folders.length) ? folders : (folder != null ? [folder] : null);
   const inFolder = (it) => flist == null ? true : flist.some(f => it.folder === f || it.folder.startsWith(f + "/"));
+  // Tier-2 news library (news-feeds.md D1): the top-level `news/` tree is a DEFAULT-EXCLUDED
+  // second-class library. With NO explicit scope (whole-library search) its daily blog posts
+  // must not drown the durable knowledge — so filter them out here. An explicit `@news/` /
+  // `@news/nvidia/` scope (flist set / docId / docIds) still enters normally.
+  const noScope = !set && !docId && flist == null;
+  const notNews = (it) => !noScope || !inNewsDir(it.folder);
   // Only compare against vectors built with the SAME embedding model — a different
   // model is a different vector space (and possibly a different dim), so cosine there
   // is meaningless. The .vec header records the model; we match it to the query's.
   const canon = canonicalEmbedModel(model);
-  const pool = getCache().items.filter(it => it.vec && it.model === canon && inFolder(it) && (set ? set.has(it.docId) : (!docId || it.docId === docId)));
+  const pool = getCache().items.filter(it => it.vec && it.model === canon && inFolder(it) && notNews(it) && (set ? set.has(it.docId) : (!docId || it.docId === docId)));
   if (!pool.length) return [];
   const qvec = await embedQuery(query, model);
   if (!qvec) return [];
@@ -1329,9 +1341,13 @@ async function relatedLibraryDocs(req, res) {
     const body = await readBody(req);
     const cents = docCentroids();
     const me = cents.get(body.docId);
+    // Tier isolation (news-feeds.md P2): a core doc's related stays in the core library;
+    // a news doc's related stays within news. Keeps the two tiers from cross-contaminating.
+    const meIsNews = inNewsDir(locOf(body.docId));
+    const sameTier = (id) => inNewsDir(locOf(id)) === meIsNews;
     // Centroid path: top-5 by cosine (embedding "feels close").
     const related = me ? [...cents.entries()]
-      .filter(([id, c]) => id !== body.docId && c.model === me.model)
+      .filter(([id, c]) => id !== body.docId && c.model === me.model && sameTier(id))
       .map(([id, c]) => ({ docId: id, title: c.title, docKind: c.docKind, score: cosine(me.vec, c.vec) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, 5) : [];
@@ -1349,6 +1365,7 @@ async function relatedLibraryDocs(req, res) {
       }
       for (const [docId, n] of counts) {
         if (n < 2) continue;
+        if (!sameTier(docId)) continue;   // P2: don't bridge core↔news via shared entities
         const m = metaById.get(docId) || {};
         const names = [];
         const otherSet = byDoc.get(docId) || new Set();
@@ -2255,6 +2272,24 @@ const DISTILL_I18N = {
 };
 const distillL = (language) => DISTILL_I18N[language] || DISTILL_I18N.zh;
 
+// D5 (news layer): synthesize a card block from a feed's OWN excerpt — NO LLM, no cost.
+// summary = excerpt with HTML/whitespace stripped; carried into blocks[0] via extraBlocks so
+// the doc reads as "has card". Same shape distillDocInternal writes → a later "补卡" deep
+// distill overwrites it at blocks[0] with zero conflict. Returns null for an empty excerpt.
+function excerptCard(excerpt, language = "") {
+  const L = distillL(language);
+  const summary = String(excerpt || "")
+    .replace(/<[^>]+>/g, " ")                 // strip HTML tags
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#x([0-9a-f]+);/gi, (m, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return " "; } })
+    .replace(/&#(\d+);/g, (m, d) => { try { return String.fromCodePoint(parseInt(d, 10)); } catch { return " "; } })
+    .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&apos;/gi, "'")
+    .replace(/&amp;/gi, "&")                   // decode &amp; LAST so &amp;lt; doesn't double-decode
+    .replace(/\s+/g, " ").trim();
+  if (!summary) return null;
+  return { id: "card", kind: "card", section: L.cardSection, content: `${L.summaryHead} ${summary}` };
+}
+
 // Generate/refresh a doc's distillation card: LLM → JSON → card block at blocks[0]
 // (id "card", kind "card") + tags (+ title/authors/year when metadata:true — false for
 // YouTube docs, whose exact metadata the LLM must not overwrite). The save path
@@ -2824,6 +2859,7 @@ module.exports = {
   listZoteroDocs, resyncZoteroAnnotations,   // P2 annotation re-sync
   listZoteroDocsDetailed, diffZoteroSync, patchZoteroDocMeta,   // P3 incremental + full sync
   fetchCrossrefReferences, computeLibraryCitations, citationGraph, docCitations,   // P4 citation graph
+  citationGraphLibrary, docCitationsLibrary,   // P4 HTTP handlers
   relatedLibraryDocs, docCentroids, lookupPaperMeta, extractKeywords, findDocByDoi,
   libraryDocIdSet,   // zotero picker "already imported" marker
   parseArxivAtom, arxivDoi, ARXIV_RE, DOI_RE,   // exported for testing
@@ -2835,4 +2871,5 @@ module.exports = {
   expandByRelationsLibrary, relationsForQueryLibrary,   // /ask -a relation-hop expansion + relation direct-answer
   timelineLibrary,   // dedicated timeline view (time-qualified relations)
   cleanStructure, renderStructure, parseStructureSections, normalizeEntity,   // exported for testing
+  excerptCard, NEWS_DIR, inNewsDir,   // news-feeds.md: tier-2 news layer helpers
 };

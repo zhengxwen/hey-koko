@@ -5488,6 +5488,9 @@ button.secondary:disabled {
    so the LLM summary reads as "about the doc" rather than part of the document body. */
 .libDocCard { background: rgba(108, 142, 191, 0.08); border-left: 3px solid var(--accent); border-radius: 6px; padding: 6px 10px; margin: 6px 0 10px; }
 .libDocCard .markdownBody:hover { background: rgba(108, 142, 191, 0.05); }
+/* Distill-card heading chevron: only the chevron folds the card (heading text still renames). */
+.libDocCardChevron { cursor: pointer; margin-right: 5px; font-size: 0.75em; color: var(--muted); user-select: none; vertical-align: middle; }
+.libDocCardChevron:hover { color: var(--accent); }
 /* Tag-bar "+N ▾ / 收起 ▴" expander chip: same shape as a tag, visually a control. */
 .libraryTagMore { background: var(--surface) !important; border: 1px dashed var(--muted); cursor: pointer; opacity: 0.85; }
 .libraryTagMore:hover { opacity: 1; border-color: var(--accent); }
@@ -6067,6 +6070,34 @@ button.secondary:disabled {
 }
 .zoteroImportGo:disabled { opacity: 0.5; cursor: default; }
 @media (max-width: 640px) { .zoteroImportCols { width: 150px; } }
+
+/* News feed subscription manager (news-feeds.md P3) — reuses the zotero modal chrome
+   (.zoteroImportOverlay/.zoteroImportDialog/head/foot), adds a management list + add row. */
+.feedMgrDialog { width: min(720px, 94vw); height: min(600px, 88vh); }
+.feedMgrAdd { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+/* class beats the global `input{width:100%}` element rule → sizes cleanly inside the flex row */
+.feedMgrInput { width: auto; flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--paper); color: var(--ink); font-size: 13px; }
+.feedMgrName { flex: 0 0 160px; }
+.feedMgrBody { flex: 1; overflow-y: auto; padding: 8px 12px; }
+.feedMgrList { display: flex; flex-direction: column; gap: 6px; }
+.feedMgrRow { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+.feedMgrRow.isPaused { opacity: 0.55; }
+.feedMgrMain { min-width: 0; flex: 1; }
+.feedMgrFeedName { font-weight: 600; font-size: 13.5px; }
+.feedMgrMeta { font-size: 11.5px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.feedMgrErr { font-size: 11.5px; color: var(--danger, #c0392b); margin-top: 3px; overflow-wrap: anywhere; }
+.feedMgrActions { display: flex; flex-wrap: wrap; gap: 5px; flex: 0 0 auto; justify-content: flex-end; }
+.feedMgrMini { padding: 4px 9px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--surface); color: var(--ink); font-size: 11.5px; cursor: pointer; white-space: nowrap; }
+.feedMgrMini:hover { background: var(--surface-hover, var(--line)); }
+.feedMgrMini:disabled { opacity: 0.5; cursor: default; }
+.feedMgrDel:hover { background: var(--danger, #c0392b); color: #fff; border-color: var(--danger, #c0392b); }
+.feedMgrInterval { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.feedMgrInterval-in { width: 56px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--paper); color: var(--ink); font-size: 12px; }
+@media (max-width: 640px) { .feedMgrRow { flex-direction: column; } .feedMgrActions { justify-content: flex-start; } .feedMgrName { flex-basis: 110px; } }
 
 /* Empty library block (e.g. a Zotero paper's «Abstract» placeholder when Zotero has no
    abstract): keep it visible + clickable with a faint "double-click to add" hint instead

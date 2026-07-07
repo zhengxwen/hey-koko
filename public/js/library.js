@@ -26,6 +26,9 @@ const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", video: "📺", 
 // The relation graph's open/collapsed state persists across articles: once the user opens it,
 // switching to another doc keeps it open (and vice-versa). Module-scoped so it survives re-renders.
 let relGraphOpenPref = false;
+// Same idea for the distill card's own collapse: clicking its 📇 heading chevron folds the
+// whole card away, and that state sticks when switching between documents.
+let cardCollapsedPref = false;
 const genId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const isYoutubeUrl = (u) => /youtube\.com|youtu\.be/.test(u || "");
 // Set by initLibrary so the background import jobs can refresh the list / task count.
@@ -316,6 +319,7 @@ export function initLibrary() {
   const opsParent = document.querySelector("#libraryOpsParent");
   const opsSubmenu = document.querySelector("#libraryOpsSubmenu");
   const citationGraphBtn = document.querySelector("#libraryCitationGraphBtn");
+  const feedBtn = document.querySelector("#libraryFeedBtn");
   const paperInput = document.querySelector("#libraryPaperInput");
   const fileInput = document.querySelector("#libraryFileInput");
   const slidesInput = document.querySelector("#librarySlidesInput");
@@ -543,6 +547,7 @@ export function initLibrary() {
     setStatus(t("lib_citationsQueued"));
   });
   if (citationGraphBtn) citationGraphBtn.addEventListener("click", () => openCitationGraph());
+  if (feedBtn) feedBtn.addEventListener("click", () => openFeedManager());
   // Backfill distillation cards for docs that predate the feature (index lacks hasCard):
   // one server-side distill job per doc — same queue as imports, browser-closable.
   const backfillItem = document.querySelector("#libraryBackfillCards");
@@ -775,6 +780,146 @@ export function initLibrary() {
 
     refreshGo();
     loadCollections();
+  }
+
+  // ---- News feed subscriptions (news-feeds.md P3) -------------------------
+  // Management overlay for the tier-2 "news" library: add a blog/site → auto-discover its
+  // feed + backfill channel → land under news/<slug>/ (retrieve/star-map default-exclude).
+  // Poll / backfill history / pause / delete per row. Self-contained + local i18n, like the
+  // Zotero overlay. Delete removes the SUBSCRIPTION only (imported articles are kept, D2).
+  const FEED_I18N = {
+    zh: { title: "新闻订阅源", close: "关闭", loading: "正在加载…", empty: "还没有订阅源。粘贴一个博客/站点网址即可添加。",
+      addUrl: "博客/站点网址（如 https://blogs.nvidia.com/）", addName: "名称（可选）", add: "添加", adding: "正在发现订阅源…",
+      addFail: "添加失败：", folder: "目录", articles: "篇", lastPoll: "上次轮询", never: "从未",
+      pollNow: "立即轮询", backfill: "回填历史", pause: "暂停", resume: "启用", del: "删除",
+      delConfirm: (n) => `删除订阅「${n}」？已导入的文章会保留。`,
+      polled: (n) => n ? `新增 ${n} 篇` : "没有新文章", backfillStarted: "回填任务已加入队列（进度见任务抽屉）",
+      mNone: "无回填通道", mWpjson: "wp-json", mPagedfeed: "分页 feed", mSitemap: "sitemap",
+      bfNo: "未回填", bfDone: "已完成", bfProg: "进行中", interval: "轮询间隔", hours: "小时", save: "保存" },
+    "zh-Hant": { title: "新聞訂閱源", close: "關閉", loading: "正在載入…", empty: "還沒有訂閱源。貼上一個部落格/網站網址即可新增。",
+      addUrl: "部落格/網站網址（如 https://blogs.nvidia.com/）", addName: "名稱（可選）", add: "新增", adding: "正在探索訂閱源…",
+      addFail: "新增失敗：", folder: "目錄", articles: "篇", lastPoll: "上次輪詢", never: "從未",
+      pollNow: "立即輪詢", backfill: "回填歷史", pause: "暫停", resume: "啟用", del: "刪除",
+      delConfirm: (n) => `刪除訂閱「${n}」？已匯入的文章會保留。`,
+      polled: (n) => n ? `新增 ${n} 篇` : "沒有新文章", backfillStarted: "回填任務已加入佇列（進度見任務抽屜）",
+      mNone: "無回填通道", mWpjson: "wp-json", mPagedfeed: "分頁 feed", mSitemap: "sitemap",
+      bfNo: "未回填", bfDone: "已完成", bfProg: "進行中", interval: "輪詢間隔", hours: "小時", save: "儲存" },
+    en: { title: "News feed subscriptions", close: "Close", loading: "Loading…", empty: "No subscriptions yet. Paste a blog/site URL to add one.",
+      addUrl: "Blog/site URL (e.g. https://blogs.nvidia.com/)", addName: "Name (optional)", add: "Add", adding: "Discovering feed…",
+      addFail: "Add failed: ", folder: "folder", articles: "articles", lastPoll: "last poll", never: "never",
+      pollNow: "Poll now", backfill: "Backfill history", pause: "Pause", resume: "Enable", del: "Delete",
+      delConfirm: (n) => `Delete subscription “${n}”? Imported articles are kept.`,
+      polled: (n) => n ? `${n} new` : "no new posts", backfillStarted: "Backfill queued (see the task drawer for progress)",
+      mNone: "no backfill channel", mWpjson: "wp-json", mPagedfeed: "paged feed", mSitemap: "sitemap",
+      bfNo: "not backfilled", bfDone: "done", bfProg: "in progress", interval: "Poll every", hours: "hours", save: "Save" },
+  };
+  const feedL = () => FEED_I18N[getPromptLanguage()] || FEED_I18N.zh;
+
+  function openFeedManager() {
+    const L = feedL();
+    const overlay = document.createElement("div");
+    overlay.className = "zoteroImportOverlay";   // reuse the modal chrome
+    overlay.innerHTML = `
+      <div class="zoteroImportDialog feedMgrDialog" role="dialog" aria-modal="true">
+        <div class="zoteroImportHead">
+          <span class="zoteroImportTitle">📰 ${escapeHtml(L.title)}</span>
+          <button type="button" class="zoteroImportClose" title="${escapeHtml(L.close)}">✕</button>
+        </div>
+        <div class="feedMgrAdd">
+          <input type="text" id="feedAddUrl" class="feedMgrInput" placeholder="${escapeHtml(L.addUrl)}" />
+          <input type="text" id="feedAddName" class="feedMgrInput feedMgrName" placeholder="${escapeHtml(L.addName)}" />
+          <button type="button" id="feedAddBtn" class="zoteroImportGo">${escapeHtml(L.add)}</button>
+        </div>
+        <div class="zoteroImportBody feedMgrBody"><div class="feedMgrList" id="feedMgrList"></div></div>
+        <div class="zoteroImportFoot">
+          <span class="feedMgrInterval">${escapeHtml(L.interval)}
+            <input type="number" id="feedInterval" class="feedMgrInterval-in" min="1" step="1" /> ${escapeHtml(L.hours)}
+            <button type="button" id="feedIntervalSave" class="feedMgrMini">${escapeHtml(L.save)}</button>
+          </span>
+          <span class="zoteroImportStatus" id="feedStatus"></span>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const listEl = overlay.querySelector("#feedMgrList");
+    const statusEl2 = overlay.querySelector("#feedStatus");
+    const addUrl = overlay.querySelector("#feedAddUrl");
+    const addName = overlay.querySelector("#feedAddName");
+    const addBtn = overlay.querySelector("#feedAddBtn");
+    const intervalIn = overlay.querySelector("#feedInterval");
+
+    const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    overlay.querySelector(".zoteroImportClose").addEventListener("click", close);
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
+
+    const fmtDate = (ts) => ts ? new Date(ts).toLocaleDateString() : L.never;
+    const methodLabel = (m) => ({ wpjson: L.mWpjson, pagedfeed: L.mPagedfeed, sitemap: L.mSitemap }[m] || L.mNone);
+    const bfLabel = (bf) => !bf ? L.bfNo : bf.doneAt ? L.bfDone : (bf.cursor > 0 ? L.bfProg : L.bfNo);
+
+    async function render() {
+      listEl.innerHTML = `<div class="zoteroImportMsg">${escapeHtml(L.loading)}</div>`;
+      let data; try { data = await postJson("/api/feeds/list", {}); } catch { data = { ok: false }; }
+      if (!data.ok) { listEl.innerHTML = `<div class="zoteroImportMsg zoteroImportErr">${escapeHtml(data.error || "error")}</div>`; return; }
+      intervalIn.value = data.pollIntervalH || 24;
+      if (!data.feeds.length) { listEl.innerHTML = `<div class="zoteroImportMsg">${escapeHtml(L.empty)}</div>`; return; }
+      listEl.innerHTML = "";
+      for (const f of data.feeds) {
+        const row = document.createElement("div");
+        row.className = "feedMgrRow" + (f.enabled ? "" : " isPaused");
+        const meta = `${escapeHtml(f.folder)} · ${f.articles} ${L.articles} · ${L.lastPoll}: ${fmtDate(f.lastPollAt)} · ${escapeHtml(methodLabel(f.backfill && f.backfill.method))} · ${escapeHtml(bfLabel(f.backfill))}`;
+        const err = f.lastError ? `<div class="feedMgrErr">⚠ ${escapeHtml(f.lastError)}</div>` : "";
+        row.innerHTML = `
+          <div class="feedMgrMain">
+            <div class="feedMgrNameLine"><span class="feedMgrFeedName">${escapeHtml(f.name)}</span></div>
+            <div class="feedMgrMeta">${meta}</div>${err}
+          </div>
+          <div class="feedMgrActions">
+            <button type="button" class="feedMgrMini" data-act="poll">${escapeHtml(L.pollNow)}</button>
+            <button type="button" class="feedMgrMini" data-act="backfill">${escapeHtml(L.backfill)}</button>
+            <button type="button" class="feedMgrMini" data-act="toggle">${escapeHtml(f.enabled ? L.pause : L.resume)}</button>
+            <button type="button" class="feedMgrMini feedMgrDel" data-act="del">${escapeHtml(L.del)}</button>
+          </div>`;
+        row.querySelector('[data-act="poll"]').addEventListener("click", async (e) => {
+          const b = e.target; b.disabled = true;
+          try { const r = await postJson("/api/feeds/poll-now", { id: f.id, ...importJobCommon() }); statusEl2.textContent = r.ok ? L.polled(r.new || 0) : (r.error || ""); }
+          catch { statusEl2.textContent = ""; } finally { b.disabled = false; render(); }
+        });
+        row.querySelector('[data-act="backfill"]').addEventListener("click", async (e) => {
+          const b = e.target; b.disabled = true;
+          try { await postJson("/api/feeds/backfill", { id: f.id, ...importJobCommon() }); statusEl2.textContent = L.backfillStarted; setStatus(L.backfillStarted); }
+          catch { /* ignore */ } finally { b.disabled = false; }
+        });
+        row.querySelector('[data-act="toggle"]').addEventListener("click", async () => {
+          try { await postJson("/api/feeds/edit", { id: f.id, enabled: !f.enabled }); } catch {} render();
+        });
+        row.querySelector('[data-act="del"]').addEventListener("click", async () => {
+          if (!confirm(L.delConfirm(f.name))) return;
+          try { await postJson("/api/feeds/delete", { id: f.id }); } catch {} render();
+        });
+        listEl.appendChild(row);
+      }
+    }
+
+    async function doAdd() {
+      const siteUrl = addUrl.value.trim();
+      if (!siteUrl) return;
+      addBtn.disabled = true; statusEl2.textContent = L.adding;
+      try {
+        const r = await postJson("/api/feeds/add", { siteUrl, name: addName.value.trim() });
+        if (r.ok) { addUrl.value = ""; addName.value = ""; statusEl2.textContent = ""; render(); }
+        else statusEl2.textContent = L.addFail + (r.error || "");
+      } catch (e) { statusEl2.textContent = L.addFail + (e.message || ""); }
+      finally { addBtn.disabled = false; }
+    }
+    addBtn.addEventListener("click", doAdd);
+    addUrl.addEventListener("keydown", (e) => { if (e.key === "Enter") doAdd(); });
+    overlay.querySelector("#feedIntervalSave").addEventListener("click", async () => {
+      const h = Math.max(1, parseInt(intervalIn.value, 10) || 24);
+      try { await postJson("/api/feeds/edit", { pollIntervalH: h }); statusEl2.textContent = "✓"; } catch {}
+    });
+
+    render();
   }
 
   // "🔄 Sync Zotero annotations": re-pull highlights for every Zotero-imported doc and
@@ -1885,6 +2030,7 @@ export function initLibrary() {
     // double-click-editable and scroll-targetable for source citations.
     let lastSection = null;
     let figNo = 0; // sequential figure number → image_NN.ext when no original name
+    let cardBodyEl = null;   // the distill-card block div, so its heading chevron can fold it
     doc.blocks.forEach((b, idx) => {
       if (b.section && b.section !== lastSection) {
         const h = document.createElement("h3");
@@ -1894,7 +2040,25 @@ export function initLibrary() {
         // a video's transcript section is AI-reformatted speech, not verbatim → ✏️ badge;
         // the distill card is AI-generated summary/key points, not original content → 📇 badge
         if (doc.docKind === "video" && isTranscriptSection(b.section)) h.appendChild(transcriptMark(() => regenerateCard(doc)));
-        else if (b.kind === "card") h.appendChild(cardMark(() => regenerateCard(doc)));
+        else if (b.kind === "card") {
+          h.appendChild(cardMark(() => regenerateCard(doc)));
+          // A chevron that folds the whole card. Only the chevron toggles (stopPropagation),
+          // so double-clicking the heading text still renames the section. cardCollapsedPref
+          // is module-scoped → the fold state carries over when you switch documents.
+          h.classList.add("libDocCardHead", cardCollapsedPref ? "isCollapsed" : "isOpen");
+          const chev = document.createElement("span");
+          chev.className = "libDocCardChevron";
+          chev.textContent = cardCollapsedPref ? "▶" : "▼";
+          h.insertBefore(chev, h.firstChild);
+          chev.addEventListener("click", (e) => {
+            e.stopPropagation();
+            cardCollapsedPref = !cardCollapsedPref;
+            chev.textContent = cardCollapsedPref ? "▶" : "▼";
+            h.classList.toggle("isCollapsed", cardCollapsedPref);
+            h.classList.toggle("isOpen", !cardCollapsedPref);
+            if (cardBodyEl) cardBodyEl.style.display = cardCollapsedPref ? "none" : "";
+          });
+        }
         attachSectionEdit(h, doc, b.section);
         previewContent.appendChild(h);
         lastSection = b.section;
@@ -1924,6 +2088,9 @@ export function initLibrary() {
         // Distill card: visualize its «§ 关系» section as a node-link graph ABOVE the card text
         // (above «§ 摘要»). Open/collapse state persists across articles via relGraphOpenPref.
         if (b.kind === "card") { try { const g = renderRelationGraph(b.content || "", { open: relGraphOpenPref }); if (g) { g.addEventListener("toggle", () => { relGraphOpenPref = g.open; }); div.insertBefore(g, div.firstChild); } } catch (e) { console.warn("[relGraph]", e); } }
+        // Remember this card's body so its heading chevron can fold it, and honor the
+        // persisted fold state on (re)render / doc switch.
+        if (b.kind === "card") { cardBodyEl = div; if (cardCollapsedPref) div.style.display = "none"; }
         attachEdit(div, doc, idx);
         // P3: a slide's whole-page raster (if rendered) sits in a collapsed <details> so it
         // doesn't crowd the text; clicking the image opens the shared lightbox.
