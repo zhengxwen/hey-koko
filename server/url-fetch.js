@@ -319,24 +319,52 @@ async function extractCleanContent(html, baseUrl) {
 // optimizeImage (PNG→JPEG, oversized→compressed).
 const IMG_EXT = { "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif", "image/avif": "avif" };
 
-// macOS `sips` (built-in, like the app's caffeinate/afplay use) → JPEG re-encode + optional
-// downscale. Zero-npm: no image library. Absent (non-macOS) / failure → caller keeps original.
-let _sipsOk = null;
-function sipsAvailable() {
-  if (_sipsOk === null) { try { _sipsOk = process.platform === "darwin" && fs.existsSync("/usr/bin/sips"); } catch { _sipsOk = false; } }
-  return _sipsOk;
+// Image re-encoder backend — ZERO npm (no image library), uses whatever CLI is present:
+//   • macOS      → `sips` (built in, like the app's caffeinate/afplay/AppleScript use)
+//   • Linux/DGX  → `ffmpeg` (already a project dep for youtube/whisper) → ImageMagick
+// Env HEYKOKO_IMAGE_TOOL=sips|ffmpeg|imagemagick|none forces one (or disables). Detected once;
+// absent → caller keeps the original bytes (image import is an opt-in enhancement, not core).
+let _imgBackend;   // undefined = not probed; { tool, cmd } or null
+async function imageBackend() {
+  if (_imgBackend !== undefined) return _imgBackend;
+  const forced = (process.env.HEYKOKO_IMAGE_TOOL || "").toLowerCase();
+  const sips = () => (fs.existsSync("/usr/bin/sips") ? { tool: "sips", cmd: "/usr/bin/sips" } : null);
+  const ff = async () => { const c = await findCommand("ffmpeg"); return c ? { tool: "ffmpeg", cmd: c } : null; };
+  const im = async () => { const c = (await findCommand("magick")) || (await findCommand("convert")); return c ? { tool: "imagemagick", cmd: c } : null; };
+  if (forced === "none") _imgBackend = null;
+  else if (forced === "sips") _imgBackend = sips();
+  else if (forced === "ffmpeg") _imgBackend = await ff();
+  else if (forced === "imagemagick") _imgBackend = await im();
+  else _imgBackend = (process.platform === "darwin" && sips()) || (await ff()) || (await im()) || null;   // auto
+  if (_imgBackend) console.log(`[url-fetch] image re-encoder: ${_imgBackend.tool} (${_imgBackend.cmd})`);
+  return _imgBackend;
 }
-function sipsToJpeg(buf, mime, { quality = 75, maxDim = 0 } = {}) {
-  if (!sipsAvailable()) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    let dir; try { dir = fs.mkdtempSync(path.join(os.tmpdir(), "hkimg-")); } catch { return resolve(null); }
-    const inp = path.join(dir, "in." + (IMG_EXT[mime] || "img")), outp = path.join(dir, "out.jpg");
-    const cleanup = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
-    try { fs.writeFileSync(inp, buf); } catch { cleanup(); return resolve(null); }
-    const args = ["-s", "format", "jpeg", "-s", "formatOptions", String(quality)];
-    if (maxDim > 0) args.push("-Z", String(maxDim));   // downscale so the longest side ≤ maxDim
+// Re-encode buf → JPEG (quality 0–100), optionally downscaling the longest side to maxDim.
+// Returns the JPEG Buffer, or null if no backend / the tool failed.
+async function reencodeToJpeg(buf, mime, { quality = 75, maxDim = 0 } = {}) {
+  const be = await imageBackend();
+  if (!be) return null;
+  let dir; try { dir = fs.mkdtempSync(path.join(os.tmpdir(), "hkimg-")); } catch { return null; }
+  const inp = path.join(dir, "in." + (IMG_EXT[mime] || "img")), outp = path.join(dir, "out.jpg");
+  const cleanup = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+  try { fs.writeFileSync(inp, buf); } catch { cleanup(); return null; }
+  let args;
+  if (be.tool === "sips") {
+    args = ["-s", "format", "jpeg", "-s", "formatOptions", String(quality)];
+    if (maxDim > 0) args.push("-Z", String(maxDim));                      // -Z: longest side ≤ maxDim
     args.push(inp, "--out", outp);
-    execFile("/usr/bin/sips", args, { timeout: 20000 }, (err) => {
+  } else if (be.tool === "ffmpeg") {
+    const qv = Math.min(31, Math.max(2, Math.round(31 - quality * 0.29)));   // 0–100 → mjpeg -q:v 2(best)–31(worst)
+    args = ["-y", "-loglevel", "error", "-i", inp];
+    if (maxDim > 0) args.push("-vf", `scale=${maxDim}:${maxDim}:force_original_aspect_ratio=decrease:force_divisible_by=2`);
+    args.push("-q:v", String(qv), outp);
+  } else {   // imagemagick (magick or legacy convert): same arg order, input→ops→output
+    args = [inp];
+    if (maxDim > 0) args.push("-resize", `${maxDim}x${maxDim}>`);         // '>' = shrink only, never upscale
+    args.push("-quality", String(quality), outp);
+  }
+  return new Promise((resolve) => {
+    execFile(be.cmd, args, { timeout: 20000 }, (err) => {
       let res = null;
       if (!err) { try { res = fs.readFileSync(outp); } catch {} }
       cleanup();
@@ -346,12 +374,12 @@ function sipsToJpeg(buf, mime, { quality = 75, maxDim = 0 } = {}) {
 }
 // User rules (news-feeds.md): (1) PNG → always convert to JPEG; (2) too-large images → compress
 // (and downscale the huge ones). Animated GIFs are left alone (compressing flattens them).
-// Returns { buf, ct } — the (possibly) re-encoded bytes + its mime. sips absent → original.
+// Returns { buf, ct } — the (possibly) re-encoded bytes + its mime. No backend → original.
 async function optimizeImage(buf, mime) {
   const isPng = /png/i.test(mime), isGif = /gif/i.test(mime);
   const huge = buf.length > 1500 * 1024, big = buf.length > 500 * 1024;
   if (!isPng && (isGif || !big)) return { buf, ct: mime };   // keep: reasonable non-PNG, or any GIF
-  const opt = await sipsToJpeg(buf, mime, { quality: huge ? 62 : big ? 72 : 82, maxDim: huge ? 1600 : 0 });
+  const opt = await reencodeToJpeg(buf, mime, { quality: huge ? 62 : big ? 72 : 82, maxDim: huge ? 1600 : 0 });
   if (opt && (isPng || opt.length < buf.length)) return { buf: opt, ct: "image/jpeg" };   // PNG always converts; else only if smaller
   return { buf, ct: mime };
 }
