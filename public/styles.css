@@ -5577,6 +5577,9 @@ button.secondary:disabled {
 .timelineScroll { flex: 1; min-height: 0; overflow: auto; }
 .timelineEmpty { padding: 40px; text-align: center; color: var(--muted); }
 .timelineEmptyNote { fill: var(--muted); font-size: 13px; font-style: italic; }
+.timelineBreakGap { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.6; }
+.timelineBreakSlash { stroke: var(--muted); stroke-width: 1.5; }
+.timelineBreakLabel { fill: var(--muted); font-size: 10px; }
 .timelineSvg { display: block; }
 .timelineSvg .timelineAxis { stroke: var(--line); stroke-width: 1.5; }
 .timelineSvg .timelineGrid { stroke: var(--line); stroke-width: 1; opacity: 0.35; }

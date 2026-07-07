@@ -44,12 +44,37 @@ export function openTimeline(events, { onOpenDoc = null } = {}) {
     const dMin = hasMatch ? Math.min(...shown.map((e) => e.year)) : minY;
     const dMax = hasMatch ? Math.max(...shown.map((e) => e.year)) : maxY;
     const dSpan = Math.max(1, dMax - dMin);
-    const pxPerYear = Math.max(4, Math.min(80, Math.max(7, Math.min(46, Math.round(1000 / dSpan))) * zoomFactor));
     title.textContent = t("timelineTitle", { n: shown.length, a: dMin, b: dMax });
     scroll.innerHTML = "";
 
-    const NTR = 30, DOT = 4, laneH = 19, topPad = 12, marginL = 46, marginR = 24;
-    const xOf = (y) => marginL + (y - dMin) * pxPerYear;
+    const NTR = 30, DOT = 4, laneH = 19, topPad = 12, marginL = 46, marginR = 24, BREAKPX = 46;
+    // Compressed year axis: a long empty stretch (gap wider than ~1/12 of the span) is squished to a
+    // fixed BREAKPX so a lone ancient event can't push everything else off-screen. Dense clusters keep a
+    // linear scale; xOf() piecewise-maps years through anchors. No compression when nothing matches.
+    const uy = hasMatch ? [...new Set(shown.map((e) => e.year))].sort((a, b) => a - b) : [dMin, dMax];
+    const gapThreshold = hasMatch ? Math.max(20, Math.round(dSpan / 12)) : Infinity;
+    let keptYears = 0, nBreaks = 0;
+    for (let i = 1; i < uy.length; i++) { const g = uy[i] - uy[i - 1]; if (g > gapThreshold) nBreaks++; else keptYears += g; }
+    const targetW = 1000 * zoomFactor;                       // width the kept (linear) years should fill
+    let pxPerYear = keptYears > 0 ? (targetW - marginL - marginR - nBreaks * BREAKPX) / keptYears : 24 * zoomFactor;
+    pxPerYear = Math.max(3, Math.min(60, pxPerYear));
+    const anchors = [];
+    { let ax = marginL;
+      for (let i = 0; i < uy.length; i++) {
+        const broken = i > 0 && uy[i] - uy[i - 1] > gapThreshold;
+        if (i > 0) ax += broken ? BREAKPX : (uy[i] - uy[i - 1]) * pxPerYear;
+        anchors.push({ year: uy[i], x: ax, brokenBefore: broken });
+      } }
+    const lastA = anchors[anchors.length - 1];
+    const xOf = (y) => {
+      if (y <= anchors[0].year) return anchors[0].x + (y - anchors[0].year) * pxPerYear;
+      if (y >= lastA.year) return lastA.x + (y - lastA.year) * pxPerYear;
+      for (let i = 1; i < anchors.length; i++) {
+        if (y <= anchors[i].year) { const a0 = anchors[i - 1], a1 = anchors[i]; return a0.x + (y - a0.year) / (a1.year - a0.year) * (a1.x - a0.x); }
+      }
+      return lastA.x;
+    };
+    const inBroken = (y) => { for (let i = 1; i < anchors.length; i++) { if (y > anchors[i - 1].year && y < anchors[i].year) return anchors[i].brokenBefore; } return false; };
     const bodyOf = (e) => `${e.head} ${e.rel} ${e.tail}`;   // the triple after the year
     // lane-pack: each event goes in the lowest lane whose last label right-edge clears this x
     const laneRight = []; const placed = [];
@@ -65,16 +90,29 @@ export function openTimeline(events, { onOpenDoc = null } = {}) {
     const H = axisY + 34;
     const svg = el("svg", { class: "timelineSvg", width: Math.round(W), height: Math.round(H), viewBox: `0 0 ${Math.round(W)} ${Math.round(H)}` });
 
-    // axis + decade gridlines
+    // axis + gridlines; ticks inside a compressed gap are skipped, each gap gets a break glyph
     const step = niceStep(dSpan);
-    const start = Math.floor(dMin / step) * step;
     svg.appendChild(el("line", { x1: marginL - 10, y1: axisY, x2: W - 6, y2: axisY, class: "timelineAxis" }));
-    for (let y = start; y <= dMax + step; y += step) {
-      if (y < dMin - step) continue;
+    const drawnYears = new Set();
+    const addTick = (y) => {
+      if (drawnYears.has(y)) return; drawnYears.add(y);
       const x = xOf(y);
-      if (x < marginL - 12 || x > W) continue;
+      if (x < marginL - 12 || x > W) return;
       svg.appendChild(el("line", { x1: x, y1: topPad, x2: x, y2: axisY, class: "timelineGrid" }));
       svg.appendChild(el("text", { x, y: axisY + 16, class: "timelineTick", "text-anchor": "middle" }, String(y)));
+    };
+    addTick(anchors[0].year); addTick(lastA.year);           // always label the two ends
+    const start = Math.floor(dMin / step) * step;
+    for (let y = start; y <= dMax + step; y += step) { if (y < dMin - step || inBroken(y)) continue; addTick(y); }
+    for (let i = 1; i < anchors.length; i++) {               // break glyphs + the years framing each gap
+      if (!anchors[i].brokenBefore) continue;
+      const a0 = anchors[i - 1], a1 = anchors[i], mx = (a0.x + a1.x) / 2;
+      addTick(a0.year); addTick(a1.year);
+      const bg = el("g", { class: "timelineBreak" });
+      bg.appendChild(el("line", { x1: mx, y1: topPad, x2: mx, y2: axisY, class: "timelineBreakGap" }));
+      for (const dx of [-3, 3]) bg.appendChild(el("line", { x1: mx + dx - 3, y1: axisY + 5, x2: mx + dx + 3, y2: axisY - 5, class: "timelineBreakSlash" }));
+      bg.appendChild(el("text", { x: mx, y: topPad - 1, class: "timelineBreakLabel", "text-anchor": "middle" }, t("timelineGap", { n: a1.year - a0.year })));
+      svg.appendChild(bg);
     }
     if (!hasMatch) {   // keep the original axis, just note that nothing matched the filter
       svg.appendChild(el("text", { x: marginL, y: topPad + 4, class: "timelineEmptyNote", "text-anchor": "start" }, t("timelineNoMatch")));
