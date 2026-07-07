@@ -391,6 +391,8 @@ function indexEntryOf(doc) {
     // opens the PDF at zotero://open-pdf/library/items/<key>, the item key selects it.
     zoteroKey: (doc.zotero && doc.zotero.key) || undefined,
     zoteroAttachmentKey: (doc.zotero && doc.zotero.attachmentKey) || undefined,
+    zoteroVersion: (doc.zotero && doc.zotero.version) || undefined,   // P3 sync diff cursor
+    cites: (Array.isArray(doc.cites) && doc.cites.length) ? doc.cites : undefined,   // P4 in-library citation edges (docId list)
     // venue surfaced to the list card (which journal/conference); rest of the citation
     // lives in the full doc only.
     venue: (doc.citation && doc.citation.venue) || undefined,
@@ -2045,7 +2047,7 @@ const DISTILL_I18N = {
       "\"relations\": 5-10 条实体关系三元组 [\"头\",\"关系\",\"尾\"]，关系用简短动词短语（如 提出/改进/基于/评测于/对比/收购/发布/位于）；头尾实体名必须出现在 entities 列表里；若这条关系有明确的时间或地点，追加第四项对象 {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}。\n" +
       "时间一律用绝对日期：文档顶部给出了发布日期，正文里的相对时间（如「上周三」「本月初」「去年」）请据此换算成绝对日期，换算不出就省略 time 字段。",
     videoStrict: "\n注意：字幕来自自动语音转写、可能有识别错误——只抽取字幕中明确清楚说出的具体名称，拿不准的宁可不抽，不要臆造实体或关系。",
-    cardSection: "«蒸馏卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要点**", toc: "目录：", transcriptHeading: "«字幕整理»", annotSection: "«Zotero 批注»", annotComment: "批注",
+    cardSection: "«蒸馏卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要点**", toc: "目录：", transcriptHeading: "«字幕整理»",
     entitiesHead: "**§ 实体**", relationsHead: "**§ 关系**", pubDateHead: "发布日期：", typeLabels: TYPE_LABELS.zh, aliasWrap: ["（", "）"], aliasSep: "、",
     vTitle: "视频标题：", vChannel: "频道：", vSample: "字幕抽样：",
     rerank: "你是检索精排助手。给定一个查询和编号片段列表，按与查询的相关度从高到低输出片段编号。只输出 JSON，不要任何解释或代码块标记：{\"order\":[编号,…]}。明显不相关的编号可以省略。",
@@ -2090,7 +2092,7 @@ const DISTILL_I18N = {
       "\"relations\": 5-10 條實體關係三元組 [\"頭\",\"關係\",\"尾\"]，關係用簡短動詞短語（如 提出/改進/基於/評測於/對比/收購/發布/位於）；頭尾實體名必須出現在 entities 列表裡；若這條關係有明確的時間或地點，追加第四項物件 {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}。\n" +
       "時間一律用絕對日期：文件頂部給出了發表日期，正文裡的相對時間（如「上週三」「本月初」「去年」）請據此換算成絕對日期，換算不出就省略 time 欄位。",
     videoStrict: "\n注意：字幕來自自動語音轉寫、可能有識別錯誤——只抽取字幕中明確清楚說出的具體名稱，拿不準的寧可不抽，不要臆造實體或關係。",
-    cardSection: "«蒸餾卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要點**", toc: "目錄：", transcriptHeading: "«字幕整理»", annotSection: "«Zotero 批註»", annotComment: "批註",
+    cardSection: "«蒸餾卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要點**", toc: "目錄：", transcriptHeading: "«字幕整理»",
     entitiesHead: "**§ 實體**", relationsHead: "**§ 關係**", pubDateHead: "發表日期：", typeLabels: TYPE_LABELS["zh-Hant"], aliasWrap: ["（", "）"], aliasSep: "、",
     vTitle: "影片標題：", vChannel: "頻道：", vSample: "字幕抽樣：",
     rerank: "你是檢索精排助手。給定一個查詢和編號片段列表，按與查詢的相關度從高到低輸出片段編號。只輸出 JSON，不要任何解釋或代碼塊標記：{\"order\":[編號,…]}。明顯不相關的編號可以省略。",
@@ -2135,7 +2137,7 @@ const DISTILL_I18N = {
       "\"relations\": 5-10 entity triples [\"head\",\"relation\",\"tail\"], relation a short verb phrase (e.g. proposes/improves/based-on/evaluated-on/compared-with/acquires/releases/located-in); head and tail names MUST appear in the entities list; if the relation has a clear time or place, append a fourth object {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}.\n" +
       "Always use absolute dates: the publication date is given at the top, so convert relative times in the body (\"last Wednesday\", \"earlier this month\", \"last year\") into absolute dates; if you cannot, omit the time field.",
     videoStrict: "\nNote: the transcript is automatic speech-to-text and may contain errors — extract ONLY names clearly and explicitly spoken; when unsure, leave it out rather than inventing entities or relations.",
-    cardSection: "«Distill Card»", summaryHead: "**§ Summary**", claimsHead: "**§ Key points**", toc: "TOC: ", transcriptHeading: "«Transcript»", annotSection: "«Zotero Annotations»", annotComment: "note",
+    cardSection: "«Distill Card»", summaryHead: "**§ Summary**", claimsHead: "**§ Key points**", toc: "TOC: ", transcriptHeading: "«Transcript»",
     entitiesHead: "**§ Entities**", relationsHead: "**§ Relations**", pubDateHead: "Published: ", typeLabels: TYPE_LABELS.en, aliasWrap: ["(", ")"], aliasSep: ", ",
     vTitle: "Video title: ", vChannel: "Channel: ", vSample: "Transcript sample:",
     rerank: "You are a retrieval reranker. Given a query and a numbered list of snippets, output the snippet indices ordered from most to least relevant to the query. Output ONLY JSON, no explanation or code fences: {\"order\":[index,…]}. Clearly irrelevant indices may be omitted.",
@@ -2357,37 +2359,40 @@ async function buildYoutubeDoc(data, url, language = "") {
 // (already sorted upstream). Returns "" when there are no annotations. The section name
 // («…») follows the special-section convention so re-sync (P2) can find + replace it.
 const ANNOT_COLOR = { "#ffd400": "🟡", "#ff6666": "🔴", "#5fb236": "🟢", "#2ea8e5": "🔵", "#a28ae5": "🟣", "#e56eee": "🩷", "#f19837": "🟠", "#aaaaaa": "⚪" };
-// Special-section names the «Zotero 批注» block can carry (zh / zh-Hant / en) — used by
-// re-sync (P2) to FIND the existing annotation block regardless of the import language.
+// Fixed special-section name (single language on purpose, like «Abstract»). The RE still
+// matches the older localized variants so re-sync can find + migrate blocks imported
+// before the rename.
+const ZOTERO_ANNOT_SECTION = "«Zotero Annotations»";
 const ANNOT_SECTION_RE = /^«Zotero (?:批注|批註|Annotations)»$/;
 // One stable hash of the rendered annotation markdown — stored on doc.zotero.annotHash so
 // re-sync can tell "highlights changed" from "nothing to do". Shared by import (jobs.js)
 // and re-sync so the two always agree; "" (no annotations) hashes to a stable value.
 function zoteroAnnotHash(annotationMarkdown) { return hashText(String(annotationMarkdown || "")); }
-// Shared rendering: annotation objects → { section name, rendered lines }.
-function renderZoteroAnnotations(annotations, language) {
+// Shared rendering: annotation objects → { section name, rendered lines }. Language-neutral
+// (page + color dot + 「highlight」 — comment), so the block is identical regardless of UI
+// language and the hash stays comparable across syncs.
+function renderZoteroAnnotations(annotations) {
   const list = (annotations || []).filter(a => a && (a.text || a.comment));
-  const L = distillL(language);
   const lines = list.map(a => {
     const dot = ANNOT_COLOR[String(a.color || "").toLowerCase()] || "•";
     const pg = a.page ? `p.${a.page} ` : "";
     const quote = a.text ? `「${a.text}」` : "";
-    const note = a.comment ? `${quote ? " — " : ""}${L.annotComment}: ${a.comment}` : "";
+    const note = a.comment ? `${quote ? " — " : ""}${a.comment}` : "";
     return `- ${pg}${dot} ${quote}${note}`.replace(/\s+$/, "");
   });
-  return { section: L.annotSection, lines };
+  return { section: ZOTERO_ANNOT_SECTION, lines };
 }
 // Markdown form — used ONLY for the stable annotHash (identity), not for the stored block.
-function buildZoteroAnnotationSection(annotations, language) {
-  const { section, lines } = renderZoteroAnnotations(annotations, language);
+function buildZoteroAnnotationSection(annotations) {
+  const { section, lines } = renderZoteroAnnotations(annotations);
   if (!lines.length) return "";
   return `\n\n# ${section}\n\n${lines.join("\n")}\n`;
 }
-// The «Zotero 批注» BLOCK(S) — built DIRECTLY (not via the chunker) so a single short
-// highlight isn't dropped by the noise filter. embed:true (highlights are high-signal);
-// split only if the rendered list is genuinely huge. [] when there are no annotations.
-function zoteroAnnotationBlocks(annotations, language) {
-  const { section, lines } = renderZoteroAnnotations(annotations, language);
+// The «Zotero Annotations» BLOCK(S) — built DIRECTLY (not via the chunker) so a single
+// short highlight isn't dropped by the noise filter. embed:true (highlights are high
+// signal); split only if the rendered list is genuinely huge. [] when there are none.
+function zoteroAnnotationBlocks(annotations) {
+  const { section, lines } = renderZoteroAnnotations(annotations);
   if (!lines.length) return [];
   return splitLong(lines.join("\n"), MAX_BLOCK_CHARS).map((piece, i) => ({
     id: `zann${i}`, kind: "text", section, content: piece, hash: hashText(piece),
@@ -2414,27 +2419,186 @@ function listZoteroDocs() {
 }
 
 // P2 annotation re-sync: given freshly-pulled Zotero annotations for one doc, rebuild its
-// «Zotero 批注» block ONLY when the content actually changed (annotHash guard) — so a
-// no-op sync costs nothing and doesn't churn vectors. Reuses the import-time section name
-// language (detected from the existing block) so the hash stays comparable. New/removed
-// highlights re-embed just that one block via saveDocInternal's hash diff.
-async function resyncZoteroAnnotations(docId, annotations, language = "") {
+// «Zotero Annotations» block ONLY when the content actually changed (annotHash guard) — so
+// a no-op sync costs nothing and doesn't churn vectors. The RE also matches older localized
+// section names, so a doc imported before the rename gets migrated on the next sync.
+// New/removed highlights re-embed just that one block via saveDocInternal's hash diff.
+async function resyncZoteroAnnotations(docId, annotations) {
   const doc = readDoc(docId);
   if (!doc || doc.type !== "libdoc") throw new Error("文档不存在");
-  const existing = (doc.blocks || []).find(b => ANNOT_SECTION_RE.test((b.section || "").trim()));
-  const lang = existing
-    ? (existing.section.includes("Annotations") ? "en" : existing.section.includes("批註") ? "zh-Hant" : "zh")
-    : (language || "zh");
   // Hash off the markdown form (stable identity); build the stored block(s) directly.
-  const newHash = zoteroAnnotHash(buildZoteroAnnotationSection(annotations, lang));
+  const newHash = zoteroAnnotHash(buildZoteroAnnotationSection(annotations));
   const oldHash = (doc.zotero && doc.zotero.annotHash) || "";
-  if (newHash === oldHash) return { docId, changed: false, annotCount: (annotations || []).length };
+  const hasBlock = (doc.blocks || []).some(b => ANNOT_SECTION_RE.test((b.section || "").trim()));
+  // Guard skips only when the hash matches AND the block is actually present (so a legacy
+  // doc whose hash happens to match but predates the block still gets one built).
+  if (newHash === oldHash && (hasBlock || !buildZoteroAnnotationSection(annotations))) {
+    return { docId, changed: false, annotCount: (annotations || []).length };
+  }
   // Drop the old annotation block(s), append freshly-built new ones (if any).
   doc.blocks = (doc.blocks || []).filter(b => !ANNOT_SECTION_RE.test((b.section || "").trim()));
-  doc.blocks.push(...zoteroAnnotationBlocks(annotations, lang));
+  doc.blocks.push(...zoteroAnnotationBlocks(annotations));
   doc.zotero = { ...(doc.zotero || {}), annotHash: newHash };
   const r = await saveDocInternal(doc, doc.embedModel || DEFAULT_MODEL);
   return { docId, changed: true, annotCount: (annotations || []).length, reembedded: r.reembedded };
+}
+
+// ---- P3 sync: diff Zotero state vs hey-koko's zotero docs -------------------
+
+// Existing Zotero docs with the fields the diff needs (folder resolved live via locOf).
+function listZoteroDocsDetailed() {
+  return loadIndex().filter(d => d.zoteroKey).map(d => ({
+    docId: d.docId, key: d.zoteroKey, version: d.zoteroVersion || 0,
+    folder: locOf(d.docId), doi: d.doi || "", title: d.title || d.docId,
+  }));
+}
+
+// Pure diff (unit-testable): given the CURRENT Zotero top-level doc items, a collection
+// key→name map, and hey-koko's existing zotero docs, produce the sync plan.
+//   toImport : Zotero items not yet in hey-koko — scoped to ALREADY-TRACKED collections
+//              (folders under zotero/), so full-sync never drags in the user's whole
+//              library uninvited; brand-new collections go through the Import dialog.
+//   toUpdate : both sides have it, Zotero's version is newer → refresh metadata.
+//   toMove   : its first collection changed → target folder differs from where it sits.
+//   toDelete : hey-koko has it but Zotero no longer does.
+// mode "incremental" drops toDelete + toMove (additive only, §P3 "加不删不挪").
+function diffZoteroSync(zoteroItems, collMap, existing, mode = "full") {
+  const collName = (it) => (it.collections && it.collections.length) ? (collMap[it.collections[0]] || "") : "";
+  const targetFolder = (it) => { const cn = collName(it); return cn ? `zotero/${cn}` : "zotero"; };
+  const eByKey = new Map(existing.map(d => [d.key, d]));
+  const zByKey = new Map(zoteroItems.map(it => [it.key, it]));
+  const trackedFolders = new Set(existing.map(d => d.folder));
+
+  const toImport = [], toUpdate = [], toMove = [];
+  for (const it of zoteroItems) {
+    const e = eByKey.get(it.key);
+    if (!e) {
+      if (trackedFolders.has(targetFolder(it))) toImport.push({ itemKey: it.key, title: it.title, collectionName: collName(it) });
+      continue;
+    }
+    if ((it.itemVersion || 0) > (e.version || 0)) toUpdate.push({ itemKey: it.key, docId: e.docId, title: it.title });
+    if (targetFolder(it) !== e.folder) toMove.push({ docId: e.docId, title: it.title, from: e.folder, targetDir: targetFolder(it) });
+  }
+  let toDelete = existing.filter(d => !zByKey.has(d.key)).map(d => ({ docId: d.docId, title: d.title, key: d.key }));
+
+  if (mode === "incremental") return { toImport, toUpdate, toDelete: [], toMove: [] };
+  return { toImport, toUpdate, toDelete, toMove };
+}
+
+// Refresh a Zotero doc's METADATA in place (title/authors/date/venue/doi + version cursor)
+// WITHOUT re-importing — preserves the body, user edits (e.g. a filled «Abstract»), and
+// vectors (metadata isn't embedded). Tags are left alone (may be hey-koko-curated).
+function patchZoteroDocMeta(docId, meta) {
+  const doc = readDoc(docId);
+  if (!doc || doc.type !== "libdoc") throw new Error("文档不存在");
+  if (meta.title) doc.title = meta.title;
+  if (meta.authors) doc.authors = meta.authors;
+  if (meta.year) doc.year = meta.year;
+  if (meta.publishedAt) doc.publishedAt = meta.publishedAt;
+  if (meta.doi) doc.doi = meta.doi;
+  if (meta.venue || meta.itemType) {
+    doc.citation = { ...(doc.citation || {}), venue: meta.venue || (doc.citation && doc.citation.venue) || "", type: meta.itemType || (doc.citation && doc.citation.type) || "", url: meta.url || (doc.citation && doc.citation.url) || "" };
+  }
+  doc.zotero = { ...(doc.zotero || {}), version: meta.itemVersion || (doc.zotero && doc.zotero.version) || 0 };
+  writeDoc(doc);          // no re-embed: none of these fields feed the vectors
+  upsertIndex(doc);
+  invalidateCache();
+  return { docId, patched: true };
+}
+
+// ---- P4 citation graph: which library papers cite which --------------------
+
+// The DOIs a paper cites, from Crossref's `reference` list (only entries that carry a
+// DOI). Same fetch etiquette as lookupPaperMeta. [] on any failure / no references.
+async function fetchCrossrefReferences(doi) {
+  if (!doi) return [];
+  try {
+    const r = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, {
+      headers: { "User-Agent": "hey-koko/1.0 (knowledge-library import)", "Accept": "application/json" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!r.ok) return [];
+    const refs = ((await r.json()).message || {}).reference || [];
+    return [...new Set(refs.map(x => String(x.DOI || "").toLowerCase().trim()).filter(Boolean))];
+  } catch { return []; }
+}
+
+// Compute + store one doc's IN-LIBRARY citations: fetch its Crossref references, keep only
+// those whose DOI is another doc in the library, store as doc.cites = [docId,…]. A plain
+// top-level field (NOT derived from the distill card, so saveDocInternal won't wipe it —
+// only a full re-import rebuilds the doc, after which this is re-run). No re-embed.
+async function computeDocCitations(docId, doiToDoc) {
+  const doc = readDoc(docId);
+  if (!doc || doc.type !== "libdoc" || !doc.doi) return { docId, cites: 0, skipped: !doc || !doc.doi };
+  const refDois = await fetchCrossrefReferences(doc.doi);
+  const seen = new Set(), cites = [];
+  for (const rd of refDois) {
+    const target = doiToDoc.get(rd);
+    if (target && target !== docId && !seen.has(target)) { seen.add(target); cites.push(target); }
+  }
+  doc.cites = cites;
+  writeDoc(doc);
+  upsertIndex(doc);
+  invalidateCache();
+  return { docId, cites: cites.length };
+}
+
+// Backfill citations for the given docs (or ALL docs with a DOI). Sequential — Crossref is
+// one call per paper. Returns per-doc results + a total edge count.
+async function computeLibraryCitations(docIds) {
+  const idx = loadIndex();
+  const doiToDoc = new Map(idx.filter(d => d.doi).map(d => [String(d.doi).toLowerCase(), d.docId]));
+  const targets = (Array.isArray(docIds) && docIds.length) ? docIds : idx.filter(d => d.doi).map(d => d.docId);
+  const results = [];
+  for (const id of targets) {
+    try { results.push(await computeDocCitations(id, doiToDoc)); }
+    catch (e) { results.push({ docId: id, error: e.message }); }
+  }
+  return { results, edges: results.reduce((n, r) => n + (r.cites || 0), 0), scanned: targets.length };
+}
+
+// The whole citation network for visualization: nodes = docs that cite or are cited within
+// the library; edges = [fromDocId, toDocId]. Built from the index (cites projection) — no
+// doc reads. citedBy is the reverse of cites.
+function citationGraph() {
+  const idx = loadIndex();
+  const byId = new Map(idx.map(d => [d.docId, d]));
+  const edges = [];
+  const touched = new Set();
+  for (const d of idx) {
+    for (const to of (d.cites || [])) {
+      if (!byId.has(to)) continue;   // target was deleted since last backfill
+      edges.push({ from: d.docId, to });
+      touched.add(d.docId); touched.add(to);
+    }
+  }
+  const nodes = [...touched].map(id => {
+    const d = byId.get(id) || {};
+    return { docId: id, title: d.title || id, year: d.year || (d.publishedAt || "").slice(0, 4), docKind: d.docKind || "doc" };
+  });
+  return { nodes, edges };
+}
+
+// The library docs this doc cites / is cited by (titles resolved) — for the doc-view chips.
+function docCitations(docId) {
+  const idx = loadIndex();
+  const byId = new Map(idx.map(d => [d.docId, d]));
+  const self = byId.get(docId);
+  const link = (id) => { const d = byId.get(id); return d ? { docId: id, title: d.title || id, year: d.year || "" } : null; };
+  const cites = ((self && self.cites) || []).map(link).filter(Boolean);
+  const citedBy = idx.filter(d => (d.cites || []).includes(docId)).map(d => ({ docId: d.docId, title: d.title || d.docId, year: d.year || "" }));
+  return { cites, citedBy };
+}
+
+// POST /api/library/citation-graph → { ok, nodes, edges } for the whole library.
+async function citationGraphLibrary(_req, res) {
+  try { sendJson(res, 200, { ok: true, ...citationGraph() }); }
+  catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+// POST /api/library/doc-citations { docId } → { ok, cites, citedBy } for one doc.
+async function docCitationsLibrary(req, res) {
+  try { const body = await readBody(req); sendJson(res, 200, { ok: true, ...docCitations(body.docId) }); }
+  catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
 // ---- paper metadata via DOI → Crossref -------------------------------------
@@ -2546,6 +2710,8 @@ module.exports = {
   importDocInternal, distillDocInternal, distillLibraryDoc, buildYoutubeDoc, llmComplete,
   buildZoteroAnnotationSection, zoteroAnnotationBlocks, zoteroAbstractBlock, zoteroAnnotHash,   // zotero import section/block builders
   listZoteroDocs, resyncZoteroAnnotations,   // P2 annotation re-sync
+  listZoteroDocsDetailed, diffZoteroSync, patchZoteroDocMeta,   // P3 incremental + full sync
+  fetchCrossrefReferences, computeLibraryCitations, citationGraph, docCitations,   // P4 citation graph
   relatedLibraryDocs, docCentroids, lookupPaperMeta, extractKeywords, findDocByDoi,
   libraryDocIdSet,   // zotero picker "already imported" marker
   parseArxivAtom, arxivDoi, ARXIV_RE, DOI_RE,   // exported for testing

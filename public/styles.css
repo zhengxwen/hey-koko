@@ -1063,6 +1063,18 @@ input[type="file"] {
   background: var(--accent-hover);
 }
 
+/* Second-level "Operations" flyout inside the import menu: a parent row that reveals a
+   submenu to its LEFT (the import menu sits at the toolbar's right edge). */
+.exportSubWrap { position: relative; display: flex; }
+.exportSubParent { width: 100%; }
+.exportSubParent::after { content: ""; }   /* the ▸ arrow lives in the label text */
+.exportSubmenu {
+  bottom: auto;
+  top: -4px;
+  left: auto;
+  right: calc(100% + 6px);
+}
+
 button {
   border: 0;
   border-radius: 8px;
@@ -6061,3 +6073,25 @@ button.secondary:disabled {
   font-size: 0.85em;
   font-style: italic;
 }
+
+/* Zotero full-sync confirmation dialog (library.js openFullSyncConfirm). */
+.zoteroSyncDialog {
+  width: min(460px, 92vw);
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.zoteroSyncBody { padding: 14px 18px; }
+.zoteroSyncIntro { margin: 0 0 12px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.zoteroSyncCounts { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 14px; }
+.zoteroSyncCounts b { font-variant-numeric: tabular-nums; }
+.zoteroSyncCounts .zoteroSyncDanger { color: #c0392b; }
+.zoteroSyncDelList { margin-top: 12px; font-size: 13px; }
+.zoteroSyncDelList summary { cursor: pointer; color: #c0392b; }
+.zoteroSyncDelList ul { margin: 8px 0 0; padding-left: 18px; max-height: 180px; overflow-y: auto; color: var(--ink); }
+.zoteroSyncCancel {
+  padding: 8px 16px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--ink); cursor: pointer; font-size: 13px;
+}
+.zoteroSyncGoDanger { background: #c0392b; }

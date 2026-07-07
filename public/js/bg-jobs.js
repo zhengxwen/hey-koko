@@ -56,6 +56,12 @@ const jobControllers = new Map();
 // max persisted seq on reload so it stays monotonic across sessions.
 let _enqueueSeq = 0;
 
+// Running tally of successfully-completed jobs in the CURRENT draining batch — shown in the
+// drawer summary ("… · 已完成 N") so the user sees progress as a big queue drains. Resets to
+// 0 once nothing is left to run (the next batch counts from zero). Not persisted — a live
+// progress indicator, so a reload naturally restarts it.
+let bgDoneCount = 0;
+
 // Per-lane SUBMISSION gate. Video jobs each upload their source clip to ComfyUI before they can
 // submit, and those uploads finish in a RACE — so without coordination the server receives (and
 // immediately starts) them out of enqueue order. fireJob runs in enqueue order, so we chain each
@@ -401,10 +407,16 @@ async function fireJob(job) {
     ackServerJob(job.serverJobId);
     if (job.status !== 'done') job.serverJobId = null;
   }
-  // Auto-remove a successfully-finished job — its result is already in the chat.
+  // Auto-remove a successfully-finished job — its result is already in the chat — and bump
+  // the "completed" tally the drawer summary shows while a batch drains.
   if (job.status === 'done') {
+    bgDoneCount++;
     const i = state.bgJobs.indexOf(job);
     if (i >= 0) state.bgJobs.splice(i, 1);
+  }
+  // Queue fully drained (nothing left to run) → reset the tally so the next batch starts at 0.
+  if (!state.bgJobs.some((j) => j.status === 'running' || j.status === 'queued' || j.status === 'paused' || j.status === 'enhancing')) {
+    bgDoneCount = 0;
   }
   persist();
   refreshPlaceholders();
@@ -1079,6 +1091,9 @@ function buildJobsSummary() {
   if (queued) parts.push(t('bg_sumQueued', { n: queued }));
   if (paused) parts.push(t('bg_sumPaused', { n: paused }));
   if (!parts.length) return null;
+  // How many finished successfully so far in this draining batch (appended after the
+  // running/queued/paused counts). Only shown once at least one has completed.
+  if (bgDoneCount) parts.push(t('bg_sumDone', { n: bgDoneCount }));
   const el = document.createElement('div');
   el.className = 'bgJobsSummary';
   el.textContent = parts.join(' · ');

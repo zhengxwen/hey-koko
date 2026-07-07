@@ -11,7 +11,7 @@
 import { dom, state } from './state.js';
 import { escapeHtml, postJson } from './utils.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './markdown.js';
-import { renderRelationGraph } from './relation-graph.js';
+import { renderRelationGraph, openEntityGraphModal } from './relation-graph.js';
 import { applyHighlights, registerHighlightHost } from './highlight.js';
 import { saveTabs } from './settings.js';
 import { createTab, switchTab } from './tabs.js';
@@ -310,6 +310,12 @@ export function initLibrary() {
   const importUrlItem = document.querySelector("#libraryImportUrl");
   const importZoteroItem = document.querySelector("#libraryImportZotero");
   const syncZoteroAnnotsItem = document.querySelector("#librarySyncZoteroAnnots");
+  const zoteroIncrSyncItem = document.querySelector("#libraryZoteroIncrSync");
+  const zoteroFullSyncItem = document.querySelector("#libraryZoteroFullSync");
+  const buildCitationsItem = document.querySelector("#libraryBuildCitations");
+  const opsParent = document.querySelector("#libraryOpsParent");
+  const opsSubmenu = document.querySelector("#libraryOpsSubmenu");
+  const citationGraphBtn = document.querySelector("#libraryCitationGraphBtn");
   const paperInput = document.querySelector("#libraryPaperInput");
   const fileInput = document.querySelector("#libraryFileInput");
   const textInput = document.querySelector("#libraryTextInput");
@@ -508,20 +514,35 @@ export function initLibrary() {
     }
   });
 
-  // ---- import menu ----
-  importBtn.addEventListener("click", (e) => { e.stopPropagation(); importMenu.hidden = !importMenu.hidden; });
-  document.addEventListener("click", (e) => { if (!importMenu.contains(e.target) && e.target !== importBtn) importMenu.hidden = true; });
-  importPaperItem.addEventListener("click", () => { importMenu.hidden = true; paperInput.click(); });
-  importFilesItem.addEventListener("click", () => { importMenu.hidden = true; fileInput.click(); });
-  importTextItem.addEventListener("click", () => { importMenu.hidden = true; textInput.click(); });
-  importUrlItem.addEventListener("click", () => { importMenu.hidden = true; importUrl(); });
-  if (importZoteroItem) importZoteroItem.addEventListener("click", () => { importMenu.hidden = true; openZoteroImport(); });
-  if (syncZoteroAnnotsItem) syncZoteroAnnotsItem.addEventListener("click", () => { importMenu.hidden = true; syncZoteroAnnotations(); });
+  // ---- import menu ---- (the "🔧 Operations" flyout collapses whenever the menu closes)
+  const closeImportMenu = () => { importMenu.hidden = true; if (opsSubmenu) opsSubmenu.hidden = true; };
+  importBtn.addEventListener("click", (e) => { e.stopPropagation(); importMenu.hidden = !importMenu.hidden; if (opsSubmenu) opsSubmenu.hidden = true; });
+  document.addEventListener("click", (e) => { if (!importMenu.contains(e.target) && e.target !== importBtn) closeImportMenu(); });
+  if (opsParent) opsParent.addEventListener("click", (e) => { e.stopPropagation(); opsSubmenu.hidden = !opsSubmenu.hidden; });
+  importPaperItem.addEventListener("click", () => { closeImportMenu(); paperInput.click(); });
+  importFilesItem.addEventListener("click", () => { closeImportMenu(); fileInput.click(); });
+  importTextItem.addEventListener("click", () => { closeImportMenu(); textInput.click(); });
+  importUrlItem.addEventListener("click", () => { closeImportMenu(); importUrl(); });
+  if (importZoteroItem) importZoteroItem.addEventListener("click", () => { closeImportMenu(); openZoteroImport(); });
+  if (syncZoteroAnnotsItem) syncZoteroAnnotsItem.addEventListener("click", () => { closeImportMenu(); syncZoteroAnnotations(); });
+  if (zoteroIncrSyncItem) zoteroIncrSyncItem.addEventListener("click", () => { closeImportMenu(); zoteroSync("incremental"); });
+  if (zoteroFullSyncItem) zoteroFullSyncItem.addEventListener("click", () => { closeImportMenu(); zoteroSync("full"); });
+  if (buildCitationsItem) buildCitationsItem.addEventListener("click", () => {
+    closeImportMenu();
+    // One bg job scans every DOI'd doc's Crossref references → in-library cites (survives
+    // browser close, shows in the task drawer). No per-doc payload = all docs.
+    enqueueBgJob({
+      tabId: state.activeTabId, kind: "libimport", label: "🔗 " + t("lib_citationGraph"),
+      payload: { type: "citations" }, noPlaceholder: true,
+    });
+    setStatus(t("lib_citationsQueued"));
+  });
+  if (citationGraphBtn) citationGraphBtn.addEventListener("click", () => openCitationGraph());
   // Backfill distillation cards for docs that predate the feature (index lacks hasCard):
   // one server-side distill job per doc — same queue as imports, browser-closable.
   const backfillItem = document.querySelector("#libraryBackfillCards");
   if (backfillItem) backfillItem.addEventListener("click", () => {
-    importMenu.hidden = true;
+    closeImportMenu();
     const missing = docs.filter((d) => !d.hasCard);
     if (!missing.length) { setStatus(t("lib_backfillNone")); return; }
     if (!confirm(t("lib_backfillConfirm", { n: missing.length }))) return;
@@ -601,17 +622,29 @@ export function initLibrary() {
       unreachable: "无法连接 Zotero 本地 API。请确认：① Zotero 正在运行（版本 8 或更高）；② 设置 → 高级 → 勾选“允许本机其它应用与 Zotero 通信”。",
       imported: "已导入", reimport: "重新导入", selectHint: "勾选要导入的论文", importBtn: "导入选中",
       queued: "篇已加入导入队列", close: "关闭", retry: "重试", noneSel: "先勾选至少一篇论文", pickColl: "← 选择一个分类",
-      syncing: "正在同步 Zotero 批注…", syncDone: (n, c) => `批注同步完成：检查 ${n} 篇，更新 ${c} 篇`, syncNoDocs: "库中还没有 Zotero 导入的论文" },
+      syncing: "正在同步 Zotero 批注…", syncDone: (n, c) => `批注同步完成：检查 ${n} 篇，更新 ${c} 篇`, syncNoDocs: "库中还没有 Zotero 导入的论文",
+      planning: "正在比对 Zotero…", upToDate: "已与 Zotero 一致，无需同步", incrDone: (i, u) => `增量同步：新增 ${i} 篇，更新 ${u} 篇`,
+      fullTitle: "⚠️ Zotero 完全同步（镜像）", fullIntro: "将使 zotero/ 目录与 Zotero 当前状态完全一致（只影响 Zotero 导入的文档）：",
+      cImport: "新增导入", cUpdate: "更新元数据", cMove: "移动目录", cDelete: "删除（Zotero 中已移除）", delListLabel: "将删除以下文档：",
+      fullConfirm: "执行完全同步", fullCancel: "取消", fullDone: (i, u, m, d) => `完全同步完成：新增 ${i}、更新 ${u}、移动 ${m}、删除 ${d}` },
     "zh-Hant": { title: "從 Zotero 匯入", all: "整個文庫", loading: "正在連接 Zotero…", empty: "這個分類裡沒有論文",
       unreachable: "無法連接 Zotero 本地 API。請確認：① Zotero 正在執行（版本 8 或更高）；② 設定 → 進階 → 勾選「允許本機其它應用與 Zotero 通訊」。",
       imported: "已匯入", reimport: "重新匯入", selectHint: "勾選要匯入的論文", importBtn: "匯入選中",
       queued: "篇已加入匯入佇列", close: "關閉", retry: "重試", noneSel: "先勾選至少一篇論文", pickColl: "← 選擇一個分類",
-      syncing: "正在同步 Zotero 批註…", syncDone: (n, c) => `批註同步完成：檢查 ${n} 篇，更新 ${c} 篇`, syncNoDocs: "庫中還沒有 Zotero 匯入的論文" },
+      syncing: "正在同步 Zotero 批註…", syncDone: (n, c) => `批註同步完成：檢查 ${n} 篇，更新 ${c} 篇`, syncNoDocs: "庫中還沒有 Zotero 匯入的論文",
+      planning: "正在比對 Zotero…", upToDate: "已與 Zotero 一致，無需同步", incrDone: (i, u) => `增量同步：新增 ${i} 篇，更新 ${u} 篇`,
+      fullTitle: "⚠️ Zotero 完全同步（鏡像）", fullIntro: "將使 zotero/ 目錄與 Zotero 目前狀態完全一致（只影響 Zotero 匯入的文件）：",
+      cImport: "新增匯入", cUpdate: "更新中繼資料", cMove: "移動目錄", cDelete: "刪除（Zotero 中已移除）", delListLabel: "將刪除以下文件：",
+      fullConfirm: "執行完全同步", fullCancel: "取消", fullDone: (i, u, m, d) => `完全同步完成：新增 ${i}、更新 ${u}、移動 ${m}、刪除 ${d}` },
     en: { title: "Import from Zotero", all: "Entire library", loading: "Connecting to Zotero…", empty: "No papers in this collection",
       unreachable: "Can't reach the Zotero local API. Check that: (1) Zotero is running (v8+); (2) Settings → Advanced → “Allow other applications on this computer to communicate with Zotero” is enabled.",
       imported: "imported", reimport: "re-import", selectHint: "Check the papers to import", importBtn: "Import selected",
       queued: " queued for import", close: "Close", retry: "Retry", noneSel: "Select at least one paper first", pickColl: "← Pick a collection",
-      syncing: "Syncing Zotero annotations…", syncDone: (n, c) => `Annotation sync done: ${n} checked, ${c} updated`, syncNoDocs: "No Zotero-imported papers in the library yet" },
+      syncing: "Syncing Zotero annotations…", syncDone: (n, c) => `Annotation sync done: ${n} checked, ${c} updated`, syncNoDocs: "No Zotero-imported papers in the library yet",
+      planning: "Comparing with Zotero…", upToDate: "Already in sync with Zotero", incrDone: (i, u) => `Incremental sync: ${i} imported, ${u} updated`,
+      fullTitle: "⚠️ Zotero full sync (mirror)", fullIntro: "This makes the zotero/ folder exactly match Zotero's current state (only affects Zotero-imported docs):",
+      cImport: "import", cUpdate: "update metadata", cMove: "move folder", cDelete: "delete (removed from Zotero)", delListLabel: "These documents will be deleted:",
+      fullConfirm: "Run full sync", fullCancel: "Cancel", fullDone: (i, u, m, d) => `Full sync done: ${i} imported, ${u} updated, ${m} moved, ${d} deleted` },
   };
   const zotL = () => ZOT_I18N[getPromptLanguage()] || ZOT_I18N.zh;
 
@@ -741,6 +774,94 @@ export function initLibrary() {
     if (!data.synced) { setStatus(L.syncNoDocs); return; }
     setStatus(L.syncDone(data.synced, data.changed));
     if (data.changed) { try { await refreshList(); } catch { /* panel closed */ } }
+  }
+
+  // Apply a sync plan: new items → bg import jobs; updates → metadata patch (server, no
+  // re-import); moves → /api/library/move (grouped by target); deletes → /api/library/delete.
+  async function applyZoteroPlan(plan) {
+    let imported = 0, updated = 0, moved = 0, deleted = 0;
+    for (const it of plan.toImport || []) {
+      enqueueBgJob({
+        tabId: state.activeTabId, kind: "libimport", label: "📚 " + (it.title || it.itemKey),
+        payload: { type: "zotero", itemKey: it.itemKey, collectionName: it.collectionName || "", ...importJobCommon() },
+        noPlaceholder: true,
+      });
+      imported++;
+    }
+    if ((plan.toUpdate || []).length) {
+      const r = await postJson("/api/zotero/patch-meta", { items: plan.toUpdate.map(u => ({ docId: u.docId, itemKey: u.itemKey })) });
+      updated = (r.patched || []).length;
+    }
+    const byDir = {};
+    for (const m of plan.toMove || []) { (byDir[m.targetDir] = byDir[m.targetDir] || []).push(m.docId); }
+    for (const dir of Object.keys(byDir)) { await postJson("/api/library/move", { docIds: byDir[dir], targetDir: dir }); moved += byDir[dir].length; }
+    if ((plan.toDelete || []).length) {
+      const r = await postJson("/api/library/delete", { docIds: plan.toDelete.map(d => d.docId) });
+      deleted = (r.deleted || []).length;
+    }
+    return { imported, updated, moved, deleted };
+  }
+
+  // "⟳ Incremental sync" (additive, no confirm) / "⚠️ Full sync" (mirror, confirm first).
+  async function zoteroSync(mode) {
+    const L = zotL();
+    setStatus(L.planning);
+    let plan;
+    try { plan = await postJson("/api/zotero/sync-plan", { mode }); }
+    catch { plan = { ok: false }; }
+    if (!plan.ok) { setStatus(plan.reason === "unreachable" ? L.unreachable : (plan.error || L.unreachable)); return; }
+    const n = (plan.toImport || []).length + (plan.toUpdate || []).length + (plan.toDelete || []).length + (plan.toMove || []).length;
+    if (!n) { setStatus(L.upToDate); return; }
+
+    if (mode === "incremental") {
+      const r = await applyZoteroPlan(plan);
+      setStatus(L.incrDone(r.imported, r.updated));
+      if (r.updated) { try { await refreshList(); } catch { /* closed */ } }
+      return;
+    }
+    // full sync → confirm dialog (destructive: moves + deletes)
+    openFullSyncConfirm(plan, async () => {
+      setStatus(L.planning);
+      const r = await applyZoteroPlan(plan);
+      setStatus(L.fullDone(r.imported, r.updated, r.moved, r.deleted));
+      try { await refreshList(); } catch { /* closed */ }
+    });
+  }
+
+  // Confirmation overlay for full sync — counts + an expandable red delete list.
+  function openFullSyncConfirm(plan, onConfirm) {
+    const L = zotL();
+    const nI = (plan.toImport || []).length, nU = (plan.toUpdate || []).length, nM = (plan.toMove || []).length, nD = (plan.toDelete || []).length;
+    const overlay = document.createElement("div");
+    overlay.className = "zoteroImportOverlay";
+    const delRows = (plan.toDelete || []).map(d => `<li>${escapeHtml(d.title || d.docId)}</li>`).join("");
+    overlay.innerHTML = `
+      <div class="zoteroSyncDialog" role="dialog" aria-modal="true">
+        <div class="zoteroImportHead"><span class="zoteroImportTitle">${escapeHtml(L.fullTitle)}</span>
+          <button type="button" class="zoteroImportClose" title="${escapeHtml(L.fullCancel)}">✕</button></div>
+        <div class="zoteroSyncBody">
+          <p class="zoteroSyncIntro">${escapeHtml(L.fullIntro)}</p>
+          <ul class="zoteroSyncCounts">
+            <li>📥 ${escapeHtml(L.cImport)}: <b>${nI}</b></li>
+            <li>✏️ ${escapeHtml(L.cUpdate)}: <b>${nU}</b></li>
+            <li>📂 ${escapeHtml(L.cMove)}: <b>${nM}</b></li>
+            <li class="${nD ? "zoteroSyncDanger" : ""}">🗑 ${escapeHtml(L.cDelete)}: <b>${nD}</b></li>
+          </ul>
+          ${nD ? `<details class="zoteroSyncDelList"><summary>${escapeHtml(L.delListLabel)}</summary><ul>${delRows}</ul></details>` : ""}
+        </div>
+        <div class="zoteroImportFoot">
+          <button type="button" class="zoteroSyncCancel">${escapeHtml(L.fullCancel)}</button>
+          <button type="button" class="zoteroImportGo ${nD ? "zoteroSyncGoDanger" : ""}">${escapeHtml(L.fullConfirm)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    overlay.querySelector(".zoteroImportClose").addEventListener("click", close);
+    overlay.querySelector(".zoteroSyncCancel").addEventListener("click", close);
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
+    overlay.querySelector(".zoteroImportGo").addEventListener("click", () => { close(); onConfirm(); });
   }
 
   // Resolve the target sub-folder for a video's channel when "auto-file by channel" is on.
@@ -1507,7 +1628,81 @@ export function initLibrary() {
       askFolderSel.style.display = "none";
       renderBlocks(doc);
       renderRelated(docId);   // async — fills in below the toolbar when ready
+      renderCitations(docId); // async — in-library cites / cited-by (P4), papers only
     } catch (e) { alert(t("lib_loadFailed") + " " + e.message); }
+  }
+
+  // "📎 Cites / 📑 Cited by" chips: in-library citation links (P4). Mirrors renderRelated.
+  // Best-effort decoration — a doc with no computed citations just shows nothing.
+  async function renderCitations(docId) {
+    try {
+      const { cites, citedBy } = await postJson("/api/library/doc-citations", { docId });
+      if ((!cites || !cites.length) && (!citedBy || !citedBy.length)) return;
+      if (!currentDoc || currentDoc.docId !== docId) return;
+      const mkRow = (icon, labelKey, list) => {
+        if (!list || !list.length) return null;
+        const row = document.createElement("div");
+        row.className = "libRelatedRow";
+        const label = document.createElement("span");
+        label.className = "libRelatedLabel";
+        label.textContent = `${icon} ${t(labelKey)} (${list.length})`;
+        row.appendChild(label);
+        for (const c of list) {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "libRelatedChip";
+          chip.textContent = `📄 ${c.title}${c.year ? ` ${c.year}` : ""}`;
+          chip.title = c.title;
+          chip.addEventListener("click", () => openDoc(c.docId));
+          row.appendChild(chip);
+        }
+        return row;
+      };
+      const rows = [mkRow("📎", "lib_cites", cites), mkRow("📑", "lib_citedBy", citedBy)].filter(Boolean);
+      let anchor = previewContent.querySelector(".libRelatedRow");   // after related chips if present
+      anchor = anchor || previewContent.querySelector(".libraryDocToolbar");
+      for (const row of rows) {
+        if (anchor && anchor.nextSibling) previewContent.insertBefore(row, anchor.nextSibling);
+        else previewContent.appendChild(row);
+        anchor = row;
+      }
+    } catch (e) { console.warn("[library] citation chips failed:", e); }
+  }
+
+  // 🔗 Citation graph: the whole library's in-library citation network, drawn with the
+  // shared entity-graph modal. Nodes = papers (name = title), directed edges = "cites".
+  // fetchNeighborhood filters the full graph client-side so clicking a paper recenters on
+  // its citation neighborhood (no extra endpoint). Run "Build citation graph" first.
+  async function openCitationGraph() {
+    setStatus(t("lib_planning") || "");
+    let g;
+    try { g = await postJson("/api/library/citation-graph", {}); }
+    catch { setStatus(t("lib_citationGraphEmpty")); return; }
+    setStatus("");
+    if (!g || !g.ok || !g.edges || !g.edges.length) { setStatus(t("lib_citationGraphEmpty")); return; }
+    const titleOf = new Map(g.nodes.map((n) => [n.docId, n.title]));
+    const docIdOf = new Map(g.nodes.map((n) => [n.title, n.docId]));
+    // → the modal's {nodes, edges, docs} shape (head/tail are node NAMES = titles).
+    const toData = (nodes, edges) => ({
+      nodes: nodes.map((n) => ({ key: n.title, name: n.title, type: "work", count: n.year || "" })),
+      edges: edges.map((e) => ({ head: titleOf.get(e.from) || e.from, tail: titleOf.get(e.to) || e.to, label: t("lib_cites"), count: 1, docIds: [e.from] })),
+      docs: nodes.map((n) => ({ docId: n.docId, title: n.title, docKind: n.docKind || "paper" })),
+    });
+    const full = toData(g.nodes, g.edges);
+    openEntityGraphModal({
+      data: full,
+      title: () => `🔗 ${t("lib_citationGraph")} (${g.nodes.length})`,
+      onOpenDoc: (docId) => { open(); openDoc(docId); },   // modal closes itself after this
+      // recenter on a clicked paper: its cites + citedBy neighborhood, filtered client-side
+      fetchNeighborhood: async (seeds) => {
+        const seedIds = new Set(seeds.map((s) => docIdOf.get(s)).filter(Boolean));
+        const keep = new Set(seedIds);
+        for (const e of g.edges) { if (seedIds.has(e.from)) keep.add(e.to); if (seedIds.has(e.to)) keep.add(e.from); }
+        const nodes = g.nodes.filter((n) => keep.has(n.docId));
+        const edges = g.edges.filter((e) => keep.has(e.from) && keep.has(e.to));
+        return { ...toData(nodes, edges), centers: seeds.map((s) => ({ name: s })) };
+      },
+    });
   }
 
   // "🔗 Related" chips under the doc toolbar: top-5 similar docs by centroid cosine,

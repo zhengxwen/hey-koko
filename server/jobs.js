@@ -354,6 +354,11 @@ async function runLibImportJob(job, signal) {
     const r = await library.distillDocInternal(p.docId, { metadata: false, model: p.chatModel, language: p.language, timeoutS: p.llmTimeoutS, signal });
     return { docId: p.docId, distilled: !!r.ok, reembedded: r.reembedded };
   }
+  if (p.type === "citations") {        // backfill: compute in-library citation edges (P4)
+    stage("distilling");               // reuse a drawer-known stage label
+    const r = await library.computeLibraryCitations(p.docIds);
+    return { citations: r.edges, scanned: r.scanned };
+  }
 
   let source, docKind = p.docKind, title, authors = "", year = "", publishedAt = "", doi = "", citation = null, keywords = [], tags = [], zoteroObj = null, zoteroAbstract = null, zoteroAnnots = [], exactMeta = false, text, images = [];
   if (p.type === "youtube") {
@@ -434,12 +439,12 @@ async function runLibImportJob(job, signal) {
     // Annotations become their OWN block(s) appended after the body (built directly, not
     // via the chunker, so a short single highlight isn't dropped as noise). The hash is of
     // the markdown form so import + re-sync agree on "did the highlights change".
-    zoteroAnnots = library.zoteroAnnotationBlocks(annots, p.language);
+    zoteroAnnots = library.zoteroAnnotationBlocks(annots);
     text = `# ${title}\n\n${bodyText}`;
     zoteroObj = {
       key: itemKey, attachmentKey, version: meta.itemVersion || 0,
       collection: p.collectionName || "",
-      annotHash: library.zoteroAnnotHash(library.buildZoteroAnnotationSection(annots, p.language)),
+      annotHash: library.zoteroAnnotHash(library.buildZoteroAnnotationSection(annots)),
     };
   } else {
     throw new Error("unknown libimport type");

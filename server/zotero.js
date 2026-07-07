@@ -249,7 +249,7 @@ async function zoteroSyncAnnotationsHandler(req, res) {
     try {
       if (!d.attachmentKey) { results.push({ docId: d.docId, error: "no-attachment" }); continue; }
       const annots = await getAnnotations(d.attachmentKey);
-      results.push(await lib.resyncZoteroAnnotations(d.docId, annots, body.language || ""));
+      results.push(await lib.resyncZoteroAnnotations(d.docId, annots));
     } catch (e) {
       if (e.code === "ZOTERO_UNREACHABLE") { sendJson(res, 200, { ok: false, reason: "unreachable", error: e.message }); return; }
       results.push({ docId: d.docId, error: e.message });
@@ -262,6 +262,43 @@ async function zoteroSyncAnnotationsHandler(req, res) {
   });
 }
 
+// POST /api/zotero/sync-plan { mode: "full"|"incremental" } → the diff between Zotero's
+// current state and hey-koko's zotero docs: { ok, mode, toImport, toUpdate, toDelete,
+// toMove }. Advisory — the frontend applies it (bg import jobs + move/delete + patch-meta).
+async function zoteroSyncPlanHandler(req, res) {
+  let body = {}; try { body = await readBody(req); } catch { /* default full */ }
+  const mode = body.mode === "incremental" ? "incremental" : "full";
+  const lib = library();
+  try {
+    const [cols, items] = await Promise.all([listCollections(), listItems(null)]);
+    const collMap = {}; cols.forEach(c => { collMap[c.key] = c.name; });
+    const plan = lib.diffZoteroSync(items, collMap, lib.listZoteroDocsDetailed(), mode);
+    sendJson(res, 200, { ok: true, mode, ...plan });
+  } catch (e) {
+    if (e.code === "ZOTERO_UNREACHABLE") { sendJson(res, 200, { ok: false, reason: "unreachable", error: e.message }); return; }
+    sendJson(res, 500, { ok: false, error: e.message });
+  }
+}
+
+// POST /api/zotero/patch-meta { items: [{docId, itemKey}] } → refresh each doc's metadata
+// in place from Zotero (no re-import, preserves body/edits/vectors). { ok, patched, errors }.
+async function zoteroPatchMetaHandler(req, res) {
+  let body = {}; try { body = await readBody(req); } catch { /* empty */ }
+  const lib = library();
+  const patched = [], errors = [];
+  for (const it of body.items || []) {
+    try {
+      const meta = await getItem(it.itemKey);
+      lib.patchZoteroDocMeta(it.docId, meta);
+      patched.push(it.docId);
+    } catch (e) {
+      if (e.code === "ZOTERO_UNREACHABLE") { sendJson(res, 200, { ok: false, reason: "unreachable", error: e.message }); return; }
+      errors.push({ docId: it.docId, error: e.message });
+    }
+  }
+  sendJson(res, 200, { ok: true, patched, errors });
+}
+
 // Lazy require to avoid a load-time cycle (library.js ← jobs.js → zotero.js).
 function library() { return require("./library"); }
 
@@ -269,6 +306,7 @@ module.exports = {
   available, listCollections, listItems, getItem, getChildren,
   pickPdfAttachment, attachmentFilePath, getFulltext, getAnnotations,
   zoteroCollectionsHandler, zoteroItemsHandler, zoteroSyncAnnotationsHandler,
+  zoteroSyncPlanHandler, zoteroPatchMetaHandler,
   // exported for testing
   parseZoteroDate, authorsOf, itemMeta, TRANSLATED_PDF_RE, DOC_ITEM_TYPES,
 };

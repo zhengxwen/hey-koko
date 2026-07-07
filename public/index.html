@@ -440,18 +440,27 @@
               </select>
               <button id="starMapBtn" type="button" class="secondary archiveSortBtn" title="Knowledge star map">🌌 Star map</button>
               <button id="libraryTimelineBtn" type="button" class="secondary archiveSortBtn" title="Timeline">⏱ Timeline</button>
+              <button id="libraryCitationGraphBtn" type="button" class="secondary archiveSortBtn" title="Citation graph">🔗 Citations</button>
               <span id="libraryTaskCount" class="libraryTaskCount" hidden></span>
               <!-- Import stays the LAST toolbar element — even with the ⏳ badge visible -->
               <div class="libraryImportWrapper">
                 <button id="libraryImportBtn" type="button" class="secondary archiveSortBtn">+ Import ▾</button>
                 <div id="libraryImportMenu" class="exportMenu" hidden>
+                  <button id="libraryImportUrl" type="button">Web URL / blog</button>
                   <button id="libraryImportPaper" type="button">Local papers (PDF/DOCX)</button>
                   <button id="libraryImportFiles" type="button">Local docs (PDF/PPTX/DOCX)</button>
                   <button id="libraryImportText" type="button">Text / Markdown files</button>
-                  <button id="libraryImportUrl" type="button">Web URL / blog</button>
                   <button id="libraryImportZotero" type="button">📚 Import from Zotero</button>
-                  <button id="librarySyncZoteroAnnots" type="button">🔄 Sync Zotero annotations</button>
-                  <button id="libraryBackfillCards" type="button">📇 Backfill distill cards</button>
+                  <div class="exportSubWrap">
+                    <button id="libraryOpsParent" type="button" class="exportSubParent">🔧 Operations ▸</button>
+                    <div id="libraryOpsSubmenu" class="exportMenu exportSubmenu" hidden>
+                      <button id="librarySyncZoteroAnnots" type="button">🔄 Sync Zotero annotations</button>
+                      <button id="libraryZoteroIncrSync" type="button">⟳ Zotero incremental sync</button>
+                      <button id="libraryZoteroFullSync" type="button">⚠️ Zotero full sync (mirror)</button>
+                      <button id="libraryBuildCitations" type="button">🔗 Build citation graph</button>
+                      <button id="libraryBackfillCards" type="button">📇 Backfill distill cards</button>
+                    </div>
+                  </div>
                 </div>
               </div>
               <input id="libraryPaperInput" type="file" accept=".pdf,.docx" multiple hidden />
