@@ -28,6 +28,7 @@ const { listSystemVoices, speakAudio } = require("./server/speech");
 const { listTtsVoices, synthesize } = require("./server/tts");
 const { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives } = require("./server/archive");
 const { importLibrary, listLibrary, searchLibrary, getLibraryDoc, saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, listLibraryDirs, moveLibraryDocs, rescanLibrary, rateLibraryDoc, editLibraryTag, distillLibraryDoc, relatedLibraryDocs, entityLookupLibrary, entityFacetsLibrary, aliasesLibrary, aliasEditLibrary, entityNeighborhoodLibrary, timelineLibrary, expandByRelationsLibrary, relationsForQueryLibrary } = require("./server/library");
+const { zoteroCollectionsHandler, zoteroItemsHandler, zoteroSyncAnnotationsHandler } = require("./server/zotero");
 const { serveStarmap } = require("./server/star-map");
 const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file");
 const bgQueue = require("./server/jobs");   // Option B: server-side background job queue
@@ -375,6 +376,20 @@ const server = http.createServer((req, res) => {
 
   if ((req.method === "GET" || req.method === "POST") && req.url === "/api/library/timeline") {
     timelineLibrary(req, res);
+    return;
+  }
+
+  // Zotero import bridge (read-only local API proxy) — see server/zotero.js.
+  if (req.method === "POST" && req.url === "/api/zotero/collections") {
+    zoteroCollectionsHandler(req, res);
+    return;
+  }
+  if (req.method === "POST" && req.url === "/api/zotero/items") {
+    zoteroItemsHandler(req, res);
+    return;
+  }
+  if (req.method === "POST" && req.url === "/api/zotero/sync-annotations") {
+    zoteroSyncAnnotationsHandler(req, res);
     return;
   }
 

@@ -308,6 +308,8 @@ export function initLibrary() {
   const importFilesItem = document.querySelector("#libraryImportFiles");
   const importTextItem = document.querySelector("#libraryImportText");
   const importUrlItem = document.querySelector("#libraryImportUrl");
+  const importZoteroItem = document.querySelector("#libraryImportZotero");
+  const syncZoteroAnnotsItem = document.querySelector("#librarySyncZoteroAnnots");
   const paperInput = document.querySelector("#libraryPaperInput");
   const fileInput = document.querySelector("#libraryFileInput");
   const textInput = document.querySelector("#libraryTextInput");
@@ -513,6 +515,8 @@ export function initLibrary() {
   importFilesItem.addEventListener("click", () => { importMenu.hidden = true; fileInput.click(); });
   importTextItem.addEventListener("click", () => { importMenu.hidden = true; textInput.click(); });
   importUrlItem.addEventListener("click", () => { importMenu.hidden = true; importUrl(); });
+  if (importZoteroItem) importZoteroItem.addEventListener("click", () => { importMenu.hidden = true; openZoteroImport(); });
+  if (syncZoteroAnnotsItem) syncZoteroAnnotsItem.addEventListener("click", () => { importMenu.hidden = true; syncZoteroAnnotations(); });
   // Backfill distillation cards for docs that predate the feature (index lacks hasCard):
   // one server-side distill job per doc — same queue as imports, browser-closable.
   const backfillItem = document.querySelector("#libraryBackfillCards");
@@ -585,6 +589,158 @@ export function initLibrary() {
       });
     }
     setStatus(t("lib_importQueued"));
+  }
+
+  // ---- Zotero import dialog -----------------------------------------------
+  // Read-only pull from the Zotero desktop LOCAL API (proxied via /api/zotero/*): pick a
+  // collection → pick papers → one libimport job each (type:"zotero"). Self-contained
+  // overlay (built on demand, like the move-folder popup) with a local i18n map so it
+  // doesn't touch the big i18n catalog. See docs/plans/zotero-paper-library.md.
+  const ZOT_I18N = {
+    zh: { title: "从 Zotero 导入", all: "整个文库", loading: "正在连接 Zotero…", empty: "这个分类里没有论文",
+      unreachable: "无法连接 Zotero 本地 API。请确认：① Zotero 正在运行（版本 8 或更高）；② 设置 → 高级 → 勾选“允许本机其它应用与 Zotero 通信”。",
+      imported: "已导入", reimport: "重新导入", selectHint: "勾选要导入的论文", importBtn: "导入选中",
+      queued: "篇已加入导入队列", close: "关闭", retry: "重试", noneSel: "先勾选至少一篇论文", pickColl: "← 选择一个分类",
+      syncing: "正在同步 Zotero 批注…", syncDone: (n, c) => `批注同步完成：检查 ${n} 篇，更新 ${c} 篇`, syncNoDocs: "库中还没有 Zotero 导入的论文" },
+    "zh-Hant": { title: "從 Zotero 匯入", all: "整個文庫", loading: "正在連接 Zotero…", empty: "這個分類裡沒有論文",
+      unreachable: "無法連接 Zotero 本地 API。請確認：① Zotero 正在執行（版本 8 或更高）；② 設定 → 進階 → 勾選「允許本機其它應用與 Zotero 通訊」。",
+      imported: "已匯入", reimport: "重新匯入", selectHint: "勾選要匯入的論文", importBtn: "匯入選中",
+      queued: "篇已加入匯入佇列", close: "關閉", retry: "重試", noneSel: "先勾選至少一篇論文", pickColl: "← 選擇一個分類",
+      syncing: "正在同步 Zotero 批註…", syncDone: (n, c) => `批註同步完成：檢查 ${n} 篇，更新 ${c} 篇`, syncNoDocs: "庫中還沒有 Zotero 匯入的論文" },
+    en: { title: "Import from Zotero", all: "Entire library", loading: "Connecting to Zotero…", empty: "No papers in this collection",
+      unreachable: "Can't reach the Zotero local API. Check that: (1) Zotero is running (v8+); (2) Settings → Advanced → “Allow other applications on this computer to communicate with Zotero” is enabled.",
+      imported: "imported", reimport: "re-import", selectHint: "Check the papers to import", importBtn: "Import selected",
+      queued: " queued for import", close: "Close", retry: "Retry", noneSel: "Select at least one paper first", pickColl: "← Pick a collection",
+      syncing: "Syncing Zotero annotations…", syncDone: (n, c) => `Annotation sync done: ${n} checked, ${c} updated`, syncNoDocs: "No Zotero-imported papers in the library yet" },
+  };
+  const zotL = () => ZOT_I18N[getPromptLanguage()] || ZOT_I18N.zh;
+
+  function openZoteroImport() {
+    const L = zotL();
+    const overlay = document.createElement("div");
+    overlay.className = "zoteroImportOverlay";
+    overlay.innerHTML = `
+      <div class="zoteroImportDialog" role="dialog" aria-modal="true">
+        <div class="zoteroImportHead">
+          <span class="zoteroImportTitle">📚 ${escapeHtml(L.title)}</span>
+          <button type="button" class="zoteroImportClose" title="${escapeHtml(L.close)}">✕</button>
+        </div>
+        <div class="zoteroImportBody">
+          <div class="zoteroImportCols" id="zotColList"></div>
+          <div class="zoteroImportItems" id="zotItemList"></div>
+        </div>
+        <div class="zoteroImportFoot">
+          <span class="zoteroImportStatus" id="zotStatus"></span>
+          <button type="button" class="zoteroImportGo" id="zotImportGo" disabled>${escapeHtml(L.importBtn)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const colList = overlay.querySelector("#zotColList");
+    const itemList = overlay.querySelector("#zotItemList");
+    const statusEl2 = overlay.querySelector("#zotStatus");
+    const goBtn = overlay.querySelector("#zotImportGo");
+
+    const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    overlay.querySelector(".zoteroImportClose").addEventListener("click", close);
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });   // backdrop
+
+    let curCollection = null, curCollectionName = "";   // null = whole library
+    const selected = new Map();   // itemKey → {itemKey, title, collectionName}
+
+    const refreshGo = () => {
+      goBtn.disabled = selected.size === 0;
+      goBtn.textContent = selected.size ? `${L.importBtn} (${selected.size})` : L.importBtn;
+    };
+
+    async function loadCollections() {
+      colList.innerHTML = `<div class="zoteroImportMsg">${escapeHtml(L.loading)}</div>`;
+      let data;
+      try { data = await postJson("/api/zotero/collections", {}); }
+      catch { data = { ok: false }; }
+      if (!data.ok) {
+        colList.innerHTML = "";
+        itemList.innerHTML = `<div class="zoteroImportMsg zoteroImportErr">${escapeHtml(L.unreachable)}<br><br><button type="button" class="zoteroImportRetry">${escapeHtml(L.retry)}</button></div>`;
+        itemList.querySelector(".zoteroImportRetry").addEventListener("click", loadCollections);
+        return;
+      }
+      const rows = [{ key: null, name: L.all, numItems: 0 }, ...data.collections];
+      colList.innerHTML = "";
+      for (const c of rows) {
+        const el = document.createElement("button");
+        el.type = "button";
+        el.className = "zoteroCollRow";
+        el.textContent = c.key === null ? c.name : `${c.name}${c.numItems ? ` (${c.numItems})` : ""}`;
+        el.addEventListener("click", () => {
+          [...colList.children].forEach((n) => n.classList.remove("isActive"));
+          el.classList.add("isActive");
+          curCollection = c.key; curCollectionName = c.key === null ? "" : c.name;
+          loadItems();
+        });
+        colList.appendChild(el);
+      }
+      itemList.innerHTML = `<div class="zoteroImportMsg">${escapeHtml(L.pickColl)}</div>`;
+    }
+
+    async function loadItems() {
+      itemList.innerHTML = `<div class="zoteroImportMsg">${escapeHtml(L.loading)}</div>`;
+      let data;
+      try { data = await postJson("/api/zotero/items", { collection: curCollection }); }
+      catch { data = { ok: false }; }
+      if (!data.ok) { itemList.innerHTML = `<div class="zoteroImportMsg zoteroImportErr">${escapeHtml(data.error || L.unreachable)}</div>`; return; }
+      if (!data.items.length) { itemList.innerHTML = `<div class="zoteroImportMsg">${escapeHtml(L.empty)}</div>`; return; }
+      itemList.innerHTML = `<div class="zoteroImportHint">${escapeHtml(L.selectHint)}</div>`;
+      for (const it of data.items) {
+        const row = document.createElement("label");
+        row.className = "zoteroItemRow checkboxLabel";
+        const meta = [it.authors, it.year, it.venue].filter(Boolean).join(" · ");
+        const badge = it.imported ? `<span class="zoteroImportedBadge">${escapeHtml(L.imported)}</span>` : "";
+        row.innerHTML = `<input type="checkbox" ${selected.has(it.key) ? "checked" : ""}/>
+          <span class="zoteroItemMain"><span class="zoteroItemTitle">${escapeHtml(it.title || it.key)}</span>${badge}
+          <span class="zoteroItemMeta">${escapeHtml(meta)}</span></span>`;
+        const cb = row.querySelector("input");
+        cb.addEventListener("change", () => {
+          if (cb.checked) selected.set(it.key, { itemKey: it.key, title: it.title || it.key, collectionName: curCollectionName });
+          else selected.delete(it.key);
+          refreshGo();
+        });
+        itemList.appendChild(row);
+      }
+    }
+
+    goBtn.addEventListener("click", () => {
+      if (!selected.size) { statusEl2.textContent = L.noneSel; return; }
+      let n = 0;
+      for (const s of selected.values()) {
+        enqueueBgJob({
+          tabId: state.activeTabId, kind: "libimport", label: "📚 " + s.title,
+          payload: { type: "zotero", itemKey: s.itemKey, collectionName: s.collectionName, ...importJobCommon() },
+          noPlaceholder: true,
+        });
+        n++;
+      }
+      setStatus(t("lib_importQueued"));
+      statusEl2.textContent = `${n} ${L.queued}`;
+      close();
+    });
+
+    refreshGo();
+    loadCollections();
+  }
+
+  // "🔄 Sync Zotero annotations": re-pull highlights for every Zotero-imported doc and
+  // rebuild the «Zotero 批注» block where it changed (server no-ops unchanged ones).
+  async function syncZoteroAnnotations() {
+    const L = zotL();
+    setStatus(L.syncing);
+    let data;
+    try { data = await postJson("/api/zotero/sync-annotations", { language: getPromptLanguage() }); }
+    catch { data = { ok: false }; }
+    if (!data.ok) { setStatus(data.reason === "unreachable" ? L.unreachable : (data.error || L.unreachable)); return; }
+    if (!data.synced) { setStatus(L.syncNoDocs); return; }
+    setStatus(L.syncDone(data.synced, data.changed));
+    if (data.changed) { try { await refreshList(); } catch { /* panel closed */ } }
   }
 
   // Resolve the target sub-folder for a video's channel when "auto-file by channel" is on.
@@ -1449,6 +1605,15 @@ export function initLibrary() {
     } else if (src.startsWith("file:")) {
       metaLine.append(`　·　📎 ${src.slice(5)}`);
     }
+    // Zotero-imported doc → deep link back to the PDF in Zotero (opens at the attachment).
+    // hey-koko has no PDF reader by design; reading/highlighting happens in Zotero.
+    if (doc.zotero && doc.zotero.attachmentKey) {
+      const z = document.createElement("a");
+      z.href = `zotero://open-pdf/library/items/${doc.zotero.attachmentKey}`;
+      z.className = "libraryDocSrcLink";
+      z.textContent = "📚 " + (getPromptLanguage() === "en" ? "Open in Zotero" : "在 Zotero 中打开");
+      metaLine.append("　·　", z);
+    }
     facts.appendChild(metaLine);
     previewContent.appendChild(facts);
     // Per-doc toolbar: regenerate metadata + distillation card (server-side distill —
@@ -1522,7 +1687,11 @@ export function initLibrary() {
           `<img class="generatedImage" data-filename="${escapeHtml(figName)}" src="data:${b.imageMime || "image/png"};base64,${b.image}" alt="figure" />` +
           (b.content ? `<div class="libraryFigCaption">${escapeHtml(b.content)}</div>` : "");
       } else {
-        div.innerHTML = `<div class="markdownBody">${markdownToHtml(b.content || "")}</div>`;
+        // An empty block (e.g. a Zotero paper's «Abstract» placeholder when Zotero has no
+        // abstract) would collapse to zero height — tag it so it stays visible + clickable
+        // with a "double-click to edit" hint the user fills in.
+        const emptyCls = (b.content && b.content.trim()) ? "" : " libDocBlockEmpty";
+        div.innerHTML = `<div class="markdownBody${emptyCls}"${emptyCls ? ` data-empty-hint="${escapeHtml(t("lib_emptyBlockHint"))}"` : ""}>${markdownToHtml(b.content || "")}</div>`;
         if (b.highlights && b.highlights.length) {
           const bodyEl = div.querySelector(".markdownBody");
           if (bodyEl) applyHighlights(bodyEl, b.highlights);

@@ -5972,3 +5972,92 @@ button.secondary:disabled {
 .starMapModalPath { font-size: 12px; color: var(--muted); word-break: break-all; }
 .starMapModalRow { margin-top: 6px; display: flex; justify-content: center; }
 @media (max-width: 760px) { .starMapLegend { display: none; } .starMapInspector { width: calc(100vw - 32px); } }
+
+/* ---- Zotero import dialog (library.js openZoteroImport) --------------------
+   Self-contained overlay: a two-pane picker (collections | items) built on demand.
+   Reuses .checkboxLabel for the item rows (the canonical checkbox pattern). */
+.zoteroImportOverlay {
+  position: fixed; inset: 0; z-index: 1200;
+  background: rgba(0, 0, 0, 0.42);
+  display: flex; align-items: center; justify-content: center;
+}
+.zoteroImportDialog {
+  width: min(760px, 92vw); height: min(560px, 86vh);
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.zoteroImportHead {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+}
+.zoteroImportTitle { font-weight: 600; font-size: 15px; }
+.zoteroImportClose {
+  background: none; border: none; color: var(--muted);
+  font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 6px;
+}
+.zoteroImportClose:hover { background: var(--surface-hover); color: var(--ink); }
+.zoteroImportBody { flex: 1; display: flex; min-height: 0; }
+.zoteroImportCols {
+  width: 220px; flex-shrink: 0; overflow-y: auto;
+  border-right: 1px solid var(--line); padding: 6px;
+}
+.zoteroCollRow {
+  display: block; width: 100%; text-align: left;
+  padding: 8px 10px; margin-bottom: 2px; border: none; border-radius: 6px;
+  background: none; color: var(--ink); font-size: 13px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zoteroCollRow:hover { background: var(--surface); }
+.zoteroCollRow.isActive { background: var(--accent); color: #fff; }
+.zoteroImportItems { flex: 1; overflow-y: auto; padding: 10px 14px; min-width: 0; }
+.zoteroImportHint, .zoteroImportMsg { color: var(--muted); font-size: 12.5px; margin-bottom: 8px; }
+.zoteroImportMsg { padding: 20px 8px; line-height: 1.6; text-align: center; }
+.zoteroImportErr { color: var(--ink); }
+.zoteroImportRetry {
+  margin-top: 4px; padding: 6px 14px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--surface); color: var(--ink); cursor: pointer;
+}
+.zoteroItemRow {
+  padding: 7px 4px; border-bottom: 1px solid var(--line);
+  font-size: 13px; align-items: start;
+}
+.zoteroItemMain { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.zoteroItemTitle { color: var(--ink); overflow-wrap: anywhere; }
+.zoteroItemMeta { font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+.zoteroImportedBadge {
+  display: inline-block; margin-left: 6px; padding: 0 6px;
+  font-size: 10.5px; line-height: 16px; border-radius: 8px;
+  background: var(--surface); color: var(--muted); vertical-align: middle;
+}
+.zoteroImportFoot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-top: 1px solid var(--line); gap: 12px;
+}
+.zoteroImportStatus { font-size: 12px; color: var(--muted); }
+.zoteroImportGo {
+  padding: 8px 18px; border: none; border-radius: 8px;
+  background: var(--accent); color: #fff; font-size: 13px; cursor: pointer;
+}
+.zoteroImportGo:disabled { opacity: 0.5; cursor: default; }
+@media (max-width: 640px) { .zoteroImportCols { width: 150px; } }
+
+/* Empty library block (e.g. a Zotero paper's «Abstract» placeholder when Zotero has no
+   abstract): keep it visible + clickable with a faint "double-click to add" hint instead
+   of collapsing to zero height. The hint text rides in data-empty-hint (i18n). */
+.libDocBlock .markdownBody.libDocBlockEmpty {
+  min-height: 2.2em;
+  display: flex;
+  align-items: center;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: text;
+}
+.libDocBlock .markdownBody.libDocBlockEmpty::before {
+  content: "✎ " attr(data-empty-hint);
+  color: var(--muted);
+  font-size: 0.85em;
+  font-style: italic;
+}

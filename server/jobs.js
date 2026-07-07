@@ -24,6 +24,7 @@ const { spawn } = require("child_process");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const library = require("./library");
+const zotero = require("./zotero");
 
 const JOBS_FILE = path.join(config.JOBS_DIR, "jobs.json");
 // Library file imports spool their raw file here (payload carries the path) so N
@@ -354,7 +355,7 @@ async function runLibImportJob(job, signal) {
     return { docId: p.docId, distilled: !!r.ok, reembedded: r.reembedded };
   }
 
-  let source, docKind = p.docKind, title, authors = "", year = "", publishedAt = "", doi = "", citation = null, keywords = [], exactMeta = false, text, images = [];
+  let source, docKind = p.docKind, title, authors = "", year = "", publishedAt = "", doi = "", citation = null, keywords = [], tags = [], zoteroObj = null, zoteroAbstract = null, zoteroAnnots = [], exactMeta = false, text, images = [];
   if (p.type === "youtube") {
     stage("fetching");
     let data = null, errored = null;
@@ -398,6 +399,48 @@ async function runLibImportJob(job, signal) {
     // Author keywords are parsed straight from the first page — independent of the DOI,
     // so a paper Crossref can't resolve still gets them.
     keywords = library.extractKeywords(text);
+  } else if (p.type === "zotero") {
+    // Zotero import DEFAULT path: pull the attachment's plain text via the local API's
+    // /fulltext (no GPU, no file access) — MinerU is opt-in per-paper (deep re-parse).
+    // Zotero metadata is authoritative → exactMeta so the distill LLM won't overwrite it.
+    stage("fetching");
+    const itemKey = p.itemKey;
+    if (!itemKey) throw new Error("zotero import: itemKey required");
+    const meta = await zotero.getItem(itemKey);
+    const children = await zotero.getChildren(itemKey);
+    const pdf = zotero.pickPdfAttachment(children);
+    if (!pdf) throw new Error(`Zotero 条目「${meta.title || itemKey}」没有可用的 PDF 附件`);
+    const attachmentKey = (pdf.data || pdf).key;
+    stage("parsing");
+    const ft = await zotero.getFulltext(attachmentKey);
+    const bodyText = (ft && ft.content) ? ft.content : "";
+    if (!bodyText.trim()) {
+      throw new Error(`Zotero 尚未对「${meta.title || itemKey}」建立全文索引——在 Zotero 里打开一次该 PDF 触发索引，或稍后用「🔬 深度重解析」`);
+    }
+    const annots = await zotero.getAnnotations(attachmentKey);
+    source = `zotero:${itemKey}`;
+    docKind = "paper";
+    title = meta.title || itemKey;
+    authors = meta.authors || ""; year = meta.year || ""; publishedAt = meta.publishedAt || "";
+    doi = meta.doi || "";
+    citation = (meta.venue || meta.url || meta.itemType)
+      ? { venue: meta.venue || "", type: meta.itemType || "", url: meta.url || "" } : null;
+    tags = Array.isArray(meta.tags) ? meta.tags : [];
+    exactMeta = !!meta.title;   // Zotero title present → trust its metadata, don't re-guess
+    // «Abstract» always leads the doc (injected as a block so it survives even when EMPTY):
+    // filled from Zotero's abstractNote when present, else an empty placeholder the user
+    // can edit. We never guess it from the body text.
+    zoteroAbstract = library.zoteroAbstractBlock(meta.abstract);
+    // Annotations become their OWN block(s) appended after the body (built directly, not
+    // via the chunker, so a short single highlight isn't dropped as noise). The hash is of
+    // the markdown form so import + re-sync agree on "did the highlights change".
+    zoteroAnnots = library.zoteroAnnotationBlocks(annots, p.language);
+    text = `# ${title}\n\n${bodyText}`;
+    zoteroObj = {
+      key: itemKey, attachmentKey, version: meta.itemVersion || 0,
+      collection: p.collectionName || "",
+      annotHash: library.zoteroAnnotHash(library.buildZoteroAnnotationSection(annots, p.language)),
+    };
   } else {
     throw new Error("unknown libimport type");
   }
@@ -407,7 +450,19 @@ async function runLibImportJob(job, signal) {
   // dedupe only for file imports: their docId comes from the file BASENAME, so two
   // different papers both named main.pdf would otherwise silently overwrite each other
   // (URL/YouTube docIds derive from the URL — same id really is the same doc there).
-  const imp = await library.importDocInternal({ source, docKind, folder: p.folder, title, authors, year, publishedAt, doi, citation, keywords, text, images, model: p.embedModel, dedupe: p.type === "file" });
+  // Zotero docs land under zotero/<collection> (plan §0.2); everything else honors the
+  // caller's folder (or auto-classify). dedupeDoi (not dedupe) for zotero: its docId is
+  // keyed by itemKey, so it overwrites on re-import instead of text-suffixing _2.
+  const folder = p.type === "zotero"
+    ? (p.collectionName ? `zotero/${p.collectionName}` : "zotero")
+    : p.folder;
+  const imp = await library.importDocInternal({ source, docKind, folder, title, authors, year, publishedAt, doi, citation, keywords, tags, zotero: zoteroObj, extraBlocks: zoteroAbstract ? [zoteroAbstract] : undefined, appendBlocks: zoteroAnnots, text, images, model: p.embedModel, dedupe: p.type === "file", dedupeDoi: p.type === "zotero" });
+  // DOI dedup fired: this paper is already in the library under imp.docId. Don't re-embed
+  // or re-distill — just tell the drawer it was skipped and which doc holds it.
+  if (imp.skippedDoi) {
+    dropSpool(job);
+    return { docId: imp.docId, blockCount: imp.blockCount, folder: imp.folder, distilled: false, skippedDoi: imp.skippedDoi };
+  }
   let distilled = false;
   if (p.distill !== false && p.chatModel) {
     stage("distilling");

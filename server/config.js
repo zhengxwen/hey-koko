@@ -105,6 +105,16 @@ const config = {
     "/opt/homebrew/share/whisper-cpp/models",
     "/usr/local/share/whisper-cpp/models",
   ],
+  // Zotero desktop LOCAL API bridge (read-only paper import — server/zotero.js).
+  // Optional: ~/.hey-koko/zotero.json { "apiBase": "http://127.0.0.1:23119" } overrides
+  // the default, e.g. an SSH tunnel when Zotero runs on another machine. Absent file →
+  // localhost default (the common same-machine case). ZOTERO_API_BASE env wins over both.
+  ZOTERO: (() => {
+    let file = {};
+    try { file = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "zotero.json"), "utf8")) || {}; } catch { /* optional */ }
+    const apiBase = process.env.ZOTERO_API_BASE || file.apiBase || "http://127.0.0.1:23119";
+    return { apiBase: String(apiBase).replace(/\/+$/, "") };
+  })(),
   MIME_TYPES: {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",

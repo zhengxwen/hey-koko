@@ -383,6 +383,14 @@ function indexEntryOf(doc) {
   return {
     docId: doc.docId, type: doc.type, docKind: doc.docKind, source: doc.source,
     title: doc.title, authors: doc.authors || "", year: doc.year || "",
+    // doi projected into the index so import can dedup by DOI (same paper under a
+    // different filename) without reading every doc — also the join key for the
+    // planned citation graph (docs/plans/zotero-paper-library.md §P4).
+    doi: doc.doi || undefined,
+    // Zotero deep-link keys (present only on Zotero-imported docs): the attachment key
+    // opens the PDF at zotero://open-pdf/library/items/<key>, the item key selects it.
+    zoteroKey: (doc.zotero && doc.zotero.key) || undefined,
+    zoteroAttachmentKey: (doc.zotero && doc.zotero.attachmentKey) || undefined,
     // venue surfaced to the list card (which journal/conference); rest of the citation
     // lives in the full doc only.
     venue: (doc.citation && doc.citation.venue) || undefined,
@@ -408,6 +416,16 @@ function upsertIndex(doc) {
   saveIndex(arr);
 }
 function removeFromIndex(id) { saveIndex(loadIndex().filter(d => d.docId !== id)); }
+// Set of all indexed docIds — cheap membership check (e.g. the Zotero picker marking
+// which items are already imported, keyed by their zotero_<itemKey> docId).
+function libraryDocIdSet() { return new Set(loadIndex().map(d => d.docId)); }
+// First indexed doc carrying this DOI (case-insensitive) — used to skip re-importing the
+// same paper under a different filename, and (later) to join the citation graph.
+function findDocByDoi(doi) {
+  if (!doi) return null;
+  const key = String(doi).toLowerCase();
+  return loadIndex().find(d => d.doi && String(d.doi).toLowerCase() === key) || null;
+}
 
 // ---- docId derived from source (file basename / URL), sanitized + deduped --
 function deriveDocId(source) {
@@ -791,7 +809,34 @@ function attachImages(hits, maxImages) {
 // server-side libimport background job (jobs.js). Throws on failure.
 async function importDocInternal(body) {
   const model = body.model || DEFAULT_MODEL;
+  // DOI dedup (file/Zotero imports): the SAME paper often arrives under a different
+  // filename (e.g. arXiv "2401.pdf" vs the published PDF). When a doc with this DOI is
+  // already in the library — and it isn't the doc this very import would overwrite —
+  // skip it before the expensive chunk+embed, and report which doc already holds it.
+  // Not merged (plan §P0): the existing doc wins, the caller surfaces "already exists".
+  // dedupe (file) and dedupeDoi (zotero, which keys by itemKey not text) both opt in.
+  if ((body.dedupe || body.dedupeDoi) && body.doi) {
+    const existing = findDocByDoi(body.doi);
+    if (existing && existing.docId !== deriveDocId(body.source || `file:${body.title || "doc"}`)) {
+      return { docId: existing.docId, blockCount: existing.blockCount || 0,
+        folder: locOf(existing.docId), skippedDoi: body.doi, embedded: true };
+    }
+  }
   const blocks = splitIntoBlocks(body.text || "", body.images || []);
+  // Caller-injected blocks are PREPENDED to the body, ahead of the chunked text (e.g. a
+  // Zotero paper's always-present, user-editable «Abstract» — kept even when EMPTY, which
+  // the chunker would otherwise drop as noise). An empty/embed:false one gets a null
+  // vector slot like any non-embedded block; a filled one embeds normally.
+  const mkExtra = (b, k) => {
+    const content = String(b.content || "");
+    const nb = { id: b.id || `x${k}`, kind: b.kind || "text", section: b.section || "", content, hash: hashText(content) };
+    if (b.embed === false || !content) nb.embed = false;   // empty placeholder → never embed ""
+    return nb;
+  };
+  if (Array.isArray(body.extraBlocks) && body.extraBlocks.length) blocks.unshift(...body.extraBlocks.map(mkExtra));
+  // appendBlocks land AFTER the body (e.g. the «Zotero 批注» block — kept out of the chunker
+  // so a short single highlight isn't dropped as noise).
+  if (Array.isArray(body.appendBlocks) && body.appendBlocks.length) blocks.push(...body.appendBlocks.map(mkExtra));
   if (!blocks.length) throw new Error("文档为空，无法导入");
   // embed:false blocks (a references section) keep a zero-vector slot — never embedded.
   const vectors = new Array(blocks.length).fill(null);
@@ -831,6 +876,9 @@ async function importDocInternal(body) {
     // Only stored when non-empty so non-paper docs don't carry empty scaffolding.
     citation: (body.citation && Object.values(body.citation).some(Boolean)) ? body.citation : undefined,
     keywords: (Array.isArray(body.keywords) && body.keywords.length) ? body.keywords : undefined,
+    // Zotero linkage {key, attachmentKey, version, annotHash, collection}: powers the
+    // "open in Zotero" deep link + P2 annotation re-sync + P3 incremental sync.
+    zotero: (body.zotero && body.zotero.key) ? body.zotero : undefined,
     tags: body.tags || [], embedModel: model,
     importedAt: Date.now(),
     blocks,
@@ -1997,7 +2045,7 @@ const DISTILL_I18N = {
       "\"relations\": 5-10 条实体关系三元组 [\"头\",\"关系\",\"尾\"]，关系用简短动词短语（如 提出/改进/基于/评测于/对比/收购/发布/位于）；头尾实体名必须出现在 entities 列表里；若这条关系有明确的时间或地点，追加第四项对象 {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}。\n" +
       "时间一律用绝对日期：文档顶部给出了发布日期，正文里的相对时间（如「上周三」「本月初」「去年」）请据此换算成绝对日期，换算不出就省略 time 字段。",
     videoStrict: "\n注意：字幕来自自动语音转写、可能有识别错误——只抽取字幕中明确清楚说出的具体名称，拿不准的宁可不抽，不要臆造实体或关系。",
-    cardSection: "«蒸馏卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要点**", toc: "目录：", transcriptHeading: "«字幕整理»",
+    cardSection: "«蒸馏卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要点**", toc: "目录：", transcriptHeading: "«字幕整理»", annotSection: "«Zotero 批注»", annotComment: "批注",
     entitiesHead: "**§ 实体**", relationsHead: "**§ 关系**", pubDateHead: "发布日期：", typeLabels: TYPE_LABELS.zh, aliasWrap: ["（", "）"], aliasSep: "、",
     vTitle: "视频标题：", vChannel: "频道：", vSample: "字幕抽样：",
     rerank: "你是检索精排助手。给定一个查询和编号片段列表，按与查询的相关度从高到低输出片段编号。只输出 JSON，不要任何解释或代码块标记：{\"order\":[编号,…]}。明显不相关的编号可以省略。",
@@ -2042,7 +2090,7 @@ const DISTILL_I18N = {
       "\"relations\": 5-10 條實體關係三元組 [\"頭\",\"關係\",\"尾\"]，關係用簡短動詞短語（如 提出/改進/基於/評測於/對比/收購/發布/位於）；頭尾實體名必須出現在 entities 列表裡；若這條關係有明確的時間或地點，追加第四項物件 {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}。\n" +
       "時間一律用絕對日期：文件頂部給出了發表日期，正文裡的相對時間（如「上週三」「本月初」「去年」）請據此換算成絕對日期，換算不出就省略 time 欄位。",
     videoStrict: "\n注意：字幕來自自動語音轉寫、可能有識別錯誤——只抽取字幕中明確清楚說出的具體名稱，拿不準的寧可不抽，不要臆造實體或關係。",
-    cardSection: "«蒸餾卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要點**", toc: "目錄：", transcriptHeading: "«字幕整理»",
+    cardSection: "«蒸餾卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要點**", toc: "目錄：", transcriptHeading: "«字幕整理»", annotSection: "«Zotero 批註»", annotComment: "批註",
     entitiesHead: "**§ 實體**", relationsHead: "**§ 關係**", pubDateHead: "發表日期：", typeLabels: TYPE_LABELS["zh-Hant"], aliasWrap: ["（", "）"], aliasSep: "、",
     vTitle: "影片標題：", vChannel: "頻道：", vSample: "字幕抽樣：",
     rerank: "你是檢索精排助手。給定一個查詢和編號片段列表，按與查詢的相關度從高到低輸出片段編號。只輸出 JSON，不要任何解釋或代碼塊標記：{\"order\":[編號,…]}。明顯不相關的編號可以省略。",
@@ -2087,7 +2135,7 @@ const DISTILL_I18N = {
       "\"relations\": 5-10 entity triples [\"head\",\"relation\",\"tail\"], relation a short verb phrase (e.g. proposes/improves/based-on/evaluated-on/compared-with/acquires/releases/located-in); head and tail names MUST appear in the entities list; if the relation has a clear time or place, append a fourth object {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}.\n" +
       "Always use absolute dates: the publication date is given at the top, so convert relative times in the body (\"last Wednesday\", \"earlier this month\", \"last year\") into absolute dates; if you cannot, omit the time field.",
     videoStrict: "\nNote: the transcript is automatic speech-to-text and may contain errors — extract ONLY names clearly and explicitly spoken; when unsure, leave it out rather than inventing entities or relations.",
-    cardSection: "«Distill Card»", summaryHead: "**§ Summary**", claimsHead: "**§ Key points**", toc: "TOC: ", transcriptHeading: "«Transcript»",
+    cardSection: "«Distill Card»", summaryHead: "**§ Summary**", claimsHead: "**§ Key points**", toc: "TOC: ", transcriptHeading: "«Transcript»", annotSection: "«Zotero Annotations»", annotComment: "note",
     entitiesHead: "**§ Entities**", relationsHead: "**§ Relations**", pubDateHead: "Published: ", typeLabels: TYPE_LABELS.en, aliasWrap: ["(", ")"], aliasSep: ", ",
     vTitle: "Video title: ", vChannel: "Channel: ", vSample: "Transcript sample:",
     rerank: "You are a retrieval reranker. Given a query and a numbered list of snippets, output the snippet indices ordered from most to least relevant to the query. Output ONLY JSON, no explanation or code fences: {\"order\":[index,…]}. Clearly irrelevant indices may be omitted.",
@@ -2303,6 +2351,92 @@ async function buildYoutubeDoc(data, url, language = "") {
   return { source: `url:${url}`, docKind: "video", title, authors, year, publishedAt: uploadDate, text, images };
 }
 
+// Render a doc's Zotero highlights/notes into a Markdown section that rides into the
+// library as its own «Zotero 批注» block (embed:true — the user's own highlights are the
+// highest-signal retrieval material). Grouped/ordered by the annotations' reading order
+// (already sorted upstream). Returns "" when there are no annotations. The section name
+// («…») follows the special-section convention so re-sync (P2) can find + replace it.
+const ANNOT_COLOR = { "#ffd400": "🟡", "#ff6666": "🔴", "#5fb236": "🟢", "#2ea8e5": "🔵", "#a28ae5": "🟣", "#e56eee": "🩷", "#f19837": "🟠", "#aaaaaa": "⚪" };
+// Special-section names the «Zotero 批注» block can carry (zh / zh-Hant / en) — used by
+// re-sync (P2) to FIND the existing annotation block regardless of the import language.
+const ANNOT_SECTION_RE = /^«Zotero (?:批注|批註|Annotations)»$/;
+// One stable hash of the rendered annotation markdown — stored on doc.zotero.annotHash so
+// re-sync can tell "highlights changed" from "nothing to do". Shared by import (jobs.js)
+// and re-sync so the two always agree; "" (no annotations) hashes to a stable value.
+function zoteroAnnotHash(annotationMarkdown) { return hashText(String(annotationMarkdown || "")); }
+// Shared rendering: annotation objects → { section name, rendered lines }.
+function renderZoteroAnnotations(annotations, language) {
+  const list = (annotations || []).filter(a => a && (a.text || a.comment));
+  const L = distillL(language);
+  const lines = list.map(a => {
+    const dot = ANNOT_COLOR[String(a.color || "").toLowerCase()] || "•";
+    const pg = a.page ? `p.${a.page} ` : "";
+    const quote = a.text ? `「${a.text}」` : "";
+    const note = a.comment ? `${quote ? " — " : ""}${L.annotComment}: ${a.comment}` : "";
+    return `- ${pg}${dot} ${quote}${note}`.replace(/\s+$/, "");
+  });
+  return { section: L.annotSection, lines };
+}
+// Markdown form — used ONLY for the stable annotHash (identity), not for the stored block.
+function buildZoteroAnnotationSection(annotations, language) {
+  const { section, lines } = renderZoteroAnnotations(annotations, language);
+  if (!lines.length) return "";
+  return `\n\n# ${section}\n\n${lines.join("\n")}\n`;
+}
+// The «Zotero 批注» BLOCK(S) — built DIRECTLY (not via the chunker) so a single short
+// highlight isn't dropped by the noise filter. embed:true (highlights are high-signal);
+// split only if the rendered list is genuinely huge. [] when there are no annotations.
+function zoteroAnnotationBlocks(annotations, language) {
+  const { section, lines } = renderZoteroAnnotations(annotations, language);
+  if (!lines.length) return [];
+  return splitLong(lines.join("\n"), MAX_BLOCK_CHARS).map((piece, i) => ({
+    id: `zann${i}`, kind: "text", section, content: piece, hash: hashText(piece),
+  }));
+}
+
+// The «Abstract» block for a Zotero paper — ALWAYS returned (prepended to the doc via
+// importDocInternal's extraBlocks), so every paper shows an «Abstract» section the user
+// can edit. Filled from Zotero's author-written abstractNote when present (embedded —
+// abstracts are dense retrieval signal + they ground the distill summary); left EMPTY
+// and non-embedded when Zotero has none, as a placeholder to fill in later. The name is
+// the special-section «Abstract» (guillemets, single language) — distinct from the
+// distill card's own «蒸馏卡» → §摘要, so the real abstractNote isn't confused with the
+// LLM summary.
+function zoteroAbstractBlock(abstract) {
+  const a = String(abstract || "").replace(/\s+\n/g, "\n").trim();
+  return { id: "zabstract", kind: "text", section: "«Abstract»", content: a, ...(a ? {} : { embed: false }) };
+}
+
+// All Zotero-imported docs, from the index projection: { docId, attachmentKey }.
+function listZoteroDocs() {
+  return loadIndex().filter(d => d.zoteroKey)
+    .map(d => ({ docId: d.docId, attachmentKey: d.zoteroAttachmentKey || "" }));
+}
+
+// P2 annotation re-sync: given freshly-pulled Zotero annotations for one doc, rebuild its
+// «Zotero 批注» block ONLY when the content actually changed (annotHash guard) — so a
+// no-op sync costs nothing and doesn't churn vectors. Reuses the import-time section name
+// language (detected from the existing block) so the hash stays comparable. New/removed
+// highlights re-embed just that one block via saveDocInternal's hash diff.
+async function resyncZoteroAnnotations(docId, annotations, language = "") {
+  const doc = readDoc(docId);
+  if (!doc || doc.type !== "libdoc") throw new Error("文档不存在");
+  const existing = (doc.blocks || []).find(b => ANNOT_SECTION_RE.test((b.section || "").trim()));
+  const lang = existing
+    ? (existing.section.includes("Annotations") ? "en" : existing.section.includes("批註") ? "zh-Hant" : "zh")
+    : (language || "zh");
+  // Hash off the markdown form (stable identity); build the stored block(s) directly.
+  const newHash = zoteroAnnotHash(buildZoteroAnnotationSection(annotations, lang));
+  const oldHash = (doc.zotero && doc.zotero.annotHash) || "";
+  if (newHash === oldHash) return { docId, changed: false, annotCount: (annotations || []).length };
+  // Drop the old annotation block(s), append freshly-built new ones (if any).
+  doc.blocks = (doc.blocks || []).filter(b => !ANNOT_SECTION_RE.test((b.section || "").trim()));
+  doc.blocks.push(...zoteroAnnotationBlocks(annotations, lang));
+  doc.zotero = { ...(doc.zotero || {}), annotHash: newHash };
+  const r = await saveDocInternal(doc, doc.embedModel || DEFAULT_MODEL);
+  return { docId, changed: true, annotCount: (annotations || []).length, reembedded: r.reembedded };
+}
+
 // ---- paper metadata via DOI → Crossref -------------------------------------
 // Peer-reviewed papers carry their DOI on the first page (header/footer/footnote);
 // Crossref then gives the EXACT title/authors/date. Same spirit as YouTube imports:
@@ -2312,9 +2446,19 @@ async function buildYoutubeDoc(data, url, language = "") {
 // Returns null when no DOI is found; { doi } alone when Crossref is unreachable
 // (the caller then falls back to LLM metadata but still records the DOI).
 const DOI_RE = /\b10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+/;
+// arXiv identifiers rarely come with a printed DOI, but the PDF header always shows the
+// id — new-style (2007+) "2401.12345" (optional vN) or old-style "hep-th/9901001".
+const ARXIV_RE = /arxiv:\s*(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?\/\d{7}(?:v\d+)?)/i;
 async function lookupPaperMeta(text) {
-  const m = String(text || "").slice(0, 6000).match(DOI_RE);
-  if (!m) return null;
+  const head = String(text || "").slice(0, 6000);
+  const m = head.match(DOI_RE);
+  // A DataCite-registered arXiv DOI won't resolve on Crossref, so preprints are handled
+  // by their arXiv id (below) UNLESS the page also carries a real (publisher) DOI.
+  if (!m) {
+    const ax = head.match(ARXIV_RE);
+    if (ax) return lookupArxivMeta(ax[1]);
+    return null;
+  }
   const doi = m[0].replace(/[.,;:)]+$/, "");
   try {
     const r = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, {
@@ -2347,6 +2491,39 @@ async function lookupPaperMeta(text) {
   } catch { return { doi }; }
 }
 
+// arXiv preprint metadata from the arXiv Atom API (no dep — the response is small XML
+// scraped with the same regex style as the rest of this file). rawId may carry a version
+// suffix ("2401.12345v2"); the canonical id (no vN) forms the DataCite DOI
+// 10.48550/arXiv.<id>. Best-effort: any failure still records the DOI so the doc is
+// linkable and the distill LLM can fill title/authors from the text.
+// rawId may carry a version suffix ("2401.12345v2"); the DataCite DOI drops it.
+function arxivDoi(rawId) { return `10.48550/arXiv.${String(rawId).replace(/v\d+$/i, "")}`; }
+// Parse the arXiv Atom feed for one paper (pure — no network, so it's unit-testable).
+// The feed's own <title>/<author> echo the query, so scope everything to <entry> first.
+function parseArxivAtom(xml, id) {
+  const citation = { venue: "arXiv", type: "posted-content", url: `https://arxiv.org/abs/${id}` };
+  const doi = `10.48550/arXiv.${id}`;
+  const entry = (String(xml || "").match(/<entry>([\s\S]*?)<\/entry>/) || [])[1];
+  if (!entry) return { doi, citation };
+  const title = ((entry.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || "").replace(/\s+/g, " ").trim();
+  const authors = [...entry.matchAll(/<name>([\s\S]*?)<\/name>/g)].map(a => a[1].trim()).filter(Boolean).join(", ");
+  const dm = entry.match(/<published>(\d{4})-(\d{2})-(\d{2})/);
+  return { doi, title, authors, year: dm ? dm[1] : "", publishedAt: dm ? `${dm[1]}-${dm[2]}-${dm[3]}` : "", citation };
+}
+async function lookupArxivMeta(rawId) {
+  const id = String(rawId).replace(/v\d+$/i, "");
+  const doi = arxivDoi(rawId);
+  const citation = { venue: "arXiv", type: "posted-content", url: `https://arxiv.org/abs/${id}` };
+  try {
+    const r = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}&max_results=1`, {
+      headers: { "User-Agent": "hey-koko/1.0 (knowledge-library import)" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return { doi, citation };
+    return parseArxivAtom(await r.text(), id);
+  } catch { return { doi, citation }; }
+}
+
 // Author-supplied keywords from a paper's first page: a "Keywords:" / "Index Terms—"
 // (IEEE em-dash) / "关键词：" line. Only the HEAD is scanned (the word "keywords" also
 // appears in prose / related work). Split on ; , 、 ；, strip markdown emphasis, and
@@ -2367,7 +2544,11 @@ module.exports = {
   splitIntoBlocks,   // exported for reuse/testing of the chunker
   // server-side libimport job (jobs.js) + distill + related-docs
   importDocInternal, distillDocInternal, distillLibraryDoc, buildYoutubeDoc, llmComplete,
-  relatedLibraryDocs, docCentroids, lookupPaperMeta, extractKeywords,
+  buildZoteroAnnotationSection, zoteroAnnotationBlocks, zoteroAbstractBlock, zoteroAnnotHash,   // zotero import section/block builders
+  listZoteroDocs, resyncZoteroAnnotations,   // P2 annotation re-sync
+  relatedLibraryDocs, docCentroids, lookupPaperMeta, extractKeywords, findDocByDoi,
+  libraryDocIdSet,   // zotero picker "already imported" marker
+  parseArxivAtom, arxivDoi, ARXIV_RE, DOI_RE,   // exported for testing
   locOf,   // docId → on-disk folder ("" = root); used by the star map for folder scoping
   // structure-card entity/relation layer (docs/plans/structure-card.md)
   entityLookupLibrary, entityIndex, entityFacetsLibrary, entityFacets,
