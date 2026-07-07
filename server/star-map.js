@@ -107,6 +107,9 @@ function gather(source, folders = []) {
     if (!isCleanVec(c.vec, dim)) { corrupt++; continue; }   // wrong-dim / NaN / Inf → skip
     const folder = library.locOf(docId) || "";
     if (!inScope(folder, scope)) continue;   // B: restrict to the chosen folders
+    // Tier-2 news (news-feeds.md P2): excluded from the whole-library map so daily blog
+    // posts don't dominate the constellation. A folder scope on news/ opts them back in.
+    if (!scope.length && library.inNewsDir(folder)) continue;
     items.push({ id: docId, vec: c.vec, title: c.title || docId, kind: c.docKind || "doc", snippet: "", blocks: c.blocks || 0, folder });
   }
   if (excluded) console.warn(`[starmap] ${excluded} doc(s) excluded: embedding model ≠ ${model}`);
@@ -294,7 +297,9 @@ function currentCount(source, folders = []) {
     if (source === "archive") return Object.keys(embed.loadArchiveEmbeddings().items || {}).length;
     const index = JSON.parse(fs.readFileSync(path.join(library.LIBRARY_DIR, "index.json"), "utf-8"));
     const scope = normFolders(folders);
-    if (!scope.length) return index.length;
+    // Match gather()'s whole-library set: exclude tier-2 news, else the count never agrees
+    // with the built map's n and every open shows a spurious "outdated" badge.
+    if (!scope.length) return index.filter((e) => !library.inNewsDir(library.locOf(e.docId) || "")).length;
     return index.filter((e) => inScope(library.locOf(e.docId) || "", scope)).length;
   } catch { return 0; }
 }
