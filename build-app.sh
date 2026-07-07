@@ -68,7 +68,7 @@ swiftc "${SRC_DIR}/AppMain.swift" \
   -framework Cocoa \
   -framework WebKit \
   -O \
-  -target arm64-apple-macos11.0
+  -target arm64-apple-macos11.3
 echo "  ✓ Native app compiled"
 
 # ─── Create Info.plist ────────────────────────────────────────────

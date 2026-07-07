@@ -4,7 +4,7 @@
 import Cocoa
 import WebKit
 
-class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate {
     var window: NSWindow!
     var webView: WKWebView!
     var serverProcess: Process?
@@ -132,6 +132,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
         webView = WKWebView(frame: window.contentView!.bounds, configuration: config)
         webView.autoresizingMask = [.width, .height]
         webView.uiDelegate = self   // so JS alert()/confirm()/prompt() show native dialogs
+        webView.navigationDelegate = self   // so <a download> (image/video/audio) actually saves
         window.contentView?.addSubview(webView)
 
         // Restore the last zoom level (Safari-like page zoom persists across launches)
@@ -252,6 +253,67 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
         } else {
             finish(alert.runModal())
         }
+    }
+
+    // MARK: - WKNavigationDelegate / WKDownloadDelegate (file downloads)
+    // WKWebView ignores `<a download>` clicks (image/video/audio save buttons, chat
+    // JSON export) unless we opt each one into a real WKDownload. A blob:/data: link
+    // with a `download` attribute arrives here with shouldPerformDownload == true; a
+    // response whose MIME the web view can't display should download too.
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 preferences: WKWebpagePreferences,
+                 decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+        if navigationAction.shouldPerformDownload {
+            decisionHandler(.download, preferences)
+        } else {
+            decisionHandler(.allow, preferences)
+        }
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if navigationResponse.canShowMIMEType {
+            decisionHandler(.allow)
+        } else {
+            decisionHandler(.download)
+        }
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    // Ask where to save (prefilled with the page-supplied filename), then hand WKDownload
+    // the chosen URL. Save panel runs on the main thread as a sheet on our window.
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                  suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+        DispatchQueue.main.async {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = suggestedFilename.isEmpty ? "download" : suggestedFilename
+            panel.canCreateDirectories = true
+            let handle: (NSApplication.ModalResponse) -> Void = { resp in
+                guard resp == .OK, let url = panel.url else { completionHandler(nil); return }
+                // WKDownload requires the destination NOT to exist yet.
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                completionHandler(url)
+            }
+            if let win = self.webView.window {
+                panel.beginSheetModal(for: win, completionHandler: handle)
+            } else {
+                handle(panel.runModal())
+            }
+        }
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        NSLog("[hey-koko] download failed: \(error.localizedDescription)")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
