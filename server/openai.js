@@ -494,7 +494,18 @@ async function proxyChat(res, body) {
         const trimmed = line.trim();
         if (!trimmed.startsWith("data:")) continue;
         const dataStr = trimmed.slice(5).trim();
-        if (!dataStr || dataStr === "[DONE]") continue;
+        if (!dataStr) continue;
+        // `data: [DONE]` is the end marker. Finalize NOW rather than waiting for the
+        // upstream socket to close — some providers (notably DeepSeek) send [DONE] but
+        // keep the keep-alive connection open, which would otherwise leave `for await`
+        // hanging forever, so the client's response never ends and the UI stays stuck
+        // on "sending/receiving". Returning here also cancels the upstream stream.
+        if (dataStr === "[DONE]") {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          writeChunk({ message: { role: "assistant", content: "" }, done: true, prompt_eval_count: inputTokens, eval_count: outputTokens });
+          res.end();
+          return;
+        }
         let evt;
         try { evt = JSON.parse(dataStr); } catch { continue; }
 

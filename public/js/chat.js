@@ -1947,6 +1947,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
   let thinkingContent = "";
   let finalContent = "";
   let forceText = false;
+  let genError = null;
   try {
     for (let iter = 0; iter < 6; iter++) {
       const useTools = iter < 5 && !forceText; // last turn / repeat detected: force a text answer
@@ -2000,36 +2001,43 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
       break;
     }
   } catch (error) {
-    if (pending) pending.remove();
-    if (error.name !== "AbortError") {
-      const errReply = { role: "assistant", content: `⚠️ ${error.message}`, timestamp: Date.now() };
+    genError = error;   // only GENERATION (network/tool) errors belong in an error bubble
+  }
+
+  if (pending) pending.remove();
+
+  if (genError) {
+    if (genError.name !== "AbortError") {
+      const errReply = { role: "assistant", content: `⚠️ ${genError.message}`, timestamp: Date.now() };
       if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, errReply);
       else tab.messages.push(errReply);
       saveChat();
       if (state.activeTabId === tabId) renderChat();
-      showSendError(error.message);
+      showSendError(genError.message);
     }
-    setAvatarState("idle");
-    setGenerating(false);
-    state.currentAbortController = null;
-    return;
-  }
-
-  if (pending) pending.remove();
-  if (finalContent) {
+  } else if (finalContent) {
     const reply = { role: "assistant", content: finalContent, timestamp: Date.now(), genMs: Date.now() - genStart };
     if (toolSteps.length) reply.toolSteps = toolSteps;
     if (thinkingContent) reply.thinking = thinkingContent;
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, reply);
     else tab.messages.push(reply);
     saveChat();
-    if (state.activeTabId === tabId) renderChat();
-    showExpression(detectExpression(finalContent));
-    if (dom.autoSpeakCheckbox.checked && state.activeTabId === tabId) {
-      const btn = dom.messagesEl.querySelector(".message.assistant:last-child .speakMessage");
-      if (btn) speakMessage(finalContent, btn);
+    // Rendering is BEST-EFFORT and separate from generation: the reply is already
+    // valid, so a DOM glitch here (e.g. WebKit "object can not be found" while
+    // re-rendering the tool-steps block) must NOT surface as a ⚠️ generation error.
+    try {
+      if (state.activeTabId === tabId) renderChat();
+      showExpression(detectExpression(finalContent));
+      if (dom.autoSpeakCheckbox.checked && state.activeTabId === tabId) {
+        const btn = dom.messagesEl.querySelector(".message.assistant:last-child .speakMessage");
+        if (btn) speakMessage(finalContent, btn);
+      }
+    } catch (e) {
+      console.error("[agenticReply] post-render error (reply is fine):", e);
     }
   }
+
+  // Always clear generation state — no throw can reach here now (render is guarded).
   setAvatarState("idle");
   setGenerating(false);
   state.currentAbortController = null;
@@ -3543,7 +3551,10 @@ export function renderChat() {
     }
     // Insert thinking details block if present
     if (el && (message.thinking || message.thinkingFrames?.length)) {
-      const markdownBody = el.querySelector(".markdownBody");
+      // `:scope >` so we get the message's OWN body, not a nested `.markdownBody`
+      // inside an already-inserted thinking/tool block — inserting before a non-child
+      // throws WebKit's "The object can not be found here." NotFoundError.
+      const markdownBody = el.querySelector(":scope > .markdownBody");
       const details = buildThinkingDetails(message.thinking, message.thinkingFrames);
       if (markdownBody && details) el.insertBefore(details, markdownBody);
     }
@@ -3552,7 +3563,10 @@ export function renderChat() {
     // message content so it never re-enters the conversation context (buildMessages
     // sends only content). Same pattern as the tool-steps block below.
     if (el && message.autoProcess) {
-      const markdownBody = el.querySelector(".markdownBody");
+      // `:scope >` so we get the message's OWN body, not a nested `.markdownBody`
+      // inside an already-inserted thinking/tool block — inserting before a non-child
+      // throws WebKit's "The object can not be found here." NotFoundError.
+      const markdownBody = el.querySelector(":scope > .markdownBody");
       if (markdownBody) {
         const details = document.createElement("details");
         details.className = "thinking-details";
@@ -3562,7 +3576,10 @@ export function renderChat() {
     }
     // Insert tool-call details block (which tools the AI used, args + results)
     if (el && message.toolSteps && message.toolSteps.length) {
-      const markdownBody = el.querySelector(".markdownBody");
+      // `:scope >` so we get the message's OWN body, not a nested `.markdownBody`
+      // inside an already-inserted thinking/tool block — inserting before a non-child
+      // throws WebKit's "The object can not be found here." NotFoundError.
+      const markdownBody = el.querySelector(":scope > .markdownBody");
       if (markdownBody) {
         const body = message.toolSteps
           .map((s) => `**🔧 ${getToolLabel(s.name, s.args)}**\n\n\`\`\`\n${(s.result || "").slice(0, 1500)}\n\`\`\``)
