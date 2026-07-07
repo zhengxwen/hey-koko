@@ -5552,6 +5552,7 @@ button.secondary:disabled {
 .relGraphNavBtn { min-width: 26px; min-height: 24px; padding: 0 6px; font-size: 15px; line-height: 1; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
 .relGraphNavBtn:hover:not(:disabled) { background: var(--surface); border-color: var(--accent); color: var(--accent); }
 .relGraphNavBtn:disabled { opacity: 0.35; cursor: default; }
+.relGraphNavTimeline { margin-left: 6px; border-color: var(--accent); color: var(--accent); }
 .relGraphLegend.hasNav, .relGraphNav ~ .relGraphLegend { top: 44px; }
 /* Source-documents panel (bottom-left): click a row to open that document */
 .relGraphDocs { position: absolute; bottom: 12px; left: 14px; z-index: 2; max-width: 300px; max-height: 34vh; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; background: var(--panel-alpha, var(--panel)); border: 1px solid var(--line); border-radius: 8px; }

@@ -2492,9 +2492,12 @@ document.querySelector("#starMapBtn")?.addEventListener("click", () => {
 // library header (it's a whole-library analysis, unrelated to the star map's spatial layout).
 document.querySelector("#libraryTimelineBtn")?.addEventListener("click", async () => {
   try {
+    // Honor the library's folder-scope dropdown; empty value = whole library.
+    const folder = (document.querySelector("#libraryAskFolder")?.value || "").trim();
+    const body = folder ? JSON.stringify({ folders: [folder] }) : "{}";
     const [{ openTimeline }, data] = await Promise.all([
       import("./timeline.js"),
-      fetch("/api/library/timeline", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()),
+      fetch("/api/library/timeline", { method: "POST", headers: { "Content-Type": "application/json" }, body }).then((r) => r.json()),
     ]);
     if (!data || !data.events || !data.events.length) { alert(t("timelineEmpty")); return; }
     openTimeline(data.events, { onOpenDoc: (docId) => openLibraryDoc(docId) });

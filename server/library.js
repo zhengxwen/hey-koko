@@ -1465,10 +1465,11 @@ function timelineLibrary(req, res) {
   readBody(req).then((body) => {
     const names = (Array.isArray(body.names) ? body.names : []).map((n) => canonEntity(normalizeEntity(n))).filter(Boolean);
     const nameSet = names.length ? new Set(names) : null;
-    const folders = Array.isArray(body.folders) && body.folders.length ? new Set(body.folders) : null;
+    // folder scope is prefix-inclusive (a folder + all its sub-folders), matching retrieve()/ask.
+    const folders = Array.isArray(body.folders) && body.folders.length ? body.folders : null;
     const events = [];
     for (const it of loadIndex()) {
-      if (folders && !folders.has(locOf(it.docId))) continue;
+      if (folders) { const loc = locOf(it.docId); if (!folders.some((f) => loc === f || loc.startsWith(f + "/"))) continue; }
       const doc = readDoc(it.docId);
       for (const r of ((doc && doc.relations) || [])) {
         if (!Array.isArray(r) || r.length < 3) continue;

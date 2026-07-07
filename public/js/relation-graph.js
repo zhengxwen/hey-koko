@@ -396,7 +396,7 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, ra
 // enlarged, not shrunk to fit) and the box scrolls if it's taller than the viewport. A
 // semi-transparent ⌄ hint appears whenever more graph is hidden below the fold, and hides
 // once you reach the bottom. Backdrop click / × / Esc close it.
-function openGraphModal(rels, { title = "", center = "", onNodeClick = null, radial = false, onBack = null, onForward = null, onOpenDoc = null } = {}) {
+function openGraphModal(rels, { title = "", center = "", onNodeClick = null, radial = false, onBack = null, onForward = null, onOpenDoc = null, onTimeline = null } = {}) {
   const overlay = document.createElement("div"); overlay.className = "relGraphModal";
   const inner = document.createElement("div"); inner.className = "relGraphModalInner";
   const close = document.createElement("button"); close.type = "button"; close.className = "relGraphModalClose";
@@ -422,6 +422,11 @@ function openGraphModal(rels, { title = "", center = "", onNodeClick = null, rad
       zout.addEventListener("click", () => { spread = Math.max(0.4, spread * 0.83); draw(true); });
       zres.addEventListener("click", () => { spread = 1; draw(true); });
       navEl.append(zin, zout, zres);
+    }
+    if (onTimeline) {   // jump to a timeline scoped to the entities currently in view (B → C)
+      const tl = mkBtn("⏱", t("relGraphTimeline")); tl.classList.add("relGraphNavTimeline");
+      tl.addEventListener("click", () => onTimeline());
+      navEl.append(tl);
     }
   }
   const scroll = document.createElement("div"); scroll.className = "relGraphModalScroll" + (radial ? " isRadial" : "");
@@ -561,7 +566,7 @@ function openGraphModal(rels, { title = "", center = "", onNodeClick = null, rad
 // payload ({edges,center,centers}); `title(data)` builds the header; `fetchNeighborhood(names)`
 // (optional) lets the modal RECENTER on a clicked node by fetching that node's neighborhood.
 // Reuses the exact per-doc graph renderer + modal chrome.
-export function openEntityGraphModal({ data, title = () => "", fetchNeighborhood = null, onOpenDoc = null } = {}) {
+export function openEntityGraphModal({ data, title = () => "", fetchNeighborhood = null, onOpenDoc = null, onTimeline = null } = {}) {
   const toRels = (d) => (d.edges || []).map((e) => ({
     head: e.head, tail: e.tail, qual: e.qual || "", cooc: !!e.cooc, count: e.count, docIds: e.docIds || [], time: e.time || "",
     rel: e.cooc ? (t("relGraphCooc") + (e.count > 1 ? ` ·${e.count}` : "")) : (e.label || e.rel || ""),
@@ -589,6 +594,7 @@ export function openEntityGraphModal({ data, title = () => "", fetchNeighborhood
     title: title(data), center: centersOf(data), onNodeClick, radial: true, onOpenDoc,
     onBack: fetchNeighborhood ? () => { if (hi > 0) { hi--; load(hist[hi], false); } } : null,
     onForward: fetchNeighborhood ? () => { if (hi < hist.length - 1) { hi++; load(hist[hi], false); } } : null,
+    onTimeline: onTimeline ? () => onTimeline((hist[hi] || []).slice()) : null,
   });
   ctrl.render(first, { title: title(data), center: centersOf(data), onNodeClick, docTitle: docTitleOf(data), docs: data.docs || [] });
   ctrl.setNav(false, false);

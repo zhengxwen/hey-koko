@@ -1443,8 +1443,19 @@ async function showEntityNeighborhood(names) {
     const focus = cs.length === 1 ? cs[0].name : t("star_entityNeighborMulti", { n: cs.length });
     return t("star_entityNeighborTitle", { name: focus, n: d.nodes.length, d: d.docs.length });
   };
+  // ⏱ in the graph opens a timeline scoped to whatever entities are currently in view (B → C).
+  const openScopedTimeline = async (scopeSeeds) => {
+    try {
+      const [{ openTimeline }, tl] = await Promise.all([
+        import("./timeline.js"),
+        post("/api/library/timeline", { names: scopeSeeds }),
+      ]);
+      if (!tl || !tl.events || !tl.events.length) { alert(t("star_entityTimelineEmpty", { name: (scopeSeeds || []).join("、") })); return; }
+      openTimeline(tl.events, { onOpenDoc: (docId) => { closeStarMap(); openLibraryDoc(docId); } });
+    } catch (e) { console.error("entity timeline failed", e); }
+  };
   // Clicking a source-document row closes the star map and opens that doc in the library.
-  openEntityGraphModal({ data, title: titleOf, fetchNeighborhood: fetchN, onOpenDoc: (docId) => { closeStarMap(); openLibraryDoc(docId); } });
+  openEntityGraphModal({ data, title: titleOf, fetchNeighborhood: fetchN, onTimeline: openScopedTimeline, onOpenDoc: (docId) => { closeStarMap(); openLibraryDoc(docId); } });
 }
 // The 🔗 alias sub-panel: fuzzy merge suggestions (合并 / 忽略) + confirmed groups (拆分).
 function renderAliasPanel() {
