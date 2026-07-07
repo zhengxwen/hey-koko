@@ -203,6 +203,19 @@ export function setGenerating(active) {
   }
 }
 
+// WebKit/Safari (this app runs in WKWebView) sometimes fails to REJECT a pending
+// `reader.read()` when the underlying fetch is aborted, so a streaming read loop can
+// hang forever — the reply never stops and the UI stays stuck on "正在停止中".
+// Canceling the reader on abort makes the pending read() resolve `{done:true}`, which
+// cleanly breaks the loop; `signal.aborted` still tells us it was a user stop. Call
+// this right after getReader() on every streaming response.
+function cancelReaderOnAbort(reader, signal) {
+  if (!signal) return;
+  const cancel = () => { try { reader.cancel(); } catch { /* already closed */ } };
+  if (signal.aborted) { cancel(); return; }
+  signal.addEventListener("abort", cancel, { once: true });
+}
+
 // Short label for a queued /imagine job (first prompt, or a generic fallback).
 function bgImagineLabel(cmds, isVideo) {
   const txt = cmds.map((c) => c.prompt).filter(Boolean).join("; ").trim();
@@ -828,6 +841,7 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
     }
 
     const reader = response.body.getReader();
+    cancelReaderOnAbort(reader, abortController.signal);   // WebKit: unblock a hung read() on Stop
     const decoder = new TextDecoder();
     let buffer = "";
     let content = "";
@@ -996,6 +1010,7 @@ async function handleTitleCommand(tab, tabId, content) {
         });
         if (response.ok) {
           const reader = response.body.getReader();
+          cancelReaderOnAbort(reader, abortController.signal);   // WebKit: unblock a hung read() on Stop
           const decoder = new TextDecoder();
           let buffer = "";
           let result = "";
@@ -1230,6 +1245,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     }
 
     const reader = response.body.getReader();
+    cancelReaderOnAbort(reader, abortController.signal);   // WebKit: unblock a hung read() on Stop
     const decoder = new TextDecoder();
     let buffer = "";
     let firstChunkReceived = false;
@@ -1452,6 +1468,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     }
 
     const reader = response.body.getReader();
+    cancelReaderOnAbort(reader, abortController.signal);   // WebKit: unblock a hung read() on Stop
     const decoder = new TextDecoder();
     let buffer = "";
     let firstChunkReceived = false;
@@ -1693,6 +1710,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
     }
 
     const reader = response.body.getReader();
+    cancelReaderOnAbort(reader, abortController.signal);   // WebKit: unblock a hung read() on Stop
     const decoder = new TextDecoder();
     let buffer = "";
     let firstChunk = false;
@@ -2243,6 +2261,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
 
       // Stream the answer into the bubble.
       const reader = response.body.getReader();
+      cancelReaderOnAbort(reader, abortController.signal);   // WebKit: unblock a hung read() on Stop
       const decoder = new TextDecoder();
       let buffer = "";
       let firstChunk = false;
