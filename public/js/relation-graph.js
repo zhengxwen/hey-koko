@@ -243,6 +243,7 @@ const el = (tag, attrs, text) => {
   return e;
 };
 const trunc = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+let svgSeq = 0;   // per-svg id prefix so multiple graphs' arrow markers never collide
 
 // Build the SVG for a set of relations. `full` = full-screen mode: bigger layout, longer
 // labels, and a wider stroke class so text stays readable when the graph fills the screen.
@@ -303,10 +304,24 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, ra
   svgAttrs.width = Math.round(W * scale);
   svgAttrs.height = Math.round(H * scale);
   const svg = el("svg", svgAttrs);
-  const defs = el("defs");
-  const marker = el("marker", { id: "relArrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
-  marker.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", class: "relArrowHead" }));
-  defs.appendChild(marker); svg.appendChild(defs);
+  const defs = el("defs"); svg.appendChild(defs);
+  // Per-colour arrow markers. An SVG marker can't reliably inherit its line's stroke
+  // (context-stroke isn't supported in every browser — it renders black where it isn't),
+  // so mint ONE marker per distinct edge colour and point each edge at the matching one.
+  // Marker ids are prefixed per-svg so multiple graphs on the page never collide.
+  const gid = "rg" + (++svgSeq);
+  // Default (uncoloured) edge colour — matches the CSS (.relEdge → var(--muted)) so a
+  // default arrow matches its darkened edge. Coloured edges pass their own ec below.
+  const defaultArrowColor = (getComputedStyle(document.documentElement).getPropertyValue("--muted") || "#8a8f98").trim();
+  const arrowMarkers = new Map();   // colour string → marker id
+  function markerFor(color) {
+    if (arrowMarkers.has(color)) return arrowMarkers.get(color);
+    const mid = `${gid}a${arrowMarkers.size}`;
+    const mk = el("marker", { id: mid, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "4", markerHeight: "4", orient: "auto-start-reverse" });
+    mk.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", class: "relArrowHead", fill: color }));
+    defs.appendChild(mk); arrowMarkers.set(color, mid);
+    return mid;
+  }
   const NR = full ? 6 : 5;   // node radius
   for (const r of rels) {   // edges first (under nodes)
     if (!edgeVisible(r)) continue;   // legend toggle hid this edge's category
@@ -324,10 +339,10 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, ra
       if (titles.length) tip += `\n${t("relGraphFrom")}: ${titles.slice(0, 4).join(" · ")}${r.docIds.length > 4 ? " …" : ""}`;
     }
     // wider transparent hit-line so the edge is easy to hover, both carrying the tooltip
-    const lineAttrs = { x1, y1, x2, y2, class: "relEdge" + (r.cooc ? " relEdgeCooc" : "") };
-    if (!r.cooc) lineAttrs["marker-end"] = "url(#relArrow)";
+    const ec = edgeColor(r);   // per-center colour (null = default grey edge)
+    const lineAttrs = { x1, y1, x2, y2, class: "relEdge" + (r.cooc ? " relEdgeCooc" : "") + (ec ? "" : " relEdgeDim") };
+    if (!r.cooc) lineAttrs["marker-end"] = `url(#${markerFor(ec || defaultArrowColor)})`;   // arrow matches the edge colour
     const line = el("line", lineAttrs);
-    const ec = edgeColor(r);
     if (ec) line.style.stroke = ec;   // inline style (beats the CSS stroke) — colour by center
     line.appendChild(el("title", {}, tip));
     svg.appendChild(line);
@@ -456,8 +471,9 @@ function openGraphModal(rels, { title = "", center = "", onNodeClick = null, rad
     legend.innerHTML = "";
     const lineSwatch = (dashed) => {
       const s = el("svg", { viewBox: "0 0 26 8", class: "relGraphLegendSwatch" });
-      const mk = el("marker", { id: "relArrowLegend", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
-      mk.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", class: "relArrowHead" }));
+      const mk = el("marker", { id: "relArrowLegend", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "4", markerHeight: "4", orient: "auto-start-reverse" });
+      const legLineColor = (getComputedStyle(document.documentElement).getPropertyValue("--muted") || "#8a8f98").trim();
+      mk.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", class: "relArrowHead", fill: legLineColor }));
       const defs = el("defs"); defs.appendChild(mk); s.appendChild(defs);
       const ln = el("line", { x1: 1, y1: 4, x2: dashed ? 25 : 19, y2: 4, class: "relEdge" + (dashed ? " relEdgeCooc" : "") });
       if (!dashed) ln.setAttribute("marker-end", "url(#relArrowLegend)");

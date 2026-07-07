@@ -5501,11 +5501,15 @@ button.secondary:disabled {
 .relGraphSummary:hover { color: var(--ink); }
 .relGraphStage { padding: 4px 6px 8px; }
 .relGraphSvg { display: block; width: auto; max-width: 100%; height: auto; max-height: 520px; margin-inline: auto; }
-.relGraphSvg .relEdge { stroke: var(--line); stroke-width: 1.3; }
+/* Default (uncoloured) edges use var(--muted), not the faint var(--line), so relation
+   graphs read clearly — both the inline card preview and the double-click modal.
+   Colour-by-centre edges (entity graph) set their own stroke inline and are unaffected. */
+.relGraphSvg .relEdge { stroke: var(--muted); stroke-width: 1.3; }
 .relGraphSvg .relEdgeHit { stroke: transparent; stroke-width: 14; cursor: help; pointer-events: stroke; }
 .relGraphSvg .relEdge { pointer-events: none; }
 .relGraphSvg .relEdgeLabel { cursor: help; }
-.relGraphSvg .relArrowHead { fill: var(--muted); }
+/* Arrowhead colour is set PER-MARKER in JS (one marker per edge colour) so each arrow
+   matches its edge — don't set `fill` here or it would override that. */
 .relGraphSvg .relNode { fill: var(--accent); stroke: var(--panel); stroke-width: 1.5; }
 .relGraphSvg .relNodeLabel { font-size: 11px; fill: var(--ink); stroke: var(--panel-alpha, var(--panel)); stroke-width: 3px; }
 .relGraphSvg .relEdgeLabel { font-size: 9.5px; fill: var(--muted); stroke: var(--panel-alpha, var(--panel)); stroke-width: 3px; }
@@ -5550,8 +5554,13 @@ button.secondary:disabled {
 .relGraphSvg .relNodeShared { fill: var(--panel); stroke: var(--ink); stroke-width: 2.5; stroke-dasharray: 2.5 2; }
 /* legend shared dot: hollow + ringed (higher specificity so it isn't overridden by .relNode) */
 .relGraphLegend .relNode.relNodeShared { fill: var(--panel); stroke: var(--ink); stroke-width: 2; stroke-dasharray: 2.5 2; }
-/* Co-occurrence edges (share a doc, no explicit relation): dashed + muted, undirected */
-.relGraphSvg .relEdgeCooc { stroke-dasharray: 4 3; opacity: 0.6; }
+/* Co-occurrence edges (share a doc, no explicit relation): dashed + muted, undirected.
+   Half the width of a solid relation edge so the dashed mesh reads as lighter/secondary. */
+.relGraphSvg .relEdgeCooc { stroke-dasharray: 4 3; opacity: 0.6; stroke-width: 0.65; }
+.relGraphSvgFull .relEdgeCooc { stroke-width: 0.9; }
+/* Entity neighbourhood (radial) graph: thin the grey/uncoloured edges to 2/3 (1.8→1.2)
+   so the coloured by-centre relations stand out, without the grey ones getting too faint. */
+.relGraphSvgRadial .relEdgeDim { stroke-width: 1.2; }
 /* Timeline layer: the year on a timed relation edge (small, on a halo so it reads over the line) */
 .relGraphSvg .relEdgeYear { font-size: 11px; font-weight: 600; fill: var(--muted); stroke: var(--panel-alpha, var(--panel)); stroke-width: 3px; pointer-events: none; }
 .relGraphLegend .relEdgeYear { font-size: 9px; font-weight: 600; fill: var(--muted); stroke: none; }
@@ -5563,9 +5572,9 @@ button.secondary:disabled {
 .relGraphLegendRow span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .relGraphLegendRow.isOff { opacity: 0.4; text-decoration: line-through; }
 .relGraphLegendSwatch { width: 26px; height: 8px; flex: none; }
-.relGraphLegend .relEdge { stroke: var(--line); stroke-width: 1.8; }
-.relGraphLegend .relEdgeCooc { stroke-dasharray: 4 3; opacity: 0.7; }
-.relGraphLegend .relArrowHead { fill: var(--muted); }
+.relGraphLegend .relEdge { stroke: var(--muted); stroke-width: 1.8; }
+.relGraphLegend .relEdgeCooc { stroke-dasharray: 4 3; opacity: 0.7; stroke-width: 0.9; }
+/* legend arrow colour is set on the marker in JS — no fill here */
 .relGraphLegend .relNode { fill: var(--accent); }
 /* Back/forward nav (top-left, above legend) */
 .relGraphNav { position: absolute; top: 10px; left: 14px; z-index: 3; display: flex; gap: 4px; }
