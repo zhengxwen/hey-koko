@@ -27,7 +27,7 @@ const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
 const { listSystemVoices, speakAudio } = require("./server/speech");
 const { listTtsVoices, synthesize } = require("./server/tts");
 const { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives } = require("./server/archive");
-const { importLibrary, listLibrary, searchLibrary, getLibraryDoc, saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, listLibraryDirs, moveLibraryDocs, rescanLibrary, rateLibraryDoc, editLibraryTag, distillLibraryDoc, relatedLibraryDocs, entityLookupLibrary, entityFacetsLibrary, aliasesLibrary, aliasEditLibrary, entityNeighborhoodLibrary, timelineLibrary } = require("./server/library");
+const { importLibrary, listLibrary, searchLibrary, getLibraryDoc, saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, listLibraryDirs, moveLibraryDocs, rescanLibrary, rateLibraryDoc, editLibraryTag, distillLibraryDoc, relatedLibraryDocs, entityLookupLibrary, entityFacetsLibrary, aliasesLibrary, aliasEditLibrary, entityNeighborhoodLibrary, timelineLibrary, expandByRelationsLibrary, relationsForQueryLibrary } = require("./server/library");
 const { serveStarmap } = require("./server/star-map");
 const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file");
 const bgQueue = require("./server/jobs");   // Option B: server-side background job queue
@@ -360,6 +360,16 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/library/entity-neighborhood") {
     entityNeighborhoodLibrary(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/library/expand") {
+    expandByRelationsLibrary(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/library/relations") {
+    relationsForQueryLibrary(req, res);
     return;
   }
 

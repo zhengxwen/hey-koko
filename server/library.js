@@ -180,7 +180,8 @@ async function embedDocVectors(doc, id, folder, model) {
 function loadIndex() { try { return JSON.parse(fs.readFileSync(indexFile(), "utf-8")); } catch { return []; } }
 let _entityIdx = null;   // { byName: Map<normName,{display,docs:Set}>, byDoc: Map<docId,Set<normName>> }
 let _entityFacets = null; // { facets:[{type,entities:[{name,count,docIds}]}] } — type-aware, reads docs
-function saveIndex(arr) { ensureDir(); fs.writeFileSync(indexFile(), JSON.stringify(arr)); _entityIdx = null; _entityFacets = null; _aliasMap = null; _entityGraph = null; }
+let _entitySurfaces = null; // Map<normalizedSurface, canonKey> — every entity name/alias, for query matching
+function saveIndex(arr) { ensureDir(); fs.writeFileSync(indexFile(), JSON.stringify(arr)); _entityIdx = null; _entityFacets = null; _aliasMap = null; _entityGraph = null; _entitySurfaces = null; }
 
 // ---- entity alias unification (structure layer) ---------------------------
 // Cross-doc entities fragment ("毕导" vs "毕导THU"; "GraphRAG" vs "Graph RAG"). aliases.json
@@ -200,7 +201,7 @@ function loadAliasStore() {
 function saveAliasStore(store) {
   ensureDir();
   fs.writeFileSync(aliasFile(), JSON.stringify(store));
-  _aliasStore = store; _aliasMap = null; _entityIdx = null; _entityFacets = null; _entityGraph = null;
+  _aliasStore = store; _aliasMap = null; _entityIdx = null; _entityFacets = null; _entityGraph = null; _entitySurfaces = null;
 }
 // Stable order-independent key for a pair of normalized names (rejected-suggestion set).
 // Tab-joined (never a NUL byte, which corrupts grep/tooling).
@@ -299,6 +300,49 @@ function entityIndex() {
   }
   _entityIdx = { byName, byDoc };
   return _entityIdx;
+}
+// Every entity SURFACE FORM (normalized name + every alias) → its canonical key, for
+// matching entities mentioned in a free-text /ask query. Keys of aliasResolver() are
+// already the normalized surfaces (name AND alias — the union-find saw both); the
+// entityIndex pass backfills canonical displays not otherwise present. 1-char surfaces
+// are dropped (too noisy). Cached with the other entity layers.
+function entitySurfaces() {
+  if (_entitySurfaces) return _entitySurfaces;
+  const m = new Map();
+  for (const [surface, v] of aliasResolver()) {
+    if (surface.length >= 2) m.set(surface, v.canonicalKey);
+  }
+  const { byName } = entityIndex();
+  for (const [canonKey, e] of byName) {
+    const nk = normalizeEntity(e.display);
+    if (nk.length >= 2 && !m.has(nk)) m.set(nk, canonKey);
+  }
+  _entitySurfaces = m;
+  return _entitySurfaces;
+}
+// Canonical entity keys whose name/alias occurs in the query text. CJK surfaces match
+// as plain substrings (no word boundaries in CJK); pure-ASCII surfaces require word
+// boundaries so "AI" doesn't fire inside "maintain". The query is normalized the same
+// way surfaces are (NFKC + lowercase).
+function queryEntityHits(query) {
+  const ql = normalizeEntity(query);
+  if (!ql) return new Set();
+  const hits = new Set();
+  for (const [surface, canonKey] of entitySurfaces()) {
+    let matched;
+    if (/[^\x00-\x7f]/.test(surface)) {
+      matched = ql.includes(surface);
+    } else {
+      matched = false;
+      for (let i = ql.indexOf(surface); i !== -1 && !matched; i = ql.indexOf(surface, i + 1)) {
+        const before = i === 0 ? " " : ql[i - 1];
+        const after = i + surface.length >= ql.length ? " " : ql[i + surface.length];
+        if (!/\w/.test(before) && !/\w/.test(after)) matched = true;
+      }
+    }
+    if (matched) hits.add(canonKey);
+  }
+  return hits;
 }
 // Type-aware facet aggregate for the star map's entity picker: entities grouped by TYPE,
 // each with its docIds and a count. Types live only in the full docs (index.json projects
@@ -635,13 +679,41 @@ async function retrieve(query, model, { docId = null, docIds = null, folder = nu
   if (!pool.length) return [];
   const qvec = await embedQuery(query, model);
   if (!qvec) return [];
-  // cosine top-N candidates → optional LLM listwise rerank → MMR-select topK.
-  let cands = pool
-    .map(it => ({ it, score: cosine(qvec, it.vec) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, Math.max(topK * 4, 24));
+  // Structure-layer boost: docs that literally NAME an entity mentioned in the query
+  // (alias-folded, so "毕导" hits "毕啸天") get a score bonus + a guaranteed candidate
+  // seat — embedding alone under-weights proper nouns, so a doc that's exactly about the
+  // named entity can otherwise fall out of the top-N. Whole-library / folder scope only.
+  const entKeys = queryEntityHits(query);
+  const entDocs = new Set();
+  if (entKeys.size) {
+    const { byName } = entityIndex();
+    // Ubiquity guard: an entity present in most docs isn't discriminative (boosting half
+    // the library ≈ boosting nothing but noise), so skip entities over ~half the pool.
+    const poolDocs = new Set(pool.map(it => it.docId)).size;
+    const maxDocs = Math.max(8, Math.floor(poolDocs * 0.5));
+    for (const k of entKeys) {
+      const e = byName.get(k);
+      if (!e || e.docs.size > maxDocs) continue;
+      for (const id of e.docs) entDocs.add(id);
+    }
+  }
+  const ENTITY_BONUS = 0.15;
+  // cosine (+ entity bonus) top-N candidates → optional LLM listwise rerank → MMR topK.
+  const scored = pool
+    .map(it => { const base = cosine(qvec, it.vec); const entHit = entDocs.has(it.docId); return { it, base, score: base + (entHit ? ENTITY_BONUS : 0), entHit }; })
+    .sort((a, b) => b.score - a.score);
+  let cands = scored.slice(0, Math.max(topK * 4, 24));
+  if (entDocs.size) {
+    // Force each entity-hit doc's best block into the pool if the boost didn't already
+    // land it there (capped at topK, so a broad entity match can't flood the candidates).
+    const present = new Set(cands.map(c => c.it.docId));
+    const bestByDoc = new Map();
+    for (const s of scored) { if (!s.entHit) continue; const cur = bestByDoc.get(s.it.docId); if (!cur || s.base > cur.base) bestByDoc.set(s.it.docId, s); }
+    let injected = 0;
+    for (const [docId, s] of bestByDoc) { if (present.has(docId) || injected >= topK) continue; cands.push(s); injected++; }
+  }
   if (rerank) cands = await rerankCandidates(query, cands, rerank, topK, language);
-  return mmrSelect(cands, topK).map(s => ({ ...s.it, score: s.score, vec: undefined }));
+  return mmrSelect(cands, topK).map(s => ({ ...s.it, score: s.score, entMatched: !!s.entHit, vec: undefined }));
 }
 
 // Greedy MMR (maximal marginal relevance): pick topK balancing relevance against
@@ -1097,6 +1169,7 @@ async function retrieveLibrary(req, res) {
       hits: hits.map(h => ({
         docId: h.docId, title: h.title, docKind: h.docKind, blockId: h.blockId,
         section: h.section, kind: h.kind, content: h.content, score: h.score, hasImage: h.hasImage,
+        entMatched: !!h.entMatched,   // hit was boosted/seated by a query-entity match
       })),
       images,
     });
@@ -1455,6 +1528,80 @@ function entityNeighborhoodLibrary(req, res) {
     const docs = [...docSet].map((id) => { const m = metaById.get(id) || {}; return { docId: id, title: m.title || id, docKind: m.docKind || "doc" }; });
     const centers = seeds.map((k) => { const n = nodes.get(k); return { key: k, name: n.name, type: n.type, count: n.docs.size }; });
     sendJson(res, 200, { center: centers[0], centers, nodes: outNodes, edges: outEdges, docs });
+  }).catch((e) => sendJson(res, 500, { error: e.message }));
+}
+
+// POST /api/library/expand { docIds, folders? } → { docs:[{docId,title,docKind,via:[names]}] }
+// Relation-hop expansion for /ask -a: from the entities in the already-read docs, walk ONE
+// relation hop in the cross-doc graph to neighbor entities, and return the OTHER docs those
+// neighbors appear in (ranked by how many distinct neighbor entities connect them). This is
+// the structural counterpart to embedding retrieval — it finds docs linked by fact, not by
+// wording (e.g. read a paper → surface docs about its authors / institution).
+function expandByRelationsLibrary(req, res) {
+  readBody(req).then((body) => {
+    const docIds = Array.isArray(body.docIds) ? body.docIds : [];
+    if (!docIds.length) { sendJson(res, 200, { docs: [] }); return; }
+    const { nodes, edges, byDoc } = entityGraph();
+    const inputSet = new Set(docIds);
+    const seeds = new Set();
+    for (const id of docIds) { const s = byDoc.get(id); if (s) for (const k of s) seeds.add(k); }
+    if (!seeds.size) { sendJson(res, 200, { docs: [] }); return; }
+    const adj = new Map();
+    for (const ed of edges.values()) {
+      if (!adj.has(ed.head)) adj.set(ed.head, new Set());
+      if (!adj.has(ed.tail)) adj.set(ed.tail, new Set());
+      adj.get(ed.head).add(ed.tail); adj.get(ed.tail).add(ed.head);
+    }
+    const neighbors = new Set();
+    for (const s of seeds) { const a = adj.get(s); if (a) for (const n of a) if (!seeds.has(n)) neighbors.add(n); }
+    if (!neighbors.size) { sendJson(res, 200, { docs: [] }); return; }
+    const folders = Array.isArray(body.folders) && body.folders.length ? body.folders : null;
+    const inFolder = (docId) => !folders || folders.includes(locOf(docId));
+    const metaById = new Map(loadIndex().map((d) => [d.docId, d]));
+    const docScore = new Map();   // docId -> { count, via:Set(entity display) }
+    for (const ne of neighbors) {
+      const node = nodes.get(ne);
+      if (!node) continue;
+      for (const docId of node.docs) {
+        if (inputSet.has(docId) || !inFolder(docId)) continue;
+        let rec = docScore.get(docId);
+        if (!rec) { rec = { count: 0, via: new Set() }; docScore.set(docId, rec); }
+        rec.count++; rec.via.add(node.name);
+      }
+    }
+    const docs = [...docScore.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 8)
+      .map(([docId, rec]) => { const m = metaById.get(docId) || {}; return { docId, title: m.title || docId, docKind: m.docKind || "doc", via: [...rec.via].slice(0, 4) }; });
+    sendJson(res, 200, { docs });
+  }).catch((e) => sendJson(res, 500, { error: e.message }));
+}
+
+// POST /api/library/relations { query, folders? } → { relations:[{head,rel,tail,docId,time}], entities:[names] }
+// Structure-layer direct answer: the relation triples in the library that INVOLVE an entity
+// named in the query (alias-folded). Fed to /ask synthesis as high-confidence facts so
+// questions like "谁发表了X" / "X和Y什么关系" are answered from the graph, not just prose.
+function relationsForQueryLibrary(req, res) {
+  readBody(req).then((body) => {
+    const entKeys = queryEntityHits(String(body.query || ""));
+    if (!entKeys.size) { sendJson(res, 200, { relations: [], entities: [] }); return; }
+    const { nodes, edges } = entityGraph();
+    const folders = Array.isArray(body.folders) && body.folders.length ? body.folders : null;
+    const inFolder = (docId) => !folders || folders.includes(locOf(docId));
+    const out = [];
+    for (const ed of edges.values()) {
+      if (!entKeys.has(ed.head) && !entKeys.has(ed.tail)) continue;
+      const docs = [...ed.docs].filter(inFolder);
+      if (!docs.length) continue;
+      let label = "", best = -1;
+      for (const [l, c] of ed.labels) if (c > best) { best = c; label = l; }
+      const hn = nodes.get(ed.head), tn = nodes.get(ed.tail);
+      const time = ed.times.size ? [...ed.times.entries()].sort((a, b) => b[1] - a[1])[0][0] : "";
+      out.push({ head: (hn && hn.name) || ed.head, rel: label, tail: (tn && tn.name) || ed.tail, docId: docs[0], time });
+      if (out.length >= 30) break;
+    }
+    const entities = [...entKeys].map((k) => { const n = nodes.get(k); return n ? n.name : null; }).filter(Boolean);
+    sendJson(res, 200, { relations: out, entities });
   }).catch((e) => sendJson(res, 500, { error: e.message }));
 }
 
@@ -2226,6 +2373,7 @@ module.exports = {
   entityLookupLibrary, entityIndex, entityFacetsLibrary, entityFacets,
   aliasesLibrary, aliasEditLibrary, aliasResolver, aliasSuggestions,   // entity alias unification
   entityNeighborhoodLibrary, entityGraph,   // cross-doc entity network graph
+  expandByRelationsLibrary, relationsForQueryLibrary,   // /ask -a relation-hop expansion + relation direct-answer
   timelineLibrary,   // dedicated timeline view (time-qualified relations)
   cleanStructure, renderStructure, parseStructureSections, normalizeEntity,   // exported for testing
 };

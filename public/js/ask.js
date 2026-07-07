@@ -247,7 +247,10 @@ export async function runLibraryQuery(query, { docId = null, docIds = null, arch
     }
   }
   if (!sysParts.length) return { answer: t("lib_noResults"), hits: [], truncated };
-  const sys = sysParts.join("\n\n");
+  // ③ Structure-layer: prepend relation facts about any entity named in the query, so
+  // relation questions are grounded in the graph. Empty (no-op) when no entity is named.
+  const relFacts = await relationFactsBlock(query, folderList, signal);
+  const sys = relFacts + sysParts.join("\n\n");
   const userMsg = { role: "user", content: query };
   if (images && images.length) userMsg.images = images.map((im) => im.image);
 
@@ -615,6 +618,28 @@ async function retrieveUnion(queries, { folders = [], seen = new Set(), signal =
   return out;
 }
 
+// ② Relation-hop expansion: given the docs already read, ask the server for docs that are
+// STRUCTURALLY related (one relation hop away in the cross-doc graph — e.g. docs about a
+// read paper's authors/institution). The structural complement to embedding search; gives
+// the auto loop direction that keyword re-planning can't. Best-effort, additive.
+async function expandRelations(docIds, folders = [], signal = null) {
+  try { const r = await postJson("/api/library/expand", { docIds, folders }, signal); return (r && r.docs) || []; }
+  catch (e) { if (e && e.name === "AbortError") throw e; return []; }
+}
+
+// ③ Relation direct-answer: the relation triples in the library that involve entities named
+// in the query (alias-folded), as a compact fact block to PREPEND to the answer's system
+// prompt — so "谁发表了X" / "X和Y什么关系" are answered from the graph, not just prose.
+// Returns "" when the query names no known entity. Best-effort.
+async function relationFactsBlock(query, folders = [], signal = null) {
+  try {
+    const r = await postJson("/api/library/relations", { query, folders }, signal);
+    if (!r || !r.relations || !r.relations.length) return "";
+    const lines = r.relations.map((rel) => `- ${rel.head} —${rel.rel}→ ${rel.tail}${rel.time ? `（${rel.time}）` : ""}`);
+    return t("auto_relFactsHeader") + "\n" + lines.join("\n") + "\n\n";
+  } catch (e) { if (e && e.name === "AbortError") throw e; return ""; }
+}
+
 // Planner call. round 1: returns {queries, isCompare, dims}. Later rounds (with
 // accumulated notes): returns {done, queries}. Any failure → a safe fallback so the
 // run degrades to a single-round plain retrieval instead of erroring out.
@@ -706,6 +731,9 @@ export async function handleAutoAsk(task, tab, scope = {}, insertAt = null) {
     let truncatedAny = false;
     const budget = Math.max(2000, getNumCtx() - 8192);   // synth/read token budget
     if (explicitDims) addLog(t("auto_dims", { dims: explicitDims.join(" / ") }));
+    // ③ relation facts about entities named in the task — prepended to synthesis (both
+    // paths). "" when the task names no known entity. Fetched once up front.
+    const relFacts = await relationFactsBlock(task, folders, signal);
 
     // ---- GATHER: plan → retrieve → read, looping until done / dry / caps ----
     for (let round = 1; round <= AUTO_ROUNDS && seen.size < AUTO_MAXDOCS; round++) {
@@ -724,7 +752,19 @@ export async function handleAutoAsk(task, tab, scope = {}, insertAt = null) {
       addLog(t("auto_traceRound", { round }) + queries.map((q) => "`" + q + "`").join(" / "));
       if (planEntities.length) addLog(t("auto_traceEntities") + planEntities.map((e) => "`" + e + "`").join(" / "));
       setStatus(t("auto_searching", { n: queries.length }));
-      const fresh = await retrieveUnion(queries, { folders, seen, signal, entities: planEntities });
+      let fresh = await retrieveUnion(queries, { folders, seen, signal, entities: planEntities });
+      // ② Relation-hop expansion (once we've read something): pull docs structurally
+      // linked to what we've read — neighbors in the relation graph, which embedding /
+      // keyword search would miss. Additive; dedup against seen + this round's fresh.
+      if (seen.size) {
+        const relDocs = await expandRelations([...seen], folders, signal);
+        const relFresh = relDocs.filter((d) => !seen.has(d.docId) && !fresh.some((f) => f.docId === d.docId));
+        if (relFresh.length) {
+          addLog(t("auto_relExpand", { n: relFresh.length }) + "\n" +
+            relFresh.map((d) => `* ${srcLinkMd(`${kindIcon(d.docKind)} ${d.title}`, { docId: d.docId })}${d.via && d.via.length ? ` — 🔗 ${d.via.join("、")}` : ""}`).join("\n"));
+          fresh = fresh.concat(relFresh);
+        }
+      }
       if (!fresh.length) { addLog(t("auto_traceDry")); break; }   // dry
       const take = fresh.slice(0, AUTO_MAXDOCS - seen.size);
       // Show which docs surfaced, one per bullet line, each a clickable library link.
@@ -742,7 +782,7 @@ export async function handleAutoAsk(task, tab, scope = {}, insertAt = null) {
           amsg.content = t("auto_synth");
           rerender();
           const L = autoL();
-          const sys = L.synthFull + "\n\n" + L.fullLabel + full.text;
+          const sys = relFacts + L.synthFull + "\n\n" + L.fullLabel + full.text;
           const answer = await chatOnce([{ role: "system", content: sys }, { role: "user", content: L.taskLabel + task }],
             { signal, temperature: 0.3, onToken: (acc) => { streamed = true; amsg.searching = false; amsg.content = acc; paint(); } });
           amsg.searching = false;
@@ -752,10 +792,14 @@ export async function handleAutoAsk(task, tab, scope = {}, insertAt = null) {
       }
 
       // SLOW PATH: read each fresh doc alone into a compact note (map-reduce).
+      // Capture the prior-rounds count ONCE — `seen` grows inside the loop (seen.add
+      // below), so reading seen.size per-iteration would double-count (17/12 bug).
+      const doneBefore = seen.size;
+      const total = Math.min(AUTO_MAXDOCS, doneBefore + take.length);
       let i = 0;
       for (const d of take) {
         i++;
-        setStatus(t("auto_traceReading", { i: seen.size + i, n: Math.min(AUTO_MAXDOCS, seen.size + take.length), title: d.title }));
+        setStatus(t("auto_traceReading", { i: doneBefore + i, n: total, title: d.title }));
         seen.add(d.docId);
         let info;
         try { info = await fetchDocText(d.docId, askFullBudget(), signal); }   // per-doc read budget (chars), reuses the ⚙/auto budget
@@ -778,7 +822,7 @@ export async function handleAutoAsk(task, tab, scope = {}, insertAt = null) {
     rerender();
     const L = autoL();
     const notesText = notes.map((n) => `【${n.title}】\n${n.note}`).join("\n\n");
-    const sys = (wantCompare && dims && dims.length ? L.synthNotesCompare(dims.join(" / ")) : L.synthNotes)
+    const sys = relFacts + (wantCompare && dims && dims.length ? L.synthNotesCompare(dims.join(" / ")) : L.synthNotes)
       + "\n\n" + L.notesLabel + notesText;
     const answer = await chatOnce([{ role: "system", content: sys }, { role: "user", content: L.taskLabel + task }],
       { signal, temperature: 0.3, onToken: (acc) => { streamed = true; amsg.searching = false; amsg.content = acc; paint(); } });
