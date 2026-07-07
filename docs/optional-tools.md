@@ -65,18 +65,12 @@ Hey-Koko auto-detects `~/venv/unlimited-ocr` even without the env var. Once dete
 
 ## LibreOffice
 
-Whole-slide **page images** for slide decks imported into the knowledge library. When enabled, each slide of a `.pptx` (or slide-style PDF) is rendered to a full-page JPEG stored on that page, so `/ask` can hand a vision model the actual page — charts, diagrams, layout, SmartArt — not just its terse bullet text. This is **opt-in and off by default** (the page rasters add ~200–350 KB per page to a document).
+Whole-slide **page images** for slide decks imported into the knowledge library. Each slide of a `.pptx` (or slide-style PDF) is rendered to a full-page JPEG stored on that page, so `/ask` can hand a vision model the actual page — charts, diagrams, layout, SmartArt — not just its terse bullet text. Rendering runs automatically for slide imports when a backend is present (no flag to enable); it just adds the page rasters to the document (~200–350 KB per page).
 
 ```bash
 brew install --cask libreoffice          # macOS
 sudo apt install -y libreoffice          # Linux (Debian/Ubuntu)
 winget install TheDocumentFoundation.LibreOffice   # Windows
-```
-
-Then turn slide rendering on:
-
-```bash
-export HEYKOKO_SLIDES_RENDER=1
 ```
 
 **How it works & requirements.** `.pptx` decks are converted to PDF headlessly (`soffice --convert-to pdf`), then each page is rasterized with `pypdfium2` — which ships in [MinerU](#mineru)'s virtual environment, so **MinerU must also be installed** (Hey-Koko auto-derives its Python from the `mineru` launcher; override with `SLIDES_PYTHON=/path/to/python`). Slide-style **PDFs render without LibreOffice** — they go straight through `pypdfium2`. If neither LibreOffice nor MinerU is present, decks still import with their text and figure crops; only the whole-page images are skipped.

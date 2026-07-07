@@ -9,7 +9,7 @@
 //          reused). PowerPoint via AppleScript is a last-resort fallback: on recent macOS
 //          builds its sandbox silently drops AppleScript `save`/export (verified: open+read
 //          work, but JPG/PDF/copy saves all write nothing), so it usually yields nothing.
-// Opt-in behind config.slidesRender. See docs/plans/slides-library.md P3.
+// Runs automatically for slide imports; no-ops when no backend is present. See P3 in the plan.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -64,12 +64,11 @@ let detectDone = false;
   hasPptxRender = (!!sofficePath && hasPdfRender) || hasPowerPoint;
   if (sofficePath && hasPdfRender) console.log(`[render-slides] pptx page-render available (LibreOffice ${sofficePath} → PDF → pypdfium2)`);
   else if (hasPowerPoint) console.log(`[render-slides] pptx page-render: only PowerPoint found — its AppleScript export is unreliable on recent macOS; install LibreOffice for reliable pptx rendering`);
-  else if (config.slidesRender) console.log(`[render-slides] pptx page-render unavailable (no LibreOffice; PowerPoint absent)`);
+  else console.log(`[render-slides] pptx page-render unavailable (no LibreOffice; PowerPoint absent)`);
   detectDone = true;
 })();
 
-// Is page-rendering possible for this file type right now? (config.slidesRender gates
-// whether the caller even asks.)
+// Is page-rendering possible for this file type right now (a backend detected)?
 function canRender(ext) {
   const e = String(ext || "").toLowerCase();
   if (e === ".pdf") return hasPdfRender;
@@ -200,10 +199,10 @@ async function renderPptxPages(buf, opts = {}) {
   return renderPptxViaPowerPoint(buf, opts);
 }
 
-// Dispatch by extension. Returns [] (never throws) when rendering is off, unavailable,
-// or fails — the caller treats page images as a best-effort enrichment.
+// Dispatch by extension. Returns [] (never throws) when rendering is unavailable or
+// fails — the caller treats page images as a best-effort enrichment.
 async function renderPages(buf, ext, opts = {}) {
-  if (!config.slidesRender || !buf || !buf.length) return [];
+  if (!buf || !buf.length) return [];
   const e = String(ext || "").toLowerCase();
   if (e === ".pdf") return renderPdfPages(buf, opts);
   if (e === ".pptx") return renderPptxPages(buf, opts);
