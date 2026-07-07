@@ -86,6 +86,8 @@ const ASK_I18N = {
     sysRagMore: "另外，以下是从知识库限定文件夹检索到的相关片段，可与上文全文互为补充；引用片段时用 [n] 标注来源。\n\n资料片段：\n",
     roleUser: "用户", roleAssistant: "助手",
     summarize: "请通读全文，总结主要内容和要点。",
+    slidesHint: "\n注意：部分来源是幻灯片页（要点式残句 + 演讲备注），请基于页面要点和备注作答，不要臆测未写明的论证细节；引用幻灯片时可指出具体页码。",
+    pgPrev: "上一页", pgThis: "本页", pgNext: "下一页",
   },
   "zh-Hant": {
     sysFullA: "你是知識庫助手。下面是用戶指定的文檔/對話全文",
@@ -95,6 +97,8 @@ const ASK_I18N = {
     sysRagMore: "另外，以下是從知識庫限定資料夾檢索到的相關片段，可與上文全文互為補充；引用片段時用 [n] 標註來源。\n\n資料片段：\n",
     roleUser: "用戶", roleAssistant: "助手",
     summarize: "請通讀全文，總結主要內容和要點。",
+    slidesHint: "\n注意：部分來源是簡報頁（要點式殘句 + 演講備註），請基於頁面要點和備註作答，不要臆測未寫明的論證細節；引用簡報時可指出具體頁碼。",
+    pgPrev: "上一頁", pgThis: "本頁", pgNext: "下一頁",
   },
   en: {
     sysFullA: "You are a knowledge-library assistant. Below is the full text of the document(s)/conversation(s) the user selected",
@@ -104,6 +108,8 @@ const ASK_I18N = {
     sysRagMore: "Additionally, the snippets below were retrieved from the scoped library folder(s); use them alongside the full text above, citing them as [n].\n\nSource snippets:\n",
     roleUser: "User", roleAssistant: "Assistant",
     summarize: "Read the full text and summarize its main content and key points.",
+    slidesHint: "\nNote: some sources are slide pages (terse bullet fragments + speaker notes). Answer from the page's points and notes; don't infer argument details that aren't stated. When citing a slide, you may give the page number.",
+    pgPrev: "prev page", pgThis: "this page", pgNext: "next page",
   },
 };
 const askL = () => ASK_I18N[getPromptLanguage()] || ASK_I18N.en;
@@ -236,7 +242,19 @@ export async function runLibraryQuery(query, { docId = null, docIds = null, arch
       // [n] numbering continues after any full-read sources so the citations in the
       // answer line up with the numbered sources footer.
       const offset = sourceHits.length;
-      const context = r.hits.map((h, i) => `[${offset + i + 1}] (${h.title}${h.section ? " · " + h.section : ""}):\n${h.content}`).join("\n\n");
+      const L = askL();
+      // Slides hits carry ±1 page text (server attachSlideNeighbors) — expand them into
+      // a prev/this/next page block so a terse single page reads in context.
+      const bodyOf = (h) => {
+        const n = h.neighbors;
+        if (!n || (!n.prev && !n.next)) return h.content;
+        const parts = [];
+        if (n.prev) parts.push(`（${L.pgPrev} · ${n.prev.section}）${n.prev.content}`);
+        parts.push(`（${L.pgThis} · ${h.section}）${h.content}`);
+        if (n.next) parts.push(`（${L.pgNext} · ${n.next.section}）${n.next.content}`);
+        return parts.join("\n");
+      };
+      const context = r.hits.map((h, i) => `[${offset + i + 1}] (${h.title}${h.section ? " · " + h.section : ""}):\n${bodyOf(h)}`).join("\n\n");
       sourceHits = [...sourceHits, ...r.hits];
       // Drop images that belong to a video doc (transcript screenshots — worthless
       // for Q&A and fatal to text-only chat models). Same rule as the full-read path.
@@ -244,6 +262,9 @@ export async function runLibraryQuery(query, { docId = null, docIds = null, arch
       const okImages = (r.images || []).filter((im) => !videoDocs.has(im.docId));
       images = [...images, ...okImages].slice(0, askMaxImages());
       sysParts.push((sysParts.length ? askL().sysRagMore : askL().sysRag) + context);
+      // Slides-source caveat appended AFTER the RAG preamble (so it doesn't flip the
+      // sysRag/sysRagMore selection above): terse pages, answer from points + notes.
+      if (r.hits.some((h) => h.docKind === "slides")) sysParts.push(L.slidesHint);
     }
   }
   if (!sysParts.length) return { answer: t("lib_noResults"), hits: [], truncated };

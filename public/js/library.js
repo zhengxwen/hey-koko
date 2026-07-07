@@ -318,7 +318,9 @@ export function initLibrary() {
   const citationGraphBtn = document.querySelector("#libraryCitationGraphBtn");
   const paperInput = document.querySelector("#libraryPaperInput");
   const fileInput = document.querySelector("#libraryFileInput");
+  const slidesInput = document.querySelector("#librarySlidesInput");
   const textInput = document.querySelector("#libraryTextInput");
+  const importSlidesItem = document.querySelector("#libraryImportSlides");
   const askInput = document.querySelector("#libraryAskInput");
   const askSend = document.querySelector("#libraryAskSend");
   const askScoped = document.querySelector("#libraryAskScoped");
@@ -521,6 +523,9 @@ export function initLibrary() {
   if (opsParent) opsParent.addEventListener("click", (e) => { e.stopPropagation(); opsSubmenu.hidden = !opsSubmenu.hidden; });
   importPaperItem.addEventListener("click", () => { closeImportMenu(); paperInput.click(); });
   importFilesItem.addEventListener("click", () => { closeImportMenu(); fileInput.click(); });
+  // Slides importer: force docKind:"slides" so pptx keeps its per-slide structure and a
+  // slide-PDF is parsed page-by-page (not as an article). See slides-library.md.
+  if (importSlidesItem) importSlidesItem.addEventListener("click", () => { closeImportMenu(); slidesInput.click(); });
   importTextItem.addEventListener("click", () => { closeImportMenu(); textInput.click(); });
   importUrlItem.addEventListener("click", () => { closeImportMenu(); importUrl(); });
   if (importZoteroItem) importZoteroItem.addEventListener("click", () => { closeImportMenu(); openZoteroImport(); });
@@ -558,6 +563,16 @@ export function initLibrary() {
   // "本地论文" → always docKind:paper, stored in the paper/ folder.
   paperInput.addEventListener("change", () => { importFiles([...paperInput.files], { folder: "paper", docKind: "paper" }); paperInput.value = ""; });
   fileInput.addEventListener("change", () => { importFiles([...fileInput.files]); fileInput.value = ""; });
+  // Slides import (menu + per-doc "re-parse as slides"): forces docKind:"slides". The
+  // per-doc button pins the folder to the existing doc's location (pendingSlidesFolder)
+  // so re-importing the same file overwrites in place instead of auto-classifying away.
+  let pendingSlidesFolder = null;
+  if (slidesInput) slidesInput.addEventListener("change", () => {
+    const folder = pendingSlidesFolder; pendingSlidesFolder = null;
+    importFiles([...slidesInput.files], { folder, docKind: "slides" });
+    slidesInput.value = "";
+  });
+  const reimportAsSlides = (folder) => { pendingSlidesFolder = folder || null; slidesInput.click(); };
   textInput.addEventListener("change", () => { importFiles([...textInput.files]); textInput.value = ""; });
 
   function docKindForExt(ext) {
@@ -1849,6 +1864,21 @@ export function initLibrary() {
     editMdBtn.textContent = t("lib_editMarkdown");
     editMdBtn.addEventListener("click", () => editDocMarkdown(doc));
     bar.appendChild(editMdBtn);
+    // Re-parse as slides: only for docs that came from a local .pdf/.pptx (the source
+    // file must be re-picked — hey-koko doesn't retain it). Re-imports with docKind
+    // "slides" pinned to this doc's current folder so it overwrites in place. See
+    // slides-library.md §0.7: label-only docKind change can't restore page structure.
+    if (/^file:.*\.(pdf|pptx)$/i.test(String(doc.source || ""))) {
+      const slidesBtn = document.createElement("button");
+      slidesBtn.type = "button";
+      slidesBtn.className = "secondary";
+      slidesBtn.textContent = t("lib_reimportSlides");
+      slidesBtn.addEventListener("click", () => {
+        const d = docs.find((x) => x.docId === doc.docId);
+        reimportAsSlides(d ? d.folder : null);
+      });
+      bar.appendChild(slidesBtn);
+    }
     previewContent.appendChild(bar);
     // Render as one continuous markdown article (NOT chat bubbles): a section
     // heading appears once when it changes; each block stays individually
@@ -1895,6 +1925,21 @@ export function initLibrary() {
         // (above «§ 摘要»). Open/collapse state persists across articles via relGraphOpenPref.
         if (b.kind === "card") { try { const g = renderRelationGraph(b.content || "", { open: relGraphOpenPref }); if (g) { g.addEventListener("toggle", () => { relGraphOpenPref = g.open; }); div.insertBefore(g, div.firstChild); } } catch (e) { console.warn("[relGraph]", e); } }
         attachEdit(div, doc, idx);
+        // P3: a slide's whole-page raster (if rendered) sits in a collapsed <details> so it
+        // doesn't crowd the text; clicking the image opens the shared lightbox.
+        if (b.pageImage) {
+          const det = document.createElement("details");
+          det.className = "libSlidePage";
+          const sum = document.createElement("summary");
+          sum.textContent = t("lib_slidePage");
+          const img = document.createElement("img");
+          img.className = "generatedImage libSlidePageImg";
+          img.loading = "lazy";
+          img.src = `data:${b.pageImageMime || "image/jpeg"};base64,${b.pageImage}`;
+          img.dataset.filename = `${String(b.section || "slide").replace(/[^\w.-]+/g, "_")}.jpg`;
+          det.append(sum, img);
+          div.appendChild(det);
+        }
       }
       previewContent.appendChild(div);
     });

@@ -61,6 +61,28 @@ function resolveOcrPython() {
   return "";
 }
 
+// Python for slide page-rendering (P3 visual layer): needs pypdfium2 + Pillow, which
+// MinerU's own venv already ships (it renders PDFs to raster). SLIDES_PYTHON overrides;
+// else derive from the `mineru` launcher's shebang (its venv python); else the OCR venv;
+// else "" (PDF page-render unavailable → slides keep text + crop figures only).
+function resolveSlidesPython() {
+  if (process.env.SLIDES_PYTHON) return process.env.SLIDES_PYTHON;
+  // The `mineru` console-script's first line is `#!/path/to/venv/bin/python3`.
+  for (const dir of ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), "local", "bin"), path.join(os.homedir(), "venv", "mineru", "bin")]) {
+    try {
+      const exe = path.join(dir, "mineru");
+      if (!fs.existsSync(exe)) continue;
+      const first = fs.readFileSync(exe, "utf8").split(/\r?\n/)[0] || "";
+      if (first.startsWith("#!")) { const py = first.slice(2).trim().split(/\s+/)[0]; if (py && fs.existsSync(py)) return py; }
+    } catch { /* keep looking */ }
+  }
+  try {
+    const which = execFileSync(process.platform === "win32" ? "where" : "which", ["mineru"], { encoding: "utf8" }).trim().split(/\r?\n/)[0];
+    if (which) { const first = fs.readFileSync(which, "utf8").split(/\r?\n/)[0] || ""; if (first.startsWith("#!")) { const py = first.slice(2).trim().split(/\s+/)[0]; if (py && fs.existsSync(py)) return py; } }
+  } catch { /* ignore */ }
+  return process.env.UNLIMITED_OCR_PYTHON ? resolveOcrPython() : "";
+}
+
 // App data home: everything the server persists (chat archives, knowledge library,
 // background-job queue) plus the cloud-backend config files (claude.json/openai.json)
 // lives under this one directory. HEYKOKO_DIR overrides it — point a throwaway/test
@@ -99,6 +121,17 @@ const config = {
   // JIT-compiles CUDA and requires python3-dev headers + a supported GPU — set
   // MINERU_BACKEND=hybrid-engine (etc.) to opt into it. "" → let MinerU pick.
   mineruBackend: process.env.MINERU_BACKEND || "pipeline",
+  // P3 slides visual layer — render each slide page to a whole-page JPEG (q80) stored on
+  // the page block, so /ask can feed a vision model the actual page (charts/layout), not
+  // just the terse text. OPT-IN (HEYKOKO_SLIDES_RENDER=1): the rasters bloat the doc JSON
+  // (~200-350KB/page base64) and pptx rendering drives PowerPoint (a GUI app + one-time
+  // automation permission), so it's off by default. slidesPython renders PDFs (pypdfium2);
+  // pptx uses PowerPoint via AppleScript (macOS). slidesRenderScale bumps resolution for
+  // small text (higher scale = clearer + bigger file); slidesRenderMaxPages caps cost.
+  slidesRender: /^(1|true|yes|on)$/i.test(String(process.env.HEYKOKO_SLIDES_RENDER || "")),
+  slidesPython: resolveSlidesPython(),
+  slidesRenderScale: Number(process.env.HEYKOKO_SLIDES_RENDER_SCALE || 2.0),
+  slidesRenderMaxPages: Number(process.env.HEYKOKO_SLIDES_RENDER_MAXPAGES || 80),
   WHISPER_MODEL_SEARCH_PATHS: [
     path.join(os.homedir(), ".local", "share", "whisper-cpp"),
     path.join(os.homedir(), "whisper.cpp", "models"),

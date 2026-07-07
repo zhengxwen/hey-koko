@@ -7,6 +7,7 @@ const os = require("os");
 const { execFile, execFileSync, spawn } = require("child_process");
 const { sendJson } = require("./utils");
 const config = require("./config");
+const { parsePptx } = require("./pptx");
 
 // Detect tool availability (async, non-blocking)
 let hasPandoc = false;
@@ -146,7 +147,15 @@ async function parseFile(req, res) {
     const inputPath = path.join(tmpDir, safeName);
     fs.writeFileSync(inputPath, data);
 
-    if (ext === ".docx" || ext === ".pptx") {
+    // x-doc-kind lets the caller ask for slides-aware parsing (per-page structure)
+    // instead of the default article parse. Only "slides" changes behavior today.
+    const slides = String(req.headers["x-doc-kind"] || "").toLowerCase() === "slides";
+    if (ext === ".pptx") {
+      // Native per-slide parser (page = block, keeps speaker notes) with Pandoc as the
+      // fallback for any deck it can't read. Slides-aware regardless of x-doc-kind —
+      // a .pptx IS a deck — but a plain import still benefits from the page structure.
+      await parsePptxFile(inputPath, tmpDir, res);
+    } else if (ext === ".docx") {
       await parseDocx(inputPath, tmpDir, res);
     } else if (ext === ".pdf") {
       // The kill timer follows the caller's ⚙ timeout (x-parse-timeout-s, seconds),
@@ -159,7 +168,7 @@ async function parseFile(req, res) {
       if (engine === "unlimited") {
         await parseUnlimitedOcr(inputPath, tmpDir, res, timeoutMs);
       } else {
-        await parsePdf(inputPath, tmpDir, res, timeoutMs);
+        await parsePdf(inputPath, tmpDir, res, timeoutMs, slides);
       }
     }
   } catch (error) {
@@ -170,6 +179,23 @@ async function parseFile(req, res) {
       try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
     }
   }
+}
+
+// .pptx → per-slide Markdown via the native parser (server/pptx.js — page = block,
+// speaker notes preserved, images left as placeholders per plan §0.3). Falls back to
+// Pandoc for any deck the native parser can't read (odd/damaged zip, ZIP64, etc.).
+function parsePptxFile(inputPath, tmpDir, res) {
+  return new Promise((resolve) => {
+    try {
+      const buf = fs.readFileSync(inputPath);
+      const { text, images } = parsePptx(buf);
+      sendJson(res, 200, { text, images, tool: "pptx-slides" });
+      resolve();
+    } catch (err) {
+      console.log(`[parse-file] native pptx parse failed (${err.message}); falling back to pandoc`);
+      parseDocx(inputPath, tmpDir, res).then(resolve, resolve);
+    }
+  });
 }
 
 function parseDocx(inputPath, tmpDir, res) {
@@ -236,7 +262,7 @@ function parseDocx(inputPath, tmpDir, res) {
 // Unlimited-OCR both fit this shape (spawn a tool, stream progress, read a result.md +
 // images/ from an output dir), so they share this core; only the command and label
 // differ. Streams ndjson progress and a final {text, images, tool}.
-function runPdfTool({ cmd, args, tool, label, outputDir, res, timeoutMs }) {
+function runPdfTool({ cmd, args, tool, label, outputDir, res, timeoutMs, slides = false }) {
   return new Promise((resolve) => {
     // Use spawn for streaming progress
     res.writeHead(200, {
@@ -324,8 +350,14 @@ function runPdfTool({ cmd, args, tool, label, outputDir, res, timeoutMs }) {
         return;
       }
 
-      const { text, images } = collectMarkdownOutput(mdFile);
-      res.write(JSON.stringify({ text, images, tool }) + "\n");
+      // Slides mode: rebuild the markdown page-by-page from MinerU's content_list.json
+      // (which carries page_idx per element) so each slide becomes its own block. Any
+      // problem — no content_list, unexpected schema — silently degrades to the flat
+      // .md parse (article-style), so a PDF that isn't really a deck still imports.
+      let out = null;
+      if (slides) { try { out = collectSlidesOutput(outputDir); } catch { out = null; } }
+      const { text, images } = out || collectMarkdownOutput(mdFile);
+      res.write(JSON.stringify({ text, images, tool: slides && out ? tool + "-slides" : tool }) + "\n");
       res.end();
       finish();
     });
@@ -395,7 +427,7 @@ function collectMarkdownOutput(mdFile) {
   return { text: markdown, images };
 }
 
-function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000) {
+function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000, slides = false) {
   return new Promise((resolve) => {
     if (!hasMinerU) {
       sendJson(res, 501, { error: "mineru_unavailable", fallback: true });
@@ -407,9 +439,92 @@ function parsePdf(inputPath, tmpDir, res, timeoutMs = 300000) {
     const backendArgs = config.mineruBackend ? ["-b", config.mineruBackend] : [];
     runPdfTool({
       cmd: mineruPath, args: [...backendArgs, "-p", inputPath, "-o", outputDir],
-      tool: "mineru", label: "MinerU", outputDir, res, timeoutMs,
+      tool: "mineru", label: "MinerU", outputDir, res, timeoutMs, slides,
     }).then(resolve);
   });
+}
+
+// Slides-aware rebuild of MinerU output: group content_list.json elements by page_idx
+// into `## Slide N` sections so the chunker makes one block per page. Text/equations
+// become lines; figures inline as ![](image_NN.ext) (kept — MinerU already cropped them,
+// so PDF decks get their figures for free, unlike pptx); tables keep their HTML. Throws
+// if no content_list exists (caller then falls back to the flat .md parse).
+function collectSlidesOutput(outputDir) {
+  const clFile = findFileEndingWith(outputDir, "_content_list.json") || findFileEndingWith(outputDir, "content_list.json");
+  if (!clFile) throw new Error("no content_list.json");
+  const list = JSON.parse(fs.readFileSync(clFile, "utf-8"));
+  if (!Array.isArray(list) || !list.length) throw new Error("empty content_list");
+  const imagesDir = path.join(path.dirname(clFile), "images");
+  const haveImages = fs.existsSync(imagesDir);
+  const basenameToPath = new Map();
+  if (haveImages) for (const p of collectImageFiles(imagesDir)) basenameToPath.set(path.basename(p), p);
+
+  const images = [];
+  const seenHashes = new Map();
+  let imageCounter = 0;
+  const inlineImage = (imgPath) => {
+    const bn = path.basename(String(imgPath || ""));
+    const full = basenameToPath.get(bn);
+    if (!full) return "";
+    const imgData = fs.readFileSync(full);
+    const hashKey = imgData.length + ":" + imgData.slice(0, 64).toString("hex");
+    let name = seenHashes.get(hashKey);
+    if (!name) {
+      imageCounter++;
+      const imgExt = path.extname(full).toLowerCase();
+      name = `image_${String(imageCounter).padStart(2, "0")}${imgExt}`;
+      seenHashes.set(hashKey, name);
+      const mime = imgExt === ".png" ? "image/png" : imgExt === ".gif" ? "image/gif" : "image/jpeg";
+      images.push({ name, base64: imgData.toString("base64"), mime });
+    }
+    return name;
+  };
+
+  // Bucket every element by its page index (default 0 when MinerU omits it).
+  const pages = new Map();
+  for (const el of list) {
+    const pg = Number.isInteger(el.page_idx) ? el.page_idx : 0;
+    if (!pages.has(pg)) pages.set(pg, []);
+    const bucket = pages.get(pg);
+    const type = el.type || (el.text != null ? "text" : "");
+    if (type === "image" || type === "figure") {
+      const name = inlineImage(el.img_path);
+      const cap = Array.isArray(el.image_caption) ? el.image_caption.join(" ") : (el.img_caption || "");
+      if (name) bucket.push(`![${cap || ""}](${name})`);
+      else if (cap) bucket.push(cap);
+    } else if (type === "table") {
+      const cap = Array.isArray(el.table_caption) ? el.table_caption.join(" ") : (el.table_caption || "");
+      if (cap) bucket.push(cap);
+      if (el.table_body) bucket.push(String(el.table_body));
+      else { const name = inlineImage(el.img_path); if (name) bucket.push(`![](${name})`); }
+    } else {
+      const txt = String(el.text != null ? el.text : "").trim();
+      if (txt) bucket.push(txt);
+    }
+  }
+  const pageNums = [...pages.keys()].sort((a, b) => a - b);
+  const parts = [];
+  // Number slides by the TRUE page index (page_idx + 1), not a dense counter: a page
+  // MinerU found empty simply gets no block, and the numbering stays aligned with the
+  // whole-page rasters (P3), which pypdfium2 renders by real page index.
+  pageNums.forEach((pg) => {
+    const lines = pages.get(pg).filter(Boolean);
+    if (!lines.length) return;
+    parts.push(`## Slide ${pg + 1}\n\n${lines.join("\n\n")}`);
+  });
+  const text = parts.join("\n\n");
+  if (!text.trim()) throw new Error("content_list produced no text");
+  return { text, images };
+}
+
+// Like findFile but matches a full suffix (findFile only matches an extension).
+function findFileEndingWith(dir, suffix) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) { const f = findFileEndingWith(full, suffix); if (f) return f; }
+    else if (entry.name.endsWith(suffix)) return full;
+  }
+  return null;
 }
 
 // Baidu Unlimited-OCR via the shipped Python wrapper (server/unlimited_ocr.py), which
@@ -613,4 +728,4 @@ function parseHtml(req, res) {
   req.on("error", (e) => sendJson(res, 500, { error: e.message }));
 }
 
-module.exports = { getCapabilities, parseFile, parseHtml };
+module.exports = { getCapabilities, parseFile, parseHtml, collectSlidesOutput };

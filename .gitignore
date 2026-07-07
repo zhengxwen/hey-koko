@@ -48,3 +48,6 @@ temp/
 # macOS Electron app build
 hey-koko.app/
 __pycache__/
+
+# local-only planning docs (kept in ~/.hey-koko/plans/, never committed)
+docs/plans/

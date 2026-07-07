@@ -166,7 +166,7 @@ function hasVectors(id, folder) {
 async function embedDocVectors(doc, id, folder, model) {
   const vectors = new Array(doc.blocks.length).fill(null);
   const toEmbed = [], idx = [];
-  doc.blocks.forEach((b, i) => { if (b.embed !== false) { toEmbed.push(blockEmbedText(b)); idx.push(i); } });
+  doc.blocks.forEach((b, i) => { if (b.embed !== false) { toEmbed.push(blockEmbedText(b, doc)); idx.push(i); } });
   if (toEmbed.length) {
     const embs = await embedMany(toEmbed, model);
     idx.forEach((bi, k) => { vectors[bi] = embs[k]; });
@@ -490,7 +490,12 @@ const FIG_CAPTION_RE = /^[*_]{0,2}(?:figure|fig\.?|table|图|表|圖)[\s*_]*\.?\
 // A table's caption ("Table 3: …" only — a "Figure N" line must never claim a table).
 const TABLE_CAPTION_RE = /^[*_]{0,2}(?:table|表)[\s*_]*\.?\s*\d/i;
 
-function splitIntoBlocks(text, images) {
+// keepShort (slides): a deck page is legitimately terse ("Accuracy: 95%", "Q&A") and its
+// `Slide N · title` heading carries meaning — dropping it as "noise" would lose the page
+// AND its title. So for slides, any non-empty page survives the noise filter; every other
+// doc kind keeps the default behavior (stray page numbers / tags below MIN_BLOCK_CHARS
+// are still dropped).
+function splitIntoBlocks(text, images, { keepShort = false } = {}) {
   const imgByName = new Map((images || []).map(im => [im.name, im]));
   const lines = (text || "").split(/\r?\n/);
   // Degenerate-structure fallback: "one section = one block" relies on headings, but
@@ -516,7 +521,7 @@ function splitIntoBlocks(text, images) {
   const emit = () => {
     const content = para.join("\n").trim();
     para = [];
-    if (content && !isNoiseBlock(content)) {
+    if (content && (keepShort || !isNoiseBlock(content))) {
       const noEmbed = NO_EMBED_SECTION.test((section || "").trim());
       for (const piece of splitLong(content, maxBlock)) {
         const b = { id: `b${bid++}`, kind: "text", section, content: piece, hash: hashText(piece) };
@@ -641,13 +646,22 @@ async function embedMany(texts, model) {
 }
 // Tables embed as caption + flattened cell text — raw <table> markup / pipe punctuation
 // is tag soup to the embedding model and would drown out the actual numbers.
-const blockEmbedText = (b) => {
-  if (b.kind === "figure") return b.content || "image";
-  if (b.kind === "table") {
+const blockEmbedText = (b, doc) => {
+  let base;
+  if (b.kind === "figure") base = b.content || "image";
+  else if (b.kind === "table") {
     const flat = (b.content || "").replace(/<[^>]+>/g, " ").replace(/\|/g, " ").replace(/\s+/g, " ").trim();
-    return flat.slice(0, MAX_BLOCK_CHARS) || " ";
+    base = flat.slice(0, MAX_BLOCK_CHARS) || " ";
+  } else base = b.content || " ";
+  // Slides: one page's text is sparse residual bullets — prefix the deck title and the
+  // slide's own header (section = "Slide N · title") so the vector carries enough context
+  // to be found. Other kinds keep raw content (their section is structural noise). Both
+  // the hash and the embed use this same text, so edit-time vector reuse stays correct.
+  if (doc && doc.docKind === "slides") {
+    const ctx = [doc.title, b.section].filter(Boolean).join(" ｜ ");
+    if (ctx) base = base.trim() ? `${ctx}\n${base}` : ctx;
   }
-  return b.content || " ";
+  return base;
 };
 
 // ---- in-memory retrieval cache (rebuilt only when the library changes) -----
@@ -792,6 +806,20 @@ function attachImages(hits, maxImages) {
     let doc = docCache.get(h.docId);
     if (doc === undefined) { doc = readDoc(h.docId); docCache.set(h.docId, doc); }
     if (!doc || !doc.blocks) continue;
+    // Slides (P3): prefer the hit page's whole-page raster — a vision model reading the
+    // full page (layout + charts + SmartArt) beats disconnected crop figures. Falls
+    // through to the crop logic below when the deck wasn't page-rendered.
+    if (doc.docKind === "slides") {
+      const hb = doc.blocks[h.idx];
+      if (hb && hb.pageImage) {
+        const key = `${h.docId}:${hb.id}:page`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          picked.push({ docId: h.docId, title: h.title, blockId: hb.id, image: hb.pageImage, imageMime: hb.pageImageMime });
+        }
+        continue;
+      }
+    }
     for (let j = h.idx - 1; j <= h.idx + 1; j++) {
       const b = doc.blocks[j];
       if (!b || b.kind !== "figure" || !b.image) continue;
@@ -803,6 +831,32 @@ function attachImages(hits, maxImages) {
     }
   }
   return picked;
+}
+
+// Slides: a single page's residual bullets read poorly out of context, so attach the
+// nearest prev/next page text to each slide hit (a deck's pages are short — cheap). Only
+// text-block hits get neighbors (a figure hit's idx-1 would be its own page). NOT done for
+// other doc kinds: their blocks can be 32k chars, so neighbor expansion would blow the
+// prompt budget. Mutates hits in place with { neighbors: { prev, next } }.
+function attachSlideNeighbors(hits) {
+  const docCache = new Map();
+  for (const h of hits) {
+    if (h.docKind !== "slides" || h.kind !== "text") continue;
+    let doc = docCache.get(h.docId);
+    if (doc === undefined) { doc = readDoc(h.docId); docCache.set(h.docId, doc); }
+    if (!doc || !doc.blocks) continue;
+    const nearestText = (from, step) => {
+      for (let j = from; j >= 0 && j < doc.blocks.length; j += step) {
+        const b = doc.blocks[j];
+        if (b && b.kind === "text" && (b.content || "").trim())
+          return { section: b.section || "", content: String(b.content).slice(0, 600) };
+      }
+      return null;
+    };
+    const prev = nearestText(h.idx - 1, -1);
+    const next = nearestText(h.idx + 1, +1);
+    if (prev || next) h.neighbors = { prev, next };
+  }
 }
 
 // ---- HTTP handlers --------------------------------------------------------
@@ -824,7 +878,7 @@ async function importDocInternal(body) {
         folder: locOf(existing.docId), skippedDoi: body.doi, embedded: true };
     }
   }
-  const blocks = splitIntoBlocks(body.text || "", body.images || []);
+  const blocks = splitIntoBlocks(body.text || "", body.images || [], { keepShort: body.docKind === "slides" });
   // Caller-injected blocks are PREPENDED to the body, ahead of the chunked text (e.g. a
   // Zotero paper's always-present, user-editable «Abstract» — kept even when EMPTY, which
   // the chunker would otherwise drop as noise). An empty/embed:false one gets a null
@@ -839,11 +893,26 @@ async function importDocInternal(body) {
   // appendBlocks land AFTER the body (e.g. the «Zotero 批注» block — kept out of the chunker
   // so a short single highlight isn't dropped as noise).
   if (Array.isArray(body.appendBlocks) && body.appendBlocks.length) blocks.push(...body.appendBlocks.map(mkExtra));
+  // P3 slides visual layer: attach each rendered whole-page JPEG to its page block, keyed
+  // by the "Slide N" in the block's section (both the PDF and pptx parsers number pages so
+  // this aligns with the raster page number). Stored as a plain field on the text block —
+  // not a separate figure block — so it never affects chunking/embedding, only /ask's
+  // attachImages and the doc view. attachImagesToSlides for the reader.
+  if (Array.isArray(body.pageImages) && body.pageImages.length) {
+    const byPage = new Map(body.pageImages.map(im => [im.page, im]));
+    for (const b of blocks) {
+      if (b.kind !== "text") continue;
+      const m = String(b.section || "").match(/Slide\s+(\d+)/i);
+      const im = m && byPage.get(parseInt(m[1], 10));
+      if (im && im.base64) { b.pageImage = im.base64; b.pageImageMime = im.mime || "image/jpeg"; }
+    }
+  }
   if (!blocks.length) throw new Error("文档为空，无法导入");
   // embed:false blocks (a references section) keep a zero-vector slot — never embedded.
   const vectors = new Array(blocks.length).fill(null);
   const toEmbed = [], toEmbedIdx = [];
-  blocks.forEach((b, i) => { if (b.embed !== false) { toEmbed.push(blockEmbedText(b)); toEmbedIdx.push(i); } });
+  const embedCtx = { docKind: body.docKind, title: body.title };
+  blocks.forEach((b, i) => { if (b.embed !== false) { toEmbed.push(blockEmbedText(b, embedCtx)); toEmbedIdx.push(i); } });
   if (toEmbed.length) {
     const embs = await embedMany(toEmbed, model);
     toEmbedIdx.forEach((bi, k) => { vectors[bi] = embs[k]; });
@@ -1142,11 +1211,11 @@ async function saveDocInternal(doc, model) {
   const newVecs = new Array(doc.blocks.length).fill(null);
   const toEmbed = [], toEmbedIdx = [];
   doc.blocks.forEach((b, i) => {
-    b.hash = hashText(blockEmbedText(b));
+    b.hash = hashText(blockEmbedText(b, doc));
     if (b.embed === false) return;   // not vectorized → leave a zero-vector slot
     const prev = oldMap.get(b.id);
     if (prev && prev.hash === b.hash && prev.vec) newVecs[i] = prev.vec;
-    else { toEmbed.push(blockEmbedText(b)); toEmbedIdx.push(i); }
+    else { toEmbed.push(blockEmbedText(b, doc)); toEmbedIdx.push(i); }
   });
   if (toEmbed.length) {
     const embs = await embedMany(toEmbed, model);
@@ -1215,11 +1284,13 @@ async function retrieveLibrary(req, res) {
       language: body.language || "",   // prompt language for the rerank call
     });
     const images = body.attachImages ? attachImages(hits, body.maxImages || 3) : [];
+    attachSlideNeighbors(hits);   // slide hits get ±1 page text (no-op for other kinds)
     sendJson(res, 200, {
       hits: hits.map(h => ({
         docId: h.docId, title: h.title, docKind: h.docKind, blockId: h.blockId,
         section: h.section, kind: h.kind, content: h.content, score: h.score, hasImage: h.hasImage,
         entMatched: !!h.entMatched,   // hit was boosted/seated by a query-entity match
+        neighbors: h.neighbors || null,   // slides: adjacent page text for context
       })),
       images,
     });
@@ -1705,16 +1776,16 @@ async function reparseLibrary(req, res) {
     const old = readDoc(body.docId);
     if (!old) { sendJson(res, 404, { error: "文档不存在" }); return; }
     const convBlocks = (old.blocks || []).filter(isConvBlock);   // preserve the conversation
-    const newChunks = splitIntoBlocks(body.text || "", body.images || []);
+    const newChunks = splitIntoBlocks(body.text || "", body.images || [], { keepShort: old.docKind === "slides" });
     if (!newChunks.length && !convBlocks.length) { sendJson(res, 400, { error: "内容为空，无法重新分块" }); return; }
     // re-id sequentially so freshly-chunked ids can't collide with preserved conv ids
     const blocks = [...newChunks, ...convBlocks].map((b, i) => ({ ...b, id: `b${i}` }));
     const vectors = new Array(blocks.length).fill(null);
     const toEmbed = [], toEmbedIdx = [];
     blocks.forEach((b, i) => {
-      b.hash = hashText(blockEmbedText(b));
+      b.hash = hashText(blockEmbedText(b, old));
       if (b.embed === false) return;   // plain Q/A bubble → not retrievable, zero slot
-      toEmbed.push(blockEmbedText(b)); toEmbedIdx.push(i);
+      toEmbed.push(blockEmbedText(b, old)); toEmbedIdx.push(i);
     });
     if (toEmbed.length) {
       const embs = await embedMany(toEmbed, model);
@@ -1795,6 +1866,17 @@ function distillSample(doc, tocLabel, budget = DISTILL_BUDGET) {
   // embed:false sections (references) are citation noise — keep them out of the sample too.
   const body = (doc.blocks || []).filter(b => b.kind === "text" && b.embed !== false && !isConvBlock(b));
   if (!body.length) return "";
+  // Slides: a deck is short and every page carries a point — feed the pages in order
+  // (section label + text) up to budget, rather than sampling section openings like an
+  // article. The ordered page list doubles as the agenda for the distill card.
+  if (doc.docKind === "slides") {
+    let out = "";
+    for (const b of body) {
+      if (out.length >= budget) break;
+      out += (b.section ? `【${b.section}】\n` : "") + b.content + "\n\n";
+    }
+    return out.slice(0, budget);
+  }
   const sections = [...new Set(body.map(b => b.section).filter(Boolean))];
   const head = sections.length ? tocLabel + sections.join(" / ") + "\n\n" : "";
   const firstOf = new Map();
@@ -2042,6 +2124,15 @@ const DISTILL_I18N = {
       "只输出 JSON，不要任何解释或代码块标记：\n" +
       "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "年份只要 4 位数字，没有就空字符串；标签用简短名词短语；摘要和要点用中文写（人名、机构名、地名保留原文）。",
+    slides: "你是演示幻灯片蒸馏助手。给你的是一套幻灯片的逐页文本（每页以【Slide N · 标题】标注，正文是要点式残句，可能夹带 📝 演讲备注）。完成两件事：\n" +
+      "1) 抽取元数据：演讲/课程标题、作者或讲者、年份（能判断就填，判断不出留空字符串）；\n" +
+      "2) 写一张\"蒸馏卡\"：\n" +
+      "- 摘要：3-5 句话，说清「主题与场合、面向的听众、整体脉络（agenda）、核心论点、结论或号召」；\n" +
+      "- 关键要点：4-8 条，各一句话，覆盖各章节的核心论点、关键图表/数据说明了什么、结论页要点；结合备注补全残句省略的意思，但不要臆造未写明的内容；\n" +
+      "- 3-6 个简短主题标签。\n" +
+      "只输出 JSON，不要任何解释或代码块标记：\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
+      "作者只保留人名，多个用英文逗号分隔；年份只要 4 位数字；标签用简短名词短语；摘要和要点用中文写（专有名词保留原文）。",
     structAsk: "\n此外，在上面同一个 JSON 对象里再补充两个字段：\n" +
       "\"entities\": 8-15 个本文涉及的具体实体，每个形如 {\"name\":\"规范名\",\"type\":\"类型\",\"aliases\":[\"别名\"]}；类型只能取 person(人物)/org(机构)/place(地点)/event(事件)/method(方法或模型)/dataset(数据集或基准)/concept(概念)/tool(工具)/product(产品)/work(作品)/policy(政策法规) 之一；名字用规范全称，有通用缩写就用缩写，没有别名就给空数组 []。\n" +
       "\"relations\": 5-10 条实体关系三元组 [\"头\",\"关系\",\"尾\"]，关系用简短动词短语（如 提出/改进/基于/评测于/对比/收购/发布/位于）；头尾实体名必须出现在 entities 列表里；若这条关系有明确的时间或地点，追加第四项对象 {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}。\n" +
@@ -2087,6 +2178,15 @@ const DISTILL_I18N = {
       "只輸出 JSON，不要任何解釋或代碼塊標記：\n" +
       "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "年份只要 4 位數字，沒有就空字符串；標籤用簡短名詞短語；摘要和要點用繁體中文寫（人名、機構名、地名保留原文）。",
+    slides: "你是簡報幻燈片蒸餾助手。給你的是一套簡報的逐頁文本（每頁以【Slide N · 標題】標註，正文是要點式殘句，可能夾帶 📝 演講備註）。完成兩件事：\n" +
+      "1) 抽取元數據：演講/課程標題、作者或講者、年份（能判斷就填，判斷不出留空字符串）；\n" +
+      "2) 寫一張\"蒸餾卡\"：\n" +
+      "- 摘要：3-5 句話，說清「主題與場合、面向的聽眾、整體脈絡（agenda）、核心論點、結論或號召」；\n" +
+      "- 關鍵要點：4-8 條，各一句話，涵蓋各章節的核心論點、關鍵圖表/數據說明了什麼、結論頁要點；結合備註補全殘句省略的意思，但不要臆造未寫明的內容；\n" +
+      "- 3-6 個簡短主題標籤。\n" +
+      "只輸出 JSON，不要任何解釋或代碼塊標記：\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
+      "作者只保留人名，多個用英文逗號分隔；年份只要 4 位數字；標籤用簡短名詞短語；摘要和要點用繁體中文寫（專有名詞保留原文）。",
     structAsk: "\n此外，在上面同一個 JSON 物件裡再補充兩個欄位：\n" +
       "\"entities\": 8-15 個本文涉及的具體實體，每個形如 {\"name\":\"規範名\",\"type\":\"類型\",\"aliases\":[\"別名\"]}；類型只能取 person(人物)/org(機構)/place(地點)/event(事件)/method(方法或模型)/dataset(資料集或基準)/concept(概念)/tool(工具)/product(產品)/work(作品)/policy(政策法規) 之一；名字用規範全稱，有通用縮寫就用縮寫，沒有別名就給空陣列 []。\n" +
       "\"relations\": 5-10 條實體關係三元組 [\"頭\",\"關係\",\"尾\"]，關係用簡短動詞短語（如 提出/改進/基於/評測於/對比/收購/發布/位於）；頭尾實體名必須出現在 entities 列表裡；若這條關係有明確的時間或地點，追加第四項物件 {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}。\n" +
@@ -2132,6 +2232,15 @@ const DISTILL_I18N = {
       "Output ONLY JSON, no explanation or code fences:\n" +
       "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
       "Year: 4 digits, or empty if unknown. Tags: short noun phrases. Write in English (keep names, orgs and places as-is).",
+    slides: "You are a slide-deck distillation assistant. You are given a deck's text page by page (each page marked 【Slide N · title】; the body is terse bullet fragments, possibly with 📝 speaker notes). Do two things:\n" +
+      "1) Extract metadata: the talk/course title, the author or presenter, the year (fill when inferable, else empty string).\n" +
+      "2) Write a distillation card:\n" +
+      "- Summary: 3-5 sentences covering the topic and occasion, the intended audience, the overall structure (agenda), the core arguments, and the conclusion or call to action.\n" +
+      "- Key claims: 4-8, one sentence each, covering each section's core point, what the key charts/figures show, and the closing takeaways; use the speaker notes to complete what the fragments omit, but do NOT invent anything not stated.\n" +
+      "- 3-6 short topic tags.\n" +
+      "Output ONLY JSON, no explanation or code fences:\n" +
+      "{\"title\":\"...\",\"authors\":\"...\",\"year\":\"...\",\"tags\":[\"...\"],\"summary\":\"...\",\"claims\":[\"...\"],\"entities\":[…],\"relations\":[…]}\n" +
+      "Authors: names only, comma-separated. Year: 4 digits, or empty. Tags: short noun phrases. Write in English (keep proper nouns as-is).",
     structAsk: "\nAdditionally, add two more fields to the SAME JSON object:\n" +
       "\"entities\": 8-15 concrete entities the text is about, each as {\"name\":\"canonical name\",\"type\":\"type\",\"aliases\":[\"alias\"]}; type must be one of person/org/place/event/method/dataset/concept/tool/product/work/policy; use the canonical full name (or the common abbreviation if there is one); empty array [] when there are no aliases.\n" +
       "\"relations\": 5-10 entity triples [\"head\",\"relation\",\"tail\"], relation a short verb phrase (e.g. proposes/improves/based-on/evaluated-on/compared-with/acquires/releases/located-in); head and tail names MUST appear in the entities list; if the relation has a clear time or place, append a fourth object {\"time\":\"YYYY-MM-DD\",\"place\":\"...\"}.\n" +
@@ -2172,7 +2281,10 @@ async function distillDocInternal(docId, { metadata = false, model, language = "
     : (dateLine ? `${dateLine}\n\n${sample}` : sample);
   // Base template by kind; then append the shared entity/relation ask (structAsk) and,
   // for videos, the stricter "don't invent from ASR noise" note.
-  const base = isVideo ? L.video : (doc.docKind === "paper" ? L.paper : (doc.docKind === "blog" ? L.news : L.doc));
+  const base = isVideo ? L.video
+    : (doc.docKind === "paper" ? L.paper
+    : (doc.docKind === "slides" ? L.slides
+    : (doc.docKind === "blog" ? L.news : L.doc)));
   const systemPrompt = base + L.structAsk + (isVideo ? L.videoStrict : "");
   // Per-call budget follows the UI "timeout (s)" slider (snapshotted into the job
   // payload at enqueue) so slow machines can raise it — but never below 300s: the
@@ -2705,7 +2817,7 @@ module.exports = {
   importLibrary, listLibrary, searchLibrary, getLibraryDoc,
   saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, LIBRARY_DIR,
   listLibraryDirs, moveLibraryDocs, rescanLibrary, rateLibraryDoc, editLibraryTag,
-  splitIntoBlocks,   // exported for reuse/testing of the chunker
+  splitIntoBlocks, blockEmbedText, distillSample, attachImages,   // exported for reuse/testing of the chunker
   // server-side libimport job (jobs.js) + distill + related-docs
   importDocInternal, distillDocInternal, distillLibraryDoc, buildYoutubeDoc, llmComplete,
   buildZoteroAnnotationSection, zoteroAnnotationBlocks, zoteroAbstractBlock, zoteroAnnotHash,   // zotero import section/block builders

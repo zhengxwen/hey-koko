@@ -25,6 +25,7 @@ const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const library = require("./library");
 const zotero = require("./zotero");
+const renderSlides = require("./render-slides");
 
 const JOBS_FILE = path.join(config.JOBS_DIR, "jobs.json");
 // Library file imports spool their raw file here (payload carries the path) so N
@@ -360,7 +361,7 @@ async function runLibImportJob(job, signal) {
     return { citations: r.edges, scanned: r.scanned };
   }
 
-  let source, docKind = p.docKind, title, authors = "", year = "", publishedAt = "", doi = "", citation = null, keywords = [], tags = [], zoteroObj = null, zoteroAbstract = null, zoteroAnnots = [], exactMeta = false, text, images = [];
+  let source, docKind = p.docKind, title, authors = "", year = "", publishedAt = "", doi = "", citation = null, keywords = [], tags = [], zoteroObj = null, zoteroAbstract = null, zoteroAnnots = [], exactMeta = false, text, images = [], pageImages = [];
   if (p.type === "youtube") {
     stage("fetching");
     let data = null, errored = null;
@@ -390,8 +391,14 @@ async function runLibImportJob(job, signal) {
     stage("parsing");
     const buf = p.spool ? fs.readFileSync(p.spool) : Buffer.from(p.fileB64 || "", "base64");
     if (!buf.length) throw new Error("file payload missing");
-    const parsed = await loopbackParseFile(p.name, buf, signal, (pct) => stage("parsing", pct ? { value: pct, max: 100 } : null), p.llmTimeoutS);
+    const parsed = await loopbackParseFile(p.name, buf, signal, (pct) => stage("parsing", pct ? { value: pct, max: 100 } : null), p.llmTimeoutS, p.docKind);
     source = `file:${p.name}`; docKind = docKind || "other"; title = p.name.replace(/\.[^.]+$/, ""); text = parsed.text; images = parsed.images || [];
+    // P3: a slides import also renders each page to a whole-page JPEG (best-effort; the
+    // same file buffer is already in hand). Opt-in + graceful — [] when off/unavailable.
+    if (docKind === "slides" && config.slidesRender) {
+      stage("rendering");
+      try { pageImages = await renderSlides.renderPages(buf, p.ext, { timeoutMs: (p.llmTimeoutS ? p.llmTimeoutS * 1000 : undefined) }); } catch (e) { if (e && e.name === "AbortError") throw e; }
+    }
     // DOI on the first page → Crossref exact metadata (title/authors/date + citation).
     // When it lands, the distill LLM is told NOT to re-guess metadata (YouTube pattern);
     // a DOI without Crossref (offline) is still recorded on the doc.
@@ -416,15 +423,42 @@ async function runLibImportJob(job, signal) {
     const pdf = zotero.pickPdfAttachment(children);
     if (!pdf) throw new Error(`Zotero 条目「${meta.title || itemKey}」没有可用的 PDF 附件`);
     const attachmentKey = (pdf.data || pdf).key;
+    // A Zotero "presentation" item is a slide deck: parse it PER-PAGE via MinerU (the
+    // page structure is the whole value of a deck), NOT the default /fulltext plain text
+    // that has no page boundaries. Reads the PDF straight off disk (same as a deep
+    // re-parse). Falls back to /fulltext when the file or MinerU isn't available —
+    // still searchable, just without per-slide blocks. See slides-library.md §0.9.
+    const isSlides = String(meta.itemType || "").toLowerCase() === "presentation";
     stage("parsing");
-    const ft = await zotero.getFulltext(attachmentKey);
-    const bodyText = (ft && ft.content) ? ft.content : "";
+    let bodyText = "", slideImages = [];
+    if (isSlides) {
+      const filePath = zotero.attachmentFilePath(pdf.data || pdf, pdf);
+      if (filePath && fs.existsSync(filePath)) {
+        try {
+          const buf = fs.readFileSync(filePath);
+          const parsed = await loopbackParseFile((pdf.data || pdf).filename || `${itemKey}.pdf`, buf, signal,
+            (pct) => stage("parsing", pct ? { value: pct, max: 100 } : null), p.llmTimeoutS, "slides");
+          bodyText = parsed.text || ""; slideImages = parsed.images || [];
+          // P3: render each page to a whole-page JPEG (best-effort, opt-in) — Zotero decks
+          // are PDFs, so this uses the pypdfium2 backend on the same buffer.
+          if (bodyText.trim() && config.slidesRender) {
+            stage("rendering");
+            try { pageImages = await renderSlides.renderPages(buf, ".pdf", { timeoutMs: (p.llmTimeoutS ? p.llmTimeoutS * 1000 : undefined) }); } catch (e) { if (e && e.name === "AbortError") throw e; }
+          }
+        } catch (e) { if (e && e.name === "AbortError") throw e; /* fall back to /fulltext below */ }
+      }
+    }
+    if (!bodyText.trim()) {
+      const ft = await zotero.getFulltext(attachmentKey);
+      bodyText = (ft && ft.content) ? ft.content : "";
+    }
     if (!bodyText.trim()) {
       throw new Error(`Zotero 尚未对「${meta.title || itemKey}」建立全文索引——在 Zotero 里打开一次该 PDF 触发索引，或稍后用「🔬 深度重解析」`);
     }
     const annots = await zotero.getAnnotations(attachmentKey);
     source = `zotero:${itemKey}`;
-    docKind = "paper";
+    docKind = isSlides ? "slides" : "paper";
+    images = slideImages;
     title = meta.title || itemKey;
     authors = meta.authors || ""; year = meta.year || ""; publishedAt = meta.publishedAt || "";
     doi = meta.doi || "";
@@ -461,7 +495,7 @@ async function runLibImportJob(job, signal) {
   const folder = p.type === "zotero"
     ? (p.collectionName ? `zotero/${p.collectionName}` : "zotero")
     : p.folder;
-  const imp = await library.importDocInternal({ source, docKind, folder, title, authors, year, publishedAt, doi, citation, keywords, tags, zotero: zoteroObj, extraBlocks: zoteroAbstract ? [zoteroAbstract] : undefined, appendBlocks: zoteroAnnots, text, images, model: p.embedModel, dedupe: p.type === "file", dedupeDoi: p.type === "zotero" });
+  const imp = await library.importDocInternal({ source, docKind, folder, title, authors, year, publishedAt, doi, citation, keywords, tags, zotero: zoteroObj, extraBlocks: zoteroAbstract ? [zoteroAbstract] : undefined, appendBlocks: zoteroAnnots, text, images, pageImages, model: p.embedModel, dedupe: p.type === "file", dedupeDoi: p.type === "zotero" });
   // DOI dedup fired: this paper is already in the library under imp.docId. Don't re-embed
   // or re-distill — just tell the drawer it was skipped and which doc holds it.
   if (imp.skippedDoi) {
@@ -495,7 +529,7 @@ async function runLibImportJob(job, signal) {
 // lines, then a final {text,images,tool} line). onProgress gets the MinerU percentage.
 // timeoutS rides the ⚙ "timeout (s)" slider down to MinerU's kill timer (floored at
 // 5 min server-side — a long/OCR-heavy PDF must not die at the chat slider's 60s).
-function loopbackParseFile(filename, buf, signal, onProgress, timeoutS = 0) {
+function loopbackParseFile(filename, buf, signal, onProgress, timeoutS = 0, docKind = "") {
   return new Promise((resolve, reject) => {
     const boundary = "----hkspool" + crypto.randomUUID().replace(/-/g, "");
     const head = Buffer.from(
@@ -507,6 +541,8 @@ function loopbackParseFile(filename, buf, signal, onProgress, timeoutS = 0) {
       headers: {
         "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": payload.length,
         "x-parse-timeout-s": String(Number(timeoutS) || 0),
+        // slides → parse-file rebuilds per-page structure (pptx native / PDF content_list).
+        ...(docKind ? { "x-doc-kind": String(docKind) } : {}),
       },
     }, (res) => {
       let buffer = "", last = null, error = null;

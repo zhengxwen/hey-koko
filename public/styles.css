@@ -5448,6 +5448,10 @@ button.secondary:disabled {
   white-space: nowrap;
 }
 .libraryFigCaption { font-size: 0.85em; opacity: 0.7; margin-top: 4px; text-align: center; }
+/* P3: a slide's collapsed whole-page raster (opens the lightbox on click) */
+.libSlidePage { margin-top: 6px; }
+.libSlidePage > summary { cursor: pointer; font-size: 0.85em; opacity: 0.7; user-select: none; }
+.libSlidePageImg { display: block; max-width: 100%; margin-top: 6px; border: 1px solid var(--border, #ddd); border-radius: 4px; cursor: zoom-in; }
 /* Continuous-article reading view (not chat bubbles) */
 .libDocBlock { padding: 0; }
 .libDocBlock .markdownBody { cursor: text; padding: 2px 4px; border-radius: 4px; transition: background 0.12s; }

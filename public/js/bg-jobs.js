@@ -123,6 +123,7 @@ function bgProgressLabel(stage, progress) {
     // libimport (server-side library import) stages
     case 'fetching': return t('bg_fetchingContent');
     case 'parsing': return t('bg_parsing');
+    case 'rendering': return t('bg_rendering');
     case 'importing': return t('lib_importing');
     case 'distilling': return t('bg_distilling');
     default: return '';
