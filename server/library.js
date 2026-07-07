@@ -455,9 +455,13 @@ function deriveDocId(source) {
   } else {
     base = (source || "doc").replace(/\.[^.]+$/, "");
   }
-  base = base.replace(/[^\w一-龥.-]+/g, "_").replace(/^[_.]+|[_.]+$/g, "").slice(0, 80) || "doc";
   // Same source (basename / URL) → same docId → re-import overwrites = incremental update.
-  return base;
+  return cleanDocId(base);
+}
+// Sanitize an arbitrary string into a safe docId (also used for caller-supplied docIds,
+// e.g. the news layer's `<company>_<date>_<slug>`). Keeps word chars, CJK, dot, hyphen.
+function cleanDocId(s) {
+  return String(s || "").replace(/[^\w一-龥.-]+/g, "_").replace(/^[_.]+|[_.]+$/g, "").slice(0, 80) || "doc";
 }
 
 // ---- chunking: Markdown → blocks (text / figure / table), no overlap ------
@@ -929,7 +933,9 @@ async function importDocInternal(body) {
     const embs = await embedMany(toEmbed, model);
     toEmbedIdx.forEach((bi, k) => { vectors[bi] = embs[k]; });
   }
-  let docId = deriveDocId(body.source || `file:${body.title || "doc"}`);
+  // An explicit body.docId (news layer → "<company>_<date>_<slug>") wins over the
+  // URL-derived default; still sanitized + still deterministic, so a re-import overwrites.
+  let docId = body.docId ? cleanDocId(body.docId) : deriveDocId(body.source || `file:${body.title || "doc"}`);
   // File imports (dedupe:true): the docId comes from the file's BASENAME, and generic
   // names (main.pdf, paper.pdf) collide across genuinely different documents. Same body
   // text → same docId (an idempotent re-import still overwrites); different text →
@@ -946,6 +952,22 @@ async function importDocInternal(body) {
       docId = `${base}_${n}`;
     }
     if (docId !== base) dedupedFrom = base;
+  }
+  // News layer (dedupeUrl:true): the base docId is "<company>_<date>", shared by every
+  // article that day. Reuse the doc that already holds THIS url (poll re-run / backfill
+  // overwrite = idempotent); otherwise a DIFFERENT article claims base_1/base_2/… — the
+  // first id not already taken. Keyed on source URL (loadIndex reads fresh, imports are
+  // serialized in the lib lane, so the taken-set is current). See newsDocId in feeds.js.
+  else if (body.dedupeUrl && body.source) {
+    const idx = loadIndex();
+    const mine = idx.find(d => d.source === body.source);
+    if (mine) docId = mine.docId;
+    else {
+      const taken = new Set(idx.map(d => d.docId));
+      const base = docId; let n = 0;
+      while (taken.has(docId)) { n++; docId = `${base}_${n}`; }
+      if (docId !== base) dedupedFrom = base;
+    }
   }
   const doc = {
     type: "libdoc", schemaVersion: 1,

@@ -17,9 +17,10 @@ const path = require("path");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const library = require("./library");
-const { extractCleanContent } = require("./url-fetch");
+const { extractArticleWithImages } = require("./url-fetch");
 
 const NEWS_DIR = library.NEWS_DIR || "news";
+const NEWS_IMAGE_CAP = 8;   // max images downloaded per article (bandwidth/size guard)
 const UA = "Mozilla/5.0 (compatible; hey-koko-feeds/1.0)";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function abortErr() { const e = new Error("Aborted"); e.name = "AbortError"; return e; }
@@ -138,6 +139,15 @@ function atomLink(block) {
   return ((alt || attrs.find((a) => a.href)) || {}).href || "";
 }
 function toDate(s) { if (!s) return ""; const d = new Date(s); return isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10); }
+// { date:"YYYY-MM-DD", time:"HH-MM-SS" } in UTC. time is "" when the source string carried
+// NO clock component (a date-only feed) so we don't stamp a spurious 00-00-00. Both RSS and
+// wp-json resolve to the same UTC instant → the poll and backfill paths agree on the docId.
+function toDateTime(s) {
+  if (!s) return { date: "", time: "" };
+  const d = new Date(s); if (isNaN(d.getTime())) return { date: "", time: "" };
+  const iso = d.toISOString();
+  return { date: iso.slice(0, 10), time: /\d{1,2}:\d{2}/.test(String(s)) ? iso.slice(11, 19).replace(/:/g, "-") : "" };
+}
 // RSS <item> / Atom <entry> → normalized items. Detects Atom by <feed>+<entry>.
 function parseFeed(xml) {
   xml = String(xml || "");
@@ -159,7 +169,8 @@ function parseFeed(xml) {
       contentHtml = stripCdata(firstTag(b, "content:encoded") || "");
     }
     const title = decodeEntities(firstTag(b, "title") || "").trim();
-    if (url) items.push({ url, title, publishedAt: toDate(published), excerpt: decodeEntities(excerpt).trim(), contentHtml });
+    const dt = toDateTime(published);
+    if (url) items.push({ url, title, publishedAt: dt.date, publishedTime: dt.time, excerpt: decodeEntities(excerpt).trim(), contentHtml });
   }
   // channel/feed title = the first <title> BEFORE any item/entry
   const head = xml.replace(/<(item|entry)[\s>][\s\S]*$/i, "");
@@ -267,28 +278,39 @@ async function addFeedInternal({ siteUrl, feedUrl, name, folder } = {}) {
   return feed;
 }
 
+// docId BASE = "<company>_<date>" — plus "_<HH-MM-SS>" when the feed gave a publish TIME
+// (e.g. nvidia_2026-07-07_14-30-00) — instead of the default host+path. NO title (they run
+// long). The timestamp usually makes each id unique; if it still collides (date-only feed,
+// or identical timestamps) importDocInternal(dedupeUrl) bumps _1/_2/… for a DIFFERENT
+// article, while the SAME URL reuses its existing id (poll re-runs / backfill overwrite).
+function newsDocId(feed, date, time) {
+  const company = String(feed.folder || feed.id || "").split("/").filter(Boolean).pop() || feed.id || "news";
+  return [company, date || "", time || ""].filter(Boolean).join("_");
+}
+
 // ---- import one item (shared by backfill; poll goes via the feeditem job) ----
-function importItem(feed, { url, title, publishedAt, excerpt, text }, ctx) {
+function importItem(feed, { url, title, publishedAt, publishedTime, excerpt, text, images }, ctx) {
   const card = library.excerptCard(excerpt, ctx.language);
   return library.importDocInternal({
-    source: `url:${url}`, docKind: "blog", folder: feed.folder,
+    source: `url:${url}`, docId: newsDocId(feed, publishedAt, publishedTime), dedupeUrl: true,
+    docKind: "blog", folder: feed.folder,
     title: title || url, publishedAt: publishedAt || "",
-    text, model: ctx.embedModel || "",
+    text, images: images || [], model: ctx.embedModel || "",
     extraBlocks: card ? [card] : undefined,
   });
 }
-// Full article text from a feed item: prefer inline content:encoded/content (full HTML),
-// else fetch the page. Returns "" when nothing usable.
-async function resolveItemText(it, ctx) {
+// Full article text + downloaded images from a feed item: prefer inline content:encoded/
+// content (full HTML), else fetch the page. Returns { text:"", images:[] } when nothing usable.
+async function resolveItem(it, ctx) {
   if (it.contentHtml && it.contentHtml.length > 200) {
-    const { text } = await extractCleanContent(it.contentHtml, it.url);
-    if (text && text.trim()) return text.trim();
+    const r = await extractArticleWithImages(it.contentHtml, it.url, NEWS_IMAGE_CAP);
+    if (r.text && r.text.trim()) return { text: r.text.trim(), images: r.images };
   }
   const r = await politeFetch(it.url, { timeoutMs: 20000, signal: ctx.signal, minGapMs: 2000 });
-  if (!r.ok) return "";
-  if (!/html|text|json/i.test(r.headers.get("content-type") || "")) return "";
-  const { text } = await extractCleanContent(await r.text(), it.url);
-  return (text || "").trim();
+  if (!r.ok) return { text: "", images: [] };
+  if (!/html|text|json/i.test(r.headers.get("content-type") || "")) return { text: "", images: [] };
+  const out = await extractArticleWithImages(await r.text(), it.url, NEWS_IMAGE_CAP);
+  return { text: (out.text || "").trim(), images: out.images };
 }
 
 // ---- backfill engine (one job per feed; imports directly, no sub-jobs) ------
@@ -310,13 +332,14 @@ async function backfillWpjson(feed, ctx) {
     for (const post of posts) {
       const url = post.link; if (!url || isSeen(feed.id, url)) continue;
       try {
-        const { text } = await extractCleanContent(stripCdata(post.content && post.content.rendered || ""), url);
+        const { text, images } = await extractArticleWithImages(stripCdata(post.content && post.content.rendered || ""), url, NEWS_IMAGE_CAP);
         if (!text || !text.trim()) { skipped++; markSeen(feed.id, [url]); continue; }
+        const dt = toDateTime(post.date_gmt ? post.date_gmt + "Z" : "");
         await importItem(feed, {
-          url, text: text.trim(),
+          url, text: text.trim(), images,
           title: decodeEntities(stripCdata(post.title && post.title.rendered || "")).trim(),
           excerpt: post.excerpt && post.excerpt.rendered || "",
-          publishedAt: toDate(post.date_gmt ? post.date_gmt + "Z" : ""),
+          publishedAt: dt.date, publishedTime: dt.time,
         }, ctx);
         imported++;
       } catch (e) { if (e && e.name === "AbortError") throw e; skipped++; }
@@ -342,7 +365,7 @@ async function backfillPagedFeed(feed, ctx) {
     for (const it of items) {
       if (!it.url || isSeen(feed.id, it.url)) continue;
       fresh++;
-      try { const text = await resolveItemText(it, ctx); if (text) { await importItem(feed, { ...it, text }, ctx); imported++; } else skipped++; }
+      try { const { text, images } = await resolveItem(it, ctx); if (text) { await importItem(feed, { ...it, text, images }, ctx); imported++; } else skipped++; }
       catch (e) { if (e && e.name === "AbortError") throw e; skipped++; }
       markSeen(feed.id, [it.url]);
       if (ctx.onProgress) ctx.onProgress(imported + skipped, undefined);
@@ -382,10 +405,13 @@ async function backfillSitemap(feed, ctx) {
       const r = await politeFetch(url, { timeoutMs: 20000, signal: ctx.signal, minGapMs: 2000 });
       if (!r.ok) { skipped++; markSeen(feed.id, [url]); continue; }
       const html = await r.text();
-      const { text } = await extractCleanContent(html, url);
+      const { text, images } = await extractArticleWithImages(html, url, NEWS_IMAGE_CAP);
       if (!text || !text.trim()) { skipped++; markSeen(feed.id, [url]); continue; }
       const title = decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "").trim();
-      await importItem(feed, { url, title, text: text.trim() }, ctx);
+      // sitemaps carry no publish time → pull it from the page's og/article meta if present.
+      const pm = html.match(/property=["']article:published_time["'][^>]*content=["']([^"']+)["']|<time[^>]+datetime=["']([^"']+)["']/i);
+      const dt = toDateTime(pm ? (pm[1] || pm[2]) : "");
+      await importItem(feed, { url, title, text: text.trim(), images, publishedAt: dt.date, publishedTime: dt.time }, ctx);
       imported++;
     } catch (e) { if (e && e.name === "AbortError") throw e; skipped++; }
     markSeen(feed.id, [url]);
@@ -430,7 +456,7 @@ function loopbackPost(pathname, bodyObj) {
 function enqueueFeedItem(feed, it, ctx) {
   return loopbackPost("/api/jobs", {
     kind: "libimport", label: "feeditem", conversationId: "__feeds__",
-    payload: { type: "feeditem", url: it.url, title: it.title, publishedAt: it.publishedAt, excerpt: it.excerpt, folder: feed.folder, distill: false, embedModel: ctx.embedModel || "", language: ctx.language || "" },
+    payload: { type: "feeditem", url: it.url, docId: newsDocId(feed, it.publishedAt, it.publishedTime), title: it.title, publishedAt: it.publishedAt, excerpt: it.excerpt, folder: feed.folder, distill: false, embedModel: ctx.embedModel || "", language: ctx.language || "" },
   });
 }
 async function pollFeed(feed, ctx = {}) {
@@ -511,6 +537,26 @@ async function feedsPollNowHandler(req, res) {
     else sendJson(res, 200, { ok: true, ...(await pollAll(ctx)) });
   } catch (e) { sendJson(res, 200, { ok: false, error: e.message }); }
 }
+// POST /api/feeds/backfill-estimate { id } → { ok, method, total, known } so the UI can
+// warn "will import ~N articles — confirm?" before starting. wp-json gives an exact count
+// in ONE request (X-WP-Total); sitemap/paged-feed can't be counted cheaply → known:false.
+async function feedsBackfillEstimateHandler(req, res) {
+  let b = {}; try { b = await readBody(req); } catch {}
+  try {
+    const f = getFeed(b.id); if (!f) throw new Error("feed not found");
+    let method = f.backfill && f.backfill.method;
+    if (!method) { const p = await probeBackfill(f); method = p.method; patchBackfill(f.id, { method, total: p.total || 0 }); if (p.sitemap) patchFeed(f.id, { sitemapUrl: p.sitemap }); }
+    let total = 0, known = false;
+    if (method === "wpjson") {
+      const origin = new URL(f.siteUrl || f.feedUrl).origin;
+      try { const r = await politeFetch(origin + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 12000, retries: 1 }); total = Number(r.headers.get("x-wp-total")) || 0; known = total > 0; } catch {}
+      if (known) patchBackfill(f.id, { total });
+    }
+    // sitemap/pagedfeed: walking them just to count is as costly as the backfill itself →
+    // leave known:false; the UI confirms without a number.
+    sendJson(res, 200, { ok: true, method: method || "", total, known });
+  } catch (e) { sendJson(res, 200, { ok: false, error: e.message }); }
+}
 async function feedsBackfillHandler(req, res) {
   let b = {}; try { b = await readBody(req); } catch {}
   try {
@@ -523,8 +569,8 @@ async function feedsBackfillHandler(req, res) {
 
 module.exports = {
   startPolling, runBackfill,
-  feedsListHandler, feedsAddHandler, feedsEditHandler, feedsDeleteHandler, feedsPollNowHandler, feedsBackfillHandler,
+  feedsListHandler, feedsAddHandler, feedsEditHandler, feedsDeleteHandler, feedsPollNowHandler, feedsBackfillHandler, feedsBackfillEstimateHandler,
   // exported for testing
-  parseFeed, parseSitemap, parseSitemapUrls, decodeEntities, toDate, sanitizeNewsFolder, slugify,
+  parseFeed, parseSitemap, parseSitemapUrls, decodeEntities, toDate, toDateTime, sanitizeNewsFolder, slugify,
   _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder },
 };

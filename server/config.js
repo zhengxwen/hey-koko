@@ -123,12 +123,11 @@ const config = {
   mineruBackend: process.env.MINERU_BACKEND || "pipeline",
   // P3 slides visual layer — render each slide page to a whole-page JPEG (q80) stored on
   // the page block, so /ask can feed a vision model the actual page (charts/layout), not
-  // just the terse text. OPT-IN (HEYKOKO_SLIDES_RENDER=1): the rasters bloat the doc JSON
-  // (~200-350KB/page base64) and pptx rendering drives PowerPoint (a GUI app + one-time
-  // automation permission), so it's off by default. slidesPython renders PDFs (pypdfium2);
-  // pptx uses PowerPoint via AppleScript (macOS). slidesRenderScale bumps resolution for
-  // small text (higher scale = clearer + bigger file); slidesRenderMaxPages caps cost.
-  slidesRender: /^(1|true|yes|on)$/i.test(String(process.env.HEYKOKO_SLIDES_RENDER || "")),
+  // just the terse text. Always attempted for slide imports; it's best-effort, so it just
+  // no-ops when no backend is present. slidesPython renders PDFs (pypdfium2); pptx goes
+  // via LibreOffice → PDF → pypdfium2 (PowerPoint AppleScript as a macOS fallback).
+  // slidesRenderScale bumps resolution for small text (higher = clearer + bigger file);
+  // slidesRenderMaxPages caps cost.
   slidesPython: resolveSlidesPython(),
   slidesRenderScale: Number(process.env.HEYKOKO_SLIDES_RENDER_SCALE || 2.0),
   slidesRenderMaxPages: Number(process.env.HEYKOKO_SLIDES_RENDER_MAXPAGES || 80),

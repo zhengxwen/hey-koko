@@ -313,6 +313,98 @@ async function extractCleanContent(html, baseUrl) {
   return { text, imageUrls };
 }
 
+// Like downloadImages but returns { url, name:"image_N.ext", base64, mime } so the result
+// can be woven back into the markdown as ![alt](image_N.ext) refs (the shape splitIntoBlocks
+// matches). Same tracker/oversize filtering as downloadImages. Each image is normalized via
+// optimizeImage (PNG→JPEG, oversized→compressed).
+const IMG_EXT = { "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif", "image/avif": "avif" };
+
+// macOS `sips` (built-in, like the app's caffeinate/afplay use) → JPEG re-encode + optional
+// downscale. Zero-npm: no image library. Absent (non-macOS) / failure → caller keeps original.
+let _sipsOk = null;
+function sipsAvailable() {
+  if (_sipsOk === null) { try { _sipsOk = process.platform === "darwin" && fs.existsSync("/usr/bin/sips"); } catch { _sipsOk = false; } }
+  return _sipsOk;
+}
+function sipsToJpeg(buf, mime, { quality = 75, maxDim = 0 } = {}) {
+  if (!sipsAvailable()) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let dir; try { dir = fs.mkdtempSync(path.join(os.tmpdir(), "hkimg-")); } catch { return resolve(null); }
+    const inp = path.join(dir, "in." + (IMG_EXT[mime] || "img")), outp = path.join(dir, "out.jpg");
+    const cleanup = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+    try { fs.writeFileSync(inp, buf); } catch { cleanup(); return resolve(null); }
+    const args = ["-s", "format", "jpeg", "-s", "formatOptions", String(quality)];
+    if (maxDim > 0) args.push("-Z", String(maxDim));   // downscale so the longest side ≤ maxDim
+    args.push(inp, "--out", outp);
+    execFile("/usr/bin/sips", args, { timeout: 20000 }, (err) => {
+      let res = null;
+      if (!err) { try { res = fs.readFileSync(outp); } catch {} }
+      cleanup();
+      resolve(res && res.length ? res : null);
+    });
+  });
+}
+// User rules (news-feeds.md): (1) PNG → always convert to JPEG; (2) too-large images → compress
+// (and downscale the huge ones). Animated GIFs are left alone (compressing flattens them).
+// Returns { buf, ct } — the (possibly) re-encoded bytes + its mime. sips absent → original.
+async function optimizeImage(buf, mime) {
+  const isPng = /png/i.test(mime), isGif = /gif/i.test(mime);
+  const huge = buf.length > 1500 * 1024, big = buf.length > 500 * 1024;
+  if (!isPng && (isGif || !big)) return { buf, ct: mime };   // keep: reasonable non-PNG, or any GIF
+  const opt = await sipsToJpeg(buf, mime, { quality: huge ? 62 : big ? 72 : 82, maxDim: huge ? 1600 : 0 });
+  if (opt && (isPng || opt.length < buf.length)) return { buf: opt, ct: "image/jpeg" };   // PNG always converts; else only if smaller
+  return { buf, ct: mime };
+}
+
+async function downloadImagesNamed(urls, referer, max) {
+  const out = [], seen = new Set();
+  let n = 0;
+  for (const u of urls) {
+    if (out.length >= max) break;
+    if (seen.has(u)) continue;
+    seen.add(u);
+    try {
+      const res = await fetch(u, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; LocalAIChat/1.0)", "Referer": referer, "Accept": "image/avif,image/webp,image/*,*/*;q=0.8" },
+        signal: AbortSignal.timeout(8000), redirect: "follow",
+      });
+      if (!res.ok) continue;
+      let ct = (res.headers.get("content-type") || "").split(";")[0].trim();
+      if (!ct.startsWith("image/") || ct === "image/svg+xml") continue;
+      let buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 3000 || buf.length > 5 * 1024 * 1024) continue;   // skip trackers / oversized
+      ({ buf, ct } = await optimizeImage(buf, ct));   // PNG→JPEG + compress large
+      out.push({ url: u, name: `image_${++n}.${IMG_EXT[ct] || "jpg"}`, base64: buf.toString("base64"), mime: ct });
+    } catch { /* skip unreachable images */ }
+  }
+  return out;
+}
+
+// extractCleanContent's image-KEEPING sibling (news-feeds.md): instead of collapsing every
+// image to a ［图片：alt］ text placeholder, it DOWNLOADS them and rewrites each ref to
+// ![alt](image_N.ext) so splitIntoBlocks turns them into real figure blocks (stored on the
+// doc, shown in the reader). Images that fail to download / are UI icons still degrade to the
+// text placeholder. maxImages=0 → behaves like extractCleanContent (no downloads).
+async function extractArticleWithImages(html, baseUrl, maxImages = 8) {
+  const articleHtml = extractMainContentHtml(html);
+  const markdown = await htmlToMarkdown(rewriteArticleImages(articleHtml, baseUrl));
+  const cleaned = cleanupMarkdown(markdown);
+  const imageUrls = [...cleaned.matchAll(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g)].map((m) => m[1]);
+  const downloaded = maxImages > 0 ? await downloadImagesNamed(imageUrls, baseUrl, maxImages) : [];
+  const byUrl = new Map(downloaded.map((im) => [im.url, im]));
+  let text = cleaned.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (_, alt, url) => {
+    const a = (alt || "").trim();
+    const im = byUrl.get(url);
+    if (im) return `![${a}](${im.name})`;                              // downloaded → keep as a real figure
+    if (UI_ICON_ALT_RE.test(a)) return "";                            // UI icon → drop
+    return a && a.length <= 60 ? `［图片：${a}］` : "［图片］";          // failed download → text placeholder
+  });
+  text = removeRelatedCardBlocks(removeRelatedWidgets(cutTrailingSections(text)))
+    .replace(/(［图片[^］]*］)(\s*\n\s*［图片[^］]*］)+/g, "$1")
+    .replace(/\n{3,}/g, "\n\n");
+  return { text, images: downloaded.map(({ name, base64, mime }) => ({ name, base64, mime })) };
+}
+
 // ---- In-article noise cleanup + image handling ----
 
 // Standalone UI/chrome lines that publishers inject inside the article body.
@@ -1499,4 +1591,4 @@ async function expandYoutubeUrls(req, res) {
   console.log(model ? `[url-fetch] whisper model: ${model}` : "[url-fetch] whisper model not found");
 })();
 
-module.exports = { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, formatTranscriptServer, extractCleanContent, expandYoutubeUrls };
+module.exports = { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, formatTranscriptServer, extractCleanContent, extractArticleWithImages, optimizeImage, expandYoutubeUrls };

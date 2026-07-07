@@ -793,7 +793,11 @@ export function initLibrary() {
       addFail: "添加失败：", folder: "目录", articles: "篇", lastPoll: "上次轮询", never: "从未",
       pollNow: "立即轮询", backfill: "回填历史", pause: "暂停", resume: "启用", del: "删除",
       delConfirm: (n) => `删除订阅「${n}」？已导入的文章会保留。`,
-      polled: (n) => n ? `新增 ${n} 篇` : "没有新文章", backfillStarted: "回填任务已加入队列（进度见任务抽屉）",
+      polled: (n) => n ? `新增 ${n} 篇` : "没有新文章", backfillStarted: "回填任务已加入队列",
+      estimating: "正在预估篇数…", noChannel: "该订阅源没有可用的回填通道（无 wp-json / 分页 feed / sitemap）。",
+      estKnown: (n, name) => `将从「${name}」回填约 ${n} 篇历史文章（已导入的会自动跳过）。开始回填？`,
+      estUnknown: (name, m) => `无法预估「${name}」的篇数（通道：${m}）。仍要回填全部历史吗？`,
+      bfRunning: "回填中", bfQueued: "排队中…",
       mNone: "无回填通道", mWpjson: "wp-json", mPagedfeed: "分页 feed", mSitemap: "sitemap",
       bfNo: "未回填", bfDone: "已完成", bfProg: "进行中", interval: "轮询间隔", hours: "小时", save: "保存" },
     "zh-Hant": { title: "新聞訂閱源", close: "關閉", loading: "正在載入…", empty: "還沒有訂閱源。貼上一個部落格/網站網址即可新增。",
@@ -801,7 +805,11 @@ export function initLibrary() {
       addFail: "新增失敗：", folder: "目錄", articles: "篇", lastPoll: "上次輪詢", never: "從未",
       pollNow: "立即輪詢", backfill: "回填歷史", pause: "暫停", resume: "啟用", del: "刪除",
       delConfirm: (n) => `刪除訂閱「${n}」？已匯入的文章會保留。`,
-      polled: (n) => n ? `新增 ${n} 篇` : "沒有新文章", backfillStarted: "回填任務已加入佇列（進度見任務抽屜）",
+      polled: (n) => n ? `新增 ${n} 篇` : "沒有新文章", backfillStarted: "回填任務已加入佇列",
+      estimating: "正在預估篇數…", noChannel: "該訂閱源沒有可用的回填通道（無 wp-json / 分頁 feed / sitemap）。",
+      estKnown: (n, name) => `將從「${name}」回填約 ${n} 篇歷史文章（已匯入的會自動跳過）。開始回填？`,
+      estUnknown: (name, m) => `無法預估「${name}」的篇數（通道：${m}）。仍要回填全部歷史嗎？`,
+      bfRunning: "回填中", bfQueued: "排隊中…",
       mNone: "無回填通道", mWpjson: "wp-json", mPagedfeed: "分頁 feed", mSitemap: "sitemap",
       bfNo: "未回填", bfDone: "已完成", bfProg: "進行中", interval: "輪詢間隔", hours: "小時", save: "儲存" },
     en: { title: "News feed subscriptions", close: "Close", loading: "Loading…", empty: "No subscriptions yet. Paste a blog/site URL to add one.",
@@ -809,7 +817,11 @@ export function initLibrary() {
       addFail: "Add failed: ", folder: "folder", articles: "articles", lastPoll: "last poll", never: "never",
       pollNow: "Poll now", backfill: "Backfill history", pause: "Pause", resume: "Enable", del: "Delete",
       delConfirm: (n) => `Delete subscription “${n}”? Imported articles are kept.`,
-      polled: (n) => n ? `${n} new` : "no new posts", backfillStarted: "Backfill queued (see the task drawer for progress)",
+      polled: (n) => n ? `${n} new` : "no new posts", backfillStarted: "Backfill queued",
+      estimating: "Estimating…", noChannel: "This subscription has no usable backfill channel (no wp-json / paged feed / sitemap).",
+      estKnown: (n, name) => `This will backfill ~${n} past articles from “${name}” (already-imported ones are skipped). Start backfill?`,
+      estUnknown: (name, m) => `Can't estimate the article count for “${name}” (channel: ${m}). Backfill the whole history anyway?`,
+      bfRunning: "Backfilling", bfQueued: "Queued…",
       mNone: "no backfill channel", mWpjson: "wp-json", mPagedfeed: "paged feed", mSitemap: "sitemap",
       bfNo: "not backfilled", bfDone: "done", bfProg: "in progress", interval: "Poll every", hours: "hours", save: "Save" },
   };
@@ -847,7 +859,7 @@ export function initLibrary() {
     const addBtn = overlay.querySelector("#feedAddBtn");
     const intervalIn = overlay.querySelector("#feedInterval");
 
-    const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+    const close = () => { clearInterval(progTimer); overlay.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
     document.addEventListener("keydown", onKey);
     overlay.querySelector(".zoteroImportClose").addEventListener("click", close);
@@ -856,6 +868,19 @@ export function initLibrary() {
     const fmtDate = (ts) => ts ? new Date(ts).toLocaleDateString() : L.never;
     const methodLabel = (m) => ({ wpjson: L.mWpjson, pagedfeed: L.mPagedfeed, sitemap: L.mSitemap }[m] || L.mNone);
     const bfLabel = (bf) => !bf ? L.bfNo : bf.doneAt ? L.bfDone : (bf.cursor > 0 ? L.bfProg : L.bfNo);
+
+    // Live in-row backfill progress: enqueueBgJob returns the local job object, whose
+    // .status/.progress the SSE stream mutates in place. Poll them onto each row's progress
+    // line; on completion refresh the row (article count + drop the line). feedId → job.
+    const running = new Map();
+    const progTimer = setInterval(() => {
+      for (const [fid, job] of [...running]) {
+        const span = listEl.querySelector(`.feedMgrRow[data-feed-id="${fid}"] .feedMgrProg`);
+        if (job.status === "done") { running.delete(fid); render(); continue; }
+        if (job.status === "error" || job.status === "interrupted") { running.delete(fid); if (span) { span.hidden = false; span.textContent = "⚠ " + (job.error || ""); } continue; }
+        if (span) { const p = job.progress; span.hidden = false; span.textContent = p && p.max ? `${L.bfRunning} ${p.value}/${p.max}` : (p && p.value ? `${L.bfRunning} ${p.value}` : L.bfQueued); }
+      }
+    }, 600);
 
     async function render() {
       listEl.innerHTML = `<div class="zoteroImportMsg">${escapeHtml(L.loading)}</div>`;
@@ -867,12 +892,14 @@ export function initLibrary() {
       for (const f of data.feeds) {
         const row = document.createElement("div");
         row.className = "feedMgrRow" + (f.enabled ? "" : " isPaused");
+        row.dataset.feedId = f.id;
         const meta = `${escapeHtml(f.folder)} · ${f.articles} ${L.articles} · ${L.lastPoll}: ${fmtDate(f.lastPollAt)} · ${escapeHtml(methodLabel(f.backfill && f.backfill.method))} · ${escapeHtml(bfLabel(f.backfill))}`;
         const err = f.lastError ? `<div class="feedMgrErr">⚠ ${escapeHtml(f.lastError)}</div>` : "";
         row.innerHTML = `
           <div class="feedMgrMain">
             <div class="feedMgrNameLine"><span class="feedMgrFeedName">${escapeHtml(f.name)}</span></div>
             <div class="feedMgrMeta">${meta}</div>${err}
+            <div class="feedMgrProg" hidden></div>
           </div>
           <div class="feedMgrActions">
             <button type="button" class="feedMgrMini" data-act="poll">${escapeHtml(L.pollNow)}</button>
@@ -886,9 +913,24 @@ export function initLibrary() {
           catch { statusEl2.textContent = ""; } finally { b.disabled = false; render(); }
         });
         row.querySelector('[data-act="backfill"]').addEventListener("click", async (e) => {
-          const b = e.target; b.disabled = true;
-          try { await postJson("/api/feeds/backfill", { id: f.id, ...importJobCommon() }); statusEl2.textContent = L.backfillStarted; setStatus(L.backfillStarted); }
-          catch { /* ignore */ } finally { b.disabled = false; }
+          const b = e.target; b.disabled = true; statusEl2.textContent = L.estimating;
+          let est; try { est = await postJson("/api/feeds/backfill-estimate", { id: f.id }); } catch { est = { ok: false }; }
+          b.disabled = false; statusEl2.textContent = "";
+          if (!est.ok || !est.method) { alert(L.noChannel); return; }
+          // Tell the user the count (wp-json gives an exact number; sitemap/paged-feed can't
+          // be counted cheaply → confirm without one), and require an explicit confirm.
+          const msg = est.known ? L.estKnown(est.total, f.name) : L.estUnknown(f.name, methodLabel(est.method));
+          if (!confirm(msg)) return;
+          // Enqueue via the FRONTEND queue (not /api/feeds/backfill) so the returned job is
+          // tracked locally → live progress in the drawer AND on this row.
+          const job = enqueueBgJob({
+            tabId: state.activeTabId, kind: "libimport", label: "📰 " + f.name,
+            payload: { type: "backfill", feedId: f.id, ...importJobCommon() }, noPlaceholder: true,
+          });
+          if (job) running.set(f.id, job);
+          statusEl2.textContent = L.backfillStarted; setStatus(L.backfillStarted);
+          openBgDrawer();
+          const span = row.querySelector(".feedMgrProg"); if (span) { span.hidden = false; span.textContent = L.bfQueued; }
         });
         row.querySelector('[data-act="toggle"]').addEventListener("click", async () => {
           try { await postJson("/api/feeds/edit", { id: f.id, enabled: !f.enabled }); } catch {} render();

@@ -365,19 +365,23 @@ async function runLibImportJob(job, signal) {
   // backfill: one feed's whole history, imported directly by feeds.runBackfill (no sub-jobs).
   if (p.type === "feeditem") {
     stage("fetching");
-    let text = "", title = p.title || p.url, publishedAt = p.publishedAt || "";
-    if (p.html) {
-      ({ text } = await require("./url-fetch").extractCleanContent(p.html, p.url));
-    } else {
-      const r = await loopbackPost("/api/fetch-url", { url: p.url }, signal);
-      let d = {}; try { d = JSON.parse(r.text); } catch {}
-      if (!r.ok || d.type === "error" || d.type === "unsupported" || !d.content) throw new Error(d.content || `fetch failed (${r.status})`);
-      text = d.content; if (d.title) title = d.title; if (!publishedAt && d.publishedAt) publishedAt = d.publishedAt;
+    let title = p.title || p.url, html = p.html || "";
+    if (!html) {   // poll enqueues without html → fetch the article page ourselves (raw, for images)
+      const res = await fetch(p.url, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; hey-koko-feeds/1.0)" }, redirect: "follow",
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : AbortSignal.timeout(25000),
+      });
+      if (!res.ok) throw new Error(`fetch failed (${res.status})`);
+      if (!/html/i.test(res.headers.get("content-type") || "")) throw new Error("not html");
+      html = await res.text();
+      if (!p.title) { const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i); if (m) title = m[1].trim(); }
     }
-    if (!text || !String(text).trim()) throw new Error("empty document");
     stage("importing");
+    // extractArticleWithImages downloads images + keeps ![](image_N.ext) refs → figure blocks.
+    const { text, images } = await require("./url-fetch").extractArticleWithImages(html, p.url, p.images === false ? 0 : 8);
+    if (!text || !String(text).trim()) throw new Error("empty document");
     const card = library.excerptCard(p.excerpt, p.language);
-    const imp = await library.importDocInternal({ source: `url:${p.url}`, docKind: "blog", folder: p.folder, title, publishedAt, text, model: p.embedModel, extraBlocks: card ? [card] : undefined });
+    const imp = await library.importDocInternal({ source: `url:${p.url}`, docId: p.docId, dedupeUrl: true, docKind: "blog", folder: p.folder, title, publishedAt: p.publishedAt || "", text, images, model: p.embedModel, extraBlocks: card ? [card] : undefined });
     return { docId: imp.docId, blockCount: imp.blockCount, folder: imp.folder, distilled: false };
   }
   if (p.type === "backfill") {
@@ -421,8 +425,8 @@ async function runLibImportJob(job, signal) {
     const parsed = await loopbackParseFile(p.name, buf, signal, (pct) => stage("parsing", pct ? { value: pct, max: 100 } : null), p.llmTimeoutS, p.docKind);
     source = `file:${p.name}`; docKind = docKind || "other"; title = p.name.replace(/\.[^.]+$/, ""); text = parsed.text; images = parsed.images || [];
     // P3: a slides import also renders each page to a whole-page JPEG (best-effort; the
-    // same file buffer is already in hand). Opt-in + graceful — [] when off/unavailable.
-    if (docKind === "slides" && config.slidesRender) {
+    // same file buffer is already in hand). Graceful — [] when no render backend is present.
+    if (docKind === "slides") {
       stage("rendering");
       try { pageImages = await renderSlides.renderPages(buf, p.ext, { timeoutMs: (p.llmTimeoutS ? p.llmTimeoutS * 1000 : undefined) }); } catch (e) { if (e && e.name === "AbortError") throw e; }
     }
@@ -466,9 +470,9 @@ async function runLibImportJob(job, signal) {
           const parsed = await loopbackParseFile((pdf.data || pdf).filename || `${itemKey}.pdf`, buf, signal,
             (pct) => stage("parsing", pct ? { value: pct, max: 100 } : null), p.llmTimeoutS, "slides");
           bodyText = parsed.text || ""; slideImages = parsed.images || [];
-          // P3: render each page to a whole-page JPEG (best-effort, opt-in) — Zotero decks
-          // are PDFs, so this uses the pypdfium2 backend on the same buffer.
-          if (bodyText.trim() && config.slidesRender) {
+          // P3: render each page to a whole-page JPEG (best-effort) — Zotero decks are
+          // PDFs, so this uses the pypdfium2 backend on the same buffer.
+          if (bodyText.trim()) {
             stage("rendering");
             try { pageImages = await renderSlides.renderPages(buf, ".pdf", { timeoutMs: (p.llmTimeoutS ? p.llmTimeoutS * 1000 : undefined) }); } catch (e) { if (e && e.name === "AbortError") throw e; }
           }
