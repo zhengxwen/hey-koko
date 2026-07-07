@@ -199,7 +199,15 @@ if (dom.sendTimeToggle) {
   dom.sendTimeToggle.addEventListener("change", saveCurrentSettings);
 }
 if (dom.toolsToggle) {
-  dom.toolsToggle.addEventListener("change", saveCurrentSettings);
+  // The "search the knowledge library" sub-option only makes sense while tool use is on,
+  // so hide its whole row when the master toggle is off (and reflect the loaded state).
+  const syncLibToolRow = () => {
+    const row = dom.libraryToolToggle?.closest(".toolSubToggle");
+    if (row) row.style.display = dom.toolsToggle.checked ? "" : "none";
+  };
+  dom.toolsToggle.addEventListener("change", () => { saveCurrentSettings(); syncLibToolRow(); });
+  dom.libraryToolToggle?.addEventListener("change", saveCurrentSettings);
+  syncLibToolRow();
 }
 if (dom.libraryDistillToggle) {
   dom.libraryDistillToggle.addEventListener("change", saveCurrentSettings);

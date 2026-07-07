@@ -55,6 +55,18 @@ export const TOOL_SCHEMAS = [
   {
     type: "function",
     function: {
+      name: "search_library",
+      description: "Search the user's personal knowledge library (imported documents, papers, YouTube transcripts, notes) by meaning. Use when the user asks about content they've saved/imported, or refers to '我库里…', 'my library', 'that doc/paper/video about…'. Returns relevant passages with their source titles.",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string", description: "what to look up in the library" } },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "set_reminder",
       description: "Schedule a reminder for the user. Use when they ask to be reminded of something at a time.",
       parameters: {
@@ -128,6 +140,27 @@ async function recallMemory(query) {
   } catch (e) { return "Recall failed: " + e.message; }
 }
 
+// Raw semantic retrieval over the knowledge library — the same /api/library/retrieve
+// that /ask builds on, NOT the /ask command itself: we hand the model raw passages and
+// let the OUTER agentic loop iterate (re-query) if it needs more, rather than nesting a
+// second answer-generation or agentic pass inside the tool.
+async function searchLibrary(query) {
+  try {
+    const res = await fetch("/api/library/retrieve", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, model: embedModel(), topK: 5 }),
+    });
+    const data = await res.json();
+    if (data.error) return "Library search failed: " + data.error;
+    const hits = (data.hits || []).slice(0, 5);
+    if (!hits.length) return "No relevant documents in the knowledge library.";
+    return hits.map((h, i) => {
+      const snip = String(h.content || "").replace(/\s+/g, " ").slice(0, 300);
+      return `${i + 1}. [${h.title}${h.section ? " · " + h.section : ""}] ${snip}`;
+    }).join("\n\n");
+  } catch (e) { return "Library search failed: " + e.message; }
+}
+
 function setReminder(when, text) {
   const w = String(when || "").trim()
     .replace(/(\d+)\s*(?:minutes?|mins?)\b/i, "$1m")
@@ -153,6 +186,7 @@ export async function executeTool(name, args) {
     case "calculate": return calculate(args.expression);
     case "web_search": return await webSearch(args.query || "");
     case "recall_memory": return await recallMemory(args.query || "");
+    case "search_library": return await searchLibrary(args.query || "");
     case "set_reminder": return setReminder(args.when, args.text);
     case "remember_fact": return rememberFact(args.fact);
     default: return `Unknown tool: ${name}`;
@@ -163,9 +197,18 @@ export function getToolLabel(name, args) {
   const a = args || {};
   if (name === "web_search") return `web_search("${a.query || ""}")`;
   if (name === "recall_memory") return `recall_memory("${a.query || ""}")`;
+  if (name === "search_library") return `search_library("${a.query || ""}")`;
   if (name === "calculate") return `calculate(${a.expression || ""})`;
   if (name === "get_datetime") return "get_datetime()";
   if (name === "set_reminder") return `set_reminder("${a.when || ""}", "${a.text || ""}")`;
   if (name === "remember_fact") return `remember_fact("${a.fact || ""}")`;
   return name;
+}
+
+// The tool set actually offered to the model: everything in TOOL_SCHEMAS, minus
+// search_library when the user has switched the knowledge-library tool off (its own
+// checkbox, independent of the master tool-use toggle). Default on when absent.
+export function activeToolSchemas() {
+  const useLib = dom.libraryToolToggle ? dom.libraryToolToggle.checked : true;
+  return useLib ? TOOL_SCHEMAS : TOOL_SCHEMAS.filter((t) => t.function.name !== "search_library");
 }

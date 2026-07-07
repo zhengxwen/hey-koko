@@ -443,9 +443,9 @@ export function initLibrary() {
   sortBtn.title = t("lib_sortHint");
   sortBtn.textContent = t("lib_sortDefault");
   sortBtn.addEventListener("click", () => {
-    sortMode = sortMode === "" ? "new" : sortMode === "new" ? "old" : sortMode === "old" ? "rate" : "";
+    sortMode = sortMode === "" ? "importRev" : sortMode === "importRev" ? "new" : sortMode === "new" ? "old" : sortMode === "old" ? "rate" : "";
     sortBtn.dataset.mode = sortMode;
-    sortBtn.textContent = t(sortMode === "new" ? "lib_sortNewOld" : sortMode === "old" ? "lib_sortOldNew" : sortMode === "rate" ? "lib_sortRate" : "lib_sortDefault");
+    sortBtn.textContent = t(sortMode === "importRev" ? "lib_sortImportRev" : sortMode === "new" ? "lib_sortNewOld" : sortMode === "old" ? "lib_sortOldNew" : sortMode === "rate" ? "lib_sortRate" : "lib_sortDefault");
     renderList();
   });
 
@@ -1217,7 +1217,7 @@ export function initLibrary() {
     } else if (sortMode === "rate") {
       // Rating high→low; unrated sink to the end, ties keep import order (stable sort).
       list.sort((a, b) => (b.rating || 0) - (a.rating || 0));
-    } else if (sortMode) {
+    } else if (sortMode === "new" || sortMode === "old") {
       // Date sort applies inside each folder too (the tree below groups a pre-sorted
       // list, so node.files inherit this order). Undated docs always sink to the end.
       const dateOf = (d) => (d.publishedAt ? Date.parse(d.publishedAt) : d.importedAt) || 0;
@@ -1226,7 +1226,12 @@ export function initLibrary() {
         if (!da || !db) return (da ? -1 : 0) + (db ? 1 : 0);
         return sortMode === "new" ? db - da : da - db;
       });
+    } else if (sortMode === "") {
+      // 导入序 = newest imported first. docs arrive oldest-first (index appends), so
+      // reverse puts the most recently imported at the top. The folder tree inherits it.
+      list.reverse();
     }
+    // sortMode === "importRev" (导入反序) → keep the natural oldest-first order (no-op).
     if (!list.length) {
       listEl.innerHTML = `<div class="archiveEmpty">${docs.length ? t("lib_noMatch") : t("lib_emptyList")}</div>`;
       return;

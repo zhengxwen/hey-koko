@@ -96,6 +96,7 @@ export const dom = {
   showThinkingCheckbox: document.querySelector("#showThinking"),
   sendTimeToggle: document.querySelector("#sendTime"),
   toolsToggle: document.querySelector("#toolsToggle"),
+  libraryToolToggle: document.querySelector("#libraryToolToggle"),
   numCtxSelect: document.querySelector("#numCtxSelect"),
   numCtxDisplay: document.querySelector("#numCtxDisplay"),
   pdfEngineLabel: document.querySelector("#pdfEngineLabel"),

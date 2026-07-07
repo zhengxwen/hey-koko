@@ -26,7 +26,7 @@ import { t, getPrompt, getPromptLanguage } from './i18n.js';
 import { getNumCtx, recordContextUsage, renderContextMeter } from './context-meter.js';
 import { addMemory, getMemoryPromptBlock } from './memory.js';
 import { parseRemind, addReminder, describeReminder, markActivity } from './proactive.js';
-import { TOOL_SCHEMAS, executeTool, getToolLabel } from './tools.js';
+import { activeToolSchemas, executeTool, getToolLabel } from './tools.js';
 import { applyHighlights, captureAnchor, highlightsInSelection, registerHighlightHost, resolveHighlightHost } from './highlight.js';
 
 // Streaming markdown re-render throttle. Ollama streams a chunk (often a single
@@ -1958,7 +1958,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
         body: JSON.stringify({
           model: dom.modelSelect.value,
           messages,
-          ...(useTools ? { tools: TOOL_SCHEMAS } : {}),
+          ...(useTools ? { tools: activeToolSchemas() } : {}),
           ...(showThinking ? { think: true } : {}),
           stream: false,
           options: { temperature: 0.7, num_ctx: getNumCtx() },

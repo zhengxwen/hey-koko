@@ -348,6 +348,7 @@ const UI = {
     lib_taskCount: "⏳ ${n} importing",
     lib_taskCountHint: "Show background tasks",
     lib_sortDefault: "Import order",
+    lib_sortImportRev: "Import order (rev)",
     lib_sortNewOld: "Date New→Old",
     lib_sortOldNew: "Date Old→New",
     lib_sortHint: "Sort docs by date (YouTube upload date; otherwise import time)",
@@ -474,6 +475,7 @@ const UI = {
     label_sendTime: "Send time info",
     label_sendTimeHint: "Tell the AI the current time, and how long you took to reply when it's been over 4 hours.",
     label_tools: "Tool use (search / memory / reminders / time / calc)",
+    label_libraryTool: "Search the knowledge library",
     label_toolsHint: "Let the AI decide when to search the web, recall memory, etc. Replies are non-streamed; use a tool-capable model.",
     tools_using: "Using ${tool}",
     tools_used: "Tool calls (${count})",
@@ -1094,6 +1096,7 @@ const UI = {
     lib_taskCount: "⏳ ${n} 个导入中",
     lib_taskCountHint: "查看后台任务",
     lib_sortDefault: "导入序",
+    lib_sortImportRev: "导入反序",
     lib_sortNewOld: "日期 新→旧",
     lib_sortOldNew: "日期 旧→新",
     lib_sortHint: "按日期排序（YouTube 用发布日期，其余按导入时间）",
@@ -1218,6 +1221,7 @@ const UI = {
     label_sendTime: "发送时间信息",
     label_sendTimeHint: "让 AI 知道当前时间，以及当你隔了超过 4 小时才回复时，间隔有多久。",
     label_tools: "工具调用（搜索/记忆/提醒/时间/计算）",
+    label_libraryTool: "调用知识库（语义检索）",
     label_toolsHint: "让 AI 自己决定何时联网、翻记忆等。回复非流式，建议用工具能力强的模型。",
     tools_using: "正在调用 ${tool}",
     tools_used: "工具调用（${count}）",
@@ -1831,6 +1835,7 @@ const UI = {
     lib_taskCount: "⏳ ${n} 個匯入中",
     lib_taskCountHint: "查看背景任務",
     lib_sortDefault: "匯入序",
+    lib_sortImportRev: "匯入反序",
     lib_sortNewOld: "日期 新→舊",
     lib_sortOldNew: "日期 舊→新",
     lib_sortHint: "按日期排序（YouTube 用發布日期，其餘按匯入時間）",
@@ -1955,6 +1960,7 @@ const UI = {
     label_sendTime: "傳送時間資訊",
     label_sendTimeHint: "讓 AI 知道目前時間，以及當你隔了超過 4 小時才回覆時，間隔有多久。",
     label_tools: "工具呼叫（搜尋/記憶/提醒/時間/計算）",
+    label_libraryTool: "呼叫知識庫（語意檢索）",
     label_toolsHint: "讓 AI 自己決定何時聯網、翻記憶等。回覆非串流，建議用工具能力強的模型。",
     tools_using: "正在呼叫 ${tool}",
     tools_used: "工具呼叫（${count}）",
@@ -2529,6 +2535,7 @@ const BINDINGS = [
   { sel: "#sendTimeLabel", key: "label_sendTime" },
   { sel: "#sendTimeHint", key: "label_sendTimeHint" },
   { sel: "#toolsLabel", key: "label_tools" },
+  { sel: "#libraryToolLabel", key: "label_libraryTool" },
   { sel: "#toolsHint", key: "label_toolsHint" },
   // Theme dots
   { sel: '.themeColorDot[data-theme="teal"]', key: "theme_teal", attr: "title" },
@@ -2611,7 +2618,7 @@ export function applyUILanguage() {
   const libSortBtn = document.querySelector("#librarySortBtn");
   if (libSortBtn) {
     const m = libSortBtn.dataset.mode;
-    libSortBtn.textContent = t(m === "new" ? "lib_sortNewOld" : m === "old" ? "lib_sortOldNew" : m === "rate" ? "lib_sortRate" : "lib_sortDefault");
+    libSortBtn.textContent = t(m === "importRev" ? "lib_sortImportRev" : m === "new" ? "lib_sortNewOld" : m === "old" ? "lib_sortOldNew" : m === "rate" ? "lib_sortRate" : "lib_sortDefault");
     libSortBtn.title = t("lib_sortHint");
   }
   const libRateFilter = document.querySelector("#libraryRatingFilter");
