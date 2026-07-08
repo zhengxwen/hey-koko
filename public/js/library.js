@@ -2061,15 +2061,21 @@ export function initLibrary() {
     if (doc.authors) mp.push(doc.authors);
     if (doc.tags && doc.tags.length) mp.push("🏷 " + doc.tags.map((tg) => tg && tg.name).filter(Boolean).join("、"));
     metaLine.textContent = mp.join("　·　");
+    facts.appendChild(metaLine);
+    // The source/Zotero links get their OWN row: the meta row above is single-line
+    // (nowrap + ellipsis), so a long tag list would clip the 🔗 URL off the right edge
+    // and hide it. On its own line it's always visible whatever the tag count.
+    const srcLine = document.createElement("div");
+    srcLine.className = "libraryDocInfoLine";
     const src = String(doc.source || "");
     if (src.startsWith("url:")) {
       const a = document.createElement("a");
       a.href = src.slice(4); a.target = "_blank"; a.rel = "noopener";
       a.className = "libraryDocSrcLink";
       a.textContent = "🔗 " + src.slice(4);
-      metaLine.append("　·　", a);
+      srcLine.appendChild(a);
     } else if (src.startsWith("file:")) {
-      metaLine.append(`　·　📎 ${src.slice(5)}`);
+      srcLine.append(`📎 ${src.slice(5)}`);
     }
     // Zotero-imported doc → deep link back to the PDF in Zotero (opens at the attachment).
     // hey-koko has no PDF reader by design; reading/highlighting happens in Zotero.
@@ -2078,9 +2084,10 @@ export function initLibrary() {
       z.href = `zotero://open-pdf/library/items/${doc.zotero.attachmentKey}`;
       z.className = "libraryDocSrcLink";
       z.textContent = "📚 " + (getPromptLanguage() === "en" ? "Open in Zotero" : "在 Zotero 中打开");
-      metaLine.append("　·　", z);
+      if (srcLine.childNodes.length) srcLine.append("　·　");
+      srcLine.appendChild(z);
     }
-    facts.appendChild(metaLine);
+    if (srcLine.childNodes.length) facts.appendChild(srcLine);
     previewContent.appendChild(facts);
     // Per-doc toolbar: regenerate metadata + distillation card (server-side distill —
     // useful for docs imported before the card feature, or after heavy edits).
