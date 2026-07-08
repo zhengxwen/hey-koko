@@ -330,6 +330,7 @@ async function backfillWpjson(feed, ctx) {
     let posts; try { posts = await r.json(); } catch { break; }
     if (!Array.isArray(posts) || !posts.length) break;
     for (const post of posts) {
+      if (ctx.signal && ctx.signal.aborted) throw abortErr();   // respond to a mid-page cancel
       const url = post.link; if (!url || isSeen(feed.id, url)) continue;
       try {
         const { text, images } = await extractArticleWithImages(stripCdata(post.content && post.content.rendered || ""), url, NEWS_IMAGE_CAP);
@@ -439,7 +440,11 @@ async function runBackfill(feedId, ctx = {}) {
     patchFeed(feedId, { lastError: "" });
     return { feedId, method, imported: r.imported, skipped: r.skipped, done: true };
   } catch (e) {
-    if (!(e && e.name === "AbortError")) patchFeed(feedId, { lastError: String(e.message || e) });
+    // User interrupted the backfill task → STOP importing this source: disable the feed so
+    // the poll timer skips it and no backfill auto-resumes (cursor is kept, so re-enabling +
+    // 回填历史 continues where it left off). A real error just records lastError.
+    if (e && e.name === "AbortError") patchFeed(feedId, { enabled: false, lastError: "已中断，已暂停该源导入（启用后可继续回填）" });
+    else patchFeed(feedId, { lastError: String(e.message || e) });
     throw e;
   } finally { flushState(); saveFeeds(true); }
 }
@@ -514,6 +519,7 @@ async function feedsEditHandler(req, res) {
       const f = getFeed(b.id); if (!f) throw new Error("feed not found");
       for (const k of ["name", "siteUrl", "feedUrl", "enabled"]) if (b[k] != null) f[k] = b[k];
       if (b.folder != null) f.folder = sanitizeNewsFolder(b.folder);
+      if (b.enabled === true) f.lastError = "";   // re-enabling clears the "interrupted, paused" note
       saveFeeds(true);
     }
     sendJson(res, 200, { ok: true, feed: b.id ? getFeed(b.id) : null, pollIntervalH: loadFeeds().pollIntervalH });
@@ -557,6 +563,25 @@ async function feedsBackfillEstimateHandler(req, res) {
     sendJson(res, 200, { ok: true, method: method || "", total, known });
   } catch (e) { sendJson(res, 200, { ok: false, error: e.message }); }
 }
+// POST /api/feeds/refresh → reconcile the whole news library with the ACTUAL directory:
+// (1) prune index entries whose doc file was hand-deleted; (2) rebuild every feed's seen-set
+// from the docs that REMAIN on disk (so a deleted article's URL is no longer "seen" and a
+// re-poll/回填 re-imports it). Returns the fresh, disk-accurate feed list. See news-feeds.md.
+async function feedsRefreshHandler(_req, res) {
+  try {
+    const removed = library.pruneIndexGhosts();     // index → match disk (drop deleted docs)
+    const cfg = loadFeeds();
+    const st = loadState();
+    for (const f of cfg.feeds) {
+      st[f.id] = library.sourcesUnderFolder(f.folder);   // seen = what's actually still imported
+      // if everything under this feed is gone, let a backfill restart from scratch
+      if (st[f.id].size === 0 && f.backfill && f.backfill.doneAt) patchBackfill(f.id, { cursor: 0, total: 0, totalPages: 0, doneAt: 0 });
+    }
+    saveStateNow();
+    const counts = folderCountMap();
+    sendJson(res, 200, { ok: true, removed, pollIntervalH: cfg.pollIntervalH, feeds: cfg.feeds.map((f) => ({ ...f, _urls: undefined, articles: sumFolder(counts, f.folder) })) });
+  } catch (e) { sendJson(res, 500, { ok: false, error: e.message }); }
+}
 async function feedsBackfillHandler(req, res) {
   let b = {}; try { b = await readBody(req); } catch {}
   try {
@@ -569,7 +594,7 @@ async function feedsBackfillHandler(req, res) {
 
 module.exports = {
   startPolling, runBackfill,
-  feedsListHandler, feedsAddHandler, feedsEditHandler, feedsDeleteHandler, feedsPollNowHandler, feedsBackfillHandler, feedsBackfillEstimateHandler,
+  feedsListHandler, feedsAddHandler, feedsEditHandler, feedsDeleteHandler, feedsPollNowHandler, feedsBackfillHandler, feedsBackfillEstimateHandler, feedsRefreshHandler,
   // exported for testing
   parseFeed, parseSitemap, parseSitemapUrls, decodeEntities, toDate, toDateTime, sanitizeNewsFolder, slugify,
   _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder },

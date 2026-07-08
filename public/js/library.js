@@ -793,6 +793,8 @@ export function initLibrary() {
       addFail: "添加失败：", folder: "目录", articles: "篇", lastPoll: "上次轮询", never: "从未",
       pollNow: "立即轮询", backfill: "回填历史", pause: "暂停", resume: "启用", del: "删除",
       delConfirm: (n) => `删除订阅「${n}」？已导入的文章会保留。`,
+      refresh: "🔄 刷新", refreshTip: "按实际目录内容刷新（去掉已删除的文章）",
+      refreshed: (n) => n ? `已同步目录，移除 ${n} 条失效记录` : "已按目录刷新",
       polled: (n) => n ? `新增 ${n} 篇` : "没有新文章", backfillStarted: "回填任务已加入队列",
       estimating: "正在预估篇数…", noChannel: "该订阅源没有可用的回填通道（无 wp-json / 分页 feed / sitemap）。",
       estKnown: (n, name) => `将从「${name}」回填约 ${n} 篇历史文章（已导入的会自动跳过）。开始回填？`,
@@ -805,6 +807,8 @@ export function initLibrary() {
       addFail: "新增失敗：", folder: "目錄", articles: "篇", lastPoll: "上次輪詢", never: "從未",
       pollNow: "立即輪詢", backfill: "回填歷史", pause: "暫停", resume: "啟用", del: "刪除",
       delConfirm: (n) => `刪除訂閱「${n}」？已匯入的文章會保留。`,
+      refresh: "🔄 重新整理", refreshTip: "依實際目錄內容重新整理（移除已刪除的文章）",
+      refreshed: (n) => n ? `已同步目錄，移除 ${n} 條失效記錄` : "已依目錄重新整理",
       polled: (n) => n ? `新增 ${n} 篇` : "沒有新文章", backfillStarted: "回填任務已加入佇列",
       estimating: "正在預估篇數…", noChannel: "該訂閱源沒有可用的回填通道（無 wp-json / 分頁 feed / sitemap）。",
       estKnown: (n, name) => `將從「${name}」回填約 ${n} 篇歷史文章（已匯入的會自動跳過）。開始回填？`,
@@ -817,6 +821,8 @@ export function initLibrary() {
       addFail: "Add failed: ", folder: "folder", articles: "articles", lastPoll: "last poll", never: "never",
       pollNow: "Poll now", backfill: "Backfill history", pause: "Pause", resume: "Enable", del: "Delete",
       delConfirm: (n) => `Delete subscription “${n}”? Imported articles are kept.`,
+      refresh: "🔄 Refresh", refreshTip: "Sync to the actual directory (drop deleted articles)",
+      refreshed: (n) => n ? `Synced to disk, removed ${n} stale record(s)` : "Refreshed from disk",
       polled: (n) => n ? `${n} new` : "no new posts", backfillStarted: "Backfill queued",
       estimating: "Estimating…", noChannel: "This subscription has no usable backfill channel (no wp-json / paged feed / sitemap).",
       estKnown: (n, name) => `This will backfill ~${n} past articles from “${name}” (already-imported ones are skipped). Start backfill?`,
@@ -835,7 +841,10 @@ export function initLibrary() {
       <div class="zoteroImportDialog feedMgrDialog" role="dialog" aria-modal="true">
         <div class="zoteroImportHead">
           <span class="zoteroImportTitle">📰 ${escapeHtml(L.title)}</span>
-          <button type="button" class="zoteroImportClose" title="${escapeHtml(L.close)}">✕</button>
+          <span class="feedMgrHeadBtns">
+            <button type="button" class="feedMgrMini" id="feedRefreshBtn" title="${escapeHtml(L.refreshTip)}">${escapeHtml(L.refresh)}</button>
+            <button type="button" class="zoteroImportClose" title="${escapeHtml(L.close)}">✕</button>
+          </span>
         </div>
         <div class="feedMgrAdd">
           <input type="text" id="feedAddUrl" class="feedMgrInput" placeholder="${escapeHtml(L.addUrl)}" />
@@ -876,8 +885,11 @@ export function initLibrary() {
     const progTimer = setInterval(() => {
       for (const [fid, job] of [...running]) {
         const span = listEl.querySelector(`.feedMgrRow[data-feed-id="${fid}"] .feedMgrProg`);
+        // Cancelled from the task drawer → the job is spliced out of the queue. The server
+        // pauses the feed on interrupt, so re-render to reflect it (progress line drops).
+        if (!state.bgJobs.includes(job)) { running.delete(fid); render(); continue; }
         if (job.status === "done") { running.delete(fid); render(); continue; }
-        if (job.status === "error" || job.status === "interrupted") { running.delete(fid); if (span) { span.hidden = false; span.textContent = "⚠ " + (job.error || ""); } continue; }
+        if (job.status === "error" || job.status === "interrupted") { running.delete(fid); render(); continue; }
         if (span) { const p = job.progress; span.hidden = false; span.textContent = p && p.max ? `${L.bfRunning} ${p.value}/${p.max}` : (p && p.value ? `${L.bfRunning} ${p.value}` : L.bfQueued); }
       }
     }, 600);
@@ -956,6 +968,11 @@ export function initLibrary() {
     }
     addBtn.addEventListener("click", doAdd);
     addUrl.addEventListener("keydown", (e) => { if (e.key === "Enter") doAdd(); });
+    overlay.querySelector("#feedRefreshBtn").addEventListener("click", async (e) => {
+      const b = e.target; b.disabled = true; statusEl2.textContent = "…";
+      try { const r = await postJson("/api/feeds/refresh", {}); statusEl2.textContent = r.ok ? L.refreshed(r.removed || 0) : (r.error || ""); }
+      catch { statusEl2.textContent = ""; } finally { b.disabled = false; render(); }
+    });
     overlay.querySelector("#feedIntervalSave").addEventListener("click", async () => {
       const h = Math.max(1, parseInt(intervalIn.value, 10) || 24);
       try { await postJson("/api/feeds/edit", { pollIntervalH: h }); statusEl2.textContent = "✓"; } catch {}

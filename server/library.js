@@ -424,6 +424,29 @@ function upsertIndex(doc) {
   saveIndex(arr);
 }
 function removeFromIndex(id) { saveIndex(loadIndex().filter(d => d.docId !== id)); }
+// Reconcile index.json with the ACTUAL disk (news-feeds.md refresh): drop entries whose
+// doc file was hand-deleted from the directory. Cheap — a fresh LOC walk + a filter, no doc
+// reads / no re-embed (unlike the full rescan). Returns how many ghosts were removed.
+function pruneIndexGhosts() {
+  invalidateLoc();
+  const loc = buildLoc();                                  // fresh on-disk truth
+  const before = loadIndex();
+  const after = before.filter(d => loc.has(d.docId));
+  if (after.length !== before.length) { saveIndex(after); invalidateCache(); }
+  return before.length - after.length;
+}
+// Source URLs of the docs CURRENTLY on disk under a folder (index carries each doc's source).
+// The news layer rebuilds a feed's seen-set from this so a hand-deleted doc becomes
+// re-importable (its URL is no longer "seen"). Call pruneIndexGhosts first for disk accuracy.
+function sourcesUnderFolder(prefix) {
+  const p = String(prefix || ""); const out = new Set();
+  if (!p) return out;
+  for (const d of loadIndex()) {
+    const f = locOf(d.docId);
+    if ((f === p || f.startsWith(p + "/")) && typeof d.source === "string" && d.source.startsWith("url:")) out.add(d.source.slice(4));
+  }
+  return out;
+}
 // Set of all indexed docIds — cheap membership check (e.g. the Zotero picker marking
 // which items are already imported, keyed by their zotero_<itemKey> docId).
 function libraryDocIdSet() { return new Set(loadIndex().map(d => d.docId)); }
@@ -2893,5 +2916,5 @@ module.exports = {
   expandByRelationsLibrary, relationsForQueryLibrary,   // /ask -a relation-hop expansion + relation direct-answer
   timelineLibrary,   // dedicated timeline view (time-qualified relations)
   cleanStructure, renderStructure, parseStructureSections, normalizeEntity,   // exported for testing
-  excerptCard, NEWS_DIR, inNewsDir,   // news-feeds.md: tier-2 news layer helpers
+  excerptCard, NEWS_DIR, inNewsDir, pruneIndexGhosts, sourcesUnderFolder,   // news-feeds.md: tier-2 news layer helpers
 };

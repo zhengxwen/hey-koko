@@ -418,6 +418,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/feeds/poll-now") { feeds.feedsPollNowHandler(req, res); return; }
   if (req.method === "POST" && req.url === "/api/feeds/backfill") { feeds.feedsBackfillHandler(req, res); return; }
   if (req.method === "POST" && req.url === "/api/feeds/backfill-estimate") { feeds.feedsBackfillEstimateHandler(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/feeds/refresh") { feeds.feedsRefreshHandler(req, res); return; }
 
   if (req.method === "GET" && req.url === "/api/parse-file/capabilities") {
     getCapabilities(res);

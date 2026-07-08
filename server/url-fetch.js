@@ -229,12 +229,18 @@ function extractMainContentHtml(html) {
   candidates.sort((a, b) => b.score - a.score);
   if (candidates.length) return candidates[0].html;
 
-  // 3. Fallback: gather all low-link-density paragraphs (readability's safety net).
-  const paras = (cleaned.match(/<p\b[^>]*>[\s\S]*?<\/p>/gi) || [])
-    .filter((p) => textMetrics(p).linkDensity < 0.5);
-  if (paras.join("").replace(/<[^>]+>/g, "").trim().length >= 200) return paras.join("\n");
+  // 3. Fallback: gather all low-link-density paragraphs (readability's safety net) — but
+  // ONLY for a full page. A bare article fragment (e.g. a WordPress wp-json content.rendered,
+  // which is `<p>…<figure><img></figure><p>…` with no <article>/<body> wrapper) has no chrome
+  // to shed, and keeping only <p> would silently DROP its <figure>/<img> — so return it whole.
+  const isFragment = !/<body\b|<html\b/i.test(cleaned);
+  if (!isFragment) {
+    const paras = (cleaned.match(/<p\b[^>]*>[\s\S]*?<\/p>/gi) || [])
+      .filter((p) => textMetrics(p).linkDensity < 0.5);
+    if (paras.join("").replace(/<[^>]+>/g, "").trim().length >= 200) return paras.join("\n");
+  }
 
-  // 4. Last resort: whole cleaned <body>.
+  // 4. Last resort / fragment: whole cleaned <body> (or the fragment as-is — images kept).
   const body = cleaned.match(/<body\b[^>]*>([\s\S]*)<\/body>/i);
   return body ? body[1] : cleaned;
 }
