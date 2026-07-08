@@ -455,11 +455,13 @@ async function extractWordPressPost(post, url, ctx) {
 // the wp-caption/lazy body images that trafilatura DROPS from a full page) via the layout-preserving
 // built-in; HERO from the page og:image; dek/author/date/tags from the page meta + rel="tag" links.
 // See extractMicrosoftPage. Needs the browser UA (browserUA) + trafilatura for the bare-URL fallback.
+// The article's featured/hero image (og:image). For a text-only post this is Microsoft's default
+// "Official Microsoft Blog" header banner — still the image the article actually shows, so import it
+// (the user wants it) rather than treating it as a placeholder to skip.
 function msOgImage(html) {
   const m = String(html).match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
         || String(html).match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
-  const u = m ? decodeEntities(m[1]).trim() : "";
-  return /official-microsoft-blog-header/i.test(u) ? "" : u;   // generic header placeholder → not a real hero
+  return m ? decodeEntities(m[1]).trim() : "";
 }
 function msTagNames(html) {
   const names = [...String(html).matchAll(/rel=["']tag["'][^>]*>([^<]+)</gi)].map((m) => decodeEntities(m[1]).trim()).filter(Boolean);

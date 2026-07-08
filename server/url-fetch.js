@@ -427,13 +427,30 @@ async function downloadImagesNamed(urls, referer, max, signal) {
   return out;
 }
 
+// Convert embedded videos into an inline link BEFORE htmlToMarkdown (which drops <iframe>): a
+// YouTube <iframe src|data-src=…/embed/ID> (often lazy-loaded, hence data-src) becomes
+// <a href="watch?v=ID">▶ title</a> so the video is represented in the body at its position. The
+// human title is the LAST title= attr (the first is the generic "YouTube Video"); a11y-only
+// "screen-reader-text" scaffolding around the embed is dropped. Non-YouTube iframes are removed.
+function rewriteVideoEmbeds(html) {
+  return String(html)
+    .replace(/<p\b[^>]*class=["'][^"']*screen-reader-text[^"']*["'][^>]*>[\s\S]*?<\/p>/gi, "")
+    .replace(/<iframe\b[^>]*?>(?:[\s\S]*?<\/iframe>)?/gi, (tag) => {
+      const src = (tag.match(/\b(?:data-src|src)\s*=\s*["']([^"']+)["']/i) || [])[1] || "";
+      const m = src.match(/(?:youtube(?:-nocookie)?\.com\/embed\/|youtu\.be\/|youtube\.com\/watch\?v=)([\w-]{11})/i);
+      if (!m) return "";   // non-YouTube iframe → drop
+      const titles = [...tag.matchAll(/\btitle\s*=\s*["']([^"']*)["']/gi)].map((x) => x[1].trim()).filter(Boolean);
+      const title = titles.reverse().find((t) => !/^youtube video$/i.test(t)) || "YouTube";
+      return `<p><a href="https://www.youtube.com/watch?v=${m[1]}">▶ ${title}</a></p>`;
+    });
+}
 // extractCleanContent's image-KEEPING sibling (news-feeds.md): instead of collapsing every
 // image to a ［图片：alt］ text placeholder, it DOWNLOADS them and rewrites each ref to
 // ![alt](image_N.ext) so splitIntoBlocks turns them into real figure blocks (stored on the
 // doc, shown in the reader). Images that fail to download / are UI icons still degrade to the
 // text placeholder. maxImages=0 → behaves like extractCleanContent (no downloads).
 async function extractArticleWithImages(html, baseUrl, maxImages = 8, signal) {
-  const articleHtml = extractMainContentHtml(html);
+  const articleHtml = rewriteVideoEmbeds(extractMainContentHtml(html));
   const markdown = await htmlToMarkdown(rewriteArticleImages(articleHtml, baseUrl));
   const cleaned = cleanupMarkdown(markdown);
   const imageUrls = [...cleaned.matchAll(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g)].map((m) => m[1]);
