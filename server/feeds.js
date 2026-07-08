@@ -904,7 +904,16 @@ let _pollTimer = null, _booted = false;
 function startPolling() {
   // Runs once at server startup (startPolling is also re-invoked on poll-interval changes,
   // where we must NOT wipe a user's mid-session interrupt-pause).
-  if (!_booted) { _booted = true; try { clearInterruptPauses(); } catch (e) { console.warn("[feeds] clearInterruptPauses:", e.message); } }
+  if (!_booted) {
+    _booted = true;
+    try { clearInterruptPauses(); } catch (e) { console.warn("[feeds] clearInterruptPauses:", e.message); }
+    // Probe trafilatura once at startup and log it — news extraction needs it for non-WordPress feeds
+    // and the WordPress empty-content.rendered fallback. Async + non-blocking; a miss is a warning.
+    trafilaturaAvailable().then((ok) => {
+      if (ok) console.log("[feeds] trafilatura: available (news article extraction ready)");
+      else console.warn("[feeds] trafilatura: NOT FOUND — non-WordPress feeds and the WordPress empty-content fallback will be skipped. Install: pip install trafilatura (or set TRAFILATURA_PYTHON to a python that has it).");
+    }).catch(() => {});
+  }
   const ms = Math.max(1, Number(loadFeeds().pollIntervalH) || 24) * 3600 * 1000;
   if (_pollTimer) clearInterval(_pollTimer);
   _pollTimer = setInterval(() => { pollAll().catch((e) => console.warn("[feeds] pollAll:", e.message)); }, ms);

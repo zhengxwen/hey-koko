@@ -1,6 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Xiuwen Zheng
 
+// Prefix every server log line with a local "YYYY-MM-DD HH:MM:SS [LEVEL] " tag so
+// external-program invocations (sips/ffmpeg/whisper/…) and everything else are
+// time-stamped and level-tagged. Patched here at the very top — before any require —
+// because some modules log during load (tool detection). Preserves printf-style
+// format strings by prepending to the first string arg rather than adding a separate one.
+(function stampConsole() {
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+           `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+  const LEVELS = { log: "INFO", info: "INFO", debug: "DEBUG", warn: "WARN", error: "ERROR" };
+  for (const [m, level] of Object.entries(LEVELS)) {
+    const orig = console[m].bind(console);
+    const prefix = `[${level}]`;
+    console[m] = (...args) => {
+      if (typeof args[0] === "string") orig(`${stamp()} ${prefix} ${args[0]}`, ...args.slice(1));
+      else orig(`${stamp()} ${prefix}`, ...args);
+    };
+  }
+})();
+
 // Safety net: a non-fatal async error (e.g. an optional-tool probe rejecting on
 // a minimal Finder-launch PATH) must never take down the server after it has
 // bound the port — otherwise the native app just times out with "Unable to
