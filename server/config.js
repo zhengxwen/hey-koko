@@ -114,6 +114,13 @@ const config = {
   // to import are reported unavailable rather than breaking the daemon.
   ttsPython: resolveVenvPython("TTS_PYTHON"),
   umapPython: resolveVenvPython("UMAP_PYTHON"),
+  // News-feed article extraction (server/extract-article.py) runs `trafilatura` — a
+  // site-agnostic main-content + metadata extractor that drops nav/related/boilerplate
+  // and returns author/date/categories/tags/hero-image. TRAFILATURA_PYTHON overrides;
+  // else it shares the heykoko venv (just `pip install trafilatura` there). Availability
+  // is probed at runtime (import trafilatura) — when absent, news import reports the
+  // feature unavailable rather than falling back to the weaker built-in HTML heuristics.
+  newsPython: resolveVenvPython("TRAFILATURA_PYTHON"),
   // Local PDF OCR engine (baidu/Unlimited-OCR) interpreter; "" when not installed.
   ocrPython: resolveOcrPython(),
   // MinerU backend passed as `-b`. Default "pipeline" (ONNX/torch, dependency-light,

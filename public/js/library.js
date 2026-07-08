@@ -800,6 +800,7 @@ export function initLibrary() {
       estKnown: (n, name) => `将从「${name}」回填约 ${n} 篇历史文章（已导入的会自动跳过）。开始回填？`,
       estUnknown: (name, m) => `无法预估「${name}」的篇数（通道：${m}）。仍要回填全部历史吗？`,
       bfRunning: "回填中", bfQueued: "排队中…",
+      extractorMissing: "⚠️ 新闻正文抽取依赖 trafilatura，当前未检测到，轮询/回填暂不可用。请在 hey-koko 的 Python 环境执行 pip install trafilatura（或设 TRAFILATURA_PYTHON），然后重启服务。",
       mNone: "无回填通道", mWpjson: "wp-json", mPagedfeed: "分页 feed", mSitemap: "sitemap",
       bfNo: "未回填", bfDone: "已完成", bfProg: "进行中", interval: "轮询间隔", hours: "小时", save: "保存" },
     "zh-Hant": { title: "新聞訂閱源", close: "關閉", loading: "正在載入…", empty: "還沒有訂閱源。貼上一個部落格/網站網址即可新增。",
@@ -814,6 +815,7 @@ export function initLibrary() {
       estKnown: (n, name) => `將從「${name}」回填約 ${n} 篇歷史文章（已匯入的會自動跳過）。開始回填？`,
       estUnknown: (name, m) => `無法預估「${name}」的篇數（通道：${m}）。仍要回填全部歷史嗎？`,
       bfRunning: "回填中", bfQueued: "排隊中…",
+      extractorMissing: "⚠️ 新聞正文擷取依賴 trafilatura，目前未偵測到，輪詢/回填暫不可用。請在 hey-koko 的 Python 環境執行 pip install trafilatura（或設 TRAFILATURA_PYTHON），然後重新啟動服務。",
       mNone: "無回填通道", mWpjson: "wp-json", mPagedfeed: "分頁 feed", mSitemap: "sitemap",
       bfNo: "未回填", bfDone: "已完成", bfProg: "進行中", interval: "輪詢間隔", hours: "小時", save: "儲存" },
     en: { title: "News feed subscriptions", close: "Close", loading: "Loading…", empty: "No subscriptions yet. Paste a blog/site URL to add one.",
@@ -828,6 +830,7 @@ export function initLibrary() {
       estKnown: (n, name) => `This will backfill ~${n} past articles from “${name}” (already-imported ones are skipped). Start backfill?`,
       estUnknown: (name, m) => `Can't estimate the article count for “${name}” (channel: ${m}). Backfill the whole history anyway?`,
       bfRunning: "Backfilling", bfQueued: "Queued…",
+      extractorMissing: "⚠️ News article extraction needs trafilatura, which wasn't detected — poll/backfill are unavailable. Run pip install trafilatura in hey-koko's Python env (or set TRAFILATURA_PYTHON), then restart the server.",
       mNone: "no backfill channel", mWpjson: "wp-json", mPagedfeed: "paged feed", mSitemap: "sitemap",
       bfNo: "not backfilled", bfDone: "done", bfProg: "in progress", interval: "Poll every", hours: "hours", save: "Save" },
   };
@@ -851,6 +854,7 @@ export function initLibrary() {
           <input type="text" id="feedAddName" class="feedMgrInput feedMgrName" placeholder="${escapeHtml(L.addName)}" />
           <button type="button" id="feedAddBtn" class="zoteroImportGo">${escapeHtml(L.add)}</button>
         </div>
+        <div class="feedMgrBanner" id="feedMgrBanner" hidden></div>
         <div class="zoteroImportBody feedMgrBody"><div class="feedMgrList" id="feedMgrList"></div></div>
         <div class="zoteroImportFoot">
           <span class="feedMgrInterval">${escapeHtml(L.interval)}
@@ -898,6 +902,8 @@ export function initLibrary() {
       listEl.innerHTML = `<div class="zoteroImportMsg">${escapeHtml(L.loading)}</div>`;
       let data; try { data = await postJson("/api/feeds/list", {}); } catch { data = { ok: false }; }
       if (!data.ok) { listEl.innerHTML = `<div class="zoteroImportMsg zoteroImportErr">${escapeHtml(data.error || "error")}</div>`; return; }
+      const banner = overlay.querySelector("#feedMgrBanner");
+      if (banner) { const missing = data.extractorAvailable === false; banner.hidden = !missing; banner.textContent = missing ? L.extractorMissing : ""; }
       intervalIn.value = data.pollIntervalH || 24;
       if (!data.feeds.length) { listEl.innerHTML = `<div class="zoteroImportMsg">${escapeHtml(L.empty)}</div>`; return; }
       listEl.innerHTML = "";
@@ -928,6 +934,7 @@ export function initLibrary() {
           const b = e.target; b.disabled = true; statusEl2.textContent = L.estimating;
           let est; try { est = await postJson("/api/feeds/backfill-estimate", { id: f.id }); } catch { est = { ok: false }; }
           b.disabled = false; statusEl2.textContent = "";
+          if (!est.ok && est.error) { alert(est.error); return; }   // e.g. trafilatura missing
           if (!est.ok || !est.method) { alert(L.noChannel); return; }
           // Tell the user the count (wp-json gives an exact number; sitemap/paged-feed can't
           // be counted cheaply → confirm without one), and require an explicit confirm.

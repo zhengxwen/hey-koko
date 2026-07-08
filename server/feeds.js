@@ -17,7 +17,7 @@ const path = require("path");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const library = require("./library");
-const { extractArticleWithImages } = require("./url-fetch");
+const { extractArticle, trafilaturaAvailable } = require("./url-fetch");
 
 const NEWS_DIR = library.NEWS_DIR || "news";
 const NEWS_IMAGE_CAP = 8;   // max images downloaded per article (bandwidth/size guard)
@@ -288,29 +288,66 @@ function newsDocId(feed, date, time) {
   return [company, date || "", time || ""].filter(Boolean).join("_");
 }
 
+// Merge trafilatura's author/categories/tags (news-feeds.md: extracted per article) into the
+// fields importDocInternal stores: author→authors, categories+tags→tags (deduped, capped).
+function metaFields(meta) {
+  const m = meta || {};
+  const tags = [...new Set([...(m.categories || []), ...(m.tags || [])].map((s) => String(s).trim()).filter(Boolean))].slice(0, 12);
+  return { authors: (m.author || "").trim(), tags };
+}
 // ---- import one item (shared by backfill; poll goes via the feeditem job) ----
-function importItem(feed, { url, title, publishedAt, publishedTime, excerpt, text, images }, ctx) {
+function importItem(feed, { url, title, publishedAt, publishedTime, excerpt, text, images, meta }, ctx) {
   const card = library.excerptCard(excerpt, ctx.language);
+  // Feed-provided date wins for the docId; fall back to trafilatura's parsed date so an
+  // undated feed still yields "<company>_<YYYY-MM-DD>" instead of a bare "<company>".
+  const pub = publishedAt || String((meta && meta.date) || "").slice(0, 10);
   return library.importDocInternal({
-    source: `url:${url}`, docId: newsDocId(feed, publishedAt, publishedTime), dedupeUrl: true,
+    source: `url:${url}`, docId: newsDocId(feed, pub, publishedTime), dedupeUrl: true,
     docKind: "blog", folder: feed.folder,
-    title: title || url, publishedAt: publishedAt || "",
+    title: title || (meta && meta.title) || url, publishedAt: pub,
+    ...metaFields(meta),
     text, images: images || [], model: ctx.embedModel || "",
     extraBlocks: card ? [card] : undefined,
   });
 }
-// Full article text + downloaded images from a feed item: prefer inline content:encoded/
-// content (full HTML), else fetch the page. Returns { text:"", images:[] } when nothing usable.
+// Full article text + downloaded images + metadata from a feed item: prefer inline
+// content:encoded/content (full HTML), else fetch the page. Returns { text:"", images:[] }
+// when nothing usable. Throws TrafilaturaUnavailable up the stack when the sidecar is absent.
 async function resolveItem(it, ctx) {
   if (it.contentHtml && it.contentHtml.length > 200) {
-    const r = await extractArticleWithImages(it.contentHtml, it.url, NEWS_IMAGE_CAP);
-    if (r.text && r.text.trim()) return { text: r.text.trim(), images: r.images };
+    const r = await extractArticle(it.contentHtml, it.url, NEWS_IMAGE_CAP);
+    if (r.text && r.text.trim()) return { text: r.text.trim(), images: r.images, meta: r.meta };
   }
   const r = await politeFetch(it.url, { timeoutMs: 20000, signal: ctx.signal, minGapMs: 2000 });
   if (!r.ok) return { text: "", images: [] };
   if (!/html|text|json/i.test(r.headers.get("content-type") || "")) return { text: "", images: [] };
-  const out = await extractArticleWithImages(await r.text(), it.url, NEWS_IMAGE_CAP);
-  return { text: (out.text || "").trim(), images: out.images };
+  const out = await extractArticle(await r.text(), it.url, NEWS_IMAGE_CAP);
+  return { text: (out.text || "").trim(), images: out.images, meta: out.meta };
+}
+
+// Enrich a SINGLE polled article with its WordPress taxonomy. trafilatura reads author/tags
+// from the page's HTML meta, but many WP themes (e.g. NVIDIA's) don't emit article:tag there —
+// the tags only live in wp-json. Look the post up by slug (?slug=…&_embed) and return the
+// authoritative author + category/tag names, or null for non-WP sites / any failure (the caller
+// then just keeps trafilatura's own metadata). Mirrors the _embed handling in backfillWpjson.
+async function fetchWpTaxonomy(url, signal) {
+  try {
+    const u = new URL(url);
+    const slug = u.pathname.replace(/\/+$/, "").split("/").filter(Boolean).pop();
+    if (!slug) return null;
+    // _links MUST be in _fields or WordPress returns an empty _embedded (verified).
+    const api = `${u.origin}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&_embed=author,wp:term&_fields=link,_links,_embedded`;
+    const r = await politeFetch(api, { timeoutMs: 12000, signal });
+    if (!r.ok || !/json/i.test(r.headers.get("content-type") || "")) return null;
+    const arr = await r.json();
+    if (!Array.isArray(arr) || !arr.length) return null;
+    const norm = (s) => String(s || "").replace(/\/+$/, "");
+    const post = arr.find((p) => norm(p.link) === norm(url)) || arr[0];
+    const emb = post._embedded || {};
+    const author = (emb.author && emb.author[0] && emb.author[0].name) || "";
+    const terms = [].concat(...(emb["wp:term"] || [])).filter((t) => t && (t.taxonomy === "category" || t.taxonomy === "post_tag")).map((t) => t.name).filter(Boolean);
+    return { author, terms };
+  } catch { return null; }
 }
 
 // ---- backfill engine (one job per feed; imports directly, no sub-jobs) ------
@@ -320,7 +357,10 @@ async function backfillWpjson(feed, ctx) {
   let imported = 0, skipped = 0;
   while (true) {
     if (ctx.signal && ctx.signal.aborted) throw abortErr();
-    const u = `${base}?per_page=100&page=${page}&_fields=link,title,excerpt,date_gmt,content`;
+    // _embed pulls the author display-name + category/tag term names into _embedded so we can
+    // store them (the numeric author/term IDs in the bare post are useless without a lookup).
+    // _links MUST be in _fields or WordPress can't resolve the embeds (they come back empty).
+    const u = `${base}?per_page=100&page=${page}&_embed=author,wp:term&_fields=link,title,excerpt,date_gmt,content,_links,_embedded`;
     const r = await politeFetch(u, { timeoutMs: 40000, signal: ctx.signal });
     if (r.status === 400) break;   // WordPress 400s past the last page
     if (!r.ok) throw new Error(`wp-json HTTP ${r.status}`);
@@ -333,11 +373,19 @@ async function backfillWpjson(feed, ctx) {
       if (ctx.signal && ctx.signal.aborted) throw abortErr();   // respond to a mid-page cancel
       const url = post.link; if (!url || isSeen(feed.id, url)) continue;
       try {
-        const { text, images } = await extractArticleWithImages(stripCdata(post.content && post.content.rendered || ""), url, NEWS_IMAGE_CAP);
+        const { text, images, meta } = await extractArticle(stripCdata(post.content && post.content.rendered || ""), url, NEWS_IMAGE_CAP);
         if (!text || !text.trim()) { skipped++; markSeen(feed.id, [url]); continue; }
         const dt = toDateTime(post.date_gmt ? post.date_gmt + "Z" : "");
+        // wp-json _embedded carries the authoritative author + term names → prefer them over
+        // trafilatura's (a bare content.rendered fragment rarely has author/category in-body).
+        const emb = post._embedded || {};
+        const wpAuthor = (emb.author && emb.author[0] && emb.author[0].name) || "";
+        // Keep only real category/tag taxonomies — WordPress also embeds an "author" term
+        // (the author's archive slug) which is just noise as a tag.
+        const wpTerms = [].concat(...(emb["wp:term"] || [])).filter((t) => t && (t.taxonomy === "category" || t.taxonomy === "post_tag")).map((t) => t.name).filter(Boolean);
+        const mergedMeta = { ...meta, author: wpAuthor || (meta && meta.author) || "", tags: [...new Set([...(meta && meta.tags || []), ...wpTerms])], categories: [] };
         await importItem(feed, {
-          url, text: text.trim(), images,
+          url, text: text.trim(), images, meta: mergedMeta,
           title: decodeEntities(stripCdata(post.title && post.title.rendered || "")).trim(),
           excerpt: post.excerpt && post.excerpt.rendered || "",
           publishedAt: dt.date, publishedTime: dt.time,
@@ -366,7 +414,7 @@ async function backfillPagedFeed(feed, ctx) {
     for (const it of items) {
       if (!it.url || isSeen(feed.id, it.url)) continue;
       fresh++;
-      try { const { text, images } = await resolveItem(it, ctx); if (text) { await importItem(feed, { ...it, text, images }, ctx); imported++; } else skipped++; }
+      try { const { text, images, meta } = await resolveItem(it, ctx); if (text) { await importItem(feed, { ...it, text, images, meta }, ctx); imported++; } else skipped++; }
       catch (e) { if (e && e.name === "AbortError") throw e; skipped++; }
       markSeen(feed.id, [it.url]);
       if (ctx.onProgress) ctx.onProgress(imported + skipped, undefined);
@@ -406,13 +454,14 @@ async function backfillSitemap(feed, ctx) {
       const r = await politeFetch(url, { timeoutMs: 20000, signal: ctx.signal, minGapMs: 2000 });
       if (!r.ok) { skipped++; markSeen(feed.id, [url]); continue; }
       const html = await r.text();
-      const { text, images } = await extractArticleWithImages(html, url, NEWS_IMAGE_CAP);
+      const { text, images, meta } = await extractArticle(html, url, NEWS_IMAGE_CAP);
       if (!text || !text.trim()) { skipped++; markSeen(feed.id, [url]); continue; }
-      const title = decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "").trim();
+      // Prefer trafilatura's cleaned title (og/h1) over the raw <title> (often "Post | Site").
+      const title = (meta && meta.title) || decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "").trim();
       // sitemaps carry no publish time → pull it from the page's og/article meta if present.
       const pm = html.match(/property=["']article:published_time["'][^>]*content=["']([^"']+)["']|<time[^>]+datetime=["']([^"']+)["']/i);
       const dt = toDateTime(pm ? (pm[1] || pm[2]) : "");
-      await importItem(feed, { url, title, text: text.trim(), images, publishedAt: dt.date, publishedTime: dt.time }, ctx);
+      await importItem(feed, { url, title, text: text.trim(), images, meta, publishedAt: dt.date, publishedTime: dt.time }, ctx);
       imported++;
     } catch (e) { if (e && e.name === "AbortError") throw e; skipped++; }
     markSeen(feed.id, [url]);
@@ -482,6 +531,9 @@ async function pollFeed(feed, ctx = {}) {
   return { new: count };
 }
 async function pollAll(ctx = {}) {
+  // Extraction requires the trafilatura sidecar (no JS fallback). Skip the whole poll rather
+  // than enqueue feeditem jobs that would all fail — the manager UI surfaces the reason.
+  if (!(await trafilaturaAvailable())) return { polled: 0, new: 0, error: "trafilatura-unavailable" };
   const feeds = loadFeeds().feeds.filter((f) => f.enabled);
   let total = 0;
   for (const f of feeds) { try { total += (await pollFeed(f, ctx)).new || 0; } catch (e) { console.warn("[feeds] poll", f.id, e.message); } }
@@ -504,9 +556,15 @@ function startPolling() {
 
 // ---- HTTP handlers ----------------------------------------------------------
 async function feedsListHandler(_req, res) {
-  try { const cfg = loadFeeds(); const counts = folderCountMap(); sendJson(res, 200, { ok: true, pollIntervalH: cfg.pollIntervalH, feeds: cfg.feeds.map((f) => ({ ...f, _urls: undefined, articles: sumFolder(counts, f.folder) })) }); }
-  catch (e) { sendJson(res, 500, { ok: false, error: e.message }); }
+  try {
+    const cfg = loadFeeds(); const counts = folderCountMap();
+    const extractorAvailable = await trafilaturaAvailable();   // UI shows a banner + disables poll/backfill when false
+    sendJson(res, 200, { ok: true, pollIntervalH: cfg.pollIntervalH, extractorAvailable, feeds: cfg.feeds.map((f) => ({ ...f, _urls: undefined, articles: sumFolder(counts, f.folder) })) });
+  } catch (e) { sendJson(res, 500, { ok: false, error: e.message }); }
 }
+// Shared "sidecar missing" error text (returned by poll-now / backfill when trafilatura is
+// absent). Kept short + actionable: name the package and the venv to install it into.
+const EXTRACTOR_MISSING = "新闻抽取功能不可用：未检测到 trafilatura。请在 hey-koko 的 Python 环境中安装：pip install trafilatura（或设置 TRAFILATURA_PYTHON 指向已安装它的解释器），然后重启服务。";
 async function feedsAddHandler(req, res) {
   let b = {}; try { b = await readBody(req); } catch {}
   try { sendJson(res, 200, { ok: true, feed: await addFeedInternal(b) }); } catch (e) { sendJson(res, 200, { ok: false, error: e.message }); }
@@ -538,6 +596,7 @@ async function feedsDeleteHandler(req, res) {
 async function feedsPollNowHandler(req, res) {
   let b = {}; try { b = await readBody(req); } catch {}
   try {
+    if (!(await trafilaturaAvailable())) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
     const ctx = { embedModel: b.embedModel, language: b.language };
     if (b.id) { const f = getFeed(b.id); if (!f) throw new Error("feed not found"); sendJson(res, 200, { ok: true, ...(await pollFeed(f, ctx)) }); }
     else sendJson(res, 200, { ok: true, ...(await pollAll(ctx)) });
@@ -549,6 +608,7 @@ async function feedsPollNowHandler(req, res) {
 async function feedsBackfillEstimateHandler(req, res) {
   let b = {}; try { b = await readBody(req); } catch {}
   try {
+    if (!(await trafilaturaAvailable())) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
     const f = getFeed(b.id); if (!f) throw new Error("feed not found");
     let method = f.backfill && f.backfill.method;
     if (!method) { const p = await probeBackfill(f); method = p.method; patchBackfill(f.id, { method, total: p.total || 0 }); if (p.sitemap) patchFeed(f.id, { sitemapUrl: p.sitemap }); }
@@ -585,6 +645,7 @@ async function feedsRefreshHandler(_req, res) {
 async function feedsBackfillHandler(req, res) {
   let b = {}; try { b = await readBody(req); } catch {}
   try {
+    if (!(await trafilaturaAvailable())) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
     const f = getFeed(b.id); if (!f) throw new Error("feed not found");
     const r = await loopbackPost("/api/jobs", { kind: "libimport", label: "backfill", conversationId: "__feeds__", payload: { type: "backfill", feedId: f.id, embedModel: b.embedModel || "", language: b.language || "" } });
     let j = {}; try { j = JSON.parse(r.text); } catch {}
@@ -593,7 +654,7 @@ async function feedsBackfillHandler(req, res) {
 }
 
 module.exports = {
-  startPolling, runBackfill,
+  startPolling, runBackfill, fetchWpTaxonomy,
   feedsListHandler, feedsAddHandler, feedsEditHandler, feedsDeleteHandler, feedsPollNowHandler, feedsBackfillHandler, feedsBackfillEstimateHandler, feedsRefreshHandler,
   // exported for testing
   parseFeed, parseSitemap, parseSitemapUrls, decodeEntities, toDate, toDateTime, sanitizeNewsFolder, slugify,

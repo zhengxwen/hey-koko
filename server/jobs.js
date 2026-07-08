@@ -377,11 +377,21 @@ async function runLibImportJob(job, signal) {
       if (!p.title) { const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i); if (m) title = m[1].trim(); }
     }
     stage("importing");
-    // extractArticleWithImages downloads images + keeps ![](image_N.ext) refs → figure blocks.
-    const { text, images } = await require("./url-fetch").extractArticleWithImages(html, p.url, p.images === false ? 0 : 8);
+    // trafilatura (server/extract-article.py) extracts clean body + author/date/categories/
+    // tags/hero-image, dropping nav/"Related news"; then images download → ![](image_N.ext)
+    // figure blocks. No JS fallback — a missing sidecar throws TrafilaturaUnavailable here.
+    const { text, images, meta } = await require("./url-fetch").extractArticle(html, p.url, p.images === false ? 0 : 8);
     if (!text || !String(text).trim()) throw new Error("empty document");
     const card = library.excerptCard(p.excerpt, p.language);
-    const imp = await library.importDocInternal({ source: `url:${p.url}`, docId: p.docId, dedupeUrl: true, docKind: "blog", folder: p.folder, title, publishedAt: p.publishedAt || "", text, images, model: p.embedModel, extraBlocks: card ? [card] : undefined });
+    const m = meta || {};
+    // Polled single articles: WordPress tags rarely appear in the page's HTML meta (trafilatura
+    // gets categories but not tags), so look the post up in wp-json for its authoritative
+    // author + category/tag names. null on non-WP sites → fall back to trafilatura's metadata.
+    const wp = await feeds.fetchWpTaxonomy(p.url, signal).catch(() => null);
+    const authors = ((wp && wp.author) || m.author || "").trim();
+    const tags = [...new Set([...(m.categories || []), ...(m.tags || []), ...((wp && wp.terms) || [])].map((s) => String(s).trim()).filter(Boolean))].slice(0, 12);
+    const pub = p.publishedAt || String(m.date || "").slice(0, 10);
+    const imp = await library.importDocInternal({ source: `url:${p.url}`, docId: p.docId, dedupeUrl: true, docKind: "blog", folder: p.folder, title: title || m.title || p.url, authors, tags, publishedAt: pub, text, images, model: p.embedModel, extraBlocks: card ? [card] : undefined });
     return { docId: imp.docId, blockCount: imp.blockCount, folder: imp.folder, distilled: false };
   }
   if (p.type === "backfill") {

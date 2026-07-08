@@ -439,6 +439,93 @@ async function extractArticleWithImages(html, baseUrl, maxImages = 8) {
   return { text, images: downloaded.map(({ name, base64, mime }) => ({ name, base64, mime })) };
 }
 
+// ==== trafilatura sidecar: site-agnostic article extraction (news layer) ==============
+// The built-in extractArticleWithImages above is a hand-rolled heuristic that breaks on
+// sites it wasn't tuned for (drops the hero image, leaks "Related news" thumbnails, has no
+// author/category/tag parsing). For the news library we instead shell out to `trafilatura`
+// (server/extract-article.py) — a maintained, benchmark-leading main-content + metadata
+// extractor. Per the product decision, there is NO JS fallback here: when trafilatura is
+// absent, callers surface "feature unavailable" rather than silently using weaker output.
+
+let _trafiAvail;   // undefined = not probed; true/false cached
+async function trafilaturaAvailable() {
+  if (_trafiAvail !== undefined) return _trafiAvail;
+  _trafiAvail = await new Promise((resolve) => {
+    let done = false;
+    const fin = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const p = spawn(config.newsPython, ["-c", "import trafilatura, sys; sys.exit(0)"], { stdio: "ignore" });
+      p.on("error", () => fin(false));
+      p.on("exit", (code) => fin(code === 0));
+    } catch { fin(false); }
+  });
+  return _trafiAvail;
+}
+
+// Run the python extractor on one HTML document. Resolves to the parsed JSON
+// { markdown, title, author, date, description, sitename, image, categories[], tags[] }.
+// Rejects (err.name = "TrafilaturaUnavailable") when the interpreter/package is missing so
+// the caller can render a precise message; other failures reject with the stderr tail.
+function runTrafilatura(html, url) {
+  return new Promise((resolve, reject) => {
+    const script = path.join(__dirname, "extract-article.py");
+    let proc;
+    try {
+      proc = spawn(config.newsPython, [script, url || ""], { stdio: ["pipe", "pipe", "pipe"] });
+    } catch (e) {
+      const err = new Error(`cannot spawn ${config.newsPython}: ${e.message}`);
+      err.name = "TrafilaturaUnavailable"; return reject(err);
+    }
+    let out = "", errBuf = "";
+    proc.on("error", (e) => { const err = new Error(`cannot spawn ${config.newsPython}: ${e.message}`); err.name = "TrafilaturaUnavailable"; reject(err); });
+    proc.stdout.on("data", (d) => { out += d; });
+    proc.stderr.on("data", (d) => { errBuf += d; });
+    proc.stdin.on("error", () => { /* EPIPE if the child died early — the close handler reports it */ });
+    proc.on("close", (code) => {
+      if (code === 3) { const err = new Error("trafilatura not installed"); err.name = "TrafilaturaUnavailable"; return reject(err); }
+      let j = null; try { j = JSON.parse(out); } catch { /* fall through */ }
+      if (j && j.error) return reject(new Error(j.error));
+      if (code !== 0 || !j) return reject(new Error(`trafilatura exited ${code}: ${(errBuf || out).slice(0, 300)}`));
+      resolve(j);
+    });
+    proc.stdin.end(html);
+  });
+}
+
+// News-layer article extraction: trafilatura for clean body + metadata, then the shared
+// image pipeline (download + PNG→JPEG + compress + rename to image_N) to weave figures.
+// Returns { text, images:[{name,base64,mime}], meta:{title,author,date,description,
+// sitename,categories[],tags[]} }. Throws TrafilaturaUnavailable when the sidecar is absent.
+async function extractArticle(html, baseUrl, maxImages = 8) {
+  const r = await runTrafilatura(html, baseUrl);
+  let md = cleanupMarkdown(r.markdown || "");
+  const bodyUrls = [...md.matchAll(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g)].map((m) => m[1]);
+  const hero = /^https?:\/\//i.test(r.image || "") ? r.image : "";
+  // Hero first so it becomes image_1; body images keep their document order after it.
+  const urls = hero ? [hero, ...bodyUrls.filter((u) => u !== hero)] : bodyUrls;
+  const downloaded = maxImages > 0 ? await downloadImagesNamed(urls, baseUrl, maxImages) : [];
+  const byUrl = new Map(downloaded.map((im) => [im.url, im]));
+  // Rewrite body refs to the local image_N names; drop any that failed to download (tracker
+  // pixels / oversized). trafilatura already stripped boilerplate, so no ［图片］ placeholder.
+  md = md.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (_, alt, url) => {
+    const im = byUrl.get(url);
+    return im ? `![${(alt || "").trim()}](${im.name})` : "";
+  });
+  const heroIm = hero && byUrl.get(hero);
+  if (heroIm && !md.includes(`(${heroIm.name})`)) md = `![](${heroIm.name})\n\n${md}`;
+  md = md.replace(/\n{3,}/g, "\n\n").trim();
+  return {
+    text: md,
+    images: downloaded.map(({ name, base64, mime }) => ({ name, base64, mime })),
+    meta: {
+      title: r.title || "", author: r.author || "", date: r.date || "",
+      description: r.description || "", sitename: r.sitename || "",
+      categories: Array.isArray(r.categories) ? r.categories : [],
+      tags: Array.isArray(r.tags) ? r.tags : [],
+    },
+  };
+}
+
 // ---- In-article noise cleanup + image handling ----
 
 // Standalone UI/chrome lines that publishers inject inside the article body.
@@ -1625,4 +1712,4 @@ async function expandYoutubeUrls(req, res) {
   console.log(model ? `[url-fetch] whisper model: ${model}` : "[url-fetch] whisper model not found");
 })();
 
-module.exports = { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, formatTranscriptServer, extractCleanContent, extractArticleWithImages, optimizeImage, expandYoutubeUrls };
+module.exports = { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, formatTranscriptServer, extractCleanContent, extractArticleWithImages, extractArticle, trafilaturaAvailable, optimizeImage, expandYoutubeUrls };

@@ -76,6 +76,24 @@ $vpy = "$env:USERPROFILE\venv\heykoko\Scripts\python.exe"
 winget install eSpeak-NG.eSpeak-NG
 ```
 
+## News feed extraction — `trafilatura`
+
+The 📰 **news feed subscriptions** feature (poll company/official blogs and backfill
+their history into the `news/` knowledge library) extracts each article with
+[trafilatura](https://trafilatura.readthedocs.io/) — a site-agnostic main-content +
+metadata extractor that drops nav/"related"/boilerplate and returns the author,
+publish date, categories, tags, and hero image. It's a pure-Python package (no GPU),
+so just add it to the **same shared venv** — all platforms:
+
+```bash
+uv pip install --python ~/venv/heykoko/bin/python trafilatura
+```
+
+(Windows: `& $vpy -m pip install trafilatura`.) `TRAFILATURA_PYTHON` overrides which
+interpreter runs it. There is **no built-in fallback** — without trafilatura the
+feed manager's poll/backfill actions report the feature unavailable (and show a
+banner) rather than importing lower-quality text. Restart the server after installing.
+
 ## First run & troubleshooting
 
 On first synthesis Kokoro downloads its ~330 MB model from Hugging Face (cached
