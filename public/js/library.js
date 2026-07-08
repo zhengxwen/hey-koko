@@ -813,6 +813,7 @@ export function initLibrary() {
       extractorMissing: "⚠️ 新闻正文抽取依赖 trafilatura，当前未检测到，轮询/回填暂不可用。请在 hey-koko 的 Python 环境执行 pip install trafilatura（或设 TRAFILATURA_PYTHON），然后重启服务。",
       dedicatedTip: (n) => `专属处理器${n ? "（" + n + "）" : ""} —— 为该站点定制的抽取规则（图片位置、图注、主图、作者/标签更准）`,
       mNone: "无回填通道", mWpjson: "wp-json", mPagedfeed: "分页 feed", mSitemap: "sitemap",
+      sites: "✅ 站点", sitesTip: "已适配的站点（内置 + 插件）—— 点击填入网址和名称", sitesNone: "暂无已适配站点", sitesAdded: "已添加",
       bfNo: "未回填", bfDone: "已完成", bfProg: "进行中", interval: "轮询间隔", hours: "小时", save: "保存" },
     "zh-Hant": { title: "新聞訂閱源", close: "關閉", loading: "正在載入…", empty: "還沒有訂閱源。貼上一個部落格/網站網址即可新增。",
       addUrl: "部落格/網站網址（如 https://blogs.nvidia.com/）", addName: "名稱（可選）", add: "新增", adding: "正在探索訂閱源…",
@@ -829,6 +830,7 @@ export function initLibrary() {
       extractorMissing: "⚠️ 新聞正文擷取依賴 trafilatura，目前未偵測到，輪詢/回填暫不可用。請在 hey-koko 的 Python 環境執行 pip install trafilatura（或設 TRAFILATURA_PYTHON），然後重新啟動服務。",
       dedicatedTip: (n) => `專屬處理器${n ? "（" + n + "）" : ""} —— 為該站點客製的擷取規則（圖片位置、圖注、主圖、作者/標籤更準）`,
       mNone: "無回填通道", mWpjson: "wp-json", mPagedfeed: "分頁 feed", mSitemap: "sitemap",
+      sites: "✅ 站點", sitesTip: "已適配的站點（內建 + 外掛）—— 點擊填入網址和名稱", sitesNone: "暫無已適配站點", sitesAdded: "已新增",
       bfNo: "未回填", bfDone: "已完成", bfProg: "進行中", interval: "輪詢間隔", hours: "小時", save: "儲存" },
     en: { title: "News feed subscriptions", close: "Close", loading: "Loading…", empty: "No subscriptions yet. Paste a blog/site URL to add one.",
       addUrl: "Blog/site URL (e.g. https://blogs.nvidia.com/)", addName: "Name (optional)", add: "Add", adding: "Discovering feed…",
@@ -845,6 +847,7 @@ export function initLibrary() {
       extractorMissing: "⚠️ News article extraction needs trafilatura, which wasn't detected — poll/backfill are unavailable. Run pip install trafilatura in hey-koko's Python env (or set TRAFILATURA_PYTHON), then restart the server.",
       dedicatedTip: (n) => `Dedicated handler${n ? " (" + n + ")" : ""} — extraction tuned for this site (image positions, captions, hero, author/tags are more accurate)`,
       mNone: "no backfill channel", mWpjson: "wp-json", mPagedfeed: "paged feed", mSitemap: "sitemap",
+      sites: "✅ Sites", sitesTip: "Sites with a dedicated handler (built-in + plugins) — click to fill in URL and name", sitesNone: "No dedicated site handlers", sitesAdded: "added",
       bfNo: "not backfilled", bfDone: "done", bfProg: "in progress", interval: "Poll every", hours: "hours", save: "Save" },
   };
   const feedL = () => FEED_I18N[getPromptLanguage()] || FEED_I18N.zh;
@@ -863,6 +866,10 @@ export function initLibrary() {
           </span>
         </div>
         <div class="feedMgrAdd">
+          <span class="feedMgrSitesWrap">
+            <button type="button" id="feedSitesBtn" class="feedMgrMini" title="${escapeHtml(L.sitesTip)}">${escapeHtml(L.sites)} ▾</button>
+            <div class="feedMgrSitesMenu" id="feedSitesMenu" hidden></div>
+          </span>
           <input type="text" id="feedAddUrl" class="feedMgrInput" placeholder="${escapeHtml(L.addUrl)}" />
           <input type="text" id="feedAddName" class="feedMgrInput feedMgrName" placeholder="${escapeHtml(L.addName)}" />
           <button type="button" id="feedAddBtn" class="zoteroImportGo">${escapeHtml(L.add)}</button>
@@ -884,12 +891,37 @@ export function initLibrary() {
     const addName = overlay.querySelector("#feedAddName");
     const addBtn = overlay.querySelector("#feedAddBtn");
     const intervalIn = overlay.querySelector("#feedInterval");
+    const sitesBtn = overlay.querySelector("#feedSitesBtn");
+    const sitesMenu = overlay.querySelector("#feedSitesMenu");
 
     const close = () => { clearInterval(progTimer); overlay.remove(); document.removeEventListener("keydown", onKey); };
-    const onKey = (e) => { if (e.key === "Escape") close(); };
+    // Escape closes the sites menu first (if open), the overlay second.
+    const onKey = (e) => { if (e.key === "Escape") { if (sitesMenu && !sitesMenu.hidden) { sitesMenu.hidden = true; return; } close(); } };
     document.addEventListener("keydown", onKey);
     overlay.querySelector(".zoteroImportClose").addEventListener("click", close);
     overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
+
+    // "✅ 站点" picker: every registered site handler (built-in + url-handler plugins), served by
+    // /api/feeds/list as `handlers`. Click an entry → prefill the add form with its siteUrl+title
+    // (title is slug-stable with the existing feed folders). Already-subscribed hosts are dimmed.
+    let sitesHandlers = [], sitesSubscribed = new Set();
+    const hostKey = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
+    function buildSitesMenu() {
+      sitesMenu.innerHTML = "";
+      if (!sitesHandlers.length) { sitesMenu.innerHTML = `<div class="feedMgrSitesEmpty">${escapeHtml(L.sitesNone)}</div>`; return; }
+      for (const h of sitesHandlers) {
+        const added = sitesSubscribed.has(hostKey(h.siteUrl)) || sitesSubscribed.has(h.host);
+        const it = document.createElement("button");
+        it.type = "button";
+        it.className = "feedMgrSitesItem" + (added ? " isAdded" : "");
+        it.innerHTML = `<span class="feedMgrSitesTitle">✅ ${escapeHtml(h.title)}</span>` +
+          `<span class="feedMgrSitesHost">${escapeHtml(h.siteUrl)}${added ? " · " + escapeHtml(L.sitesAdded) : ""}</span>`;
+        it.addEventListener("click", () => { addUrl.value = h.siteUrl; addName.value = h.title; sitesMenu.hidden = true; addBtn.focus(); });
+        sitesMenu.appendChild(it);
+      }
+    }
+    sitesBtn.addEventListener("click", () => { if (sitesMenu.hidden) { buildSitesMenu(); sitesMenu.hidden = false; } else sitesMenu.hidden = true; });
+    overlay.addEventListener("mousedown", (e) => { if (!sitesMenu.hidden && !sitesMenu.contains(e.target) && e.target !== sitesBtn) sitesMenu.hidden = true; });
 
     const fmtDate = (ts) => ts ? new Date(ts).toLocaleDateString() : L.never;
     const methodLabel = (m) => ({ wpjson: L.mWpjson, pagedfeed: L.mPagedfeed, sitemap: L.mSitemap }[m] || L.mNone);
@@ -919,6 +951,8 @@ export function initLibrary() {
       // Only warn when trafilatura is missing AND at least one feed actually needs it — dedicated/
       // WordPress feeds (e.g. NVIDIA) extract without trafilatura, so they never trigger the banner.
       if (banner) { const missing = data.extractorAvailable === false && data.needExtractor !== false; banner.hidden = !missing; banner.textContent = missing ? L.extractorMissing : ""; }
+      sitesHandlers = data.handlers || [];
+      sitesSubscribed = new Set((data.feeds || []).map((f) => hostKey(f.siteUrl || f.feedUrl)).filter(Boolean));
       intervalIn.value = data.pollIntervalH || 24;
       if (!data.feeds.length) { listEl.innerHTML = `<div class="zoteroImportMsg">${escapeHtml(L.empty)}</div>`; return; }
       listEl.innerHTML = "";

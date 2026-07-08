@@ -247,6 +247,14 @@ async function findSitemap(origin) {
   return "";
 }
 async function probeBackfill(feed) {
+  // A site handler that declares its OWN archive enumerator (listPage — see the plugin-contract
+  // comment above HANDLER_SDK) outranks the generic channels: it exists precisely because the
+  // site has none of them, or they're truncated (e.g. a MediaRoom RSS clamped to 10 items).
+  const ph = handlerChannelFor(feed);
+  if (ph) {
+    try { const p = await ph.listPage(1, {}); if (p && Array.isArray(p.items) && p.items.length) return { method: "handler", total: Number(p.total) || 0 }; } catch {}
+    // enumerator down (site changed / network) → fall through to the generic probes
+  }
   const base = siteRoot(feed);
   try {
     const r = await politeFetch(base + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 12000, retries: 1 });
@@ -555,27 +563,124 @@ async function extractMicrosoftPage(html, url, ctx) {
 // company: add `{ extractPost(post,url,ctx){…} }` (wp-json sites → gets the raw post) or
 // `{ extractPage(html,url,ctx){…} }` (full-HTML sites → gets the fetched page). A pinned handler
 // wins over the wp-json/trafilatura defaults for that host.
+// `title` + `siteUrl` feed the 📰 panel's "✅ sites" picker (click → prefill the add form):
+// siteUrl matters when it ISN'T just https://<host>/ (wordpress.org's blog lives under /news/);
+// title doubles as the subscription NAME, so keep it slug-stable with the user's existing feed
+// folders (slugify(title) → news/<slug>) — "microsoft-blog" → news/microsoft-blog etc.
 const SITE_HANDLERS = {
   // NVIDIA blogs — the WordPress handler was built and verified HERE, so NVIDIA is pinned
   // explicitly (its tuning is a named, first-class handler in code, not an implicit default).
   // Other WordPress sites ride the SAME handler as a best-effort default via the wp-json channel
   // (see backfillWpjson's fallback); add them here once individually verified. (To make the rich
   // handler NVIDIA-ONLY, change that fallback from `extractWordPressPost` to the trafilatura path.)
-  "blogs.nvidia.com": { name: "nvidia", extractPost: extractWordPressPost },
+  "blogs.nvidia.com": { name: "nvidia", title: "nvidia-blog", siteUrl: "https://blogs.nvidia.com/", extractPost: extractWordPressPost },
   // Microsoft official blog — WordPress but wp-json is locked (401 rest_forbidden) and the site is
   // Akamai-fronted (bot UA → 403). Can't use the wp-json handler; instead a browser-UA full-page
   // fetch (browserUA) + trafilatura extractor (needsTrafilatura), hero from og:image.
-  "blogs.microsoft.com": { name: "microsoft", extractPage: extractMicrosoftPage, browserUA: true, needsTrafilatura: true },
+  "blogs.microsoft.com": { name: "microsoft", title: "microsoft-blog", siteUrl: "https://blogs.microsoft.com/", extractPage: extractMicrosoftPage, browserUA: true, needsTrafilatura: true },
   // WordPress.org News — plain wp-json (like NVIDIA), individually verified: real posts checked,
   // and the hero/body-image duplicate bug (see extractWordPressPost's imgFileKey dedup) was found
   // and fixed through THIS site. Pinned for the same reason NVIDIA is (provenance/✅ badge), even
-  // though it rides the identical shared handler with no site-specific override.
-  "wordpress.org": { name: "wordpress", extractPost: extractWordPressPost },
+  // though it rides the identical shared handler with no site-specific override. NOTE the siteUrl:
+  // a subdirectory install — https://wordpress.org/ alone would probe the WRONG (root) site.
+  "wordpress.org": { name: "wordpress", title: "wordpress-news", siteUrl: "https://wordpress.org/news/", extractPost: extractWordPressPost },
 };
 function siteHandler(host) {
   const h = String(host || "").replace(/^www\./, "");
   return SITE_HANDLERS[h] || SITE_HANDLERS[h.split(".").slice(-2).join(".")] || null;
 }
+// The feed's handler IF it declares an archive enumerator (listPage) — the "handler" backfill
+// channel. Shared by probeBackfill / runBackfill / the estimate endpoint.
+function handlerChannelFor(feed) {
+  const ph = siteHandler(siteHostKey((feed && feed.siteUrl) || (feed && feed.feedUrl)));
+  return ph && typeof ph.listPage === "function" ? ph : null;
+}
+
+// ---- external site-handler plugins (<DATA_DIR>/url-handlers/*.js) -----------------------------
+// Per-site adapters are open-ended (the user adds companies one at a time) but most of them don't
+// belong in THIS repo's history — they live in the separate `hey-koko-url-handlers` repo,
+// symlinked to ~/.hey-koko/url-handlers. Each *.js file there exports a factory:
+//   module.exports = (sdk) => ({ "blog.example.com": { name?, extractPost?, extractPage?,
+//                                                      listPage?, browserUA?, needsTrafilatura? } })
+// — the same entry shape as SITE_HANDLERS, so a plugin host gets the ✅ badge / uaFor /
+// trafilatura-guard / backfill+poll dispatch plumbing for free (zero special-casing downstream).
+// listPage (contract v1.1) is the OPTIONAL archive enumerator for sites whose generic backfill
+// channels are absent or truncated: `async listPage(page /*1-based*/, {signal}) → { items:
+// [{url, title?, publishedAt?, publishedTime?, excerpt?, contentHtml?}], total?, hasMore? }`.
+// Declaring it makes the feed's backfill channel "handler" (backfillHandler walks the pages and
+// runs each item through the SAME resolveItem path RSS items use); return items:[] when past the
+// end. `total` (approximate is fine) sizes the progress bar; `hasMore:false` ends the walk a
+// fetch early. Poll stays on the RSS feed — listPage is backfill-only.
+// The `sdk` argument hands plugins the extraction primitives WITHOUT them require()-ing hey-koko
+// internals by path — the SDK surface is the only contract to keep stable (adding fields is free;
+// changing signatures means updating the plugin repo). A plain object export (no factory) also
+// works for handlers that need no sdk. Plugins WIN over built-ins on the same host (lets a plugin
+// hot-fix a built-in without touching this repo — logged loudly). Loaded once at require time —
+// server restart picks up changes (consistent with every other server-side change); a broken
+// plugin file is warned and skipped, never crashes the server. Zero-dependency: readdirSync +
+// require, no watcher. Missing directory → feature invisible (same as a missing claude.json).
+const HANDLER_SDK = {
+  // extraction primitives (url-fetch.js): layout-preserving built-in for clean WP fragments
+  // (images in position + captions + YouTube→📺 links), trafilatura for full pages (throws
+  // TrafilaturaUnavailable when the sidecar is missing)
+  extractArticleWithImages, extractArticle,
+  // network: per-host politeness/backoff (REQUIRED for bulk/backfill), plain page fetch (poll one-offs)
+  politeFetch, fetchPageHtml,
+  // parsing helpers proven across the built-in handlers
+  metaContent, decodeEntities, stripCdata, toDateTime, imgFileKey,
+  NEWS_IMAGE_CAP, BROWSER_UA,
+};
+const URL_HANDLERS_DIR = path.join(config.DATA_DIR, "url-handlers");
+// Every failure mode here must (a) leave the server booting normally and (b) say WHY on the
+// console — a plugin author's only feedback channel is the startup log. Silent cases are limited
+// to "directory simply absent" (feature not in use, like a missing claude.json).
+function loadExternalHandlers() {
+  let files = [];
+  try { files = fs.readdirSync(URL_HANDLERS_DIR).filter((f) => f.endsWith(".js")); }
+  catch (e) {
+    let why = "";
+    if (e && e.code === "ENOENT") {
+      // plain missing dir → silent; but a DANGLING SYMLINK (deliberately created, target gone —
+      // e.g. the plugin repo was moved) also ENOENTs and deserves a loud message.
+      try { fs.lstatSync(URL_HANDLERS_DIR); why = "is a symlink to a missing target"; } catch {}
+    } else if (e) why = `cannot be read (${e.message})`;
+    if (why) console.warn(`[feeds] url-handlers: ${URL_HANDLERS_DIR} ${why} — external handlers skipped this run`);
+    return 0;
+  }
+  let loaded = 0;
+  for (const f of files.sort()) {
+    let fileCount = 0;
+    try {
+      const mod = require(path.join(URL_HANDLERS_DIR, f));
+      const entries = typeof mod === "function" ? mod(HANDLER_SDK) : mod;
+      if (entries && typeof entries.then === "function") {
+        console.warn(`[feeds] url-handler ${f}: factory must be synchronous (returned a Promise) — skipped`); continue;
+      }
+      for (const [host, h] of Object.entries(entries || {})) {
+        if (!h || (typeof h.extractPost !== "function" && typeof h.extractPage !== "function" && typeof h.listPage !== "function")) {
+          console.warn(`[feeds] url-handler ${f}: entry "${host}" has no extractPost/extractPage/listPage — skipped`); continue;
+        }
+        if (!h.name) h.name = f.replace(/\.js$/, "");
+        const key = String(host).replace(/^www\./, "");
+        if (SITE_HANDLERS[key]) console.log(`[feeds] url-handler ${f}: overrides "${key}" (was "${SITE_HANDLERS[key].name}")`);
+        SITE_HANDLERS[key] = h;
+        fileCount++;
+      }
+      if (!fileCount) console.warn(`[feeds] url-handler ${f}: no usable handler entries — nothing registered from this file`);
+    } catch (e) {
+      // require/factory threw (syntax error, bad require inside the plugin, …) — report the
+      // message plus the stack line pointing INTO the plugin file (the author's actual bug line).
+      const loc = String((e && e.stack) || "").split("\n").find((l) => l.includes(f));
+      console.warn(`[feeds] url-handler ${f} failed to load (skipped; other handlers unaffected): ${e && e.message}${loc ? ` @ ${loc.trim()}` : ""}`);
+    }
+    loaded += fileCount;
+  }
+  if (loaded) console.log(`[feeds] loaded ${loaded} external site handler(s) from ${URL_HANDLERS_DIR}`);
+  return loaded;
+}
+// Belt-and-braces: even a bug in the loader itself must never take the server down with it.
+try { loadExternalHandlers(); }
+catch (e) { console.warn(`[feeds] url-handlers: loading failed (${e && e.message}) — continuing without external handlers`); }
 
 // Trafilatura full-page extraction — the site-agnostic path, AND the fallback for a WordPress post
 // whose content.rendered is empty (only a plugin marker like <div id="bsf_rt_marker">; the real body
@@ -638,7 +743,8 @@ async function feedNeedsTrafilatura(feed, signal) {
   // (full-page trafilatura) → true. So the guards/banner correctly require trafilatura for it.
   if (custom && (custom.extractPost || custom.extractPage)) return !!custom.needsTrafilatura;
   if (feed.backfill && feed.backfill.method === "wpjson") return false;      // known WordPress
-  if (feed.backfill && (feed.backfill.method === "pagedfeed" || feed.backfill.method === "sitemap")) return true;
+  // "handler" here = a listPage-ONLY entry (no extract hook, filtered above) → items extract via trafilatura
+  if (feed.backfill && ["pagedfeed", "sitemap", "handler"].includes(feed.backfill.method)) return true;
   try {                                                                      // unprobed → cheap wp-json check
     const r = await politeFetch(siteRoot(feed) + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 10000, signal, retries: 0 });
     if (r.ok && /json/i.test(r.headers.get("content-type") || "")) return false;   // WordPress
@@ -774,6 +880,47 @@ async function backfillPagedFeed(feed, ctx) {
   }
   return { imported, skipped };
 }
+// "handler" channel: the site handler's own listPage(page, ctx) enumerates the archive (listing
+// pages, JSON APIs — whatever the plugin knows about the site) and yields normalized feed items;
+// each goes through the SAME resolveItem path RSS items use, so the handler's extractPage/
+// extractPost does the extraction. Cursor/clamp/seen semantics mirror backfillPagedFeed —
+// including the runUrls guard, because a site that ignores the offset param past its end would
+// otherwise loop forever on a repeating page.
+async function backfillHandler(feed, ctx) {
+  const ph = handlerChannelFor(feed);
+  if (!ph) throw new Error("handler 回填通道已失效（插件被移除？）：" + (feed.siteUrl || feed.feedUrl));
+  let page = Math.max(1, feed.backfill.cursor || 1), imported = 0, skipped = 0;
+  let total = feed.backfill.total || 0;
+  let pageSize = 0;
+  const runUrls = new Set();
+  while (true) {
+    if (ctx.signal && ctx.signal.aborted) throw abortErr();
+    let res;
+    try { res = await ph.listPage(page, { signal: ctx.signal }); }
+    catch (e) { if (e && e.name === "AbortError") throw e; break; }   // enumerator failure mid-run → stop; cursor persists for resume
+    const items = (res && Array.isArray(res.items)) ? res.items : [];
+    if (!items.length) break;   // past the last page
+    if (res.total && Number(res.total) !== total) { total = Number(res.total); patchBackfill(feed.id, { total }); }
+    if (!pageSize) pageSize = items.length || 10;
+    let pageHasNewUrl = false;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const pos = (page - 1) * pageSize + i + 1;   // absolute position in the archive → drives the bar
+      if (!it || !it.url) continue;
+      if (!runUrls.has(it.url)) { runUrls.add(it.url); pageHasNewUrl = true; }
+      if (isSeen(feed.id, it.url)) { if (ctx.onProgress) ctx.onProgress(pos, total || undefined); continue; }
+      let handled = false;
+      try { const { text, images, meta } = await resolveItem(it, ctx); if (text) { await importItem(feed, { ...it, text, images, meta }, ctx); imported++; } else skipped++; handled = true; }
+      catch (e) { if (e && (e.name === "AbortError" || e.name === "TrafilaturaUnavailable" || e.name === "ImageBackendMissing")) throw e; skipped++; }   // transient error → leave un-seen for retry
+      if (handled) markSeen(feed.id, [it.url]);
+      if (ctx.onProgress) ctx.onProgress(pos, total || undefined);
+    }
+    if (!pageHasNewUrl) break;   // offset ignored past the end (page repeats) → done
+    page++; patchBackfill(feed.id, { cursor: page });
+    if (res.hasMore === false) break;   // explicit end saves the final empty-page fetch
+  }
+  return { imported, skipped };
+}
 async function collectSitemapUrls(feed, ctx) {
   const root = feed.sitemapUrl || await findSitemap(siteRoot(feed));
   if (!root) return [];
@@ -849,6 +996,13 @@ async function runBackfill(feedId, ctx = {}) {
   const feed = getFeed(feedId);
   if (!feed) throw new Error("feed not found: " + feedId);
   let method = feed.backfill && feed.backfill.method;
+  // A handler with listPage may have been installed AFTER this feed was first probed (plugins load
+  // at startup, but the probed channel is persisted) — upgrade the stored channel and rewind, the
+  // seen-set keeps already-imported articles from re-importing.
+  if (method && method !== "handler" && handlerChannelFor(feed)) {
+    console.log(`[feeds] backfill ${feedId}: channel ${method} → handler (site handler now provides listPage)`);
+    method = "handler"; patchBackfill(feedId, { method, cursor: 0 });
+  }
   if (!method) { const p = await probeBackfill(feed); method = p.method; patchBackfill(feedId, { method, total: p.total || 0 }); if (p.sitemap) patchFeed(feedId, { sitemapUrl: p.sitemap }); }
   if (!method) { patchFeed(feedId, { lastError: "无可用回填通道（无 wp-json / 分页 feed / sitemap）" }); return { feedId, method: "", imported: 0, skipped: 0, done: false, error: "no-channel" }; }
   const fresh = getFeed(feedId);   // re-read after the probe patch
@@ -857,6 +1011,7 @@ async function runBackfill(feedId, ctx = {}) {
     if (method === "wpjson") r = await backfillWpjson(fresh, ctx);
     else if (method === "pagedfeed") r = await backfillPagedFeed(fresh, ctx);
     else if (method === "sitemap") r = await backfillSitemap(fresh, ctx);
+    else if (method === "handler") r = await backfillHandler(fresh, ctx);
     else throw new Error("unknown backfill method: " + method);
     patchBackfill(feedId, { doneAt: Date.now() });
     patchFeed(feedId, { lastError: "" });
@@ -986,7 +1141,14 @@ async function feedsListHandler(_req, res) {
       return { ...f, _urls: undefined, articles: sumFolder(counts, f.folder), dedicated: !!h, handlerName: h ? (h.name || "custom") : "", needsTrafilatura: feedNeedsTrafilaturaCached(f) };
     });
     const needExtractor = feeds.some((f) => f.enabled && f.needsTrafilatura);
-    sendJson(res, 200, { ok: true, pollIntervalH: cfg.pollIntervalH, extractorAvailable, needExtractor, feeds });
+    // All registered site handlers (built-in + plugins) for the 📰 panel's "✅ sites" picker:
+    // clicking one prefills the add form with siteUrl+title. siteUrl defaults to https://<host>/
+    // when the handler didn't declare one (fine for top-level blogs; subdirectory installs like
+    // wordpress.org/news MUST declare it); title falls back name → host.
+    const handlers = Object.entries(SITE_HANDLERS).map(([host, h]) => ({
+      host, name: h.name || "", title: h.title || h.name || host, siteUrl: h.siteUrl || `https://${host}/`,
+    })).sort((a, b) => a.title.localeCompare(b.title));
+    sendJson(res, 200, { ok: true, pollIntervalH: cfg.pollIntervalH, extractorAvailable, needExtractor, feeds, handlers });
   } catch (e) { sendJson(res, 500, { ok: false, error: e.message }); }
 }
 // Shared "sidecar missing" error text (returned by poll-now / backfill when trafilatura is
@@ -1040,12 +1202,21 @@ async function feedsBackfillEstimateHandler(req, res) {
   try {
     const f = getFeed(b.id); if (!f) throw new Error("feed not found");
     let method = f.backfill && f.backfill.method;
+    // Same channel upgrade as runBackfill, so the confirm dialog sizes the walk the backfill will
+    // actually do (a stale pagedfeed estimate would show the truncated feed's ~10, not the archive).
+    if (method && method !== "handler" && handlerChannelFor(f)) { method = "handler"; patchBackfill(f.id, { method, cursor: 0 }); }
     if (!method) { const p = await probeBackfill(f); method = p.method; patchBackfill(f.id, { method, total: p.total || 0 }); if (p.sitemap) patchFeed(f.id, { sitemapUrl: p.sitemap }); }
     // Guard AFTER the probe: now feedNeedsTrafilatura knows the channel (wpjson → no trafilatura).
     if (!(await trafilaturaAvailable()) && (await feedNeedsTrafilatura(f))) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
     let total = 0, known = false, approx = false;
     if (method === "wpjson") {
       try { const r = await politeFetch(siteRoot(f) + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 12000, retries: 1 }); total = Number(r.headers.get("x-wp-total")) || 0; known = total > 0; } catch {}
+    } else if (method === "handler") {
+      // the enumerator's own count (usually derived from the site's pagination → approximate);
+      // a probe that just ran already patched backfill.total, so reuse it before re-fetching page 1
+      total = (f.backfill && f.backfill.total) || 0;
+      if (!total) { try { const ph = handlerChannelFor(f); const p = ph ? await ph.listPage(1, {}) : null; total = Number(p && p.total) || 0; } catch {} }
+      known = total > 0; approx = true;
     } else {
       // pagedfeed/sitemap can't be counted by walking the feed (as costly as the backfill), but the
       // site's sitemap lists every post URL compactly → count those. Gives ~N even for pagedfeed.
@@ -1100,5 +1271,5 @@ module.exports = {
   feedsListHandler, feedsAddHandler, feedsEditHandler, feedsDeleteHandler, feedsPollNowHandler, feedsBackfillHandler, feedsBackfillEstimateHandler, feedsRefreshHandler,
   // exported for testing
   parseFeed, parseSitemap, parseSitemapUrls, decodeEntities, toDate, toDateTime, sanitizeNewsFolder, slugify,
-  _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder, feedNeedsTrafilaturaCached, siteHostKey, siteHandler, uaFor, msOgImage, msTagNames, extractMicrosoftPage, resolveItem, countSitemapPosts, extractWordPressPost, siteRoot, siteRootFromFeedUrl, fetchWpPost },
+  _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder, feedNeedsTrafilaturaCached, siteHostKey, siteHandler, uaFor, msOgImage, msTagNames, extractMicrosoftPage, resolveItem, countSitemapPosts, extractWordPressPost, siteRoot, siteRootFromFeedUrl, fetchWpPost, loadExternalHandlers, HANDLER_SDK, handlerChannelFor, backfillHandler, runBackfill },
 };
