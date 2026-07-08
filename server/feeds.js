@@ -25,6 +25,13 @@ const { extractArticle, extractArticleWithImages, trafilaturaAvailable } = requi
 const NEWS_DIR = library.NEWS_DIR || "news";
 const NEWS_IMAGE_CAP = 8;   // max images downloaded per article (bandwidth/size guard)
 const UA = "Mozilla/5.0 (compatible; hey-koko-feeds/1.0)";
+// Some hosts (Akamai/Cloudflare-fronted — e.g. blogs.microsoft.com) 403 the honest bot UA on their
+// feed/API/article endpoints but serve normally to a real browser UA. A per-site handler opts in
+// with `browserUA:true`; uaFor() then returns this for that host across EVERY fetch path (poll RSS,
+// feed discovery, backfill, article page) — no per-call threading. siteHandler/siteHostKey are
+// hoisted function declarations, resolved at call time (runtime), so referencing them here is safe.
+const BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+function uaFor(url) { try { const h = siteHandler(siteHostKey(url)); return h && h.browserUA ? BROWSER_UA : UA; } catch { return UA; } }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function abortErr() { const e = new Error("Aborted"); e.name = "AbortError"; return e; }
 
@@ -95,7 +102,7 @@ async function fetchRetry(url, { retries = 3, timeoutMs = 20000, headers = {}, s
     const onAbort = () => ctrl.abort();
     if (signal) signal.addEventListener("abort", onAbort, { once: true });
     try {
-      const res = await fetch(url, { headers: { "User-Agent": UA, ...headers }, redirect: "follow", signal: ctrl.signal });
+      const res = await fetch(url, { headers: { "User-Agent": uaFor(url), ...headers }, redirect: "follow", signal: ctrl.signal });
       if ((res.status === 429 || res.status === 503 || res.status === 403) && attempt < retries) { await sleep(1000 * Math.pow(2, attempt)); continue; }
       return res;
     } catch (e) {
@@ -317,6 +324,19 @@ function importItem(feed, { url, title, publishedAt, publishedTime, excerpt, tex
 // content:encoded/content (full HTML), else fetch the page. Returns { text:"", images:[] }
 // when nothing usable. Throws TrafilaturaUnavailable up the stack when the sidecar is absent.
 async function resolveItem(it, ctx) {
+  // A host-pinned page handler (e.g. Microsoft) wins. It takes the BODY from the RSS content:encoded
+  // (it.contentHtml — trafilatura would drop its wp-caption images from a full page) and the HERO/meta
+  // from the fetched page. Backfill is large (MS ≈ 2160 posts) → fetch the page POLITELY (per-host gap +
+  // 429/503/403 backoff + browser UA), not via the raw fetchPageHtml the poll path uses, so a 2000+ run
+  // won't trip Akamai. Errors (trafilatura / image-compress) propagate — backfill's catch stops the run.
+  const ph = siteHandler(siteHostKey(it.url));
+  if (ph && ph.extractPage) {
+    let html = null;
+    try { const r = await politeFetch(it.url, { timeoutMs: 25000, signal: ctx.signal, minGapMs: 1500 }); if (r.ok && /html/i.test(r.headers.get("content-type") || "")) html = await r.text(); }
+    catch (e) { if (e && e.name === "AbortError") throw e; }   // page fetch failed → handler still uses content:encoded (no hero)
+    const e = await ph.extractPage(html, it.url, { ...ctx, contentHtml: it.contentHtml });
+    if (e && e.text && e.text.trim()) return { text: e.text.trim(), images: e.images, meta: e.meta };
+  }
   if (it.contentHtml && it.contentHtml.length > 200) {
     const r = await extractArticle(it.contentHtml, it.url, NEWS_IMAGE_CAP, ctx.signal);
     if (r.text && r.text.trim()) return { text: r.text.trim(), images: r.images, meta: r.meta };
@@ -375,7 +395,7 @@ async function fetchWpPost(url, signal) {
 async function fetchPageHtml(url, signal) {
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; hey-koko-feeds/1.0)" }, redirect: "follow",
+      headers: { "User-Agent": uaFor(url) }, redirect: "follow",
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : AbortSignal.timeout(25000),
     });
     if (!res.ok || !/html/i.test(res.headers.get("content-type") || "")) return null;
@@ -428,6 +448,60 @@ async function extractWordPressPost(post, url, ctx) {
   };
 }
 
+// Microsoft official blog (blogs.microsoft.com) — WordPress, but its wp-json REST API is
+// deliberately restricted (401 rest_forbidden) AND the site is Akamai-fronted (the bot UA gets a
+// 403), so neither the wp-json handler nor the honest UA work. Extraction mirrors the NVIDIA wp-json
+// handler, sourced differently: BODY from the RSS content:encoded (the clean WP post body — it keeps
+// the wp-caption/lazy body images that trafilatura DROPS from a full page) via the layout-preserving
+// built-in; HERO from the page og:image; dek/author/date/tags from the page meta + rel="tag" links.
+// See extractMicrosoftPage. Needs the browser UA (browserUA) + trafilatura for the bare-URL fallback.
+function msOgImage(html) {
+  const m = String(html).match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+        || String(html).match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+  const u = m ? decodeEntities(m[1]).trim() : "";
+  return /official-microsoft-blog-header/i.test(u) ? "" : u;   // generic header placeholder → not a real hero
+}
+function msTagNames(html) {
+  const names = [...String(html).matchAll(/rel=["']tag["'][^>]*>([^<]+)</gi)].map((m) => decodeEntities(m[1]).trim()).filter(Boolean);
+  return [...new Set(names)].slice(0, 12);
+}
+// One <meta property|name="prop" content="…"> value (both attribute orders), entity-decoded.
+function metaContent(html, prop) {
+  const p = prop.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = String(html).match(new RegExp(`<meta[^>]+(?:property|name)=["']${p}["'][^>]+content=["']([^"']*)["']`, "i"))
+        || String(html).match(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${p}["']`, "i"));
+  return m ? decodeEntities(m[1]).trim() : "";
+}
+async function extractMicrosoftPage(html, url, ctx) {
+  html = html || "";
+  const cap = ctx && ctx.images === false ? 0 : NEWS_IMAGE_CAP;
+  const hero = msOgImage(html);
+  const heroHtml = /^https?:\/\//i.test(hero) ? `<figure><img src="${hero.replace(/"/g, "%22")}"/></figure>` : "";
+  // content:encoded (ctx.contentHtml) = the clean WP post body; it KEEPS the wp-caption/lazy body
+  // images that trafilatura DROPS from a full page → run the LAYOUT-PRESERVING built-in (images in
+  // position + captions) + og:image hero as image_1 (mirrors the NVIDIA wp-json handler). Bare URL
+  // with no content:encoded → fall back to full-page trafilatura (may drop wp-caption images).
+  const frag = ctx && ctx.contentHtml ? stripCdata(String(ctx.contentHtml)) : "";
+  let body, images, tMeta = {};
+  if (frag && frag.length > 200) {
+    const r = await extractArticleWithImages(heroHtml + frag, url, cap, ctx && ctx.signal);
+    body = r.text; images = r.images;
+  } else if (html) {
+    const r = await extractArticle(html, url, cap, ctx && ctx.signal, hero);
+    body = r.text; images = r.images; tMeta = r.meta || {};
+  } else return null;
+  if (!body || !body.trim()) return null;
+  const dek = (metaContent(html, "og:description") || tMeta.description || "").replace(/\s+/g, " ").trim();
+  const text = (dek && !body.trimStart().startsWith(dek.slice(0, 40)) ? `*${dek}*\n\n` : "") + body.trim();
+  const dt = toDateTime(metaContent(html, "article:published_time") || tMeta.date || "");
+  const title = (metaContent(html, "og:title") || tMeta.title || "").replace(/\s*[|–-]\s*The Official Microsoft Blog\s*$/i, "").trim();
+  return {
+    text, images,
+    meta: { author: (metaContent(html, "author") || tMeta.author || "").trim(), tags: msTagNames(html), categories: [] },
+    title, publishedAt: dt.date, publishedTime: dt.time,
+  };
+}
+
 // Bespoke per-company handlers, keyed by host (exact or registrable domain). To pin/override a
 // company: add `{ extractPost(post,url,ctx){…} }` (wp-json sites → gets the raw post) or
 // `{ extractPage(html,url,ctx){…} }` (full-HTML sites → gets the fetched page). A pinned handler
@@ -439,6 +513,10 @@ const SITE_HANDLERS = {
   // (see backfillWpjson's fallback); add them here once individually verified. (To make the rich
   // handler NVIDIA-ONLY, change that fallback from `extractWordPressPost` to the trafilatura path.)
   "blogs.nvidia.com": { name: "nvidia", extractPost: extractWordPressPost },
+  // Microsoft official blog — WordPress but wp-json is locked (401 rest_forbidden) and the site is
+  // Akamai-fronted (bot UA → 403). Can't use the wp-json handler; instead a browser-UA full-page
+  // fetch (browserUA) + trafilatura extractor (needsTrafilatura), hero from og:image.
+  "blogs.microsoft.com": { name: "microsoft", extractPage: extractMicrosoftPage, browserUA: true, needsTrafilatura: true },
 };
 function siteHandler(host) {
   const h = String(host || "").replace(/^www\./, "");
@@ -460,8 +538,12 @@ async function extractArticleForUrl(url, ctx = {}) {
     if (post) { const e = await custom.extractPost(post, url, ctx); if (e && e.text && e.text.trim()) return { ...e, usedTrafilatura: false }; }
   }
   if (custom && custom.extractPage) {
+    // ctx.contentHtml (the RSS content:encoded, plumbed from the feeditem job) is the body source;
+    // the page supplies the hero + meta. Call the handler even if the page fetch failed (html null) —
+    // it still extracts the body from content:encoded.
     const html = await fetchPageHtml(url, ctx.signal);
-    if (html) { const e = await custom.extractPage(html, url, ctx); if (e && e.text && e.text.trim()) return { ...e, usedTrafilatura: false }; }
+    const e = await custom.extractPage(html, url, ctx);
+    if (e && e.text && e.text.trim()) return { ...e, usedTrafilatura: !!custom.needsTrafilatura };
   }
   // 2) generic WordPress via wp-json → the built-in layout-preserving handler (no trafilatura).
   const post = await fetchWpPost(url, ctx.signal);
@@ -489,7 +571,9 @@ async function extractArticleForUrl(url, ctx = {}) {
 // news feature is only "blocked without trafilatura" for feeds that genuinely need it.
 async function feedNeedsTrafilatura(feed, signal) {
   const custom = siteHandler(siteHostKey(feed.siteUrl || feed.feedUrl));
-  if (custom && (custom.extractPost || custom.extractPage)) return false;   // dedicated handler
+  // A dedicated handler declares its own need: NVIDIA (wp-json, built-in) → false; Microsoft
+  // (full-page trafilatura) → true. So the guards/banner correctly require trafilatura for it.
+  if (custom && (custom.extractPost || custom.extractPage)) return !!custom.needsTrafilatura;
   if (feed.backfill && feed.backfill.method === "wpjson") return false;      // known WordPress
   if (feed.backfill && (feed.backfill.method === "pagedfeed" || feed.backfill.method === "sitemap")) return true;
   try {                                                                      // unprobed → cheap wp-json check
@@ -504,7 +588,7 @@ async function feedNeedsTrafilatura(feed, signal) {
 // dedicated flag; an unprobed non-dedicated feed is assumed to (maybe) need trafilatura.
 function feedNeedsTrafilaturaCached(feed) {
   const custom = siteHandler(siteHostKey(feed.siteUrl || feed.feedUrl));
-  if (custom && (custom.extractPost || custom.extractPage)) return false;
+  if (custom && (custom.extractPost || custom.extractPage)) return !!custom.needsTrafilatura;
   return !(feed.backfill && feed.backfill.method === "wpjson");
 }
 
@@ -573,6 +657,12 @@ async function backfillWpjson(feed, ctx) {
 }
 async function backfillPagedFeed(feed, ctx) {
   let page = Math.max(1, feed.backfill.cursor || 1), imported = 0, skipped = 0;
+  // URLs fetched THIS run. Used to detect a feed that CLAMPS (repeats a page once you page past its
+  // end) — the true "no more pages" signal for feeds that don't 404/empty at the end. We must NOT
+  // stop just because a page's items are all already-SEEN: the poll (and the boot catch-up poll)
+  // imports the LATEST page and marks it seen, so page 1 is essentially always fully-seen — the old
+  // `fresh===0 break` therefore stopped the backfill on page 1 and it never reached the history.
+  const runUrls = new Set();
   while (true) {
     if (ctx.signal && ctx.signal.aborted) throw abortErr();
     const base = feed.feedUrl;
@@ -580,18 +670,21 @@ async function backfillPagedFeed(feed, ctx) {
     const r = await politeFetch(u, { timeoutMs: 20000, signal: ctx.signal });
     if (!r.ok) break;
     const { items } = parseFeed(await r.text());
-    if (!items.length) break;
-    let fresh = 0;
+    if (!items.length) break;   // past the last page (feeds that 404/empty at the end)
+    let pageHasNewUrl = false;
     for (const it of items) {
-      if (!it.url || isSeen(feed.id, it.url)) continue;
-      fresh++;
+      if (!it.url) continue;
+      if (!runUrls.has(it.url)) { runUrls.add(it.url); pageHasNewUrl = true; }
+      if (isSeen(feed.id, it.url)) continue;   // already imported (poll / prior backfill) → skip, keep paging
       let handled = false;
       try { const { text, images, meta } = await resolveItem(it, ctx); if (text) { await importItem(feed, { ...it, text, images, meta }, ctx); imported++; } else skipped++; handled = true; }
       catch (e) { if (e && (e.name === "AbortError" || e.name === "TrafilaturaUnavailable" || e.name === "ImageBackendMissing")) throw e; skipped++; }   // transient error → leave un-seen for retry
       if (handled) markSeen(feed.id, [it.url]);
       if (ctx.onProgress) ctx.onProgress(imported + skipped, undefined);
     }
-    if (fresh === 0) break;   // a whole page already seen → caught up
+    // Stop only when a page repeats ONLY earlier pages' URLs (feed clamped past its end). A page whose
+    // items are already-seen but NEW to this run (the poll-imported latest page) is NOT the end.
+    if (!pageHasNewUrl) break;
     page++; patchBackfill(feed.id, { cursor: page });
   }
   return { imported, skipped };
@@ -612,6 +705,30 @@ async function collectSitemapUrls(feed, ctx) {
     } else { for (const u of parseSitemapUrls(t)) urls.push(u.loc); }
   }
   return [...new Set(urls)].filter((u) => !/\/(category|tag|author|page|feed)\//i.test(u));
+}
+// Count posts via the site's sitemap for the backfill ESTIMATE — a Yoast/WP sitemap lists every
+// post URL compactly, so we can size the backfill WITHOUT walking it article-by-article (which is
+// as costly as the backfill itself). Returns { total, approx } — approx:true when there were more
+// post sub-sitemaps than the CAP we sampled. Used for the pagedfeed/sitemap channels so their
+// confirm dialog can still show ~N (wp-json already has an exact X-WP-Total). A pagedfeed that is
+// truncated may import fewer than this, so it reads as an upper-bound "约 N".
+async function countSitemapPosts(feed, signal) {
+  const origin = new URL(feed.siteUrl || feed.feedUrl).origin;
+  const root = feed.sitemapUrl || await findSitemap(origin);
+  if (!root) return { total: 0, approx: false };
+  const notPost = (u) => /\/(category|tag|author|page|feed)\//i.test(u);
+  // Sitemaps are static XML (not the bot-protected article pages) → a short gap keeps the estimate snappy.
+  let t; try { const r = await politeFetch(root, { timeoutMs: 15000, signal, retries: 1, minGapMs: 250 }); if (!r.ok) return { total: 0, approx: false }; t = await r.text(); } catch { return { total: 0, approx: false }; }
+  if (!/<sitemapindex[\s>]/i.test(t)) return { total: parseSitemapUrls(t).filter((u) => !notPost(u.loc)).length, approx: false };
+  const { locs } = parseSitemap(t);
+  const postSm = locs.filter((l) => /post|blog|article|news/i.test(l));
+  const subs = postSm.length ? postSm : locs;
+  const CAP = 20; let total = 0;
+  for (const sm of subs.slice(0, CAP)) {
+    if (signal && signal.aborted) break;
+    try { const r = await politeFetch(sm, { timeoutMs: 15000, signal, retries: 1, minGapMs: 250 }); if (r.ok) total += parseSitemapUrls(await r.text()).filter((u) => !notPost(u.loc)).length; } catch {}
+  }
+  return { total, approx: subs.length > CAP };
 }
 async function backfillSitemap(feed, ctx) {
   if (!feed._urls) feed._urls = await collectSitemapUrls(feed, ctx);
@@ -683,9 +800,14 @@ function loopbackPost(pathname, bodyObj) {
   });
 }
 function enqueueFeedItem(feed, it, ctx) {
+  // Only sites with a dedicated extractPage handler (e.g. Microsoft) consume content:encoded as the
+  // BODY source; carry it in the payload for them (capped) so the poll path gets the same wp-caption
+  // body images as backfill. Other feeds (wp-json / trafilatura) don't use it → keep their payload lean.
+  const ph = siteHandler(siteHostKey(it.url));
+  const contentHtml = (ph && ph.extractPage && it.contentHtml) ? String(it.contentHtml).slice(0, 300000) : undefined;
   return loopbackPost("/api/jobs", {
     kind: "libimport", label: "feeditem", conversationId: "__feeds__",
-    payload: { type: "feeditem", url: it.url, docId: newsDocId(feed, it.publishedAt, it.publishedTime), title: it.title, publishedAt: it.publishedAt, excerpt: it.excerpt, folder: feed.folder, distill: false, embedModel: ctx.embedModel || "", language: ctx.language || "" },
+    payload: { type: "feeditem", url: it.url, docId: newsDocId(feed, it.publishedAt, it.publishedTime), title: it.title, publishedAt: it.publishedAt, excerpt: it.excerpt, contentHtml, folder: feed.folder, distill: false, embedModel: ctx.embedModel || "", language: ctx.language || "" },
   });
 }
 async function pollFeed(feed, ctx = {}) {
@@ -827,15 +949,17 @@ async function feedsBackfillEstimateHandler(req, res) {
     if (!method) { const p = await probeBackfill(f); method = p.method; patchBackfill(f.id, { method, total: p.total || 0 }); if (p.sitemap) patchFeed(f.id, { sitemapUrl: p.sitemap }); }
     // Guard AFTER the probe: now feedNeedsTrafilatura knows the channel (wpjson → no trafilatura).
     if (!(await trafilaturaAvailable()) && (await feedNeedsTrafilatura(f))) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
-    let total = 0, known = false;
+    let total = 0, known = false, approx = false;
     if (method === "wpjson") {
       const origin = new URL(f.siteUrl || f.feedUrl).origin;
       try { const r = await politeFetch(origin + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 12000, retries: 1 }); total = Number(r.headers.get("x-wp-total")) || 0; known = total > 0; } catch {}
-      if (known) patchBackfill(f.id, { total });
+    } else {
+      // pagedfeed/sitemap can't be counted by walking the feed (as costly as the backfill), but the
+      // site's sitemap lists every post URL compactly → count those. Gives ~N even for pagedfeed.
+      try { const c = await countSitemapPosts(f); total = c.total; approx = c.approx; known = total > 0; } catch {}
     }
-    // sitemap/pagedfeed: walking them just to count is as costly as the backfill itself →
-    // leave known:false; the UI confirms without a number.
-    sendJson(res, 200, { ok: true, method: method || "", total, known });
+    if (known) patchBackfill(f.id, { total });
+    sendJson(res, 200, { ok: true, method: method || "", total, known, approx });
   } catch (e) { sendJson(res, 200, { ok: false, error: e.message }); }
 }
 // POST /api/feeds/refresh → reconcile the whole news library with the ACTUAL directory:
@@ -883,5 +1007,5 @@ module.exports = {
   feedsListHandler, feedsAddHandler, feedsEditHandler, feedsDeleteHandler, feedsPollNowHandler, feedsBackfillHandler, feedsBackfillEstimateHandler, feedsRefreshHandler,
   // exported for testing
   parseFeed, parseSitemap, parseSitemapUrls, decodeEntities, toDate, toDateTime, sanitizeNewsFolder, slugify,
-  _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder, feedNeedsTrafilaturaCached, siteHostKey, siteHandler },
+  _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder, feedNeedsTrafilaturaCached, siteHostKey, siteHandler, uaFor, msOgImage, msTagNames, extractMicrosoftPage, resolveItem, countSitemapPosts },
 };

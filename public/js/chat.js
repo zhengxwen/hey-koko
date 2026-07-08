@@ -4,7 +4,7 @@
 // Chat rendering, message handling, and sending
 import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState } from './state.js';
 import { TAG_COLORS } from './constants.js';
-import { escapeHtml, formatTimestamp, formatDuration, mediaFilename } from './utils.js';
+import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
 import { renderRelationGraph } from './relation-graph.js';
 import { setAvatarState, showExpression, detectExpression, isCloudModel } from './avatar.js';
@@ -2852,7 +2852,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
   if (_libMsg && _libMsg.isLibraryBlock && _libMsg.librarySection) {
     const secTag = document.createElement("div");
     secTag.className = "librarySectionTag";
-    secTag.textContent = _libMsg.librarySection;
+    secTag.textContent = stripHeadingEmphasis(_libMsg.librarySection);   // strip literal ** from `## **X**` section labels
     // A video's transcript section is ASR+LLM-reformatted speech, not verbatim → ✏️
     // badge, hover/click for the explanation (shared helper — same as the library panel).
     const _libMeta = (_libTab && _libTab.libraryMeta) || {};

@@ -40,6 +40,19 @@ export function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+// Strip markdown emphasis (**bold**, *italic*, __x__) from a plain-text LABEL such as a section
+// heading. A `## **X**` heading (source HTML wrapped the <h2> text in <strong>) keeps literal **
+// markers in its section field; those render verbatim where the label is shown as plain text.
+// New imports are cleaned server-side (splitIntoBlocks); this also cleans already-imported docs.
+export function stripHeadingEmphasis(s) {
+  return String(s == null ? "" : s)
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/\*([^*\n]+?)\*/g, "$1")
+    .replace(/^[\s*_]+|[\s*_]+$/g, "")
+    .trim();
+}
+
 export function formatTimestamp(ts) {
   if (!ts) return "";
   const d = new Date(ts);

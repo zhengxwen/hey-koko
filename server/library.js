@@ -528,6 +528,17 @@ const TABLE_CAPTION_RE = /^[*_]{0,2}(?:table|表)[\s*_]*\.?\s*\d/i;
 // AND its title. So for slides, any non-empty page survives the noise filter; every other
 // doc kind keeps the default behavior (stray page numbers / tags below MIN_BLOCK_CHARS
 // are still dropped).
+// A section heading is a plain-text LABEL; markdown emphasis inside it (`## **X**`, `## *X*`, `## __X__`
+// — produced when the source HTML wraps the <h2> text in <strong>/<em>) would render as literal ** / *
+// in the section title (the block.section field). Strip the emphasis markers, keeping the text.
+function stripHeadingEmphasis(s) {
+  return String(s == null ? "" : s)
+    .replace(/\*\*(.+?)\*\*/g, "$1")     // **bold**
+    .replace(/__(.+?)__/g, "$1")          // __bold__
+    .replace(/\*([^*\n]+?)\*/g, "$1")     // *italic*
+    .replace(/^[\s*_]+|[\s*_]+$/g, "")    // stray/unbalanced leading|trailing markers
+    .trim();
+}
 function splitIntoBlocks(text, images, { keepShort = false } = {}) {
   const imgByName = new Map((images || []).map(im => [im.name, im]));
   const lines = (text || "").split(/\r?\n/);
@@ -619,7 +630,7 @@ function splitIntoBlocks(text, images, { keepShort = false } = {}) {
 
     const h = line.match(/^(#{1,6})\s+(.*)/);
     if (h) {
-      const name = h[2].trim();
+      const name = stripHeadingEmphasis(h[2]);   // `## **X**` (from <h2><strong>) → section "X", not "**X**"
       if (name === section) continue;        // duplicate heading (MinerU repeats it across columns/pages) → stay in one block
       pendingFig = null;
       emit(); section = name; continue;      // real section boundary → flush text + its figures
