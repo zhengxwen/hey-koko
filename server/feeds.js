@@ -200,6 +200,25 @@ function parseSitemapUrls(xml) {
 
 // ---- feed discovery + backfill-channel probe --------------------------------
 function absolutize(href, base) { try { return new URL(href, base).href; } catch { return href; } }
+// The site's wp-json/sitemap ROOT — NOT necessarily `new URL(...).origin`: a subdirectory WP
+// install (e.g. wordpress.org's own /news/ subsite) serves wp-json AND its sitemap under that
+// PATH, not at the bare domain root (verified: wordpress.org/wp-json and wordpress.org/news/wp-json
+// are two different, unrelated sites; same for /sitemap.xml). `.origin` silently drops the path and
+// hits the wrong endpoint (often a valid-but-empty response, so the bug doesn't even throw).
+// Prefer feed.siteUrl (carries the path); fall back to deriving the root from feedUrl by stripping
+// its known feed-discovery suffix (/feed/, /rss, …).
+function siteRootFromFeedUrl(feedUrl) {
+  try {
+    const u = new URL(feedUrl);
+    const p = u.pathname.replace(/\/(feed|rss|rss\.xml|atom\.xml|index\.xml|feed\.xml)\/?$/i, "");
+    return u.origin + (p === "/" || !p ? "" : p);
+  } catch { return ""; }
+}
+function siteRoot(feed) {
+  const site = String((feed && feed.siteUrl) || "").trim();
+  if (site) { try { return new URL(site).href.replace(/\/+$/, ""); } catch {} }
+  return siteRootFromFeedUrl((feed && feed.feedUrl) || "");
+}
 async function discoverFeedUrl(siteUrl) {
   try {
     const r = await politeFetch(siteUrl, { timeoutMs: 15000 });
@@ -228,20 +247,23 @@ async function findSitemap(origin) {
   return "";
 }
 async function probeBackfill(feed) {
-  const origin = new URL(feed.siteUrl || feed.feedUrl).origin;
+  const base = siteRoot(feed);
   try {
-    const r = await politeFetch(origin + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 12000, retries: 1 });
+    const r = await politeFetch(base + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 12000, retries: 1 });
     if (r.ok && /json/i.test(r.headers.get("content-type") || "")) {
       const j = await r.json();
-      if (Array.isArray(j)) return { method: "wpjson", total: Number(r.headers.get("x-wp-total")) || 0 };
+      // total>0 required — a valid-but-EMPTY array (e.g. a subdirectory site whose domain ROOT
+      // also happens to answer wp-json but for an unrelated/empty post list) is not this feed's
+      // WordPress API; fall through to pagedfeed/sitemap instead of "detecting" a 0-post wpjson feed.
+      if (Array.isArray(j) && j.length) return { method: "wpjson", total: Number(r.headers.get("x-wp-total")) || 0 };
     }
   } catch {}
   try {
-    const base = feed.feedUrl; const u = base + (base.includes("?") ? "&" : "?") + "paged=2";
+    const feedU = feed.feedUrl; const u = feedU + (feedU.includes("?") ? "&" : "?") + "paged=2";
     const r = await politeFetch(u, { timeoutMs: 12000, retries: 1 });
     if (r.ok) { const { items } = parseFeed(await r.text()); if (items.length) return { method: "pagedfeed", total: 0 }; }
   } catch {}
-  const sm = await findSitemap(origin);
+  const sm = await findSitemap(base);
   if (sm) return { method: "sitemap", total: 0, sitemap: sm };
   return { method: "", total: 0 };
 }
@@ -271,7 +293,7 @@ async function addFeedInternal({ siteUrl, feedUrl, name, folder } = {}) {
   if (siteUrl && !/^https?:\/\//i.test(siteUrl)) siteUrl = "https://" + siteUrl;
   if (feedUrl && !/^https?:\/\//i.test(feedUrl)) feedUrl = "https://" + feedUrl;
   if (!feedUrl) { feedUrl = await discoverFeedUrl(siteUrl); if (!feedUrl) throw new Error("未能自动发现订阅源，请手动填写 feed URL"); }
-  if (!siteUrl) siteUrl = new URL(feedUrl).origin;
+  if (!siteUrl) siteUrl = siteRootFromFeedUrl(feedUrl) || new URL(feedUrl).origin;
   let feedTitle = "";
   try { const r = await politeFetch(feedUrl, { timeoutMs: 15000, retries: 1 }); if (r.ok) feedTitle = parseFeed(await r.text()).title; } catch {}
   const label = String(name || "").trim() || feedTitle || new URL(siteUrl).hostname;
@@ -375,13 +397,16 @@ async function fetchWpTaxonomy(url, signal) {
 
 // Fetch the FULL wp-json post for a URL (by slug), with everything the WordPress handler needs.
 // Returns the post object, or null for non-WordPress sites / not-found / error. This lets the POLL
-// path use the same rich, trafilatura-FREE WordPress handler that backfill uses.
-async function fetchWpPost(url, signal) {
+// path use the same rich, trafilatura-FREE WordPress handler that backfill uses. `apiBase` (the
+// feed's siteRoot — threaded from enqueueFeedItem/jobs.js) overrides the guessed `u.origin` for a
+// subdirectory install (e.g. wordpress.org's /news/ subsite), whose wp-json does NOT live at the
+// bare domain root; falls back to the article's own origin when no feed context is available.
+async function fetchWpPost(url, signal, apiBase) {
   try {
     const u = new URL(url);
     const slug = u.pathname.replace(/\/+$/, "").split("/").filter(Boolean).pop();
     if (!slug) return null;
-    const api = `${u.origin}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&_embed=author,wp:term,wp:featuredmedia&_fields=link,title,excerpt,date_gmt,content,_links,_embedded,yoast_head_json.og_description`;
+    const api = `${apiBase || u.origin}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&_embed=author,wp:term,wp:featuredmedia&_fields=link,title,excerpt,date_gmt,content,_links,_embedded,yoast_head_json.og_description`;
     const r = await politeFetch(api, { timeoutMs: 15000, signal });
     if (!r.ok || !/json/i.test(r.headers.get("content-type") || "")) return null;
     const arr = await r.json();
@@ -419,6 +444,18 @@ async function fetchPageHtml(url, signal) {
 // override the rate-limiter's hostOf.
 function siteHostKey(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } }
 
+// Filename-based image identity: strips query string, any CDN resize proxy host (e.g. Jetpack's
+// i0/i1/i2.wp.com, which mirrors the ORIGINAL path after its own host — "i0.wp.com/example.com/x.png"
+// is the same file as "example.com/x.png"), and a WordPress thumbnail-size suffix ("-300x169" before
+// the extension) so the SAME photo served at different sizes/proxies still compares equal. Byte-hash
+// dedup misses this because a resized/re-encoded copy has different bytes than the original.
+function imgFileKey(u) {
+  try {
+    const seg = new URL(u).pathname.split("/").filter(Boolean).pop() || "";
+    return seg.replace(/-\d+x\d+(?=\.\w+$)/, "").toLowerCase();
+  } catch { return ""; }
+}
+
 // WordPress (wp-json) article handler — tuned & verified on NVIDIA blogs.
 //   • body: content.rendered via the LAYOUT-PRESERVING built-in (images stay in position + their
 //     <figcaption>; trafilatura drops both from a bare fragment);
@@ -435,7 +472,13 @@ async function extractWordPressPost(post, url, ctx) {
   // page-builder/client-rendered and lives only in the page HTML) → bail so the caller falls to the
   // full-page path instead of importing just the hero + dek. (~7% of recent NVIDIA posts hit this.)
   if (frag.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().length < 200) return null;
-  const heroHtml = /^https?:\/\//i.test(heroUrl) ? `<figure><img src="${heroUrl.replace(/"/g, "%22")}"/></figure>` : "";
+  // Many WP editors manually re-insert the featured image as the post body's own first block
+  // (common Gutenberg habit) — importing the hero AGAIN would duplicate that same photo. Skip the
+  // hero when the body already contains it (by filename, since a resized/proxied copy has different
+  // bytes than the original so content-hash dedup alone won't catch it).
+  const heroKey = imgFileKey(heroUrl);
+  const bodyHasHero = heroKey && [...frag.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)].some((m) => imgFileKey(m[1]) === heroKey);
+  const heroHtml = (!bodyHasHero && /^https?:\/\//i.test(heroUrl)) ? `<figure><img src="${heroUrl.replace(/"/g, "%22")}"/></figure>` : "";
   const { text: body, images } = await extractArticleWithImages(heroHtml + frag, url, NEWS_IMAGE_CAP, ctx.signal);
   if (!body || !body.trim()) return null;
   const dek = String((post.yoast_head_json && post.yoast_head_json.og_description) || "").replace(/\s+/g, " ").trim();
@@ -523,6 +566,11 @@ const SITE_HANDLERS = {
   // Akamai-fronted (bot UA → 403). Can't use the wp-json handler; instead a browser-UA full-page
   // fetch (browserUA) + trafilatura extractor (needsTrafilatura), hero from og:image.
   "blogs.microsoft.com": { name: "microsoft", extractPage: extractMicrosoftPage, browserUA: true, needsTrafilatura: true },
+  // WordPress.org News — plain wp-json (like NVIDIA), individually verified: real posts checked,
+  // and the hero/body-image duplicate bug (see extractWordPressPost's imgFileKey dedup) was found
+  // and fixed through THIS site. Pinned for the same reason NVIDIA is (provenance/✅ badge), even
+  // though it rides the identical shared handler with no site-specific override.
+  "wordpress.org": { name: "wordpress", extractPost: extractWordPressPost },
 };
 function siteHandler(host) {
   const h = String(host || "").replace(/^www\./, "");
@@ -560,7 +608,7 @@ async function extractArticleForUrl(url, ctx = {}) {
   const custom = siteHandler(siteHostKey(url));
   // 1) host-pinned handler — wp-json (extractPost) or full-HTML (extractPage).
   if (custom && custom.extractPost) {
-    const post = await fetchWpPost(url, ctx.signal);
+    const post = await fetchWpPost(url, ctx.signal, ctx.apiBase);
     if (post) { const e = await custom.extractPost(post, url, ctx); if (e && e.text && e.text.trim()) return { ...e, usedTrafilatura: false }; }
   }
   if (custom && custom.extractPage) {
@@ -572,7 +620,7 @@ async function extractArticleForUrl(url, ctx = {}) {
     if (e && e.text && e.text.trim()) return { ...e, usedTrafilatura: !!custom.needsTrafilatura };
   }
   // 2) generic WordPress via wp-json → the built-in layout-preserving handler (no trafilatura).
-  const post = await fetchWpPost(url, ctx.signal);
+  const post = await fetchWpPost(url, ctx.signal, ctx.apiBase);
   if (post) { const e = await extractWordPressPost(post, url, ctx); if (e && e.text && e.text.trim()) return { ...e, usedTrafilatura: false }; }
   // 3) site-agnostic trafilatura full page — also the fallback when the WordPress handler returned
   // null because content.rendered was empty (page-builder/client-rendered body).
@@ -592,8 +640,7 @@ async function feedNeedsTrafilatura(feed, signal) {
   if (feed.backfill && feed.backfill.method === "wpjson") return false;      // known WordPress
   if (feed.backfill && (feed.backfill.method === "pagedfeed" || feed.backfill.method === "sitemap")) return true;
   try {                                                                      // unprobed → cheap wp-json check
-    const origin = new URL(feed.siteUrl || feed.feedUrl).origin;
-    const r = await politeFetch(origin + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 10000, signal, retries: 0 });
+    const r = await politeFetch(siteRoot(feed) + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 10000, signal, retries: 0 });
     if (r.ok && /json/i.test(r.headers.get("content-type") || "")) return false;   // WordPress
   } catch { /* fall through */ }
   return true;
@@ -609,7 +656,7 @@ function feedNeedsTrafilaturaCached(feed) {
 
 // ---- backfill engine (one job per feed; imports directly, no sub-jobs) ------
 async function backfillWpjson(feed, ctx) {
-  const base = new URL(feed.siteUrl || feed.feedUrl).origin + "/wp-json/wp/v2/posts";
+  const base = siteRoot(feed) + "/wp-json/wp/v2/posts";
   let page = Math.max(1, feed.backfill.cursor || 1), total = feed.backfill.total || 0, totalPages = feed.backfill.totalPages || 0;
   let imported = 0, skipped = 0;
   while (true) {
@@ -728,8 +775,7 @@ async function backfillPagedFeed(feed, ctx) {
   return { imported, skipped };
 }
 async function collectSitemapUrls(feed, ctx) {
-  const origin = new URL(feed.siteUrl || feed.feedUrl).origin;
-  const root = feed.sitemapUrl || await findSitemap(origin);
+  const root = feed.sitemapUrl || await findSitemap(siteRoot(feed));
   if (!root) return [];
   const seen = new Set(), urls = [], queue = [root]; let fetches = 0;
   while (queue.length && fetches < 60) {
@@ -751,8 +797,7 @@ async function collectSitemapUrls(feed, ctx) {
 // confirm dialog can still show ~N (wp-json already has an exact X-WP-Total). A pagedfeed that is
 // truncated may import fewer than this, so it reads as an upper-bound "约 N".
 async function countSitemapPosts(feed, signal) {
-  const origin = new URL(feed.siteUrl || feed.feedUrl).origin;
-  const root = feed.sitemapUrl || await findSitemap(origin);
+  const root = feed.sitemapUrl || await findSitemap(siteRoot(feed));
   if (!root) return { total: 0, approx: false };
   const notPost = (u) => /\/(category|tag|author|page|feed)\//i.test(u);
   // Sitemaps are static XML (not the bot-protected article pages) → a short gap keeps the estimate snappy.
@@ -845,7 +890,9 @@ function enqueueFeedItem(feed, it, ctx) {
   const contentHtml = (ph && ph.extractPage && it.contentHtml) ? String(it.contentHtml).slice(0, 300000) : undefined;
   return loopbackPost("/api/jobs", {
     kind: "libimport", label: "feeditem", conversationId: "__feeds__",
-    payload: { type: "feeditem", url: it.url, docId: newsDocId(feed, it.publishedAt, it.publishedTime), title: it.title, publishedAt: it.publishedAt, excerpt: it.excerpt, contentHtml, folder: feed.folder, distill: false, embedModel: ctx.embedModel || "", language: ctx.language || "" },
+    // apiBase = this feed's siteRoot, so the poll-path wp-json lookup (fetchWpPost) hits the right
+    // subdirectory install instead of guessing the article URL's bare domain origin (see siteRoot()).
+    payload: { type: "feeditem", url: it.url, docId: newsDocId(feed, it.publishedAt, it.publishedTime), title: it.title, publishedAt: it.publishedAt, excerpt: it.excerpt, contentHtml, folder: feed.folder, distill: false, embedModel: ctx.embedModel || "", language: ctx.language || "", apiBase: siteRoot(feed) },
   });
 }
 async function pollFeed(feed, ctx = {}) {
@@ -998,8 +1045,7 @@ async function feedsBackfillEstimateHandler(req, res) {
     if (!(await trafilaturaAvailable()) && (await feedNeedsTrafilatura(f))) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
     let total = 0, known = false, approx = false;
     if (method === "wpjson") {
-      const origin = new URL(f.siteUrl || f.feedUrl).origin;
-      try { const r = await politeFetch(origin + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 12000, retries: 1 }); total = Number(r.headers.get("x-wp-total")) || 0; known = total > 0; } catch {}
+      try { const r = await politeFetch(siteRoot(f) + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 12000, retries: 1 }); total = Number(r.headers.get("x-wp-total")) || 0; known = total > 0; } catch {}
     } else {
       // pagedfeed/sitemap can't be counted by walking the feed (as costly as the backfill), but the
       // site's sitemap lists every post URL compactly → count those. Gives ~N even for pagedfeed.
@@ -1054,5 +1100,5 @@ module.exports = {
   feedsListHandler, feedsAddHandler, feedsEditHandler, feedsDeleteHandler, feedsPollNowHandler, feedsBackfillHandler, feedsBackfillEstimateHandler, feedsRefreshHandler,
   // exported for testing
   parseFeed, parseSitemap, parseSitemapUrls, decodeEntities, toDate, toDateTime, sanitizeNewsFolder, slugify,
-  _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder, feedNeedsTrafilaturaCached, siteHostKey, siteHandler, uaFor, msOgImage, msTagNames, extractMicrosoftPage, resolveItem, countSitemapPosts, extractWordPressPost },
+  _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder, feedNeedsTrafilaturaCached, siteHostKey, siteHandler, uaFor, msOgImage, msTagNames, extractMicrosoftPage, resolveItem, countSitemapPosts, extractWordPressPost, siteRoot, siteRootFromFeedUrl, fetchWpPost },
 };

@@ -369,7 +369,7 @@ async function runLibImportJob(job, signal) {
     // handler here just like backfill (wp-json → images in position + captions + og:description
     // dek + author/tags); only a non-WordPress site falls to trafilatura. Returns null when the
     // article can't be extracted (empty). See feeds.extractArticleForUrl.
-    const ex = await feeds.extractArticleForUrl(p.url, { signal, images: p.images, language: p.language, contentHtml: p.contentHtml });
+    const ex = await feeds.extractArticleForUrl(p.url, { signal, images: p.images, language: p.language, contentHtml: p.contentHtml, apiBase: p.apiBase });
     if (!ex || !ex.text || !String(ex.text).trim()) throw new Error("empty document");
     stage("importing");
     const card = library.blankCard(p.language);   // news «蒸馏卡» starts BLANK (no excerpt dump)
