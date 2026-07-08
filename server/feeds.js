@@ -560,7 +560,8 @@ async function backfillWpjson(feed, ctx) {
       } catch (e) {
         if (e && e.name === "AbortError") throw e;                 // user interrupt → stop
         if (e && e.name === "TrafilaturaUnavailable") throw e;     // sidecar gone → stop, don't burn the rest
-        skipped++;                                                 // transient error → leave un-seen so it retries
+        if (e && e.name === "ImageBackendMissing") throw e;        // no image compressor → stop the whole run
+        skipped++;                                                 // transient error (incl. per-image compress fail) → leave un-seen, retry
       }
       if (handled) markSeen(feed.id, [url]);
       if (ctx.onProgress) ctx.onProgress(pos, total || undefined);
@@ -586,7 +587,7 @@ async function backfillPagedFeed(feed, ctx) {
       fresh++;
       let handled = false;
       try { const { text, images, meta } = await resolveItem(it, ctx); if (text) { await importItem(feed, { ...it, text, images, meta }, ctx); imported++; } else skipped++; handled = true; }
-      catch (e) { if (e && (e.name === "AbortError" || e.name === "TrafilaturaUnavailable")) throw e; skipped++; }   // transient error → leave un-seen for retry
+      catch (e) { if (e && (e.name === "AbortError" || e.name === "TrafilaturaUnavailable" || e.name === "ImageBackendMissing")) throw e; skipped++; }   // transient error → leave un-seen for retry
       if (handled) markSeen(feed.id, [it.url]);
       if (ctx.onProgress) ctx.onProgress(imported + skipped, undefined);
     }
@@ -635,7 +636,7 @@ async function backfillSitemap(feed, ctx) {
       const dt = toDateTime(pm ? (pm[1] || pm[2]) : "");
       await importItem(feed, { url, title, text: text.trim(), images, meta, publishedAt: dt.date, publishedTime: dt.time }, ctx);
       imported++; handled = true;
-    } catch (e) { if (e && (e.name === "AbortError" || e.name === "TrafilaturaUnavailable")) throw e; skipped++; }   // transient error → leave un-seen for retry
+    } catch (e) { if (e && (e.name === "AbortError" || e.name === "TrafilaturaUnavailable" || e.name === "ImageBackendMissing")) throw e; skipped++; }   // transient error → leave un-seen for retry
     if (handled) markSeen(feed.id, [url]);
     if (ctx.onProgress) ctx.onProgress(i + 1, urls.length);
   }

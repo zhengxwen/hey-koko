@@ -380,14 +380,22 @@ async function reencodeToJpeg(buf, mime, { quality = 75, maxDim = 0 } = {}) {
 }
 // User rules (news-feeds.md): (1) PNG → always convert to JPEG; (2) too-large images → compress
 // (and downscale the huge ones). Animated GIFs are left alone (compressing flattens them).
-// Returns { buf, ct } — the (possibly) re-encoded bytes + its mime. No backend → original.
+// Returns { buf, ct } — the (possibly) re-encoded bytes + its mime. Per the user's rule, an image
+// that NEEDS shrinking but can't be re-encoded is a HARD error (the caller fails the whole blog
+// import rather than silently keeping the oversized original):
+//   • no backend at all → ImageBackendMissing (systemic — the caller aborts the run);
+//   • backend present but the tool failed on this image → ImageOptimizeError (this blog only).
+// A re-encode that simply doesn't shrink an already-efficient non-PNG is NOT an error (kept as-is).
 async function optimizeImage(buf, mime) {
   const isPng = /png/i.test(mime), isGif = /gif/i.test(mime);
   const huge = buf.length > 1500 * 1024, big = buf.length > 500 * 1024;
-  if (!isPng && (isGif || !big)) return { buf, ct: mime };   // keep: reasonable non-PNG, or any GIF
+  if (!isPng && (isGif || !big)) return { buf, ct: mime };   // no shrink needed: reasonable non-PNG, or any GIF
+  const be = await imageBackend();
+  if (!be) { const e = new Error("图片压缩后端缺失（请安装 ffmpeg 或 ImageMagick，或设 HEYKOKO_IMAGE_TOOL）"); e.name = "ImageBackendMissing"; throw e; }
   const opt = await reencodeToJpeg(buf, mime, { quality: huge ? 62 : big ? 72 : 82, maxDim: huge ? 1600 : 0 });
-  if (opt && (isPng || opt.length < buf.length)) return { buf: opt, ct: "image/jpeg" };   // PNG always converts; else only if smaller
-  return { buf, ct: mime };
+  if (!opt) { const e = new Error(`图片压缩失败（${be.tool}）：${Math.round(buf.length / 1024)}KB ${mime}`); e.name = "ImageOptimizeError"; throw e; }
+  if (isPng || opt.length < buf.length) return { buf: opt, ct: "image/jpeg" };   // PNG always converts; else only if smaller
+  return { buf, ct: mime };   // re-encode ran but didn't shrink an already-efficient non-PNG — fine
 }
 
 async function downloadImagesNamed(urls, referer, max, signal) {
@@ -408,9 +416,13 @@ async function downloadImagesNamed(urls, referer, max, signal) {
       if (!ct.startsWith("image/") || ct === "image/svg+xml") continue;
       let buf = Buffer.from(await res.arrayBuffer());
       if (buf.length < 3000 || buf.length > 5 * 1024 * 1024) continue;   // skip trackers / oversized
-      ({ buf, ct } = await optimizeImage(buf, ct));   // PNG→JPEG + compress large
+      ({ buf, ct } = await optimizeImage(buf, ct));   // PNG→JPEG + compress large (throws on failure)
       out.push({ url: u, name: `image_${++n}.${IMG_EXT[ct] || "jpg"}`, base64: buf.toString("base64"), mime: ct });
-    } catch { /* skip unreachable images */ }
+    } catch (e) {
+      // A compression failure is FATAL to the import (user rule) — propagate it. An interrupt
+      // propagates too. Everything else (unreachable image, bad response) just skips that image.
+      if (e && (e.name === "ImageOptimizeError" || e.name === "ImageBackendMissing" || e.name === "AbortError")) throw e;
+    }
   }
   return out;
 }
