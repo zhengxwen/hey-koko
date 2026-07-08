@@ -395,13 +395,17 @@ async function extractWordPressPost(post, url, ctx) {
   };
 }
 
-// Bespoke per-company handlers, keyed by host (exact or registrable domain). EMPTY by default —
-// every WordPress site currently rides the shared WP handler above. To pin/override a company:
-//   "blog.acme.com": { extractPost(post,url,ctx){…} }   // wp-json sites (gets the raw post object)
-//   "blog.acme.com": { extractPage(html,url,ctx){…} }   // full-HTML sites (gets fetched page HTML)
-// A pinned handler wins over the WP/trafilatura defaults for that host.
+// Bespoke per-company handlers, keyed by host (exact or registrable domain). To pin/override a
+// company: add `{ extractPost(post,url,ctx){…} }` (wp-json sites → gets the raw post) or
+// `{ extractPage(html,url,ctx){…} }` (full-HTML sites → gets the fetched page). A pinned handler
+// wins over the wp-json/trafilatura defaults for that host.
 const SITE_HANDLERS = {
-  // "blogs.nvidia.com": { extractPost: extractWordPressPost },  // (implicit — NVIDIA is WordPress)
+  // NVIDIA blogs — the WordPress handler was built and verified HERE, so NVIDIA is pinned
+  // explicitly (its tuning is a named, first-class handler in code, not an implicit default).
+  // Other WordPress sites ride the SAME handler as a best-effort default via the wp-json channel
+  // (see backfillWpjson's fallback); add them here once individually verified. (To make the rich
+  // handler NVIDIA-ONLY, change that fallback from `extractWordPressPost` to the trafilatura path.)
+  "blogs.nvidia.com": { name: "nvidia", extractPost: extractWordPressPost },
 };
 function siteHandler(host) {
   const h = String(host || "").replace(/^www\./, "");
@@ -655,7 +659,12 @@ async function feedsListHandler(_req, res) {
   try {
     const cfg = loadFeeds(); const counts = folderCountMap();
     const extractorAvailable = await trafilaturaAvailable();   // UI shows a banner + disables poll/backfill when false
-    sendJson(res, 200, { ok: true, pollIntervalH: cfg.pollIntervalH, extractorAvailable, feeds: cfg.feeds.map((f) => ({ ...f, _urls: undefined, articles: sumFolder(counts, f.folder) })) });
+    // dedicated = this feed's host has a bespoke SITE_HANDLERS entry (e.g. NVIDIA) → the UI marks it
+    // with a ✅. Sites on the shared WordPress handler or the generic trafilatura path are not "dedicated".
+    sendJson(res, 200, { ok: true, pollIntervalH: cfg.pollIntervalH, extractorAvailable, feeds: cfg.feeds.map((f) => {
+      const h = siteHandler(hostOf(f.siteUrl || f.feedUrl));
+      return { ...f, _urls: undefined, articles: sumFolder(counts, f.folder), dedicated: !!h, handlerName: h ? (h.name || "custom") : "" };
+    }) });
   } catch (e) { sendJson(res, 500, { ok: false, error: e.message }); }
 }
 // Shared "sidecar missing" error text (returned by poll-now / backfill when trafilatura is

@@ -801,6 +801,7 @@ export function initLibrary() {
       estUnknown: (name, m) => `无法预估「${name}」的篇数（通道：${m}）。仍要回填全部历史吗？`,
       bfRunning: "回填中", bfQueued: "排队中…",
       extractorMissing: "⚠️ 新闻正文抽取依赖 trafilatura，当前未检测到，轮询/回填暂不可用。请在 hey-koko 的 Python 环境执行 pip install trafilatura（或设 TRAFILATURA_PYTHON），然后重启服务。",
+      dedicatedTip: (n) => `专属处理器${n ? "（" + n + "）" : ""} —— 为该站点定制的抽取规则（图片位置、图注、主图、作者/标签更准）`,
       mNone: "无回填通道", mWpjson: "wp-json", mPagedfeed: "分页 feed", mSitemap: "sitemap",
       bfNo: "未回填", bfDone: "已完成", bfProg: "进行中", interval: "轮询间隔", hours: "小时", save: "保存" },
     "zh-Hant": { title: "新聞訂閱源", close: "關閉", loading: "正在載入…", empty: "還沒有訂閱源。貼上一個部落格/網站網址即可新增。",
@@ -816,6 +817,7 @@ export function initLibrary() {
       estUnknown: (name, m) => `無法預估「${name}」的篇數（通道：${m}）。仍要回填全部歷史嗎？`,
       bfRunning: "回填中", bfQueued: "排隊中…",
       extractorMissing: "⚠️ 新聞正文擷取依賴 trafilatura，目前未偵測到，輪詢/回填暫不可用。請在 hey-koko 的 Python 環境執行 pip install trafilatura（或設 TRAFILATURA_PYTHON），然後重新啟動服務。",
+      dedicatedTip: (n) => `專屬處理器${n ? "（" + n + "）" : ""} —— 為該站點客製的擷取規則（圖片位置、圖注、主圖、作者/標籤更準）`,
       mNone: "無回填通道", mWpjson: "wp-json", mPagedfeed: "分頁 feed", mSitemap: "sitemap",
       bfNo: "未回填", bfDone: "已完成", bfProg: "進行中", interval: "輪詢間隔", hours: "小時", save: "儲存" },
     en: { title: "News feed subscriptions", close: "Close", loading: "Loading…", empty: "No subscriptions yet. Paste a blog/site URL to add one.",
@@ -831,6 +833,7 @@ export function initLibrary() {
       estUnknown: (name, m) => `Can't estimate the article count for “${name}” (channel: ${m}). Backfill the whole history anyway?`,
       bfRunning: "Backfilling", bfQueued: "Queued…",
       extractorMissing: "⚠️ News article extraction needs trafilatura, which wasn't detected — poll/backfill are unavailable. Run pip install trafilatura in hey-koko's Python env (or set TRAFILATURA_PYTHON), then restart the server.",
+      dedicatedTip: (n) => `Dedicated handler${n ? " (" + n + ")" : ""} — extraction tuned for this site (image positions, captions, hero, author/tags are more accurate)`,
       mNone: "no backfill channel", mWpjson: "wp-json", mPagedfeed: "paged feed", mSitemap: "sitemap",
       bfNo: "not backfilled", bfDone: "done", bfProg: "in progress", interval: "Poll every", hours: "hours", save: "Save" },
   };
@@ -915,7 +918,7 @@ export function initLibrary() {
         const err = f.lastError ? `<div class="feedMgrErr">⚠ ${escapeHtml(f.lastError)}</div>` : "";
         row.innerHTML = `
           <div class="feedMgrMain">
-            <div class="feedMgrNameLine"><span class="feedMgrFeedName">${escapeHtml(f.name)}</span></div>
+            <div class="feedMgrNameLine">${f.dedicated ? `<span class="feedMgrDedicated" title="${escapeHtml(L.dedicatedTip(f.handlerName || ""))}">✅</span> ` : ""}<span class="feedMgrFeedName">${escapeHtml(f.name)}</span></div>
             <div class="feedMgrMeta">${meta}</div>${err}
             <div class="feedMgrProg" hidden></div>
           </div>
