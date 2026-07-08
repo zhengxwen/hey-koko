@@ -382,7 +382,7 @@ async function runLibImportJob(job, signal) {
     // figure blocks. No JS fallback — a missing sidecar throws TrafilaturaUnavailable here.
     const { text, images, meta } = await require("./url-fetch").extractArticle(html, p.url, p.images === false ? 0 : 8, signal);
     if (!text || !String(text).trim()) throw new Error("empty document");
-    const card = library.excerptCard(p.excerpt, p.language);
+    const card = library.blankCard(p.language);   // news «蒸馏卡» starts BLANK (no excerpt dump)
     const m = meta || {};
     // Polled single articles: WordPress tags rarely appear in the page's HTML meta (trafilatura
     // gets categories but not tags), so look the post up in wp-json for its authoritative

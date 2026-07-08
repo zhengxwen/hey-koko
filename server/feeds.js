@@ -297,7 +297,7 @@ function metaFields(meta) {
 }
 // ---- import one item (shared by backfill; poll goes via the feeditem job) ----
 function importItem(feed, { url, title, publishedAt, publishedTime, excerpt, text, images, meta }, ctx) {
-  const card = library.excerptCard(excerpt, ctx.language);
+  const card = library.blankCard(ctx.language);   // news «蒸馏卡» starts BLANK (no excerpt dump); 补卡 fills it later
   // Feed-provided date wins for the docId; fall back to trafilatura's parsed date so an
   // undated feed still yields "<company>_<YYYY-MM-DD>" instead of a bare "<company>".
   const pub = publishedAt || String((meta && meta.date) || "").slice(0, 10);
@@ -357,10 +357,11 @@ async function backfillWpjson(feed, ctx) {
   let imported = 0, skipped = 0;
   while (true) {
     if (ctx.signal && ctx.signal.aborted) throw abortErr();
-    // _embed pulls the author display-name + category/tag term names into _embedded so we can
-    // store them (the numeric author/term IDs in the bare post are useless without a lookup).
-    // _links MUST be in _fields or WordPress can't resolve the embeds (they come back empty).
-    const u = `${base}?per_page=100&page=${page}&_embed=author,wp:term&_fields=link,title,excerpt,date_gmt,content,_links,_embedded`;
+    // _embed pulls the author name + category/tag terms + FEATURED IMAGE into _embedded. The
+    // featured image (the article's main/hero image) is NOT in content.rendered and its /media
+    // endpoint is often auth-gated (401) — but _embed=wp:featuredmedia returns its source_url
+    // inline. _links MUST be in _fields or WordPress can't resolve the embeds (they come back empty).
+    const u = `${base}?per_page=100&page=${page}&_embed=author,wp:term,wp:featuredmedia&_fields=link,title,excerpt,date_gmt,content,_links,_embedded`;
     const r = await politeFetch(u, { timeoutMs: 40000, signal: ctx.signal });
     if (r.status === 400) break;   // WordPress 400s past the last page
     if (!r.ok) throw new Error(`wp-json HTTP ${r.status}`);
@@ -386,7 +387,20 @@ async function backfillWpjson(feed, ctx) {
       // trafilatura absent — could leave a cursor at 201 with nothing actually imported).
       let handled = false;
       try {
-        const { text, images, meta } = await extractArticle(stripCdata(post.content && post.content.rendered || ""), url, NEWS_IMAGE_CAP, ctx.signal);
+        // Featured image (hero) from the embed → passed as heroUrl so it's downloaded as image_1
+        // ahead of the content.rendered body images.
+        const fm = (post._embedded && post._embedded["wp:featuredmedia"]) || [];
+        const heroUrl = (fm[0] && fm[0].source_url) || "";
+        // content.rendered is PURE article body, so every <img> in it is a real content image —
+        // scrape them directly (real src or lazy data-src) since trafilatura drops <img>s wrapped
+        // in wp-caption/figure-with-lazy on a bare fragment.
+        const frag = stripCdata(post.content && post.content.rendered || "");
+        const fragImgs = [];
+        for (const tag of frag.match(/<img\b[^>]*>/gi) || []) {
+          const m = tag.match(/\b(?:data-src|data-lazy-src|src)=["']([^"']+)["']/i);
+          if (m && /^https?:\/\//i.test(m[1])) fragImgs.push(m[1]);
+        }
+        const { text, images, meta } = await extractArticle(frag, url, NEWS_IMAGE_CAP, ctx.signal, heroUrl, fragImgs);
         if (!text || !text.trim()) { skipped++; handled = true; markSeen(feed.id, [url]); if (ctx.onProgress) ctx.onProgress(pos, total || undefined); continue; }
         const dt = toDateTime(post.date_gmt ? post.date_gmt + "Z" : "");
         // wp-json _embedded carries the authoritative author + term names → prefer them over

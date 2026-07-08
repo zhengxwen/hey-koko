@@ -2372,6 +2372,15 @@ function excerptCard(excerpt, language = "") {
   return { id: "card", kind: "card", section: L.cardSection, content: `${L.summaryHead} ${summary}` };
 }
 
+// News layer: a BLANK «蒸馏卡» slot (empty content, never embedded) instead of auto-filling it
+// from the feed excerpt. The doc still reads as "has card" (📇) so a later 补卡/distill can fill
+// it in place (distillDocInternal replaces blocks[0]); the article's full body already carries
+// the content, so the excerpt would only be redundant noise in the card.
+function blankCard(language = "") {
+  const L = distillL(language);
+  return { id: "card", kind: "card", section: L.cardSection, content: "", embed: false };
+}
+
 // Generate/refresh a doc's distillation card: LLM → JSON → card block at blocks[0]
 // (id "card", kind "card") + tags (+ title/authors/year when metadata:true — false for
 // YouTube docs, whose exact metadata the LLM must not overwrite). The save path
@@ -2953,5 +2962,5 @@ module.exports = {
   expandByRelationsLibrary, relationsForQueryLibrary,   // /ask -a relation-hop expansion + relation direct-answer
   timelineLibrary,   // dedicated timeline view (time-qualified relations)
   cleanStructure, renderStructure, parseStructureSections, normalizeEntity,   // exported for testing
-  excerptCard, NEWS_DIR, inNewsDir, pruneIndexGhosts, sourcesUnderFolder,   // news-feeds.md: tier-2 news layer helpers
+  excerptCard, blankCard, NEWS_DIR, inNewsDir, pruneIndexGhosts, sourcesUnderFolder,   // news-feeds.md: tier-2 news layer helpers
 };

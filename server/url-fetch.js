@@ -508,14 +508,24 @@ function runTrafilatura(html, url, signal) {
 // image pipeline (download + PNG→JPEG + compress + rename to image_N) to weave figures.
 // Returns { text, images:[{name,base64,mime}], meta:{title,author,date,description,
 // sitename,categories[],tags[]} }. Throws TrafilaturaUnavailable when the sidecar is absent.
-async function extractArticle(html, baseUrl, maxImages = 8, signal) {
+async function extractArticle(html, baseUrl, maxImages = 8, signal, heroUrl, extraImageUrls) {
   const r = await runTrafilatura(html, baseUrl, signal);
   let md = cleanupMarkdown(r.markdown || "");
   const bodyUrls = [...md.matchAll(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g)].map((m) => m[1]);
-  const hero = /^https?:\/\//i.test(r.image || "") ? r.image : "";
-  // Hero first so it becomes image_1; body images keep their document order after it.
-  const urls = hero ? [hero, ...bodyUrls.filter((u) => u !== hero)] : bodyUrls;
-  const downloaded = maxImages > 0 ? await downloadImagesNamed(urls, baseUrl, maxImages, signal) : [];
+  // An explicit heroUrl (wp-json featured_media — the article's main image, which is NOT in the
+  // content.rendered fragment nor available as og:image there) wins over trafilatura's og:image.
+  const hero = /^https?:\/\//i.test(heroUrl || "") ? heroUrl : (/^https?:\/\//i.test(r.image || "") ? r.image : "");
+  // extraImageUrls: content images the CALLER already knows are article body (the wp-json path
+  // scrapes them from content.rendered — trafilatura drops <img>s inside wp-caption/lazy wrappers
+  // even though they're real). Safe only for pure-content input; the caller vouches for that.
+  const extras = (Array.isArray(extraImageUrls) ? extraImageUrls : []).filter((u) => /^https?:\/\//i.test(u));
+  // Download order: hero, trafilatura body images (in document order), then the caller's extras.
+  const order = [];
+  const push = (u) => { if (u && !order.includes(u)) order.push(u); };
+  if (hero) push(hero);
+  bodyUrls.forEach(push);
+  extras.forEach(push);
+  const downloaded = maxImages > 0 ? await downloadImagesNamed(order, baseUrl, maxImages, signal) : [];
   const byUrl = new Map(downloaded.map((im) => [im.url, im]));
   // Rewrite body refs to the local image_N names; drop any that failed to download (tracker
   // pixels / oversized). trafilatura already stripped boilerplate, so no ［图片］ placeholder.
@@ -525,6 +535,10 @@ async function extractArticle(html, baseUrl, maxImages = 8, signal) {
   });
   const heroIm = hero && byUrl.get(hero);
   if (heroIm && !md.includes(`(${heroIm.name})`)) md = `![](${heroIm.name})\n\n${md}`;
+  // Append any downloaded extras that trafilatura never placed in the body (so they still show).
+  const tail = [];
+  for (const u of extras) { const im = byUrl.get(u); if (im && !md.includes(`(${im.name})`)) tail.push(`![](${im.name})`); }
+  if (tail.length) md = `${md}\n\n${tail.join("\n\n")}`;
   md = md.replace(/\n{3,}/g, "\n\n").trim();
   return {
     text: md,
