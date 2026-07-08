@@ -9,7 +9,7 @@
 // the chat-side /ask command). Retrieval is server-side; generation reuses /api/chat.
 
 import { dom, state } from './state.js';
-import { escapeHtml, postJson } from './utils.js';
+import { escapeHtml, postJson, stripHeadingEmphasis } from './utils.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './markdown.js';
 import { renderRelationGraph, openEntityGraphModal } from './relation-graph.js';
 import { applyHighlights, registerHighlightHost } from './highlight.js';
@@ -2153,7 +2153,7 @@ export function initLibrary() {
       if (b.section && b.section !== lastSection) {
         const h = document.createElement("h3");
         h.className = "libDocSection";
-        h.textContent = b.section;
+        h.textContent = stripHeadingEmphasis(b.section);   // `## **X**` heading → plain "X" (also cleans already-imported docs)
         h.title = t("lib_editSectionHint");
         // a video's transcript section is AI-reformatted speech, not verbatim → ✏️ badge;
         // the distill card is AI-generated summary/key points, not original content → 📇 badge
