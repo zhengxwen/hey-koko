@@ -902,8 +902,9 @@ export function initLibrary() {
     overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
 
     // "✅ 站点" picker: every registered site handler (built-in + url-handler plugins), served by
-    // /api/feeds/list as `handlers`. Click an entry → prefill the add form with its siteUrl+title
-    // (title is slug-stable with the existing feed folders). Already-subscribed hosts are dimmed.
+    // /api/feeds/list as `handlers`. The menu DISPLAYS title + siteUrl; clicking prefills the URL
+    // field with siteUrl and the 名称 field with `name` (the slug-shaped subscription label that
+    // becomes the news/<slug> folder). Already-subscribed hosts are dimmed.
     let sitesHandlers = [], sitesSubscribed = new Set();
     const hostKey = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
     function buildSitesMenu() {
@@ -916,7 +917,7 @@ export function initLibrary() {
         it.className = "feedMgrSitesItem" + (added ? " isAdded" : "");
         it.innerHTML = `<span class="feedMgrSitesTitle">✅ ${escapeHtml(h.title)}</span>` +
           `<span class="feedMgrSitesHost">${escapeHtml(h.siteUrl)}${added ? " · " + escapeHtml(L.sitesAdded) : ""}</span>`;
-        it.addEventListener("click", () => { addUrl.value = h.siteUrl; addName.value = h.title; sitesMenu.hidden = true; addBtn.focus(); });
+        it.addEventListener("click", () => { addUrl.value = h.siteUrl; addName.value = h.name || h.title; sitesMenu.hidden = true; addBtn.focus(); });
         sitesMenu.appendChild(it);
       }
     }

@@ -563,27 +563,27 @@ async function extractMicrosoftPage(html, url, ctx) {
 // company: add `{ extractPost(post,url,ctx){…} }` (wp-json sites → gets the raw post) or
 // `{ extractPage(html,url,ctx){…} }` (full-HTML sites → gets the fetched page). A pinned handler
 // wins over the wp-json/trafilatura defaults for that host.
-// `title` + `siteUrl` feed the 📰 panel's "✅ sites" picker (click → prefill the add form):
-// siteUrl matters when it ISN'T just https://<host>/ (wordpress.org's blog lives under /news/);
-// title doubles as the subscription NAME, so keep it slug-stable with the user's existing feed
-// folders (slugify(title) → news/<slug>) — "microsoft-blog" → news/microsoft-blog etc.
+// Picker metadata (📰 panel's "✅ sites" menu): `title` + `siteUrl` are what the menu DISPLAYS;
+// `name` is what clicking fills into the 名称 field → the subscription label AND the folder slug
+// (slugify(name) → news/<slug>), so keep name slug-shaped ("microsoft-blog" → news/microsoft-blog).
+// siteUrl matters when it ISN'T just https://<host>/ (wordpress.org's blog lives under /news/).
 const SITE_HANDLERS = {
   // NVIDIA blogs — the WordPress handler was built and verified HERE, so NVIDIA is pinned
   // explicitly (its tuning is a named, first-class handler in code, not an implicit default).
   // Other WordPress sites ride the SAME handler as a best-effort default via the wp-json channel
   // (see backfillWpjson's fallback); add them here once individually verified. (To make the rich
   // handler NVIDIA-ONLY, change that fallback from `extractWordPressPost` to the trafilatura path.)
-  "blogs.nvidia.com": { name: "nvidia", title: "nvidia-blog", siteUrl: "https://blogs.nvidia.com/", extractPost: extractWordPressPost },
+  "blogs.nvidia.com": { name: "nvidia-blog", title: "NVIDIA Blog", siteUrl: "https://blogs.nvidia.com/", extractPost: extractWordPressPost },
   // Microsoft official blog — WordPress but wp-json is locked (401 rest_forbidden) and the site is
   // Akamai-fronted (bot UA → 403). Can't use the wp-json handler; instead a browser-UA full-page
   // fetch (browserUA) + trafilatura extractor (needsTrafilatura), hero from og:image.
-  "blogs.microsoft.com": { name: "microsoft", title: "microsoft-blog", siteUrl: "https://blogs.microsoft.com/", extractPage: extractMicrosoftPage, browserUA: true, needsTrafilatura: true },
+  "blogs.microsoft.com": { name: "microsoft-blog", title: "Microsoft Blog", siteUrl: "https://blogs.microsoft.com/", extractPage: extractMicrosoftPage, browserUA: true, needsTrafilatura: true },
   // WordPress.org News — plain wp-json (like NVIDIA), individually verified: real posts checked,
   // and the hero/body-image duplicate bug (see extractWordPressPost's imgFileKey dedup) was found
   // and fixed through THIS site. Pinned for the same reason NVIDIA is (provenance/✅ badge), even
   // though it rides the identical shared handler with no site-specific override. NOTE the siteUrl:
   // a subdirectory install — https://wordpress.org/ alone would probe the WRONG (root) site.
-  "wordpress.org": { name: "wordpress", title: "wordpress-news", siteUrl: "https://wordpress.org/news/", extractPost: extractWordPressPost },
+  "wordpress.org": { name: "wordpress-news", title: "WordPress News", siteUrl: "https://wordpress.org/news/", extractPost: extractWordPressPost },
 };
 function siteHandler(host) {
   const h = String(host || "").replace(/^www\./, "");
