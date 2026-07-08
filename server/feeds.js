@@ -353,6 +353,36 @@ async function fetchWpTaxonomy(url, signal) {
   } catch { return null; }
 }
 
+// Fetch the FULL wp-json post for a URL (by slug), with everything the WordPress handler needs.
+// Returns the post object, or null for non-WordPress sites / not-found / error. This lets the POLL
+// path use the same rich, trafilatura-FREE WordPress handler that backfill uses.
+async function fetchWpPost(url, signal) {
+  try {
+    const u = new URL(url);
+    const slug = u.pathname.replace(/\/+$/, "").split("/").filter(Boolean).pop();
+    if (!slug) return null;
+    const api = `${u.origin}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&_embed=author,wp:term,wp:featuredmedia&_fields=link,title,excerpt,date_gmt,content,_links,_embedded,yoast_head_json.og_description`;
+    const r = await politeFetch(api, { timeoutMs: 15000, signal });
+    if (!r.ok || !/json/i.test(r.headers.get("content-type") || "")) return null;
+    const arr = await r.json();
+    if (!Array.isArray(arr) || !arr.length) return null;
+    const norm = (s) => String(s || "").replace(/\/+$/, "");
+    return arr.find((p) => norm(p.link) === norm(url)) || arr[0];
+  } catch { return null; }
+}
+
+// Fetch an article's full HTML page (for the trafilatura fallback + any extractPage handler).
+async function fetchPageHtml(url, signal) {
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; hey-koko-feeds/1.0)" }, redirect: "follow",
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : AbortSignal.timeout(25000),
+    });
+    if (!res.ok || !/html/i.test(res.headers.get("content-type") || "")) return null;
+    return await res.text();
+  } catch { return null; }
+}
+
 // ---- Per-site article handlers -----------------------------------------------------------------
 // Rich article extraction is inherently PER-SITE: company blogs differ enough that one generic
 // extractor loses images / layout / metadata (historically almost every blog needed its own
@@ -364,7 +394,10 @@ async function fetchWpTaxonomy(url, signal) {
 // The WordPress handler was tuned & verified on **NVIDIA blogs**; it also works for WordPress
 // sites in general (Meta Engineering, etc.) — but treat that as "probably", not "guaranteed":
 // a site that extracts poorly should get its own entry here rather than bending the WP handler.
-function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } }
+// Host key for handler matching — bare hostname, www stripped (distinct from hostOf's host:port,
+// which the rate-limiter uses). Kept separate so a duplicate function declaration can't silently
+// override the rate-limiter's hostOf.
+function siteHostKey(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } }
 
 // WordPress (wp-json) article handler — tuned & verified on NVIDIA blogs.
 //   • body: content.rendered via the LAYOUT-PRESERVING built-in (images stay in position + their
@@ -412,6 +445,69 @@ function siteHandler(host) {
   return SITE_HANDLERS[h] || SITE_HANDLERS[h.split(".").slice(-2).join(".")] || null;
 }
 
+// Unified single-article extraction (used by the POLL path — jobs.js feeditem — so a WordPress
+// site uses its rich, trafilatura-FREE handler exactly like backfill does, instead of the old
+// full-page trafilatura route). Resolution: host-pinned handler → generic WordPress (wp-json) →
+// trafilatura full page. Returns { text, images, meta:{author,tags,categories}, title,
+// publishedAt, publishedTime, usedTrafilatura } or null. Throws TrafilaturaUnavailable only when
+// it actually falls to the trafilatura branch and the sidecar is missing.
+async function extractArticleForUrl(url, ctx = {}) {
+  const max = ctx.images === false ? 0 : NEWS_IMAGE_CAP;
+  const custom = siteHandler(siteHostKey(url));
+  // 1) host-pinned handler — wp-json (extractPost) or full-HTML (extractPage).
+  if (custom && custom.extractPost) {
+    const post = await fetchWpPost(url, ctx.signal);
+    if (post) { const e = await custom.extractPost(post, url, ctx); if (e && e.text && e.text.trim()) return { ...e, usedTrafilatura: false }; }
+  }
+  if (custom && custom.extractPage) {
+    const html = await fetchPageHtml(url, ctx.signal);
+    if (html) { const e = await custom.extractPage(html, url, ctx); if (e && e.text && e.text.trim()) return { ...e, usedTrafilatura: false }; }
+  }
+  // 2) generic WordPress via wp-json → the built-in layout-preserving handler (no trafilatura).
+  const post = await fetchWpPost(url, ctx.signal);
+  if (post) { const e = await extractWordPressPost(post, url, ctx); if (e && e.text && e.text.trim()) return { ...e, usedTrafilatura: false }; }
+  // 3) site-agnostic trafilatura full page (+ og:description dek + merged categories/tags).
+  const html = await fetchPageHtml(url, ctx.signal);
+  if (!html) return null;
+  const out = await extractArticle(html, url, max, ctx.signal);
+  if (!out || !out.text || !out.text.trim()) return null;
+  const m = out.meta || {};
+  const dek = String(m.description || "").replace(/\s+/g, " ").trim();
+  const body = (dek && !out.text.trimStart().startsWith(dek.slice(0, 40)) ? `*${dek}*\n\n` : "") + out.text;
+  const tags = [...new Set([...(m.categories || []), ...(m.tags || [])].map((s) => String(s).trim()).filter(Boolean))];
+  return {
+    text: body, images: out.images,
+    meta: { author: (m.author || "").trim(), tags, categories: [] },
+    title: m.title || "", publishedAt: String(m.date || "").slice(0, 10), publishedTime: "",
+    usedTrafilatura: true,
+  };
+}
+
+// Does this feed's extraction fall to the trafilatura path? NO for a host-pinned handler or a
+// WordPress site (they use the built-in). Uses the cached backfill channel when known; otherwise
+// probes wp-json once (cheap). Drives the per-feed availability guards + the UI banner, so the
+// news feature is only "blocked without trafilatura" for feeds that genuinely need it.
+async function feedNeedsTrafilatura(feed, signal) {
+  const custom = siteHandler(siteHostKey(feed.siteUrl || feed.feedUrl));
+  if (custom && (custom.extractPost || custom.extractPage)) return false;   // dedicated handler
+  if (feed.backfill && feed.backfill.method === "wpjson") return false;      // known WordPress
+  if (feed.backfill && (feed.backfill.method === "pagedfeed" || feed.backfill.method === "sitemap")) return true;
+  try {                                                                      // unprobed → cheap wp-json check
+    const origin = new URL(feed.siteUrl || feed.feedUrl).origin;
+    const r = await politeFetch(origin + "/wp-json/wp/v2/posts?per_page=1", { timeoutMs: 10000, signal, retries: 0 });
+    if (r.ok && /json/i.test(r.headers.get("content-type") || "")) return false;   // WordPress
+  } catch { /* fall through */ }
+  return true;
+}
+
+// Cheap, NETWORK-FREE variant for the list endpoint (rendered often): only the cached channel +
+// dedicated flag; an unprobed non-dedicated feed is assumed to (maybe) need trafilatura.
+function feedNeedsTrafilaturaCached(feed) {
+  const custom = siteHandler(siteHostKey(feed.siteUrl || feed.feedUrl));
+  if (custom && (custom.extractPost || custom.extractPage)) return false;
+  return !(feed.backfill && feed.backfill.method === "wpjson");
+}
+
 // ---- backfill engine (one job per feed; imports directly, no sub-jobs) ------
 async function backfillWpjson(feed, ctx) {
   const base = new URL(feed.siteUrl || feed.feedUrl).origin + "/wp-json/wp/v2/posts";
@@ -454,7 +550,7 @@ async function backfillWpjson(feed, ctx) {
         // Dispatch to the per-site handler: a host-pinned one if present, else the shared WordPress
         // handler (extractWordPressPost — tuned on NVIDIA). Both keep images in position + captions,
         // hero as image_1, og:description as the lead dek, and author/tags from _embed.
-        const custom = siteHandler(hostOf(url));
+        const custom = siteHandler(siteHostKey(url));
         const extracted = custom && custom.extractPost
           ? await custom.extractPost(post, url, ctx)
           : await extractWordPressPost(post, url, ctx);
@@ -609,13 +705,19 @@ async function pollFeed(feed, ctx = {}) {
   return { new: count };
 }
 async function pollAll(ctx = {}) {
-  // Extraction requires the trafilatura sidecar (no JS fallback). Skip the whole poll rather
-  // than enqueue feeditem jobs that would all fail — the manager UI surfaces the reason.
-  if (!(await trafilaturaAvailable())) return { polled: 0, new: 0, error: "trafilatura-unavailable" };
+  // Per-feed trafilatura gate: WordPress/dedicated feeds (e.g. NVIDIA) extract WITHOUT trafilatura,
+  // so poll them regardless. Only feeds that would fall to the trafilatura full-page path are
+  // skipped when the sidecar is missing (their feeditem jobs would otherwise all fail).
+  const avail = await trafilaturaAvailable();
   const feeds = loadFeeds().feeds.filter((f) => f.enabled);
-  let total = 0;
-  for (const f of feeds) { try { total += (await pollFeed(f, ctx)).new || 0; } catch (e) { console.warn("[feeds] poll", f.id, e.message); } }
-  return { polled: feeds.length, new: total };
+  let total = 0, skipped = 0;
+  for (const f of feeds) {
+    try {
+      if (!avail && (await feedNeedsTrafilatura(f, ctx.signal))) { skipped++; continue; }
+      total += (await pollFeed(f, ctx)).new || 0;
+    } catch (e) { console.warn("[feeds] poll", f.id, e.message); }
+  }
+  return { polled: feeds.length - skipped, new: total, skippedNoExtractor: skipped };
 }
 
 // Note left on a feed that was auto-paused because its backfill job was interrupted.
@@ -658,13 +760,16 @@ function startPolling() {
 async function feedsListHandler(_req, res) {
   try {
     const cfg = loadFeeds(); const counts = folderCountMap();
-    const extractorAvailable = await trafilaturaAvailable();   // UI shows a banner + disables poll/backfill when false
-    // dedicated = this feed's host has a bespoke SITE_HANDLERS entry (e.g. NVIDIA) → the UI marks it
-    // with a ✅. Sites on the shared WordPress handler or the generic trafilatura path are not "dedicated".
-    sendJson(res, 200, { ok: true, pollIntervalH: cfg.pollIntervalH, extractorAvailable, feeds: cfg.feeds.map((f) => {
-      const h = siteHandler(hostOf(f.siteUrl || f.feedUrl));
-      return { ...f, _urls: undefined, articles: sumFolder(counts, f.folder), dedicated: !!h, handlerName: h ? (h.name || "custom") : "" };
-    }) });
+    const extractorAvailable = await trafilaturaAvailable();
+    // Per feed: dedicated = host has a bespoke SITE_HANDLERS entry (✅ in the UI). needsTrafilatura =
+    // this feed falls to the trafilatura path (non-WordPress). The banner shows only when trafilatura
+    // is missing AND at least one enabled feed actually needs it — dedicated/WordPress feeds don't.
+    const feeds = cfg.feeds.map((f) => {
+      const h = siteHandler(siteHostKey(f.siteUrl || f.feedUrl));
+      return { ...f, _urls: undefined, articles: sumFolder(counts, f.folder), dedicated: !!h, handlerName: h ? (h.name || "custom") : "", needsTrafilatura: feedNeedsTrafilaturaCached(f) };
+    });
+    const needExtractor = feeds.some((f) => f.enabled && f.needsTrafilatura);
+    sendJson(res, 200, { ok: true, pollIntervalH: cfg.pollIntervalH, extractorAvailable, needExtractor, feeds });
   } catch (e) { sendJson(res, 500, { ok: false, error: e.message }); }
 }
 // Shared "sidecar missing" error text (returned by poll-now / backfill when trafilatura is
@@ -701,10 +806,13 @@ async function feedsDeleteHandler(req, res) {
 async function feedsPollNowHandler(req, res) {
   let b = {}; try { b = await readBody(req); } catch {}
   try {
-    if (!(await trafilaturaAvailable())) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
     const ctx = { embedModel: b.embedModel, language: b.language };
-    if (b.id) { const f = getFeed(b.id); if (!f) throw new Error("feed not found"); sendJson(res, 200, { ok: true, ...(await pollFeed(f, ctx)) }); }
-    else sendJson(res, 200, { ok: true, ...(await pollAll(ctx)) });
+    if (b.id) {
+      const f = getFeed(b.id); if (!f) throw new Error("feed not found");
+      // Only block when this feed actually needs trafilatura (non-WordPress) and it's missing.
+      if (!(await trafilaturaAvailable()) && (await feedNeedsTrafilatura(f))) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
+      sendJson(res, 200, { ok: true, ...(await pollFeed(f, ctx)) });
+    } else sendJson(res, 200, { ok: true, ...(await pollAll(ctx)) });   // pollAll skips per-feed internally
   } catch (e) { sendJson(res, 200, { ok: false, error: e.message }); }
 }
 // POST /api/feeds/backfill-estimate { id } → { ok, method, total, known } so the UI can
@@ -713,10 +821,11 @@ async function feedsPollNowHandler(req, res) {
 async function feedsBackfillEstimateHandler(req, res) {
   let b = {}; try { b = await readBody(req); } catch {}
   try {
-    if (!(await trafilaturaAvailable())) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
     const f = getFeed(b.id); if (!f) throw new Error("feed not found");
     let method = f.backfill && f.backfill.method;
     if (!method) { const p = await probeBackfill(f); method = p.method; patchBackfill(f.id, { method, total: p.total || 0 }); if (p.sitemap) patchFeed(f.id, { sitemapUrl: p.sitemap }); }
+    // Guard AFTER the probe: now feedNeedsTrafilatura knows the channel (wpjson → no trafilatura).
+    if (!(await trafilaturaAvailable()) && (await feedNeedsTrafilatura(f))) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
     let total = 0, known = false;
     if (method === "wpjson") {
       const origin = new URL(f.siteUrl || f.feedUrl).origin;
@@ -760,8 +869,8 @@ async function feedsRefreshHandler(_req, res) {
 async function feedsBackfillHandler(req, res) {
   let b = {}; try { b = await readBody(req); } catch {}
   try {
-    if (!(await trafilaturaAvailable())) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
     const f = getFeed(b.id); if (!f) throw new Error("feed not found");
+    if (!(await trafilaturaAvailable()) && (await feedNeedsTrafilatura(f))) return sendJson(res, 200, { ok: false, error: EXTRACTOR_MISSING, code: "extractor-unavailable" });
     const r = await loopbackPost("/api/jobs", { kind: "libimport", label: "backfill", conversationId: "__feeds__", payload: { type: "backfill", feedId: f.id, embedModel: b.embedModel || "", language: b.language || "" } });
     let j = {}; try { j = JSON.parse(r.text); } catch {}
     sendJson(res, 200, { ok: true, jobId: j.jobId, feed: f.name });
@@ -769,9 +878,9 @@ async function feedsBackfillHandler(req, res) {
 }
 
 module.exports = {
-  startPolling, runBackfill, fetchWpTaxonomy,
+  startPolling, runBackfill, fetchWpTaxonomy, extractArticleForUrl, feedNeedsTrafilatura,
   feedsListHandler, feedsAddHandler, feedsEditHandler, feedsDeleteHandler, feedsPollNowHandler, feedsBackfillHandler, feedsBackfillEstimateHandler, feedsRefreshHandler,
   // exported for testing
   parseFeed, parseSitemap, parseSitemapUrls, decodeEntities, toDate, toDateTime, sanitizeNewsFolder, slugify,
-  _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder },
+  _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder, feedNeedsTrafilaturaCached, siteHostKey, siteHandler },
 };

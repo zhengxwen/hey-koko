@@ -906,7 +906,9 @@ export function initLibrary() {
       let data; try { data = await postJson("/api/feeds/list", {}); } catch { data = { ok: false }; }
       if (!data.ok) { listEl.innerHTML = `<div class="zoteroImportMsg zoteroImportErr">${escapeHtml(data.error || "error")}</div>`; return; }
       const banner = overlay.querySelector("#feedMgrBanner");
-      if (banner) { const missing = data.extractorAvailable === false; banner.hidden = !missing; banner.textContent = missing ? L.extractorMissing : ""; }
+      // Only warn when trafilatura is missing AND at least one feed actually needs it — dedicated/
+      // WordPress feeds (e.g. NVIDIA) extract without trafilatura, so they never trigger the banner.
+      if (banner) { const missing = data.extractorAvailable === false && data.needExtractor !== false; banner.hidden = !missing; banner.textContent = missing ? L.extractorMissing : ""; }
       intervalIn.value = data.pollIntervalH || 24;
       if (!data.feeds.length) { listEl.innerHTML = `<div class="zoteroImportMsg">${escapeHtml(L.empty)}</div>`; return; }
       listEl.innerHTML = "";

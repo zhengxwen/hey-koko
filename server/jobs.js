@@ -365,37 +365,21 @@ async function runLibImportJob(job, signal) {
   // backfill: one feed's whole history, imported directly by feeds.runBackfill (no sub-jobs).
   if (p.type === "feeditem") {
     stage("fetching");
-    let title = p.title || p.url, html = p.html || "";
-    if (!html) {   // poll enqueues without html → fetch the article page ourselves (raw, for images)
-      const res = await fetch(p.url, {
-        headers: { "User-Agent": "Mozilla/5.0 (compatible; hey-koko-feeds/1.0)" }, redirect: "follow",
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : AbortSignal.timeout(25000),
-      });
-      if (!res.ok) throw new Error(`fetch failed (${res.status})`);
-      if (!/html/i.test(res.headers.get("content-type") || "")) throw new Error("not html");
-      html = await res.text();
-      if (!p.title) { const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i); if (m) title = m[1].trim(); }
-    }
+    // Unified per-site extraction: a WordPress site (e.g. NVIDIA) uses its rich, trafilatura-FREE
+    // handler here just like backfill (wp-json → images in position + captions + og:description
+    // dek + author/tags); only a non-WordPress site falls to trafilatura. Returns null when the
+    // article can't be extracted (empty). See feeds.extractArticleForUrl.
+    const ex = await feeds.extractArticleForUrl(p.url, { signal, images: p.images, language: p.language });
+    if (!ex || !ex.text || !String(ex.text).trim()) throw new Error("empty document");
     stage("importing");
-    // trafilatura (server/extract-article.py) extracts clean body + author/date/categories/
-    // tags/hero-image, dropping nav/"Related news"; then images download → ![](image_N.ext)
-    // figure blocks. No JS fallback — a missing sidecar throws TrafilaturaUnavailable here.
-    const { text, images, meta } = await require("./url-fetch").extractArticle(html, p.url, p.images === false ? 0 : 8, signal);
-    if (!text || !String(text).trim()) throw new Error("empty document");
     const card = library.blankCard(p.language);   // news «蒸馏卡» starts BLANK (no excerpt dump)
-    const m = meta || {};
-    // Polled single articles: WordPress tags rarely appear in the page's HTML meta (trafilatura
-    // gets categories but not tags), so look the post up in wp-json for its authoritative
-    // author + category/tag names. null on non-WP sites → fall back to trafilatura's metadata.
-    const wp = await feeds.fetchWpTaxonomy(p.url, signal).catch(() => null);
-    const authors = ((wp && wp.author) || m.author || "").trim();
-    const tags = [...new Set([...(m.categories || []), ...(m.tags || []), ...((wp && wp.terms) || [])].map((s) => String(s).trim()).filter(Boolean))].slice(0, 12);
-    const pub = p.publishedAt || String(m.date || "").slice(0, 10);
-    // Lead "dek" = the article's og:description (trafilatura's meta.description), prepended as an
-    // italic standfirst if it isn't already the opening line of the body.
-    const dek = String(m.description || "").replace(/\s+/g, " ").trim();
-    const body = (dek && !text.trimStart().startsWith(dek.slice(0, 40)) ? `*${dek}*\n\n` : "") + text;
-    const imp = await library.importDocInternal({ source: `url:${p.url}`, docId: p.docId, dedupeUrl: true, docKind: "blog", folder: p.folder, title: title || m.title || p.url, authors, tags, publishedAt: pub, text: body, images, model: p.embedModel, extraBlocks: card ? [card] : undefined });
+    const meta = ex.meta || {};
+    const imp = await library.importDocInternal({
+      source: `url:${p.url}`, docId: p.docId, dedupeUrl: true, docKind: "blog", folder: p.folder,
+      title: p.title || ex.title || p.url, authors: (meta.author || "").trim(), tags: meta.tags || [],
+      publishedAt: p.publishedAt || ex.publishedAt || "", text: ex.text, images: ex.images || [],
+      model: p.embedModel, extraBlocks: card ? [card] : undefined,
+    });
     return { docId: imp.docId, blockCount: imp.blockCount, folder: imp.folder, distilled: false };
   }
   if (p.type === "backfill") {
