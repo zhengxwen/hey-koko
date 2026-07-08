@@ -74,6 +74,57 @@ Everything beyond a chat model is optional — image generation, file parsers, Y
 On macOS you can also package Hey-Koko into a native `.app` with `./build-app.sh` (and force-stop stuck instances with `./kill-app.sh`) — see [macOS App Bundle](docs/install.md#macos-app-bundle).
 
 
+## Full macOS Setup (Python tools)
+
+The Quick Start above gives you chat. The steps below add **PDF parsing** (MinerU) and **local text-to-speech + star-map** (Kokoro) — all isolated in `~/venv` so they don't touch your system Python.
+
+> **Prerequisites:** Homebrew and Node.js from the Quick Start above.
+
+### 1. Install uv (Python package manager)
+
+[uv](https://github.com/astral-sh/uv) auto-downloads the correct Python version for each venv — no need to install Python 3.11/3.12 yourself.
+
+```bash
+brew install uv
+```
+
+### 2. TTS + Star-map venv (`~/venv/heykoko`, Python 3.11)
+
+```bash
+# Create the venv (uv downloads Python 3.11 automatically)
+uv venv --python 3.11 ~/venv/heykoko
+
+# Install Kokoro TTS + UMAP star-map dependencies
+uv pip install --python ~/venv/heykoko/bin/python \
+  kokoro "misaki[zh]" numpy soundfile umap-learn scikit-learn
+
+# English voices need the spaCy English model + espeak-ng
+uv pip install --python ~/venv/heykoko/bin/python \
+  "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+brew install espeak-ng
+```
+
+### 3. MinerU venv (`~/venv/mineru`, Python 3.11)
+
+```bash
+uv venv --python 3.11 ~/venv/mineru
+uv pip install --python ~/venv/mineru/bin/python -U "mineru[all]"
+```
+
+On first PDF parse, MinerU downloads ~2 GB of models. If behind a corporate proxy/firewall that intercepts TLS, add `--system-certs` to the `uv pip install` commands above.
+
+### 4. Verify
+
+```bash
+~/venv/heykoko/bin/python -c "import kokoro; print('Kokoro OK')"
+~/venv/mineru/bin/mineru --help | head -1
+```
+
+The server **auto-detects** both venvs at startup — no env vars needed. Just run `node server.js`.
+
+> **Note:** Unlimited-OCR requires an NVIDIA GPU and is not available on Apple Silicon. See [optional-tools.md](docs/optional-tools.md#unlimited-ocr) for Linux/CUDA setup.
+
+
 ## Commands
 
 Type `/` in the chat box to open the command palette. The main commands:
