@@ -657,6 +657,11 @@ async function backfillWpjson(feed, ctx) {
 }
 async function backfillPagedFeed(feed, ctx) {
   let page = Math.max(1, feed.backfill.cursor || 1), imported = 0, skipped = 0;
+  // Progress-bar total: a paged feed can't count itself, but the site's sitemap can — reuse the
+  // estimate's stored total, else compute it once here, so the bar shows i/N (not a bare count / "queued").
+  let total = feed.backfill.total || 0;
+  if (!total) { try { total = (await countSitemapPosts(feed, ctx.signal)).total || 0; if (total) patchBackfill(feed.id, { total }); } catch {} }
+  let pageSize = 0;   // captured from the first page → absolute article position = (page-1)*pageSize + i + 1
   // URLs fetched THIS run. Used to detect a feed that CLAMPS (repeats a page once you page past its
   // end) — the true "no more pages" signal for feeds that don't 404/empty at the end. We must NOT
   // stop just because a page's items are all already-SEEN: the poll (and the boot catch-up poll)
@@ -671,16 +676,19 @@ async function backfillPagedFeed(feed, ctx) {
     if (!r.ok) break;
     const { items } = parseFeed(await r.text());
     if (!items.length) break;   // past the last page (feeds that 404/empty at the end)
+    if (!pageSize) pageSize = items.length || 10;
     let pageHasNewUrl = false;
-    for (const it of items) {
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const pos = (page - 1) * pageSize + i + 1;   // absolute position in the archive → drives the bar (like wpjson)
       if (!it.url) continue;
       if (!runUrls.has(it.url)) { runUrls.add(it.url); pageHasNewUrl = true; }
-      if (isSeen(feed.id, it.url)) continue;   // already imported (poll / prior backfill) → skip, keep paging
+      if (isSeen(feed.id, it.url)) { if (ctx.onProgress) ctx.onProgress(pos, total || undefined); continue; }   // already imported → skip import but still advance the bar
       let handled = false;
       try { const { text, images, meta } = await resolveItem(it, ctx); if (text) { await importItem(feed, { ...it, text, images, meta }, ctx); imported++; } else skipped++; handled = true; }
       catch (e) { if (e && (e.name === "AbortError" || e.name === "TrafilaturaUnavailable" || e.name === "ImageBackendMissing")) throw e; skipped++; }   // transient error → leave un-seen for retry
       if (handled) markSeen(feed.id, [it.url]);
-      if (ctx.onProgress) ctx.onProgress(imported + skipped, undefined);
+      if (ctx.onProgress) ctx.onProgress(pos, total || undefined);
     }
     // Stop only when a page repeats ONLY earlier pages' URLs (feed clamped past its end). A page whose
     // items are already-seen but NEW to this run (the poll-imported latest page) is NOT the end.
