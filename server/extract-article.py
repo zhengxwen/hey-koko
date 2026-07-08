@@ -46,8 +46,10 @@ def main():
         sys.exit(3)
 
     # Body as GitHub-flavoured markdown, images kept (![](abs-url)), links flattened to
-    # plain text, comments/nav/related dropped. favor_precision biases toward cleaner
-    # main-content boundaries (fewer stray "Related" cards) at a small recall cost.
+    # plain text, comments/nav/related dropped. favor_recall KEEPS body images that precision
+    # mode silently drops (lazy-loaded / caption-wrapped figures — e.g. NVIDIA's cat-306.png) and
+    # stays clean on company blogs (no stray "Related" cards in testing); the image loss under
+    # precision mattered more than its slightly tidier boundaries for this news use case.
     try:
         body = trafilatura.extract(
             html,
@@ -57,7 +59,7 @@ def main():
             include_links=False,
             include_comments=False,
             include_tables=True,
-            favor_precision=True,
+            favor_recall=True,
         ) or ""
     except TypeError:
         # Older trafilatura without output_format="markdown" — degrade to txt (no images).

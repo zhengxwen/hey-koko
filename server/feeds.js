@@ -431,6 +431,10 @@ async function extractWordPressPost(post, url, ctx) {
   const fm = (post._embedded && post._embedded["wp:featuredmedia"]) || [];
   const heroUrl = (fm[0] && fm[0].source_url) || "";
   const frag = stripCdata(post.content && post.content.rendered || "");
+  // Empty content.rendered (only a plugin marker like <div id="bsf_rt_marker">; the real body is
+  // page-builder/client-rendered and lives only in the page HTML) → bail so the caller falls to the
+  // full-page path instead of importing just the hero + dek. (~7% of recent NVIDIA posts hit this.)
+  if (frag.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().length < 200) return null;
   const heroHtml = /^https?:\/\//i.test(heroUrl) ? `<figure><img src="${heroUrl.replace(/"/g, "%22")}"/></figure>` : "";
   const { text: body, images } = await extractArticleWithImages(heroHtml + frag, url, NEWS_IMAGE_CAP, ctx.signal);
   if (!body || !body.trim()) return null;
@@ -525,6 +529,27 @@ function siteHandler(host) {
   return SITE_HANDLERS[h] || SITE_HANDLERS[h.split(".").slice(-2).join(".")] || null;
 }
 
+// Trafilatura full-page extraction — the site-agnostic path, AND the fallback for a WordPress post
+// whose content.rendered is empty (only a plugin marker like <div id="bsf_rt_marker">; the real body
+// is page-builder/client-rendered and lives only in the page HTML). Fetches the page, runs trafilatura,
+// prepends the og:description dek, merges categories+tags. Returns the article object (the caller stamps
+// usedTrafilatura) or null. Throws TrafilaturaUnavailable when the sidecar is missing.
+async function extractFullPage(url, ctx = {}) {
+  const html = await fetchPageHtml(url, ctx.signal);
+  if (!html) return null;
+  const out = await extractArticle(html, url, ctx.images === false ? 0 : NEWS_IMAGE_CAP, ctx.signal);
+  if (!out || !out.text || !out.text.trim()) return null;
+  const m = out.meta || {};
+  const dek = String(m.description || "").replace(/\s+/g, " ").trim();
+  const body = (dek && !out.text.trimStart().startsWith(dek.slice(0, 40)) ? `*${dek}*\n\n` : "") + out.text;
+  const tags = [...new Set([...(m.categories || []), ...(m.tags || [])].map((s) => String(s).trim()).filter(Boolean))];
+  return {
+    text: body, images: out.images,
+    meta: { author: (m.author || "").trim(), tags, categories: [] },
+    title: m.title || "", publishedAt: String(m.date || "").slice(0, 10), publishedTime: "",
+  };
+}
+
 // Unified single-article extraction (used by the POLL path — jobs.js feeditem — so a WordPress
 // site uses its rich, trafilatura-FREE handler exactly like backfill does, instead of the old
 // full-page trafilatura route). Resolution: host-pinned handler → generic WordPress (wp-json) →
@@ -532,7 +557,6 @@ function siteHandler(host) {
 // publishedAt, publishedTime, usedTrafilatura } or null. Throws TrafilaturaUnavailable only when
 // it actually falls to the trafilatura branch and the sidecar is missing.
 async function extractArticleForUrl(url, ctx = {}) {
-  const max = ctx.images === false ? 0 : NEWS_IMAGE_CAP;
   const custom = siteHandler(siteHostKey(url));
   // 1) host-pinned handler — wp-json (extractPost) or full-HTML (extractPage).
   if (custom && custom.extractPost) {
@@ -550,21 +574,10 @@ async function extractArticleForUrl(url, ctx = {}) {
   // 2) generic WordPress via wp-json → the built-in layout-preserving handler (no trafilatura).
   const post = await fetchWpPost(url, ctx.signal);
   if (post) { const e = await extractWordPressPost(post, url, ctx); if (e && e.text && e.text.trim()) return { ...e, usedTrafilatura: false }; }
-  // 3) site-agnostic trafilatura full page (+ og:description dek + merged categories/tags).
-  const html = await fetchPageHtml(url, ctx.signal);
-  if (!html) return null;
-  const out = await extractArticle(html, url, max, ctx.signal);
-  if (!out || !out.text || !out.text.trim()) return null;
-  const m = out.meta || {};
-  const dek = String(m.description || "").replace(/\s+/g, " ").trim();
-  const body = (dek && !out.text.trimStart().startsWith(dek.slice(0, 40)) ? `*${dek}*\n\n` : "") + out.text;
-  const tags = [...new Set([...(m.categories || []), ...(m.tags || [])].map((s) => String(s).trim()).filter(Boolean))];
-  return {
-    text: body, images: out.images,
-    meta: { author: (m.author || "").trim(), tags, categories: [] },
-    title: m.title || "", publishedAt: String(m.date || "").slice(0, 10), publishedTime: "",
-    usedTrafilatura: true,
-  };
+  // 3) site-agnostic trafilatura full page — also the fallback when the WordPress handler returned
+  // null because content.rendered was empty (page-builder/client-rendered body).
+  const full = await extractFullPage(url, ctx);
+  return full ? { ...full, usedTrafilatura: true } : null;
 }
 
 // Does this feed's extraction fall to the trafilatura path? NO for a host-pinned handler or a
@@ -637,9 +650,24 @@ async function backfillWpjson(feed, ctx) {
         // handler (extractWordPressPost — tuned on NVIDIA). Both keep images in position + captions,
         // hero as image_1, og:description as the lead dek, and author/tags from _embed.
         const custom = siteHandler(siteHostKey(url));
-        const extracted = custom && custom.extractPost
+        let extracted = custom && custom.extractPost
           ? await custom.extractPost(post, url, ctx)
           : await extractWordPressPost(post, url, ctx);
+        if (!extracted || !extracted.text || !extracted.text.trim()) {
+          // empty content.rendered → fall back to the full page (trafilatura).
+          try { extracted = await extractFullPage(url, ctx); }
+          catch (e) {
+            if (e && (e.name === "AbortError" || e.name === "ImageBackendMissing")) throw e;
+            if (e && e.name === "TrafilaturaUnavailable") {
+              // trafilatura absent → report + skip THIS article WITHOUT marking it seen, so a later
+              // run (once trafilatura is installed) retries it instead of burning it forever. Don't
+              // halt the whole WordPress-feed backfill (its other articles don't need trafilatura).
+              console.warn(`[feeds] skip (content.rendered empty + trafilatura unavailable): ${url}`);
+              skipped++; if (ctx.onProgress) ctx.onProgress(pos, total || undefined); continue;
+            }
+            extracted = null;   // other full-page failure → fall through to the skip path below
+          }
+        }
         if (!extracted || !extracted.text || !extracted.text.trim()) { skipped++; handled = true; markSeen(feed.id, [url]); if (ctx.onProgress) ctx.onProgress(pos, total || undefined); continue; }
         await importItem(feed, { url, ...extracted }, ctx);
         imported++; handled = true;
@@ -1017,5 +1045,5 @@ module.exports = {
   feedsListHandler, feedsAddHandler, feedsEditHandler, feedsDeleteHandler, feedsPollNowHandler, feedsBackfillHandler, feedsBackfillEstimateHandler, feedsRefreshHandler,
   // exported for testing
   parseFeed, parseSitemap, parseSitemapUrls, decodeEntities, toDate, toDateTime, sanitizeNewsFolder, slugify,
-  _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder, feedNeedsTrafilaturaCached, siteHostKey, siteHandler, uaFor, msOgImage, msTagNames, extractMicrosoftPage, resolveItem, countSitemapPosts },
+  _internal: { loadFeeds, loadState, isSeen, markSeen, getFeed, probeBackfill, discoverFeedUrl, pollFeed, pollAll, addFeedInternal, folderCountMap, sumFolder, feedNeedsTrafilaturaCached, siteHostKey, siteHandler, uaFor, msOgImage, msTagNames, extractMicrosoftPage, resolveItem, countSitemapPosts, extractWordPressPost },
 };
