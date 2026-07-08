@@ -599,12 +599,13 @@ function handlerChannelFor(feed) {
 // ---- external site-handler plugins (<DATA_DIR>/url-handlers/*.js) -----------------------------
 // Per-site adapters are open-ended (the user adds companies one at a time) but most of them don't
 // belong in THIS repo's history — they live in the separate `hey-koko-url-handlers` repo,
-// symlinked to ~/.hey-koko/url-handlers. Each *.js file there exports a factory:
+// whose handlers/ code directory is symlinked to ~/.hey-koko/url-handlers. Each *.js file
+// there exports a factory:
 //   module.exports = (sdk) => ({ "blog.example.com": { name?, extractPost?, extractPage?,
 //                                                      listPage?, browserUA?, needsTrafilatura? } })
 // — the same entry shape as SITE_HANDLERS, so a plugin host gets the ✅ badge / uaFor /
 // trafilatura-guard / backfill+poll dispatch plumbing for free (zero special-casing downstream).
-// listPage (contract v1.1) is the OPTIONAL archive enumerator for sites whose generic backfill
+// listPage is the OPTIONAL archive enumerator for sites whose generic backfill
 // channels are absent or truncated: `async listPage(page /*1-based*/, {signal}) → { items:
 // [{url, title?, publishedAt?, publishedTime?, excerpt?, contentHtml?}], total?, hasMore? }`.
 // Declaring it makes the feed's backfill channel "handler" (backfillHandler walks the pages and

@@ -635,16 +635,20 @@ function splitIntoBlocks(text, images, { keepShort = false } = {}) {
       pendingFig = null;
       emit(); section = name; continue;      // real section boundary → flush text + its figures
     }
-    const img = raw.match(/!\[[^\]]*\]\((image_\d+\.\w+)\)/);
+    const img = raw.match(/!\[([^\]]*)\]\((image_\d+\.\w+)\)/);
     if (img) {
       // figure is its own block (carries the inline image) but is DEFERRED, not emitted
       // inline — so it doesn't split the surrounding prose.
-      const im = imgByName.get(img[1]);
+      const im = imgByName.get(img[2]);
       // <br> in a caption (e.g. the YouTube cover's metadata, which must ride the image's
       // single line) becomes a real newline so the stored block content uses \n, not <br>.
       const caption = raw.replace(/!\[[^\]]*\]\([^)]*\)/, "").replace(/<br\s*\/?>/gi, "\n").trim();
+      // No caption beside the image → the ALT text (the news extractors carry the source's own
+      // caption there, in the source language) so the figure stays retrievable/labelled; the
+      // filename is the last resort. An explicit next-line "Figure N:" still overrides (below).
+      const alt = img[1].trim();
       // keep the original image filename (e.g. image_01.jpg) so downloads/lightbox use it
-      const fig = { kind: "figure", section, content: caption || img[1], imageName: img[1], hash: hashText(img[1] + caption) };
+      const fig = { kind: "figure", section, content: caption || alt || img[2], imageName: img[2], hash: hashText(img[2] + (caption || alt)) };
       if (im) { fig.image = im.base64; fig.imageMime = im.mime; }
       sectionFigs.push(fig);
       pendingFig = caption ? null : fig;     // same-line caption wins; else watch the next line
