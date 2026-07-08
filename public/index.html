@@ -438,9 +438,14 @@
                 <option value="3">★3+</option>
                 <option value="unrated">Unrated</option>
               </select>
-              <button id="starMapBtn" type="button" class="secondary archiveSortBtn" title="Knowledge star map">🌌 Star map</button>
-              <button id="libraryTimelineBtn" type="button" class="secondary archiveSortBtn" title="Timeline">⏱ Timeline</button>
-              <button id="libraryCitationGraphBtn" type="button" class="secondary archiveSortBtn" title="Citation graph">🔗 Citations</button>
+              <div class="libraryViewsWrapper">
+                <button id="libraryViewsBtn" type="button" class="secondary archiveSortBtn" title="Views">🗺 Views ▾</button>
+                <div id="libraryViewsMenu" class="exportMenu" hidden>
+                  <button id="starMapBtn" type="button" title="Knowledge star map">🌌 Star map</button>
+                  <button id="libraryTimelineBtn" type="button" title="Timeline">⏱ Timeline</button>
+                  <button id="libraryCitationGraphBtn" type="button" title="Citation graph">🔗 Citations</button>
+                </div>
+              </div>
               <button id="libraryFeedBtn" type="button" class="secondary archiveSortBtn" title="News feed subscriptions">📰 Feeds</button>
               <span id="libraryTaskCount" class="libraryTaskCount" hidden></span>
               <!-- Import stays the LAST toolbar element — even with the ⏳ badge visible -->

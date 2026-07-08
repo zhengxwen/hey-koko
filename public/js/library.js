@@ -548,6 +548,16 @@ export function initLibrary() {
   });
   if (citationGraphBtn) citationGraphBtn.addEventListener("click", () => openCitationGraph());
   if (feedBtn) feedBtn.addEventListener("click", () => openFeedManager());
+  // 🗺 Views dropdown — folds star map / timeline / citation graph into one button. The
+  // three items keep their original ids so their handlers (main.js + openCitationGraph)
+  // fire unchanged; we only toggle the menu and close it after any pick or outside click.
+  const viewsBtn = document.querySelector("#libraryViewsBtn");
+  const viewsMenu = document.querySelector("#libraryViewsMenu");
+  if (viewsBtn && viewsMenu) {
+    viewsBtn.addEventListener("click", (e) => { e.stopPropagation(); viewsMenu.hidden = !viewsMenu.hidden; });
+    viewsMenu.addEventListener("click", () => { viewsMenu.hidden = true; });   // any item closes it
+    document.addEventListener("click", (e) => { if (!viewsMenu.contains(e.target) && e.target !== viewsBtn) viewsMenu.hidden = true; });
+  }
   // Backfill distillation cards for docs that predate the feature (index lacks hasCard):
   // one server-side distill job per doc — same queue as imports, browser-closable.
   const backfillItem = document.querySelector("#libraryBackfillCards");
