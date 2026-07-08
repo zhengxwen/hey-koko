@@ -3784,6 +3784,12 @@ button.secondary:disabled {
 .archiveCard.isSelected {
   background: var(--accent-hover);
 }
+/* A doc whose card failed to render (isolated so it can't hide the rest of the list). */
+.archiveCard.archiveCardBad {
+  border: 1px solid color-mix(in srgb, var(--danger, #d33) 55%, transparent);
+  background: color-mix(in srgb, var(--danger, #d33) 8%, var(--paper));
+}
+.archiveCard.archiveCardBad .archiveCardTitle { color: var(--danger, #d33); }
 
 .archiveCardHeader {
   display: flex;

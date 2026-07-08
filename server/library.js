@@ -1007,7 +1007,10 @@ async function importDocInternal(body) {
     // Zotero linkage {key, attachmentKey, version, annotHash, collection}: powers the
     // "open in Zotero" deep link + P2 annotation re-sync + P3 incremental sync.
     zotero: (body.zotero && body.zotero.key) ? body.zotero : undefined,
-    tags: body.tags || [], embedModel: model,
+    // Tags are stored as {name,color} objects (the UI reads tg.name/tg.color everywhere — a
+    // bare string would make escapeHtml(tg.name) throw and abort the whole list render). Accept
+    // either shape from callers (the news layer passes plain strings) and normalize here.
+    tags: normalizeTags(body.tags), embedModel: model,
     importedAt: Date.now(),
     blocks,
   };
@@ -1068,10 +1071,31 @@ function backfillPublishedAt() {
   if (changed) saveIndex(arr);
 }
 
+// One-time (per process) repair: the news layer briefly stored tags as bare strings instead
+// of the canonical {name,color} objects. A string tag makes the list card's escapeHtml(tg.name)
+// throw, which aborts the whole folder-tree render (any folder after the offending one — e.g.
+// youtube — vanishes). Normalize both the index entry and the doc file in place.
+let TAG_NORMALIZE_DONE = false;
+function normalizeTagsMigration() {
+  if (TAG_NORMALIZE_DONE) return;
+  TAG_NORMALIZE_DONE = true;
+  const arr = loadIndex();
+  let changed = false;
+  for (const e of arr) {
+    if (!Array.isArray(e.tags) || !e.tags.some((t) => typeof t === "string")) continue;
+    const fixed = normalizeTags(e.tags);
+    e.tags = fixed; changed = true;
+    const doc = readDoc(e.docId);
+    if (doc && Array.isArray(doc.tags)) { doc.tags = fixed; try { writeDoc(doc, locOf(e.docId)); } catch { /* retry next restart */ } }
+  }
+  if (changed) saveIndex(arr);
+}
+
 // POST /api/library/list  → { docs:[index entries] }
 async function listLibrary(_req, res) {
   try {
     backfillPublishedAt();
+    normalizeTagsMigration();
     sendJson(res, 200, { docs: loadIndex().map(d => ({ ...d, folder: locOf(d.docId) })) });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
@@ -1918,6 +1942,19 @@ function tagColor(name) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
   return `hsl(${h}, 55%, 82%)`;
+}
+// Coerce a tags array into the canonical [{name,color}] shape. Strings (news layer / any
+// caller) get a derived color; existing {name,color} objects pass through; blanks/dupes drop.
+function normalizeTags(tags) {
+  if (!Array.isArray(tags)) return [];
+  const seen = new Set(), out = [];
+  for (const t of tags) {
+    const name = (typeof t === "string" ? t : (t && t.name) || "").trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, color: (t && typeof t === "object" && t.color) || tagColor(name) });
+  }
+  return out;
 }
 
 // Sample a doc for the distill prompt: section list + one representative chunk per

@@ -315,13 +315,13 @@ function importItem(feed, { url, title, publishedAt, publishedTime, excerpt, tex
 // when nothing usable. Throws TrafilaturaUnavailable up the stack when the sidecar is absent.
 async function resolveItem(it, ctx) {
   if (it.contentHtml && it.contentHtml.length > 200) {
-    const r = await extractArticle(it.contentHtml, it.url, NEWS_IMAGE_CAP);
+    const r = await extractArticle(it.contentHtml, it.url, NEWS_IMAGE_CAP, ctx.signal);
     if (r.text && r.text.trim()) return { text: r.text.trim(), images: r.images, meta: r.meta };
   }
   const r = await politeFetch(it.url, { timeoutMs: 20000, signal: ctx.signal, minGapMs: 2000 });
   if (!r.ok) return { text: "", images: [] };
   if (!/html|text|json/i.test(r.headers.get("content-type") || "")) return { text: "", images: [] };
-  const out = await extractArticle(await r.text(), it.url, NEWS_IMAGE_CAP);
+  const out = await extractArticle(await r.text(), it.url, NEWS_IMAGE_CAP, ctx.signal);
   return { text: (out.text || "").trim(), images: out.images, meta: out.meta };
 }
 
@@ -369,12 +369,25 @@ async function backfillWpjson(feed, ctx) {
     if (!totalPages) { total = total || Number(r.headers.get("x-wp-total")) || 0; totalPages = Number(r.headers.get("x-wp-totalpages")) || 0; patchBackfill(feed.id, { total, totalPages }); }
     let posts; try { posts = await r.json(); } catch { break; }
     if (!Array.isArray(posts) || !posts.length) break;
-    for (const post of posts) {
+    for (let j = 0; j < posts.length; j++) {
+      const post = posts[j];
       if (ctx.signal && ctx.signal.aborted) throw abortErr();   // respond to a mid-page cancel
-      const url = post.link; if (!url || isSeen(feed.id, url)) continue;
+      // Report the TRUE absolute article position — (page-1)*100 + index — for EVERY post,
+      // including ones skipped as already-seen. Otherwise a resumed backfill (which re-scans the
+      // partly-done page, silently skipping seen items) appears frozen at the page's baseline
+      // (e.g. "201") because only newly-imported items bumped the counter. Throttle the
+      // seen-skip updates (every 10th) so a fully-seen page doesn't spam the SSE stream.
+      const pos = (page - 1) * 100 + j + 1;
+      const url = post.link;
+      if (!url || isSeen(feed.id, url)) { if (ctx.onProgress && j % 10 === 0) ctx.onProgress(pos, total || undefined); continue; }
+      // Only mark an article "seen" when we actually finished with it (imported, or legitimately
+      // empty). A THROWN extraction error must NOT burn it: leaving it un-seen lets the next run
+      // retry, instead of silently skipping it forever (this is how a systemic failure — e.g.
+      // trafilatura absent — could leave a cursor at 201 with nothing actually imported).
+      let handled = false;
       try {
-        const { text, images, meta } = await extractArticle(stripCdata(post.content && post.content.rendered || ""), url, NEWS_IMAGE_CAP);
-        if (!text || !text.trim()) { skipped++; markSeen(feed.id, [url]); continue; }
+        const { text, images, meta } = await extractArticle(stripCdata(post.content && post.content.rendered || ""), url, NEWS_IMAGE_CAP, ctx.signal);
+        if (!text || !text.trim()) { skipped++; handled = true; markSeen(feed.id, [url]); if (ctx.onProgress) ctx.onProgress(pos, total || undefined); continue; }
         const dt = toDateTime(post.date_gmt ? post.date_gmt + "Z" : "");
         // wp-json _embedded carries the authoritative author + term names → prefer them over
         // trafilatura's (a bare content.rendered fragment rarely has author/category in-body).
@@ -390,10 +403,14 @@ async function backfillWpjson(feed, ctx) {
           excerpt: post.excerpt && post.excerpt.rendered || "",
           publishedAt: dt.date, publishedTime: dt.time,
         }, ctx);
-        imported++;
-      } catch (e) { if (e && e.name === "AbortError") throw e; skipped++; }
-      markSeen(feed.id, [url]);
-      if (ctx.onProgress) ctx.onProgress((page - 1) * 100 + imported + skipped, total || undefined);
+        imported++; handled = true;
+      } catch (e) {
+        if (e && e.name === "AbortError") throw e;                 // user interrupt → stop
+        if (e && e.name === "TrafilaturaUnavailable") throw e;     // sidecar gone → stop, don't burn the rest
+        skipped++;                                                 // transient error → leave un-seen so it retries
+      }
+      if (handled) markSeen(feed.id, [url]);
+      if (ctx.onProgress) ctx.onProgress(pos, total || undefined);
     }
     page++; patchBackfill(feed.id, { cursor: page });
     if (totalPages && page > totalPages) break;
@@ -414,9 +431,10 @@ async function backfillPagedFeed(feed, ctx) {
     for (const it of items) {
       if (!it.url || isSeen(feed.id, it.url)) continue;
       fresh++;
-      try { const { text, images, meta } = await resolveItem(it, ctx); if (text) { await importItem(feed, { ...it, text, images, meta }, ctx); imported++; } else skipped++; }
-      catch (e) { if (e && e.name === "AbortError") throw e; skipped++; }
-      markSeen(feed.id, [it.url]);
+      let handled = false;
+      try { const { text, images, meta } = await resolveItem(it, ctx); if (text) { await importItem(feed, { ...it, text, images, meta }, ctx); imported++; } else skipped++; handled = true; }
+      catch (e) { if (e && (e.name === "AbortError" || e.name === "TrafilaturaUnavailable")) throw e; skipped++; }   // transient error → leave un-seen for retry
+      if (handled) markSeen(feed.id, [it.url]);
       if (ctx.onProgress) ctx.onProgress(imported + skipped, undefined);
     }
     if (fresh === 0) break;   // a whole page already seen → caught up
@@ -450,21 +468,22 @@ async function backfillSitemap(feed, ctx) {
     if (ctx.signal && ctx.signal.aborted) throw abortErr();
     if (i % 20 === 0) patchBackfill(feed.id, { cursor: i });
     const url = urls[i]; if (isSeen(feed.id, url)) continue;
+    let handled = false;
     try {
       const r = await politeFetch(url, { timeoutMs: 20000, signal: ctx.signal, minGapMs: 2000 });
-      if (!r.ok) { skipped++; markSeen(feed.id, [url]); continue; }
+      if (!r.ok) { skipped++; handled = true; markSeen(feed.id, [url]); if (ctx.onProgress) ctx.onProgress(i + 1, urls.length); continue; }
       const html = await r.text();
-      const { text, images, meta } = await extractArticle(html, url, NEWS_IMAGE_CAP);
-      if (!text || !text.trim()) { skipped++; markSeen(feed.id, [url]); continue; }
+      const { text, images, meta } = await extractArticle(html, url, NEWS_IMAGE_CAP, ctx.signal);
+      if (!text || !text.trim()) { skipped++; handled = true; markSeen(feed.id, [url]); if (ctx.onProgress) ctx.onProgress(i + 1, urls.length); continue; }
       // Prefer trafilatura's cleaned title (og/h1) over the raw <title> (often "Post | Site").
       const title = (meta && meta.title) || decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "").trim();
       // sitemaps carry no publish time → pull it from the page's og/article meta if present.
       const pm = html.match(/property=["']article:published_time["'][^>]*content=["']([^"']+)["']|<time[^>]+datetime=["']([^"']+)["']/i);
       const dt = toDateTime(pm ? (pm[1] || pm[2]) : "");
       await importItem(feed, { url, title, text: text.trim(), images, meta, publishedAt: dt.date, publishedTime: dt.time }, ctx);
-      imported++;
-    } catch (e) { if (e && e.name === "AbortError") throw e; skipped++; }
-    markSeen(feed.id, [url]);
+      imported++; handled = true;
+    } catch (e) { if (e && (e.name === "AbortError" || e.name === "TrafilaturaUnavailable")) throw e; skipped++; }   // transient error → leave un-seen for retry
+    if (handled) markSeen(feed.id, [url]);
     if (ctx.onProgress) ctx.onProgress(i + 1, urls.length);
   }
   patchBackfill(feed.id, { cursor: urls.length });
@@ -492,7 +511,9 @@ async function runBackfill(feedId, ctx = {}) {
     // User interrupted the backfill task → STOP importing this source: disable the feed so
     // the poll timer skips it and no backfill auto-resumes (cursor is kept, so re-enabling +
     // 回填历史 continues where it left off). A real error just records lastError.
-    if (e && e.name === "AbortError") patchFeed(feedId, { enabled: false, lastError: "已中断，已暂停该源导入（启用后可继续回填）" });
+    // pausedByInterrupt marks an AUTO pause (vs. a manual 暂停) so 🔄 refresh AND the next server
+    // startup can lift it, while leaving deliberately-paused feeds alone.
+    if (e && e.name === "AbortError") patchFeed(feedId, { enabled: false, pausedByInterrupt: true, lastError: INTERRUPT_NOTE });
     else patchFeed(feedId, { lastError: String(e.message || e) });
     throw e;
   } finally { flushState(); saveFeeds(true); }
@@ -540,8 +561,30 @@ async function pollAll(ctx = {}) {
   return { polled: feeds.length, new: total };
 }
 
-let _pollTimer = null;
+// Note left on a feed that was auto-paused because its backfill job was interrupted.
+const INTERRUPT_NOTE = "已中断，已暂停该源导入（启用后可继续回填）";
+
+// A restart KILLS any running backfill, and that abort re-flags the feed as "interrupted,
+// paused" — so a paused/⚠️ state would reappear on every boot even though nothing is running.
+// Clear it at startup: an interrupt-pause is a within-session "stop now", not a persistent
+// setting (a deliberate 暂停 sets enabled:false WITHOUT the flag/note, so it survives). Matches
+// both the flag (new) and the legacy note string (feeds paused before the flag existed).
+function clearInterruptPauses() {
+  const cfg = loadFeeds();
+  let changed = 0;
+  for (const f of cfg.feeds) {
+    if (f.pausedByInterrupt || (typeof f.lastError === "string" && f.lastError.indexOf("已中断") === 0)) {
+      f.enabled = true; f.lastError = ""; delete f.pausedByInterrupt; changed++;
+    }
+  }
+  if (changed) { saveFeeds(true); console.log(`[feeds] cleared ${changed} interrupt-paused feed(s) on startup`); }
+}
+
+let _pollTimer = null, _booted = false;
 function startPolling() {
+  // Runs once at server startup (startPolling is also re-invoked on poll-interval changes,
+  // where we must NOT wipe a user's mid-session interrupt-pause).
+  if (!_booted) { _booted = true; try { clearInterruptPauses(); } catch (e) { console.warn("[feeds] clearInterruptPauses:", e.message); } }
   const ms = Math.max(1, Number(loadFeeds().pollIntervalH) || 24) * 3600 * 1000;
   if (_pollTimer) clearInterval(_pollTimer);
   _pollTimer = setInterval(() => { pollAll().catch((e) => console.warn("[feeds] pollAll:", e.message)); }, ms);
@@ -577,7 +620,7 @@ async function feedsEditHandler(req, res) {
       const f = getFeed(b.id); if (!f) throw new Error("feed not found");
       for (const k of ["name", "siteUrl", "feedUrl", "enabled"]) if (b[k] != null) f[k] = b[k];
       if (b.folder != null) f.folder = sanitizeNewsFolder(b.folder);
-      if (b.enabled === true) f.lastError = "";   // re-enabling clears the "interrupted, paused" note
+      if (b.enabled === true) { f.lastError = ""; delete f.pausedByInterrupt; }   // re-enabling clears the "interrupted, paused" note
       saveFeeds(true);
     }
     sendJson(res, 200, { ok: true, feed: b.id ? getFeed(b.id) : null, pollIntervalH: loadFeeds().pollIntervalH });
@@ -634,10 +677,20 @@ async function feedsRefreshHandler(_req, res) {
     const st = loadState();
     for (const f of cfg.feeds) {
       st[f.id] = library.sourcesUnderFolder(f.folder);   // seen = what's actually still imported
+      // A feed auto-paused by a prior interrupt is lifted here (refresh = "reset & recheck"):
+      // re-enable it and clear the stale "已中断…" note. A MANUAL 暂停 (no pausedByInterrupt flag)
+      // is left untouched.
+      if (f.pausedByInterrupt || (typeof f.lastError === "string" && f.lastError.indexOf("已中断") === 0)) { f.enabled = true; f.lastError = ""; delete f.pausedByInterrupt; }
+      const bf = f.backfill || {};
       // if everything under this feed is gone, let a backfill restart from scratch
-      if (st[f.id].size === 0 && f.backfill && f.backfill.doneAt) patchBackfill(f.id, { cursor: 0, total: 0, totalPages: 0, doneAt: 0 });
+      if (st[f.id].size === 0 && bf.doneAt) patchBackfill(f.id, { cursor: 0, total: 0, totalPages: 0, doneAt: 0 });
+      // a PARTLY-DONE backfill (interrupted) resumes from its page cursor, so its progress bar
+      // reappears mid-way (e.g. "201"). Refresh rewinds the cursor to 0 so the next 回填 re-scans
+      // from the top — already-imported articles are skipped via the (disk-rebuilt) seen-set, so
+      // this re-checks for gaps without re-importing. (cursor 0 works for all channels.)
+      else if (!bf.doneAt && (bf.cursor || 0) > 0) patchBackfill(f.id, { cursor: 0 });
     }
-    saveStateNow();
+    saveStateNow(); saveFeeds(true);   // persist seen-set AND the re-enable/cursor changes above
     const counts = folderCountMap();
     sendJson(res, 200, { ok: true, removed, pollIntervalH: cfg.pollIntervalH, feeds: cfg.feeds.map((f) => ({ ...f, _urls: undefined, articles: sumFolder(counts, f.folder) })) });
   } catch (e) { sendJson(res, 500, { ok: false, error: e.message }); }

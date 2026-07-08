@@ -380,7 +380,7 @@ async function runLibImportJob(job, signal) {
     // trafilatura (server/extract-article.py) extracts clean body + author/date/categories/
     // tags/hero-image, dropping nav/"Related news"; then images download → ![](image_N.ext)
     // figure blocks. No JS fallback — a missing sidecar throws TrafilaturaUnavailable here.
-    const { text, images, meta } = await require("./url-fetch").extractArticle(html, p.url, p.images === false ? 0 : 8);
+    const { text, images, meta } = await require("./url-fetch").extractArticle(html, p.url, p.images === false ? 0 : 8, signal);
     if (!text || !String(text).trim()) throw new Error("empty document");
     const card = library.excerptCard(p.excerpt, p.language);
     const m = meta || {};

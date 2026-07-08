@@ -1483,9 +1483,10 @@ export function initLibrary() {
   function renderTagBar() {
     const counts = new Map();   // name -> { color, n: docs carrying it }
     docs.forEach((d) => (d.tags || []).forEach((tg) => {
-      if (!tg || !tg.name) return;
-      const e = counts.get(tg.name);
-      if (e) e.n++; else counts.set(tg.name, { color: tg.color || "#e0e0e0", n: 1 });
+      const name = typeof tg === "string" ? tg : (tg && tg.name);   // tolerate bare-string tags
+      if (!name) return;
+      const e = counts.get(name);
+      if (e) e.n++; else counts.set(name, { color: (tg && typeof tg === "object" && tg.color) || "#e0e0e0", n: 1 });
     }));
     const entries = [...counts.entries()].sort((a, b) => (b[1].n - a[1].n) || a[0].localeCompare(b[0]));
     tagBar.innerHTML = "";
@@ -1681,12 +1682,41 @@ export function initLibrary() {
   }
 
   // One doc card (depth indents it under its folder in the tree view).
+  // Render a doc card, isolating failures: if createCard throws on a malformed doc (e.g. a
+  // corrupt field), render a distinct "⚠️ bad" placeholder for THAT doc instead of letting the
+  // exception bubble up and abort the whole folder-tree render (which would hide every doc/folder
+  // after it). The bad card is still clickable so the user can open it to inspect or delete it.
+  function safeCard(d, depth) {
+    try { return createCard(d, depth); }
+    catch (err) { console.error("[library] card render failed for", d && d.docId, err); return createBadCard(d, depth); }
+  }
+  function createBadCard(d, depth) {
+    const card = document.createElement("div");
+    card.className = "archiveCard archiveCardBad";
+    if (depth) card.style.paddingLeft = (depth * 16 + 8) + "px";
+    const id = String((d && d.docId) || "");
+    const title = String((d && d.title) || id || "?");
+    card.innerHTML = `<div class="archiveCardInfo">
+      <div class="archiveCardTitle">⚠️ ${escapeHtml(title)}</div>
+      <div class="archiveCardMeta"><span>${escapeHtml(t("lib_badDoc"))}</span><span>${escapeHtml(id)}</span></div>
+    </div>`;
+    if (id) card.addEventListener("click", () => openDoc(id));
+    return card;
+  }
   function createCard(d, depth) {
     const card = document.createElement("div");
     card.className = "archiveCard" + (selected.has(d.docId) ? " isSelected" : "");
     if (depth) card.style.paddingLeft = (depth * 16 + 8) + "px";
     const sc = scores && scores.has(d.docId) ? `<span class="archiveCardScore">${Math.round(scores.get(d.docId) * 100)}%</span>` : "";
-    const tagsHtml = (d.tags || []).map((tg) => `<span class="archiveCardTag" style="background:${tg.color || "#e0e0e0"}">${escapeHtml(tg.name)}</span>`).join("");
+    // Tags are normally {name,color}; tolerate a bare-string tag (older/news docs) — a raw
+    // undefined name would make escapeHtml throw and abort the ENTIRE list render (hiding every
+    // folder rendered after this card in the tree).
+    const tagsHtml = (d.tags || []).map((tg) => {
+      const name = typeof tg === "string" ? tg : (tg && tg.name);
+      if (!name) return "";
+      const color = (tg && typeof tg === "object" && tg.color) || "#e0e0e0";
+      return `<span class="archiveCardTag" style="background:${color}">${escapeHtml(name)}</span>`;
+    }).join("");
     // 📇 = this doc has a distillation card (kind:"card" block leads its blocks).
     // Date: publishedAt (YouTube upload date) beats the coarser year when present.
     // ★N = the manual rating (set from the preview pane's star widget).
@@ -1741,7 +1771,7 @@ export function initLibrary() {
     }
     // Semantic results / tag filter → flat list in relevance order (skip the tree).
     if (scores || activeTagFilter) {
-      list.forEach((d) => listEl.appendChild(createCard(d, 0)));
+      list.forEach((d) => listEl.appendChild(safeCard(d, 0)));
       return;
     }
     // Otherwise group docs into a collapsible folder tree (same look as archives).
@@ -1778,7 +1808,7 @@ export function initLibrary() {
         container.appendChild(dirEl);
         renderNode(node.dirs[name], content, depth + 1, path);
       });
-      node.files.forEach((d) => container.appendChild(createCard(d, depth)));
+      node.files.forEach((d) => container.appendChild(safeCard(d, depth)));
     };
     renderNode(root, listEl, 0, "");
   }

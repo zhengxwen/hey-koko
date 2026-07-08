@@ -390,17 +390,18 @@ async function optimizeImage(buf, mime) {
   return { buf, ct: mime };
 }
 
-async function downloadImagesNamed(urls, referer, max) {
+async function downloadImagesNamed(urls, referer, max, signal) {
   const out = [], seen = new Set();
   let n = 0;
   for (const u of urls) {
+    if (signal && signal.aborted) throw abortError();   // stop the whole image pass on interrupt
     if (out.length >= max) break;
     if (seen.has(u)) continue;
     seen.add(u);
     try {
       const res = await fetch(u, {
         headers: { "User-Agent": "Mozilla/5.0 (compatible; LocalAIChat/1.0)", "Referer": referer, "Accept": "image/avif,image/webp,image/*,*/*;q=0.8" },
-        signal: AbortSignal.timeout(8000), redirect: "follow",
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000), redirect: "follow",
       });
       if (!res.ok) continue;
       let ct = (res.headers.get("content-type") || "").split(";")[0].trim();
@@ -466,27 +467,38 @@ async function trafilaturaAvailable() {
 // { markdown, title, author, date, description, sitename, image, categories[], tags[] }.
 // Rejects (err.name = "TrafilaturaUnavailable") when the interpreter/package is missing so
 // the caller can render a precise message; other failures reject with the stderr tail.
-function runTrafilatura(html, url) {
+function runTrafilatura(html, url, signal) {
   return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(abortError());   // don't even spawn if already cancelled
     const script = path.join(__dirname, "extract-article.py");
     let proc;
     try {
-      proc = spawn(config.newsPython, [script, url || ""], { stdio: ["pipe", "pipe", "pipe"] });
+      // Pass the AbortSignal to spawn: when the user interrupts the background job, Node sends
+      // SIGTERM to the python process, killing the whole trafilatura run immediately (no waiting
+      // for the current article to finish). SIGKILL follows if it doesn't exit promptly.
+      proc = spawn(config.newsPython, [script, url || ""], { stdio: ["pipe", "pipe", "pipe"], signal, killSignal: "SIGTERM" });
     } catch (e) {
       const err = new Error(`cannot spawn ${config.newsPython}: ${e.message}`);
       err.name = "TrafilaturaUnavailable"; return reject(err);
     }
-    let out = "", errBuf = "";
-    proc.on("error", (e) => { const err = new Error(`cannot spawn ${config.newsPython}: ${e.message}`); err.name = "TrafilaturaUnavailable"; reject(err); });
+    let out = "", errBuf = "", settled = false;
+    const done = (fn, v) => { if (!settled) { settled = true; fn(v); } };
+    proc.on("error", (e) => {
+      // spawn fires 'error' with name "AbortError" when the signal aborts → propagate as an
+      // abort (so runBackfill pauses the feed), NOT as "trafilatura missing".
+      if (e && e.name === "AbortError") return done(reject, abortError());
+      const err = new Error(`cannot spawn ${config.newsPython}: ${e.message}`); err.name = "TrafilaturaUnavailable"; done(reject, err);
+    });
     proc.stdout.on("data", (d) => { out += d; });
     proc.stderr.on("data", (d) => { errBuf += d; });
     proc.stdin.on("error", () => { /* EPIPE if the child died early — the close handler reports it */ });
-    proc.on("close", (code) => {
-      if (code === 3) { const err = new Error("trafilatura not installed"); err.name = "TrafilaturaUnavailable"; return reject(err); }
+    proc.on("close", (code, sig) => {
+      if (signal && signal.aborted) return done(reject, abortError());   // killed by the abort signal
+      if (code === 3) { const err = new Error("trafilatura not installed"); err.name = "TrafilaturaUnavailable"; return done(reject, err); }
       let j = null; try { j = JSON.parse(out); } catch { /* fall through */ }
-      if (j && j.error) return reject(new Error(j.error));
-      if (code !== 0 || !j) return reject(new Error(`trafilatura exited ${code}: ${(errBuf || out).slice(0, 300)}`));
-      resolve(j);
+      if (j && j.error) return done(reject, new Error(j.error));
+      if (code !== 0 || !j) return done(reject, new Error(`trafilatura exited ${code}${sig ? "/" + sig : ""}: ${(errBuf || out).slice(0, 300)}`));
+      done(resolve, j);
     });
     proc.stdin.end(html);
   });
@@ -496,14 +508,14 @@ function runTrafilatura(html, url) {
 // image pipeline (download + PNG→JPEG + compress + rename to image_N) to weave figures.
 // Returns { text, images:[{name,base64,mime}], meta:{title,author,date,description,
 // sitename,categories[],tags[]} }. Throws TrafilaturaUnavailable when the sidecar is absent.
-async function extractArticle(html, baseUrl, maxImages = 8) {
-  const r = await runTrafilatura(html, baseUrl);
+async function extractArticle(html, baseUrl, maxImages = 8, signal) {
+  const r = await runTrafilatura(html, baseUrl, signal);
   let md = cleanupMarkdown(r.markdown || "");
   const bodyUrls = [...md.matchAll(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g)].map((m) => m[1]);
   const hero = /^https?:\/\//i.test(r.image || "") ? r.image : "";
   // Hero first so it becomes image_1; body images keep their document order after it.
   const urls = hero ? [hero, ...bodyUrls.filter((u) => u !== hero)] : bodyUrls;
-  const downloaded = maxImages > 0 ? await downloadImagesNamed(urls, baseUrl, maxImages) : [];
+  const downloaded = maxImages > 0 ? await downloadImagesNamed(urls, baseUrl, maxImages, signal) : [];
   const byUrl = new Map(downloaded.map((im) => [im.url, im]));
   // Rewrite body refs to the local image_N names; drop any that failed to download (tracker
   // pixels / oversized). trafilatura already stripped boilerplate, so no ［图片］ placeholder.
