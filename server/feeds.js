@@ -17,7 +17,10 @@ const path = require("path");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const library = require("./library");
-const { extractArticle, trafilaturaAvailable } = require("./url-fetch");
+// extractArticle = trafilatura (site-agnostic, for FULL pages via pagedfeed/sitemap).
+// extractArticleWithImages = layout-preserving built-in (for CLEAN wp-json content.rendered
+// fragments — keeps images in position + captions, which trafilatura drops from a fragment).
+const { extractArticle, extractArticleWithImages, trafilaturaAvailable } = require("./url-fetch");
 
 const NEWS_DIR = library.NEWS_DIR || "news";
 const NEWS_IMAGE_CAP = 8;   // max images downloaded per article (bandwidth/size guard)
@@ -350,6 +353,61 @@ async function fetchWpTaxonomy(url, signal) {
   } catch { return null; }
 }
 
+// ---- Per-site article handlers -----------------------------------------------------------------
+// Rich article extraction is inherently PER-SITE: company blogs differ enough that one generic
+// extractor loses images / layout / metadata (historically almost every blog needed its own
+// custom handling). This registry makes that explicit and extensible. Resolution order for a
+// given article:
+//   1) a bespoke handler pinned to the host in SITE_HANDLERS (add one per company as needed);
+//   2) else, if the site exposes wp-json → the WORDPRESS handler (extractWordPressPost);
+//   3) else → the site-agnostic trafilatura FULL-PAGE path (extractArticle).
+// The WordPress handler was tuned & verified on **NVIDIA blogs**; it also works for WordPress
+// sites in general (Meta Engineering, etc.) — but treat that as "probably", not "guaranteed":
+// a site that extracts poorly should get its own entry here rather than bending the WP handler.
+function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } }
+
+// WordPress (wp-json) article handler — tuned & verified on NVIDIA blogs.
+//   • body: content.rendered via the LAYOUT-PRESERVING built-in (images stay in position + their
+//     <figcaption>; trafilatura drops both from a bare fragment);
+//   • hero: featured_media source_url from the embed → prepended as image_1 (not in content.rendered,
+//     and /media is often 401 — the embed inlines it);
+//   • lead dek: yoast_head_json.og_description (the curated summary, absent from the body);
+//   • author + category/tag names: from _embed (content.rendered carries none).
+// Returns { text, images, meta, title, publishedAt, publishedTime } or null if the body is empty.
+async function extractWordPressPost(post, url, ctx) {
+  const fm = (post._embedded && post._embedded["wp:featuredmedia"]) || [];
+  const heroUrl = (fm[0] && fm[0].source_url) || "";
+  const frag = stripCdata(post.content && post.content.rendered || "");
+  const heroHtml = /^https?:\/\//i.test(heroUrl) ? `<figure><img src="${heroUrl.replace(/"/g, "%22")}"/></figure>` : "";
+  const { text: body, images } = await extractArticleWithImages(heroHtml + frag, url, NEWS_IMAGE_CAP, ctx.signal);
+  if (!body || !body.trim()) return null;
+  const dek = String((post.yoast_head_json && post.yoast_head_json.og_description) || "").replace(/\s+/g, " ").trim();
+  const emb = post._embedded || {};
+  const wpAuthor = (emb.author && emb.author[0] && emb.author[0].name) || "";
+  const wpTerms = [].concat(...(emb["wp:term"] || [])).filter((t) => t && (t.taxonomy === "category" || t.taxonomy === "post_tag")).map((t) => t.name).filter(Boolean);
+  const dt = toDateTime(post.date_gmt ? post.date_gmt + "Z" : "");
+  return {
+    text: (dek ? `*${dek}*\n\n` : "") + body.trim(),
+    images,
+    meta: { author: wpAuthor, tags: wpTerms, categories: [] },
+    title: decodeEntities(stripCdata(post.title && post.title.rendered || "")).trim(),
+    publishedAt: dt.date, publishedTime: dt.time,
+  };
+}
+
+// Bespoke per-company handlers, keyed by host (exact or registrable domain). EMPTY by default —
+// every WordPress site currently rides the shared WP handler above. To pin/override a company:
+//   "blog.acme.com": { extractPost(post,url,ctx){…} }   // wp-json sites (gets the raw post object)
+//   "blog.acme.com": { extractPage(html,url,ctx){…} }   // full-HTML sites (gets fetched page HTML)
+// A pinned handler wins over the WP/trafilatura defaults for that host.
+const SITE_HANDLERS = {
+  // "blogs.nvidia.com": { extractPost: extractWordPressPost },  // (implicit — NVIDIA is WordPress)
+};
+function siteHandler(host) {
+  const h = String(host || "").replace(/^www\./, "");
+  return SITE_HANDLERS[h] || SITE_HANDLERS[h.split(".").slice(-2).join(".")] || null;
+}
+
 // ---- backfill engine (one job per feed; imports directly, no sub-jobs) ------
 async function backfillWpjson(feed, ctx) {
   const base = new URL(feed.siteUrl || feed.feedUrl).origin + "/wp-json/wp/v2/posts";
@@ -361,7 +419,9 @@ async function backfillWpjson(feed, ctx) {
     // featured image (the article's main/hero image) is NOT in content.rendered and its /media
     // endpoint is often auth-gated (401) — but _embed=wp:featuredmedia returns its source_url
     // inline. _links MUST be in _fields or WordPress can't resolve the embeds (they come back empty).
-    const u = `${base}?per_page=100&page=${page}&_embed=author,wp:term,wp:featuredmedia&_fields=link,title,excerpt,date_gmt,content,_links,_embedded`;
+    // yoast_head_json.og_description = the curated one-line SUMMARY (SEO/social meta) — NOT in
+    // content.rendered; used as the article's lead "dek". Nested _fields keeps the payload tiny.
+    const u = `${base}?per_page=100&page=${page}&_embed=author,wp:term,wp:featuredmedia&_fields=link,title,excerpt,date_gmt,content,_links,_embedded,yoast_head_json.og_description`;
     const r = await politeFetch(u, { timeoutMs: 40000, signal: ctx.signal });
     if (r.status === 400) break;   // WordPress 400s past the last page
     if (!r.ok) throw new Error(`wp-json HTTP ${r.status}`);
@@ -387,36 +447,15 @@ async function backfillWpjson(feed, ctx) {
       // trafilatura absent — could leave a cursor at 201 with nothing actually imported).
       let handled = false;
       try {
-        // Featured image (hero) from the embed → passed as heroUrl so it's downloaded as image_1
-        // ahead of the content.rendered body images.
-        const fm = (post._embedded && post._embedded["wp:featuredmedia"]) || [];
-        const heroUrl = (fm[0] && fm[0].source_url) || "";
-        // content.rendered is PURE article body, so every <img> in it is a real content image —
-        // scrape them directly (real src or lazy data-src) since trafilatura drops <img>s wrapped
-        // in wp-caption/figure-with-lazy on a bare fragment.
-        const frag = stripCdata(post.content && post.content.rendered || "");
-        const fragImgs = [];
-        for (const tag of frag.match(/<img\b[^>]*>/gi) || []) {
-          const m = tag.match(/\b(?:data-src|data-lazy-src|src)=["']([^"']+)["']/i);
-          if (m && /^https?:\/\//i.test(m[1])) fragImgs.push(m[1]);
-        }
-        const { text, images, meta } = await extractArticle(frag, url, NEWS_IMAGE_CAP, ctx.signal, heroUrl, fragImgs);
-        if (!text || !text.trim()) { skipped++; handled = true; markSeen(feed.id, [url]); if (ctx.onProgress) ctx.onProgress(pos, total || undefined); continue; }
-        const dt = toDateTime(post.date_gmt ? post.date_gmt + "Z" : "");
-        // wp-json _embedded carries the authoritative author + term names → prefer them over
-        // trafilatura's (a bare content.rendered fragment rarely has author/category in-body).
-        const emb = post._embedded || {};
-        const wpAuthor = (emb.author && emb.author[0] && emb.author[0].name) || "";
-        // Keep only real category/tag taxonomies — WordPress also embeds an "author" term
-        // (the author's archive slug) which is just noise as a tag.
-        const wpTerms = [].concat(...(emb["wp:term"] || [])).filter((t) => t && (t.taxonomy === "category" || t.taxonomy === "post_tag")).map((t) => t.name).filter(Boolean);
-        const mergedMeta = { ...meta, author: wpAuthor || (meta && meta.author) || "", tags: [...new Set([...(meta && meta.tags || []), ...wpTerms])], categories: [] };
-        await importItem(feed, {
-          url, text: text.trim(), images, meta: mergedMeta,
-          title: decodeEntities(stripCdata(post.title && post.title.rendered || "")).trim(),
-          excerpt: post.excerpt && post.excerpt.rendered || "",
-          publishedAt: dt.date, publishedTime: dt.time,
-        }, ctx);
+        // Dispatch to the per-site handler: a host-pinned one if present, else the shared WordPress
+        // handler (extractWordPressPost — tuned on NVIDIA). Both keep images in position + captions,
+        // hero as image_1, og:description as the lead dek, and author/tags from _embed.
+        const custom = siteHandler(hostOf(url));
+        const extracted = custom && custom.extractPost
+          ? await custom.extractPost(post, url, ctx)
+          : await extractWordPressPost(post, url, ctx);
+        if (!extracted || !extracted.text || !extracted.text.trim()) { skipped++; handled = true; markSeen(feed.id, [url]); if (ctx.onProgress) ctx.onProgress(pos, total || undefined); continue; }
+        await importItem(feed, { url, ...extracted }, ctx);
         imported++; handled = true;
       } catch (e) {
         if (e && e.name === "AbortError") throw e;                 // user interrupt → stop

@@ -420,12 +420,12 @@ async function downloadImagesNamed(urls, referer, max, signal) {
 // ![alt](image_N.ext) so splitIntoBlocks turns them into real figure blocks (stored on the
 // doc, shown in the reader). Images that fail to download / are UI icons still degrade to the
 // text placeholder. maxImages=0 → behaves like extractCleanContent (no downloads).
-async function extractArticleWithImages(html, baseUrl, maxImages = 8) {
+async function extractArticleWithImages(html, baseUrl, maxImages = 8, signal) {
   const articleHtml = extractMainContentHtml(html);
   const markdown = await htmlToMarkdown(rewriteArticleImages(articleHtml, baseUrl));
   const cleaned = cleanupMarkdown(markdown);
   const imageUrls = [...cleaned.matchAll(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g)].map((m) => m[1]);
-  const downloaded = maxImages > 0 ? await downloadImagesNamed(imageUrls, baseUrl, maxImages) : [];
+  const downloaded = maxImages > 0 ? await downloadImagesNamed(imageUrls, baseUrl, maxImages, signal) : [];
   const byUrl = new Map(downloaded.map((im) => [im.url, im]));
   let text = cleaned.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (_, alt, url) => {
     const a = (alt || "").trim();

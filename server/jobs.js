@@ -391,7 +391,11 @@ async function runLibImportJob(job, signal) {
     const authors = ((wp && wp.author) || m.author || "").trim();
     const tags = [...new Set([...(m.categories || []), ...(m.tags || []), ...((wp && wp.terms) || [])].map((s) => String(s).trim()).filter(Boolean))].slice(0, 12);
     const pub = p.publishedAt || String(m.date || "").slice(0, 10);
-    const imp = await library.importDocInternal({ source: `url:${p.url}`, docId: p.docId, dedupeUrl: true, docKind: "blog", folder: p.folder, title: title || m.title || p.url, authors, tags, publishedAt: pub, text, images, model: p.embedModel, extraBlocks: card ? [card] : undefined });
+    // Lead "dek" = the article's og:description (trafilatura's meta.description), prepended as an
+    // italic standfirst if it isn't already the opening line of the body.
+    const dek = String(m.description || "").replace(/\s+/g, " ").trim();
+    const body = (dek && !text.trimStart().startsWith(dek.slice(0, 40)) ? `*${dek}*\n\n` : "") + text;
+    const imp = await library.importDocInternal({ source: `url:${p.url}`, docId: p.docId, dedupeUrl: true, docKind: "blog", folder: p.folder, title: title || m.title || p.url, authors, tags, publishedAt: pub, text: body, images, model: p.embedModel, extraBlocks: card ? [card] : undefined });
     return { docId: imp.docId, blockCount: imp.blockCount, folder: imp.folder, distilled: false };
   }
   if (p.type === "backfill") {
