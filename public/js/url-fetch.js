@@ -140,6 +140,11 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
   // are always in-place (cursor set) and run the reply headless.
   const runReply = async () => {
     if (!_regenerateReply) return;
+    // The whole /url chain runs as a bg job, so regenerateReply(bg) is headless — it never
+    // shows the foreground "thinking" bubble. Flip the job placeholder (which sits right
+    // below the just-spliced content/prompt bubbles) to the thinking label so the reply
+    // phase reads as "正在想…" instead of lingering on the fetch label until the answer pops in.
+    if (bg && bg.label) bg.label(t("msg_thinking"));
     if (inPlace) { await _regenerateReply(tabId, cursor.pos, cursor.pos - 1, { urlPart: true }, bg); cursor.pos++; }
     else _regenerateReply(tabId, -1, -1, { urlPart: true });
   };
@@ -262,13 +267,18 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
         await runReply();
       }
     } else if (data.type !== "youtube") {
-      // For non-YouTube: if prompt exists, add user message with prompt; otherwise let AI process normally
+      // For non-YouTube: only reply when the user actually asked something. A bare
+      // `/url <link>` just imports the page (bubble 1) — no auto AI summary. With a
+      // prompt, add the user message and let the AI answer against the fetched content.
       if (prompt) {
         placeMsg(tab, { role: "user", content: prompt, timestamp: Date.now() }, cursor);
         saveChat();
         if (state.activeTabId === tabId && _renderChat) _renderChat();
+        await runReply();
+      } else if (!bg) {
+        // Import-only (no prompt): no runReply() to close out the avatar, so idle it here.
+        setAvatarState("idle");
       }
-      await runReply();
     }
   } catch (error) {
     if (pending) pending.remove();

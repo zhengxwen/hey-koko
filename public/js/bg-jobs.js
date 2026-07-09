@@ -431,6 +431,15 @@ async function runJob(job) {
   jobControllers.set(job.id, controller);
   const sink = makeBgSink(job, controller);
   const p = job.payload || {};
+  // Client-run jobs execute right here in the browser (fetch / LLM chat), never touching the
+  // server GPU queue — so no onProgress SSE ever flips them to 'running'. Left alone they'd sit
+  // at their enqueue label + "排队中" the whole run, and every sink.label() would stash into
+  // _runLabel (invisible) instead of updating the placeholder — e.g. /url never showing
+  // "正在获取内容" → "正在想". Flip them now; they genuinely start now (unlike GPU jobs that the
+  // server serializes, which must stay queued until their turn). markRunning no-ops on the rest.
+  if (job.kind === 'url' || job.kind === 'doc' || job.kind === 'chat' || job.kind === 'docfull') {
+    sink.markRunning();
+  }
   if (job.kind === 'audio') {
     await generateSpeech(p.parsed, job.tabId, -1, sink);
   } else if (job.kind === 'analyze') {
@@ -602,6 +611,10 @@ function makeBgSink(job, controller) {
     background: true,
     signal: controller.signal,
     tabId: job.tabId,
+    // Exposed so runJob can flip a CLIENT-run job (url/doc/chat/docfull — no server GPU queue,
+    // hence no onProgress SSE to do it) to 'running' the moment it starts. The serverJobId guard
+    // inside makes this a no-op for server-queued jobs, so it's safe to call for any kind.
+    markRunning,
     // Option B: identifies this job to the server queue so generation runs server-side
     // (image/video/audio). Generators submit via comfyFetch/ttsFetch when this is set.
     server: { bgJob: job, conversationId: job.tabId, msgId: job.msgId, label: job.label, comfyUrl: job.workerUrl || '', comfyClientId: job.comfyClientId },

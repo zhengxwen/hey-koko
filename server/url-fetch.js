@@ -76,10 +76,38 @@ async function fetchUrlContent(req, res) {
     }
 
     const html = await response.text();
-    const title = decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim() || "");
-    const publishedAt = extractPublishedDate(html);
-    const { text, imageUrls } = await extractCleanContent(html, url);
-    const images = await downloadImages(imageUrls, url, 8);
+    let title = decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim() || "");
+    let publishedAt = extractPublishedDate(html);
+
+    // Main-content extraction. Prefer the trafilatura sidecar (server/extract-article.py) —
+    // the same benchmark-leading extractor the news layer uses — for cleaner body + real
+    // metadata (title/date drop the " | SiteName" cruft the <title> tag carries). It's a
+    // BEST-EFFORT upgrade: absent sidecar, python crash, image-backend gap or timeout all
+    // fall through to the zero-dependency JS heuristic (extractCleanContent), so /url keeps
+    // working exactly as before. Web contract is unchanged — trafilatura's inline
+    // ![](image_N) refs are collapsed to ［图片］ placeholders and images returned as data:
+    // URIs, since the frontend shows them as a thumbnail strip, not inline.
+    let text, images;
+    if (await trafilaturaAvailable()) {
+      try {
+        const r = await extractArticle(html, url, 8, controller.signal);
+        const body = markdownImagesToPlaceholders(r.text || "");
+        // Empty/near-empty body → trafilatura found nothing usable (client-rendered page,
+        // paywall). Leave text undefined so the JS heuristic below gets its own shot.
+        if (body.trim().length >= 40) {
+          text = body;
+          images = (r.images || []).map((im) => `data:${im.mime};base64,${im.base64}`);
+          if (r.meta && r.meta.title) title = r.meta.title;
+          const md = r.meta && String(r.meta.date || "").match(/\d{4}-\d{2}-\d{2}/);
+          if (md) publishedAt = md[0];
+        }
+      } catch { text = undefined; images = undefined; }   // degrade to the JS path below
+    }
+    if (text === undefined) {
+      const r = await extractCleanContent(html, url);
+      text = r.text;
+      images = await downloadImages(r.imageUrls, url, 8);
+    }
     const truncated = truncateContent(text, config.URL_CONTENT_MAX_CHARS);
     sendJson(res, 200, { type: "webpage", title, url, content: truncated, images, publishedAt });
   } catch (error) {
@@ -317,6 +345,22 @@ async function extractCleanContent(html, baseUrl) {
     .replace(/(［图片[^］]*］)(\s*\n\s*［图片[^］]*］)+/g, "$1")
     .replace(/\n{3,}/g, "\n\n");
   return { text, imageUrls };
+}
+
+// Collapse a trafilatura-produced markdown body (![alt](image_N.ext) refs, already
+// downloaded + boilerplate-stripped) down to the /url webpage contract: inline images
+// become ［图片］/［图片：alt］ placeholders (UI-icon images dropped, adjacent runs merged),
+// matching extractCleanContent's text so the frontend renders both extractors identically.
+function markdownImagesToPlaceholders(md) {
+  return String(md || "")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, alt) => {
+      const a = (alt || "").trim();
+      if (UI_ICON_ALT_RE.test(a)) return "";
+      return a && a.length <= 60 ? `［图片：${a}］` : "［图片］";
+    })
+    .replace(/(［图片[^］]*］)(\s*\n\s*［图片[^］]*］)+/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 // Like downloadImages but returns { url, name:"image_N.ext", base64, mime } so the result
