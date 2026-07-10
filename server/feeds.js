@@ -365,7 +365,15 @@ async function resolveItem(it, ctx) {
     try { const r = await politeFetch(it.url, { timeoutMs: 25000, signal: ctx.signal, minGapMs: 1500 }); if (r.ok && /html/i.test(r.headers.get("content-type") || "")) html = await r.text(); }
     catch (e) { if (e && e.name === "AbortError") throw e; }   // page fetch failed → handler still uses content:encoded (no hero)
     const e = await ph.extractPage(html, it.url, { ...ctx, contentHtml: it.contentHtml });
-    if (e && e.text && e.text.trim()) return { text: e.text.trim(), images: e.images, meta: e.meta };
+    // A bespoke handler parses the publish date off the page (e.g. abbvie's wd_date), but the feed
+    // item usually already carries it, so importItem takes the date from the FEED item and only
+    // falls back to meta.date. Fold the handler's publishedAt into that same fallback channel so a
+    // feed item WITHOUT a date (e.g. a slug-less ?item=<id> URL) still gets the page's date.
+    if (e && e.text && e.text.trim()) {
+      const meta = { ...(e.meta || {}) };
+      if (!meta.date && e.publishedAt) meta.date = e.publishedAt;
+      return { text: e.text.trim(), images: e.images, meta };
+    }
   }
   if (it.contentHtml && it.contentHtml.length > 200) {
     const r = await extractArticle(it.contentHtml, it.url, NEWS_IMAGE_CAP, ctx.signal);
