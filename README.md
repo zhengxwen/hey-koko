@@ -15,17 +15,18 @@ Hey-Koko gives you a personal AI chat experience without sending a single byte t
 - **Local & private** — conversations, memory, and archives stay on your device. Nothing leaves your machine.
 - **Customizable companion** — set the name, personality (system prompt), and default voice.
 - **Multi-tab chats** — run several independent conversations side by side, each with its own context.
-- **File understanding** — drag in PDF, DOCX, PPTX, EML, images, or plain text; they're parsed and fed to the model. PDFs can use a selectable local engine — [MinerU](docs/optional-tools.md#mineru) or [Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) (GPU, great on scans) — falling back to fast built-in text extraction.
+- **File understanding** — drag in PDF, DOCX, PPTX, EML, images, or plain text; they're parsed and fed to the model. PDFs can use a selectable local engine — [MinerU](docs/optional-tools.md#mineru) — falling back to fast built-in text extraction.
 - **Vision analysis** — `/analyze` an attached image or video (sampled into frames) with a local vision model.
 - **Web & YouTube** — `/url` fetches and summarizes a web page, or transcribes and tidies up a YouTube video.
 - **Web search** — `/search` queries DuckDuckGo, optionally reading the top results in depth.
 - **Image & video generation** — `/imagine` with local Ollama image models; optionally connect [ComfyUI](docs/comfyui.md) for advanced text-to-image, instruction editing, multi-image composition, and video.
 - **Local text-to-speech** — `/voice` synthesizes a downloadable audio file ([Kokoro](docs/local-python.md), or macOS system voices). Optional auto-speak reads replies aloud.
 - **Long-term memory & proactive messages** — remembers facts about you, and can greet, nudge, or remind you on its own.
-- **Agentic tools** — an optional tool-use loop (date/time, calculator, web search, recall memory, set reminders, remember facts).
+- **Agentic tools** — an optional tool-use loop (date/time, calculator, web search, knowledge-library search, recall memory, set reminders, remember facts).
+- **Knowledge library (RAG)** — import web pages, YouTube videos, papers (with Zotero sync), slide decks, news feeds, and local files into a searchable library: auto-distilled summary cards, semantic search, `/ask` with cited answers, and star-map / timeline / entity-graph views.
 - **Background task queue** — long-running jobs run detached so you can keep chatting; see [Background Jobs](#background-jobs).
 - **Conversation archive** — save, revisit, and **semantically search** past conversations; export any chat to Markdown.
-- **Rich markdown** — LaTeX math (KaTeX), Mermaid diagrams, syntax-highlighted code, and a live context/token usage meter.
+- **Rich markdown** — LaTeX math (KaTeX), Mermaid diagrams, inline SVG rendering, tables, syntax-highlighted code, and a live context/token usage meter.
 - **Multi-model** — switch between any installed Ollama model on the fly; optionally add [cloud models](docs/cloud-models.md) (Claude / OpenAI / DeepSeek / …).
 - **Trilingual UI** — English, Simplified Chinese, Traditional Chinese.
 
@@ -74,9 +75,9 @@ Everything beyond a chat model is optional — image generation, file parsers, Y
 On macOS you can also package Hey-Koko into a native `.app` with `./build-app.sh` (and force-stop stuck instances with `./kill-app.sh`) — see [macOS App Bundle](docs/install.md#macos-app-bundle).
 
 
-## Full macOS Setup (Python tools)
+## Full macOS Setup (optional Python tools)
 
-The Quick Start above gives you chat. The steps below add **PDF parsing** (MinerU) and **local text-to-speech + star-map** (Kokoro) — all isolated in `~/venv` so they don't touch your system Python.
+The Quick Start above is all you need to chat — **everything in this section is optional**. The steps below add **PDF parsing** (MinerU) and **local text-to-speech + star-map** (Kokoro); skip them (or come back later) and those features simply stay hidden. All installs are isolated in `~/venv` so they don't touch your system Python.
 
 > **Prerequisites:** Homebrew and Node.js from the Quick Start above.
 
@@ -98,7 +99,8 @@ uv venv --python 3.11 ~/venv/heykoko
 uv pip install --python ~/venv/heykoko/bin/python \
   kokoro "misaki[zh]" numpy soundfile umap-learn scikit-learn
 
-# English voices need the spaCy English model + espeak-ng
+# Optional — only if you want the English voices (af_*/am_*/bf_*/bm_*);
+# Chinese voices work without this. spaCy English model + espeak-ng:
 uv pip install --python ~/venv/heykoko/bin/python \
   "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 brew install espeak-ng
@@ -135,6 +137,7 @@ Type `/` in the chat box to open the command palette. The main commands:
 | `/analyze [question]` | Analyze an attached image/video with the vision model. `-f N` sets how many video frames to sample (default 8). |
 | `/url [prompt] <link>` | Parse & summarize a web page, or transcribe & tidy up a YouTube video. |
 | `/search <query>` | DuckDuckGo search. `--deep[=N]`/`--read` to read pages, `--n N` result count, `--day`/`--week`/`--month`/`--year` recency. |
+| `/ask [@doc \| #archive …] <question>` | Ask the knowledge library — retrieves relevant docs (read in full by default) and answers with cited sources. `-n K` doc count, `-a` agentic auto-retrieval, `-s` short answer. |
 | `/voice <text>` | Text-to-speech → downloadable audio file. `--use`/`-u engine:voice` (e.g. `kokoro:zm_yunxi`), `--speed`/`-s 0.5–2`. |
 | `/memory <fact>` | Remember a fact about you long-term. |
 | `/note <text>` | Record a note (no AI reply). |
@@ -176,19 +179,30 @@ PDF/DOCX files are auto-summarized after parsing. Both parsing and summarization
 
 Hey-Koko works with just Ollama. Each helper below unlocks an extra capability when installed; without it, that feature is simply hidden or falls back to a lighter path.
 
+### Recommended
+
+Light installs that round out the everyday features:
+
 | Capability | Helper | Setup guide |
 |------------|--------|-------------|
 | Better DOCX/PPTX parsing | Pandoc | [optional-tools.md → Pandoc](docs/optional-tools.md#pandoc) |
 | High-quality PDF parsing | MinerU | [optional-tools.md → MinerU](docs/optional-tools.md#mineru) |
-| Local GPU PDF OCR (scans) | Unlimited-OCR | [optional-tools.md → Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) |
-| Whole-slide page images for decks | LibreOffice | [optional-tools.md → LibreOffice](docs/optional-tools.md#libreoffice) |
 | YouTube support (`/url`) | yt-dlp & ffmpeg | [optional-tools.md → yt-dlp](docs/optional-tools.md#yt-dlp--ffmpeg) |
 | Speech-to-text for videos without subtitles | whisper.cpp | [optional-tools.md → whisper.cpp](docs/optional-tools.md#whispercpp) |
 | Simplified/Traditional Chinese normalization | OpenCC | [optional-tools.md → OpenCC](docs/optional-tools.md#opencc) |
 | Local text-to-speech (`/voice`) | Kokoro | [docs/local-python.md](docs/local-python.md) |
 | News feed subscriptions (📰 clean article + metadata import) | trafilatura | [docs/local-python.md](docs/local-python.md) |
-| Advanced image & video generation | ComfyUI | [docs/comfyui.md](docs/comfyui.md) |
 | Cloud chat & embedding models (Claude / OpenAI / DeepSeek / OpenRouter / Grok / Qwen / …) | API key | [docs/cloud-models.md](docs/cloud-models.md) |
+
+### Advanced
+
+Heavier setups (dedicated GPU / large installs) for specific needs:
+
+| Capability | Helper | Setup guide |
+|------------|--------|-------------|
+| Advanced image & video generation | ComfyUI | [docs/comfyui.md](docs/comfyui.md) |
+| Local GPU PDF OCR (scans) | Unlimited-OCR | [optional-tools.md → Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) |
+| Whole-slide page images for decks | LibreOffice | [optional-tools.md → LibreOffice](docs/optional-tools.md#libreoffice) |
 
 
 ## Environment Variables
@@ -198,7 +212,6 @@ The most common ones — full reference in [docs/install.md](docs/install.md#env
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
-| `COMFYUI_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
 | `HEYKOKO_PORT` | `1314` | Server port |
 
 ```bash

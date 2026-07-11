@@ -30,7 +30,7 @@ you.
 uv venv --python 3.11 ~/venv/heykoko
 uv pip install --python ~/venv/heykoko/bin/python kokoro "misaki[zh]" numpy soundfile umap-learn scikit-learn
 
-# English voices (af_*/am_* US, bf_*/bm_* UK) also need the spaCy English model
+# Optional — only if you want the English voices (af_*/am_* US, bf_*/bm_* UK); Chinese voices work without this. They need the spaCy English model
 # + espeak-ng (otherwise misaki tries to auto-download the model and fails):
 uv pip install --python ~/venv/heykoko/bin/python \
   "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
@@ -46,7 +46,7 @@ Install [uv](https://github.com/astral-sh/uv) first if you don't have it: `curl 
 uv venv --python 3.11 ~/venv/heykoko
 uv pip install --python ~/venv/heykoko/bin/python kokoro "misaki[zh]" numpy soundfile umap-learn scikit-learn
 
-# English voices (af_*/am_* US, bf_*/bm_* UK) also need the spaCy English model
+# Optional — only if you want the English voices (af_*/am_* US, bf_*/bm_* UK); Chinese voices work without this. They need the spaCy English model
 # + espeak-ng (otherwise misaki tries to auto-download the model and fails):
 uv pip install --python ~/venv/heykoko/bin/python \
   "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
@@ -70,7 +70,7 @@ $vpy = "$env:USERPROFILE\venv\heykoko\Scripts\python.exe"
 & $vpy -m pip install --upgrade pip
 & $vpy -m pip install kokoro "misaki[zh]" numpy soundfile umap-learn scikit-learn
 
-# English voices (af_*/am_* US, bf_*/bm_* UK) also need the spaCy English model
+# Optional — only if you want the English voices (af_*/am_* US, bf_*/bm_* UK); Chinese voices work without this. They need the spaCy English model
 # + espeak-ng (otherwise misaki tries to auto-download the model and fails):
 & $vpy -m pip install "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 winget install eSpeak-NG.eSpeak-NG
