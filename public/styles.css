@@ -5601,6 +5601,10 @@ button.secondary:disabled {
 .relGraphSvg .relNodeClickable { cursor: pointer; }
 .relGraphSvg .relNodeHit { fill: transparent; cursor: pointer; }
 .relGraphSvg .relNode.relNodeClickable:hover { stroke: var(--accent); stroke-width: 2.5; }
+/* Full-screen modal: nodes are DRAGGABLE (manually pull apart overlapping labels).
+   touch-action:none so a touch-drag moves the node instead of scrolling the pane. */
+.relGraphSvgFull .relNode, .relGraphSvgFull .relNodeHit, .relGraphSvgFull .relNodeLabel { cursor: grab; touch-action: none; }
+.relGraphSvgFull.isNodeDrag .relNode, .relGraphSvgFull.isNodeDrag .relNodeHit, .relGraphSvgFull.isNodeDrag .relNodeLabel { cursor: grabbing; }
 /* Multi-center: a shared neighbor (belongs to >=2 centers = the intersection) — hollow, ringed */
 .relGraphSvg .relNodeShared { fill: var(--panel); stroke: var(--ink); stroke-width: 2.5; stroke-dasharray: 2.5 2; }
 /* legend shared dot: hollow + ringed (higher specificity so it isn't overridden by .relNode) */

@@ -247,7 +247,7 @@ let svgSeq = 0;   // per-svg id prefix so multiple graphs' arrow markers never c
 
 // Build the SVG for a set of relations. `full` = full-screen mode: bigger layout, longer
 // labels, and a wider stroke class so text stays readable when the graph fills the screen.
-function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, radial = false, filter = null, spread = 1, docTitle = null } = {}) {
+function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, radial = false, filter = null, spread = 1, docTitle = null, draggable = false } = {}) {
   const centerSet = center instanceof Set ? center : new Set(center ? [center] : []);
   const names = [...new Set(rels.flatMap((r) => [r.head, r.tail]))];
   // Multi-center (>=2 seeds): sectors + per-center colors + a shared inner ring, so you can tell
@@ -323,13 +323,34 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, ra
     return mid;
   }
   const NR = full ? 6 : 5;   // node radius
-  for (const r of rels) {   // edges first (under nodes)
-    if (!edgeVisible(r)) continue;   // legend toggle hid this edge's category
+  // Geometry shared by the initial render AND node dragging: edge endpoints trimmed to the
+  // node radius (extra room on the arrow side), so a dragged node's edges re-trim identically.
+  const edgeGeom = (r) => {
     const a = P(r.head), b = P(r.tail);
     const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
     const ux = dx / d, uy = dy / d;
-    const x1 = a.x + ux * (NR + 1), y1 = a.y + uy * (NR + 1);
-    const x2 = b.x - ux * (NR + 6), y2 = b.y - uy * (NR + 6);
+    return { x1: a.x + ux * (NR + 1), y1: a.y + uy * (NR + 1), x2: b.x - ux * (NR + 6), y2: b.y - uy * (NR + 6), ux, uy };
+  };
+  // Label placement, reused on drag. Radial leaves anchor away from the hub; others sit above.
+  const placeNodeLabel = (nm, label, isCenter) => {
+    const q = P(nm);
+    if (radial && !isCenter) {
+      const right = q.x >= cx;
+      label.setAttribute("x", right ? q.x + NR + 6 : q.x - NR - 6);
+      label.setAttribute("y", q.y + 5);
+      label.setAttribute("text-anchor", right ? "start" : "end");
+    } else {
+      label.setAttribute("x", q.x);
+      label.setAttribute("y", q.y - (isCenter ? NR + 3 : NR) - 5);
+      label.setAttribute("text-anchor", "middle");
+    }
+  };
+  const nodeEls = new Map();   // name → {circle, hit, label, isCenter} (for drag repositioning)
+  const edgeEls = [];          // {r, line, hit, labelEl, yearEl}
+  let suppressClick = false;   // a drag ends with a stray click — swallow it (don't recenter)
+  for (const r of rels) {   // edges first (under nodes)
+    if (!edgeVisible(r)) continue;   // legend toggle hid this edge's category
+    const { x1, y1, x2, y2, ux, uy } = edgeGeom(r);
     const yr = r.time ? String(r.time).slice(0, 4) : "";   // timeline layer: year on timed relations
     const label = r.qual ? `${r.rel} (${r.qual})` : (r.time ? `${r.rel} (${r.time})` : r.rel);
     // co-occurrence edges are undirected (no arrow, dashed) — "share a document", not a relation
@@ -351,12 +372,14 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, ra
     svg.appendChild(hit);
     // Radial (neighborhood): NO edge labels — a hub has dozens of edges and their labels pile
     // into an unreadable mush at the center. The relation is in the hover tooltip instead.
+    let labelEl = null, yearEl = null;
     if (!radial) {
       const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
       const tx = el("text", { x: mx, y: my - 2, class: "relEdgeLabel", "text-anchor": "middle" }, trunc(label, eTrunc));
       tx.setAttribute("paint-order", "stroke");   // halo for legibility over edges
       tx.appendChild(el("title", {}, tip));   // tooltip on the relation text (esp. when truncated)
       svg.appendChild(tx);
+      labelEl = tx;
     } else if (yr && f.years !== false) {
       // Radial: full relation labels would mush, but a bare 4-digit YEAR is short + sparse. Place
       // it at the edge MIDPOINT, nudged PERPENDICULAR to the line so it sits beside the spoke —
@@ -368,7 +391,9 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, ra
       if (ec) yt.style.fill = ec;
       yt.appendChild(el("title", {}, tip));
       svg.appendChild(yt);
+      yearEl = yt;
     }
+    edgeEls.push({ r, line, hit, labelEl, yearEl });
   }
   for (const nm of names) {   // nodes
     if (!nodeVisible(nm)) continue;   // legend toggle hid this node's category
@@ -381,28 +406,88 @@ function buildGraphSvg(rels, { full = false, center = "", onNodeClick = null, ra
     if (col && !isShared) { circle.style.fill = col; if (isCenter) circle.style.stroke = col; }
     // Radial: label sits to the SIDE (out from the hub) and is anchored away from center, so
     // labels radiate outward without crossing the hub. Non-radial: label sits above the node.
-    let label;
-    if (radial && !isCenter) {
-      const right = q.x >= cx;
-      label = el("text", { x: right ? q.x + NR + 6 : q.x - NR - 6, y: q.y + 5, class: "relNodeLabel" + clk, "text-anchor": right ? "start" : "end" }, trunc(nm, nTrunc));
-    } else {
-      label = el("text", { x: q.x, y: q.y - (isCenter ? NR + 3 : NR) - 5, class: "relNodeLabel" + (isCenter ? " relNodeLabelCenter" : "") + clk, "text-anchor": "middle" }, trunc(nm, nTrunc));
-    }
+    const label = el("text", { class: "relNodeLabel" + (isCenter ? " relNodeLabelCenter" : "") + clk }, trunc(nm, nTrunc));
+    placeNodeLabel(nm, label, isCenter);
     label.setAttribute("paint-order", "stroke");
     if (col && isCenter) label.style.fill = col;   // center label in its own hue (inline beats CSS)
-    const tipText = onNodeClick ? `${nm}\n${t("relGraphRecenter")}` : nm;
+    const tipText = nm
+      + (onNodeClick ? `\n${t("relGraphRecenter")}` : "")
+      + (draggable ? `\n${t("relGraphDragHint")}` : "");
     circle.appendChild(el("title", {}, tipText));
     label.appendChild(el("title", {}, tipText));
-    if (onNodeClick) {
-      // generous invisible hit-target so small nodes are easy to click
-      const hit = el("circle", { cx: q.x, cy: q.y, r: NR + 10, class: "relNodeHit" });
+    let hit = null;
+    if (onNodeClick || draggable) {
+      // generous invisible hit-target so small nodes are easy to click / grab
+      hit = el("circle", { cx: q.x, cy: q.y, r: NR + 10, class: "relNodeHit" });
       hit.appendChild(el("title", {}, tipText));
-      const go = (e) => { e.stopPropagation(); onNodeClick(nm); };
-      hit.addEventListener("click", go); circle.addEventListener("click", go); label.addEventListener("click", go);
       svg.appendChild(hit);
+    }
+    if (onNodeClick) {
+      const go = (e) => { e.stopPropagation(); if (!suppressClick) onNodeClick(nm); };
+      hit.addEventListener("click", go); circle.addEventListener("click", go); label.addEventListener("click", go);
     }
     svg.appendChild(circle);
     svg.appendChild(label);
+    nodeEls.set(nm, { circle, hit, label, isCenter });
+  }
+  // Interactive mode (full-screen modal): drag a node to reposition it — the node, its label,
+  // its hit-target, and every connected edge (line + relation/year label) follow live, so the
+  // user can manually pull apart labels the automatic layout left overlapping.
+  if (draggable) {
+    const svgPoint = (e) => {   // client px → viewBox coords (independent of CSS scaling)
+      const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+      const m = svg.getScreenCTM();
+      return m ? pt.matrixTransform(m.inverse()) : pt;
+    };
+    const moveNode = (nm) => {
+      const n = nodeEls.get(nm); if (!n) return;
+      const q = P(nm);
+      n.circle.setAttribute("cx", q.x); n.circle.setAttribute("cy", q.y);
+      if (n.hit) { n.hit.setAttribute("cx", q.x); n.hit.setAttribute("cy", q.y); }
+      placeNodeLabel(nm, n.label, n.isCenter);
+      for (const em of edgeEls) {
+        if (em.r.head !== nm && em.r.tail !== nm) continue;
+        const g = edgeGeom(em.r);
+        for (const ln of [em.line, em.hit]) {
+          ln.setAttribute("x1", g.x1); ln.setAttribute("y1", g.y1);
+          ln.setAttribute("x2", g.x2); ln.setAttribute("y2", g.y2);
+        }
+        const mx = (g.x1 + g.x2) / 2, my = (g.y1 + g.y2) / 2;
+        if (em.labelEl) { em.labelEl.setAttribute("x", mx); em.labelEl.setAttribute("y", my - 2); }
+        if (em.yearEl) { em.yearEl.setAttribute("x", mx - g.uy * 9); em.yearEl.setAttribute("y", my + g.ux * 9); }
+      }
+    };
+    let drag = null;   // {name, offX, offY, sx, sy, moved}
+    for (const [nm, n] of nodeEls) {
+      const down = (e) => {
+        if (e.button !== 0) return;
+        const p = svgPoint(e), q = P(nm);
+        drag = { name: nm, offX: q.x - p.x, offY: q.y - p.y, sx: e.clientX, sy: e.clientY, moved: false };
+        e.preventDefault();
+        try { e.target.setPointerCapture(e.pointerId); } catch { /* older engines */ }
+      };
+      for (const eln of [n.circle, n.label, n.hit]) if (eln) eln.addEventListener("pointerdown", down);
+    }
+    svg.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 3) return;   // a click, not a drag
+      drag.moved = true;
+      svg.classList.add("isNodeDrag");
+      const p = svgPoint(e);
+      pos.set(drag.name, {
+        x: Math.max(4, Math.min(W - 4, p.x + drag.offX)),
+        y: Math.max(4, Math.min(H - 4, p.y + drag.offY)),
+      });
+      moveNode(drag.name);
+    });
+    const up = () => {
+      if (!drag) return;
+      if (drag.moved) { suppressClick = true; setTimeout(() => { suppressClick = false; }, 0); }   // eat the trailing click
+      drag = null;
+      svg.classList.remove("isNodeDrag");
+    };
+    svg.addEventListener("pointerup", up);
+    svg.addEventListener("pointercancel", up);
   }
   return svg;
 }
@@ -528,7 +613,7 @@ function openGraphModal(rels, { title = "", center = "", onNodeClick = null, rad
   // false so it doesn't yank the view back while you're panning.
   const draw = (recenter = false) => {
     scroll.innerHTML = "";
-    scroll.appendChild(buildGraphSvg(curRels, { full: true, radial, spread, filter, docTitle: curDocTitle, center: curCenter, onNodeClick: curOnClick }));
+    scroll.appendChild(buildGraphSvg(curRels, { full: true, radial, spread, filter, docTitle: curDocTitle, center: curCenter, onNodeClick: curOnClick, draggable: true }));
     renderLegend();
     requestAnimationFrame(() => { updateHint(); if (recenter) centerScroll(); });
   };
@@ -550,12 +635,12 @@ function openGraphModal(rels, { title = "", center = "", onNodeClick = null, rad
     spread = Math.min(4, Math.max(0.4, spread * (e.deltaY < 0 ? 1.12 : 0.89)));
     draw(true);
   }, { passive: false });
-  // Drag the empty background to pan (grab cursor). Node/edge hits keep their own click.
+  // Drag the empty background to pan (grab cursor). Node hits keep their own click/drag.
   let panning = false, panSX = 0, panSY = 0, panSL = 0, panST = 0;
   const onPanDown = (e) => {
     if (!radial || e.button !== 0) return;
     const cl = e.target.classList;
-    if (cl && (cl.contains("relNodeHit") || cl.contains("relNodeClickable"))) return;   // let node clicks through
+    if (cl && (cl.contains("relNodeHit") || cl.contains("relNodeClickable") || cl.contains("relNode") || cl.contains("relNodeLabel"))) return;   // node drag, not pan
     panning = true; panSX = e.clientX; panSY = e.clientY; panSL = scroll.scrollLeft; panST = scroll.scrollTop;
     scroll.classList.add("isPanning");
   };
