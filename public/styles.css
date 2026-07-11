@@ -4525,6 +4525,36 @@ button.secondary:disabled {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
+/* /analyze extracted-frame thumbnails (in the folded thinking block): each thumb
+   displays at its natural aspect (capped 240×260 by .generatedImage — portrait video
+   frames stay narrow, NOT stretched to 240 wide) and is captioned "第N帧 · Xs".
+   Scene-change picks get just a ⚡ badge in the top-left corner (no border ring, so
+   the thumbnail stays compact). */
+.frameThumbGrid { gap: 8px; align-items: flex-start; }
+.frameThumb { text-align: center; }
+.frameThumb .frameCaption {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--muted);
+  text-align: center;
+}
+.frameThumb.isScene .frameCaption { color: var(--accent-strong); font-weight: 600; }
+.frameThumb .frameSceneBadge {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.4;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
+
 /* AI-generated videos (ComfyUI WAN etc.) */
 .videoGrid {
   display: flex;
@@ -5295,10 +5325,13 @@ button.secondary:disabled {
 .message.bgPlaceholder {
   position: relative;
   display: flex;
-  align-items: center;
+  flex-direction: column;   /* status/label row on top; /analyze thinking block below */
+  align-items: stretch;
   border: 1px dashed var(--surface-hover);
   background: var(--accent-subtle);
 }
+/* /analyze frames on the placeholder sit below the status, slightly separated. */
+.message.bgPlaceholder > .thinking-details { margin-top: 10px; }
 .message.bgPlaceholder .bgPhIcon { margin-right: 6px; }
 .message.bgPlaceholder .bgPhLabel { font-weight: 600; margin-right: 8px; }
 .message.bgPlaceholder .bgPhModel { font-size: 11px; color: var(--muted); margin-right: 8px; word-break: break-all; }
@@ -5307,6 +5340,8 @@ button.secondary:disabled {
 .message.bgPlaceholder .bgPhEnhanced { margin-top: 8px; }
 .message.bgPlaceholder .bgPhEnhanced .enhancedLabel { font-size: 0.78rem; font-weight: 600; color: var(--accent-strong); margin-bottom: 4px; }
 .message.bgPlaceholder .bgPhEnhanced blockquote { margin: 0; font-size: 0.85rem; color: var(--muted); border-left: 2px solid var(--border); padding-left: 8px; }
+/* Images that stream in one-by-one on a multi-image gen placeholder. */
+.bgPhImages { margin-top: 8px; }
 .bgPhActions { margin-top: 6px; display: flex; gap: 8px; }
 .bgPhGoto, .bgPhRetry {
   display: inline-flex;

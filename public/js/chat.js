@@ -11,7 +11,7 @@ import { setAvatarState, showExpression, detectExpression, isCloudModel } from '
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.js';
-import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractVideoFrames, comfyModelSupportsMask } from './image-gen.js';
+import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractKeyFrames, comfyModelSupportsMask } from './image-gen.js';
 import { openMaskModal } from './mask-paint.js';
 import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
@@ -403,6 +403,22 @@ function renderBgPlaceholder(message) {
     bar.appendChild(fill);
     body.appendChild(bar);
   }
+  // Multi-image batch: completed images stream in one-by-one (bg sink addImage) so
+  // the user sees each as it finishes instead of waiting for the whole batch.
+  if (message.liveImages && message.liveImages.length) {
+    const grid = document.createElement('div');
+    grid.className = 'imageGrid bgPhImages';
+    for (const src of message.liveImages) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'imageWrapper';
+      const img = document.createElement('img');
+      img.className = 'generatedImage';
+      img.src = src;
+      wrapper.appendChild(img);
+      grid.appendChild(wrapper);
+    }
+    body.appendChild(grid);
+  }
   const actions = document.createElement('div');
   actions.className = 'bgPhActions';
   const goto = document.createElement('button');
@@ -429,6 +445,11 @@ function renderBgPlaceholder(message) {
   }
   body.appendChild(actions);
   el.appendChild(body);
+  // /analyze: the frame map + extracted frames arrive the moment extraction ends
+  // (sink.thinking → syncPlaceholder). Shown folded BELOW the status line (the
+  // placeholder stacks as a column) so the "正在逐张分析 (N/M)" progress stays on top.
+  const think = buildThinkingDetails(message.thinkingMd, message.thinkingFrames);
+  if (think) el.appendChild(think);
   // Close (×) — identical to a normal bubble's delete button: a hover-revealed
   // round action pinned to the top-right corner (reuses .messageAction.deleteMessage).
   const rightActions = document.createElement('div');
@@ -2051,20 +2072,25 @@ function dispatchReply(tabId, insertIndex = -1, contextEndIndex = -1) {
   else regenerateReply(tabId, insertIndex, contextEndIndex);
 }
 
-// Parse /analyze [-f N] [-d] [extra question]. `-f`/`--frames` sets how many frames to
-// sample from a video (1–32, default 8); `-d`/`--debug` shows the extracted frames in
-// the chat instead of analyzing (to verify they actually differ). Null if not /analyze.
+// Parse /analyze [-f N] [-d] [-a] [extra question]. `-f`/`--frames` sets how many frames
+// to sample from a video (1–32, default 8); extracted frames always show folded in the
+// thinking block as thumbnails — `-d`/`--debug` swaps in the FULL-RES frames actually
+// sent to the model (to debug what the model really sees); `-a`/`--all`
+// sends every image/frame in ONE multi-image request (default is per-item map-reduce —
+// see analyzeMedia; a model that only accepts one image per request needs the default,
+// and --all on such a model is the user's own call). Null if not /analyze.
 function parseAnalyzeCommand(input) {
   const m = input.match(/^\/analyze(?:\s+([\s\S]+))?\s*$/i);
   if (!m) return null;
   let rest = (m[1] || "").trim();
-  let frames = null, debug = false;
+  let frames = null, debug = false, all = false;
   rest = rest.replace(/(?:^|\s)(?:-d|--debug)(?=\s|$)/i, () => { debug = true; return " "; });
+  rest = rest.replace(/(?:^|\s)(?:-a|--all)(?=\s|$)/i, () => { all = true; return " "; });
   rest = rest.replace(/(?:^|\s)(?:-f|--frames)\s+(\d+)(?=\s|$)/i, (_, n) => {
     frames = Math.min(32, Math.max(1, parseInt(n, 10)));
     return " ";
   });
-  return { prompt: rest.trim(), frames, debug };
+  return { prompt: rest.trim(), frames, debug, all };
 }
 
 // Strip a data-URL prefix so we hand the model raw base64 (what Ollama expects).
@@ -2142,16 +2168,24 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
     let images = [];
     let kind = "";
     let frameTimes = []; // timestamps (s) of the sampled frames, shown to the user as a map
+    let frameScenes = []; // per-frame flag: picked at a scene change (⚡ in the map) vs density fill
+    let frameThumbs = []; // small display thumbs for the folded thinking block (never sent to the model)
+    let dedupDropped = 0; // near-duplicate frames removed by extractKeyFrames
     const frameTarget = parsed.frames || 8;
-    // Sample the video into N still frames and send them as SEPARATE images in
+    // Sample the video into UP TO N still frames — scene-change keyframes plus
+    // density-floor fill, near-duplicates deduped (extractKeyFrames; a static clip
+    // legitimately yields fewer than N). Frames are sent as SEPARATE images in
     // chronological order — the model refers to them by frame number (#1..#N),
     // which is far more reliable than mapping moments to timestamps. The actual
     // timestamps are surfaced to the user as a frame→time table (not to the model).
     const framesFromVideo = async (b64, mime) => {
       showPending(t("analyze_extracting"));
       const src = b64.startsWith("data:") ? b64 : `data:${mime || "video/mp4"};base64,${b64}`;
-      const frames = await extractVideoFrames(src, frameTarget);
+      const { frames, dropped } = await extractKeyFrames(src, frameTarget);
       frameTimes = frames.map(f => f.t);
+      frameScenes = frames.map(f => !!f.scene);
+      frameThumbs = frames.map(f => rawBase64(f.thumb || f.url));   // fallback path has no thumb
+      dedupDropped = dropped;
       return frames.map(f => rawBase64(f.url));
     };
 
@@ -2204,47 +2238,137 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
     if (!bg) setSendingImageCount(imageCount);
 
 
-    // 2. Build the analysis request as a self-contained turn: a dedicated
-    // "visual analysis expert" system prompt (NOT the chat persona) and a single
-    // user turn carrying the frames + instruction — no prior conversation context.
-    let basePrompt, systemPrompt;
-    if (kind === "mixed") {
-      basePrompt = t("analyze_mixedPrompt", { images: imageCount, frames: frameCount });
-      systemPrompt = t("analyze_mixedSystem");
-    } else if (kind === "video") {
-      basePrompt = t("analyze_videoPrompt", { frames: frameCount });
-      systemPrompt = t("analyze_videoSystem");
-    } else {
-      basePrompt = t("analyze_imagePrompt");
-      systemPrompt = t("analyze_imageSystem");
-    }
-    const instruction = parsed.prompt ? `${basePrompt}\n\n${parsed.prompt}` : basePrompt;
-    const messages = [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: instruction, images },
-    ];
-
-    // Build the thinking content now (before the model call) so it shows folded in
-    // the pending/streaming bubble: frame→time map, plus the -d frame screenshots.
+    // 2. Build the thinking content now (before any model call) so it shows folded
+    // in the pending/streaming bubble: frame→time map (⚡ marks scene-change picks,
+    // plus the dedup tally), and the -d frame screenshots.
     if (frameTimes.length) {
-      const rows = frameTimes.map((s, i) => t("analyze_frameRow", { n: i + 1, t: (s || 0).toFixed(1) })).join("\n");
-      thinkingMd = `${t("analyze_frameMap")}\n\n${rows}`;
+      // The frame→time map is a single inline row (⚡ marks scene-change picks), not a
+      // vertical bullet list; the thumbnails below carry the same #N + time captions.
+      const row = frameTimes.map((s, i) => t("analyze_frameRow", { n: i + 1, t: (s || 0).toFixed(1) }) + (frameScenes[i] ? "⚡" : "")).join(" · ");
+      const legend = frameScenes.some(Boolean) ? `\n${t("analyze_frameSceneLegend")}` : "";
+      const dropNote = dedupDropped ? `\n${t("analyze_dedupDropped", { n: dedupDropped })}` : "";
+      thinkingMd = `${t("analyze_frameMap")}${legend}${dropNote}\n\n${row}`;
     }
-    if (parsed.debug && videoFrames.length) {
-      debugFrames = videoFrames;
+    // The extracted frames are ALWAYS shown folded in the thinking block, visible as
+    // soon as extraction finishes (display thumbnails; -d/--debug swaps in the
+    // full-res frames actually sent to the model). Carried as { b64, scene, n, t }
+    // objects so scene picks get a ⚡ badge + highlight and each thumb is captioned.
+    // They ride reply.thinkingFrames, which buildMessages never forwards — they can't
+    // enter future chat context.
+    if (videoFrames.length) {
+      const srcFrames = parsed.debug ? videoFrames : frameThumbs;
+      debugFrames = srcFrames.map((b64, i) => ({ b64, scene: !!frameScenes[i], n: i + 1, t: frameTimes[i] }));
       thinkingMd = `${t("analyze_debugFrames", { frames: videoFrames.length })}\n\n${thinkingMd || ""}`.trim();
     }
+    // Background job: push the frames + map onto the placeholder bubble right now
+    // (the foreground streaming bubble gets them via syncThinking on the next
+    // showPending) — the user sees what was extracted while the analysis runs.
+    if (bg && bg.thinking) bg.thinking(thinkingMd, debugFrames);
 
-    const working = kind === "mixed" ? t("analyze_workingMixed", { images: imageCount, frames: frameCount })
-      : kind === "video" ? t("analyze_workingVideo", { frames: frameCount })
-      : t("analyze_workingImage");
-    showPending(working);
+    // One non-streamed /api/chat call (map phase): read the whole NDJSON body,
+    // return the concatenated answer text.
+    const chatOnce = async (msgs) => {
+      const r = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: abortController.signal,
+        body: JSON.stringify({ model: dom.modelSelect.value, messages: msgs, options: { temperature: 0.5, num_ctx: getNumCtx() }, timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120 }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        throw new Error(cleanErrorMessage(d.error) || "请求失败");
+      }
+      let out = "";
+      for (const line of (await r.text()).split("\n")) {
+        if (!line.trim()) continue;
+        let o; try { o = JSON.parse(line); } catch { continue; }
+        if (o.error) throw new Error(cleanErrorMessage(o.error) || "请求失败");
+        out += o.message?.content || "";
+      }
+      return out.trim();
+    };
 
-    // 3. Run the vision model. A background (server) job submits the /api/chat call to
-    // the server-side queue so it survives a page close/reload (chatFetch reconnects by
-    // serverJobId, no re-inference); the foreground streams the answer into the bubble.
+    // 3. Build the analysis request as a self-contained turn (a dedicated "visual
+    // analysis expert" system prompt, NOT the chat persona; no prior conversation
+    // context). Two modes:
+    //  - map-reduce (DEFAULT for >1 image): describe each image/frame in its own
+    //    single-image call (full resolution per item; works on models that only
+    //    accept one image per request), then a text-only reduce call synthesizes
+    //    the final answer from the labeled notes. The per-item notes are folded
+    //    into the thinking block.
+    //  - --all (or a single image): everything in ONE multi-image turn, exactly
+    //    the pre-existing behavior. If the model can't take multiple images,
+    //    --all was the user's own call.
+    const mapReduce = !parsed.all && images.length > 1;
+    let messages;
+    if (mapReduce) {
+      // The map loop runs in-page (N+1 calls can't ride the single-server-job
+      // chatFetch channel), so no server SSE will ever flip a bg job to running.
+      if (bg) bg.markRunning();
+      const notes = [];
+      for (let i = 0; i < images.length; i++) {
+        const isFrame = i >= imageCount;
+        const label = isFrame
+          ? t("analyze_itemFrame", { n: i - imageCount + 1, t: (frameTimes[i - imageCount] || 0).toFixed(1) })
+          : t("analyze_itemImage", { n: i + 1 });
+        showPending(t("analyze_workingMap", { i: i + 1, n: images.length }));
+        let mapPrompt = t("analyze_mapPrompt", { label });
+        if (parsed.prompt) mapPrompt += `\n\n${t("analyze_mapFocus", { q: parsed.prompt })}`;
+        const desc = await chatOnce([
+          { role: "system", content: isFrame ? t("analyze_mapFrameSystem") : t("analyze_mapImageSystem") },
+          { role: "user", content: mapPrompt, images: [images[i]] },
+        ]);
+        notes.push(`**${label}**\n\n${desc || "—"}`);
+      }
+      // Fold the per-item notes into the thinking block (carried onto the final
+      // reply). The streaming bubble's details were inserted pre-map with only the
+      // frame map — drop them so syncThinking re-inserts the full version.
+      thinkingMd = `${thinkingMd ? `${thinkingMd}\n\n---\n\n` : ""}${t("analyze_mapNotes")}\n\n${notes.join("\n\n")}`;
+      if (bg && bg.thinking) bg.thinking(thinkingMd, debugFrames);
+      if (!bg && state.activeTabId === tabId) {
+        const det = dom.messagesEl.querySelector(".streaming-bubble > .thinking-details");
+        if (det) det.remove();
+      }
+      const reduceIntro = kind === "mixed" ? t("analyze_reduceMixedIntro", { images: imageCount, frames: frameCount })
+        : kind === "video" ? t("analyze_reduceVideoIntro", { frames: frameCount })
+        : t("analyze_reduceImageIntro", { images: imageCount });
+      const reduceTask = parsed.prompt ? t("analyze_reduceAsk", { q: parsed.prompt }) : t("analyze_reduceSummarize");
+      messages = [
+        { role: "system", content: t("analyze_reduceSystem") },
+        { role: "user", content: `${reduceIntro}\n\n${notes.join("\n\n")}\n\n${reduceTask}` },
+      ];
+      showPending(t("analyze_workingReduce"));
+    } else {
+      let basePrompt, systemPrompt;
+      if (kind === "mixed") {
+        basePrompt = t("analyze_mixedPrompt", { images: imageCount, frames: frameCount });
+        systemPrompt = t("analyze_mixedSystem");
+      } else if (kind === "video") {
+        basePrompt = t("analyze_videoPrompt", { frames: frameCount });
+        systemPrompt = t("analyze_videoSystem");
+      } else {
+        basePrompt = t("analyze_imagePrompt");
+        systemPrompt = t("analyze_imageSystem");
+      }
+      const instruction = parsed.prompt ? `${basePrompt}\n\n${parsed.prompt}` : basePrompt;
+      messages = [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: instruction, images },
+      ];
+      const working = kind === "mixed" ? t("analyze_workingMixed", { images: imageCount, frames: frameCount })
+        : kind === "video" ? t("analyze_workingVideo", { frames: frameCount })
+        : t("analyze_workingImage");
+      showPending(working);
+    }
+
+    // 4. Run the (final) model call. A background --all job submits the single
+    // /api/chat call to the server-side queue so it survives a page close/reload
+    // (chatFetch reconnects by serverJobId, no re-inference); map-reduce stays
+    // in-page end to end — a second chatFetch on the same bgJob would be mistaken
+    // for a reconnect and return the first call's result, so its reduce streams
+    // like the foreground path (the job dies with the page, like url/docfull).
     let content = "";
-    if (bg && bg.server) {
+    if (bg && bg.server && !mapReduce) {
       const resp = await chatFetch(
         { model: dom.modelSelect.value, messages, options: { temperature: 0.5, num_ctx: getNumCtx() }, timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120 },
         { bgJob: bg.server.bgJob, conversationId: bg.server.conversationId, msgId: bg.server.msgId, label: bg.server.label, signal: abortController.signal });
@@ -2742,7 +2866,10 @@ function makeDownloadButton(className, href, filename, bytes, actionLabel) {
 
 // Build the collapsible "thinking" <details> block: optional markdown text plus an
 // optional grid of frame screenshots (used by /analyze and its -d flag). Shared by
-// renderMessage and the live /analyze streaming bubble. Returns null if both empty.
+// renderMessage, the bg placeholder, and the live /analyze streaming bubble. Returns
+// null if both empty. `frames` is either an array of base64 strings (legacy) or of
+// { b64, scene, n, t } objects (/analyze video frames) — the latter get a "第N帧 · Xs"
+// caption and, for scene-change picks, a ⚡ badge + highlight ring.
 function buildThinkingDetails(thinkingText, frames) {
   if (!thinkingText && !(frames && frames.length)) return null;
   const details = document.createElement("details");
@@ -2752,14 +2879,27 @@ function buildThinkingDetails(thinkingText, frames) {
   if (frames && frames.length) {
     const content = details.querySelector(".thinking-content");
     const grid = document.createElement("div");
-    grid.className = "imageGrid";
+    grid.className = "imageGrid frameThumbGrid";
     for (const f of frames) {
+      const obj = (typeof f === "object" && f) ? f : { b64: f };
       const wrapper = document.createElement("div");
-      wrapper.className = "imageWrapper";
+      wrapper.className = obj.scene ? "imageWrapper frameThumb isScene" : "imageWrapper frameThumb";
       const img = document.createElement("img");
       img.className = "generatedImage";
-      img.src = f.startsWith("data:") ? f : `data:image/jpeg;base64,${f}`;
+      img.src = obj.b64.startsWith("data:") ? obj.b64 : `data:image/jpeg;base64,${obj.b64}`;
       wrapper.appendChild(img);
+      if (obj.scene) {
+        const badge = document.createElement("span");
+        badge.className = "frameSceneBadge";
+        badge.textContent = "⚡";
+        wrapper.appendChild(badge);
+      }
+      if (obj.n != null) {
+        const cap = document.createElement("span");
+        cap.className = "frameCaption";
+        cap.textContent = obj.t != null ? t("analyze_frameCaption", { n: obj.n, t: (obj.t || 0).toFixed(1) }) : `#${obj.n}`;
+        wrapper.appendChild(cap);
+      }
       grid.appendChild(wrapper);
     }
     content.appendChild(grid);

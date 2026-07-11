@@ -79,7 +79,7 @@ const laneSubmitChain = new Map();
 // Strip runtime-only fields before persisting (controllers live in the Map; the
 // preview is a transient blob: URL that's meaningless after a reload).
 function persist() {
-  const clean = state.bgJobs.map(({ preview, seg, _fired, _inflight, _runLabel, _submitWait, _submitRelease, _failReason, ...j }) => j);
+  const clean = state.bgJobs.map(({ preview, seg, _fired, _inflight, _runLabel, _submitWait, _submitRelease, _failReason, thinkingMd, thinkingFrames, liveImages, ...j }) => j);
   dbSaveJobs(clean).catch((e) => console.warn('[bg-jobs] persist failed:', e));
 }
 // Let the server-queue client persist a job's serverJobId (so a reload can reconnect),
@@ -626,11 +626,24 @@ function makeBgSink(job, controller) {
     start(kind, label) { if (label) { if (job.status === 'running') job.label = label; else job._runLabel = label; } refreshPlaceholders(); },
     label(l) { if (job.status === 'running') job.label = l; else job._runLabel = l; refreshPlaceholders(); },
     enhanced() {},             // surfaced in the final message instead
-    addImage() {},             // results delivered via place()
+    // Each finished image of a multi-image batch streams in here as its request
+    // resolves → show it on the placeholder immediately instead of waiting for the
+    // whole batch's place(). Transient (stripped by persist); the final place() swaps
+    // in the real bubble with full-res images + lightbox.
+    addImage(src) {
+      if (!src) return;
+      markRunning();
+      (job.liveImages || (job.liveImages = [])).push(src);
+      refreshPlaceholders();   // discrete event (≤ batch size) → sync + one rerender
+    },
     // Generator-reported failure: the run ends "normally" (error bubble already placed in
     // chat) but the JOB failed — record why so fireJob marks it 'error' (stays in the
     // drawer with the reason) instead of 'done' (auto-removed). First reason wins.
     fail(reason) { if (!job._failReason) job._failReason = String(reason || '').trim() || t('bg_statusError'); },
+    // /analyze pushes the frame map + extracted-frame thumbs here the moment
+    // extraction finishes → folded thinking block on the placeholder bubble while
+    // the analysis is still running. Transient (stripped by persist).
+    thinking(md, frames) { job.thinkingMd = md || ''; job.thinkingFrames = frames || null; refreshPlaceholders(); },
     // Progress ticks are frequent → update the drawer + poke the placeholder's bar
     // directly in the DOM, never a full chat re-render.
     progress(v, m) {
@@ -702,6 +715,11 @@ function syncPlaceholder(job) {
   found.msg.elapsed = runningElapsed(job);   // "1:23" elapsed since the job started
   found.msg.queuePos = queuePosition(job);
   found.msg.enhancedPrompt = job.enhancedPrompt;   // server-side --enhance preview (before render)
+  // /analyze: frame map + extracted-frame thumbs, shown folded on the placeholder as
+  // soon as extraction finishes (renderBgPlaceholder builds the thinking details).
+  found.msg.thinkingMd = job.thinkingMd;
+  found.msg.thinkingFrames = job.thinkingFrames;
+  found.msg.liveImages = job.liveImages;   // completed images streamed in during a multi-image batch
   return true;
 }
 

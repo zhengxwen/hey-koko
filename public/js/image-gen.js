@@ -367,6 +367,172 @@ export function extractVideoFrames(src, count = 8, quality = 0.72, maxSide = 128
   });
 }
 
+// ---- /analyze keyframe selection (scene detection + near-duplicate dedup) ----
+// Even sampling misses fast cuts and wastes frames on static stretches. Instead:
+// probe the video densely on tiny thumbnails, score how much the picture changes
+// between consecutive probes, pick the biggest change points as keyframes (with a
+// minimum separation), fill any leftover budget at the middle of the largest
+// uncovered gaps (density floor), then drop near-duplicates against a sliding
+// window of already-kept frames. Falls back to extractVideoFrames on any failure.
+const PROBE_SIDE = 64;        // longest side of probe thumbnails — 64 keeps a changed slide bullet visible; diff cost is negligible vs the seeks
+const PROBE_MAX = 120;        // probe budget (each probe = one seek + decode)
+const SCENE_MIN_DIFF = 0.10;  // probe diff (0..1) at/above this = scene-change candidate
+const DEDUP_DIFF = 0.03;      // picked-frame diff below this vs a recent kept frame = near-duplicate
+const DEDUP_WINDOW = 4;       // how many recent kept frames each pick is compared against
+const THUMB_SIDE = 320;       // display thumbnails (chat "thinking" block), NOT sent to the model
+
+// Mean |RGB delta| between two equal-size RGBA buffers, normalized to 0..1.
+// Mismatched sizes (video dimension change mid-stream) count as a full change.
+function probeDiff(a, b) {
+  if (!a || !b || a.length !== b.length) return 1;
+  let sum = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    sum += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+  }
+  return sum / ((a.length / 4) * 3 * 255);
+}
+
+// Scene-aware sibling of extractVideoFrames: picks UP TO `count` keyframes at scene
+// changes (a long static clip legitimately yields fewer). Resolves
+// { frames: [{url, t, scene}], dropped } — `scene` marks a frame picked at a change
+// point (vs density-floor fill), `dropped` counts deduped near-duplicates.
+export function extractKeyFrames(src, count = 8, quality = 0.72, maxSide = 1280) {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.preload = "auto";
+    const probeCanvas = document.createElement("canvas");
+    const canvas = document.createElement("canvas");
+    let phase = "probe";
+    let times = [];       // seek plan for the current phase
+    let idx = 0;
+    const probes = [];    // {t, data} tiny thumbnails, chronological
+    let picked = [];      // {t, scene} selected keyframe times
+    let dropped = 0;
+    const frames = [];    // final {url, t, scene}
+    let done = false;
+    // Per-seek watchdog (not a global cap — a long probe pass is legitimate).
+    let timer = setTimeout(finish, 15000);
+    const bump = () => { clearTimeout(timer); timer = setTimeout(finish, 15000); };
+    function finish() {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      video.removeAttribute("src");
+      try { video.load(); } catch {}
+      if (frames.length) resolve({ frames, dropped });
+      else extractVideoFrames(src, count, quality, maxSide)   // probing failed → even sampling
+        .then((fs) => resolve({ frames: fs.map((f) => ({ ...f, scene: false })), dropped: 0 }));
+    }
+    const seekNext = () => {
+      try { video.currentTime = times[idx]; }
+      catch { onSeeked(); }
+    };
+    const grabProbe = () => {
+      const w = video.videoWidth, h = video.videoHeight;
+      if (w && h) {
+        try {
+          const scale = PROBE_SIDE / Math.max(w, h);
+          probeCanvas.width = Math.max(1, Math.round(w * scale));
+          probeCanvas.height = Math.max(1, Math.round(h * scale));
+          const c = probeCanvas.getContext("2d", { willReadFrequently: true });
+          c.drawImage(video, 0, 0, probeCanvas.width, probeCanvas.height);
+          probes.push({ t: video.currentTime, data: c.getImageData(0, 0, probeCanvas.width, probeCanvas.height).data });
+        } catch { /* tainted/undecodable frame — skip */ }
+      }
+      idx++;
+      bump();
+      if (idx >= times.length) return selectKeyframes();
+      seekNext();
+    };
+    const grabFinal = () => {
+      const w = video.videoWidth, h = video.videoHeight;
+      if (w && h) {
+        try {
+          const scale = Math.min(1, maxSide / Math.max(w, h));
+          canvas.width = Math.max(1, Math.round(w * scale));
+          canvas.height = Math.max(1, Math.round(h * scale));
+          canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+          // Small display thumb for the chat's folded thinking block (probeCanvas is
+          // free after the probe phase) — downscaled from the big canvas, cheap.
+          const tScale = Math.min(1, THUMB_SIDE / Math.max(canvas.width, canvas.height));
+          probeCanvas.width = Math.max(1, Math.round(canvas.width * tScale));
+          probeCanvas.height = Math.max(1, Math.round(canvas.height * tScale));
+          probeCanvas.getContext("2d").drawImage(canvas, 0, 0, probeCanvas.width, probeCanvas.height);
+          frames.push({ url: canvas.toDataURL("image/jpeg", quality), thumb: probeCanvas.toDataURL("image/jpeg", 0.6), t: video.currentTime, scene: picked[idx] ? picked[idx].scene : false });
+        } catch { /* skip */ }
+      }
+      idx++;
+      bump();
+      if (idx >= times.length) return finish();
+      seekNext();
+    };
+    const onSeeked = () => (phase === "probe" ? grabProbe() : grabFinal());
+    function selectKeyframes() {
+      if (probes.length < 2) return finish();   // not enough signal → fallback path
+      const dur = (video.duration && isFinite(video.duration)) ? video.duration : probes[probes.length - 1].t + 1;
+      // Change score per probe = diff vs its predecessor ("how much changed HERE").
+      const scored = probes.map((p, i) => ({ t: p.t, data: p.data, i, score: i ? probeDiff(probes[i - 1].data, p.data) : 0 }));
+      const minSep = Math.max(0.5, dur / (count * 2));
+      // 1. Scene-change picks: biggest changes first, keeping a minimum separation.
+      const picks = [];
+      const cands = scored.filter((p) => p.score >= SCENE_MIN_DIFF).sort((x, y) => y.score - x.score);
+      for (const c of cands) {
+        if (picks.length >= count) break;
+        if (picks.some((p) => Math.abs(p.t - c.t) < minSep)) continue;
+        picks.push({ ...c, scene: true });
+      }
+      // 2. Density floor: fill the remaining budget at the middle of the largest
+      //    uncovered gap. Stop when no gap is meaningfully large — a static clip
+      //    yields FEWER than `count` frames by design.
+      while (picks.length < count) {
+        const bounds = [0, ...picks.map((p) => p.t).sort((a, b) => a - b), dur];
+        let gi = 0, glen = -1;
+        for (let i = 0; i + 1 < bounds.length; i++) {
+          if (bounds[i + 1] - bounds[i] > glen) { glen = bounds[i + 1] - bounds[i]; gi = i; }
+        }
+        if (glen < minSep * 2) break;
+        const mid = bounds[gi] + glen / 2;
+        let best = null;
+        for (const p of scored) {
+          if (picks.some((k) => k.i === p.i)) continue;
+          if (!best || Math.abs(p.t - mid) < Math.abs(best.t - mid)) best = p;
+        }
+        if (!best) break;
+        picks.push({ ...best, scene: false });
+      }
+      picks.sort((a, b) => a.t - b.t);
+      // 3. Near-duplicate dedup on the probe thumbnails: drop a pick that barely
+      //    differs from any of the last DEDUP_WINDOW kept frames (catches A-B-A
+      //    cutting patterns, not just adjacent repeats).
+      const kept = [];
+      for (const p of picks) {
+        if (kept.slice(-DEDUP_WINDOW).some((k) => probeDiff(k.data, p.data) < DEDUP_DIFF)) { dropped++; continue; }
+        kept.push(p);
+      }
+      if (!kept.length && picks.length) kept.push(picks[0]);
+      picked = kept.map((p) => ({ t: p.t, scene: p.scene }));
+      probes.length = 0;   // free the pixel buffers
+      phase = "final";
+      times = picked.map((p) => p.t);
+      idx = 0;
+      if (!times.length) return finish();
+      seekNext();
+    }
+    video.addEventListener("seeked", onSeeked);
+    video.addEventListener("loadeddata", () => {
+      const dur = video.duration;
+      if (!dur || !isFinite(dur)) return finish();   // unknown duration → fallback
+      // ~1 probe/second, at least 4× the frame budget, capped at PROBE_MAX seeks.
+      const probeCount = Math.min(PROBE_MAX, Math.max(count * 4, Math.ceil(dur)));
+      times = Array.from({ length: probeCount }, (_, i) => (dur * (i + 0.5)) / probeCount);
+      seekNext();
+    }, { once: true });
+    video.addEventListener("error", finish, { once: true });
+    video.src = src;
+  });
+}
+
 // Tell ComfyUI to actually STOP — aborting our fetch only stops us waiting; the
 // queued workflow keeps running on the GPU. /interrupt kills the running prompt
 // and clearing the queue drops anything still pending (e.g. a batch). comfyHost

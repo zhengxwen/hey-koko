@@ -57,6 +57,33 @@ async function fetchUrlContent(req, res) {
       // Fallback to page fetch if transcript fails
     }
 
+    // A bespoke news-feeds site handler pinned to this URL's host (built-in or an external
+    // plugin) wins: route through the feed importer's own pipeline (feeds.extractArticleForUrl:
+    // handler → wp-json → trafilatura fallback), giving /url the SAME site-specific extraction
+    // the news library uses, synthesized into the one webpage bubble. Only engaged when a handler
+    // actually matches the host — every other URL keeps the generic trafilatura → JS path below.
+    // Any failure (throw / empty body) falls through to that generic path. Lazy require avoids the
+    // feeds.js ↔ url-fetch.js circular dependency (feeds requires this module at load time).
+    try {
+      const feeds = require("./feeds");
+      if (feeds.handlerForUrl && feeds.handlerForUrl(url)) {
+        const hc = new AbortController();
+        const ht = setTimeout(() => hc.abort(), 30000);
+        let ex = null;
+        try { ex = await feeds.extractArticleForUrl(url, { signal: hc.signal, language }); }
+        finally { clearTimeout(ht); }
+        if (ex && ex.text && ex.text.trim().length >= 40) {
+          const text = markdownImagesToPlaceholders(ex.text);
+          const images = (ex.images || []).map((im) => `data:${im.mime};base64,${im.base64}`);
+          const title = ex.title || (ex.meta && ex.meta.title) || "";
+          const pub = String(ex.publishedAt || (ex.meta && ex.meta.date) || "").match(/\d{4}-\d{2}-\d{2}/);
+          const truncated = truncateContent(text, config.URL_CONTENT_MAX_CHARS);
+          sendJson(res, 200, { type: "webpage", title, url, content: truncated, images, publishedAt: pub ? pub[0] : "" });
+          return;
+        }
+      }
+    } catch { /* handler path failed — fall through to the generic fetch below */ }
+
     // General URL fetch
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);

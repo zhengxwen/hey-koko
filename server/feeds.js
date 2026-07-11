@@ -603,6 +603,11 @@ function handlerChannelFor(feed) {
   const ph = siteHandler(siteHostKey((feed && feed.siteUrl) || (feed && feed.feedUrl)));
   return ph && typeof ph.listPage === "function" ? ph : null;
 }
+// The bespoke site handler pinned to a URL's host (built-in SITE_HANDLERS or an external
+// plugin), or null. Exposed so the /url command (url-fetch.js) can detect a handler match and
+// route that host through extractArticleForUrl — the SAME site-specific extraction the feed
+// importer uses — instead of the generic trafilatura/JS path.
+function handlerForUrl(url) { try { return siteHandler(siteHostKey(url)) || null; } catch { return null; } }
 
 // ---- external site-handler plugins (<DATA_DIR>/url-handlers/*.js) -----------------------------
 // Per-site adapters are open-ended (the user adds companies one at a time) but most of them don't
@@ -1276,7 +1281,7 @@ async function feedsBackfillHandler(req, res) {
 }
 
 module.exports = {
-  startPolling, runBackfill, fetchWpTaxonomy, extractArticleForUrl, feedNeedsTrafilatura,
+  startPolling, runBackfill, fetchWpTaxonomy, extractArticleForUrl, handlerForUrl, feedNeedsTrafilatura,
   feedsListHandler, feedsAddHandler, feedsEditHandler, feedsDeleteHandler, feedsPollNowHandler, feedsBackfillHandler, feedsBackfillEstimateHandler, feedsRefreshHandler,
   // exported for testing
   parseFeed, parseSitemap, parseSitemapUrls, decodeEntities, toDate, toDateTime, sanitizeNewsFolder, slugify,
