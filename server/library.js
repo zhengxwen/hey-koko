@@ -2255,6 +2255,7 @@ const DISTILL_I18N = {
     cardSection: "«蒸馏卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要点**", toc: "目录：", transcriptHeading: "«字幕整理»",
     entitiesHead: "**§ 实体**", relationsHead: "**§ 关系**", pubDateHead: "发布日期：", typeLabels: TYPE_LABELS.zh, aliasWrap: ["（", "）"], aliasSep: "、",
     vTitle: "视频标题：", vChannel: "频道：", vSample: "字幕抽样：",
+    ytMeta: { channel: "频道", duration: "时长", date: "日期", category: "分类", tags: "标签", language: "语言", sep: "：", tagSep: "、" },
     rerank: "你是检索精排助手。给定一个查询和编号片段列表，按与查询的相关度从高到低输出片段编号。只输出 JSON，不要任何解释或代码块标记：{\"order\":[编号,…]}。明显不相关的编号可以省略。",
     rerankQuery: "查询：", rerankSnippets: "片段：",
   },
@@ -2309,6 +2310,7 @@ const DISTILL_I18N = {
     cardSection: "«蒸餾卡»", summaryHead: "**§ 摘要**", claimsHead: "**§ 要點**", toc: "目錄：", transcriptHeading: "«字幕整理»",
     entitiesHead: "**§ 實體**", relationsHead: "**§ 關係**", pubDateHead: "發表日期：", typeLabels: TYPE_LABELS["zh-Hant"], aliasWrap: ["（", "）"], aliasSep: "、",
     vTitle: "影片標題：", vChannel: "頻道：", vSample: "字幕抽樣：",
+    ytMeta: { channel: "頻道", duration: "時長", date: "日期", category: "分類", tags: "標籤", language: "語言", sep: "：", tagSep: "、" },
     rerank: "你是檢索精排助手。給定一個查詢和編號片段列表，按與查詢的相關度從高到低輸出片段編號。只輸出 JSON，不要任何解釋或代碼塊標記：{\"order\":[編號,…]}。明顯不相關的編號可以省略。",
     rerankQuery: "查詢：", rerankSnippets: "片段：",
   },
@@ -2363,6 +2365,7 @@ const DISTILL_I18N = {
     cardSection: "«Distill Card»", summaryHead: "**§ Summary**", claimsHead: "**§ Key points**", toc: "TOC: ", transcriptHeading: "«Transcript»",
     entitiesHead: "**§ Entities**", relationsHead: "**§ Relations**", pubDateHead: "Published: ", typeLabels: TYPE_LABELS.en, aliasWrap: ["(", ")"], aliasSep: ", ",
     vTitle: "Video title: ", vChannel: "Channel: ", vSample: "Transcript sample:",
+    ytMeta: { channel: "Channel", duration: "Duration", date: "Date", category: "Category", tags: "Tags", language: "Language", sep: ": ", tagSep: ", " },
     rerank: "You are a retrieval reranker. Given a query and a numbered list of snippets, output the snippet indices ordered from most to least relevant to the query. Output ONLY JSON, no explanation or code fences: {\"order\":[index,…]}. Clearly irrelevant indices may be omitted.",
     rerankQuery: "Query: ", rerankSnippets: "Snippets:",
   },
@@ -2573,13 +2576,14 @@ async function buildYoutubeDoc(data, url, language = "") {
   const uploadDate = rawDate.length === 8 ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}` : "";
   const authors = data.channel || "";
   const year = rawDate.length >= 4 ? rawDate.slice(0, 4) : "";
+  const m = distillL(language).ytMeta || DISTILL_I18N.en.ytMeta;
   const metaParts = [url,
-    data.channel ? `频道：${data.channel}` : "",
-    data.duration ? `时长：${data.duration}` : "",
-    uploadDate ? `日期：${uploadDate}` : "",
-    data.category ? `分类：${data.category}` : "",
-    (data.tags && data.tags.length) ? `标签：${data.tags.slice(0, 15).join("、")}` : "",
-    data.language ? `语言：${ytLangName(data.language)}` : ""].filter(Boolean);
+    data.channel ? `${m.channel}${m.sep}${data.channel}` : "",
+    data.duration ? `${m.duration}${m.sep}${data.duration}` : "",
+    uploadDate ? `${m.date}${m.sep}${uploadDate}` : "",
+    data.category ? `${m.category}${m.sep}${data.category}` : "",
+    (data.tags && data.tags.length) ? `${m.tags}${m.sep}${data.tags.slice(0, 15).join(m.tagSep)}` : "",
+    data.language ? `${m.language}${m.sep}${ytLangName(data.language)}` : ""].filter(Boolean);
   // With a thumbnail the metadata must ride the image's single line (the chunker keeps
   // same-line text as the figure caption) → joined with <br>, which splitIntoBlocks
   // converts back to real newlines in the stored caption.
