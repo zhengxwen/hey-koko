@@ -625,6 +625,7 @@ const UI = {
     msg_upscaleUsed: "🔍 upscaled with ${model}",
     msg_denoiseUsed: "🧹 denoise / de-artifact ${pct}%",
     msg_seedsBatch: "🎲 seeds (in order): ${list}",
+    msg_batchStillGenerating: "⏳ Still generating… (${done}/${total} done)",
     msg_generatingAudio: "Generating audio",
     msg_audioDone: "🔊 Audio generated (${size})",
     // Background jobs
@@ -1407,6 +1408,7 @@ const UI = {
     msg_upscaleUsed: "🔍 高清放大算法：${model}",
     msg_denoiseUsed: "🧹 抗噪 / 降伪影 ${pct}%",
     msg_seedsBatch: "🎲 各图种子（按显示顺序）：${list}",
+    msg_batchStillGenerating: "⏳ 还在生成中…（已完成 ${done}/${total}）",
     msg_generatingAudio: "正在生成语音",
     msg_audioDone: "🔊 语音已生成（${size}）",
     // 后台任务
@@ -2188,6 +2190,7 @@ const UI = {
     msg_upscaleUsed: "🔍 高清放大演算法：${model}",
     msg_denoiseUsed: "🧹 抗噪 / 降偽影 ${pct}%",
     msg_seedsBatch: "🎲 各圖種子（按顯示順序）：${list}",
+    msg_batchStillGenerating: "⏳ 還在生成中…（已完成 ${done}/${total}）",
     msg_generatingAudio: "正在生成語音",
     msg_audioDone: "🔊 語音已生成（${size}）",
     // 後台任務

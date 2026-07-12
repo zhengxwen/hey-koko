@@ -921,9 +921,16 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
         fullS: (lastData.truncatedFrom / fps).toFixed(1), usedS: (lastData.length / fps).toFixed(1),
       }, plang) + "\n\n";
     }
+    // First finished video replaces the placeholder with this result bubble, so the
+    // "正在生成视频 (N/M)" placeholder (label + bar) is gone — while more are still
+    // rendering, append a live "还在生成中…" line so the user knows it isn't done yet.
+    // Drops off automatically on the final render (allVideos.length === count).
+    const stillGen = allVideos.length < count
+      ? `\n\n${t("msg_batchStillGenerating", { done: allVideos.length, total: count }, plang)}`
+      : "";
     const videoContent = (promptWasEnhanced
       ? `**${t("msg_enhancedPrompt")}**\n> ${videoPrompt}\n\n${capNote}${doneLine}`
-      : `${capNote}${doneLine}`);
+      : `${capNote}${doneLine}`) + stillGen;
     if (!replyMsg) {
       replyMsg = {
         role: "assistant",
