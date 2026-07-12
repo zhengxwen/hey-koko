@@ -932,31 +932,34 @@ async function fetchYouTubeTranscript(videoId, language) {
     const description = vd.shortDescription || "";
     const category = mf.category || "";
     const tags = Array.isArray(vd.keywords) ? vd.keywords : [];
-    // The scrape path has no clean audio-language field. The single ASR (auto-generated)
-    // track is always in the video's ORIGINAL spoken language, whereas manual tracks are
-    // translations (any language) — so prefer the ASR track, else fall back to the first.
-    let language = "";
+    // The video's ORIGINAL spoken language (ASR track), returned as result.language for
+    // the "Language:" meta field. Kept SEPARATE from the `language` parameter (the
+    // viewer's prompt-language preference) — that drives track SELECTION below.
+    let audioLang = "";
 
     const captionTracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
     if (!captionTracks || captionTracks.length === 0) {
       // noTranscript is the STRUCTURED "no real subtitles" signal — `text` is only a
       // human-readable notice. Never infer from the text shape: real transcripts can
       // legitimately begin with "[" (e.g. a "[Music]" first cue).
-      return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: "[该视频无原始字幕]", noTranscript: true };
+      return { title, channel, duration, viewCount, uploadDate, description, category, tags, language: audioLang, text: "[该视频无原始字幕]", noTranscript: true };
     }
-    language = (captionTracks.find(t => t.kind === "asr") || captionTracks[0]).languageCode || "";
+    audioLang = (captionTracks.find(t => t.kind === "asr") || captionTracks[0]).languageCode || "";
 
-    // Select subtitle track based on prompt language preference
-    const zhTrack = captionTracks.find(t => /zh/.test(t.languageCode));
-    const enTrack = captionTracks.find(t => /en/.test(t.languageCode));
-    let track;
-    if (language === "zh" || language === "zh-Hant") {
-      track = zhTrack || enTrack || captionTracks[0];
-    } else if (language === "en") {
-      track = enTrack || zhTrack || captionTracks[0];
-    } else {
-      track = enTrack || zhTrack || captionTracks[0];
+    // Pick the track by the VIEWER's prompt language first (a translation track when the
+    // video isn't in it), then the video's original language, then a fallback set. Prefix
+    // match so "en" matches "en-US", "zh" matches "zh-Hans".
+    const userPref = (language === "zh" || language === "zh-Hans") ? ["zh-Hans", "zh-Hant", "zh"]
+      : language === "zh-Hant" ? ["zh-Hant", "zh-Hans", "zh"]
+      : language ? [language] : [];
+    const ranked = [...new Set([...userPref, audioLang, "en", "zh-Hans", "zh-Hant", "zh", "ja"].filter(Boolean))];
+    const codeMatches = (code, pref) => { const c = String(code || ""); return c === pref || c.startsWith(pref + "-"); };
+    let track = null;
+    for (const pref of ranked) {
+      const hit = captionTracks.find(t => codeMatches(t.languageCode, pref));
+      if (hit) { track = hit; break; }
     }
+    if (!track) track = captionTracks[0];
 
     let captionUrl = track.baseUrl;
     if (!captionUrl.startsWith("http")) captionUrl = "https://www.youtube.com" + captionUrl;
@@ -987,12 +990,12 @@ async function fetchYouTubeTranscript(videoId, language) {
       }
       // One cue per line — splitTranscript cuts at line boundaries, so a space-joined
       // single line would defeat chunking and feed the WHOLE transcript as one chunk.
-      if (segments.length > 0) return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: segments.join("\n") };
+      if (segments.length > 0) return { title, channel, duration, viewCount, uploadDate, description, category, tags, language: audioLang, text: segments.join("\n") };
     }
 
     // Caption fetch failed
     const langInfo = captionTracks.map(t => t.languageCode).join(", ");
-    return { title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: `[字幕获取失败，可用语言: ${langInfo}]`, noTranscript: true };
+    return { title, channel, duration, viewCount, uploadDate, description, category, tags, language: audioLang, text: `[字幕获取失败，可用语言: ${langInfo}]`, noTranscript: true };
   } catch (e) {
     console.error("[yt-transcript] error:", e.message);
     return null;
@@ -1026,32 +1029,28 @@ function fetchTranscriptViaYtdlp(videoId, language) {
 
           if (realLangs.length === 0 && autoLangs.length === 0) { resolve(null); return; }
 
-          // Pick best language — the video's ORIGINAL language first. yt-dlp marks the
-          // speech-recognition source track "xx-orig"; every other auto caption is a
-          // machine TRANSLATION of it (a hardcoded zh-first preference used to grab the
-          // Chinese machine translation of English videos). The preference list is only
-          // a fallback when no -orig marker exists.
-          const preferred = ["zh-Hans", "zh-Hant", "zh", "en", "ja"];
+          // Pick the caption track. The VIEWER's prompt language comes FIRST — so an
+          // English user gets English captions (a machine auto-translation when the
+          // video isn't in English) whenever such a track exists — then the video's
+          // ORIGINAL spoken language (verbatim; yt-dlp marks it "xx-orig"), then a small
+          // fallback set. Language is the primary key; within one language a MANUAL track
+          // (cleaner) beats an auto caption/translation. Matching is by prefix so "en"
+          // also matches "en-US" / "en-orig".
           const origAuto = autoLangs.find(l => /-orig$/.test(l));
           const origLang = origAuto ? origAuto.replace(/-orig$/, "") : "";
+          const userPref = (language === "zh" || language === "zh-Hans") ? ["zh-Hans", "zh-Hant", "zh"]
+            : language === "zh-Hant" ? ["zh-Hant", "zh-Hans", "zh"]
+            : language ? [language] : [];
+          const ranked = [...new Set([...userPref, origLang, "en", "zh-Hans", "zh-Hant", "zh", "ja"].filter(Boolean))];
+          const matches = (l, pref) => l === pref || l.startsWith(pref + "-");
           let selectedLang = null;
-
-          // Manual subs beat auto captions; among them, the original language beats all.
-          if (origLang && realLangs.includes(origLang)) selectedLang = origLang;
-          if (!selectedLang) {
-            for (const pref of preferred) {
-              if (realLangs.includes(pref)) { selectedLang = pref; break; }
-            }
+          for (const pref of ranked) {
+            const m = realLangs.find(l => matches(l, pref));   // manual first
+            if (m) { selectedLang = m; break; }
+            const a = autoLangs.find(l => matches(l, pref));   // then auto/translation
+            if (a) { selectedLang = a; break; }
           }
-          if (!selectedLang && realLangs.length) selectedLang = realLangs[0];
-          // Auto captions: the -orig track IS the recognized speech, take it verbatim.
-          if (!selectedLang && origAuto) selectedLang = origAuto;
-          if (!selectedLang) {
-            for (const pref of preferred) {
-              if (autoLangs.includes(pref)) { selectedLang = pref; break; }
-            }
-          }
-          if (!selectedLang) selectedLang = autoLangs[0];
+          if (!selectedLang) selectedLang = realLangs[0] || autoLangs[0];
 
           // Step 2: download the selected subtitle
           const tmpDir = path.join(os.tmpdir(), `yt-${videoId}-${Date.now()}`);
