@@ -9,7 +9,7 @@ Hey-Koko gives you a personal AI chat experience without sending a single byte t
 
 <p align="center"><img src="docs/demo.gif" alt="Hey-Koko in action — natural chat, image understanding, email &amp; YouTube summaries, video analysis, a knowledge star map and relation graph, image generation, and ComfyUI video generation" width="100%"></p>
 
-<p align="center"><em>One local companion — chat naturally · understand images, emails &amp; YouTube videos · <code>/analyze</code> a video · explore your knowledge as a star map &amp; relation graph · generate images and video with ComfyUI.</em></p>
+<p align="center"><em>One local companion — chat naturally · understand images, emails &amp; YouTube videos · analyze a video · explore your knowledge as a star map &amp; relation graph · generate images and video with ComfyUI.</em></p>
 
 
 ## Features
