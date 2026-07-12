@@ -2704,14 +2704,12 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     let autoPrompt;
     if (isPdfOrDocx) {
       const hasImages = file.images && file.images.length > 0;
-      let base = hasImages
-        ? `请对这篇文章做一个全面的总结，然后逐一描述每张图片的内容。`
-        : `请对这篇文章做一个全面的总结。`;
-      autoPrompt = content ? `${base}\n\n用户补充: ${content}` : base;
+      let base = hasImages ? getPrompt("fileSummarizeImages") : getPrompt("fileSummarize");
+      autoPrompt = content ? `${base}\n\n${getPrompt("fileUserNote", content)}` : base;
     } else if (content) {
       autoPrompt = content;
     } else {
-      autoPrompt = `请阅读以上文件内容并等待我的提问。`;
+      autoPrompt = getPrompt("fileReadWait");
     }
 
     // Show parsed content as assistant preview bubble

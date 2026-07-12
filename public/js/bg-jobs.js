@@ -15,7 +15,7 @@ import { genId, formatTimestamp } from './utils.js';
 import { dbSaveJobs, dbLoadJobs, dbSaveWorkers, dbLoadWorkers } from './db.js';
 import { saveChat } from './settings.js';
 import { getTab, switchTab } from './tabs.js';
-import { t } from './i18n.js';
+import { t, getPrompt } from './i18n.js';
 import { generateImage } from './image-gen.js';
 import { generateSpeech } from './voice-gen.js';
 import { setServerQueueDeps, cancelServerJob, ackServerJob, pauseServerJob, resumeServerJob, reorderServerJobs, cancelConversationServerJobs, serverJobTiming } from './server-queue.js';   // Option B
@@ -506,14 +506,12 @@ async function runDocFull(job, sink) {
   const isPdfOrDocx = ext === 'pdf' || ext === 'docx';
   let autoPrompt;
   if (isPdfOrDocx) {
-    const base = images.length
-      ? '请对这篇文章做一个全面的总结，然后逐一描述每张图片的内容。'
-      : '请对这篇文章做一个全面的总结。';
-    autoPrompt = p.content ? `${base}\n\n用户补充: ${p.content}` : base;
+    const base = images.length ? getPrompt('fileSummarizeImages') : getPrompt('fileSummarize');
+    autoPrompt = p.content ? `${base}\n\n${getPrompt('fileUserNote', p.content)}` : base;
   } else if (p.content) {
     autoPrompt = p.content;
   } else {
-    autoPrompt = '请阅读以上文件内容并等待我的提问。';
+    autoPrompt = getPrompt('fileReadWait');
   }
   const previewMsg = {
     id: genId(), role: 'assistant',
