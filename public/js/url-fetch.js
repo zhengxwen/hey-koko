@@ -211,12 +211,12 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
     if (data.type === "youtube") {
       // Show video info card
       const infoParts = [`📺 **${data.title}**`, url, ""];
-      if (data.channel) infoParts.push(`频道：${data.channel}`);
-      if (data.duration) infoParts.push(`时长：${data.duration}`);
-      if (data.viewCount) infoParts.push(`播放：${Number(data.viewCount).toLocaleString()} 次`);
+      if (data.channel) infoParts.push(t("yt_channel", { x: data.channel }));
+      if (data.duration) infoParts.push(t("yt_duration", { x: data.duration }));
+      if (data.viewCount) infoParts.push(t("yt_views", { x: Number(data.viewCount).toLocaleString() }));
       if (data.uploadDate) {
         const d = data.uploadDate.replace(/-/g, "").slice(0, 8);
-        if (d.length === 8) infoParts.push(`日期：${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`);
+        if (d.length === 8) infoParts.push(t("yt_date", { x: `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}` }));
       }
       // Extract hashtags from description
       if (data.description) {
@@ -299,10 +299,10 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
 // result produce an identical bubble under the same upsert id (idempotent).
 async function buildYoutubeInfoMsg(url, data) {
   const infoParts = [`📺 **${data.title || url}**`, url, ''];
-  if (data.channel) infoParts.push(`频道：${data.channel}`);
-  if (data.duration) infoParts.push(`时长：${data.duration}`);
-  if (data.viewCount) infoParts.push(`播放：${Number(data.viewCount).toLocaleString()} 次`);
-  if (data.uploadDate) { const d = String(data.uploadDate).replace(/-/g, '').slice(0, 8); if (d.length === 8) infoParts.push(`日期：${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`); }
+  if (data.channel) infoParts.push(t('yt_channel', { x: data.channel }));
+  if (data.duration) infoParts.push(t('yt_duration', { x: data.duration }));
+  if (data.viewCount) infoParts.push(t('yt_views', { x: Number(data.viewCount).toLocaleString() }));
+  if (data.uploadDate) { const d = String(data.uploadDate).replace(/-/g, '').slice(0, 8); if (d.length === 8) infoParts.push(t('yt_date', { x: `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}` })); }
   if (data.description) { const tags = data.description.match(/#[^\s#]+/g); if (tags && tags.length) infoParts.push('', tags.join(' ')); }
   const infoMsg = { role: 'assistant', content: infoParts.join('\n'), timestamp: Date.now() };
   if (data.thumbnail) { try { infoMsg.generatedThumbnails = [await makePreview(data.thumbnail, 480)]; } catch {} infoMsg.ytVideoId = data.videoId; }
