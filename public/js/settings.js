@@ -105,6 +105,10 @@ function saveChatMessage(message) {
   // Original upload filenames — injected into the model prompt so the user can refer to
   // an image by name (buildMessages). Persist so it survives reload / resend.
   if (message.imageNames) stored.imageNames = message.imageNames;
+  // Inpaint mask (painted on the first image): persist it so the bubble 🖌 can
+  // reload/edit it after a refresh and a resend regenerates with it. Without this
+  // the mask lives only in memory and vanishes on reload.
+  if (message.mask) stored.mask = message.mask;
   if (message.generatedThumbnails && message.generatedThumbnails.length > 0) {
     stored.generatedThumbnails = message.generatedThumbnails;
   }

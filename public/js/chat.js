@@ -582,7 +582,11 @@ function attachUploadedImages(userMessage, image) {
   userMessage.displayImages = list.map((img) => img.preview);
   const displayNames = list.map((img) => img.displayName || null);
   if (displayNames.some(Boolean)) userMessage.imageNames = displayNames;
-  if (!image.multi && image.mask) userMessage.mask = image.mask;
+  // Inpaint mask rides along: for a single image it's image.mask; for a
+  // multi-image person-swap it's painted on the FIRST image (the scene) and
+  // locks that image's background outside the mask.
+  const maskCarrier = image.multi ? image.multi[0] : image;
+  if (maskCarrier && maskCarrier.mask) userMessage.mask = maskCarrier.mask;
 }
 
 // Disambiguate repeated filenames by suffixing -1, -2 (before the extension) so each
@@ -3182,10 +3186,12 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       const fname = mediaFilename(dlNames?.[imgIdx], timestamp, "image", imageExtFromSrc(dlSrc), imgIdx, previews.length);
       image.dataset.filename = fname; // shown as the lightbox caption
       wrapper.appendChild(makeDownloadButton("imageDownloadBtn", dlSrc, fname, base64ByteLength(dlSrc), t("btn_downloadImage")));
-      // Inpaint mask: on a SINGLE-image USER bubble, when a mask-capable ComfyUI
-      // model is selected, float a 🖌 button (top-right) to paint/edit the region.
-      // The mask is stored on the message; a resend then regenerates with it.
-      if (role === "user" && previews.length === 1 && Number.isInteger(index) && comfyModelSupportsMask()) {
+      // Inpaint mask: on the FIRST image of a USER bubble, when a mask-capable
+      // ComfyUI model is selected, float a 🖌 button (top-right) to paint/edit the
+      // region. Single image → local repaint; multi-image (person-swap) → the mask
+      // on image #1 (the scene) locks its background outside the painted region.
+      // The mask is stored once on the message; a resend regenerates with it.
+      if (role === "user" && imgIdx === 0 && Number.isInteger(index) && comfyModelSupportsMask()) {
         const maskBtn = document.createElement("button");
         maskBtn.type = "button";
         maskBtn.className = "messageMaskBtn" + (msg?.mask ? " hasMask" : "");
@@ -3202,7 +3208,8 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
             ? (b64.startsWith("data:") || b64.startsWith("http") ? b64 : `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`)
             : src;
           const result = await openMaskModal(fullSrc, mm.mask || null);
-          mm.mask = result || undefined; // null = cleared/cancelled → drop the mask
+          if (result === null) return; // cancelled (X / 取消 / Esc) → leave the mask untouched
+          mm.mask = result || undefined; // "" = cleared via apply → drop the mask
           saveChat();
           renderChat();
         });

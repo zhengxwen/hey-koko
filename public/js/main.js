@@ -1417,9 +1417,11 @@ function renderStagedImagePreview() {
     btn.addEventListener("click", () => removeStagedImage(idx));
     thumb.appendChild(btn);
 
-    // Inpaint mask: only for a SINGLE staged image with a mask-capable ComfyUI
-    // model selected. Lets the user paint the region to repaint.
-    if (images.length === 1 && comfyModelSupportsMask()) {
+    // Inpaint mask: on the FIRST staged image (the scene) with a mask-capable
+    // ComfyUI model. Single image → local repaint; multi-image (person-swap) →
+    // the mask on image #1 locks its background pixel-for-pixel while the person
+    // from the other image(s) is composed into the masked region.
+    if (idx === 0 && comfyModelSupportsMask()) {
       const maskBtn = document.createElement("button");
       maskBtn.type = "button";
       maskBtn.className = "previewThumbMask" + (img.mask ? " hasMask" : "");
@@ -1434,9 +1436,12 @@ function renderStagedImagePreview() {
           ? `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`
           : img.preview;
         const result = await openMaskModal(fullSrc, img.mask || null);
-        // null = cancelled or cleared → drop any existing mask.
-        img.mask = result || undefined;
-        renderStagedImagePreview();
+        // null = cancelled (X / 取消 / Esc) → keep the existing mask untouched.
+        // "" = cleared via apply → drop it. A data URL → the new mask.
+        if (result !== null) {
+          img.mask = result || undefined;
+          renderStagedImagePreview();
+        }
       });
       thumb.appendChild(maskBtn);
     }

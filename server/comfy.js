@@ -846,7 +846,7 @@ function buildQwenEdit({ model, prompt, imageName, maskName, seed, cfg, comp }) 
 // conditioning; the canvas is a FRESH EmptySD3LatentImage (NOT a VAEEncode of
 // one image — that would bias to it and drop the others). Width/height set the
 // output size of the composite.
-function buildQwenEditPlus({ model, prompt, imageNames, seed, cfg, comp, width, height }) {
+function buildQwenEditPlus({ model, prompt, imageNames, maskName, seed, cfg, comp, width, height }) {
   const loads = {};
   imageNames.slice(0, 3).forEach((nm, i) => {
     loads[String(11 + i)] = { class_type: "LoadImage", inputs: { image: nm } };
@@ -856,18 +856,34 @@ function buildQwenEditPlus({ model, prompt, imageNames, seed, cfg, comp, width, 
     imageNames.slice(0, 3).forEach((nm, i) => { inputs["image" + (i + 1)] = [String(11 + i), 0]; });
     return { class_type: "TextEncodeQwenImageEditPlus", inputs };
   };
-  return {
+  const outW = width || 1024, outH = height || 1024;
+  const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "qwen_image" } },
     "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
     ...loads,
     "4": encInputs(prompt),
     "5": encInputs(""),
-    "6": { class_type: "EmptySD3LatentImage", inputs: { width: width || 1024, height: height || 1024, batch_size: 1 } },
+    "6": { class_type: "EmptySD3LatentImage", inputs: { width: outW, height: outH, batch_size: 1 } },
     "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["1", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
+  // Background lock (person-swap): keep the ORIGINAL scene (first reference, node
+  // 11) pixel-for-pixel OUTSIDE the painted mask; only the masked region — the
+  // swapped-in person from the fresh compose (node 9) — is taken from the
+  // generation. The scene is only scaled (lanczos) to the output size, NOT VAE
+  // round-tripped, so mask-outside pixels are a clean resize of the source, not a
+  // model reconstruction. Caller pins width/height to the scene's aspect so this
+  // resize introduces no distortion. Mask white = person region → source shows
+  // through (ImageCompositeMasked resizes the mask to the source internally).
+  if (maskName) {
+    wf["40"] = scaleNode(["11", 0], outW, outH);
+    wf["41"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+    wf["42"] = { class_type: "ImageCompositeMasked", inputs: { destination: ["40", 0], source: ["9", 0], x: 0, y: 0, resize_source: false, mask: ["41", 0] } };
+    wf["10"].inputs.images = ["42", 0];
+  }
+  return wf;
 }
 
 // OmniGen2 — works on stock ComfyUI after all: the model + its "omnigen2" CLIP
@@ -965,9 +981,19 @@ function buildBooguEdit({ model, prompt, negative, imageName, imageNames, maskNa
   // Reference latent = VAEEncode of the primary image (LoadImage node 30).
   wf["6"] = { class_type: "VAEEncode", inputs: { pixels: ["30", 0], vae: ["3", 0] } };
   wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } };
-  // Masked edit: confine the instruction to the painted region (gate the latent).
-  // Single-image only — a multi-ref compose has no single canvas to align to.
-  if (maskName) {
+  if (maskName && refs.length >= 2) {
+    // Multi-reference person-swap with a background lock: the output (node 9) is
+    // decoded at the primary scene's own resolution (its VAEEncode drives the
+    // latent), so it lines up 1:1 with the ORIGINAL primary image (node 30).
+    // Composite the fresh generation back over the untouched source, keeping only
+    // the masked region (the swapped person) — everything outside the mask stays
+    // pixel-identical to the input scene. Mask white = person region.
+    wf["41"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+    wf["42"] = { class_type: "ImageCompositeMasked", inputs: { destination: ["30", 0], source: ["9", 0], x: 0, y: 0, resize_source: false, mask: ["41", 0] } };
+    wf["10"].inputs.images = ["42", 0];
+  } else if (maskName) {
+    // Single-image masked edit: confine the instruction to the painted region by
+    // gating the latent (no separate scene to composite against).
     wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
     wf["21"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["6", 0], mask: ["20", 0] } };
     wf["8"].inputs.latent_image = ["21", 0];
@@ -2265,9 +2291,26 @@ async function generateComfyImage(req, res) {
           // collapsing all references to the last image (breaks multi-subject compose).
           const refs = images.slice(0, 3);
           for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `heykoko_ref${ri}.png`));
+          // Background-lock person-swap: a mask painted on the FIRST image (the
+          // scene) keeps everything outside it pixel-identical to the source. Qwen
+          // composes onto a FRESH latent, so pin its output to the scene's own
+          // aspect (from the first image) — otherwise the default 1024² square
+          // would distort the pasted-back background. boogu decodes at the scene's
+          // native size already, so it needs no size hint.
+          const maskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mask.png") : null;
+          // Qwen composes onto a FRESH EmptySD3 latent, which otherwise defaults to
+          // a 1024² SQUARE — wrong for a person-swap (output must equal the scene)
+          // and wrong for plain multi-subject compose too. Always pin its output to
+          // the FIRST image's (the scene's) aspect ratio when no explicit size is
+          // set. boogu decodes at the scene's native size already, so it's exempt.
+          let qw = ew, qh = eh;
+          if (editType === "qwen" && !(qw && qh)) {
+            const ts = editTargetSize(images, opts);
+            if (ts) { qw = snapDim(ts.width); qh = snapDim(ts.height); }
+          }
           workflow = editType === "boogu-edit"
-            ? buildBooguEdit({ model, prompt, negative: negative_prompt || "", imageNames, seed, cfg, comp })
-            : buildQwenEditPlus({ model, prompt, imageNames, seed, cfg, comp, width: ew, height: eh });
+            ? buildBooguEdit({ model, prompt, negative: negative_prompt || "", imageNames, maskName, seed, cfg, comp })
+            : buildQwenEditPlus({ model, prompt, imageNames, maskName, seed, cfg, comp, width: qw, height: qh });
         } else {
           const imageName = await uploadImage(images[0], controller.signal);
           // Masked instruction-edit (Kontext / Qwen): confine the edit to the

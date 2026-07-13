@@ -305,9 +305,12 @@ function bindOnce() {
   d.close.addEventListener("click", () => { closeModal(); finish(null); });
   d.cancel.addEventListener("click", () => { closeModal(); finish(null); });
   d.save.addEventListener("click", () => {
+    // Explicit apply: a painted mask → its data URL; an empty canvas (never
+    // painted, or cleared/erased away then applied) → "" so the caller DROPS the
+    // mask. Distinct from cancel's null, which means "leave the mask untouched".
     const mask = exportMask();
     closeModal();
-    finish(mask);
+    finish(mask === null ? "" : mask);
   });
   // Click on the backdrop (outside the dialog) cancels.
   d.modal.addEventListener("mousedown", (e) => {
@@ -317,8 +320,12 @@ function bindOnce() {
 
 // Open the painter for a staged image. `src` is a displayable image source
 // (data URL). `existingMask` (data URL or null) pre-loads a prior mask so it can
-// be edited. Resolves via the returned promise with the mask data URL, or null if
-// cancelled / cleared.
+// be edited. Resolves via the returned promise with:
+//   • a mask data URL — applied with paint (use it),
+//   • "" — applied with an empty canvas (the user CLEARED the mask → drop it),
+//   • null — CANCELLED (X / 取消 / Esc / backdrop → leave the existing mask as-is).
+// Callers MUST treat null as "no change", NOT as "clear", or a peek-and-close wipes
+// the mask.
 export function openMaskModal(src, existingMask = null) {
   return new Promise((resolve) => {
     const d = dom();
