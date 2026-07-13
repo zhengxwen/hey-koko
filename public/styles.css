@@ -3205,7 +3205,7 @@ button.secondary:disabled {
 
 /* Mask painter modal — wider than the scan modal to fit the image canvas. */
 .scanModal.maskModal {
-  width: min(720px, 94vw);
+  width: min(1040px, 96vw);
   max-height: 90vh;
 }
 
@@ -3225,6 +3225,26 @@ button.secondary:disabled {
   background: #1a1a1a;
   border-radius: 8px;
   overscroll-behavior: contain;
+}
+
+/* Force ALWAYS-VISIBLE scrollbars here (macOS/Safari hide overlay scrollbars until
+   you scroll, so the "drag the scrollbar" hint looked wrong). */
+.maskStageScroll::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+.maskStageScroll::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.6);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.maskStageScroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(180, 180, 180, 0.8);
+  background-clip: content-box;
+}
+.maskStageScroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .maskStage {
@@ -3249,6 +3269,16 @@ button.secondary:disabled {
   height: 100%;
   cursor: none; /* the brush ring stands in for the cursor */
   touch-action: none;
+}
+
+/* Rubber-band selection box shown while dragging in 🪄 smart-select mode. */
+.maskMarquee {
+  position: absolute;
+  z-index: 2;
+  border: 1.5px dashed rgba(255, 255, 255, 0.95);
+  background: rgba(90, 150, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
 }
 
 /* Follow-the-mouse brush ring — shows the real on-screen brush diameter. */
@@ -3277,6 +3307,27 @@ button.secondary:disabled {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+/* 🔍 打字抠图 (SAM3) row above the canvas. */
+.maskAutoTextRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.maskAutoTextRow input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.maskAutoTextRow button {
+  white-space: nowrap;
+  cursor: pointer;
 }
 
 .maskBrushLabel {

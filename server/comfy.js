@@ -2593,6 +2593,12 @@ async function generateComfyImage(req, res) {
 
 // POST /api/comfy-automask — one-click "point to segment" for the mask painter.
 // The browser sends the source image (base64) + a normalized click point {x,y}
+// SAM3.1 "multiplex" checkpoint — an all-in-one file (detector + tracker + text
+// encoder), loaded via the stock CheckpointLoaderSimple (it yields both MODEL and
+// the text-encoder CLIP). Lives in ComfyUI/models/checkpoints/. Text-prompt
+// (open-vocabulary) segmentation runs through it.
+const SAM3_CKPT = "sam3.1_multiplex_fp16.safetensors";
+
 // (0–1); SAM2 segments the object under that point and we return the mask as a
 // PNG data URL. The painter loads it into its canvas so the user can refine
 // (brush/erase) before applying — it flows through the exact same mask pipeline
@@ -2608,24 +2614,65 @@ async function comfyAutoMask(req, res) {
   try {
     const body = await readBody(req);
     comfyCtx.enterWith({ comfyUrl: normComfyUrl(body.comfyUrl) || config.comfyUrl });
-    const { image, point, grow } = body;
+    const { image, point, box, text, threshold, grow } = body;
     if (!image || typeof image !== "string" || image.length < 100) {
       sendJson(res, 400, { error: "缺少图片。" });
       return;
     }
-    const deadline = Date.now() + 120000; // SAM2 is fast; 2 min is ample
+    const deadline = Date.now() + 120000; // SAM2/SAM3 are fast; 2 min is ample
     const imageName = await uploadImage(image, controller.signal, "heykoko_automask_src.png");
-    const dims = imageDims(image) || { width: 1024, height: 1024 };
-    const coords = animateSeedPoint(point, dims.width, dims.height); // "[{x,y}]" pixel coords
     const expand = Number.isFinite(grow) ? Math.max(0, Math.min(64, Math.round(grow))) : 6;
-    const graph = {
-      "1": { class_type: "DownloadAndLoadSAM2Model", inputs: { model: "sam2.1_hiera_base_plus.safetensors", segmentor: "single_image", device: "cuda", precision: "fp16" } },
-      "2": { class_type: "LoadImage", inputs: { image: imageName } },
-      "3": { class_type: "Sam2Segmentation", inputs: { sam2_model: ["1", 0], image: ["2", 0], keep_model_loaded: true, coordinates_positive: coords } },
-      "4": { class_type: "GrowMask", inputs: { mask: ["3", 0], expand, tapered_corners: true } },
-      "5": { class_type: "MaskToImage", inputs: { mask: ["4", 0] } },
-      "6": { class_type: "SaveImage", inputs: { images: ["5", 0], filename_prefix: "heykoko_automask" } },
-    };
+    // Three modes on ONE endpoint:
+    //   • text (a phrase like "bird")   → SAM3.1 open-vocabulary text segmentation.
+    //   • box  ({x1,y1,x2,y2} 0–1)      → SAM2 BOX-prompt (the object inside the box;
+    //       HKBoxToBBox turns literal pixel coords into the BBOX link SAM2 requires).
+    //   • otherwise (point 0–1)         → SAM2 click-point segmentation.
+    // All grow the mask a touch then return a black/white PNG via MaskToImage.
+    const wantText = typeof text === "string" && text.trim().length > 0;
+    const wantBox = box && typeof box === "object" && ["x1", "y1", "x2", "y2"].every((k) => Number.isFinite(box[k]));
+    const isSam2 = !wantText;
+    let graph;
+    if (wantText) {
+      const t = text.trim().slice(0, 200);      // SAM3 truncates to ~32 tokens anyway
+      const thr = Number.isFinite(threshold) ? Math.max(0.05, Math.min(0.95, threshold)) : 0.35;
+      graph = {
+        "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: SAM3_CKPT } },
+        "2": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: t } },
+        "3": { class_type: "LoadImage", inputs: { image: imageName } },
+        "4": { class_type: "SAM3_Detect", inputs: { model: ["1", 0], image: ["3", 0], conditioning: ["2", 0], threshold: thr, refine_iterations: 2, individual_masks: false } },
+        "5": { class_type: "GrowMask", inputs: { mask: ["4", 0], expand, tapered_corners: true } },
+        "6": { class_type: "MaskToImage", inputs: { mask: ["5", 0] } },
+        "7": { class_type: "SaveImage", inputs: { images: ["6", 0], filename_prefix: "heykoko_automask" } },
+      };
+    } else if (wantBox) {
+      // Normalized box (0–1) → pixel XYXY in the LOADED image's space (SAM2's
+      // single_image segmentor does NO resize, so LoadImage dims = imageDims).
+      const dims = imageDims(image) || { width: 1024, height: 1024 };
+      const x1 = Math.round(Math.min(box.x1, box.x2) * dims.width);
+      const y1 = Math.round(Math.min(box.y1, box.y2) * dims.height);
+      const x2 = Math.round(Math.max(box.x1, box.x2) * dims.width);
+      const y2 = Math.round(Math.max(box.y1, box.y2) * dims.height);
+      graph = {
+        "1": { class_type: "DownloadAndLoadSAM2Model", inputs: { model: "sam2.1_hiera_base_plus.safetensors", segmentor: "single_image", device: "cuda", precision: "fp16" } },
+        "2": { class_type: "LoadImage", inputs: { image: imageName } },
+        "3": { class_type: "HKBoxToBBox", inputs: { x1, y1, x2, y2, boxes_json: "" } },
+        "4": { class_type: "Sam2Segmentation", inputs: { sam2_model: ["1", 0], image: ["2", 0], keep_model_loaded: true, individual_objects: false, bboxes: ["3", 0] } },
+        "5": { class_type: "GrowMask", inputs: { mask: ["4", 0], expand, tapered_corners: true } },
+        "6": { class_type: "MaskToImage", inputs: { mask: ["5", 0] } },
+        "7": { class_type: "SaveImage", inputs: { images: ["6", 0], filename_prefix: "heykoko_automask" } },
+      };
+    } else {
+      const dims = imageDims(image) || { width: 1024, height: 1024 };
+      const coords = animateSeedPoint(point, dims.width, dims.height); // "[{x,y}]" pixel coords
+      graph = {
+        "1": { class_type: "DownloadAndLoadSAM2Model", inputs: { model: "sam2.1_hiera_base_plus.safetensors", segmentor: "single_image", device: "cuda", precision: "fp16" } },
+        "2": { class_type: "LoadImage", inputs: { image: imageName } },
+        "3": { class_type: "Sam2Segmentation", inputs: { sam2_model: ["1", 0], image: ["2", 0], keep_model_loaded: true, coordinates_positive: coords } },
+        "4": { class_type: "GrowMask", inputs: { mask: ["3", 0], expand, tapered_corners: true } },
+        "5": { class_type: "MaskToImage", inputs: { mask: ["4", 0] } },
+        "6": { class_type: "SaveImage", inputs: { images: ["5", 0], filename_prefix: "heykoko_automask" } },
+      };
+    }
     const clientId = crypto.randomUUID();
     const q = await fetch(`${currentComfyUrl()}/prompt`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -2634,7 +2681,7 @@ async function comfyAutoMask(req, res) {
     if (!q.ok) { sendJson(res, q.status, { error: (await q.text()) || q.statusText }); return; }
     const queued = await q.json();
     if (queued.node_errors && Object.keys(queued.node_errors).length) {
-      sendJson(res, 400, { error: "SAM2 workflow error", detail: queued.node_errors });
+      sendJson(res, 400, { error: `${isSam2 ? "SAM2" : "SAM3"} workflow error`, detail: queued.node_errors });
       return;
     }
     if (!queued.prompt_id) { sendJson(res, 502, { error: "ComfyUI 未返回 prompt_id" }); return; }
@@ -2650,7 +2697,9 @@ async function comfyAutoMask(req, res) {
         return;
       }
     }
-    sendJson(res, 500, { error: "SAM2 未返回蒙版（可能没点到可分割的物体，换个位置再试）。" });
+    sendJson(res, 500, { error: isSam2
+      ? "SAM2 未返回蒙版（可能没点到可分割的物体，换个位置再试）。"
+      : `SAM3 没找到「${text.trim().slice(0, 40)}」（换个更简单的英文词，或降低阈值再试）。` });
   } catch (e) {
     if (e && e.name === "AbortError") { try { res.end(); } catch { /* client gone */ } return; }
     sendJson(res, 500, { error: String((e && e.message) || e) });

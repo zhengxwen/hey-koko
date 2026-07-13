@@ -871,11 +871,16 @@
         </div>
         <div class="maskBody">
           <p class="hint" id="maskHint">用画笔涂抹要让 AI 重绘的区域（高亮处），其余部分保持不变。滚轮缩放，放大后可拖动滚动条查看。</p>
+          <div class="maskAutoTextRow">
+            <input id="maskAutoTextInput" type="text" placeholder="打字自动抠图（SAM3）：bird / person / dog…（英文，可多个用逗号）" />
+            <button id="maskAutoTextBtn" type="button" class="secondary">🔍 找它</button>
+          </div>
           <div class="maskStageScroll" id="maskStageScroll">
             <div class="maskStage" id="maskStage">
               <img id="maskBaseImg" alt="" />
               <canvas id="maskCanvas"></canvas>
               <div id="maskBrushCursor" class="maskBrushCursor" hidden></div>
+              <div id="maskMarquee" class="maskMarquee" hidden></div>
             </div>
           </div>
           <div class="maskControls">
@@ -893,6 +898,7 @@
             <button id="maskAutoBtn" type="button" class="secondary" title="点一下图中的物体，自动把它抠成蒙版（SAM2）">🪄 智能选择</button>
             <button id="maskEraseBtn" type="button" class="secondary">橡皮擦</button>
             <button id="maskExpandBtn" type="button" class="secondary" title="把蒙版向外扩张，扩张幅度=画笔大小（滑块调，最小2px），可多次点击">扩张边缘</button>
+            <button id="maskInvertBtn" type="button" class="secondary" title="反选：已选和未选区域互换">反选</button>
             <button id="maskClearBtn" type="button" class="secondary">清除</button>
             <span class="maskSpacer"></span>
             <button id="maskCancelBtn" type="button" class="secondary">取消</button>

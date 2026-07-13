@@ -15,6 +15,8 @@
 // size. The image can be zoomed (buttons / ctrl+wheel); when it grows past the
 // viewport the stage scroll container shows scrollbars.
 
+import { t } from './i18n.js';
+
 const MAX_SIDE = 1280; // cap the mask resolution (perf); the server resizes it to the latent anyway
 const ZOOM_MIN = 1, ZOOM_MAX = 8, ZOOM_STEP = 1.25;
 const BRUSH_MIN = 2, BRUSH_MAX = 300;
@@ -30,11 +32,15 @@ function dom() {
     baseImg: document.querySelector("#maskBaseImg"),
     canvas: document.querySelector("#maskCanvas"),
     cursor: document.querySelector("#maskBrushCursor"),
+    marquee: document.querySelector("#maskMarquee"),
     brush: document.querySelector("#maskBrushSize"),
     brushVal: document.querySelector("#maskBrushVal"),
     auto: document.querySelector("#maskAutoBtn"),
+    autoText: document.querySelector("#maskAutoTextInput"),
+    autoTextBtn: document.querySelector("#maskAutoTextBtn"),
     erase: document.querySelector("#maskEraseBtn"),
     expand: document.querySelector("#maskExpandBtn"),
+    invert: document.querySelector("#maskInvertBtn"),
     clear: document.querySelector("#maskClearBtn"),
     cancel: document.querySelector("#maskCancelBtn"),
     save: document.querySelector("#maskSaveBtn"),
@@ -58,7 +64,10 @@ let bound = false;    // event handlers attached once
 let curSrc = null;    // the image being masked (data URL) — fed to auto-segment
 let autoMode = false; // 🪄 "point to segment": the next canvas click picks a seed
 let autoBusy = false; // a SAM2 request is in flight
-const AUTO_LABEL = "🪄 智能选择";
+let autoDragging = false;       // mouse down in 🪄 mode (may become a click or a box)
+let dragStart = null, dragCur = null; // marquee corners (canvas-internal coords)
+let dragAdd = false;            // Shift held → ADD to the mask instead of replacing it
+let shiftHeld = false;          // live Shift state (drives the add-mode + cursor)
 let baseW = 0, baseH = 0; // fit-to-container display size at zoom 1
 let zoom = 1;
 let cursorHideTimer = null;
@@ -98,11 +107,12 @@ function strokeTo(p) {
 
 function down(e) {
   e.preventDefault();
-  // 🪄 mode: the click is a SAM2 seed point, not a brush stroke.
+  // 🪄 mode: mouse-down starts either a click (→ SAM2 point) or a drag (→ box
+  // marquee). Shift = ADD to the existing mask. Decide on mouse-up by drag size.
   if (autoMode) {
-    const p = ptOf(e);
-    const d = dom();
-    runAutoSegment({ x: p.x / d.canvas.width, y: p.y / d.canvas.height });
+    autoDragging = true;
+    dragStart = dragCur = ptOf(e);
+    dragAdd = e.shiftKey;
     return;
   }
   painting = true;
@@ -115,12 +125,31 @@ function down(e) {
   moveCursor(e);
 }
 function move(e) {
+  if (autoMode) {
+    if (!autoDragging) return;
+    e.preventDefault();
+    dragCur = ptOf(e);
+    updateMarquee();
+    return;
+  }
   moveCursor(e);
   if (!painting) return;
   e.preventDefault();
   strokeTo(ptOf(e));
 }
 function up() {
+  if (autoMode && autoDragging) {
+    autoDragging = false;
+    hideMarquee();
+    const d = dom();
+    const dx = Math.abs(dragCur.x - dragStart.x), dy = Math.abs(dragCur.y - dragStart.y);
+    if (dx < 6 && dy < 6) {  // a tap → SAM2 point segmentation
+      runAutoSegment({ x: dragStart.x / d.canvas.width, y: dragStart.y / d.canvas.height }, dragAdd);
+    } else {                 // a real drag → SAM2 detect the object inside the box
+      runBoxSegment(dragStart, dragCur, dragAdd);
+    }
+    return;
+  }
   painting = false;
   lastPt = null;
 }
@@ -129,6 +158,7 @@ function up() {
 // on-screen brush diameter). Coordinates are relative to the (zoomed) stage.
 function moveCursor(e) {
   const d = dom();
+  if (autoMode) { d.cursor.hidden = true; return; } // 🪄 mode uses a crosshair, no brush ring
   if (cursorHideTimer) { clearTimeout(cursorHideTimer); cursorHideTimer = null; }
   const stageRect = d.stage.getBoundingClientRect();
   const canRect = d.canvas.getBoundingClientRect();
@@ -253,10 +283,24 @@ function closeModal() {
   const d = dom();
   d.modal.hidden = true;
   document.removeEventListener("keydown", onKey);
+  document.removeEventListener("keyup", onKeyUp);
+  shiftHeld = false;
 }
 
 function onKey(e) {
-  if (e.key === "Escape") { closeModal(); finish(null); }
+  if (e.key === "Escape") { closeModal(); finish(null); return; }
+  // In 🪄 mode, holding Shift = "add to mask" — show the OS copy cursor (a + badge)
+  // so the user sees they're adding, not replacing.
+  if (e.key === "Shift" && !shiftHeld) { shiftHeld = true; updateAutoCursor(); }
+}
+function onKeyUp(e) {
+  if (e.key === "Shift") { shiftHeld = false; updateAutoCursor(); }
+}
+
+// Cursor for 🪄 mode: "copy" (+ badge) while Shift is held = add; else crosshair.
+function updateAutoCursor() {
+  const d = dom();
+  d.canvas.style.cursor = autoMode ? (shiftHeld ? "copy" : "crosshair") : "";
 }
 
 function finish(result) {
@@ -311,6 +355,8 @@ function bindOnce() {
     syncBrush(clampBrush(d.brushVal.value) ?? clampBrush(d.brush.value) ?? 60);
   });
   d.auto.addEventListener("click", () => setAuto(!autoMode));
+  d.autoTextBtn.addEventListener("click", runTextSegment);
+  d.autoText.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); runTextSegment(); } });
   d.erase.addEventListener("click", () => setErase(!erasing));
   // Expand the mask edge outward by the current BRUSH SIZE (px) — the slider is the
   // expansion amount, so 2px = a fine nudge, big brush = a big grow. Repeated clicks
@@ -319,6 +365,7 @@ function bindOnce() {
     if (!maskCanvas) return;
     dilateMask(Math.max(1, Math.round(Number(d.brush.value) || 60)));
   });
+  d.invert.addEventListener("click", invertMask);
   d.clear.addEventListener("click", clearAll);
   d.zoomIn.addEventListener("click", () => setZoom(zoom * ZOOM_STEP));
   d.zoomOut.addEventListener("click", () => setZoom(zoom / ZOOM_STEP));
@@ -356,11 +403,15 @@ export function openMaskModal(src, existingMask = null) {
     dirty = false;
     zoom = 1;
     d.cursor.hidden = true;
-    curSrc = src;                 // remember the image for 🪄 auto-segment
+    curSrc = src;                 // remember the image for 🪄 / 🔍 auto-segment
     autoBusy = false;
+    autoDragging = false;
+    hideMarquee();
     setAuto(false);               // reset point-to-segment mode
     d.auto.disabled = false;
-    d.auto.textContent = AUTO_LABEL;
+    d.auto.textContent = t("mask_auto");
+    d.autoTextBtn.disabled = false;
+    d.autoTextBtn.textContent = t("mask_findBtn");
 
     const img = new Image();
     img.onload = () => {
@@ -396,18 +447,22 @@ export function openMaskModal(src, existingMask = null) {
       // Pre-load an existing mask so edits build on it.
       if (existingMask) loadMaskInto(existingMask);
       document.addEventListener("keydown", onKey);
+      document.addEventListener("keyup", onKeyUp);
     };
     img.src = src;
   });
 }
 
 // Paint a black/white mask PNG (data URL) onto BOTH buffers — the offscreen
-// white-on-transparent export buffer and the visible red-tint canvas — REPLACING
-// whatever was there. The saved/segmented mask is OPAQUE black+white (white =
-// region); convert it to white-on-transparent (alpha = red channel) so it behaves
-// like freshly painted strokes (an opaque image would tint the whole canvas).
-// Shared by the existing-mask pre-load and the 🪄 auto-segment result.
-function loadMaskInto(maskUrl) {
+// white-on-transparent export buffer and the visible red-tint canvas. The
+// saved/segmented mask is OPAQUE black+white (white = region); convert it to
+// white-on-transparent (alpha = red channel) so it behaves like painted strokes.
+// `add` = true UNIONS the region onto the existing mask (Shift+click); false
+// REPLACES it. `clipBox` ({x,y,w,h} canvas coords) restricts the new region to a
+// rectangle — used by box-select so SAM2's object is trimmed to the drawn box.
+// Shared by the existing-mask pre-load and the 🪄 auto-segment result. Resolves
+// with the painted-pixel count of the NEW (post-clip) region (0 = empty).
+function loadMaskInto(maskUrl, add = false, clipBox = null) {
   return new Promise((resolve) => {
     if (!maskCanvas) { resolve(0); return; }
     const w = maskCanvas.width, h = maskCanvas.height;
@@ -419,14 +474,25 @@ function loadMaskInto(maskUrl) {
       tctx.drawImage(m, 0, 0, w, h);
       const id = tctx.getImageData(0, 0, w, h);
       const data = id.data;
-      let painted = 0;
       for (let p = 0; p < data.length; p += 4) {
         const r = data[p];           // brightness of the mask
         data[p] = 255; data[p + 1] = 255; data[p + 2] = 255;
         data[p + 3] = r;             // alpha follows the white region
-        if (r > 20) painted++;       // count selected pixels (empty-mask guard)
       }
-      maskCtx.putImageData(id, 0, 0);
+      tctx.putImageData(id, 0, 0);   // tmp = white-on-transparent new region
+      if (clipBox) {                 // keep only the part inside the drawn box
+        tctx.globalCompositeOperation = "destination-in";
+        tctx.fillStyle = "#fff";
+        tctx.fillRect(clipBox.x, clipBox.y, clipBox.w, clipBox.h);
+        tctx.globalCompositeOperation = "source-over";
+      }
+      // Count the (post-clip) selected pixels for the empty-mask guard.
+      const after = tctx.getImageData(0, 0, w, h).data;
+      let painted = 0;
+      for (let p = 3; p < after.length; p += 4) if (after[p] > 20) painted++;
+      if (!add) maskCtx.clearRect(0, 0, w, h);
+      maskCtx.globalCompositeOperation = "source-over";
+      maskCtx.drawImage(tmp, 0, 0);  // union onto existing (or onto a cleared buffer = replace)
       repaintTint();
       dirty = true;
       resolve(painted);
@@ -484,6 +550,50 @@ function dilateMask(radius) {
   return painted;
 }
 
+// Rubber-band selection box (a DOM overlay) shown while dragging in 🪄 mode.
+// Positions in DISPLAY coords: canvas-internal × (rendered size / internal size).
+function updateMarquee() {
+  const d = dom();
+  const rect = d.canvas.getBoundingClientRect();
+  const sx = rect.width / d.canvas.width, sy = rect.height / d.canvas.height;
+  const x = Math.min(dragStart.x, dragCur.x) * sx, y = Math.min(dragStart.y, dragCur.y) * sy;
+  d.marquee.style.left = x + "px";
+  d.marquee.style.top = y + "px";
+  d.marquee.style.width = Math.abs(dragCur.x - dragStart.x) * sx + "px";
+  d.marquee.style.height = Math.abs(dragCur.y - dragStart.y) * sy + "px";
+  d.marquee.hidden = false;
+}
+function hideMarquee() { dom().marquee.hidden = true; }
+
+// Fill a rectangle (canvas-internal coords) into the mask — ADD (union) or REPLACE.
+function fillBoxIntoMask(a, b, add) {
+  if (!maskCanvas) return;
+  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+  const w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
+  if (!add) maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  maskCtx.globalCompositeOperation = "source-over";
+  maskCtx.fillStyle = "#ffffff";
+  maskCtx.fillRect(x, y, w, h);
+  repaintTint();
+  dirty = true;
+}
+
+// Invert the mask: selected ↔ unselected (flip alpha), so you can select the
+// easy part then invert to mask everything else.
+function invertMask() {
+  if (!maskCanvas) return;
+  const w = maskCanvas.width, h = maskCanvas.height;
+  const id = maskCtx.getImageData(0, 0, w, h);
+  const data = id.data;
+  for (let p = 0; p < data.length; p += 4) {
+    data[p] = 255; data[p + 1] = 255; data[p + 2] = 255;
+    data[p + 3] = data[p + 3] > 128 ? 0 : 255;   // flip selected/unselected
+  }
+  maskCtx.putImageData(id, 0, 0);
+  repaintTint();
+  dirty = true;
+}
+
 // Re-render the source image through a canvas at its DISPLAYED (EXIF-oriented)
 // size, returning the raw base64. This bakes the browser's orientation into the
 // pixels and drops the EXIF tag, so the bytes we send match exactly what the user
@@ -514,53 +624,109 @@ function setAuto(on) {
   autoMode = on && !autoBusy;
   const d = dom();
   d.auto.classList.toggle("isActive", autoMode);
-  d.canvas.style.cursor = autoMode ? "crosshair" : "";
+  updateAutoCursor();
   d.cursor.hidden = autoMode || d.cursor.hidden;
 }
 
-// Send the clicked seed point + the source image to the server's SAM2 endpoint;
-// load the returned mask into the painter for refinement. Best-effort: on any
-// failure the button flashes an error and the user can paint by hand.
-async function runAutoSegment(pt) {
+// POST the source image (+ a point OR a text phrase) to the server's auto-mask
+// endpoint and return the mask data URL. Sends the EXACT pixels the user sees
+// (bakedDisplayB64 bakes EXIF orientation + strips the tag) so a click point lines
+// up with what SAM2/SAM3 processes. Throws on any failure.
+async function postAutomask(extra) {
+  const b64 = await bakedDisplayB64();
+  if (!b64) throw new Error(t("mask_noImage"));
+  const comfyUrl = (document.querySelector("#comfyUrlDisplay")?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim();
+  const resp = await fetch("/api/comfy-automask", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image: b64, comfyUrl, ...extra }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.mask) throw new Error(data.error || t("mask_failed", { code: resp.status }));
+  return data.mask;
+}
+
+// Disable/enable both auto-select controls while a request is in flight.
+function setAutoBusy(on) {
+  autoBusy = on;
   const d = dom();
-  setAuto(false);          // consume the click; leave auto mode
+  d.auto.disabled = on;
+  d.autoTextBtn.disabled = on;
+}
+
+// 🪄 point mode: segment the object under the clicked seed point (SAM2). `add`
+// (Shift) unions it onto the mask. Auto mode STAYS on so you can keep clicking
+// (Shift-click several objects); toggle 🪄 off when done.
+async function runAutoSegment(pt, add = false) {
+  const d = dom();
   if (autoBusy) return;
-  autoBusy = true;
-  d.auto.disabled = true;
-  d.auto.textContent = "⏳ 分割中…";
+  setAutoBusy(true);
+  d.auto.textContent = t("mask_segmenting");
   d.canvas.style.cursor = "wait";
   try {
-    // Send the EXACT pixels the user is looking at (and clicked on): re-render the
-    // source through a canvas so the browser's EXIF orientation is baked in and the
-    // EXIF tag is stripped. Otherwise a rotated phone photo would upload as raw
-    // (un-rotated) bytes while the click point is in the DISPLAYED (rotated) frame —
-    // the two coordinate spaces disagree and SAM2 segments the wrong spot (or misses).
-    const b64 = await bakedDisplayB64();
-    if (!b64) throw new Error("无法读取图片");
-    // The ComfyUI URL the app is currently pointed at (strip the "(hostname)" suffix).
-    const comfyUrl = (document.querySelector("#comfyUrlDisplay")?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim();
-    const resp = await fetch("/api/comfy-automask", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: b64, point: pt, comfyUrl }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data.mask) throw new Error(data.error || `分割失败 (${resp.status})`);
-    const painted = await loadMaskInto(data.mask);
-    if (!painted) {                       // SAM2 returned an empty mask → nothing under the point
-      d.auto.textContent = "未选中，点物体中心再试";
-      setTimeout(() => { d.auto.textContent = AUTO_LABEL; }, 2600);
-    }
+    const painted = await loadMaskInto(await postAutomask({ point: pt }), add);
+    if (!painted) flashBtn(d.auto, t("mask_notFoundPoint"), t("mask_auto"));
   } catch (err) {
-    d.auto.textContent = "✕ " + String(err.message || err).slice(0, 20);
-    setTimeout(() => { d.auto.textContent = AUTO_LABEL; }, 2600);
-    autoBusy = false;
-    d.auto.disabled = false;
-    d.canvas.style.cursor = "";
-    return;
+    flashBtn(d.auto, "✕ " + String(err.message || err).slice(0, 20), t("mask_auto"));
+  } finally {
+    setAutoBusy(false);
+    d.auto.textContent = t("mask_auto");
+    updateAutoCursor();
   }
-  autoBusy = false;
-  d.auto.disabled = false;
-  d.auto.textContent = AUTO_LABEL;
-  d.canvas.style.cursor = "";
+}
+
+// 🪄 box mode: SAM2 BOX-prompt — segments the main object INSIDE the drawn box (its
+// true shape, which may slightly exceed the box; the box is a prompt, not a hard
+// clip). Sends the box normalized (0–1); the server scales it to image pixels and
+// builds the BBOX via HKBoxToBBox. If nothing is found (box over blank background),
+// falls back to filling the plain rectangle so a drag always selects something.
+async function runBoxSegment(a, b, add) {
+  const d = dom();
+  if (autoBusy) return;
+  const cw = d.canvas.width, ch = d.canvas.height;
+  const boxNorm = {
+    x1: Math.min(a.x, b.x) / cw, y1: Math.min(a.y, b.y) / ch,
+    x2: Math.max(a.x, b.x) / cw, y2: Math.max(a.y, b.y) / ch,
+  };
+  setAutoBusy(true);
+  d.auto.textContent = t("mask_segmenting");
+  d.canvas.style.cursor = "wait";
+  try {
+    const painted = await loadMaskInto(await postAutomask({ box: boxNorm }), add);
+    if (!painted) fillBoxIntoMask(a, b, add);   // nothing detected in the box → plain rectangle
+  } catch (err) {
+    flashBtn(d.auto, "✕ " + String(err.message || err).slice(0, 20), t("mask_auto"));
+  } finally {
+    setAutoBusy(false);
+    d.auto.textContent = t("mask_auto");
+    updateAutoCursor();
+  }
+}
+
+// 🔍 text mode: open-vocabulary segmentation by phrase (SAM3). Types a word like
+// "bird" → the mask covers every matching object.
+async function runTextSegment() {
+  const d = dom();
+  const text = (d.autoText.value || "").trim();
+  if (!text) { d.autoText.focus(); return; }
+  if (autoBusy) return;
+  setAuto(false);
+  setAutoBusy(true);
+  const label = t("mask_findBtn");
+  d.autoTextBtn.textContent = t("mask_finding");
+  try {
+    const painted = await loadMaskInto(await postAutomask({ text }));
+    if (!painted) flashBtn(d.autoTextBtn, t("mask_notFoundText", { q: text.slice(0, 12) }), label);
+    else d.autoTextBtn.textContent = label;
+  } catch (err) {
+    flashBtn(d.autoTextBtn, "✕ " + String(err.message || err).slice(0, 18), label);
+  } finally {
+    setAutoBusy(false);
+  }
+}
+
+// Briefly show a status message on a button, then restore its label.
+function flashBtn(btn, msg, label) {
+  btn.textContent = msg;
+  setTimeout(() => { btn.textContent = label; }, 2600);
 }
