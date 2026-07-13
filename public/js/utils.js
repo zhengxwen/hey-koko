@@ -132,3 +132,69 @@ export function convertToJpeg(dataUrl) {
     image.src = dataUrl;
   });
 }
+
+// Read the EXIF Orientation tag (1–8) from a JPEG data URL, or 1 if absent/other
+// format. Phone photos are stored in a fixed sensor orientation + this tag; a
+// browser <img> honours it on display, but the RAW pixels (and their width/height)
+// are un-rotated — so a portrait photo uploads as landscape bytes and the server,
+// which reads pixel dimensions, sizes the output landscape. We parse the tag to
+// decide whether to bake the rotation into the pixels before upload.
+function jpegOrientation(dataUrl) {
+  const comma = dataUrl.indexOf(",");
+  const bin = atob(dataUrl.slice(comma + 1));
+  const len = bin.length;
+  if (len < 4) return 1;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+  const view = new DataView(bytes.buffer);
+  if (view.getUint16(0) !== 0xffd8) return 1; // not a JPEG (SOI)
+  let offset = 2;
+  while (offset + 4 <= len) {
+    const marker = view.getUint16(offset);
+    offset += 2;
+    if ((marker & 0xff00) !== 0xff00) break; // out of the marker stream
+    if (marker === 0xffe1) {                  // APP1 — the EXIF segment
+      if (offset + 8 > len || view.getUint32(offset + 2) !== 0x45786966) return 1; // "Exif"
+      const tiff = offset + 8;                // TIFF header start (after len[2] + "Exif\0\0"[6])
+      const little = view.getUint16(tiff) === 0x4949; // "II" = little-endian
+      const g16 = (o) => view.getUint16(o, little);
+      const g32 = (o) => view.getUint32(o, little);
+      const ifd0 = tiff + g32(tiff + 4);
+      if (ifd0 + 2 > len) return 1;
+      const count = g16(ifd0);
+      for (let i = 0; i < count; i++) {
+        const entry = ifd0 + 2 + i * 12;
+        if (entry + 10 > len) break;
+        if (g16(entry) === 0x0112) return g16(entry + 8) || 1; // Orientation tag
+      }
+      return 1;
+    }
+    offset += view.getUint16(offset); // skip this segment by its length
+  }
+  return 1;
+}
+
+// If a JPEG carries a non-upright EXIF Orientation, bake that rotation into the
+// pixels and strip the tag, so the uploaded bytes match what the user sees (and
+// the server sizes the edit at the right aspect). Upright/other formats pass
+// through untouched — no needless recompression. Best-effort: any failure returns
+// the original. `createImageBitmap(..., {imageOrientation:'from-image'})` applies
+// the EXIF rotation deterministically across browsers.
+export async function normalizeOrientation(dataUrl, fileType) {
+  if (!/^image\/jpeg$/i.test(fileType || "")) return dataUrl;
+  let orient = 1;
+  try { orient = jpegOrientation(dataUrl); } catch { return dataUrl; }
+  if (orient <= 1) return dataUrl; // already upright → keep the original bytes
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    const bmp = await createImageBitmap(blob, { imageOrientation: "from-image" });
+    const canvas = document.createElement("canvas");
+    canvas.width = bmp.width;   // already the rotated (upright) dimensions
+    canvas.height = bmp.height;
+    canvas.getContext("2d").drawImage(bmp, 0, 0);
+    bmp.close?.();
+    return canvas.toDataURL("image/jpeg", 0.92);
+  } catch {
+    return dataUrl;
+  }
+}

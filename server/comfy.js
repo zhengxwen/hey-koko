@@ -2591,4 +2591,70 @@ async function generateComfyImage(req, res) {
   }
 }
 
-module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo };
+// POST /api/comfy-automask — one-click "point to segment" for the mask painter.
+// The browser sends the source image (base64) + a normalized click point {x,y}
+// (0–1); SAM2 segments the object under that point and we return the mask as a
+// PNG data URL. The painter loads it into its canvas so the user can refine
+// (brush/erase) before applying — it flows through the exact same mask pipeline
+// as a hand-painted one. `grow` (px) dilates the mask a touch for softer blend
+// edges. Self-contained SAM2 graph (no dependency on the edit workflow); the
+// point format matches Wan Animate's animateSeedPoint (verified live).
+async function comfyAutoMask(req, res) {
+  // NOTE: do NOT abort on req "close" — Node fires it as soon as the request BODY
+  // is fully read (well before the response), which would cancel the very first
+  // uploadImage and return an empty 200. SAM2 is a short job already bounded by the
+  // waitForOutputs deadline, so a client-disconnect abort isn't needed here.
+  const controller = new AbortController();
+  try {
+    const body = await readBody(req);
+    comfyCtx.enterWith({ comfyUrl: normComfyUrl(body.comfyUrl) || config.comfyUrl });
+    const { image, point, grow } = body;
+    if (!image || typeof image !== "string" || image.length < 100) {
+      sendJson(res, 400, { error: "缺少图片。" });
+      return;
+    }
+    const deadline = Date.now() + 120000; // SAM2 is fast; 2 min is ample
+    const imageName = await uploadImage(image, controller.signal, "heykoko_automask_src.png");
+    const dims = imageDims(image) || { width: 1024, height: 1024 };
+    const coords = animateSeedPoint(point, dims.width, dims.height); // "[{x,y}]" pixel coords
+    const expand = Number.isFinite(grow) ? Math.max(0, Math.min(64, Math.round(grow))) : 6;
+    const graph = {
+      "1": { class_type: "DownloadAndLoadSAM2Model", inputs: { model: "sam2.1_hiera_base_plus.safetensors", segmentor: "single_image", device: "cuda", precision: "fp16" } },
+      "2": { class_type: "LoadImage", inputs: { image: imageName } },
+      "3": { class_type: "Sam2Segmentation", inputs: { sam2_model: ["1", 0], image: ["2", 0], keep_model_loaded: true, coordinates_positive: coords } },
+      "4": { class_type: "GrowMask", inputs: { mask: ["3", 0], expand, tapered_corners: true } },
+      "5": { class_type: "MaskToImage", inputs: { mask: ["4", 0] } },
+      "6": { class_type: "SaveImage", inputs: { images: ["5", 0], filename_prefix: "heykoko_automask" } },
+    };
+    const clientId = crypto.randomUUID();
+    const q = await fetch(`${currentComfyUrl()}/prompt`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: graph, client_id: clientId }), signal: controller.signal,
+    });
+    if (!q.ok) { sendJson(res, q.status, { error: (await q.text()) || q.statusText }); return; }
+    const queued = await q.json();
+    if (queued.node_errors && Object.keys(queued.node_errors).length) {
+      sendJson(res, 400, { error: "SAM2 workflow error", detail: queued.node_errors });
+      return;
+    }
+    if (!queued.prompt_id) { sendJson(res, 502, { error: "ComfyUI 未返回 prompt_id" }); return; }
+    const outputs = await waitForOutputs(queued.prompt_id, controller.signal, deadline);
+    for (const nodeId of Object.keys(outputs)) {
+      for (const img of (outputs[nodeId].images || [])) {
+        if (img.type === "temp") continue;
+        const params = new URLSearchParams({ filename: img.filename, subfolder: img.subfolder || "", type: img.type || "output" });
+        const v = await fetch(`${currentComfyUrl()}/view?${params}`, { signal: controller.signal });
+        if (!v.ok) continue;
+        const buf = Buffer.from(await v.arrayBuffer());
+        sendJson(res, 200, { mask: `data:image/png;base64,${buf.toString("base64")}` });
+        return;
+      }
+    }
+    sendJson(res, 500, { error: "SAM2 未返回蒙版（可能没点到可分割的物体，换个位置再试）。" });
+  } catch (e) {
+    if (e && e.name === "AbortError") { try { res.end(); } catch { /* client gone */ } return; }
+    sendJson(res, 500, { error: String((e && e.message) || e) });
+  }
+}
+
+module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, comfyAutoMask };

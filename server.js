@@ -43,7 +43,7 @@ const claude = require("./server/claude");
 const openai = require("./server/openai");
 const { scanOllamaStream, scanComfyStream, hostnameFor } = require("./server/network");
 const { proxyOllamaImageModels, generateImage, enhancePrompt } = require("./server/image");
-const { proxyComfyModels, generateComfyImage, uploadComfyVideo } = require("./server/comfy");
+const { proxyComfyModels, generateComfyImage, uploadComfyVideo, comfyAutoMask } = require("./server/comfy");
 const { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, expandYoutubeUrls } = require("./server/url-fetch");
 const { searchWeb } = require("./server/search");
 const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
@@ -121,6 +121,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/comfy-upload-video") {
     uploadComfyVideo(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/comfy-automask") {
+    comfyAutoMask(req, res);
     return;
   }
 

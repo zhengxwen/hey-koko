@@ -881,8 +881,8 @@
           <div class="maskControls">
             <label class="maskBrushLabel">
               <span>画笔</span>
-              <input id="maskBrushSize" type="range" min="5" max="300" step="1" value="60" />
-              <input id="maskBrushVal" type="number" min="5" max="300" step="1" value="60" class="maskBrushVal" aria-label="画笔大小(像素)" />
+              <input id="maskBrushSize" type="range" min="2" max="300" step="1" value="60" />
+              <input id="maskBrushVal" type="number" min="2" max="300" step="1" value="60" class="maskBrushVal" aria-label="画笔大小(像素)" />
               <span class="maskBrushUnit">px</span>
             </label>
             <span class="maskZoomCtrl">
@@ -890,7 +890,9 @@
               <span id="maskZoomLabel">100%</span>
               <button id="maskZoomIn" type="button" class="secondary maskZoomBtn" aria-label="放大">+</button>
             </span>
+            <button id="maskAutoBtn" type="button" class="secondary" title="点一下图中的物体，自动把它抠成蒙版（SAM2）">🪄 智能选择</button>
             <button id="maskEraseBtn" type="button" class="secondary">橡皮擦</button>
+            <button id="maskExpandBtn" type="button" class="secondary" title="把蒙版向外扩张，扩张幅度=画笔大小（滑块调，最小2px），可多次点击">扩张边缘</button>
             <button id="maskClearBtn" type="button" class="secondary">清除</button>
             <span class="maskSpacer"></span>
             <button id="maskCancelBtn" type="button" class="secondary">取消</button>

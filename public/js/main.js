@@ -3,7 +3,7 @@
 
 // Main entry point - imports and initializes all modules
 import { dom, state, refreshScrollState } from './state.js';
-import { readFileAsDataUrl, convertToJpeg, makePreview, escapeHtml, genId } from './utils.js';
+import { readFileAsDataUrl, convertToJpeg, normalizeOrientation, makePreview, escapeHtml, genId } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
 import { initAvatar, updateCloudBadge } from './avatar.js';
@@ -1633,8 +1633,11 @@ async function selectFile(file) {
 
     const dataUrl = await readFileAsDataUrl(file);
     const needsConvert = !/^image\/(jpeg|png|gif|webp)$/i.test(file.type);
-    const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : dataUrl;
-    const preview = await makePreview(dataUrl);
+    // Bake EXIF orientation into the pixels for standard formats (so a portrait
+    // phone photo uploads as portrait bytes, not landscape-with-a-rotate-flag);
+    // convert exotic formats to JPEG as before.
+    const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : await normalizeOrientation(dataUrl, file.type);
+    const preview = await makePreview(sendDataUrl);
     addStagedImages([{ base64: sendDataUrl.split(",")[1], preview, name: makeUploadName(uploadStamp(), "image", file, 0, 1), displayName: file.name }]);
     clearSelectedFile();
     dom.messageInput.focus();
@@ -1771,8 +1774,10 @@ async function selectMultipleFiles(files) {
       }
       const dataUrl = await readFileAsDataUrl(file);
       const needsConvert = !/^image\/(jpeg|png|gif|webp)$/i.test(file.type);
-      const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : dataUrl;
-      const preview = await makePreview(dataUrl);
+      // Bake EXIF orientation into the pixels (portrait phone photos upload as
+      // portrait bytes) for standard formats; convert exotic formats to JPEG.
+      const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : await normalizeOrientation(dataUrl, file.type);
+      const preview = await makePreview(sendDataUrl);
       images.push({ base64: sendDataUrl.split(",")[1], preview });
       validFiles.push(file);
     }

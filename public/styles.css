@@ -3336,11 +3336,26 @@ button.secondary:disabled {
   cursor: pointer;
 }
 
+/* Press feedback so a momentary action (扩张边缘 etc.) visibly registers the click,
+   including in Safari where the default button active-state is subtle. */
+.maskControls button:active {
+  transform: translateY(1px);
+  filter: brightness(0.9);
+}
+
 .maskEraseBtn.isActive,
 #maskEraseBtn.isActive {
   background: var(--accent-subtle);
   border-color: var(--accent, #d6336c);
   color: var(--ink);
+}
+
+/* 🪄 point-to-segment mode: a distinct BLUE fill so the user clearly sees they're
+   in "click to auto-select" mode (vs the pink erase toggle). */
+#maskAutoBtn.isActive {
+  background: #2f6fed;
+  border-color: #2f6fed;
+  color: #fff;
 }
 
 .maskSaveBtn {

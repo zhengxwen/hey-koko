@@ -17,7 +17,7 @@
 
 const MAX_SIDE = 1280; // cap the mask resolution (perf); the server resizes it to the latent anyway
 const ZOOM_MIN = 1, ZOOM_MAX = 8, ZOOM_STEP = 1.25;
-const BRUSH_MIN = 5, BRUSH_MAX = 300;
+const BRUSH_MIN = 2, BRUSH_MAX = 300;
 
 let els = null;
 function dom() {
@@ -32,7 +32,9 @@ function dom() {
     cursor: document.querySelector("#maskBrushCursor"),
     brush: document.querySelector("#maskBrushSize"),
     brushVal: document.querySelector("#maskBrushVal"),
+    auto: document.querySelector("#maskAutoBtn"),
     erase: document.querySelector("#maskEraseBtn"),
+    expand: document.querySelector("#maskExpandBtn"),
     clear: document.querySelector("#maskClearBtn"),
     cancel: document.querySelector("#maskCancelBtn"),
     save: document.querySelector("#maskSaveBtn"),
@@ -53,6 +55,10 @@ let dirty = false;    // any stroke painted?
 let lastPt = null;
 let onDone = null;    // callback(maskBase64 | null)
 let bound = false;    // event handlers attached once
+let curSrc = null;    // the image being masked (data URL) — fed to auto-segment
+let autoMode = false; // 🪄 "point to segment": the next canvas click picks a seed
+let autoBusy = false; // a SAM2 request is in flight
+const AUTO_LABEL = "🪄 智能选择";
 let baseW = 0, baseH = 0; // fit-to-container display size at zoom 1
 let zoom = 1;
 let cursorHideTimer = null;
@@ -92,6 +98,13 @@ function strokeTo(p) {
 
 function down(e) {
   e.preventDefault();
+  // 🪄 mode: the click is a SAM2 seed point, not a brush stroke.
+  if (autoMode) {
+    const p = ptOf(e);
+    const d = dom();
+    runAutoSegment({ x: p.x / d.canvas.width, y: p.y / d.canvas.height });
+    return;
+  }
   painting = true;
   lastPt = null;
   dispCtx.fillStyle = "rgba(255,70,90,0.55)";
@@ -297,7 +310,15 @@ function bindOnce() {
   d.brushVal.addEventListener("change", () => {
     syncBrush(clampBrush(d.brushVal.value) ?? clampBrush(d.brush.value) ?? 60);
   });
+  d.auto.addEventListener("click", () => setAuto(!autoMode));
   d.erase.addEventListener("click", () => setErase(!erasing));
+  // Expand the mask edge outward by the current BRUSH SIZE (px) — the slider is the
+  // expansion amount, so 2px = a fine nudge, big brush = a big grow. Repeated clicks
+  // accumulate.
+  d.expand.addEventListener("click", () => {
+    if (!maskCanvas) return;
+    dilateMask(Math.max(1, Math.round(Number(d.brush.value) || 60)));
+  });
   d.clear.addEventListener("click", clearAll);
   d.zoomIn.addEventListener("click", () => setZoom(zoom * ZOOM_STEP));
   d.zoomOut.addEventListener("click", () => setZoom(zoom / ZOOM_STEP));
@@ -335,6 +356,11 @@ export function openMaskModal(src, existingMask = null) {
     dirty = false;
     zoom = 1;
     d.cursor.hidden = true;
+    curSrc = src;                 // remember the image for 🪄 auto-segment
+    autoBusy = false;
+    setAuto(false);               // reset point-to-segment mode
+    d.auto.disabled = false;
+    d.auto.textContent = AUTO_LABEL;
 
     const img = new Image();
     img.onload = () => {
@@ -367,37 +393,174 @@ export function openMaskModal(src, existingMask = null) {
       baseH = Math.max(1, Math.round(natH * fit));
       applyZoom();
 
-      // Pre-load an existing mask so edits build on it. The saved mask is OPAQUE
-      // black+white (white = region); convert it to white-on-transparent (alpha =
-      // red channel) so both buffers — and the tint — behave like freshly painted
-      // strokes (an opaque image would tint the whole canvas).
-      if (existingMask) {
-        const m = new Image();
-        m.onload = () => {
-          const tmp = document.createElement("canvas");
-          tmp.width = w; tmp.height = h;
-          const tctx = tmp.getContext("2d");
-          tctx.drawImage(m, 0, 0, w, h);
-          const id = tctx.getImageData(0, 0, w, h);
-          const data = id.data;
-          for (let p = 0; p < data.length; p += 4) {
-            const r = data[p];           // brightness of the saved mask
-            data[p] = 255; data[p + 1] = 255; data[p + 2] = 255;
-            data[p + 3] = r;             // alpha follows the white region
-          }
-          maskCtx.putImageData(id, 0, 0);
-          // Mirror into the visible canvas, then recolor to the translucent tint.
-          dispCtx.drawImage(maskCanvas, 0, 0);
-          dispCtx.globalCompositeOperation = "source-in";
-          dispCtx.fillStyle = "rgba(255,70,90,0.55)";
-          dispCtx.fillRect(0, 0, w, h);
-          dispCtx.globalCompositeOperation = "source-over";
-          dirty = true;
-        };
-        m.src = existingMask;
-      }
+      // Pre-load an existing mask so edits build on it.
+      if (existingMask) loadMaskInto(existingMask);
       document.addEventListener("keydown", onKey);
     };
     img.src = src;
   });
+}
+
+// Paint a black/white mask PNG (data URL) onto BOTH buffers — the offscreen
+// white-on-transparent export buffer and the visible red-tint canvas — REPLACING
+// whatever was there. The saved/segmented mask is OPAQUE black+white (white =
+// region); convert it to white-on-transparent (alpha = red channel) so it behaves
+// like freshly painted strokes (an opaque image would tint the whole canvas).
+// Shared by the existing-mask pre-load and the 🪄 auto-segment result.
+function loadMaskInto(maskUrl) {
+  return new Promise((resolve) => {
+    if (!maskCanvas) { resolve(0); return; }
+    const w = maskCanvas.width, h = maskCanvas.height;
+    const m = new Image();
+    m.onload = () => {
+      const tmp = document.createElement("canvas");
+      tmp.width = w; tmp.height = h;
+      const tctx = tmp.getContext("2d");
+      tctx.drawImage(m, 0, 0, w, h);
+      const id = tctx.getImageData(0, 0, w, h);
+      const data = id.data;
+      let painted = 0;
+      for (let p = 0; p < data.length; p += 4) {
+        const r = data[p];           // brightness of the mask
+        data[p] = 255; data[p + 1] = 255; data[p + 2] = 255;
+        data[p + 3] = r;             // alpha follows the white region
+        if (r > 20) painted++;       // count selected pixels (empty-mask guard)
+      }
+      maskCtx.putImageData(id, 0, 0);
+      repaintTint();
+      dirty = true;
+      resolve(painted);
+    };
+    m.onerror = () => resolve(0);
+    m.src = maskUrl;
+  });
+}
+
+// Redraw the VISIBLE canvas from the offscreen mask buffer as the translucent red
+// tint. Resets the composite op first (a prior erase leaves it "destination-out",
+// which would wipe instead of draw). Shared by loadMaskInto + dilateMask.
+function repaintTint() {
+  const w = maskCanvas.width, h = maskCanvas.height;
+  dispCtx.globalCompositeOperation = "source-over";
+  dispCtx.clearRect(0, 0, w, h);
+  dispCtx.drawImage(maskCanvas, 0, 0);
+  dispCtx.globalCompositeOperation = "source-in";
+  dispCtx.fillStyle = "rgba(255,70,90,0.55)";
+  dispCtx.fillRect(0, 0, w, h);
+  dispCtx.globalCompositeOperation = "source-over";
+}
+
+// Grow the mask outward by ~`radius` canvas px (a morphological dilation). Filter-
+// FREE: stamps the mask at many offsets covering a disk of that radius and unions
+// them (the center stamp keeps the interior; the ring stamps push the border out).
+// Avoids ctx.filter=blur, which is a no-op in some WebViews. Both buffers update
+// (offscreen export + visible tint). Returns the painted-pixel count (0 = empty
+// mask, nothing to grow). Repeated clicks accumulate.
+function dilateMask(radius) {
+  if (!maskCanvas || radius <= 0) return 0;
+  const w = maskCanvas.width, h = maskCanvas.height;
+  const tmp = document.createElement("canvas");
+  tmp.width = w; tmp.height = h;
+  const tctx = tmp.getContext("2d");
+  tctx.drawImage(maskCanvas, 0, 0);                 // center → keep the original region
+  // More directions for a larger radius so the grown edge stays smooth (not scalloped).
+  const dirs = Math.min(64, Math.max(20, Math.round(radius * 3)));
+  for (let i = 0; i < dirs; i++) {                  // ring → extend the border outward
+    const a = (i / dirs) * Math.PI * 2;
+    tctx.drawImage(maskCanvas, Math.round(Math.cos(a) * radius), Math.round(Math.sin(a) * radius));
+  }
+  const id = tctx.getImageData(0, 0, w, h);
+  const data = id.data;
+  let painted = 0;
+  for (let p = 0; p < data.length; p += 4) {
+    const on = data[p + 3] > 40 ? 255 : 0;          // solidify the unioned (antialiased) alpha
+    data[p] = 255; data[p + 1] = 255; data[p + 2] = 255; data[p + 3] = on;
+    if (on) painted++;
+  }
+  if (!painted) return 0;                            // nothing painted → nothing to grow
+  maskCtx.putImageData(id, 0, 0);
+  repaintTint();
+  dirty = true;
+  return painted;
+}
+
+// Re-render the source image through a canvas at its DISPLAYED (EXIF-oriented)
+// size, returning the raw base64. This bakes the browser's orientation into the
+// pixels and drops the EXIF tag, so the bytes we send match exactly what the user
+// sees and clicked on. Falls back to the raw curSrc base64 if rendering fails.
+function bakedDisplayB64() {
+  return new Promise((resolve) => {
+    if (!curSrc) { resolve(null); return; }
+    const im = new Image();
+    im.onload = () => {
+      try {
+        const c = document.createElement("canvas");
+        c.width = im.naturalWidth || im.width;
+        c.height = im.naturalHeight || im.height;
+        c.getContext("2d").drawImage(im, 0, 0);
+        resolve(c.toDataURL("image/jpeg", 0.92).split(",")[1]);
+      } catch {
+        resolve(curSrc.startsWith("data:") ? curSrc.split(",")[1] : null);
+      }
+    };
+    im.onerror = () => resolve(curSrc.startsWith("data:") ? curSrc.split(",")[1] : null);
+    im.src = curSrc;
+  });
+}
+
+// Toggle 🪄 point-to-segment mode. In auto mode the canvas shows a crosshair and
+// the next click seeds SAM2 instead of painting.
+function setAuto(on) {
+  autoMode = on && !autoBusy;
+  const d = dom();
+  d.auto.classList.toggle("isActive", autoMode);
+  d.canvas.style.cursor = autoMode ? "crosshair" : "";
+  d.cursor.hidden = autoMode || d.cursor.hidden;
+}
+
+// Send the clicked seed point + the source image to the server's SAM2 endpoint;
+// load the returned mask into the painter for refinement. Best-effort: on any
+// failure the button flashes an error and the user can paint by hand.
+async function runAutoSegment(pt) {
+  const d = dom();
+  setAuto(false);          // consume the click; leave auto mode
+  if (autoBusy) return;
+  autoBusy = true;
+  d.auto.disabled = true;
+  d.auto.textContent = "⏳ 分割中…";
+  d.canvas.style.cursor = "wait";
+  try {
+    // Send the EXACT pixels the user is looking at (and clicked on): re-render the
+    // source through a canvas so the browser's EXIF orientation is baked in and the
+    // EXIF tag is stripped. Otherwise a rotated phone photo would upload as raw
+    // (un-rotated) bytes while the click point is in the DISPLAYED (rotated) frame —
+    // the two coordinate spaces disagree and SAM2 segments the wrong spot (or misses).
+    const b64 = await bakedDisplayB64();
+    if (!b64) throw new Error("无法读取图片");
+    // The ComfyUI URL the app is currently pointed at (strip the "(hostname)" suffix).
+    const comfyUrl = (document.querySelector("#comfyUrlDisplay")?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim();
+    const resp = await fetch("/api/comfy-automask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: b64, point: pt, comfyUrl }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.mask) throw new Error(data.error || `分割失败 (${resp.status})`);
+    const painted = await loadMaskInto(data.mask);
+    if (!painted) {                       // SAM2 returned an empty mask → nothing under the point
+      d.auto.textContent = "未选中，点物体中心再试";
+      setTimeout(() => { d.auto.textContent = AUTO_LABEL; }, 2600);
+    }
+  } catch (err) {
+    d.auto.textContent = "✕ " + String(err.message || err).slice(0, 20);
+    setTimeout(() => { d.auto.textContent = AUTO_LABEL; }, 2600);
+    autoBusy = false;
+    d.auto.disabled = false;
+    d.canvas.style.cursor = "";
+    return;
+  }
+  autoBusy = false;
+  d.auto.disabled = false;
+  d.auto.textContent = AUTO_LABEL;
+  d.canvas.style.cursor = "";
 }
