@@ -251,6 +251,7 @@ function applyComfyModels(data) {
     if (allNames.length === 0) {
       const option = document.createElement("option");
       option.value = "";
+      option.dataset.i18n = "comfy_model_none";
       option.textContent = t("comfy_model_none");
       dom.comfyModelSelect.appendChild(option);
     } else {
@@ -265,12 +266,14 @@ function applyComfyModels(data) {
       };
       if (models.length) {
         const group = document.createElement("optgroup");
+        group.dataset.i18n = "comfy_image_group";
         group.label = t("comfy_image_group");
         for (const name of models) addOption(group, name, name === "image-upscale" ? t("comfy_imageUpscale_label") : undefined);
         dom.comfyModelSelect.appendChild(group);
       }
       if (editModels.length) {
         const group = document.createElement("optgroup");
+        group.dataset.i18n = "comfy_edit_group";
         group.label = t("comfy_edit_group");
         for (const m of editModels) addOption(group, m.name);
         dom.comfyModelSelect.appendChild(group);
@@ -281,12 +284,14 @@ function applyComfyModels(data) {
       const videoIn = videoModels.filter((m) => m.needsVideo);
       if (videoGen.length) {
         const group = document.createElement("optgroup");
+        group.dataset.i18n = "comfy_video_group";
         group.label = t("comfy_video_group");
         for (const m of videoGen) addOption(group, m.name, m.label);
         dom.comfyModelSelect.appendChild(group);
       }
       if (videoIn.length) {
         const group = document.createElement("optgroup");
+        group.dataset.i18n = "comfy_video_input_group";
         group.label = t("comfy_video_input_group");
         for (const m of videoIn) addOption(group, m.name, m.label);
         dom.comfyModelSelect.appendChild(group);

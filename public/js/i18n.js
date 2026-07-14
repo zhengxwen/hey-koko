@@ -2904,6 +2904,19 @@ export function applyUILanguage() {
   }
   // AI name title
   if (dom.aiName) dom.aiName.title = t("msg_aiNameTitle");
+  // Image-model dropdown: the always-present empty option is built by ollama.js
+  // (loadImageModels) and not otherwise re-labeled on a language switch.
+  if (dom.imageModelSelect) {
+    const empty = dom.imageModelSelect.querySelector('option[value=""]');
+    if (empty) empty.textContent = dom.imageModelSelect.options.length > 1 ? t("image_model_empty") : t("image_model_none");
+  }
+  // ComfyUI model dropdown: optgroup labels (and the "none" option) are tagged
+  // with data-i18n at build time so they can be re-localized without a refetch.
+  if (dom.comfyModelSelect) {
+    for (const g of dom.comfyModelSelect.querySelectorAll("optgroup[data-i18n]")) g.label = t(g.dataset.i18n);
+    const none = dom.comfyModelSelect.querySelector('option[data-i18n]');
+    if (none) none.textContent = t(none.dataset.i18n);
+  }
 }
 
 /** Get command list with localized descriptions */
