@@ -52,10 +52,10 @@ async function proxyOllamaChat(req, res, preBody) {
       return;
     }
     if (error.name === "AbortError") {
-      sendJson(res, 504, { error: "请求超时，模型响应时间超过设定限制。" });
+      sendJson(res, 504, { error: "Request timed out: the model exceeded the configured response time limit." });
     } else {
       sendJson(res, 500, {
-        error: "无法连接本地 Ollama。请确认 Ollama 正在运行，并且已经下载了模型。",
+        error: "Cannot connect to local Ollama. Make sure Ollama is running and the model has been downloaded.",
         detail: error.message,
       });
     }

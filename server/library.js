@@ -90,7 +90,7 @@ function buildLoc() {
       const ext = e.name.endsWith(".json.zst") ? ".json.zst" : e.name.endsWith(".json.gz") ? ".json.gz" : null;
       if (!ext) continue;
       const id = e.name.slice(0, -ext.length);
-      if (!map.has(id)) map.set(id, rel);   // 取第一个：忽略其它同名副本，docId 不冲突
+      if (!map.has(id)) map.set(id, rel);   // take the first: ignore other same-named copies, docId doesn't conflict
     }
   };
   walk(LIBRARY_DIR, "");
@@ -961,7 +961,7 @@ async function importDocInternal(body) {
       if (im && im.base64) { b.pageImage = im.base64; b.pageImageMime = im.mime || "image/jpeg"; }
     }
   }
-  if (!blocks.length) throw new Error("文档为空，无法导入");
+  if (!blocks.length) throw new Error("Document is empty, cannot import");
   // embed:false blocks (a references section) keep a zero-vector slot — never embedded.
   const vectors = new Array(blocks.length).fill(null);
   const toEmbed = [], toEmbedIdx = [];
@@ -1054,7 +1054,7 @@ async function importLibrary(req, res) {
     const body = await readBody(req);
     const r = await importDocInternal(body);
     sendJson(res, 200, { ok: true, ...r });
-  } catch (e) { sendJson(res, e.message === "文档为空，无法导入" ? 400 : 500, { error: e.message }); }
+  } catch (e) { sendJson(res, e.message === "Document is empty, cannot import" ? 400 : 500, { error: e.message }); }
 }
 
 // One-time (per process) backfill: video docs imported before publishedAt existed
@@ -1272,7 +1272,7 @@ async function getLibraryDoc(req, res) {
   try {
     const body = await readBody(req);
     const doc = readDoc(body.docId);
-    if (!doc) { sendJson(res, 404, { error: "文档不存在" }); return; }
+    if (!doc) { sendJson(res, 404, { error: "Document not found" }); return; }
     sendJson(res, 200, { doc });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
@@ -1280,7 +1280,7 @@ async function getLibraryDoc(req, res) {
 // Save a doc, re-embedding ONLY hash-changed blocks (unchanged blocks reuse their
 // stored vectors). Shared by the HTTP handler and distillDocInternal. Throws on failure.
 async function saveDocInternal(doc, model) {
-  if (!doc || doc.type !== "libdoc" || !doc.docId) throw new Error("无效的文档");
+  if (!doc || doc.type !== "libdoc" || !doc.docId) throw new Error("Invalid document");
 
   // Structure layer is REBUILT from the card text on every save — the card is
   // authoritative, so a user hand-editing the **实体**/**关系** sections (or the distill
@@ -1337,7 +1337,7 @@ async function saveLibraryDoc(req, res) {
     const body = await readBody(req);
     const r = await saveDocInternal(body.doc, body.model || DEFAULT_MODEL);
     sendJson(res, 200, { ok: true, ...r });
-  } catch (e) { sendJson(res, e.message === "无效的文档" ? 400 : 500, { error: e.message }); }
+  } catch (e) { sendJson(res, e.message === "Invalid document" ? 400 : 500, { error: e.message }); }
 }
 
 // POST /api/library/delete  { docIds:[] }
@@ -1875,10 +1875,10 @@ async function reparseLibrary(req, res) {
     const body = await readBody(req);
     const model = body.model || DEFAULT_MODEL;
     const old = readDoc(body.docId);
-    if (!old) { sendJson(res, 404, { error: "文档不存在" }); return; }
+    if (!old) { sendJson(res, 404, { error: "Document not found" }); return; }
     const convBlocks = (old.blocks || []).filter(isConvBlock);   // preserve the conversation
     const newChunks = splitIntoBlocks(body.text || "", body.images || [], { keepShort: old.docKind === "slides" });
-    if (!newChunks.length && !convBlocks.length) { sendJson(res, 400, { error: "内容为空，无法重新分块" }); return; }
+    if (!newChunks.length && !convBlocks.length) { sendJson(res, 400, { error: "Content is empty, cannot re-chunk" }); return; }
     // re-id sequentially so freshly-chunked ids can't collide with preserved conv ids
     const blocks = [...newChunks, ...convBlocks].map((b, i) => ({ ...b, id: `b${i}` }));
     const vectors = new Array(blocks.length).fill(null);
@@ -2404,12 +2404,12 @@ function blankCard(language = "") {
 // YouTube docs, whose exact metadata the LLM must not overwrite). The save path
 // re-embeds ONLY the card (all other blocks reuse their vectors by hash). Throws on failure.
 async function distillDocInternal(docId, { metadata = false, model, language = "", timeoutS = 0, signal = null } = {}) {
-  if (!model) throw new Error("蒸馏需要指定聊天模型");
+  if (!model) throw new Error("Distillation requires a chat model");
   const doc = readDoc(docId);
-  if (!doc || doc.type !== "libdoc") throw new Error("文档不存在");
+  if (!doc || doc.type !== "libdoc") throw new Error("Document not found");
   const L = distillL(language);
   const sample = distillSample(doc, L.toc);
-  if (!sample.trim()) throw new Error("文档没有可蒸馏的文本");
+  if (!sample.trim()) throw new Error("Document has no distillable text");
   // Videos get the transcript-aware prompt; their exact title/channel (from YouTube)
   // is fed IN as context instead of being asked back out of the LLM. Papers get an
   // academic variant (same JSON shape): summary structured as question→method→results→
@@ -2442,17 +2442,17 @@ async function distillDocInternal(docId, { metadata = false, model, language = "
       { role: "user", content: user },
     ], { timeoutMs, signal });
   } catch (e) {
-    // Surface a timeout as a NAMED failure ("蒸馏超时") so the task drawer can show it —
+    // Surface a timeout as a NAMED failure ("Distillation timed out") so the task drawer can show it —
     // slow machines hit this, and the fix is a longer timeout-slider value, not a retry.
     if (e && e.name === "TimeoutError") {
-      const err = new Error(`蒸馏超时（${Math.round((timeoutMs || 300000) / 1000)} 秒）`);
+      const err = new Error(`Distillation timed out (${Math.round((timeoutMs || 300000) / 1000)}s)`);
       err.code = "DISTILL_TIMEOUT";
       throw err;
     }
     throw e;
   }
   const j = parseJsonLoose(out);
-  if (!j || (!j.summary && !Array.isArray(j.claims))) throw new Error("蒸馏输出无法解析：" + String(out).slice(0, 120));
+  if (!j || (!j.summary && !Array.isArray(j.claims))) throw new Error("Failed to parse distillation output: " + String(out).slice(0, 120));
   if (metadata) {
     if (j.title && String(j.title).trim()) doc.title = String(j.title).trim();
     if (String(j.authors || "").trim()) doc.authors = String(j.authors).trim();
@@ -2472,7 +2472,7 @@ async function distillDocInternal(docId, { metadata = false, model, language = "
     claims.length ? `${L.claimsHead}\n` + claims.map(c => `- ${c}`).join("\n") : "",
     structure,
   ].filter(Boolean).join("\n\n");
-  if (!content) throw new Error("蒸馏输出为空");
+  if (!content) throw new Error("Distillation output is empty");
   // Replace any existing card, always at blocks[0]. Embed with the DOC's own vector
   // model so the .vec stays one coherent space (hash-reuse needs the same model anyway).
   const card = { id: "card", kind: "card", section: L.cardSection, content, hash: "" };
@@ -2491,7 +2491,7 @@ async function rateLibraryDoc(req, res) {
     const docId = String(body.docId || "");
     const rating = Math.max(0, Math.min(5, Math.round((Number(body.rating) || 0) * 2) / 2));
     const doc = readDoc(docId);
-    if (!doc) { sendJson(res, 404, { error: "文档不存在" }); return; }
+    if (!doc) { sendJson(res, 404, { error: "Document not found" }); return; }
     if (rating) doc.rating = rating; else delete doc.rating;
     writeDoc(doc);
     // Update the index entry IN PLACE — upsertIndex pushes to the end, which would
@@ -2515,9 +2515,9 @@ async function editLibraryTag(req, res) {
     const op = String(body.op || "");
     const name = String(body.name || "").trim();
     const newName = String(body.newName || "").trim();
-    if (!name) { sendJson(res, 400, { error: "缺少标签名" }); return; }
-    if (op === "rename" && !newName) { sendJson(res, 400, { error: "缺少新标签名" }); return; }
-    if (op !== "delete" && op !== "rename") { sendJson(res, 400, { error: "未知操作" }); return; }
+    if (!name) { sendJson(res, 400, { error: "Missing tag name" }); return; }
+    if (op === "rename" && !newName) { sendJson(res, 400, { error: "Missing new tag name" }); return; }
+    if (op !== "delete" && op !== "rename") { sendJson(res, 400, { error: "Unknown operation" }); return; }
 
     // Apply the op to a [{name,color}] list; returns a NEW list or null if unchanged.
     const apply = (tags) => {
@@ -2682,7 +2682,7 @@ function listZoteroDocs() {
 // New/removed highlights re-embed just that one block via saveDocInternal's hash diff.
 async function resyncZoteroAnnotations(docId, annotations) {
   const doc = readDoc(docId);
-  if (!doc || doc.type !== "libdoc") throw new Error("文档不存在");
+  if (!doc || doc.type !== "libdoc") throw new Error("Document not found");
   // Hash off the markdown form (stable identity); build the stored block(s) directly.
   const newHash = zoteroAnnotHash(buildZoteroAnnotationSection(annotations));
   const oldHash = (doc.zotero && doc.zotero.annotHash) || "";
@@ -2718,7 +2718,7 @@ function listZoteroDocsDetailed() {
 //   toUpdate : both sides have it, Zotero's version is newer → refresh metadata.
 //   toMove   : its first collection changed → target folder differs from where it sits.
 //   toDelete : hey-koko has it but Zotero no longer does.
-// mode "incremental" drops toDelete + toMove (additive only, §P3 "加不删不挪").
+// mode "incremental" drops toDelete + toMove (additive only, §P3 "add, never delete or move").
 function diffZoteroSync(zoteroItems, collMap, existing, mode = "full") {
   const collName = (it) => (it.collections && it.collections.length) ? (collMap[it.collections[0]] || "") : "";
   const targetFolder = (it) => { const cn = collName(it); return cn ? `zotero/${cn}` : "zotero"; };
@@ -2747,7 +2747,7 @@ function diffZoteroSync(zoteroItems, collMap, existing, mode = "full") {
 // vectors (metadata isn't embedded). Tags are left alone (may be hey-koko-curated).
 function patchZoteroDocMeta(docId, meta) {
   const doc = readDoc(docId);
-  if (!doc || doc.type !== "libdoc") throw new Error("文档不存在");
+  if (!doc || doc.type !== "libdoc") throw new Error("Document not found");
   if (meta.title) doc.title = meta.title;
   if (meta.authors) doc.authors = meta.authors;
   if (meta.year) doc.year = meta.year;

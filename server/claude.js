@@ -284,7 +284,7 @@ function toAnthropicTools(ollamaTools) {
 async function proxyChat(res, body) {
   const cfg = loadConfig();
   if (!cfg) {
-    sendJson(res, 400, { error: "Claude 未配置。" });
+    sendJson(res, 400, { error: "Claude is not configured." });
     return;
   }
 
@@ -340,9 +340,9 @@ async function proxyChat(res, body) {
   } catch (error) {
     if (timeoutHandle) clearTimeout(timeoutHandle);
     if (error.name === "AbortError") {
-      sendJson(res, 504, { error: "请求超时，Claude 响应时间超过设定限制。" });
+      sendJson(res, 504, { error: "Request timed out: Claude exceeded the configured response time limit." });
     } else {
-      sendJson(res, 502, { error: "无法连接 Claude 服务。请检查 base URL 与网络。", detail: error.message });
+      sendJson(res, 502, { error: "Cannot connect to the Claude service. Check the base URL and network.", detail: error.message });
     }
     return;
   }
@@ -361,7 +361,7 @@ async function proxyChat(res, body) {
     let data;
     try { data = await response.json(); } catch (e) {
       if (timeoutHandle) clearTimeout(timeoutHandle);
-      sendJson(res, 502, { error: "Claude 返回了无法解析的响应。", detail: e.message });
+      sendJson(res, 502, { error: "Claude returned a response that could not be parsed.", detail: e.message });
       return;
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -452,7 +452,7 @@ async function proxyChat(res, body) {
 // Throws on error. temperature is intentionally dropped (Opus 4.8/4.7 reject it).
 async function complete(model, messages, { signal } = {}) {
   const cfg = loadConfig();
-  if (!cfg) throw new Error("Claude 未配置");
+  if (!cfg) throw new Error("Claude is not configured");
   const { system, messages: anthMessages } = toAnthropicMessages(messages);
   const payload = {
     model,

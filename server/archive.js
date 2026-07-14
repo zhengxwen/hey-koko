@@ -19,13 +19,14 @@ async function archiveConversation(req, res) {
   try {
     const body = await readBody(req);
     if (!body.messages || !body.messages.length) {
-      sendJson(res, 400, { error: "对话为空，无法存档" });
+      sendJson(res, 400, { error: "Conversation is empty; nothing to archive" });
       return;
     }
 
     ensureArchivesDir();
 
-    // 按目标文件的扩展名选择压缩方式（覆盖旧存档时沿用其后缀，避免 .gz 里写 zstd）。
+    // Pick the compression by the target file's extension (when overwriting an old archive,
+    // keep its suffix so we never write zstd data into a .gz file).
     const writeArchive = (filePath) => {
       const buf = Buffer.from(JSON.stringify(body, null, 2), "utf-8");
       let compressed;
@@ -35,9 +36,11 @@ async function archiveConversation(req, res) {
       fs.writeFileSync(filePath, compressed);
     };
 
-    // 方案3：取档时标签页记下了来源存档文件名（sourceArchive）。再次归档时，
-    // 若来源文件仍在，就更新原存档而非新建一份，避免反复归档/取档堆积重复副本。
-    // sourceArchive 是内部字段，不写进存档内容本身。
+    // Approach 3: when a conversation was retrieved, the tab recorded the source archive
+    // filename (sourceArchive). On re-archive, if the source file still exists, update the
+    // original archive instead of creating a new one, avoiding duplicate copies piling up
+    // from repeated archive/retrieve. sourceArchive is an internal field and is not written
+    // into the archive content itself.
     const sourceArchive = body.sourceArchive;
     delete body.sourceArchive;
     if (sourceArchive) {
@@ -50,7 +53,7 @@ async function archiveConversation(req, res) {
           return;
         }
       }
-      // 来源文件已被删除或路径非法 → 落到下面的新建逻辑。
+      // Source file was deleted or the path is invalid → fall through to the create logic below.
     }
 
     // Find the first user message timestamp for filename
@@ -134,7 +137,7 @@ function listArchives(res) {
         });
         return {
           filename,
-          title: data.title || "未命名对话",
+          title: data.title || "Untitled conversation",
           tags: data.tags || [],
           personality: data.personality || "",
           messageCount: (data.messages || []).length,
@@ -174,7 +177,7 @@ async function loadArchives(req, res) {
         const content = readArchiveFile(filePath);
         results.push({ filename: normalized, data: JSON.parse(content) });
       } catch {
-        results.push({ filename: normalized, error: "文件不存在或无法读取" });
+        results.push({ filename: normalized, error: "File does not exist or cannot be read" });
       }
     }
 
@@ -206,7 +209,7 @@ async function deleteArchives(req, res) {
         fs.unlinkSync(filePath);
         deleted.push(normalized);
       } catch {
-        errors.push({ filename: normalized, error: "删除失败" });
+        errors.push({ filename: normalized, error: "Delete failed" });
       }
     }
 
@@ -271,7 +274,7 @@ async function moveArchives(req, res) {
       }
       const srcPath = path.join(config.ARCHIVES_DIR, normalized);
       if (!srcPath.startsWith(config.ARCHIVES_DIR) || !fs.existsSync(srcPath)) {
-        errors.push({ filename: normalized, error: "文件不存在" });
+        errors.push({ filename: normalized, error: "File does not exist" });
         continue;
       }
 
@@ -301,7 +304,7 @@ async function moveArchives(req, res) {
         const newRelPath = targetDir ? `${normalizedTarget}/${finalName}` : finalName;
         moved.push({ from: normalized, to: newRelPath });
       } catch {
-        errors.push({ filename: normalized, error: "移动失败" });
+        errors.push({ filename: normalized, error: "Move failed" });
       }
     }
 

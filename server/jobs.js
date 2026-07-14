@@ -372,7 +372,7 @@ async function runLibImportJob(job, signal) {
     const ex = await feeds.extractArticleForUrl(p.url, { signal, images: p.images, language: p.language, contentHtml: p.contentHtml, apiBase: p.apiBase });
     if (!ex || !ex.text || !String(ex.text).trim()) throw new Error("empty document");
     stage("importing");
-    const card = library.blankCard(p.language);   // news «蒸馏卡» starts BLANK (no excerpt dump)
+    const card = library.blankCard(p.language);   // news «蒸馏卡» (distill card) starts BLANK (no excerpt dump)
     const meta = ex.meta || {};
     const imp = await library.importDocInternal({
       source: `url:${p.url}`, docId: p.docId, dedupeUrl: true, docKind: "blog", folder: p.folder,
@@ -405,7 +405,7 @@ async function runLibImportJob(job, signal) {
     if (!data) throw new Error("youtube job: no result");
     // Formatting failed (raw transcript only): FAIL the import loudly — in a batch the
     // user must see which videos need reprocessing, not silently get an unformatted doc.
-    if (data.formatError) throw new Error(`字幕整理失败: ${data.formatError}`);
+    if (data.formatError) throw new Error(`Transcript formatting failed: ${data.formatError}`);
     stage("importing");
     ({ source, docKind, title, authors, year, publishedAt, text, images } = await library.buildYoutubeDoc(data, p.url, p.language));
   } else if (p.type === "url") {
@@ -450,7 +450,7 @@ async function runLibImportJob(job, signal) {
     const meta = await zotero.getItem(itemKey);
     const children = await zotero.getChildren(itemKey);
     const pdf = zotero.pickPdfAttachment(children);
-    if (!pdf) throw new Error(`Zotero 条目「${meta.title || itemKey}」没有可用的 PDF 附件`);
+    if (!pdf) throw new Error(`Zotero item "${meta.title || itemKey}" has no usable PDF attachment`);
     const attachmentKey = (pdf.data || pdf).key;
     // A Zotero "presentation" item is a slide deck: parse it PER-PAGE via MinerU (the
     // page structure is the whole value of a deck), NOT the default /fulltext plain text
@@ -482,7 +482,7 @@ async function runLibImportJob(job, signal) {
       bodyText = (ft && ft.content) ? ft.content : "";
     }
     if (!bodyText.trim()) {
-      throw new Error(`Zotero 尚未对「${meta.title || itemKey}」建立全文索引——在 Zotero 里打开一次该 PDF 触发索引，或稍后用「🔬 深度重解析」`);
+      throw new Error(`Zotero has not built a full-text index for "${meta.title || itemKey}" yet — open the PDF once in Zotero to trigger indexing, or use "🔬 Deep re-parse" later`);
     }
     const annots = await zotero.getAnnotations(attachmentKey);
     source = `zotero:${itemKey}`;
@@ -545,7 +545,7 @@ async function runLibImportJob(job, signal) {
       // Timeout fails the job LOUDLY (user request): a batch import must show which
       // docs still need a card. Other distill errors stay best-effort — the doc itself
       // is already imported either way, and the backfill action can retry.
-      if (e && e.code === "DISTILL_TIMEOUT") throw new Error(`${e.message}——文档已入库，可用「补卡」重试`);
+      if (e && e.code === "DISTILL_TIMEOUT") throw new Error(`${e.message} — the document has been imported; retry with "Backfill card"`);
       console.warn("[jobs] distill failed:", e && e.message);
     }
   }
@@ -591,8 +591,8 @@ function loopbackParseFile(filename, buf, signal, onProgress, timeoutS = 0, docK
       res.on("end", () => {
         if (buffer.trim()) handleLine(buffer);
         if (last && last.text != null) resolve(last);
-        else if (error === "mineru_unavailable") reject(new Error("MinerU 不可用：服务端解析 PDF 需要安装 MinerU"));
-        else if (error === "pandoc_unavailable") reject(new Error("Pandoc 不可用：服务端解析 DOCX/PPTX 需要安装 Pandoc"));
+        else if (error === "mineru_unavailable") reject(new Error("MinerU unavailable: server-side PDF parsing requires MinerU to be installed"));
+        else if (error === "pandoc_unavailable") reject(new Error("Pandoc unavailable: server-side DOCX/PPTX parsing requires Pandoc to be installed"));
         else reject(new Error(error || `parse failed (${res.statusCode})`));
       });
     });
@@ -646,7 +646,7 @@ async function submitJob(req, res) {
   // only — resolve it inside SPOOL_DIR (basename, so a crafted name can't escape).
   else if (kind === "libimport" && payload.type === "file" && payload.spoolName) {
     const sp = path.join(SPOOL_DIR, path.basename(String(payload.spoolName)));
-    if (!fs.existsSync(sp)) { sendJson(res, 400, { error: "uploaded file not found（服务器可能已重启，请重新导入）" }); return; }
+    if (!fs.existsSync(sp)) { sendJson(res, 400, { error: "uploaded file not found (the server may have restarted; please re-import)" }); return; }
     job.payload = { ...payload, spoolName: undefined, spool: sp };
   }
   // Insert keeping QUEUED jobs in the client's batch-enqueue (seq) order. Fire-all submits the

@@ -64,14 +64,14 @@ async function synthToWav({ engine, voice, text, speed }) {
 // settings dropdown and the /voice autocomplete is engine-agnostic.
 const VOICE_CATALOG = [
   // Kokoro (light & fast) — Mandarin presets (lang code 'z')
-  { value: "kokoro:zf_xiaoxiao", engine: "kokoro", label: "小晓 · 女声 (Kokoro)", gender: "female" },
-  { value: "kokoro:zf_xiaoyi", engine: "kokoro", label: "小艺 · 女声 (Kokoro)", gender: "female" },
-  { value: "kokoro:zf_xiaobei", engine: "kokoro", label: "小贝 · 女声 (Kokoro)", gender: "female" },
-  { value: "kokoro:zf_xiaoni", engine: "kokoro", label: "小妮 · 女声 (Kokoro)", gender: "female" },
-  { value: "kokoro:zm_yunxi", engine: "kokoro", label: "云希 · 男声 (Kokoro)", gender: "male" },
-  { value: "kokoro:zm_yunjian", engine: "kokoro", label: "云健 · 男声 (Kokoro)", gender: "male" },
-  { value: "kokoro:zm_yunyang", engine: "kokoro", label: "云扬 · 男声 (Kokoro)", gender: "male" },
-  { value: "kokoro:zm_yunxia", engine: "kokoro", label: "云夏 · 男声 (Kokoro)", gender: "male" },
+  { value: "kokoro:zf_xiaoxiao", engine: "kokoro", label: "Xiaoxiao · Female, Mandarin (Kokoro)", gender: "female" },
+  { value: "kokoro:zf_xiaoyi", engine: "kokoro", label: "Xiaoyi · Female, Mandarin (Kokoro)", gender: "female" },
+  { value: "kokoro:zf_xiaobei", engine: "kokoro", label: "Xiaobei · Female, Mandarin (Kokoro)", gender: "female" },
+  { value: "kokoro:zf_xiaoni", engine: "kokoro", label: "Xiaoni · Female, Mandarin (Kokoro)", gender: "female" },
+  { value: "kokoro:zm_yunxi", engine: "kokoro", label: "Yunxi · Male, Mandarin (Kokoro)", gender: "male" },
+  { value: "kokoro:zm_yunjian", engine: "kokoro", label: "Yunjian · Male, Mandarin (Kokoro)", gender: "male" },
+  { value: "kokoro:zm_yunyang", engine: "kokoro", label: "Yunyang · Male, Mandarin (Kokoro)", gender: "male" },
+  { value: "kokoro:zm_yunxia", engine: "kokoro", label: "Yunxia · Male, Mandarin (Kokoro)", gender: "male" },
   // Kokoro English presets — American (lang 'a') + British (lang 'b')
   { value: "kokoro:af_heart", engine: "kokoro", label: "Heart · US Female (Kokoro)", gender: "female" },
   { value: "kokoro:af_bella", engine: "kokoro", label: "Bella · US Female (Kokoro)", gender: "female" },

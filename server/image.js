@@ -140,10 +140,10 @@ async function generateImage(req, res) {
       return;
     }
     if (error.name === "AbortError") {
-      sendJson(res, 504, { error: "图片生成超时（120秒），请重试或使用更简单的提示词。" });
+      sendJson(res, 504, { error: "Image generation timed out (120s). Please retry or use a simpler prompt." });
     } else {
       sendJson(res, 500, {
-        error: "图片生成失败，请确认模型已下载且支持图像生成。",
+        error: "Image generation failed. Make sure the model is downloaded and supports image generation.",
         detail: error.message,
       });
     }
@@ -238,7 +238,7 @@ async function enhancePrompt(req, res) {
     const enhanced = await enhancePromptText({ model, prompt, language, edit, video });
     sendJson(res, 200, { enhanced, original: prompt });
   } catch (error) {
-    sendJson(res, 500, { error: "提示词增强失败", detail: error.message });
+    sendJson(res, 500, { error: "Prompt enhancement failed", detail: error.message });
   }
 }
 

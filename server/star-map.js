@@ -211,7 +211,7 @@ function labelClusters(items, clusterIds, tagsById, k) {
   const out = [];
   for (let c = 0; c < k; c++) {
     const members = items.filter((_, i) => clusterIds[i] === c);
-    if (!members.length) { out.push({ id: c, size: 0, label: `簇 ${c + 1}` }); continue; }
+    if (!members.length) { out.push({ id: c, size: 0, label: `Cluster ${c + 1}` }); continue; }
     const freq = {};
     for (const m of members) for (const t of (tagsById.get(m.id) || [])) freq[t] = (freq[t] || 0) + 1;
     let labels = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 3).map((e) => e[0]);
@@ -223,7 +223,7 @@ function labelClusters(items, clusterIds, tagsById, k) {
       }
       labels = Object.entries(wf).sort((a, b) => b[1] - a[1]).slice(0, 3).map((e) => e[0]);
     }
-    out.push({ id: c, size: members.length, label: labels.join(" · ") || `簇 ${c + 1}` });
+    out.push({ id: c, size: members.length, label: labels.join(" · ") || `Cluster ${c + 1}` });
   }
   return out;
 }
@@ -239,7 +239,7 @@ async function computeStarmap(job, signal, emitUpdate) {
   const setLabel = (s) => { if (job) { job.label = s; if (emitUpdate) emitUpdate(job); } };
 
   const { items, model, tags } = gather(source, scope);
-  setLabel(`星图:读取 ${items.length} 个向量…`);
+  setLabel(`Star map: reading ${items.length} vectors…`);
   // Re-projecting a folder scope needs enough points for UMAP to lay out sensibly;
   // below the floor we cache a `tooFew` marker so the frontend can explain instead
   // of building a degenerate 3-dot map. The whole-library map has no such floor.
@@ -257,7 +257,7 @@ async function computeStarmap(job, signal, emitUpdate) {
 
   const inPath = writeMatrix(items.map((it) => it.vec));
   try {
-    setLabel(`星图:UMAP 投影 ${items.length} 点…`);
+    setLabel(`Star map: UMAP projecting ${items.length} points…`);
     const { xy, cluster, nn } = await runUmap(inPath, signal);
     const k = cluster.length ? Math.max(...cluster) + 1 : 0;
     const clusters = labelClusters(items, cluster, tags, k);

@@ -98,7 +98,7 @@ async function fetchUrlContent(req, res) {
 
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("text/html") && !contentType.includes("text/plain") && !contentType.includes("application/json")) {
-      sendJson(res, 200, { type: "unsupported", content: `不支持的内容类型: ${contentType}` });
+      sendJson(res, 200, { type: "unsupported", content: `Unsupported content type: ${contentType}` });
       return;
     }
 
@@ -112,7 +112,7 @@ async function fetchUrlContent(req, res) {
     // BEST-EFFORT upgrade: absent sidecar, python crash, image-backend gap or timeout all
     // fall through to the zero-dependency JS heuristic (extractCleanContent), so /url keeps
     // working exactly as before. Web contract is unchanged — trafilatura's inline
-    // ![](image_N) refs are collapsed to ［图片］ placeholders and images returned as data:
+    // ![](image_N) refs are collapsed to [image] placeholders and images returned as data:
     // URIs, since the frontend shows them as a thumbnail strip, not inline.
     let text, images;
     if (await trafilaturaAvailable()) {
@@ -139,9 +139,9 @@ async function fetchUrlContent(req, res) {
     sendJson(res, 200, { type: "webpage", title, url, content: truncated, images, publishedAt });
   } catch (error) {
     if (error.name === "AbortError") {
-      sendJson(res, 200, { type: "error", content: "请求超时" });
+      sendJson(res, 200, { type: "error", content: "Request timed out" });
     } else {
-      sendJson(res, 500, { error: "获取 URL 内容失败", detail: error.message });
+      sendJson(res, 500, { error: "Failed to fetch URL content", detail: error.message });
     }
   }
 }
@@ -159,7 +159,7 @@ function truncateContent(text, max) {
     if (nl > max * 0.8) cut = cut.slice(0, nl);
     else { const sp = cut.lastIndexOf(" "); if (sp > 0) cut = cut.slice(0, sp); }
   }
-  return cut.trimEnd() + "\n\n…（内容较长，已截断）";
+  return cut.trimEnd() + "\n\n…(content was long and has been truncated)";
 }
 
 // Extract an article's publication date from page HTML → "YYYY-MM-DD" or "".
@@ -365,27 +365,27 @@ async function extractCleanContent(html, baseUrl) {
   let text = cleaned.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, alt) => {
     const a = (alt || "").trim();
     if (UI_ICON_ALT_RE.test(a)) return ""; // drop UI-icon images entirely
-    return a && a.length <= 60 ? `［图片：${a}］` : "［图片］";
+    return a && a.length <= 60 ? `[image: ${a}]` : "[image]";
   });
   text = removeRelatedCardBlocks(removeRelatedWidgets(cutTrailingSections(text)))
     // collapse runs of adjacent image placeholders (e.g. photo galleries) into one
-    .replace(/(［图片[^］]*］)(\s*\n\s*［图片[^］]*］)+/g, "$1")
+    .replace(/(\[image[^\]]*\])(\s*\n\s*\[image[^\]]*\])+/g, "$1")
     .replace(/\n{3,}/g, "\n\n");
   return { text, imageUrls };
 }
 
 // Collapse a trafilatura-produced markdown body (![alt](image_N.ext) refs, already
 // downloaded + boilerplate-stripped) down to the /url webpage contract: inline images
-// become ［图片］/［图片：alt］ placeholders (UI-icon images dropped, adjacent runs merged),
+// become [image]/[image: alt] placeholders (UI-icon images dropped, adjacent runs merged),
 // matching extractCleanContent's text so the frontend renders both extractors identically.
 function markdownImagesToPlaceholders(md) {
   return String(md || "")
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, alt) => {
       const a = (alt || "").trim();
       if (UI_ICON_ALT_RE.test(a)) return "";
-      return a && a.length <= 60 ? `［图片：${a}］` : "［图片］";
+      return a && a.length <= 60 ? `[image: ${a}]` : "[image]";
     })
-    .replace(/(［图片[^］]*］)(\s*\n\s*［图片[^］]*］)+/g, "$1")
+    .replace(/(\[image[^\]]*\])(\s*\n\s*\[image[^\]]*\])+/g, "$1")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -462,9 +462,9 @@ async function optimizeImage(buf, mime) {
   const huge = buf.length > 1500 * 1024, big = buf.length > 500 * 1024;
   if (!isPng && (isGif || !big)) return { buf, ct: mime };   // no shrink needed: reasonable non-PNG, or any GIF
   const be = await imageBackend();
-  if (!be) { const e = new Error("图片压缩后端缺失（请安装 ffmpeg 或 ImageMagick，或设 HEYKOKO_IMAGE_TOOL）"); e.name = "ImageBackendMissing"; throw e; }
+  if (!be) { const e = new Error("Image compression backend missing (install ffmpeg or ImageMagick, or set HEYKOKO_IMAGE_TOOL)"); e.name = "ImageBackendMissing"; throw e; }
   const opt = await reencodeToJpeg(buf, mime, { quality: huge ? 62 : big ? 72 : 82, maxDim: huge ? 1600 : 0 });
-  if (!opt) { const e = new Error(`图片压缩失败（${be.tool}）：${Math.round(buf.length / 1024)}KB ${mime}`); e.name = "ImageOptimizeError"; throw e; }
+  if (!opt) { const e = new Error(`Image compression failed (${be.tool}): ${Math.round(buf.length / 1024)}KB ${mime}`); e.name = "ImageOptimizeError"; throw e; }
   if (isPng || opt.length < buf.length) return { buf: opt, ct: "image/jpeg" };   // PNG always converts; else only if smaller
   return { buf, ct: mime };   // re-encode ran but didn't shrink an already-efficient non-PNG — fine
 }
@@ -516,7 +516,7 @@ function rewriteVideoEmbeds(html) {
     });
 }
 // extractCleanContent's image-KEEPING sibling (news-feeds.md): instead of collapsing every
-// image to a ［图片：alt］ text placeholder, it DOWNLOADS them and rewrites each ref to
+// image to a [image: alt] text placeholder, it DOWNLOADS them and rewrites each ref to
 // ![alt](image_N.ext) so splitIntoBlocks turns them into real figure blocks (stored on the
 // doc, shown in the reader). Images that fail to download / are UI icons still degrade to the
 // text placeholder. maxImages=0 → behaves like extractCleanContent (no downloads).
@@ -532,10 +532,10 @@ async function extractArticleWithImages(html, baseUrl, maxImages = 8, signal) {
     const im = byUrl.get(url);
     if (im) return `![${a}](${im.name})`;                              // downloaded → keep as a real figure
     if (UI_ICON_ALT_RE.test(a)) return "";                            // UI icon → drop
-    return a && a.length <= 60 ? `［图片：${a}］` : "［图片］";          // failed download → text placeholder
+    return a && a.length <= 60 ? `[image: ${a}]` : "[image]";          // failed download → text placeholder
   });
   text = removeRelatedCardBlocks(removeRelatedWidgets(cutTrailingSections(text)))
-    .replace(/(［图片[^］]*］)(\s*\n\s*［图片[^］]*］)+/g, "$1")
+    .replace(/(\[image[^\]]*\])(\s*\n\s*\[image[^\]]*\])+/g, "$1")
     .replace(/\n{3,}/g, "\n\n");
   return { text, images: downloaded.map(({ name, base64, mime }) => ({ name, base64, mime })) };
 }
@@ -628,7 +628,7 @@ async function extractArticle(html, baseUrl, maxImages = 8, signal, heroUrl, ext
   const downloaded = maxImages > 0 ? await downloadImagesNamed(order, baseUrl, maxImages, signal) : [];
   const byUrl = new Map(downloaded.map((im) => [im.url, im]));
   // Rewrite body refs to the local image_N names; drop any that failed to download (tracker
-  // pixels / oversized). trafilatura already stripped boilerplate, so no ［图片］ placeholder.
+  // pixels / oversized). trafilatura already stripped boilerplate, so no [image] placeholder.
   md = md.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (_, alt, url) => {
     const im = byUrl.get(url);
     return im ? `![${(alt || "").trim()}](${im.name})` : "";
@@ -757,7 +757,7 @@ function removeRelatedCardBlocks(text) {
   const drop = new Array(lines.length).fill(false);
   const isCardLine = (t) =>
     t === "" ||
-    /^［图片[^］]*］$/.test(t) ||
+    /^\[image[^\]]*\]$/.test(t) ||
     /^[-*]?\s*\[[^\]]*\]\([^)]*\)$/.test(t); // standalone or bulleted link
   for (let i = 0; i < lines.length; i++) {
     if (!SECTION_CUT_RE.test(lines[i].trim())) continue;
@@ -942,7 +942,7 @@ async function fetchYouTubeTranscript(videoId, language) {
       // noTranscript is the STRUCTURED "no real subtitles" signal — `text` is only a
       // human-readable notice. Never infer from the text shape: real transcripts can
       // legitimately begin with "[" (e.g. a "[Music]" first cue).
-      return { title, channel, duration, viewCount, uploadDate, description, category, tags, language: audioLang, text: "[该视频无原始字幕]", noTranscript: true };
+      return { title, channel, duration, viewCount, uploadDate, description, category, tags, language: audioLang, text: "[This video has no original subtitles]", noTranscript: true };
     }
     audioLang = (captionTracks.find(t => t.kind === "asr") || captionTracks[0]).languageCode || "";
 
@@ -995,7 +995,7 @@ async function fetchYouTubeTranscript(videoId, language) {
 
     // Caption fetch failed
     const langInfo = captionTracks.map(t => t.languageCode).join(", ");
-    return { title, channel, duration, viewCount, uploadDate, description, category, tags, language: audioLang, text: `[字幕获取失败，可用语言: ${langInfo}]`, noTranscript: true };
+    return { title, channel, duration, viewCount, uploadDate, description, category, tags, language: audioLang, text: `[Subtitle fetch failed, available languages: ${langInfo}]`, noTranscript: true };
   } catch (e) {
     console.error("[yt-transcript] error:", e.message);
     return null;
@@ -1217,13 +1217,13 @@ function whisperLangCode(raw) {
 // Verify the CLI tools + whisper model are present (throws a user-facing message if not).
 async function ensureWhisperDeps() {
   const whisperCmd = await findWhisperCli();
-  if (!whisperCmd) throw new Error("whisper-cli 未安装。请运行: brew install whisper-cpp");
+  if (!whisperCmd) throw new Error("whisper-cli is not installed. Run: brew install whisper-cpp");
   const ytdlpCmd = await findCommand("yt-dlp");
-  if (!ytdlpCmd) throw new Error("yt-dlp 未安装。请运行: brew install yt-dlp");
+  if (!ytdlpCmd) throw new Error("yt-dlp is not installed. Run: brew install yt-dlp");
   const ffmpegCmd = await findCommand("ffmpeg");
-  if (!ffmpegCmd) throw new Error("ffmpeg 未安装。请运行: brew install ffmpeg");
+  if (!ffmpegCmd) throw new Error("ffmpeg is not installed. Run: brew install ffmpeg");
   const modelPath = findWhisperModel();
-  if (!modelPath) throw new Error("未找到 whisper 模型文件。请下载: curl -L -o ~/.local/share/whisper-cpp/ggml-medium.bin --create-dirs https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin");
+  if (!modelPath) throw new Error("whisper model file not found. Download: curl -L -o ~/.local/share/whisper-cpp/ggml-medium.bin --create-dirs https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin");
   return { whisperCmd, ytdlpCmd, ffmpegCmd, modelPath };
 }
 
@@ -1262,7 +1262,7 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
 
   try {
     // Step 1: Download audio
-    onProgress({ status: "downloading", message: "正在下载音频..." });
+    onProgress({ status: "downloading", message: "Downloading audio..." });
     await new Promise((resolve, reject) => {
       if (aborted) return reject(abortError());
       const proc = spawn(ytdlpCmd, [
@@ -1288,13 +1288,13 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
 
     // Find the downloaded file (yt-dlp may produce .opus, .m4a, .webm, .wav etc.)
     const files = fs.readdirSync(tmpDir).filter(f => f.startsWith("audio") && f !== "converted.wav");
-    if (files.length === 0) throw new Error("音频下载失败：未找到下载文件");
+    if (files.length === 0) throw new Error("Audio download failed: downloaded file not found");
     const downloadedFile = path.join(tmpDir, files[0]);
     const fileSizeMB = (fs.statSync(downloadedFile).size / 1024 / 1024).toFixed(1);
-    onProgress({ status: "downloaded", message: `音频下载完成（${fileSizeMB} MB）` });
+    onProgress({ status: "downloaded", message: `Audio download complete (${fileSizeMB} MB)` });
 
     // Step 2: Convert to 16kHz mono WAV
-    onProgress({ status: "converting", message: "正在转换音频格式..." });
+    onProgress({ status: "converting", message: "Converting audio format..." });
     await new Promise((resolve, reject) => {
       if (aborted) return reject(abortError());
       const proc = spawn(ffmpegCmd, [
@@ -1305,7 +1305,7 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
       childProcesses.push(proc);
       proc.on("close", (code) => {
         if (aborted) return reject(abortError());
-        if (code !== 0) return reject(new Error(`ffmpeg 转换失败 (code ${code})`));
+        if (code !== 0) return reject(new Error(`ffmpeg conversion failed (code ${code})`));
         resolve();
       });
       proc.on("error", reject);
@@ -1313,7 +1313,7 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
     if (aborted) throw abortError();
 
     // Step 3: Transcribe with whisper-cli (timestamps for natural segmentation)
-    onProgress({ status: "transcribing", message: "正在语音识别...", progress: "0%" });
+    onProgress({ status: "transcribing", message: "Transcribing speech...", progress: "0%" });
     const transcriptText = await new Promise((resolve, reject) => {
       if (aborted) return reject(abortError());
       const proc = spawn(whisperCmd, ["-m", modelPath, "-f", audioWav, "-l", lang || "auto", "--print-progress"]);
@@ -1326,12 +1326,12 @@ async function transcribeYouTubeAudioCore(videoId, { onProgress = () => {}, sign
         const match = d.toString().match(/progress\s*=\s*(\d+)%/);
         if (match && match[1] !== lastProgress) {
           lastProgress = match[1];
-          onProgress({ status: "transcribing", message: `正在语音识别... ${match[1]}%`, progress: `${match[1]}%` });
+          onProgress({ status: "transcribing", message: `Transcribing speech... ${match[1]}%`, progress: `${match[1]}%` });
         }
       });
       proc.on("close", (code) => {
         if (aborted) return reject(abortError());
-        if (code !== 0) return reject(new Error(`whisper-cli 转录失败 (code ${code})`));
+        if (code !== 0) return reject(new Error(`whisper-cli transcription failed (code ${code})`));
         // Decode the full stdout once (concat first): per-chunk toString() can split a
         // multi-byte UTF-8 char across chunk boundaries and corrupt CJK transcripts.
         const stdout = Buffer.concat(outChunks).toString("utf-8");
@@ -1368,7 +1368,7 @@ async function transcribeYouTubeAudio(req, res) {
     const text = await transcribeYouTubeAudioCore(videoId, { onProgress: send, signal: ctrl.signal });
     send({ status: "done", text });
   } catch (e) {
-    if (!ctrl.signal.aborted) send({ status: "error", message: (e && e.message) || "转录失败" });
+    if (!ctrl.signal.aborted) send({ status: "error", message: (e && e.message) || "Transcription failed" });
   } finally {
     try { res.end(); } catch {}
   }
@@ -1464,7 +1464,7 @@ async function formatTranscriptServer(title, transcript, model, { channel = "", 
       body: JSON.stringify({ model, messages, options: { temperature: 0.3, num_ctx: config.llmTaskCtx } }),
       signal,
     });
-    if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error(`字幕整理失败 (${resp.status})${t ? ": " + t.slice(0, 200) : ""}`); }
+    if (!resp.ok) { const t = await resp.text().catch(() => ""); throw new Error(`Subtitle cleanup failed (${resp.status})${t ? ": " + t.slice(0, 200) : ""}`); }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -1505,7 +1505,7 @@ async function formatTranscriptServer(title, transcript, model, { channel = "", 
     // chunk's entire content from the result — fail loudly instead (the caller keeps
     // rawTranscript, so nothing is lost; the 0.6 retry above already ran).
     if (!nonWs(chunkText) && nonWs(chunks[i])) {
-      throw new Error(`字幕整理失败：模型对第 ${i + 1}/${total} 段返回了空结果`);
+      throw new Error(`Subtitle cleanup failed: the model returned an empty result for part ${i + 1}/${total}`);
     }
     fullContent += (fullContent ? "\n\n" : "") + chunkText;
   }
@@ -1535,7 +1535,7 @@ async function youtubeJob(req, res) {
   try {
     const ytMatch = (url || "").match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([\w-]{11})/);
     const videoId = ytMatch && ytMatch[1];
-    if (!videoId) { send({ type: "error", error: "无效的 YouTube 链接" }); res.end(); return; }
+    if (!videoId) { send({ type: "error", error: "Invalid YouTube link" }); res.end(); return; }
     // The client may have already fetched the metadata (+ subtitles) to render the
     // info card; if so it passes them in `prefetch` so we DON'T fetch twice. We
     // still whisper-transcribe here when no subtitle transcript was provided.
@@ -1571,7 +1571,7 @@ async function youtubeJob(req, res) {
       // Formatting failed AFTER a (possibly hour-long) transcription — don't discard the
       // transcript. Return "done" carrying rawTranscript + formatError and let the caller
       // decide: /url shows the raw subtitles, the library import fails loudly instead.
-      formatError = (e && e.message) || "字幕整理失败";
+      formatError = (e && e.message) || "Subtitle cleanup failed";
     }
     // Normalize Simplified/Traditional to the PROMPT language (zh → Simplified, zh-Hant →
     // Traditional). Chinese subtitles arrive in either variant (or a whisper mix); this is
@@ -1687,7 +1687,7 @@ function ytdlpErrMsg(stderr, code) {
   const s = String(stderr || "");
   const line = (s.match(/^ERROR:\s*(.*)$/m) || [])[1] || s.trim().split("\n").pop() || "";
   const cleaned = line.replace(/\s*(?:Also see\s+|See\s+)?https?:\/\/\S[\s\S]*$/, "").trim();
-  return `yt-dlp 失败 (code ${code}): ${cleaned.slice(0, 300) || "(无错误输出)"}`;
+  return `yt-dlp failed (code ${code}): ${cleaned.slice(0, 300) || "(no error output)"}`;
 }
 
 function ytFlatListRaw(ytdlpCmd, feedUrl, extraArgs) {
@@ -1753,7 +1753,7 @@ async function expandYoutubeUrls(req, res) {
     const urls = Array.isArray(body.urls) ? body.urls : [];
     const lang = ytdlpLangArg(body.language);  // localized-title language (follows the UI)
     const ytdlpCmd = await findCommand("yt-dlp");
-    if (!ytdlpCmd) { sendJson(res, 200, { videos: [], errors: [{ url: "", error: "yt-dlp 未安装。请运行: brew install yt-dlp" }] }); return; }
+    if (!ytdlpCmd) { sendJson(res, 200, { videos: [], errors: [{ url: "", error: "yt-dlp is not installed. Run: brew install yt-dlp" }] }); return; }
 
     // Members-only detection: every channel has an auto-generated members playlist
     // "UUMO<channel-id>" that flat-lists anonymously. Its ids are the ground truth —
@@ -1775,7 +1775,7 @@ async function expandYoutubeUrls(req, res) {
     const errors = [];
     for (const raw of urls) {
       const cls = ytFeedUrl(raw);
-      if (!cls) { errors.push({ url: raw, error: "无法识别的 YouTube 链接" }); continue; }
+      if (!cls) { errors.push({ url: raw, error: "Unrecognized YouTube link" }); continue; }
       try {
         const entries = await ytFlatList(ytdlpCmd, cls.feed, lang);
         // A channel /videos feed's dates are approximate (approximate_date reverse-parses
@@ -1812,7 +1812,7 @@ async function expandYoutubeUrls(req, res) {
 // Startup visibility: log which optional YouTube/ASR tools are reachable (async,
 // non-blocking — mirrors parse-file's pandoc/mineru lines). Runs after config's
 // Windows PATH refresh, so a "not found" here means genuinely missing, and the
-// server console answers "why does whisper say 未安装?" at a glance.
+// server console answers "why does whisper say not installed?" at a glance.
 (async function detectYoutubeTools() {
   for (const cmd of ["yt-dlp", "ffmpeg"]) {
     const p = await findCommand(cmd);

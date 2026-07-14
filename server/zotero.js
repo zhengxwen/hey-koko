@@ -32,7 +32,7 @@ async function zget(pathAndQuery, { json = true, timeoutMs = 20000 } = {}) {
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e) {
-    const err = new Error(`Zotero 本地 API 无法连接（${base()}）——请确认 Zotero 正在运行，且设置→高级里已勾选“允许其它应用通信”。`);
+    const err = new Error(`Cannot connect to the Zotero local API (${base()}) — make sure Zotero is running and that Settings → Advanced has "Allow other applications to communicate with Zotero" enabled.`);
     err.code = "ZOTERO_UNREACHABLE";
     err.cause = e;
     throw err;
@@ -208,7 +208,7 @@ async function getAnnotations(attachmentKey) {
 // API cross-origin, and this hides the base URL / tunnel from the client) --------------
 
 // POST /api/zotero/collections → { ok, collections } or { ok:false, reason } when Zotero
-// isn't reachable (so the picker can show "启动 Zotero 并开启本地 API" instead of an error).
+// isn't reachable (so the picker can show "Start Zotero and enable the local API" instead of an error).
 async function zoteroCollectionsHandler(_req, res) {
   try {
     const collections = await listCollections();
@@ -237,7 +237,7 @@ async function zoteroItemsHandler(req, res) {
 }
 
 // POST /api/zotero/sync-annotations { docIds?, language? } → re-pull highlights for the
-// given Zotero docs (or ALL of them) and rebuild each «Zotero 批注» block only when it
+// given Zotero docs (or ALL of them) and rebuild each «Zotero 批注» (Zotero Annotations) block only when it
 // changed. { ok, results:[{docId, changed, annotCount} | {docId, error}], synced, changed }.
 async function zoteroSyncAnnotationsHandler(req, res) {
   let body = {}; try { body = await readBody(req); } catch { /* sync all */ }

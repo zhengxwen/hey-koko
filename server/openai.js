@@ -118,7 +118,7 @@ function loadProviders() {
     // entries — REQUIRE an explicit allowlist. Without one the provider is ignored
     // (with a one-time warning) rather than flooding the dropdown or guessing.
     if (or.models.length) list.push(or);
-    else warnOnce("openrouter-no-models", '[hey-koko] openrouter.json 已配置 apiKey 但缺少 "models" —— OpenRouter 需要显式列出模型（如 ["anthropic/claude-3.5-sonnet"]），本次已跳过。');
+    else warnOnce("openrouter-no-models", '[hey-koko] openrouter.json has apiKey configured but is missing "models" —— OpenRouter requires an explicit model list (e.g. ["anthropic/claude-3.5-sonnet"]); skipped this time.');
   }
   return list;
 }
@@ -379,7 +379,7 @@ function extractApiError(text) {
 async function proxyChat(res, body) {
   const cfg = resolveProvider(body.model);
   if (!cfg) {
-    sendJson(res, 400, { error: "OpenAI 未配置。" });
+    sendJson(res, 400, { error: "OpenAI is not configured." });
     return;
   }
 
@@ -415,9 +415,9 @@ async function proxyChat(res, body) {
   } catch (error) {
     if (timeoutHandle) clearTimeout(timeoutHandle);
     if (error.name === "AbortError") {
-      sendJson(res, 504, { error: "请求超时，OpenAI 响应时间超过设定限制。" });
+      sendJson(res, 504, { error: "Request timed out: OpenAI exceeded the configured response time limit." });
     } else {
-      sendJson(res, 502, { error: "无法连接 OpenAI 服务。请检查 base URL 与网络。", detail: error.message });
+      sendJson(res, 502, { error: "Cannot connect to the OpenAI service. Check the base URL and network.", detail: error.message });
     }
     return;
   }
@@ -434,7 +434,7 @@ async function proxyChat(res, body) {
     let data;
     try { data = await response.json(); } catch (e) {
       if (timeoutHandle) clearTimeout(timeoutHandle);
-      sendJson(res, 502, { error: "OpenAI 返回了无法解析的响应。", detail: e.message });
+      sendJson(res, 502, { error: "OpenAI returned a response that could not be parsed.", detail: e.message });
       return;
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -558,7 +558,7 @@ async function proxyChat(res, body) {
 // Throws on error.
 async function complete(model, messages, { signal, temperature } = {}) {
   const cfg = resolveProvider(model);
-  if (!cfg) throw new Error("OpenAI 未配置");
+  if (!cfg) throw new Error("OpenAI is not configured");
   const payload = buildPayload({
     model,
     messages: toOpenAIMessages(messages, model),
@@ -610,7 +610,7 @@ function isCloudEmbedModel(model) {
 // Returns an array of vectors aligned to `texts`. Throws on error.
 async function embed(model, texts) {
   const cfg = allowlistProvider(model);
-  if (!cfg) throw new Error("OpenAI 未配置");
+  if (!cfg) throw new Error("OpenAI is not configured");
   const r = await fetch(`${apiBase(cfg)}/embeddings`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.apiKey}` },

@@ -649,7 +649,7 @@ async function fetchOneImage(url) {
 
 // Download every http(s) image referenced in the email's Markdown and return
 // them as inline attachments ({name, base64, mime}). Remote ![](url) references
-// are replaced with lightweight ［图片：alt］ placeholders so the rendered email
+// are replaced with lightweight [image: alt] placeholders so the rendered email
 // never re-fetches remote (tracking) URLs and reads the same offline.
 async function downloadEmailImages(markdown) {
   const IMG_RE = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+?)(?:\s+"[^"]*")?\)/g;
@@ -677,7 +677,7 @@ async function downloadEmailImages(markdown) {
   // rendered email never re-requests a remote (tracking) URL.
   const md = markdown.replace(IMG_RE, (_whole, alt, url) => {
     const name = nameByUrl.get(url);
-    return name ? `![${alt || ""}](${name})` : "［图片］";
+    return name ? `![${alt || ""}](${name})` : "[image]";
   });
   return { markdown: md, images };
 }

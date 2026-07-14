@@ -145,7 +145,7 @@ async function comfyEnum(node, input) {
     if (!Array.isArray(spec)) return [];
     // Old object_info shape: [[...options...], {...}]. Newer (ComfyUI V3) shape:
     // ["COMBO", { options: [...], multiselect, ... }]. Support both, else the list comes
-    // back empty (e.g. UpscaleModelLoader, which uses the new shape → "放大模型" only showed Auto).
+    // back empty (e.g. UpscaleModelLoader, which uses the new shape → "upscale model" only showed Auto).
     if (Array.isArray(spec[0])) return spec[0];
     if (spec[1] && Array.isArray(spec[1].options)) return spec[1].options;
     return [];
@@ -193,7 +193,7 @@ function editIsCheckpoint(editType) {
 // Video models (text→video / image→video). Detected by filename.
 function videoTypeOf(model) {
   if (!model) return null;
-  // Video enhance (升格 + 高清): a model-free post-process (frame interpolation +
+  // Video enhance (interpolate + upscale): a model-free post-process (frame interpolation +
   // AI upscale) on a source video. A fixed sentinel, not a checkpoint filename.
   if (/^video-enhance$/i.test(model)) return "enhance";
   // Bernini (video-edit) and Animate (pose-transfer) are WAN-2.2 variants whose
@@ -236,12 +236,12 @@ async function resolveBerniniAuto() {
 // Resolved at generation time to the real animate UNET filename.
 const ANIMATE_REPLACE = "wan_animate_replace";
 
-// Sentinel for the "video enhance" (升格 + 高清) dropdown entry — a source video is
+// Sentinel for the "video enhance" (interpolate + upscale) dropdown entry — a source video is
 // AI-upscaled and frame-interpolated to a target fps. Has no diffusion model, so it
 // resolves to nothing on disk; the pipeline is built directly at generation time.
 const VIDEO_ENHANCE = "video-enhance";
 
-// Sentinel for the "image upscale" (图片高清 / 放大) dropdown entry — an attached
+// Sentinel for the "image upscale" (image HD / upscale) dropdown entry — an attached
 // image is run through the AI upscale model. Lives in the image `models` list; the
 // dispatch matches it by exact name (no diffusion model, no companion files).
 const IMAGE_UPSCALE = "image-upscale";
@@ -312,10 +312,10 @@ async function proxyComfyModels(req, res) {
         videoModels.push({ name: n, type: vt });
       }
     }
-    // Video enhance (升格 + 高清): always offered — it needs no diffusion model, just
+    // Video enhance (interpolate + upscale): always offered — it needs no diffusion model, just
     // an upscale model + the Frame-Interpolation nodes (both checked at gen time). The
     // source video is interpolated to the target fps (/imagine <fps>) AND AI-upscaled.
-    videoModels.push({ name: VIDEO_ENHANCE, type: "enhance", label: "视频升格 + 高清 (interpolate + upscale)", needsVideo: true });
+    videoModels.push({ name: VIDEO_ENHANCE, type: "enhance", label: "Video interpolate + upscale", needsVideo: true });
     // txt2img list: plain checkpoints (excluding edit/video/HiDream) + HiDream-I1
     // (a diffusion model loaded specially with QuadrupleCLIPLoader). HiDream E1/O1
     // are not wired yet, so they're left out to avoid broken options.
@@ -331,7 +331,7 @@ async function proxyComfyModels(req, res) {
     // boogu_image_edit is an instruction-edit model → excluded here (it's picked
     // up by editTypeOf into editModels instead).
     const boogu = all.filter((n) => /boogu/i.test(n) && !editTypeOf(n));
-    // Image upscale (图片高清): always offered — needs only an upscale model (checked
+    // Image upscale (image HD): always offered — needs only an upscale model (checked
     // at gen time) + an attached image. Sits in the image model list as a sentinel.
     sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, IMAGE_UPSCALE], editModels, videoModels, upscaleModels, hostname });
   } catch {
@@ -355,10 +355,10 @@ async function editCompanions(editType) {
     const clipL = find(clips, /clip_l/i);
     const vae = aeVae();
     const missing = [];
-    if (!t5) missing.push("t5xxl_fp16.safetensors 或 t5xxl_fp8_e4m3fn.safetensors → ComfyUI/models/text_encoders/");
+    if (!t5) missing.push("t5xxl_fp16.safetensors or t5xxl_fp8_e4m3fn.safetensors → ComfyUI/models/text_encoders/");
     if (!clipL) missing.push("clip_l.safetensors → text_encoders/");
     if (!vae) missing.push("ae.safetensors → vae/");
-    if (missing.length) throw new Error("缺少 Kontext 所需文件：\n- " + missing.join("\n- "));
+    if (missing.length) throw new Error("Missing files required by Kontext:\n- " + missing.join("\n- "));
     return { t5, clipL, vae };
   }
   if (editType === "qwen") {
@@ -368,7 +368,7 @@ async function editCompanions(editType) {
     const missing = [];
     if (!clip) missing.push("qwen_2.5_vl_7b_fp8_scaled.safetensors → text_encoders/");
     if (!vae) missing.push("qwen_image_vae.safetensors → vae/");
-    if (missing.length) throw new Error("缺少 Qwen-Image-Edit 所需文件：\n- " + missing.join("\n- "));
+    if (missing.length) throw new Error("Missing files required by Qwen-Image-Edit:\n- " + missing.join("\n- "));
     return { clip, vae };
   }
   if (editType === "omnigen") {
@@ -376,9 +376,9 @@ async function editCompanions(editType) {
     const clip = clips.find((x) => /qwen.*vl/i.test(x) && !/7b/i.test(x)) || find(clips, /omnigen|qwen.*vl/i);
     const vae = aeVae();
     const missing = [];
-    if (!clip) missing.push("OmniGen2 文本编码器（qwen_2.5_vl）→ text_encoders/");
+    if (!clip) missing.push("OmniGen2 text encoder (qwen_2.5_vl) → text_encoders/");
     if (!vae) missing.push("ae.safetensors → vae/");
-    if (missing.length) throw new Error("缺少 OmniGen2 所需文件：\n- " + missing.join("\n- "));
+    if (missing.length) throw new Error("Missing files required by OmniGen2:\n- " + missing.join("\n- "));
     return { clip, vae };
   }
   if (editType === "boogu-edit") {
@@ -389,7 +389,7 @@ async function editCompanions(editType) {
     const missing = [];
     if (!clip) missing.push("qwen3vl_8b_fp8_scaled.safetensors → text_encoders/");
     if (!vae) missing.push("flux1_vae_bf16.safetensors → vae/");
-    if (missing.length) throw new Error("缺少 boogu 编辑所需文件：\n- " + missing.join("\n- "));
+    if (missing.length) throw new Error("Missing files required by boogu edit:\n- " + missing.join("\n- "));
     return { clip, vae };
   }
   return {};
@@ -532,7 +532,7 @@ async function hidreamCompanions() {
   if (!t5) missing.push("t5xxl_fp8_e4m3fn.safetensors → text_encoders/");
   if (!llama) missing.push("llama_3.1_8b_instruct_fp8_scaled.safetensors → text_encoders/");
   if (!vae) missing.push("ae.safetensors → vae/");
-  if (missing.length) throw new Error("缺少 HiDream 所需文件：\n- " + missing.join("\n- "));
+  if (missing.length) throw new Error("Missing files required by HiDream:\n- " + missing.join("\n- "));
   return { clipL, clipG, t5, llama, vae };
 }
 
@@ -567,7 +567,7 @@ async function zimageCompanions() {
   const missing = [];
   if (!clip) missing.push("qwen_3_4b.safetensors → text_encoders/");
   if (!vae) missing.push("ae.safetensors → vae/");
-  if (missing.length) throw new Error("缺少 Z-Image 所需文件：\n- " + missing.join("\n- "));
+  if (missing.length) throw new Error("Missing files required by Z-Image:\n- " + missing.join("\n- "));
   return { clip, vae };
 }
 
@@ -604,7 +604,7 @@ async function boogiCompanions() {
   const missing = [];
   if (!clip) missing.push("qwen3vl_8b_fp8_scaled.safetensors → text_encoders/");
   if (!vae) missing.push("flux1_vae_bf16.safetensors → vae/");
-  if (missing.length) throw new Error("缺少 boogu 所需文件：\n- " + missing.join("\n- "));
+  if (missing.length) throw new Error("Missing files required by boogu:\n- " + missing.join("\n- "));
   return { clip, vae };
 }
 
@@ -1036,7 +1036,7 @@ async function videoCompanions(videoType, model) {
     const missing = [];
     if (!clip) missing.push("umt5_xxl_fp8_e4m3fn_scaled.safetensors → text_encoders/");
     if (!vae) missing.push((is14B ? "wan_2.1_vae.safetensors" : "wan2.2_vae.safetensors") + " → vae/");
-    if (missing.length) throw new Error("缺少 WAN 视频所需文件：\n- " + missing.join("\n- "));
+    if (missing.length) throw new Error("Missing files required by WAN video:\n- " + missing.join("\n- "));
     // Optional LightX2V 4-step speed LoRAs (one per expert, matched to t2v/i2v).
     // Present → buildWan14B mounts them and we switch to the 4-step/cfg-1 preset.
     let loraHigh, loraLow;
@@ -1057,7 +1057,7 @@ async function videoCompanions(videoType, model) {
     if (!clipL) missing.push("clip_l.safetensors → text_encoders/");
     if (!llava) missing.push("llava_llama3_fp8_scaled.safetensors → text_encoders/");
     if (!vae) missing.push("hunyuan_video_vae_bf16.safetensors → vae/");
-    if (missing.length) throw new Error("缺少 Hunyuan 视频所需文件：\n- " + missing.join("\n- "));
+    if (missing.length) throw new Error("Missing files required by Hunyuan video:\n- " + missing.join("\n- "));
     return { clipL, llava, vae };
   }
   if (videoType === "ltx") {
@@ -1067,10 +1067,10 @@ async function videoCompanions(videoType, model) {
     // model and produces broken output, and it sorts first so a bare /gemma/ grabs
     // the wrong one.
     const encoder = find(clips, /gemma.*12b/i) || find(clips, /gemma_?3/i) || find(clips, /gemma/i) || find(clips, /t5xxl/i);
-    if (!encoder) throw new Error("缺少 LTX-2 文本编码器：\n- gemma_3_12B_it…safetensors（或 t5xxl）→ text_encoders/");
+    if (!encoder) throw new Error("Missing LTX-2 text encoder:\n- gemma_3_12B_it…safetensors (or t5xxl) → text_encoders/");
     return { encoder };
   }
-  throw new Error("该视频模型暂未接入（目前支持 WAN 2.2、Hunyuan、LTX-2）。");
+  throw new Error("This video model is not wired up yet (currently supported: WAN 2.2, Hunyuan, LTX-2).");
 }
 
 // Per-model video defaults (resolution / length / fps / sampling), overridable.
@@ -1131,7 +1131,7 @@ function resolveVideoConfig(videoType, opts, model, turbo) {
   };
 }
 
-// Frame interpolation (升格 / smooth slow-mo). Splices a VFI node between the
+// Frame interpolation (interpolate / smooth slow-mo). Splices a VFI node between the
 // workflow's decoded frames and its CreateVideo, multiplying the frame count by
 // `mult`. For SMOOTH SAME-SPEED playback the muxed fps is multiplied to match, so
 // the duration is unchanged — the motion is just resampled to a higher frame rate.
@@ -1160,12 +1160,12 @@ function applyVfi(wf, mult, baseFps, method) {
   return newFps > 0 ? newFps : baseFps;
 }
 
-// AI upscale model for the video-enhance (高清) pipeline. Auto-picks a sensible
+// AI upscale model for the video-enhance (HD) pipeline. Auto-picks a sensible
 // default from models/upscale_models/ (prefer a 4× general model), erroring with a
 // download hint if the folder is empty.
 async function upscaleCompanions(preferred) {
   const models = await comfyEnum("UpscaleModelLoader", "model_name");
-  // A user-picked model (⚙ "放大模型") wins when it's actually installed; otherwise
+  // A user-picked model (⚙ "upscale model") wins when it's actually installed; otherwise
   // fall through to the auto-pick. Match exact name first, then case-insensitively.
   if (preferred) {
     const exact = models.find((x) => x === preferred) || models.find((x) => x.toLowerCase() === String(preferred).toLowerCase());
@@ -1183,11 +1183,11 @@ async function upscaleCompanions(preferred) {
     find(/(^|[^0-9])4x/i) ||
     find(/x4|x2|2x/i) ||
     models[0];
-  if (!model) throw new Error("缺少放大模型：请把一个放大模型（如 RealESRGAN_x4plus.safetensors 或 4x-UltraSharp.pth）放到 ComfyUI/models/upscale_models/ 后重试。");
+  if (!model) throw new Error("Missing upscale model: put an upscale model (e.g. RealESRGAN_x4plus.safetensors or 4x-UltraSharp.pth) into ComfyUI/models/upscale_models/ and retry.");
   return { model };
 }
 
-// Video enhance (升格 + 高清). Source video → GetVideoComponents → AI-upscale every
+// Video enhance (interpolate + upscale). Source video → GetVideoComponents → AI-upscale every
 // frame (UpscaleModelLoader + ImageUpscaleWithModel) → optionally downscale to a
 // bounded HD target (outW/outH, already even; 0 = keep the model's native output) →
 // CreateVideo, keeping the SOURCE audio + fps. Frame interpolation to the target fps
@@ -1199,8 +1199,8 @@ function buildVideoEnhance({ videoName, upscaleModel, outW, outH, denoise }) {
     "5": { class_type: "LoadVideo", inputs: { file: videoName } },
     "6": { class_type: "GetVideoComponents", inputs: { video: ["5", 0] } },
   };
-  const clean = denoiseBeforeUpscale(wf, ["6", 0], denoise, "20", "21"); // pre-clean each frame (抗噪)
-  // No upscale model (⚙ "放大模型" = Off) → skip the AI upscale stage: 升格-only (frames
+  const clean = denoiseBeforeUpscale(wf, ["6", 0], denoise, "20", "21"); // pre-clean each frame (denoise)
+  // No upscale model (⚙ "upscale model" = Off) → skip the AI upscale stage: interpolate-only (frames
   // stay at source resolution; interpolation is still layered on by applyVfi).
   let framesRef = clean;
   if (upscaleModel) {
@@ -1217,7 +1217,7 @@ function buildVideoEnhance({ videoName, upscaleModel, outW, outH, denoise }) {
   return wf;
 }
 
-// Pre-upscale denoise (抗噪 / 降伪影). Upscale models AMPLIFY whatever's in the input —
+// Pre-upscale denoise (denoise / artifact reduction). Upscale models AMPLIFY whatever's in the input —
 // including compression noise / grain / JPEG artifacts. Blending the input toward a
 // mildly Gaussian-blurred copy (by `strength` 0–1) cleans that grain BEFORE the model
 // sees it, so it isn't sharpened up. 0 → untouched (sharpest); 1 → full blur (cleanest
@@ -1231,14 +1231,14 @@ function denoiseBeforeUpscale(wf, srcRef, strength, blurId, blendId) {
   return [blendId, 0];
 }
 
-// Image upscale (图片高清 / 放大): attached image → AI upscale model → bigger, sharper
-// image. `denoise` (0–1) pre-cleans the input (抗噪). `outW/outH` (already even)
+// Image upscale (image HD / upscale): attached image → AI upscale model → bigger, sharper
+// image. `denoise` (0–1) pre-cleans the input (denoise). `outW/outH` (already even)
 // optionally resize the upscaled result (e.g. --size); 0 = keep the model's native
 // output (usually 4×). Output is a normal image.
 function buildImageUpscale({ imageName, upscaleModel, outW, outH, denoise }) {
   const wf = { "1": { class_type: "LoadImage", inputs: { image: imageName } } };
   const clean = denoiseBeforeUpscale(wf, ["1", 0], denoise, "5", "6");
-  // No upscale model (⚙ "放大模型" = Off) → passthrough (only denoise / an explicit
+  // No upscale model (⚙ "upscale model" = Off) → passthrough (only denoise / an explicit
   // --size resize apply). Mostly a degenerate case for the image-upscale model.
   let ref = clean;
   if (upscaleModel) {
@@ -1444,7 +1444,7 @@ async function berniniCompanions() {
   const missing = [];
   if (!clip) missing.push("umt5_xxl_fp8_e4m3fn_scaled.safetensors → text_encoders/");
   if (!vae) missing.push("wan_2.1_vae.safetensors → vae/");
-  if (missing.length) throw new Error("缺少 Bernini 所需文件：\n- " + missing.join("\n- "));
+  if (missing.length) throw new Error("Missing files required by Bernini:\n- " + missing.join("\n- "));
   return { clip, vae, lora };
 }
 
@@ -1536,7 +1536,7 @@ async function animateCompanions() {
   if (!clipVision) missing.push("clip_vision_h.safetensors → clip_vision/");
   if (!loraSpeed) missing.push("lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors → loras/");
   if (!loraRelight) missing.push("WanAnimate_relight_lora_fp16.safetensors → loras/");
-  if (missing.length) throw new Error("缺少 Wan Animate 所需文件：\n- " + missing.join("\n- "));
+  if (missing.length) throw new Error("Missing files required by Wan Animate:\n- " + missing.join("\n- "));
   return { clip, vae, clipVision, loraSpeed, loraRelight };
 }
 
@@ -1868,12 +1868,12 @@ function comfyExecError(status) {
     const err = msgs.find((m) => Array.isArray(m) && m[0] === "execution_error");
     if (err && err[1]) {
       const d = err[1];
-      const exc = d.exception_message || d.exception_type || "未知错误";
-      const node = d.node_type ? `节点 ${d.node_type}${d.node_id != null ? " #" + d.node_id : ""} ` : "";
-      return `ComfyUI 执行错误：${node}${exc}`;
+      const exc = d.exception_message || d.exception_type || "unknown error";
+      const node = d.node_type ? `node ${d.node_type}${d.node_id != null ? " #" + d.node_id : ""} ` : "";
+      return `ComfyUI execution error: ${node}${exc}`;
     }
   } catch { /* fall through */ }
-  return "ComfyUI 执行错误（未提供详情）";
+  return "ComfyUI execution error (no details provided)";
 }
 
 // Poll /history until the queued prompt reports outputs (or it errors / times out /
@@ -1927,7 +1927,7 @@ async function generateComfyImage(req, res) {
     // Preflight: an offline / wrong-IP ComfyUI otherwise surfaces as a bogus
     // "missing model files" error (every companion lookup comes back empty).
     if (!(await comfyReachable())) {
-      sendJson(res, 502, { error: `无法连接到 ComfyUI（${currentComfyUrl()}）。请确认那台机器在线、ComfyUI 正在运行，且地址/IP 正确（IP 变了可在设置里更新 ComfyUI 地址）。` });
+      sendJson(res, 502, { error: `Cannot connect to ComfyUI (${currentComfyUrl()}). Make sure that machine is online, ComfyUI is running, and the address/IP is correct (if the IP changed, update the ComfyUI address in settings).` });
       return;
     }
 
@@ -1940,7 +1940,7 @@ async function generateComfyImage(req, res) {
     if (model === WAN14B_AUTO) {
       model = await resolveWan14bAuto(isImg2Img);
       if (!model) {
-        sendJson(res, 400, { error: "未找到 WAN 2.2 14B 模型文件（需 wan2.2_{t2v,i2v}_high_noise_14B…）。" });
+        sendJson(res, 400, { error: "WAN 2.2 14B model file not found (need wan2.2_{t2v,i2v}_high_noise_14B…)." });
         return;
       }
     }
@@ -1951,7 +1951,7 @@ async function generateComfyImage(req, res) {
       model = await resolveAnimateUnet();
       animateReplace = true;
       if (!model) {
-        sendJson(res, 400, { error: "未找到 Wan Animate 模型文件（diffusion_models/ 下需有 *animate* UNET）。" });
+        sendJson(res, 400, { error: "Wan Animate model file not found (diffusion_models/ needs an *animate* UNET)." });
         return;
       }
     }
@@ -1985,7 +1985,7 @@ async function generateComfyImage(req, res) {
 
     // Instruction-edit models require a reference image to edit.
     if (editType && !isImg2Img) {
-      sendJson(res, 400, { error: "该模型用于指令式改图，请先附带一张参考图片再用 /imagine <编辑指令>。" });
+      sendJson(res, 400, { error: "This model is for instruction-based editing. Attach a reference image first, then use /imagine <edit instruction>." });
       return;
     }
 
@@ -2014,10 +2014,10 @@ async function generateComfyImage(req, res) {
       let videoDims = null; // actual resolved output size (for the client's caption)
       let imagesUsed = 0;   // how many input images the video path actually consumed
       let stillMode = false; // single-frame Wan Animate → return an IMAGE, not a video
-      let interpWarning = null; // 升格 skipped (source fps already ≥ target) → tell the client
+      let interpWarning = null; // interpolation skipped (source fps already ≥ target) → tell the client
       let upscaleInfo = null;   // { model, denoise } actually used → shown in the result bubble
-      let exactTargetFps = 0;   // 升格: interpolated to ≥ this (ceil mult) → drop frames to EXACTLY this fps
-      // 抗噪/降伪影 strength for the upscale paths. Accepts 0–1 or 0–100 (% from the ⚙).
+      let exactTargetFps = 0;   // interpolation: interpolated to ≥ this (ceil mult) → drop frames to EXACTLY this fps
+      // denoise / artifact-reduction strength for the upscale paths. Accepts 0–1 or 0–100 (% from the ⚙).
       const upscaleDenoise = (() => { const d = Number(opts.upscaleDenoise) || 0; return d > 1 ? d / 100 : Math.max(0, d); })();
       if (videoType === "bernini") {
         // Bernini-R video EDIT: a SOURCE VIDEO (required) + instruction → edited
@@ -2025,12 +2025,12 @@ async function generateComfyImage(req, res) {
         // real high_noise model, upload the source video (and any ref image).
         if (model === BERNINI_AUTO) {
           model = await resolveBerniniAuto();
-          if (!model) { sendJson(res, 400, { error: "未找到 Bernini 模型文件（需 wan2.2_bernini_r_high_noise…）。" }); return; }
+          if (!model) { sendJson(res, 400, { error: "Bernini model file not found (need wan2.2_bernini_r_high_noise…)." }); return; }
         }
         const hasVideo = !!(sourceVideo || sourceVideoName);
         const hasImage = Array.isArray(images) && images.length > 0;
         // Source video → v2v (+ ref image → rv2v); image only → i2v.
-        if (!hasVideo && !hasImage) { sendJson(res, 400, { error: "Bernini 需要一个源视频（视频编辑 v2v）或一张图片（图生视频 i2v），再用 /imagine <描述>。" }); return; }
+        if (!hasVideo && !hasImage) { sendJson(res, 400, { error: "Bernini needs a source video (video edit, v2v) or an image (image-to-video, i2v), then use /imagine <description>." }); return; }
         const comp = await berniniCompanions();
         const turbo = !!comp.lora;
         // Size to the SOURCE's aspect (video for v2v/rv2v, image for i2v) so frames
@@ -2069,25 +2069,25 @@ async function generateComfyImage(req, res) {
         // v2v/rv2v keep the source video's fps; i2v uses bfps (so it can show duration).
         videoDims = { width: bw, height: bh, length: bl, fps: hasVideo ? undefined : bfps };
       } else if (videoType === "enhance") {
-        // 升格 + 高清: source video → AI-upscaled AND frame-interpolated to a target fps.
+        // Interpolate + upscale: source video → AI-upscaled AND frame-interpolated to a target fps.
         // The /imagine "prompt" is just the target fps number (empty / non-numeric →
         // HD upscale only, no interpolation).
-        if (!(sourceVideo || sourceVideoName)) { sendJson(res, 400, { error: "视频升格+高清需要一段源视频：先附上视频，再用 /imagine <目标帧率>（如 /imagine 60；留空则只做高清放大）。" }); return; }
-        // ⚙ "放大模型" = Off → skip upscaling: 升格-only (frames stay at source resolution).
+        if (!(sourceVideo || sourceVideoName)) { sendJson(res, 400, { error: "Video interpolate + upscale needs a source video: attach a video first, then use /imagine <target fps> (e.g. /imagine 60; leave empty for HD upscale only)." }); return; }
+        // ⚙ "upscale model" = Off → skip upscaling: interpolate-only (frames stay at source resolution).
         const noUpscale = opts.upscaleModel === "off";
         const srcFps = Number(sourceVideoFps) || 16;
         const srcFrames = Number(sourceVideoFrames) || 0;
-        // Target fps for 升格: the `/imagine <number>` prompt wins; if it has no number,
-        // fall back to the ⚙ "升格到帧率 FPS" field (same control the other video models use).
+        // Target fps for interpolation: the `/imagine <number>` prompt wins; if it has no number,
+        // fall back to the ⚙ "interpolate to FPS" field (same control the other video models use).
         const promptFps = Math.round(parseFloat((prompt || "").trim()));
         const tf = promptFps > 0 ? promptFps : Math.round(Number(opts.targetFps) || 0);
-        const willInterp = tf > 0 && tf > srcFps;       // 升格 only when target fps > source
+        const willInterp = tf > 0 && tf > srcFps;       // interpolate only when target fps > source
         const willResize = opts.width > 0 && opts.height > 0; // explicit --size
         const willDenoise = upscaleDenoise > 0;
-        // Neither 升格 nor 高清 (nor denoise / explicit resize) → ComfyUI has nothing to do.
+        // Neither interpolation nor upscale (nor denoise / explicit resize) → ComfyUI has nothing to do.
         // Tell the user in the bubble instead of running a pointless re-encode.
         if (noUpscale && !willInterp && !willResize && !willDenoise) {
-          sendJson(res, 200, { noop: true, message: `ℹ️ 无需处理：升格和高清都没开启——⚙「放大模型」设为「关闭」，且目标帧率（${tf > 0 ? tf : "未填"}）没有高于源视频帧率（${srcFps}）。这次没有调用 ComfyUI。\n\n· 想升格：\`/imagine <更高的帧率>\`（如源 ${srcFps}fps 就填 ${srcFps * 2}）\n· 想高清：把 ⚙「放大模型」从「关闭」改回「自动」或具体模型` });
+          sendJson(res, 200, { noop: true, message: `ℹ️ Nothing to do: neither interpolation nor upscale is enabled — ⚙ "upscale model" is set to "Off", and the target fps (${tf > 0 ? tf : "not set"}) is not higher than the source video fps (${srcFps}). ComfyUI was not called this time.\n\n· To interpolate: \`/imagine <a higher fps>\` (e.g. for a ${srcFps}fps source, enter ${srcFps * 2})\n· To upscale: change ⚙ "upscale model" from "Off" back to "Auto" or a specific model` });
           return;
         }
         const comp = noUpscale ? null : await upscaleCompanions(opts.upscaleModel);
@@ -2113,7 +2113,7 @@ async function generateComfyImage(req, res) {
         }
         workflow = buildVideoEnhance({ videoName, upscaleModel: comp ? comp.model : null, outW, outH, denoise: upscaleDenoise });
         upscaleInfo = { model: comp ? comp.model : null, denoise: upscaleDenoise };
-        // Frame interpolation (升格) to the requested fps. applyVfi multiplies the
+        // Frame interpolation to the requested fps. applyVfi multiplies the
         // source fps to a NUMBER and splices RIFE/FILM before CreateVideo.
         let outFps = srcFps, mult = 1;
         if (willInterp) {
@@ -2137,8 +2137,8 @@ async function generateComfyImage(req, res) {
         // Both hold STILL_FRAMES frames and return the last settled frame.
         if (!(Array.isArray(images) && images.length >= 2)) {
           const err = animateReplace
-            ? "Wan Animate（替换·单图）需要两张图：第1张场景图（含要替换的人）、第2张角色图（或附一段源视频做多帧）。"
-            : "Wan Animate 单帧需要两张图：第1张姿势图、第2张角色图（或附一段源视频做多帧动作）。";
+            ? "Wan Animate (Replace, single image) needs two images: image 1 = scene (containing the person to replace), image 2 = character (or attach a source video for multiple frames)."
+            : "Wan Animate single frame needs two images: image 1 = pose, image 2 = character (or attach a source video for a multi-frame motion).";
           sendJson(res, 400, { error: err });
           return;
         }
@@ -2175,7 +2175,7 @@ async function generateComfyImage(req, res) {
       } else if (videoType === "animate") {
         // Wan Animate MOVE (pose transfer): reference person image + source video
         // (the motion) → the character does the video's motion. Needs BOTH.
-        if (!(Array.isArray(images) && images.length)) { sendJson(res, 400, { error: "Wan Animate 需要一张人物参考图（再附一段动作来源视频）。" }); return; }
+        if (!(Array.isArray(images) && images.length)) { sendJson(res, 400, { error: "Wan Animate needs a person reference image (plus an attached motion source video)." }); return; }
         const comp = await animateCompanions();
         // Output follows the SOURCE video's aspect (the pose is scaled to it), at
         // the preset budget (or --size budget). Both dims must be /16.
@@ -2228,7 +2228,7 @@ async function generateComfyImage(req, res) {
         // Video. WAN 5B ti2v + 14B i2v do image→video; WAN 14B t2v / Hunyuan are
         // text→video only. The dedicated WAN 2.2 14B i2v model needs a ref image.
         if (videoType === "wan" && /14b/i.test(model) && /i2v/i.test(model) && !isImg2Img) {
-          sendJson(res, 400, { error: "该模型用于图生视频，请先附带一张参考图片再用 /imagine <描述>。" });
+          sendJson(res, 400, { error: "This model is for image-to-video. Attach a reference image first, then use /imagine <description>." });
           return;
         }
         const comp = await videoCompanions(videoType, model);
@@ -2326,16 +2326,16 @@ async function generateComfyImage(req, res) {
           workflow = buildEditWorkflow(editType, { model, prompt, negative: negative_prompt || "", imageName, maskName, seed, cfg, comp, denoise: editDenoise, width: ew, height: eh });
         }
       } else if (model === IMAGE_UPSCALE) {
-        // 图片高清 / 放大: attached image → AI upscale model. No prompt needed; a
+        // Image HD / upscale: attached image → AI upscale model. No prompt needed; a
         // ⚙ --size sets an explicit target (kept at the source aspect, capped 4096),
         // otherwise the model's native output (usually 4×) is returned.
-        if (!isImg2Img) { sendJson(res, 400, { error: "图片放大需要先附上一张图片，再用 /imagine（可加 --size 1920x1080 指定目标尺寸）。" }); return; }
-        const noImgUpscale = opts.upscaleModel === "off"; // ⚙ "放大模型" = Off → passthrough
+        if (!isImg2Img) { sendJson(res, 400, { error: "Image upscale needs an attached image first, then use /imagine (optionally add --size 1920x1080 to set the target size)." }); return; }
+        const noImgUpscale = opts.upscaleModel === "off"; // ⚙ "upscale model" = Off → passthrough
         const imgWillResize = opts.width > 0 && opts.height > 0; // explicit --size
         const imgWillDenoise = upscaleDenoise > 0;
         // Off + no resize + no denoise → passthrough, nothing for ComfyUI to do. Tell the user.
         if (noImgUpscale && !imgWillResize && !imgWillDenoise) {
-          sendJson(res, 200, { noop: true, message: "ℹ️ 无需处理：⚙「放大模型」设为「关闭」，图片不会有任何变化，这次没有调用 ComfyUI。\n\n· 想放大：把 ⚙「放大模型」从「关闭」改回「自动」或具体模型（默认输出 4×）" });
+          sendJson(res, 200, { noop: true, message: "ℹ️ Nothing to do: ⚙ \"upscale model\" is set to \"Off\", so the image will not change and ComfyUI was not called this time.\n\n· To upscale: change ⚙ \"upscale model\" from \"Off\" back to \"Auto\" or a specific model (default output is 4×)" });
           return;
         }
         const comp = noImgUpscale ? null : await upscaleCompanions(opts.upscaleModel);
@@ -2433,7 +2433,7 @@ async function generateComfyImage(req, res) {
         });
       }
 
-      // Frame interpolation (升格): resample the decoded frames up to a TARGET fps via
+      // Frame interpolation: resample the decoded frames up to a TARGET fps via
       // RIFE (default) or FILM VFI, keeping the same duration. Applies to every real
       // video model (not stills/images). ⚙ `targetFps` is the desired output fps; the
       // integer multiplier is derived from the model's own (or source) fps. If the base
@@ -2516,7 +2516,7 @@ async function generateComfyImage(req, res) {
         }
       }
 
-      // 升格 exact-fps pass: RIFE/FILM only multiply by an integer, so the interpolated
+      // Interpolation exact-fps pass: RIFE/FILM only multiply by an integer, so the interpolated
       // fps (videoDims.fps) overshoots the user's target. ffmpeg-resample the output DOWN
       // to EXACTLY exactTargetFps (drops frames evenly, keeps duration + audio) — smoother
       // than no interpolation, but at the precise frame rate the user asked for.
@@ -2551,15 +2551,15 @@ async function generateComfyImage(req, res) {
       if (stillMode) {
         // Single-frame Wan Animate → an IMAGE result (not a video).
         console.log(`${ts} [comfy-gen] model=${model}, mode=animate:still, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, images=${outImages.length}`);
-        if (!outImages.length) { sendJson(res, 502, { error: "ComfyUI 完成了但未产出图片。请重试。" }); return; }
+        if (!outImages.length) { sendJson(res, 502, { error: "ComfyUI finished but produced no image. Please retry." }); return; }
         sendJson(res, 200, { images: outImages, model, seed, width: videoDims?.width, height: videoDims?.height, imagesUsed });
       } else if (videoType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
         // Ran to completion but no video file came back — tell the client why rather
         // than a bare "no video" (usually SaveVideo missing or an output-collection miss).
         if (!outVideos.length) {
-          const nodeIds = Object.keys(outputs || {}).join(", ") || "无";
-          sendJson(res, 502, { error: `ComfyUI 完成了但未产出视频文件（输出节点：${nodeIds}）。请确认工作流包含 SaveVideo 节点，或重试。` });
+          const nodeIds = Object.keys(outputs || {}).join(", ") || "none";
+          sendJson(res, 502, { error: `ComfyUI finished but produced no video file (output nodes: ${nodeIds}). Make sure the workflow includes a SaveVideo node, or retry.` });
           return;
         }
         sendJson(res, 200, { videos: outVideos, videoMime, model, seed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, imagesUsed });
@@ -2575,22 +2575,22 @@ async function generateComfyImage(req, res) {
     if (clientGone || res.writableEnded) return; // client already disconnected — nothing to send
     if (error.name === "AbortError") {
       sendJson(res, 504, { error: isVideoReq
-        ? "ComfyUI 视频生成超时（超过 ⚙「超时」分钟数,默认 4 小时）。在 ⚙ 把「超时」调大、或设为 0 即可不限时长（长视频在服务端一直等到跑完）；也可降低分辨率(⚙ 尺寸)或减少帧数(⚙ Length)。"
-        : "ComfyUI 图片生成超时，请重试或减少步数。" });
-    } else if (error.isComfyError || (typeof error.message === "string" && error.message.startsWith("ComfyUI 执行错误"))) {
+        ? "ComfyUI video generation timed out (exceeded the ⚙ \"timeout\" minutes, default 4 hours). Increase ⚙ \"timeout\", or set it to 0 for no time limit (long videos keep running on the server until done); you can also lower the resolution (⚙ size) or reduce the frame count (⚙ Length)."
+        : "ComfyUI image generation timed out. Please retry or reduce the step count." });
+    } else if (error.isComfyError || (typeof error.message === "string" && error.message.startsWith("ComfyUI execution error"))) {
       // A real ComfyUI execution error (incl. CUDA OOM) — surface it verbatim, with
       // an actionable hint when we recognize an out-of-memory failure.
       let msg = error.message;
       if (/out of memory|CUDA error|alloc/i.test(msg)) {
-        msg += "\n\n显存不足：请降低 ⚙ 尺寸（如 720p→≤640）、关闭 torch.compile，或减少帧数后重试。";
+        msg += "\n\nOut of VRAM: lower the ⚙ size (e.g. 720p→≤640), disable torch.compile, or reduce the frame count and retry.";
       }
       sendJson(res, 500, { error: msg });
-    } else if (typeof error.message === "string" && (error.message.startsWith("缺少") || error.message.includes("暂未接入"))) {
+    } else if (typeof error.message === "string" && (error.message.startsWith("Missing") || error.message.includes("not wired up yet"))) {
       // Missing companion files, or an unsupported model — surface the message.
       sendJson(res, 400, { error: error.message });
     } else {
       sendJson(res, 500, {
-        error: "ComfyUI 图片生成失败，请确认 ComfyUI 正在运行且已加载所选模型。",
+        error: "ComfyUI image generation failed. Make sure ComfyUI is running and the selected model is loaded.",
         detail: error.message,
       });
     }
@@ -2622,7 +2622,7 @@ async function comfyAutoMask(req, res) {
     comfyCtx.enterWith({ comfyUrl: normComfyUrl(body.comfyUrl) || config.comfyUrl });
     const { image, point, box, text, threshold, grow } = body;
     if (!image || typeof image !== "string" || image.length < 100) {
-      sendJson(res, 400, { error: "缺少图片。" });
+      sendJson(res, 400, { error: "Missing image." });
       return;
     }
     const deadline = Date.now() + 120000; // SAM2/SAM3 are fast; 2 min is ample
@@ -2690,7 +2690,7 @@ async function comfyAutoMask(req, res) {
       sendJson(res, 400, { error: `${isSam2 ? "SAM2" : "SAM3"} workflow error`, detail: queued.node_errors });
       return;
     }
-    if (!queued.prompt_id) { sendJson(res, 502, { error: "ComfyUI 未返回 prompt_id" }); return; }
+    if (!queued.prompt_id) { sendJson(res, 502, { error: "ComfyUI did not return a prompt_id" }); return; }
     const outputs = await waitForOutputs(queued.prompt_id, controller.signal, deadline);
     for (const nodeId of Object.keys(outputs)) {
       for (const img of (outputs[nodeId].images || [])) {
@@ -2704,8 +2704,8 @@ async function comfyAutoMask(req, res) {
       }
     }
     sendJson(res, 500, { error: isSam2
-      ? "SAM2 未返回蒙版（可能没点到可分割的物体，换个位置再试）。"
-      : `SAM3 没找到「${text.trim().slice(0, 40)}」（换个更简单的英文词，或降低阈值再试）。` });
+      ? "SAM2 returned no mask (you may not have clicked on a segmentable object; try a different spot)."
+      : `SAM3 could not find "${text.trim().slice(0, 40)}" (try a simpler English word, or lower the threshold and retry).` });
   } catch (e) {
     if (e && e.name === "AbortError") { try { res.end(); } catch { /* client gone */ } return; }
     sendJson(res, 500, { error: String((e && e.message) || e) });

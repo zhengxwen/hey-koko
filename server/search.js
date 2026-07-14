@@ -192,8 +192,8 @@ async function searchWeb(req, res) {
 
     sendJson(res, 200, { query, results });
   } catch (error) {
-    if (error.name === "AbortError" || error.name === "TimeoutError") sendJson(res, 200, { results: [], error: "搜索超时" });
-    else sendJson(res, 500, { error: "搜索失败", detail: error.message });
+    if (error.name === "AbortError" || error.name === "TimeoutError") sendJson(res, 200, { results: [], error: "Search timed out" });
+    else sendJson(res, 500, { error: "Search failed", detail: error.message });
   }
 }
 

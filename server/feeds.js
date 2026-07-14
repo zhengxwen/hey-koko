@@ -1,4 +1,4 @@
-// server/feeds.js — 新闻订阅库 (news-feeds.md)
+// server/feeds.js — news feeds library (news-feeds.md)
 // A tier-2 "news" knowledge library: company/official blog feeds are polled on a timer and
 // their history is backfilled in bulk, all landing under the top-level `news/<slug>/` tree
 // which retrieve/star-map default-EXCLUDE (library.inNewsDir). Zero-dependency: RSS/Atom/
@@ -297,10 +297,10 @@ function sumFolder(map, folder) { let n = 0; for (const [f, c] of map) if (f ===
 
 async function addFeedInternal({ siteUrl, feedUrl, name, folder } = {}) {
   siteUrl = String(siteUrl || "").trim(); feedUrl = String(feedUrl || "").trim();
-  if (!siteUrl && !feedUrl) throw new Error("需要站点或订阅源 URL");
+  if (!siteUrl && !feedUrl) throw new Error("A site or feed URL is required");
   if (siteUrl && !/^https?:\/\//i.test(siteUrl)) siteUrl = "https://" + siteUrl;
   if (feedUrl && !/^https?:\/\//i.test(feedUrl)) feedUrl = "https://" + feedUrl;
-  if (!feedUrl) { feedUrl = await discoverFeedUrl(siteUrl); if (!feedUrl) throw new Error("未能自动发现订阅源，请手动填写 feed URL"); }
+  if (!feedUrl) { feedUrl = await discoverFeedUrl(siteUrl); if (!feedUrl) throw new Error("Could not auto-discover a feed; please enter the feed URL manually"); }
   if (!siteUrl) siteUrl = siteRootFromFeedUrl(feedUrl) || new URL(feedUrl).origin;
   let feedTitle = "";
   try { const r = await politeFetch(feedUrl, { timeoutMs: 15000, retries: 1 }); if (r.ok) feedTitle = parseFeed(await r.text()).title; } catch {}
@@ -337,7 +337,7 @@ function metaFields(meta) {
 }
 // ---- import one item (shared by backfill; poll goes via the feeditem job) ----
 function importItem(feed, { url, title, publishedAt, publishedTime, excerpt, text, images, meta }, ctx) {
-  const card = library.blankCard(ctx.language);   // news «蒸馏卡» starts BLANK (no excerpt dump); 补卡 fills it later
+  const card = library.blankCard(ctx.language);   // news «蒸馏卡» (distill card) starts BLANK (no excerpt dump); backfill fills it in later
   // Feed-provided date wins for the docId; fall back to trafilatura's parsed date so an
   // undated feed still yields "<company>_<YYYY-MM-DD>" instead of a bare "<company>".
   const pub = publishedAt || String((meta && meta.date) || "").slice(0, 10);
@@ -572,7 +572,7 @@ async function extractMicrosoftPage(html, url, ctx) {
 // `{ extractPage(html,url,ctx){…} }` (full-HTML sites → gets the fetched page). A pinned handler
 // wins over the wp-json/trafilatura defaults for that host.
 // Picker metadata (📰 panel's "✅ sites" menu): `title` + `siteUrl` are what the menu DISPLAYS;
-// `name` is what clicking fills into the 名称 field → the subscription label AND the folder slug
+// `name` is what clicking fills into the name field → the subscription label AND the folder slug
 // (slugify(name) → news/<slug>), so keep name slug-shaped ("microsoft-blog" → news/microsoft-blog).
 // siteUrl matters when it ISN'T just https://<host>/ (wordpress.org's blog lives under /news/).
 const SITE_HANDLERS = {
@@ -902,7 +902,7 @@ async function backfillPagedFeed(feed, ctx) {
 // otherwise loop forever on a repeating page.
 async function backfillHandler(feed, ctx) {
   const ph = handlerChannelFor(feed);
-  if (!ph) throw new Error("handler 回填通道已失效（插件被移除？）：" + (feed.siteUrl || feed.feedUrl));
+  if (!ph) throw new Error("Handler backfill channel is no longer available (plugin removed?): " + (feed.siteUrl || feed.feedUrl));
   let page = Math.max(1, feed.backfill.cursor || 1), imported = 0, skipped = 0;
   let total = feed.backfill.total || 0;
   let pageSize = 0;
@@ -956,7 +956,7 @@ async function collectSitemapUrls(feed, ctx) {
 // as costly as the backfill itself). Returns { total, approx } — approx:true when there were more
 // post sub-sitemaps than the CAP we sampled. Used for the pagedfeed/sitemap channels so their
 // confirm dialog can still show ~N (wp-json already has an exact X-WP-Total). A pagedfeed that is
-// truncated may import fewer than this, so it reads as an upper-bound "约 N".
+// truncated may import fewer than this, so it reads as an upper-bound "~N".
 async function countSitemapPosts(feed, signal) {
   const root = feed.sitemapUrl || await findSitemap(siteRoot(feed));
   if (!root) return { total: 0, approx: false };
@@ -1018,7 +1018,7 @@ async function runBackfill(feedId, ctx = {}) {
     method = "handler"; patchBackfill(feedId, { method, cursor: 0 });
   }
   if (!method) { const p = await probeBackfill(feed); method = p.method; patchBackfill(feedId, { method, total: p.total || 0 }); if (p.sitemap) patchFeed(feedId, { sitemapUrl: p.sitemap }); }
-  if (!method) { patchFeed(feedId, { lastError: "无可用回填通道（无 wp-json / 分页 feed / sitemap）" }); return { feedId, method: "", imported: 0, skipped: 0, done: false, error: "no-channel" }; }
+  if (!method) { patchFeed(feedId, { lastError: "No usable backfill channel (no wp-json / paged feed / sitemap)" }); return { feedId, method: "", imported: 0, skipped: 0, done: false, error: "no-channel" }; }
   const fresh = getFeed(feedId);   // re-read after the probe patch
   try {
     let r;
@@ -1033,8 +1033,8 @@ async function runBackfill(feedId, ctx = {}) {
   } catch (e) {
     // User interrupted the backfill task → STOP importing this source: disable the feed so
     // the poll timer skips it and no backfill auto-resumes (cursor is kept, so re-enabling +
-    // 回填历史 continues where it left off). A real error just records lastError.
-    // pausedByInterrupt marks an AUTO pause (vs. a manual 暂停) so 🔄 refresh AND the next server
+    // history backfill continues where it left off). A real error just records lastError.
+    // pausedByInterrupt marks an AUTO pause (vs. a manual pause) so 🔄 refresh AND the next server
     // startup can lift it, while leaving deliberately-paused feeds alone.
     if (e && e.name === "AbortError") patchFeed(feedId, { enabled: false, pausedByInterrupt: true, lastError: INTERRUPT_NOTE });
     else patchFeed(feedId, { lastError: String(e.message || e) });
@@ -1098,18 +1098,18 @@ async function pollAll(ctx = {}) {
 }
 
 // Note left on a feed that was auto-paused because its backfill job was interrupted.
-const INTERRUPT_NOTE = "已中断，已暂停该源导入（启用后可继续回填）";
+const INTERRUPT_NOTE = "Interrupted; import for this source has been paused (re-enable to resume backfill)";
 
 // A restart KILLS any running backfill, and that abort re-flags the feed as "interrupted,
 // paused" — so a paused/⚠️ state would reappear on every boot even though nothing is running.
 // Clear it at startup: an interrupt-pause is a within-session "stop now", not a persistent
-// setting (a deliberate 暂停 sets enabled:false WITHOUT the flag/note, so it survives). Matches
+// setting (a deliberate pause sets enabled:false WITHOUT the flag/note, so it survives). Matches
 // both the flag (new) and the legacy note string (feeds paused before the flag existed).
 function clearInterruptPauses() {
   const cfg = loadFeeds();
   let changed = 0;
   for (const f of cfg.feeds) {
-    if (f.pausedByInterrupt || (typeof f.lastError === "string" && f.lastError.indexOf("已中断") === 0)) {
+    if (f.pausedByInterrupt || (typeof f.lastError === "string" && f.lastError.indexOf("Interrupted") === 0)) {
       f.enabled = true; f.lastError = ""; delete f.pausedByInterrupt; changed++;
     }
   }
@@ -1167,7 +1167,7 @@ async function feedsListHandler(_req, res) {
 }
 // Shared "sidecar missing" error text (returned by poll-now / backfill when trafilatura is
 // absent). Kept short + actionable: name the package and the venv to install it into.
-const EXTRACTOR_MISSING = "新闻抽取功能不可用：未检测到 trafilatura。请在 hey-koko 的 Python 环境中安装：pip install trafilatura（或设置 TRAFILATURA_PYTHON 指向已安装它的解释器），然后重启服务。";
+const EXTRACTOR_MISSING = "News extraction is unavailable: trafilatura was not detected. Install it in hey-koko's Python environment: pip install trafilatura (or set TRAFILATURA_PYTHON to point at an interpreter that has it), then restart the service.";
 async function feedsAddHandler(req, res) {
   let b = {}; try { b = await readBody(req); } catch {}
   try { sendJson(res, 200, { ok: true, feed: await addFeedInternal(b) }); } catch (e) { sendJson(res, 200, { ok: false, error: e.message }); }
@@ -1243,7 +1243,7 @@ async function feedsBackfillEstimateHandler(req, res) {
 // POST /api/feeds/refresh → reconcile the whole news library with the ACTUAL directory:
 // (1) prune index entries whose doc file was hand-deleted; (2) rebuild every feed's seen-set
 // from the docs that REMAIN on disk (so a deleted article's URL is no longer "seen" and a
-// re-poll/回填 re-imports it). Returns the fresh, disk-accurate feed list. See news-feeds.md.
+// re-poll/backfill re-imports it). Returns the fresh, disk-accurate feed list. See news-feeds.md.
 async function feedsRefreshHandler(_req, res) {
   try {
     const removed = library.pruneIndexGhosts();     // index → match disk (drop deleted docs)
@@ -1252,14 +1252,14 @@ async function feedsRefreshHandler(_req, res) {
     for (const f of cfg.feeds) {
       st[f.id] = library.sourcesUnderFolder(f.folder);   // seen = what's actually still imported
       // A feed auto-paused by a prior interrupt is lifted here (refresh = "reset & recheck"):
-      // re-enable it and clear the stale "已中断…" note. A MANUAL 暂停 (no pausedByInterrupt flag)
-      // is left untouched.
-      if (f.pausedByInterrupt || (typeof f.lastError === "string" && f.lastError.indexOf("已中断") === 0)) { f.enabled = true; f.lastError = ""; delete f.pausedByInterrupt; }
+      // re-enable it and clear the stale "Interrupted…" note. A MANUAL pause (no pausedByInterrupt
+      // flag) is left untouched.
+      if (f.pausedByInterrupt || (typeof f.lastError === "string" && f.lastError.indexOf("Interrupted") === 0)) { f.enabled = true; f.lastError = ""; delete f.pausedByInterrupt; }
       const bf = f.backfill || {};
       // if everything under this feed is gone, let a backfill restart from scratch
       if (st[f.id].size === 0 && bf.doneAt) patchBackfill(f.id, { cursor: 0, total: 0, totalPages: 0, doneAt: 0 });
       // a PARTLY-DONE backfill (interrupted) resumes from its page cursor, so its progress bar
-      // reappears mid-way (e.g. "201"). Refresh rewinds the cursor to 0 so the next 回填 re-scans
+      // reappears mid-way (e.g. "201"). Refresh rewinds the cursor to 0 so the next backfill re-scans
       // from the top — already-imported articles are skipped via the (disk-rebuilt) seen-set, so
       // this re-checks for gaps without re-importing. (cursor 0 works for all channels.)
       else if (!bf.doneAt && (bf.cursor || 0) > 0) patchBackfill(f.id, { cursor: 0 });

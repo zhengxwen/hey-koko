@@ -4,10 +4,11 @@
 // Pure-JS .pptx → per-slide Markdown parser (zero npm deps — a .pptx is a ZIP of XML,
 // and Node ships zlib). One slide = one `## Slide N · title` section so the library
 // chunker turns each slide into its own block (page = the meaning unit of a deck).
-// Speaker notes ride INSIDE their slide's block (a `> 📝 备注：…` quote). Images are
-// NOT extracted here by design (docs/plans/slides-library.md §0.3, Rev1): pictures /
-// charts / SmartArt become `［图 N］` / `［图表：…］` placeholders, and visual fidelity
-// is P3's whole-slide render. Tables keep their cell text (cheap, lossless-enough).
+// Speaker notes ride INSIDE their slide's block (a `> 📝 备注：…` quote — the 备注
+// marker is kept in Chinese to match the slides distill prompt in library.js). Images
+// are NOT extracted here by design (docs/plans/slides-library.md §0.3, Rev1): pictures /
+// charts / SmartArt become `[image]` / `[chart]` / `[figure]` placeholders, and visual
+// fidelity is P3's whole-slide render. Tables keep their cell text (cheap, lossless-enough).
 // Non-text objects leave English placeholders: `[image]` / `[chart]` / `[figure]`.
 // parse-file.js falls back to Pandoc if this throws on a malformed/odd deck.
 const zlib = require("zlib");
