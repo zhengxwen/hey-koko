@@ -11,6 +11,7 @@
   --paper: #f8fafb;
   --panel: #ffffff;
   --panel-alpha: rgba(255, 255, 255, 0.86);
+  --flyout-alpha: rgba(255, 255, 255, 0.28);
   --surface: #edf0f2;
   --surface-hover: #dfe4e7;
   --shadow: 0 18px 40px rgba(27, 39, 51, 0.12);
@@ -30,6 +31,7 @@
   --paper: #1a1b1e;
   --panel: #242628;
   --panel-alpha: rgba(36, 38, 40, 0.92);
+  --flyout-alpha: rgba(36, 38, 40, 0.32);
   --surface: #2e3134;
   --surface-hover: #3a3e42;
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
@@ -469,10 +471,42 @@ body.isResizingPanel {
   box-sizing: border-box;
 }
 
+/* Two slots only: the avatar in use + the last-used one. The rest appear in
+   .avatarFlyout on hover. */
 .avatar-picker {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
+  /* Hug the two slots: as a stretched flex child its box would run the full
+     column width, pushing the JS-anchored flyout far off to the right. */
+  align-self: flex-start;
+}
+
+/* Mounted on <body> and fixed-positioned (JS anchors it): the side panel is
+   `overflow: hidden`, so an absolutely-positioned flyout would be clipped. */
+.avatarFlyout {
+  position: fixed;
+  z-index: 300;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  /* Translucent via background alpha, NOT `opacity` — opacity would fade the
+     avatars inside too and can't be undone on children. */
+  background: var(--flyout-alpha);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(223, 227, 232, 0.6);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+/* The avatars stay fully opaque against the translucent panel. */
+.avatarFlyout .avatar-picker-item {
+  background: var(--panel);
+  opacity: 1;
+}
+
+.avatarFlyout[hidden] {
+  display: none; /* beats display:flex above */
 }
 
 .avatar-picker-item {

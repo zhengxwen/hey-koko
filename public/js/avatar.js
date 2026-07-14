@@ -12,30 +12,99 @@ function parseSvgContent(svgInner) {
   return doc.documentElement;
 }
 
+// The picker shows only two slots: the avatar in use + the previously-used one.
+// The rest live in a hover flyout (see showFlyout).
+const AVATAR_PREV_KEY = "local-ai-companion-avatar-prev";
+
+function currentAvatarId() {
+  const id = localStorage.getItem(AVATAR_KEY);
+  return AVATAR_STYLES[id] ? id : "dark-girl";
+}
+
+// Previously-used avatar. Falls back to the first style that isn't the current
+// one, so the second slot is never empty on a fresh profile.
+function prevAvatarId() {
+  const cur = currentAvatarId();
+  const p = localStorage.getItem(AVATAR_PREV_KEY);
+  if (AVATAR_STYLES[p] && p !== cur) return p;
+  return Object.keys(AVATAR_STYLES).find((id) => id !== cur);
+}
+
+function makeAvatarThumb(id, isActive) {
+  const item = document.createElement("div");
+  item.className = "avatar-picker-item" + (isActive ? " is-active" : "");
+  item.dataset.style = id;
+  item.title = t(`avatar_${id}`);
+  item.appendChild(parseSvgContent(AVATAR_STYLES[id].svg));
+  item.addEventListener("click", () => applyAvatarStyle(id));
+  return item;
+}
+
 function applyAvatarStyle(styleId) {
   const style = AVATAR_STYLES[styleId];
   if (!style) return;
+  // Switching away demotes the outgoing avatar to the "last used" slot.
+  const cur = localStorage.getItem(AVATAR_KEY);
+  if (cur && cur !== styleId && AVATAR_STYLES[cur]) localStorage.setItem(AVATAR_PREV_KEY, cur);
+  localStorage.setItem(AVATAR_KEY, styleId);
   const parsed = parseSvgContent(style.svg);
   dom.avatarSvg.innerHTML = "";
   while (parsed.firstChild) dom.avatarSvg.appendChild(parsed.firstChild);
-  localStorage.setItem(AVATAR_KEY, styleId);
-  document.querySelectorAll(".avatar-picker-item").forEach((el) => {
-    el.classList.toggle("is-active", el.dataset.style === styleId);
-  });
+  renderAvatarPicker();
+  // Keep an open flyout usable after a pick (its contents just changed).
+  if (flyoutEl && !flyoutEl.hidden) showFlyout();
 }
 
 function renderAvatarPicker() {
+  const cur = currentAvatarId();
+  const prev = prevAvatarId();
   dom.avatarPicker.innerHTML = "";
-  for (const [id, style] of Object.entries(AVATAR_STYLES)) {
-    const item = document.createElement("div");
-    item.className = "avatar-picker-item";
-    item.dataset.style = id;
-    item.title = t(`avatar_${id}`);
-    const thumbSvg = parseSvgContent(style.svg);
-    item.appendChild(thumbSvg);
-    item.addEventListener("click", () => applyAvatarStyle(id));
-    dom.avatarPicker.appendChild(item);
+  dom.avatarPicker.appendChild(makeAvatarThumb(cur, true));
+  if (prev) dom.avatarPicker.appendChild(makeAvatarThumb(prev, false));
+}
+
+// ---- hover flyout: the avatars NOT in the two slots -------------------------
+// Fixed-position and mounted on <body> on purpose: the side panel is
+// `overflow: hidden` (its scrolling lives inside each tab), and only ~19px of it
+// sits right of the picker — an absolutely-positioned flyout would be clipped.
+let flyoutEl = null;
+let flyoutTimer = null;
+
+function ensureFlyout() {
+  if (flyoutEl) return flyoutEl;
+  flyoutEl = document.createElement("div");
+  flyoutEl.className = "avatarFlyout";
+  flyoutEl.hidden = true;
+  flyoutEl.addEventListener("mouseenter", () => clearTimeout(flyoutTimer));
+  flyoutEl.addEventListener("mouseleave", scheduleHideFlyout);
+  document.body.appendChild(flyoutEl);
+  return flyoutEl;
+}
+
+function showFlyout() {
+  clearTimeout(flyoutTimer);
+  const cur = currentAvatarId();
+  const prev = prevAvatarId();
+  const others = Object.keys(AVATAR_STYLES).filter((id) => id !== cur && id !== prev);
+  if (!others.length) return;
+  const fly = ensureFlyout();
+  fly.innerHTML = "";
+  for (const id of others) fly.appendChild(makeAvatarThumb(id, false));
+  fly.hidden = false;
+  // Anchor to the right of the two slots, vertically centred; clamp to viewport.
+  const r = dom.avatarPicker.getBoundingClientRect();
+  fly.style.left = `${r.right + 8}px`;
+  fly.style.top = `${r.top + r.height / 2}px`;
+  const fr = fly.getBoundingClientRect();
+  if (fr.right > window.innerWidth - 8) {
+    fly.style.left = `${Math.max(8, window.innerWidth - 8 - fr.width)}px`;
   }
+}
+
+function scheduleHideFlyout() {
+  clearTimeout(flyoutTimer);
+  // Grace period so the cursor can cross the gap into the flyout.
+  flyoutTimer = setTimeout(() => { if (flyoutEl) flyoutEl.hidden = true; }, 180);
 }
 
 // True when the currently-selected model is a cloud (Claude) model. The dropdown
@@ -120,7 +189,10 @@ export function relocalizeAvatarPicker() {
 }
 
 export function initAvatar() {
-  renderAvatarPicker();
-  applyAvatarStyle(localStorage.getItem(AVATAR_KEY) || "dark-girl");
+  applyAvatarStyle(currentAvatarId());   // also renders the two picker slots
+  dom.avatarPicker.addEventListener("mouseenter", showFlyout);
+  dom.avatarPicker.addEventListener("mouseleave", scheduleHideFlyout);
+  // The flyout is viewport-anchored, so a scroll/resize would strand it.
+  window.addEventListener("resize", () => { if (flyoutEl) flyoutEl.hidden = true; });
   startBlinkLoop();
 }
