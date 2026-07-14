@@ -24,7 +24,7 @@ ICONSET="${RESOURCES}/icon.iconset"
 mkdir -p "${ICONSET}"
 
 # Convert SVG to PNG using sips (needs intermediate PNG via /usr/bin/qlmanage or python)
-ICON_SVG="${SRC_DIR}/app-icon.svg"
+ICON_SVG="${SRC_DIR}/public/app-icon.svg"
 ICON_PNG="/tmp/${APP_NAME}_icon_1024.png"
 
 # Use python3 to render SVG to PNG (available on macOS by default via cairosvg or we use a simpler method)
@@ -84,9 +84,9 @@ cat > "${CONTENTS}/Info.plist" << PLIST
   <key>CFBundleIdentifier</key>
   <string>${BUNDLE_ID}</string>
   <key>CFBundleVersion</key>
-  <string>1.0.0</string>
+  <string>0.9.0</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
+  <string>0.9.0</string>
   <key>CFBundleExecutable</key>
   <string>hey-koko</string>
   <key>CFBundleIconFile</key>

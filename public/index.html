@@ -51,7 +51,7 @@
           </div>
           <div class="profile-side">
             <div class="profile-text">
-              <p>Hey-Koko (v0.9.0)</p>
+              <p><button type="button" id="aboutBtn" class="aboutBtn">Hey-Koko</button></p>
               <h1 id="aiName">Bella</h1>
             </div>
             <div class="avatar-picker" id="avatarPicker"></div>
@@ -617,6 +617,20 @@
         <div id="highlightsList" class="highlightsList"></div>
       </aside>
     </main>
+
+    <!-- About Modal -->
+    <div id="aboutModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal aboutModal" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
+        <button id="aboutModalClose" type="button" class="scanModalClose aboutModalClose" aria-label="Close">✕</button>
+        <div class="aboutBody">
+          <img class="aboutIcon" src="/app-icon.svg" alt="Hey-Koko" width="96" height="96" />
+          <div class="aboutMeta">
+            <h3 id="aboutModalTitle" class="aboutTitle">Hey-Koko</h3>
+            <p class="aboutVersion">v0.9.0</p>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Ollama Scan Modal -->
     <div id="scanModal" class="scanModalBackdrop" hidden>

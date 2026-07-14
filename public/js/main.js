@@ -749,6 +749,13 @@ function closeMaskPointModal() { if (dom.maskPointModal) dom.maskPointModal.hidd
 dom.comfyMaskPointBtn?.addEventListener("click", openMaskPointModal);
 dom.maskPointClose?.addEventListener("click", closeMaskPointModal);
 dom.maskPointModal?.addEventListener("click", (e) => { if (e.target === dom.maskPointModal) closeMaskPointModal(); });
+
+// About modal — click the "Hey-Koko" title to show the app icon + version.
+function closeAboutModal() { if (dom.aboutModal) dom.aboutModal.hidden = true; }
+dom.aboutBtn?.addEventListener("click", () => { if (dom.aboutModal) dom.aboutModal.hidden = false; });
+dom.aboutModalClose?.addEventListener("click", closeAboutModal);
+dom.aboutModal?.addEventListener("click", (e) => { if (e.target === dom.aboutModal) closeAboutModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && dom.aboutModal && !dom.aboutModal.hidden) closeAboutModal(); });
 // Click on the frame → normalised point (clamped to [0,1]).
 dom.maskPointImage?.addEventListener("click", (e) => {
   const r = dom.maskPointImage.getBoundingClientRect();

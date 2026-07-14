@@ -309,7 +309,7 @@ body.isResizingPanel {
   flex-direction: column;
   gap: 16px;
   padding: 18px;
-  overflow: auto;
+  overflow: hidden; /* scrolling lives inside each tab's content, not the panel */
 }
 
 .panelTabs {
@@ -317,6 +317,7 @@ body.isResizingPanel {
   gap: 4px;
   border-bottom: 1px solid var(--line);
   padding-bottom: 0;
+  flex-shrink: 0;
 }
 
 .panelTab {
@@ -352,6 +353,9 @@ body.isResizingPanel {
 
 .panelTabContent.isActive {
   display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .profile {
@@ -359,6 +363,7 @@ body.isResizingPanel {
   flex-direction: row;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .profile-side {
@@ -378,6 +383,75 @@ body.isResizingPanel {
 
 .profile-text h1 {
   cursor: default;
+}
+
+.aboutBtn {
+  all: unset;
+  cursor: help; /* hover shows the question-mark/help cursor */
+  color: var(--muted);
+  font-size: inherit;
+  font-weight: inherit;
+  transition: color 0.2s;
+  user-select: none; /* no blue text-selection highlight on click */
+  -webkit-tap-highlight-color: transparent;
+}
+
+.aboutBtn:hover,
+.aboutBtn:focus,
+.aboutBtn:active {
+  /* Override the global button:hover accent fill (higher specificity than
+     `all: unset`) so the title stays background-free. */
+  background: transparent;
+  color: var(--accent-strong);
+}
+
+.aboutModal {
+  width: min(360px, 90vw);
+  position: relative;
+  padding: 28px 24px 24px;
+}
+
+/* Higher specificity than `.scanModalClose { all: unset }` (which is defined
+   later in the file and would otherwise reset position back to static). */
+.aboutModal .aboutModalClose {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  margin-left: 0;
+}
+
+.aboutBody {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+}
+
+.aboutIcon {
+  width: 128px;
+  height: 128px;
+  border-radius: 24px;
+  flex-shrink: 0;
+}
+
+.aboutMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.aboutTitle {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.aboutVersion {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
 }
 
 .aiNameInput {

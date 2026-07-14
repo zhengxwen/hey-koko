@@ -1,6 +1,6 @@
 {
   "name": "hey-koko",
-  "version": "1.0.0",
+  "version": "0.9.0",
   "description": "A lightweight, privacy-first AI companion that runs entirely on your machine, powered by Ollama.",
   "license": "AGPL-3.0-only",
   "author": "Xiuwen Zheng",
