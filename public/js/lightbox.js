@@ -4,11 +4,12 @@
 // Image lightbox
 import { dom, state } from './state.js';
 import { getActiveTab } from './tabs.js';
+import { t } from './i18n.js';
 
 export function initLightbox() {
   const lightbox = document.createElement("div");
   lightbox.className = "imageLightbox";
-  lightbox.innerHTML = `<div class="imageLightboxCaption"></div><button class="imageLightboxClose" aria-label="关闭">×</button><button class="imageLightboxNav imageLightboxPrev" aria-label="上一张">‹</button><button class="imageLightboxNav imageLightboxNext" aria-label="下一张">›</button><img />`;
+  lightbox.innerHTML = `<div class="imageLightboxCaption"></div><button class="imageLightboxClose" aria-label="${t("lb_close")}">×</button><button class="imageLightboxNav imageLightboxPrev" aria-label="${t("lb_prevImage")}">‹</button><button class="imageLightboxNav imageLightboxNext" aria-label="${t("lb_nextImage")}">›</button><img />`;
   document.body.appendChild(lightbox);
 
   const lbImg = lightbox.querySelector("img");
@@ -284,7 +285,7 @@ export function initLightbox() {
 export function initVideoLightbox() {
   const overlay = document.createElement("div");
   overlay.className = "videoLightbox";
-  overlay.innerHTML = `<div class="videoLightboxCaption"></div><button class="videoLightboxClose" aria-label="关闭">×</button><button class="videoLightboxNav videoLightboxPrev" aria-label="上一个">‹</button><button class="videoLightboxNav videoLightboxNext" aria-label="下一个">›</button>`;
+  overlay.innerHTML = `<div class="videoLightboxCaption"></div><button class="videoLightboxClose" aria-label="${t("lb_close")}">×</button><button class="videoLightboxNav videoLightboxPrev" aria-label="${t("lb_prevVideo")}">‹</button><button class="videoLightboxNav videoLightboxNext" aria-label="${t("lb_nextVideo")}">›</button>`;
   const video = document.createElement("video");
   video.className = "videoLightboxVideo";
   video.controls = true;

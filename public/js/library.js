@@ -575,7 +575,7 @@ export function initLibrary() {
     }
     setStatus(t("lib_importQueued"));
   });
-  // "本地论文" → always docKind:paper, stored in the paper/ folder.
+  // "Local papers" → always docKind:paper, stored in the paper/ folder.
   paperInput.addEventListener("change", () => { importFiles([...paperInput.files], { folder: "paper", docKind: "paper" }); paperInput.value = ""; });
   fileInput.addEventListener("change", () => { importFiles([...fileInput.files]); fileInput.value = ""; });
   // Slides import (menu + per-doc "re-parse as slides"): forces docKind:"slides". The
@@ -597,7 +597,7 @@ export function initLibrary() {
   }
 
   // opts.folder → store all these imports in that sub-folder (overrides auto-classify);
-  // opts.docKind → force the doc kind (e.g. the "本地论文" importer forces "paper").
+  // opts.docKind → force the doc kind (e.g. the "Local papers" importer forces "paper").
   async function importFiles(files, { folder = null, docKind = null } = {}) {
     if (!files.length) return;
     // Each file becomes its OWN background job (parse + import + enrich runs headless,
@@ -901,9 +901,9 @@ export function initLibrary() {
     overlay.querySelector(".zoteroImportClose").addEventListener("click", close);
     overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
 
-    // "✅ 站点" picker: every registered site handler (built-in + url-handler plugins), served by
+    // "✅ Sites" picker: every registered site handler (built-in + url-handler plugins), served by
     // /api/feeds/list as `handlers`. The menu DISPLAYS title + siteUrl; clicking prefills the URL
-    // field with siteUrl and the 名称 field with `name` (the slug-shaped subscription label that
+    // field with siteUrl and the name field with `name` (the slug-shaped subscription label that
     // becomes the news/<slug> folder). Already-subscribed hosts are dimmed.
     let sitesHandlers = [], sitesSubscribed = new Set();
     const hostKey = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
@@ -1039,7 +1039,7 @@ export function initLibrary() {
   }
 
   // "🔄 Sync Zotero annotations": re-pull highlights for every Zotero-imported doc and
-  // rebuild the «Zotero 批注» block where it changed (server no-ops unchanged ones).
+  // rebuild the «Zotero Annotations» block where it changed (server no-ops unchanged ones).
   async function syncZoteroAnnotations() {
     const L = zotL();
     setStatus(L.syncing);
@@ -1155,7 +1155,7 @@ export function initLibrary() {
 
   // ---- URL-import input history (localStorage) ----------------------------
   // Recent lines the user typed into the URL modal, most recent first. Whole LINES
-  // are kept — a line may carry free-text notes around the URL ("[说明] https://… [说明]"),
+  // are kept — a line may carry free-text notes around the URL ("[note] https://… [note]"),
   // and those notes are the reason the history is useful.
   const URL_HISTORY_KEY = "heykoko-liburl-history";
   const URL_HISTORY_MAX = 20;
@@ -1206,7 +1206,7 @@ export function initLibrary() {
   }
 
   // Extract the URLs from one line, tolerating free-text notes around them
-  // ("[说明1] https://… [说明2]") and trailing punctuation stuck to a URL.
+  // ("[note1] https://… [note2]") and trailing punctuation stuck to a URL.
   const urlsInLine = (line) =>
     (line.match(/https?:\/\/\S+/g) || []).map((u) => u.replace(/[)\]}>.,;，。；、"'）】》]+$/, ""));
 
@@ -1237,7 +1237,7 @@ export function initLibrary() {
   urlCancel.addEventListener("click", closeUrlModal);
   urlConfirm.addEventListener("click", confirmUrlModal);
   // Deliberately NO backdrop-click-to-close: the "import URL" modal dismisses ONLY via the
-  // ✕ button, the 取消 button, or Esc — so a stray click on the dimmed area never discards a
+  // ✕ button, the Cancel button, or Esc — so a stray click on the dimmed area never discards a
   // half-typed list of URLs. Esc is handled at the document level so it works regardless of
   // which control (or none) holds focus, not just while the textarea is focused.
   document.addEventListener("keydown", (e) => {
@@ -1426,7 +1426,7 @@ export function initLibrary() {
   }
 
   // Select-all follows the filter: with one active it (un)ticks only the visible rows
-  // ("filter 教程 → select all" selects just the tutorials).
+  // ("filter tutorial → select all" selects just the tutorials).
   ytSelectAll.addEventListener("change", () => {
     ytRows.forEach((r) => { if (ytMatch(r)) r.checked = ytSelectAll.checked; });
     renderYtList();
@@ -1810,11 +1810,11 @@ export function initLibrary() {
         return sortMode === "new" ? db - da : da - db;
       });
     } else if (sortMode === "") {
-      // 导入序 = newest imported first. docs arrive oldest-first (index appends), so
+      // import order = newest imported first. docs arrive oldest-first (index appends), so
       // reverse puts the most recently imported at the top. The folder tree inherits it.
       list.reverse();
     }
-    // sortMode === "importRev" (导入反序) → keep the natural oldest-first order (no-op).
+    // sortMode === "importRev" (import reverse order) → keep the natural oldest-first order (no-op).
     if (!list.length) {
       listEl.innerHTML = `<div class="archiveEmpty">${docs.length ? t("lib_noMatch") : t("lib_emptyList")}</div>`;
       return;
@@ -2048,7 +2048,7 @@ export function initLibrary() {
   }
 
   // Regenerate JUST the distillation card (metadata untouched) with the currently
-  // selected chat model — the 📇 popup's "重新生成" button, for when a stronger model
+  // selected chat model — the 📇 popup's "Regenerate" button, for when a stronger model
   // is hooked up later. Server-side distill replaces the old card in place.
   let _cardRegenBusy = false;
   async function regenerateCard(doc) {
@@ -2118,7 +2118,7 @@ export function initLibrary() {
       const z = document.createElement("a");
       z.href = `zotero://open-pdf/library/items/${doc.zotero.attachmentKey}`;
       z.className = "libraryDocSrcLink";
-      z.textContent = "📚 " + (getPromptLanguage() === "en" ? "Open in Zotero" : "在 Zotero 中打开");
+      z.textContent = t("lib2_openInZotero");
       if (srcLine.childNodes.length) srcLine.append("　·　");
       srcLine.appendChild(z);
     }
@@ -2238,8 +2238,8 @@ export function initLibrary() {
           const bodyEl = div.querySelector(".markdownBody");
           if (bodyEl) applyHighlights(bodyEl, b.highlights);
         }
-        // Distill card: visualize its «§ 关系» section as a node-link graph ABOVE the card text
-        // (above «§ 摘要»). Open/collapse state persists across articles via relGraphOpenPref.
+        // Distill card: visualize its «§ Relations» section as a node-link graph ABOVE the card text
+        // (above «§ Summary»). Open/collapse state persists across articles via relGraphOpenPref.
         if (b.kind === "card") { try { const g = renderRelationGraph(b.content || "", { open: relGraphOpenPref }); if (g) { g.addEventListener("toggle", () => { relGraphOpenPref = g.open; }); div.insertBefore(g, div.firstChild); } } catch (e) { console.warn("[relGraph]", e); } }
         // Remember this card's body so its heading chevron can fold it, and honor the
         // persisted fold state on (re)render / doc switch.

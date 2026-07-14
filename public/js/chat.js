@@ -73,14 +73,14 @@ function cancelStreamRender() {
   _streamRenderLast = 0;
 }
 
-// "正在发送/接收中 / 正在停止中" status pill (bottom-right, blue). Shown IMMEDIATELY on
+// "Sending/Receiving / Stopping" status pill (bottom-right, blue). Shown IMMEDIATELY on
 // send/resend/edit (no delay) and animated via CSS (fade-in + pulse). The "sending"
 // pill covers the gap between clicking send and the response starting — it's dropped
 // the moment the response begins streaming (sendSucceeded), NOT when the reply finishes.
 let _sendStatusTimer = null;
 let _sendStatusKind = null; // 'sending' | 'stopping' | 'error' | null
 let _sendStatusImageCount = 0; // images carried by the in-flight request (annotates the pill)
-// "Sending/Receiving…", upgraded to "…（包括 N 张图片）" when the outgoing request
+// "Sending/Receiving…", upgraded to "…(incl. N images)" when the outgoing request
 // carries images. Computed live so setSendingImageCount can refresh the visible pill.
 function sendingStatusText() {
   const base = _sendStatusImageCount > 0
@@ -144,7 +144,7 @@ export function cleanErrorMessage(raw) {
   return s;
 }
 
-// Turn the status pill RED and show the error reason (paired with "正在发送/接收中…").
+// Turn the status pill RED and show the error reason (paired with "Sending/Receiving…").
 // Sticky (survives setGenerating(false)); auto-dismisses after a while. Exported so
 // dependency-injected modules (url-fetch.js) can surface their errors the same way.
 export function showSendError(msg) {
@@ -168,7 +168,7 @@ function sendSucceeded() {
   if (_sendStatusKind === 'stopping') return;
   clearSendStatus();
 }
-// Pressing stop/pause: switch to "正在停止中". If a pill is already visible
+// Pressing stop/pause: switch to "Stopping". If a pill is already visible
 // (sending was slow), swap text immediately; otherwise only reveal it if the
 // stop itself takes >2s.
 export function markStopping() {
@@ -205,7 +205,7 @@ export function setGenerating(active) {
 
 // WebKit/Safari (this app runs in WKWebView) sometimes fails to REJECT a pending
 // `reader.read()` when the underlying fetch is aborted, so a streaming read loop can
-// hang forever — the reply never stops and the UI stays stuck on "正在停止中".
+// hang forever — the reply never stops and the UI stays stuck on "Stopping".
 // Canceling the reader on abort makes the pending read() resolve `{done:true}`, which
 // cleanly breaks the loop; `signal.aborted` still tells us it was a user stop. Call
 // this right after getReader() on every streaming response.
@@ -240,7 +240,7 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
   const jobs = clips.length ? clips : [null];
   // --enhance is run UP-FRONT here (foreground — the tab is active right after Send, so
   // it can never hit the background-tab freeze that stalls queue advancement). Jobs are
-  // created in the 'enhancing' state (bubble shows "正在增强提示词"); pumpLane skips them
+  // created in the 'enhancing' state (bubble shows "enhancing prompt"); pumpLane skips them
   // until releaseEnhancingJob flips them to 'queued' with the rewritten prompt in tow.
   const needsEnhance = validCmds.some((c) => c.enhance && c.prompt && c.prompt.trim());
   const created = jobs.map((clip, i) => enqueueBgJob({
@@ -364,7 +364,7 @@ function renderBgPlaceholder(message) {
   body.className = 'markdownBody';
   let statusTxt;
   switch (message.status) {
-    case 'running': statusTxt = [message.seg, message.elapsed].filter(Boolean).join(' · '); break;   // "第 N/M 段 · 1:23"
+    case 'running': statusTxt = [message.seg, message.elapsed].filter(Boolean).join(' · '); break;   // "segment N/M · 1:23"
     case 'paused': statusTxt = t('bg_statusPaused'); break;
     case 'enhancing': statusTxt = t('bg_statusEnhancing'); break;
     case 'done': statusTxt = t('bg_statusDone'); break;
@@ -373,7 +373,7 @@ function renderBgPlaceholder(message) {
     case 'canceled': statusTxt = t('bg_statusCanceled'); break;
     default: statusTxt = message.queuePos ? t('bg_statusQueued', { n: message.queuePos }) : t('bg_statusQueuedPlain');
   }
-  // The label is "正在生成… · <model> · <extra>". Keep the action text at normal
+  // The label is "generating… · <model> · <extra>". Keep the action text at normal
   // size and render everything after the first " · " (the long model name etc.) small.
   const labelParts = (message.label || '').split(' · ');
   const mainLabel = labelParts[0] || '';
@@ -447,7 +447,7 @@ function renderBgPlaceholder(message) {
   el.appendChild(body);
   // /analyze: the frame map + extracted frames arrive the moment extraction ends
   // (sink.thinking → syncPlaceholder). Shown folded BELOW the status line (the
-  // placeholder stacks as a column) so the "正在逐张分析 (N/M)" progress stays on top.
+  // placeholder stacks as a column) so the "analyzing frame by frame (N/M)" progress stays on top.
   const think = buildThinkingDetails(message.thinkingMd, message.thinkingFrames);
   if (think) el.appendChild(think);
   // Close (×) — identical to a normal bubble's delete button: a hover-revealed
@@ -755,7 +755,7 @@ function resendChatMessage(index) {
       saveChat();
       renderChat();
     } else if (validCmds.length === 0) {
-      tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_commandError", { error: "缺少提示词，或附带一张图片 / 一段视频再发送。" }), timestamp: Date.now() });
+      tab.messages.splice(index + 1, 0, { role: "assistant", content: t("msg_commandError", { error: t("chat_needPromptOrMedia") }), timestamp: Date.now() });
       saveChat();
       renderChat();
     } else {
@@ -862,7 +862,7 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
 
     if (!response.ok) {
       const data = await response.json();
-      throw new Error(cleanErrorMessage(data.error) || "请求失败");
+      throw new Error(cleanErrorMessage(data.error) || t("chat_requestFailed"));
     }
 
     const reader = response.body.getReader();
@@ -1173,7 +1173,8 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
     if (msg.role === "user" && /^\/search(\s|$)/.test(msg.content)) continue;
     // Skip /analyze command line (its analysis is the assistant bubble that follows)
     if (msg.role === "user" && /^\/analyze(\s|$)/.test(msg.content)) continue;
-    if (msg.role === "assistant" && /^✅ 标题已更新为/.test(msg.content)) continue;
+    // Skip the "title updated" confirmation bubble (msg_titleUpdated, any UI language).
+    if (msg.role === "assistant" && /^✅ (标题已更新为|標題已更新為|Title updated to)/.test(msg.content)) continue;
     // File preview bubbles: send to LLM as user-role (contains the parsed file content)
     if (msg.isFilePreview) {
       const message = { role: "user", content: msg.content };
@@ -1266,7 +1267,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
 
     if (!response.ok) {
       const data = await response.json();
-      throw new Error(cleanErrorMessage(data.error) || "请求失败");
+      throw new Error(cleanErrorMessage(data.error) || t("chat_requestFailed"));
     }
 
     const reader = response.body.getReader();
@@ -1379,7 +1380,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     if (buffer.trim()) appendStreamLine(buffer);
 
     cancelStreamRender();
-    content = content.trim() || "我刚才有点走神了，你再说一次好吗？";
+    content = content.trim() || t("chat_zonedOut");
     state.streamingInfo = null;
     const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart };
     if (thinkingContent) reply.thinking = thinkingContent;
@@ -1489,7 +1490,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
 
     if (!response.ok) {
       const data = await response.json();
-      throw new Error(cleanErrorMessage(data.error) || "请求失败");
+      throw new Error(cleanErrorMessage(data.error) || t("chat_requestFailed"));
     }
 
     const reader = response.body.getReader();
@@ -1605,7 +1606,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     if (buffer.trim()) appendStreamLine(buffer);
 
     cancelStreamRender();
-    content = content.trim() || "我刚才有点走神了，你再说一次好吗？";
+    content = content.trim() || t("chat_zonedOut");
     if (!bg) state.streamingInfo = null;
     if (!bg && state.activeTabId === tabId) {
       const md = dom.messagesEl.querySelector('.streaming-bubble > .markdownBody');
@@ -1668,7 +1669,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       const bubble = dom.messagesEl.querySelector('.streaming-bubble');
       if (bubble) {
         bubble.className = "message system";
-        bubble.textContent = `${error.message}\n\n提示：先打开 Ollama，并下载模型，例如：ollama pull qwen2.5:7b`;
+        bubble.textContent = `${error.message}\n\n${t("chat_ollamaHint")}`;
       }
       showSendError(error.message);
     }
@@ -1731,7 +1732,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
     });
     if (!response.ok) {
       const d = await response.json();
-      throw new Error(cleanErrorMessage(d.error) || "请求失败");
+      throw new Error(cleanErrorMessage(d.error) || t("chat_requestFailed"));
     }
 
     const reader = response.body.getReader();
@@ -2007,7 +2008,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
           timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
         }),
       });
-      if (!res.ok) { const d = await res.json(); throw new Error(cleanErrorMessage(d.error) || "请求失败"); }
+      if (!res.ok) { const d = await res.json(); throw new Error(cleanErrorMessage(d.error) || t("chat_requestFailed")); }
       const msg = (await res.json()).message || {};
       if (msg.thinking) thinkingContent += (thinkingContent ? "\n\n" : "") + msg.thinking;
       const toolCalls = msg.tool_calls || [];
@@ -2301,13 +2302,13 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
-        throw new Error(cleanErrorMessage(d.error) || "请求失败");
+        throw new Error(cleanErrorMessage(d.error) || t("chat_requestFailed"));
       }
       let out = "";
       for (const line of (await r.text()).split("\n")) {
         if (!line.trim()) continue;
         let o; try { o = JSON.parse(line); } catch { continue; }
-        if (o.error) throw new Error(cleanErrorMessage(o.error) || "请求失败");
+        if (o.error) throw new Error(cleanErrorMessage(o.error) || t("chat_requestFailed"));
         out += o.message?.content || "";
       }
       return out.trim();
@@ -2397,7 +2398,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
       const resp = await chatFetch(
         { model: dom.modelSelect.value, messages, options: { temperature: 0.5, num_ctx: getNumCtx() }, timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120 },
         { bgJob: bg.server.bgJob, conversationId: bg.server.conversationId, msgId: bg.server.msgId, label: bg.server.label, signal: abortController.signal });
-      if (!resp.ok) throw new Error(cleanErrorMessage((await resp.json()).error) || "请求失败");
+      if (!resp.ok) throw new Error(cleanErrorMessage((await resp.json()).error) || t("chat_requestFailed"));
       content = ((await resp.json()).content || "");
     } else {
       const response = await fetch("/api/chat", {
@@ -2413,7 +2414,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
       });
       if (!response.ok) {
         const d = await response.json().catch(() => ({}));
-        throw new Error(cleanErrorMessage(d.error) || "请求失败");
+        throw new Error(cleanErrorMessage(d.error) || t("chat_requestFailed"));
       }
 
       // Stream the answer into the bubble.
@@ -2668,7 +2669,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       saveChat();
       if (state.activeTabId === tabId) renderChat();
     } else if (validCmds.length === 0) {
-      tab.messages.push({ role: "assistant", content: t("msg_commandError", { error: "缺少提示词，或附带一张图片 / 一段视频再发送。" }), timestamp: Date.now() });
+      tab.messages.push({ role: "assistant", content: t("msg_commandError", { error: t("chat_needPromptOrMedia") }), timestamp: Date.now() });
       saveChat();
       if (state.activeTabId === tabId) renderChat();
     } else {
@@ -2891,7 +2892,7 @@ function makeDownloadButton(className, href, filename, bytes, actionLabel) {
 // optional grid of frame screenshots (used by /analyze and its -d flag). Shared by
 // renderMessage, the bg placeholder, and the live /analyze streaming bubble. Returns
 // null if both empty. `frames` is either an array of base64 strings (legacy) or of
-// { b64, scene, n, t } objects (/analyze video frames) — the latter get a "第N帧 · Xs"
+// { b64, scene, n, t } objects (/analyze video frames) — the latter get a "frame N · Xs"
 // caption and, for scene-change picks, a ⚡ badge + highlight ring.
 function buildThinkingDetails(thinkingText, frames) {
   if (!thinkingText && !(frames && frames.length)) return null;
@@ -3022,7 +3023,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     if (_libMeta.docKind === "video" && isTranscriptSection(_libMsg.librarySection)) {
       secTag.appendChild(transcriptMark());
     } else if (_libMsg.libraryKind === "card") {
-      // distill-card bubble: 📇 badge after "蒸馏卡" — AI-generated summary, not original content
+      // distill-card bubble: 📇 badge after "distill card" — AI-generated summary, not original content
       secTag.appendChild(cardMark());
     }
     item.appendChild(secTag);
@@ -3191,7 +3192,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       const image = document.createElement("img");
       image.className = "messageImage";
       image.src = src;
-      image.alt = "用户上传的图片";
+      image.alt = t("chat_altUserImage");
       if (Number.isInteger(index)) {
         image.dataset.msgIndex = index;
         image.dataset.imgIndex = imgIdx;
@@ -3216,8 +3217,8 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         const maskBtn = document.createElement("button");
         maskBtn.type = "button";
         maskBtn.className = "messageMaskBtn" + (msg?.mask ? " hasMask" : "");
-        maskBtn.title = msg?.mask ? "编辑修改区域蒙版（已设置，重发以应用）" : "涂抹要修改的区域（局部重绘，重发以应用）";
-        maskBtn.setAttribute("aria-label", "涂抹蒙版");
+        maskBtn.title = msg?.mask ? t("chat_maskEditTitle") : t("chat_maskPaintTitle");
+        maskBtn.setAttribute("aria-label", t("msg_maskPaintAria"));
         maskBtn.textContent = "🖌";
         maskBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
@@ -3229,7 +3230,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
             ? (b64.startsWith("data:") || b64.startsWith("http") ? b64 : `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`)
             : src;
           const result = await openMaskModal(fullSrc, mm.mask || null);
-          if (result === null) return; // cancelled (X / 取消 / Esc) → leave the mask untouched
+          if (result === null) return; // cancelled (X / Cancel / Esc) → leave the mask untouched
           mm.mask = result || undefined; // "" = cleared via apply → drop the mask
           saveChat();
           renderChat();
@@ -3320,7 +3321,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     }
     item.appendChild(text);
     textEl = text;
-    // Distill-card bubble: visualize its «§ 关系» section as a node-link relation graph
+    // Distill-card bubble: visualize its «§ Relations» section as a node-link relation graph
     // below the text (parsed from the card markdown; null when the card has no relations).
     if (_libMsg?.libraryKind === "card") {
       try { const g = renderRelationGraph(content, { open: false }); if (g) item.appendChild(g); } catch (e) { console.warn("[relGraph]", e); }
@@ -3367,18 +3368,18 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         } else if (ytId) {
           img.dataset.fullSrc = `https://img.youtube.com/vi/${ytId}/maxresdefault.jpg`;
         }
-        img.alt = "AI 生成的图片";
-        img.onerror = () => { img.alt = "图片加载失败"; img.style.display = "none"; };
+        img.alt = t("chat_altGenImage");
+        img.onerror = () => { img.alt = t("chat_altImgLoadFail"); img.style.display = "none"; };
         wrapper.appendChild(img);
         if (Number.isInteger(index)) {
           const delBtn = document.createElement("button");
           delBtn.className = "imageDeleteBtn";
           delBtn.type = "button";
-          delBtn.title = "删除图片";
+          delBtn.title = t("chat_delImgTitle");
           delBtn.textContent = "×";
           delBtn.addEventListener("click", (e) => {
             e.stopPropagation();
-            if (!confirm("确定要删除这张图片吗？")) return;
+            if (!confirm(t("chat_confirmDelImg"))) return;
             deleteMessageImage(index, i);
           });
           wrapper.appendChild(delBtn);

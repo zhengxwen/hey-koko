@@ -28,7 +28,7 @@ export function parseVoiceCommand(input) {
   const match = input.match(/^\/voice\s+([\s\S]+)$/);
   if (!match) return null;
   if (!match[1].trim()) {
-    return { error: "缺少文字。用法：/voice <要朗读的文字>" };
+    return { error: t("voc_missingText") };
   }
 
   let rest = match[1].trim();
@@ -41,17 +41,17 @@ export function parseVoiceCommand(input) {
     const flag = rest.match(/^(--use|-u|--speed|-s)(?=\s|$)(?:\s+(\S+))?/);
     if (!flag) {
       const unknown = rest.match(/^(--?[\w-]+)/);
-      return { error: `未知参数 "${unknown ? unknown[1] : rest}"。支持：--use/-u <引擎:音色>, --speed/-s <0.5~2>` };
+      return { error: t("voc_unknownArg", { arg: unknown ? unknown[1] : rest }) };
     }
     const name = flag[1], val = flag[2];
     if (name === "--use" || name === "-u") {
-      if (!val) return { error: "--use 需要参数，如：--use kokoro:zm_yunxi" };
+      if (!val) return { error: t("voc_useNeedsArg") };
       result.voice = val;
     } else {
-      if (!val) return { error: "--speed 需要参数，如：--speed 1.1" };
+      if (!val) return { error: t("voc_speedNeedsArg") };
       const n = Number(val);
       if (isNaN(n) || n < 0.5 || n > 2) {
-        return { error: `--speed 值无效："${val}"。需为 0.5~2 之间的数` };
+        return { error: t("voc_speedInvalid", { val }) };
       }
       result.rate = n;
     }
@@ -59,7 +59,7 @@ export function parseVoiceCommand(input) {
   }
 
   result.text = rest.trim();
-  if (!result.text) return { error: "缺少文字。请在参数后面加上要朗读的内容" };
+  if (!result.text) return { error: t("voc_missingTextAfterArgs") };
   return result;
 }
 
@@ -95,8 +95,9 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
     sink.clearBubble();
 
     if (!resp.ok || !data.audio) {
-      sink.fail(`语音生成失败：${data.error || "未返回音频"}`);
-      sink.place({ role: "assistant", content: `语音生成失败：${data.error || "未返回音频"}`, timestamp: Date.now() });
+      const failMsg = t("voc_speechGenFailed", { err: data.error || t("voc_noAudioReturned") });
+      sink.fail(failMsg);
+      sink.place({ role: "assistant", content: failMsg, timestamp: Date.now() });
       setAvatarState("idle");
       return;
     }
@@ -122,8 +123,9 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
   } catch (error) {
     sink.clearBubble();
     if (error.name !== "AbortError") {
-      sink.fail(`语音生成出错：${error.message}`);
-      sink.place({ role: "assistant", content: `语音生成出错：${error.message}`, timestamp: Date.now() });
+      const errMsg = t("voc_speechGenError", { err: error.message });
+      sink.fail(errMsg);
+      sink.place({ role: "assistant", content: errMsg, timestamp: Date.now() });
     }
     setAvatarState("idle");
   } finally {

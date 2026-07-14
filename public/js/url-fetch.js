@@ -65,7 +65,7 @@ export function setDeps({ setGenerating, renderChat, regenerateReply, showSendEr
 // Surface a /url failure as the red status pill (best-effort; dep may be unset).
 function urlError(reason, bg) {
   // Background run: mark the JOB failed too (bg.fail), so it stays in the jobs drawer
-  // as "失败 · <reason>" instead of vanishing as done. Foreground: toast only.
+  // as "failed · <reason>" instead of vanishing as done. Foreground: toast only.
   if (bg && bg.fail) bg.fail(reason);
   if (_showSendError) _showSendError(reason);
 }
@@ -143,7 +143,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
     // The whole /url chain runs as a bg job, so regenerateReply(bg) is headless — it never
     // shows the foreground "thinking" bubble. Flip the job placeholder (which sits right
     // below the just-spliced content/prompt bubbles) to the thinking label so the reply
-    // phase reads as "正在想…" instead of lingering on the fetch label until the answer pops in.
+    // phase reads as "thinking…" instead of lingering on the fetch label until the answer pops in.
     if (bg && bg.label) bg.label(t("msg_thinking"));
     if (inPlace) { await _regenerateReply(tabId, cursor.pos, cursor.pos - 1, { urlPart: true }, bg); cursor.pos++; }
     else _regenerateReply(tabId, -1, -1, { urlPart: true });
@@ -167,7 +167,7 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
     pending.className = "message assistant thinking";
     const body = document.createElement("div");
     body.className = "markdownBody";
-    body.innerHTML = '<span class="thinking-text">正在获取内容<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
+    body.innerHTML = `<span class="thinking-text">${t("url_fetchingContent")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
     pending.appendChild(body);
     placePending(pending, cursor);
     scrollChatToEnd();
@@ -186,8 +186,8 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
     if (pending) pending.remove();
 
     if (!res.ok || data.type === "error") {
-      placeMsg(tab, { role: "assistant", content: `⚠️ ${data.error || data.content || "获取失败"}`, timestamp: Date.now() }, cursor);
-      urlError(data.error || data.content || "获取失败", bg);
+      placeMsg(tab, { role: "assistant", content: `⚠️ ${data.error || data.content || t("url_fetchFailed")}`, timestamp: Date.now() }, cursor);
+      urlError(data.error || data.content || t("url_fetchFailed"), bg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
       if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); }
@@ -285,8 +285,8 @@ export async function handleUrlCommand(url, tab, tabId, fullContent, prompt, cur
     if (error.name === "AbortError") {
       // User cancelled
     } else {
-      placeMsg(tab, { role: "assistant", content: `⚠️ 获取失败：${error.message}`, timestamp: Date.now() }, cursor);
-      urlError(`获取失败：${error.message}`, bg);
+      placeMsg(tab, { role: "assistant", content: `⚠️ ${t("url_fetchFailedReason", { msg: error.message })}`, timestamp: Date.now() }, cursor);
+      urlError(t("url_fetchFailedReason", { msg: error.message }), bg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
@@ -378,7 +378,7 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
     ok = r.ok; data = await r.json();
   } catch (e) {
     if (e && e.name === 'AbortError') throw e;   // canceled mid-run — let the queue handle it
-    ok = false; data = { error: (e && e.message) || '获取失败' };
+    ok = false; data = { error: (e && e.message) || t("url_fetchFailed") };
   }
   data = data || {};
 
@@ -393,7 +393,7 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
   // 1. video info card — stable id, NEVER the placeholder msgId (that's reserved for the reply).
   // Same id as the early placement above, so this refreshes it rather than duplicating.
   // Only rebuild when the result actually carries video info: a bare error result (e.g.
-  // "whisper-cli 未安装" fails before any metadata) has no title/thumbnail, and rebuilding
+  // "whisper-cli not installed" fails before any metadata) has no title/thumbnail, and rebuilding
   // from it would clobber the good prefetch-placed card with a bare-URL one.
   if (data.title || data.thumbnail || data.videoId) {
     const infoMsg = await buildYoutubeInfoMsg(url, data);
@@ -415,9 +415,9 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
     // 2b. failure → raw transcript as a fallback user bubble (if any) + the error.
     // formatError = the server transcribed fine but formatting failed; the raw
     // transcript rides along in the "done" result so it can be shown here.
-    const errMsg = data.formatError || data.error || '字幕整理失败';
+    const errMsg = data.formatError || data.error || t("url_formatFailed");
     if (data.rawTranscript) {
-      const label = data.source === 'whisper' ? '**[语音识别结果]**' : '**[原始字幕]**';
+      const label = data.source === 'whisper' ? t("url_whisperResultLabel") : t("url_rawSubtitleLabel");
       upsertById(base + ':raw', { role: 'user', content: `${label}\n\n${data.rawTranscript}`, timestamp: genTs });
     }
     upsertById(base + ':fmt', { role: 'assistant', content: `⚠️ ${errMsg}`, timestamp: genTs });
@@ -425,7 +425,7 @@ async function handleYoutubeServerJob(url, tab, tabId, prompt, cursor, bg) {
     urlError(errMsg, bg);
     return;
   }
-  // Render the finished transcript now, so "📝 整理好的字幕" lands on its own first.
+  // Render the finished transcript now, so the "📝 organized transcript" header lands on its own first.
   commit();
 
   // 3. optional prompt → reply (front-end; needs conversation context). The reply swaps the
@@ -490,7 +490,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
 
   // Add a user message indicating transcript formatting, with the raw transcript appended
   const instructions = L.intro(title, totalChunks);
-  const label = source === "whisper" ? "**[语音识别结果]**" : "**[原始字幕]**";
+  const label = source === "whisper" ? t("url_whisperResultLabel") : t("url_rawSubtitleLabel");
   const userMsg = `${instructions}\n\n${label}\n\n${transcript}`;
   placeMsg(tab, { role: "user", content: userMsg, timestamp: Date.now() }, cursor);
   saveChat();
@@ -515,7 +515,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
     pending.className = "message assistant thinking";
     const body = document.createElement("div");
     body.className = "markdownBody";
-    body.innerHTML = '<span class="thinking-text">正在整理字幕 (1/' + totalChunks + ')<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
+    body.innerHTML = `<span class="thinking-text">${t("url_formattingSubs", { i: 1, n: totalChunks })}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
     pending.appendChild(body);
     placePending(pending, cursor);
     scrollChatToEnd();
@@ -543,7 +543,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
 
     if (!response.ok) {
       const errData = await response.json();
-      throw new Error(errData.error || "请求失败");
+      throw new Error(errData.error || t("url_requestFailed"));
     }
 
     const reader = response.body.getReader();
@@ -599,7 +599,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
         scrollChatToEnd();
       } else if (i > 0 && pending && !textEl) {
         const body = pending.querySelector(".markdownBody");
-        if (body) body.innerHTML = '<span class="thinking-text">正在整理字幕 (' + (i + 1) + '/' + totalChunks + ')<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
+        if (body) body.innerHTML = `<span class="thinking-text">${t("url_formattingSubs", { i: i + 1, n: totalChunks })}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
       }
 
       const messages = [
@@ -627,7 +627,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
       // chunk's entire content from the result — fail loudly instead (mirrors the
       // server twin in server/url-fetch.js formatTranscriptServer).
       if (!nonWs(fullContent.slice(chunkStart)) && nonWs(chunks[i])) {
-        throw new Error(`模型对第 ${i + 1}/${totalChunks} 段返回了空结果`);
+        throw new Error(t("url_emptyChunkResult", { i: i + 1, n: totalChunks }));
       }
 
       // Add separator between chunks
@@ -642,7 +642,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
     // Remove progress markers from final content
     fullContent = fullContent.replace(progressMarker, "\n\n");
     // Save final result
-    fullContent = fullContent.trim() || "整理失败，请重试。";
+    fullContent = fullContent.trim() || t("url_formatFailedRetry");
     fullContent = `${L.header}\n\n${fullContent}`;
     if (state.activeTabId === tabId && textEl) textEl.innerHTML = markdownToHtml(fullContent);
     placeMsg(tab, { role: "assistant", content: fullContent, timestamp: Date.now() }, cursor);
@@ -659,8 +659,8 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
       }
     } else {
       if (pending) pending.remove();
-      placeMsg(tab, { role: "assistant", content: `⚠️ 字幕整理失败：${error.message}`, timestamp: Date.now() }, cursor);
-      urlError(`字幕整理失败：${error.message}`, bg);
+      placeMsg(tab, { role: "assistant", content: `⚠️ ${t("url_formatFailedReason", { msg: error.message })}`, timestamp: Date.now() }, cursor);
+      urlError(t("url_formatFailedReason", { msg: error.message }), bg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }
@@ -691,7 +691,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
     pending.className = "message assistant thinking";
     const body = document.createElement("div");
     body.className = "markdownBody";
-    body.innerHTML = '<span class="thinking-text">正在通过语音识别获取内容<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
+    body.innerHTML = `<span class="thinking-text">${t("url_transcribingContent")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
     pending.appendChild(body);
     placePending(pending, cursor);
     scrollChatToEnd();
@@ -707,7 +707,7 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
 
     if (!response.ok) {
       const err = await response.json();
-      throw new Error(err.error || "转录请求失败");
+      throw new Error(err.error || t("url_transcribeRequestFailed"));
     }
 
     const reader = response.body.getReader();
@@ -751,11 +751,11 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
           transcriptText = msg.text || "";
         } else if (msg.status === "error" || msg.error) {
           hasError = true;
-          const errMsg = msg.message || msg.error || "转录失败";
+          const errMsg = msg.message || msg.error || t("url_transcribeFailed");
           if (pending) pending.remove();
           pending = null;
-          placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${errMsg}`, timestamp: Date.now() }, cursor);
-          urlError(`语音识别失败：${errMsg}`, bg);
+          placeMsg(tab, { role: "assistant", content: `⚠️ ${t("url_speechRecogFailedReason", { msg: errMsg })}`, timestamp: Date.now() }, cursor);
+          urlError(t("url_speechRecogFailedReason", { msg: errMsg }), bg);
           saveChat();
           if (state.activeTabId === tabId && _renderChat) _renderChat();
         }
@@ -770,8 +770,8 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
           hasError = true;
           if (pending) pending.remove();
           pending = null;
-          placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${msg.message || msg.error}`, timestamp: Date.now() }, cursor);
-          urlError(`语音识别失败：${msg.message || msg.error}`, bg);
+          placeMsg(tab, { role: "assistant", content: `⚠️ ${t("url_speechRecogFailedReason", { msg: msg.message || msg.error })}`, timestamp: Date.now() }, cursor);
+          urlError(t("url_speechRecogFailedReason", { msg: msg.message || msg.error }), bg);
           saveChat();
           if (state.activeTabId === tabId && _renderChat) _renderChat();
         }
@@ -790,8 +790,8 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
       if (!bg) { state.currentAbortController = null; if (_setGenerating) _setGenerating(false); setAvatarState("idle"); }
       await formatTranscriptChunked(title, transcriptText, tab, tabId, "whisper", cursor, bg);
     } else {
-      placeMsg(tab, { role: "assistant", content: "⚠️ 语音识别未返回内容", timestamp: Date.now() }, cursor);
-      urlError("语音识别未返回内容", bg);
+      placeMsg(tab, { role: "assistant", content: `⚠️ ${t("url_speechRecogNoContent")}`, timestamp: Date.now() }, cursor);
+      urlError(t("url_speechRecogNoContent"), bg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
       if (!bg) { setAvatarState("idle"); if (_setGenerating) _setGenerating(false); state.currentAbortController = null; }
@@ -799,8 +799,8 @@ async function transcribeYouTubeFromAudio(videoId, title, tab, tabId, cursor = n
   } catch (error) {
     if (pending) pending.remove();
     if (error.name !== "AbortError") {
-      placeMsg(tab, { role: "assistant", content: `⚠️ 语音识别失败：${error.message}`, timestamp: Date.now() }, cursor);
-      urlError(`语音识别失败：${error.message}`, bg);
+      placeMsg(tab, { role: "assistant", content: `⚠️ ${t("url_speechRecogFailedReason", { msg: error.message })}`, timestamp: Date.now() }, cursor);
+      urlError(t("url_speechRecogFailedReason", { msg: error.message }), bg);
       saveChat();
       if (state.activeTabId === tabId && _renderChat) _renderChat();
     }

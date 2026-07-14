@@ -103,7 +103,7 @@ export async function loadTabs() {
         return { tabs: backfillMessageIds(migrated.tabs), activeTabId: migrated.activeTabId || migrated.tabs[0].id };
       }
       if (migrated.legacyMessages) {
-        const tab = createTab("聊天 1", migrated.legacyMessages);
+        const tab = createTab(`${t("tab_newChat")} 1`, migrated.legacyMessages);
         return { tabs: backfillMessageIds([tab]), activeTabId: tab.id };
       }
     }
@@ -112,7 +112,7 @@ export async function loadTabs() {
   }
 
   // Fallback: fresh start
-  const tab = createTab("聊天 1", []);
+  const tab = createTab(`${t("tab_newChat")} 1`, []);
   return { tabs: [tab], activeTabId: tab.id };
 }
 
@@ -313,7 +313,7 @@ function showTagContextMenu(event, tab) {
 
   const header = document.createElement("div");
   header.className = "tagMenuHeader";
-  header.textContent = "管理标签";
+  header.textContent = t("lib_tagManageTitle");
   menu.appendChild(header);
 
   if (tab.tags && tab.tags.length > 0) {
@@ -327,7 +327,7 @@ function showTagContextMenu(event, tab) {
       badge.style.backgroundColor = tag.color;
       badge.textContent = tag.name;
       badge.style.cursor = "pointer";
-      badge.title = "点击更换颜色";
+      badge.title = t("tabs_clickChangeColor");
       badge.addEventListener("click", (e) => {
         e.stopPropagation();
         const existing = row.parentElement.querySelector(".tagItemColors");
@@ -356,7 +356,7 @@ function showTagContextMenu(event, tab) {
       const removeBtn = document.createElement("button");
       removeBtn.className = "tagMenuRemove";
       removeBtn.textContent = "×";
-      removeBtn.title = "移除标签";
+      removeBtn.title = t("tabs_removeTag");
       removeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         tab.tags.splice(idx, 1);
@@ -391,7 +391,7 @@ function showTagContextMenu(event, tab) {
 
     const quickHeader = document.createElement("div");
     quickHeader.className = "tagMenuSubHeader";
-    quickHeader.textContent = "快捷选择（所有 Tabs）";
+    quickHeader.textContent = t("tabs_quickSelectAll");
     quickSection.appendChild(quickHeader);
 
     const quickWrap = document.createElement("div");
@@ -403,7 +403,7 @@ function showTagContextMenu(event, tab) {
       quickBadge.className = "tagMenuQuickBadge";
       quickBadge.style.backgroundColor = tg.color;
       quickBadge.textContent = tg.name;
-      quickBadge.title = "点击添加到当前标签页";
+      quickBadge.title = t("tabs_clickAddToTab");
       quickBadge.addEventListener("click", (e) => {
         e.stopPropagation();
         if (!tab.tags) tab.tags = [];
@@ -427,7 +427,7 @@ function showTagContextMenu(event, tab) {
   const input = document.createElement("input");
   input.className = "tagMenuInput";
   input.type = "text";
-  input.placeholder = "输入标签名...";
+  input.placeholder = t("tabs_tagNamePlaceholder");
   input.maxLength = 12;
 
   const colorPicker = document.createElement("div");
@@ -448,7 +448,7 @@ function showTagContextMenu(event, tab) {
 
   const addBtn = document.createElement("button");
   addBtn.className = "tagMenuAddBtn";
-  addBtn.textContent = "添加";
+  addBtn.textContent = t("tabs_addTag");
   addBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     const name = input.value.trim();
@@ -539,8 +539,8 @@ export function renderTabs() {
     const lockBtn = document.createElement("button");
     lockBtn.className = `tabLockBtn${tab.locked ? " isLocked" : ""}`;
     lockBtn.type = "button";
-    lockBtn.title = tab.locked ? "取消固定对话" : "固定对话";
-    lockBtn.setAttribute("aria-label", tab.locked ? "取消固定对话" : "固定对话");
+    lockBtn.title = tab.locked ? t("tabs_unpin") : t("tabs_pin");
+    lockBtn.setAttribute("aria-label", tab.locked ? t("tabs_unpin") : t("tabs_pin"));
     lockBtn.textContent = "📌";
     lockBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -628,8 +628,8 @@ export function renderTabs() {
       const closeButton = document.createElement("button");
       closeButton.className = "closeTab";
       closeButton.type = "button";
-      closeButton.title = "关闭这个聊天";
-      closeButton.setAttribute("aria-label", "关闭这个聊天");
+      closeButton.title = t("tabs_closeChat");
+      closeButton.setAttribute("aria-label", t("tabs_closeChat"));
       closeButton.textContent = "×";
       if (tab.locked || state.tabs.length <= 1) {
         closeButton.disabled = true;
@@ -652,8 +652,8 @@ export function renderTabs() {
     const renameButton = document.createElement("button");
     renameButton.className = "tabRenameBtn";
     renameButton.type = "button";
-    renameButton.title = "重命名对话";
-    renameButton.setAttribute("aria-label", "重命名对话");
+    renameButton.title = t("tabs_renameChat");
+    renameButton.setAttribute("aria-label", t("tabs_renameChat"));
     renameButton.textContent = "✎";
     if (tab.locked) {
       renameButton.disabled = true;
@@ -667,8 +667,8 @@ export function renderTabs() {
     const tagButton = document.createElement("button");
     tagButton.className = "tabTagBtn";
     tagButton.type = "button";
-    tagButton.title = "管理标签";
-    tagButton.setAttribute("aria-label", "管理标签");
+    tagButton.title = t("lib_tagManageTitle");
+    tagButton.setAttribute("aria-label", t("lib_tagManageTitle"));
     tagButton.textContent = "🏷";
     if (tab.locked) {
       tagButton.disabled = true;

@@ -138,7 +138,7 @@ export function initArchive() {
       tags: tab.tags || [],
       messages: exportMessages,
     };
-    // 取档而来的对话：归档时更新原存档文件，避免堆积重复副本。
+    // Conversation restored from an archive: on re-archiving, update the original archive file to avoid piling up duplicate copies.
     if (tab.sourceArchive) data.sourceArchive = tab.sourceArchive;
 
     try {
@@ -149,7 +149,7 @@ export function initArchive() {
       });
       const result = await res.json();
       if (!res.ok) {
-        alert(result.error || "存档失败");
+        alert(result.error || t("arch_archiveFailed"));
         return;
       }
 
@@ -157,7 +157,7 @@ export function initArchive() {
         closeTab(tab.id);
       } else {
         tab.messages = [];
-        tab.title = "聊天 1";
+        tab.title = `${t("tab_newChat")} 1`;
         tab.tags = [];
         saveTabs();
         renderTabs();
@@ -165,7 +165,7 @@ export function initArchive() {
         renderChat();
       }
     } catch (e) {
-      alert("存档失败：" + e.message);
+      alert(t("arch_archiveFailedMsg", { error: e.message }));
     }
   });
 
@@ -219,7 +219,7 @@ export function initArchive() {
 
   archiveSortBtn.addEventListener("click", () => {
     sortNewestFirst = !sortNewestFirst;
-    archiveSortBtn.textContent = sortNewestFirst ? "新→旧" : "目录/文件";
+    archiveSortBtn.textContent = sortNewestFirst ? t("archive_sortNewOld") : t("arch_sortByDir");
     renderArchiveList();
   });
 
@@ -237,7 +237,7 @@ export function initArchive() {
         dir.querySelector(".archiveTreeDirArrow").textContent = "▶";
       }
     });
-    archiveExpandAllBtn.textContent = allExpanded ? "收起" : "展开";
+    archiveExpandAllBtn.textContent = allExpanded ? t("archive_collapse") : t("archive_expand");
   });
 
   archiveSearch.addEventListener("input", () => {
@@ -426,7 +426,7 @@ export function initArchive() {
         <div class="archiveCardTitle">${score}${escapeHtml(archive.title)}</div>
         <div class="archiveCardMeta">
           <span>${escapeHtml(baseName)}</span>
-          <span>(${archive.messageCount}条消息)</span>
+          <span>${t("arch_msgCount", { n: archive.messageCount })}</span>
           ${tagsHtml}
         </div>
         ${previewText ? `<div class="archiveCardPreview">${escapeHtml(previewText)}</div>` : ""}
@@ -458,7 +458,7 @@ export function initArchive() {
     archiveList.innerHTML = "";
 
     if (filtered.length === 0) {
-      archiveList.innerHTML = `<div class="archiveEmpty">${archivesData.length === 0 ? "暂无存档对话" : "没有匹配的结果"}</div>`;
+      archiveList.innerHTML = `<div class="archiveEmpty">${archivesData.length === 0 ? t("arch_empty") : t("arch_noMatch")}</div>`;
       return;
     }
 
@@ -530,7 +530,7 @@ export function initArchive() {
 
   function updateSelectionUI() {
     const count = selectedArchives.size;
-    archiveSelectedCount.textContent = count > 0 ? `已选 ${count} 个` : "";
+    archiveSelectedCount.textContent = count > 0 ? t("archive_selectedCount", { count }) : "";
     archiveRestoreBtn.disabled = count === 0;
     archiveMoveBtn.disabled = count === 0;
     archiveDeleteBtn.disabled = count === 0;
@@ -554,12 +554,12 @@ export function initArchive() {
       const data = await res.json();
       const result = data.results && data.results[0];
       if (!result || result.error) {
-        alert(result ? result.error : "加载失败");
+        alert(result ? result.error : t("arch_loadFailed"));
         return;
       }
 
       const conv = result.data;
-      archivePreviewTitle.textContent = conv.title || "未命名对话";
+      archivePreviewTitle.textContent = conv.title || t("arch_untitled");
       archivePreviewContent.innerHTML = "";
 
       (conv.messages || []).forEach(msg => {
@@ -580,7 +580,7 @@ export function initArchive() {
           const imgs = previews.map((p, i) => {
             const src = p.startsWith("data:") ? p : `data:image/jpeg;base64,${p}`;
             const fn = mediaFilename(null, msg.timestamp, "image", "jpg", i, previews.length);
-            return `<img class="messageImage" data-filename="${escapeHtml(fn)}" src="${src}" alt="图片" />`;
+            return `<img class="messageImage" data-filename="${escapeHtml(fn)}" src="${src}" alt="${t("arch_altImage")}" />`;
           }).join("");
           // Multiple images share the equal-height flex row (same as live chat).
           imageHtml = previews.length > 1 ? `<div class="messageImages">${imgs}</div>` : imgs;
@@ -608,7 +608,7 @@ export function initArchive() {
               ext = isJpg ? "jpg" : "png";
             }
             const fn = mediaFilename(null, msg.timestamp, "image", ext, i, genImgs.length);
-            return `<img class="generatedImage" data-filename="${escapeHtml(fn)}" src="${src}" alt="AI 生成的图片" />`;
+            return `<img class="generatedImage" data-filename="${escapeHtml(fn)}" src="${src}" alt="${t("chat_altGenImage")}" />`;
           }).join("");
           if (items) genImageHtml = `<div class="imageGrid">${items}</div>`;
         }
@@ -643,7 +643,7 @@ export function initArchive() {
           const transContent = msg.role === "assistant"
             ? `<div class="markdownBody">${markdownToHtml(msg.translation)}</div>`
             : `<div>${escapeHtml(msg.translation)}</div>`;
-          transDiv.innerHTML = `<div class="archivePreviewTimestamp">翻译</div>` + transContent;
+          transDiv.innerHTML = `<div class="archivePreviewTimestamp">${t("label_translation")}</div>` + transContent;
           row.appendChild(transDiv);
           archivePreviewContent.appendChild(row);
         } else {
@@ -666,7 +666,7 @@ export function initArchive() {
       archivePreviewEmpty.style.display = "none";
       archivePreview.classList.add("isOpen");
     } catch (e) {
-      alert("加载预览失败：" + e.message);
+      alert(t("arch_previewLoadFailed", { error: e.message }));
     }
   }
 
@@ -691,28 +691,28 @@ export function initArchive() {
           }
           return m;
         });
-        const tab = createTab(conv.title || "恢复的对话", messages, conv.personality || null);
+        const tab = createTab(conv.title || t("arch_restoredConv"), messages, conv.personality || null);
         if (conv.persona) tab.persona = conv.persona;
         if (conv.tags) tab.tags = conv.tags;
-        // 方案3：记下来源存档，再次归档时更新原文件而非新建（saveTabs 会持久化此字段）。
+        // Option 3: record the source archive so re-archiving updates the original file instead of creating a new one (saveTabs persists this field).
         tab.sourceArchive = result.filename;
         state.tabs.unshift(tab);
       });
 
-      // 取档只复制一份到标签页，存档文件始终保留（不再删除）。
-      // 如需删除存档，请使用"删除"按钮。
+      // Restoring only copies one into a tab; the archive file is always kept (no longer deleted).
+      // To delete an archive, use the "delete" button.
 
       switchTab(state.tabs[0].id);
       archiveOverlay.classList.remove("isOpen");
       archiveChatBtn.disabled = false;
     } catch (e) {
-      alert("恢复失败：" + e.message);
+      alert(t("arch_restoreFailed", { error: e.message }));
     }
   });
 
   archiveDeleteBtn.addEventListener("click", async () => {
     if (selectedArchives.size === 0) return;
-    if (!confirm(`确定删除 ${selectedArchives.size} 个存档对话吗？此操作不可恢复。`)) return;
+    if (!confirm(t("arch_confirmDelete", { n: selectedArchives.size }))) return;
     try {
       const res = await fetch("/api/archives", {
         method: "DELETE",
@@ -730,7 +730,7 @@ export function initArchive() {
       renderArchiveTagBar();
       renderArchiveList();
     } catch (e) {
-      alert("删除失败：" + e.message);
+      alert(t("arch_deleteFailed", { error: e.message }));
     }
   });
 
@@ -751,23 +751,23 @@ export function initArchive() {
 
       const title = document.createElement("div");
       title.className = "archiveMovePopupTitle";
-      title.textContent = "选择目标目录";
+      title.textContent = t("lib_selectTargetDir");
       popup.appendChild(title);
 
       const list = document.createElement("div");
       list.className = "archiveMovePopupList";
 
-      // "新建目录" option
+      // "new directory" option
       const newDirItem = document.createElement("div");
       newDirItem.className = "archiveMovePopupItem archiveMovePopupNewDir";
-      newDirItem.textContent = "+ 新建目录";
+      newDirItem.textContent = t("lib_newDir");
       newDirItem.addEventListener("click", () => {
-        const dirName = prompt("输入新目录名（支持子目录，如 2024/June）：");
+        const dirName = prompt(t("arch_newDirPrompt"));
         if (!dirName || !dirName.trim()) return;
         const trimmed = dirName.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
         if (!trimmed) return;
         if (dirs.includes(trimmed)) {
-          alert("目录已存在：" + trimmed);
+          alert(t("arch_dirExists", { dir: trimmed }));
           return;
         }
         popup.remove();
@@ -780,7 +780,7 @@ export function initArchive() {
             });
             const moveData = await moveRes.json();
             if (moveData.errors && moveData.errors.length > 0) {
-              alert("部分文件移动失败：" + moveData.errors.map(e => e.filename).join(", "));
+              alert(t("arch_partialMoveFailed", { items: moveData.errors.map(e => e.filename).join(", ") }));
             }
             selectedArchives.clear();
             archiveSelectAllCheckbox.checked = false;
@@ -791,7 +791,7 @@ export function initArchive() {
             renderArchiveTagBar();
             renderArchiveList();
           } catch (e) {
-            alert("移动失败：" + e.message);
+            alert(t("lib_moveFailed", { error: e.message }));
           }
         })();
       });
@@ -800,7 +800,7 @@ export function initArchive() {
       dirs.forEach(dir => {
         const item = document.createElement("div");
         item.className = "archiveMovePopupItem";
-        item.textContent = dir === "" ? "/ (根目录)" : dir;
+        item.textContent = dir === "" ? t("lib_rootDir") : dir;
         item.addEventListener("click", async () => {
           popup.remove();
           try {
@@ -811,7 +811,7 @@ export function initArchive() {
             });
             const moveData = await moveRes.json();
             if (moveData.errors && moveData.errors.length > 0) {
-              alert("部分文件移动失败：" + moveData.errors.map(e => e.filename).join(", "));
+              alert(t("arch_partialMoveFailed", { items: moveData.errors.map(e => e.filename).join(", ") }));
             }
             selectedArchives.clear();
             archiveSelectAllCheckbox.checked = false;
@@ -823,7 +823,7 @@ export function initArchive() {
             renderArchiveTagBar();
             renderArchiveList();
           } catch (e) {
-            alert("移动失败：" + e.message);
+            alert(t("lib_moveFailed", { error: e.message }));
           }
         });
         list.appendChild(item);
@@ -848,7 +848,7 @@ export function initArchive() {
       }
       setTimeout(() => document.addEventListener("mousedown", closePopup), 0);
     } catch (e) {
-      alert("获取目录列表失败：" + e.message);
+      alert(t("arch_dirListFailed", { error: e.message }));
     }
   });
 

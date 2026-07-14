@@ -51,7 +51,7 @@ let matched = null;    // Set<doc index> while a search query OR entity selectio
 // "or" (any selected entity) | "and" (all). entExpanded: which type groups are open.
 let entFacets = null, entSel = new Map(), entMode = "or", entExpanded = new Set(), entFilter = "";
 // Alias unification: { groups:[{canonical,members,count}], suggestions:[{type,reason,canonical,other,...}] }.
-// aliasOpen toggles the "别名管理" sub-panel (suggestions + confirmed groups + merge-selected).
+// aliasOpen toggles the "alias management" sub-panel (suggestions + confirmed groups + merge-selected).
 let aliasData = null, aliasOpen = false;
 const ENT_TYPE_LABELS = {
   zh:        { person: "人物", org: "机构", place: "地点", event: "事件", method: "方法", dataset: "数据集", concept: "概念", tool: "工具", product: "产品", work: "作品", policy: "政策" },
@@ -184,14 +184,14 @@ function ensureDom() {
   if (!usingGL) el.ctx = el.canvas.getContext("2d");
 
   document.querySelector("#starMapCloseBtn").addEventListener("click", closeStarMap);
-  // The left-panel 知识库/档案库 buttons fire these (custom events — those modules must
+  // The left-panel knowledge-library/archive buttons fire these (custom events — those modules must
   // not import this lazily-loaded one). Dismissing the map via a PANEL button remembers
-  // it, so the 知识库 button brings the STAR MAP back — the user toggles archive ↔ map.
-  // An explicit close (←/Esc/launchpad jump) clears the memory: then 知识库 = the list.
+  // it, so the knowledge-library button brings the STAR MAP back — the user toggles archive ↔ map.
+  // An explicit close (←/Esc/launchpad jump) clears the memory: then knowledge-library = the list.
   document.addEventListener("heykoko:closeStarMap", () => {
-    // Keep an EXISTING memory when the map is already closed — the 知识库 button fires
+    // Keep an EXISTING memory when the map is already closed — the knowledge-library button fires
     // close-then-libraryOpened back to back, and the close must not eat the resume flag
-    // set by an earlier 档案库 dismissal.
+    // set by an earlier archive dismissal.
     const remember = el.overlay.classList.contains("isOpen") || resumeOnLibrary;
     closeStarMap();               // (sets resumeOnLibrary = false)
     resumeOnLibrary = remember;
@@ -1457,7 +1457,7 @@ async function showEntityNeighborhood(names) {
   // Clicking a source-document row closes the star map and opens that doc in the library.
   openEntityGraphModal({ data, title: titleOf, fetchNeighborhood: fetchN, onTimeline: openScopedTimeline, onOpenDoc: (docId) => { closeStarMap(); openLibraryDoc(docId); } });
 }
-// The 🔗 alias sub-panel: fuzzy merge suggestions (合并 / 忽略) + confirmed groups (拆分).
+// The 🔗 alias sub-panel: fuzzy merge suggestions (merge / ignore) + confirmed groups (split).
 function renderAliasPanel() {
   const box = document.createElement("div"); box.className = "starMapAliasPanel";
   const suggestions = (aliasData && aliasData.suggestions) || [];
@@ -1664,7 +1664,7 @@ function pick(px, py) {
 // (user's rule: the panel closes ONLY via its × button or Escape).
 function clickAt(px, py) { const d = pick(px, py); if (d) openInspector(d); }
 function hideTip() { if (el.tip) el.tip.hidden = true; }
-const kindLabel = (k) => ({ video: "视频", url: "网页", paper: "论文", pdf: "PDF", doc: "文档", chat: "对话" }[k] || k);
+const kindLabel = (k) => ({ video: t("bg_kindVideo"), url: t("smap_kindUrl"), paper: t("smap_kindPaper"), pdf: "PDF", doc: t("bg_kindDoc"), chat: t("smap_kindChat") }[k] || k);
 
 // ---- PNG export ------------------------------------------------------------
 // Composite the (GL or 2D) canvas plus the HTML cluster labels onto an offscreen
@@ -1859,7 +1859,7 @@ function openInspector(d) {
       prev.textContent = "";
       let lastSec = null, any = false;
       for (const b of (doc.blocks || [])) {
-        // Distill card: put the relation graph (open by default here) ABOVE the «蒸馏卡»
+        // Distill card: put the relation graph (open by default here) ABOVE the «distill card»
         // section, so the star's launchpad leads with its entity relationships.
         if (b.kind === "card") { try { const g = renderRelationGraph(b.content || "", { open: true }); if (g) { prev.appendChild(g); any = true; } } catch (e) { console.warn("[relGraph]", e); } }
         if (b.section && b.section !== lastSec) {

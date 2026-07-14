@@ -43,9 +43,9 @@ function editOllamaUrl(type) {
     type === "comfy" ? dom.comfyUrlDisplay : type === "image" ? dom.imageUrlDisplay : dom.llmUrlDisplay;
   // Strip any " (hostname)" suffix so the prompt offers just the editable address.
   const currentUrl = displayEl.textContent.replace(/\s*\(.*\)\s*$/, "");
-  const labels = { comfy: "ComfyUI", image: "图片模型", llm: "LLM" };
+  const labels = { comfy: "ComfyUI", image: t("label_imageModel"), llm: "LLM" };
   const defaultHint = type === "comfy" ? "127.0.0.1:8188" : "127.0.0.1:11434";
-  const newUrl = prompt(`编辑${labels[type] || "LLM"}服务地址（留空使用本机 ${defaultHint}）:`, currentUrl);
+  const newUrl = prompt(t("oll_editUrlPrompt", { label: labels[type] || "LLM", hint: defaultHint }), currentUrl);
   if (newUrl === null) return;
   fetch("/api/set-ollama-url", {
     method: "POST",
@@ -226,7 +226,7 @@ function applyComfyModels(data) {
     state.comfyMultiImageModels = new Set(editModels.filter((m) => m.type === "qwen").map((m) => m.name));
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
     const current = saved.comfyModel || dom.comfyModelSelect.value;
-    // ⚙ "放大模型" manual picker: Auto + each model installed in upscale_models/.
+    // ⚙ "upscale model" manual picker: Auto + each model installed in upscale_models/.
     // Restore the saved choice if it's still present (else fall back to Auto).
     if (dom.comfyParamUpscaleModel) {
       const ups = data.upscaleModels || [];
@@ -323,8 +323,8 @@ function videoAutoDefaults(modelName) {
 function comfyModelComponents(name) {
   const n = (name || "").toLowerCase();
   // Video
-  if (/image-upscale/.test(n)) return "图片高清 / 放大 · LoadImage · UpscaleModelLoader + ImageUpscaleWithModel(AI 放大模型) · SaveImage · 命令：附一张图 + /imagine（--size 指定目标尺寸，否则模型原生 4× 输出）";
-  if (/video-enhance/.test(n)) return "视频升格 + 高清 · LoadVideo→GetVideoComponents · UpscaleModelLoader + ImageUpscaleWithModel(放大) · RIFE/FILM VFI(插帧到 /imagine <fps>) · CreateVideo(保留源音频) · 命令：附源视频 + /imagine <目标帧率>（留空=只放大）";
+  if (/image-upscale/.test(n)) return t("oll_comp_imageUpscale");
+  if (/video-enhance/.test(n)) return t("oll_comp_videoEnhance");
   if (/animate/.test(n)) return "Wan Animate (pose transfer) · UNETLoader + lightx2v + relight LoRA · ModelSamplingSD3 · LoadVideo→DWPose(pose+face) · WanAnimateToVideo · segment length adapts to resolution (≤640: 241f · 720p: 161f · 1080p: 65f) — a longer source is generated in chunks with continue_motion for seamless joins, then merged";
   if (/bernini/.test(n)) return "WAN2.2 MoE · UNETLoader ×2 · CLIP umt5(wan) · VAE wan_2.1 · BerniniConditioning · SamplerCustom ×2 · v2v: LoadVideo→GetVideoComponents · turbo: LightX2V distill LoRA";
   if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b"
@@ -374,7 +374,7 @@ export function updateComfyMultiHint() {
 }
 
 // Show only the ⚙ params that apply to the selected ComfyUI model: hide the video-only block
-// (length / fps / timeout / 升格) for image models, the Wan-Animate-only knobs (torch.compile /
+// (length / fps / timeout / frame interpolation) for image models, the Wan-Animate-only knobs (torch.compile /
 // relight / pick-person) for non-animate, the upscale knob for non-upscale, and Image-CFG for
 // non-image. A pure upscale model shows only its own knob (no sampler / steps / prompt). No comfy
 // model selected (Ollama image path) → leave the modal untouched.
@@ -385,16 +385,16 @@ export function updateComfyParamVisibility() {
   const video = !!(state.comfyVideoModels && state.comfyVideoModels.has(m)) || /video-enhance/i.test(m);
   const animate = /animate/i.test(m);
   const diffusion = !upscale;                          // samples + takes a prompt (everything except the upscale pipelines)
-  // Hide a field by its <label> (or, for the 升格 pair, the shared .comfyParamRow; the
+  // Hide a field by its <label> (or, for the frame-interpolation pair, the shared .comfyParamRow; the
   // pick-person button has no label, so fall back to the element itself).
   const setVis = (el, on, sel) => { if (!el) return; const box = sel ? el.closest(sel) : (el.closest("label") || el); if (box) box.hidden = !on; };
   // Video timing — gen length is diffusion-only (an upscale / VFI keeps the source's own length).
   setVis(dom.comfyParamLength, video && diffusion);
   for (const el of [dom.comfyParamFps, dom.comfyParamTimeout]) setVis(el, video);
-  setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // 升格 + interpolation-engine row
+  setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // frame-interpolation + interpolation-engine row
   // Wan Animate only.
   for (const el of [dom.comfyParamTorchCompile, dom.comfyParamRelight, dom.comfyMaskPointBtn]) setVis(el, animate);
-  // Upscale-model pipelines only (image-upscale / video-enhance) — the 放大抗噪 % + the 放大模型 picker.
+  // Upscale-model pipelines only (image-upscale / video-enhance) — the upscale-denoise % + the upscale-model picker.
   for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel]) setVis(el, upscale);
   // Image-edit / txt2img only.
   setVis(dom.comfyParamImageCfg, diffusion && !video);
@@ -419,7 +419,7 @@ export async function loadEmbedModels() {
     if (entries.length === 0) {
       const opt = document.createElement("option");
       opt.value = "";
-      opt.textContent = "未检测到 embedding 模型";
+      opt.textContent = t("oll_embedModelNone");
       dom.embedModelSelect.appendChild(opt);
       return;
     }

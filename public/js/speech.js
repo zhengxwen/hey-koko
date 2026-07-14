@@ -89,7 +89,7 @@ function mathToSpeech(expr) {
   // Environments (matrices etc.): drop the \begin{..} / \end{..} markers
   s = s.replace(/\\(?:begin|end)\s*\{[^}]*\}/g, " ");
 
-  // Structural: fractions (中文 “分母分之分子”), binomials, roots
+  // Structural: fractions (verbalized numerator-over-denominator), binomials, roots
   s = s.replace(/\\[dt]?frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, "$2分之$1");
   s = s.replace(/\\binom\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, "$1选$2");
   s = s.replace(/\\sqrt\s*\[([^\]]+)\]\s*\{([^{}]+)\}/g, "$2的$1次根");
@@ -98,8 +98,8 @@ function mathToSpeech(expr) {
   // Degree: ^\circ / ^{\circ}
   s = s.replace(/\^\s*\{?\s*\\circ\s*\}?/g, "度");
 
-  // Binary minus → 减 (between operands, spaces allowed); other minuses → 负
-  // later (leading sign / exponent like e^{-x}).
+  // Binary minus → "minus" (between operands, spaces allowed); other minuses →
+  // "negative" later (leading sign / exponent like e^{-x}).
   s = s.replace(/([A-Za-z0-9)\]}])\s*-\s*(?=[A-Za-z0-9(\\{])/g, "$1减");
 
   // Named commands (greek, relations, operators, wrappers …) as whole words
@@ -109,13 +109,13 @@ function mathToSpeech(expr) {
   // LaTeX spacing & line breaks
   s = s.replace(/\\[,;:!> ]/g, " ").replace(/\\\\/g, " ");
 
-  // Superscripts → 的…次方 (square/cube get nicer names)
+  // Superscripts → "to the … power" (square/cube get nicer names)
   s = s.replace(/\^\s*\{?\s*2\s*\}?/g, "的平方")
        .replace(/\^\s*\{?\s*3\s*\}?/g, "的立方")
        .replace(/\^\s*\{([^{}]+)\}/g, "的$1次方")
        .replace(/\^\s*([^\s{}^_])/g, "的$1次方");
 
-  // Subscripts → 下标…
+  // Subscripts → "subscript …"
   s = s.replace(/_\s*\{([^{}]+)\}/g, "下标$1")
        .replace(/_\s*([^\s{}^_])/g, "下标$1");
 
@@ -694,7 +694,7 @@ export async function speakMessage(content, button) {
   stopSpeech(); // natural finish: restores the un-segmented DOM + button label
 }
 
-// One unified voice selector drives BOTH reading (朗读 button) and /voice
+// One unified voice selector drives BOTH reading ("read aloud" button) and /voice
 // generation. Values are engine-prefixed: "say:<name>" (macOS system voice) or
 // "kokoro:" (local neural, also downloadable). The chosen engine determines
 // how the server synthesizes; playback always happens in the browser.

@@ -30,7 +30,7 @@ function renderAvatarPicker() {
     const item = document.createElement("div");
     item.className = "avatar-picker-item";
     item.dataset.style = id;
-    item.title = style.name;
+    item.title = t(`avatar_${id}`);
     const thumbSvg = parseSvgContent(style.svg);
     item.appendChild(thumbSvg);
     item.addEventListener("click", () => applyAvatarStyle(id));
@@ -109,6 +109,14 @@ export function showExpression(expression) {
   if (state.expressionTimer) clearTimeout(state.expressionTimer);
   setAvatarState(expression);
   state.expressionTimer = setTimeout(() => setAvatarState("idle"), 2500);
+}
+
+// Re-localize the avatar picker tooltips after a UI-language switch, in place so
+// the active-selection state is preserved.
+export function relocalizeAvatarPicker() {
+  document.querySelectorAll(".avatar-picker-item").forEach((el) => {
+    el.title = t(`avatar_${el.dataset.style}`);
+  });
 }
 
 export function initAvatar() {

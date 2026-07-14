@@ -10,6 +10,7 @@
 // generation that started in tab A keep updating live when the user switches
 // away and back — and always land in tab A regardless of what's on screen.
 import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned } from './state.js';
+import { t } from './i18n.js';
 
 const DOTS = `<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>`;
 
@@ -29,7 +30,7 @@ function _imgEl(src) {
   const img = document.createElement('img');
   img.className = 'generatedImage';
   img.src = src;
-  img.alt = 'AI 生成的图片';
+  img.alt = t("pg_generatedImageAlt");
   return img;
 }
 
@@ -186,7 +187,7 @@ export function pendingGenSetIndeterminate(tabId, on) {
   if (bar) bar.classList.toggle('indeterminate', !!on);
 }
 
-// Which chunk is being processed (e.g. "第 2/4 段"), shown left of the ETA. Multi-segment only.
+// Which chunk is being processed (e.g. "segment 2/4"), shown left of the ETA. Multi-segment only.
 export function pendingGenSetSeg(tabId, text) {
   const pg = _pg(tabId);
   if (!pg) return;

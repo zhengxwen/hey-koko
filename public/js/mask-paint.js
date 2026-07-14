@@ -391,7 +391,7 @@ function bindOnce() {
 // be edited. Resolves via the returned promise with:
 //   • a mask data URL — applied with paint (use it),
 //   • "" — applied with an empty canvas (the user CLEARED the mask → drop it),
-//   • null — CANCELLED (X / 取消 / Esc / backdrop → leave the existing mask as-is).
+//   • null — CANCELLED (X / Cancel / Esc / backdrop → leave the existing mask as-is).
 // Callers MUST treat null as "no change", NOT as "clear", or a peek-and-close wipes
 // the mask.
 export function openMaskModal(src, existingMask = null) {

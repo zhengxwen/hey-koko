@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // Pure utility functions
+import { t } from './i18n.js';
 
 // Short unique id for messages / background jobs. crypto.randomUUID where
 // available, else a timestamp+random fallback (older WebKit in the wrapper).
@@ -24,7 +25,7 @@ export async function postJson(url, body, signal = null) {
   const text = await res.text();
   try { return text ? JSON.parse(text) : {}; }
   catch {
-    throw new Error(res.ok ? "服务端返回了非 JSON 响应" : `请求失败（${res.status}）——服务端可能需要重启`);
+    throw new Error(res.ok ? t("util_nonJsonResponse") : t("util_requestFailedRestart", { status: res.status }));
   }
 }
 

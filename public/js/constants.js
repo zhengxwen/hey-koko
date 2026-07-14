@@ -76,27 +76,9 @@ export const SIZE_PRESETS = {
   "4k-portrait": "2160x3840",
 };
 
-// Command list for autocomplete
-export const COMMANDS = [
-  { name: "/0", desc: "无上下文对话，独立回复" },
-  { name: "/1", desc: "仅使用上一条消息作为上下文" },
-  { name: "/clear", desc: "清空当前对话" },
-  { name: "/compact", desc: "压缩上下文，保留摘要" },
-  { name: "/imagine", desc: "生成图片" },
-  { name: "/memory", desc: "长期记住关于你的一件事" },
-  { name: "/note", desc: "记录笔记，不生成 AI 回复" },
-  { name: "/remind", desc: "设置提醒，如 /remind 30m 喝水" },
-  { name: "/retry", desc: "重答上一条消息；加 Nx 可重复 N 次（如 /retry 3x）" },
-  { name: "/search", desc: "DuckDuckGo联网搜索 · --deep[=N]/--read 读网页 · --n N 数量 · --day/--week/--month/--year 时间" },
-  { name: "/title", desc: "修改标签页标题，[tags] 添加标签" },
-  { name: "/url", desc: "解析网页/YouTube，可加prompt：/url [prompt] https://..." },
-  { name: "/voice", desc: "文字转语音，生成可下载的音频 · --use/-u 引擎:音色 · --speed/-s 0.5~2 语速" },
-];
-
 // Avatar SVG styles
 export const AVATAR_STYLES = {
   "dark-girl": {
-    name: "黑发少女",
     svg: `<ellipse cx="60" cy="52" rx="42" ry="44" fill="#2d2d3a"/>
       <ellipse id="avatarHead" cx="60" cy="62" rx="34" ry="36" fill="#fce4d6"/>
       <path d="M26 48 Q36 22 60 20 Q84 22 94 48 Q88 34 60 32 Q32 34 26 48Z" fill="#2d2d3a"/>
@@ -109,7 +91,6 @@ export const AVATAR_STYLES = {
       <circle cx="82" cy="36" r="4" fill="#b94a6d"/><circle cx="78" cy="34" r="2.5" fill="#b94a6d" opacity="0.7"/><circle cx="86" cy="34" r="2.5" fill="#b94a6d" opacity="0.7"/>`,
   },
   "blonde-angel": {
-    name: "金发天使",
     svg: `<ellipse cx="60" cy="50" rx="44" ry="42" fill="#f5d78e"/>
       <ellipse id="avatarHead" cx="60" cy="62" rx="34" ry="36" fill="#fff0e0"/>
       <path d="M24 52 Q34 18 60 16 Q86 18 96 52 Q90 36 60 34 Q30 36 24 52Z" fill="#f5d78e"/>
@@ -122,7 +103,6 @@ export const AVATAR_STYLES = {
       <path d="M52 16 Q60 8 68 16" stroke="#f5d78e" stroke-width="3" fill="none" stroke-linecap="round"/><circle cx="60" cy="10" r="3" fill="#ffe066"/>`,
   },
   "pink-girl": {
-    name: "粉发萌妹",
     svg: `<ellipse cx="60" cy="50" rx="43" ry="44" fill="#f7a8c4"/>
       <ellipse id="avatarHead" cx="60" cy="62" rx="34" ry="36" fill="#fce4d6"/>
       <path d="M25 50 Q35 20 60 18 Q85 20 95 50 Q88 34 60 32 Q32 34 25 50Z" fill="#f7a8c4"/>
@@ -135,7 +115,6 @@ export const AVATAR_STYLES = {
       <circle cx="44" cy="20" r="3" fill="#fff" opacity="0.7"/><circle cx="76" cy="22" r="2" fill="#fff" opacity="0.5"/>`,
   },
   "cat-ear": {
-    name: "猫耳娘",
     svg: `<polygon points="30,40 42,12 52,44" fill="#5c4a3a"/><polygon points="90,40 78,12 68,44" fill="#5c4a3a"/>
       <polygon points="33,38 42,18 49,42" fill="#ffb5c8"/><polygon points="87,38 78,18 71,42" fill="#ffb5c8"/>
       <ellipse cx="60" cy="52" rx="40" ry="42" fill="#5c4a3a"/>
@@ -148,7 +127,6 @@ export const AVATAR_STYLES = {
       <line x1="20" y1="68" x2="36" y2="70" stroke="#5c4a3a" stroke-width="1.2" opacity="0.4"/><line x1="20" y1="72" x2="36" y2="72" stroke="#5c4a3a" stroke-width="1.2" opacity="0.4"/><line x1="84" y1="70" x2="100" y2="68" stroke="#5c4a3a" stroke-width="1.2" opacity="0.4"/><line x1="84" y1="72" x2="100" y2="72" stroke="#5c4a3a" stroke-width="1.2" opacity="0.4"/>`,
   },
   "bunny": {
-    name: "兔耳酱",
     svg: `<ellipse cx="44" cy="24" rx="8" ry="22" fill="#fff"/><ellipse cx="76" cy="24" rx="8" ry="22" fill="#fff"/>
       <ellipse cx="44" cy="24" rx="5" ry="18" fill="#ffb5c8"/><ellipse cx="76" cy="24" rx="5" ry="18" fill="#ffb5c8"/>
       <ellipse cx="60" cy="54" rx="40" ry="40" fill="#fff"/>
@@ -160,7 +138,6 @@ export const AVATAR_STYLES = {
       <ellipse cx="60" cy="88" rx="3" ry="2.5" fill="#ffccd5"/>`,
   },
   "fox": {
-    name: "小狐狸",
     svg: `<polygon points="26,44 38,10 52,42" fill="#f0832a"/><polygon points="94,44 82,10 68,42" fill="#f0832a"/>
       <polygon points="30,42 38,18 48,40" fill="#fff" opacity="0.8"/><polygon points="90,42 82,18 72,40" fill="#fff" opacity="0.8"/>
       <ellipse cx="60" cy="52" rx="42" ry="42" fill="#f0832a"/>

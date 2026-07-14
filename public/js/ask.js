@@ -70,7 +70,7 @@ const askFullBudget = () => { const v = parseInt(dom.libraryAskBudget?.value, 10
 // For "/ask @doc …" (scoped): pull the WHOLE text of the chosen docs (document body
 // only, skipping conversation bubbles) up to a char budget, plus a few figures. The
 // model then reads the entire article(s) instead of a handful of retrieved snippets —
-// so instructions like "帮我理解，生成表格" work on the full paper.
+// so instructions like "help me understand, make a table" work on the full paper.
 const FULL_DOC_BUDGET = 100000;   // ~25k tokens; needs the chat model's num_ctx to be large enough
 
 // /ask generation prompts follow the PROMPT-LANGUAGE setting (same rule as the
@@ -142,7 +142,7 @@ async function fullDocsContext(docIds, budget = FULL_DOC_BUDGET, signal = null, 
 }
 
 // Like fullDocsContext but for conversation archives ("/ask #archive …"): load the
-// whole archived conversation(s) and render as a plain 用户/助手 transcript so the
+// whole archived conversation(s) and render as a plain user/assistant transcript so the
 // model can answer questions about that discussion. Text-only (archive images skipped).
 async function fullArchivesContext(archiveNames, budget = FULL_DOC_BUDGET, signal = null) {
   if (!archiveNames || !archiveNames.length) return { text: "", truncated: false, sources: [] };
@@ -450,7 +450,7 @@ export async function handleAskCommand(query, tab, scope = {}, insertAt = null) 
   state.currentAbortController = abort;
   setGenerating(true);
   await rerender();
-  const started = Date.now();   // run-time clock → shown as "⏱ 用时 …" on the answer bubble
+  const started = Date.now();   // run-time clock → shown as "⏱ elapsed …" on the answer bubble
   let streamed = false;
   // "/ask @doc" / "/ask #archive" with no question → default to a summary request
   // (full-read only; retrieval needs a real question to embed). The user bubble
@@ -493,7 +493,7 @@ export async function handleAskCommand(query, tab, scope = {}, insertAt = null) 
     }
   } finally {
     // Record how long the ask ran (success, stop, or error) — renderMessage shows it as
-    // "⏱ 用时 …" next to the bubble's timestamp, same as normal assistant replies.
+    // "⏱ elapsed …" next to the bubble's timestamp, same as normal assistant replies.
     amsg.genMs = Date.now() - started;
     // Only clear if still ours — a newer generation may have taken over the button.
     if (state.currentAbortController === abort) setGenerating(false);
@@ -650,7 +650,7 @@ async function expandRelations(docIds, folders = [], signal = null) {
 
 // ③ Relation direct-answer: the relation triples in the library that involve entities named
 // in the query (alias-folded), as a compact fact block to PREPEND to the answer's system
-// prompt — so "谁发表了X" / "X和Y什么关系" are answered from the graph, not just prose.
+// prompt — so "who published X" / "how are X and Y related" are answered from the graph, not just prose.
 // Returns "" when the query names no known entity. Best-effort.
 async function relationFactsBlock(query, folders = [], signal = null) {
   try {

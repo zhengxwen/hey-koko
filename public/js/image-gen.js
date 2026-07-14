@@ -59,10 +59,10 @@ function comfyOverrides() {
   const timeoutMin = num(dom.comfyParamTimeout?.value);
   if (timeoutMin !== undefined) ov.timeoutMin = timeoutMin; // ⚙ video render deadline (min); empty/0 → unlimited
   const targetFps = num(dom.comfyParamTargetFps?.value);
-  if (targetFps !== undefined) ov.targetFps = targetFps; // 升格: interpolate up to this fps
+  if (targetFps !== undefined) ov.targetFps = targetFps; // frame interpolation: interpolate up to this fps
   if (dom.comfyParamInterpMethod?.value) ov.interpMethod = dom.comfyParamInterpMethod.value; // rife | film
   const upDenoise = num(dom.comfyParamUpscaleDenoise?.value);
-  if (upDenoise !== undefined && upDenoise > 0) ov.upscaleDenoise = Math.min(1, upDenoise / 100); // 放大抗噪 % → 0–1
+  if (upDenoise !== undefined && upDenoise > 0) ov.upscaleDenoise = Math.min(1, upDenoise / 100); // upscale denoise % → 0–1
   if (dom.comfyParamUpscaleModel?.value) ov.upscaleModel = dom.comfyParamUpscaleModel.value; // manual upscale model (empty = auto)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
   const relight = num(dom.comfyParamRelight?.value);
@@ -113,7 +113,7 @@ export function parseNoteCommand(input) {
   const match = input.match(/^\/note\s+(.+)$/s);
   if (!match) return null;
   if (!match[1].trim()) {
-    return { error: "缺少内容。用法：/note <内容>" };
+    return { error: t("img_noteMissingContent") };
   }
   return { content: match[1].trim() };
 }
@@ -151,7 +151,7 @@ function parseImagineCommand(input) {
   if (batchMatch) {
     const n = parseInt(batchMatch[1], 10);
     if (n < 1 || n > 8) {
-      return { error: `批量数量 ${n} 超出范围。支持 1~8，如：4x 一只猫` };
+      return { error: t("img_batchOutOfRange", { n }) };
     }
     result.count = n;
     rest = batchMatch[2];
@@ -169,7 +169,7 @@ function parseImagineCommand(input) {
       rest = rest.replace(/^(--enhance|-e)\s*/, "").trim();
     } else if (/^--size\s/.test(rest)) {
       const sizeFlag = rest.match(/^--size\s+(\S+)/);
-      if (!sizeFlag) return { error: "--size 需要参数。格式：--size 1024x1024 或预设值（如 1080p）" };
+      if (!sizeFlag) return { error: t("img_sizeNeedsArg") };
       const sizeVal = sizeFlag[1];
       let w, h;
       const preset = SIZE_PRESETS[sizeVal.toLowerCase()];
@@ -178,12 +178,12 @@ function parseImagineCommand(input) {
       } else {
         const sizeParsed = sizeVal.match(/^(\d+)x(\d+)$/i);
         if (!sizeParsed) {
-          return { error: `--size 格式错误："${sizeVal}"。可用 1024x1024 这种宽x高，或预设值：${Object.keys(SIZE_PRESETS).join(", ")}` };
+          return { error: t("img_sizeFormatError", { val: sizeVal, presets: Object.keys(SIZE_PRESETS).join(", ") }) };
         }
         w = parseInt(sizeParsed[1], 10);
         h = parseInt(sizeParsed[2], 10);
         if (w < 256 || w > 4096 || h < 256 || h > 4096) {
-          return { error: `--size 尺寸超出范围：${w}x${h}。宽高需在 256~4096 之间（注意：扩散模型直接出大图易爆显存，4K 通常用于放大模型）` };
+          return { error: t("img_sizeOutOfRange", { w, h }) };
         }
       }
       result.options.width = w;
@@ -192,36 +192,36 @@ function parseImagineCommand(input) {
       rest = rest.replace(/^--size\s+\S+\s*/, "").trim();
     } else if (/^--steps\s/.test(rest)) {
       const stepsFlag = rest.match(/^--steps\s+(\S+)/);
-      if (!stepsFlag) return { error: "--steps 需要参数。格式：--steps 30" };
+      if (!stepsFlag) return { error: t("img_stepsNeedsArg") };
       const val = stepsFlag[1];
       const n = parseInt(val, 10);
       if (isNaN(n) || n < 1 || n > 100) {
-        return { error: `--steps 值无效："${val}"。需为 1~100 的整数` };
+        return { error: t("img_stepsInvalid", { val }) };
       }
       result.options.steps = n;
       rest = rest.replace(/^--steps\s+\S+\s*/, "").trim();
     } else if (/^--seed\s/.test(rest)) {
       const seedFlag = rest.match(/^--seed\s+(\S+)/);
-      if (!seedFlag) return { error: "--seed 需要参数。格式：--seed 42" };
+      if (!seedFlag) return { error: t("img_seedNeedsArg") };
       const val = seedFlag[1];
       const n = parseInt(val, 10);
       if (isNaN(n) || n < 0 || n > 2147483647) {
-        return { error: `--seed 值无效："${val}"。需为 0~2147483647 的整数` };
+        return { error: t("img_seedInvalid", { val }) };
       }
       result.options.seed = n;
       rest = rest.replace(/^--seed\s+\S+\s*/, "").trim();
     } else if (/^--quality\s/.test(rest)) {
       const qualityFlag = rest.match(/^--quality\s+(\S+)/);
-      if (!qualityFlag) return { error: "--quality 需要参数。支持：high, medium, low" };
+      if (!qualityFlag) return { error: t("img_qualityNeedsArg") };
       const val = qualityFlag[1];
       if (!["high", "medium", "low"].includes(val)) {
-        return { error: `--quality 值无效："${val}"。支持：high, medium, low` };
+        return { error: t("img_qualityInvalid", { val }) };
       }
       result.options.quality = val;
       rest = rest.replace(/^--quality\s+\S+\s*/, "").trim();
     } else {
       const unknownMatch = rest.match(/^--([\w-]+)/);
-      return { error: `未知参数 "--${unknownMatch[1]}"。支持的参数：--size（含预设：${Object.keys(SIZE_PRESETS).join("/")}）, --steps, --seed, --quality, --enhance, --no` };
+      return { error: t("img_unknownArg", { arg: unknownMatch[1], presets: Object.keys(SIZE_PRESETS).join("/") }) };
     }
   }
 
@@ -734,7 +734,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
         : ` · ${t("msg_inputImages", { n: refImages.length })}`)
     : "";
   const vidSuffix = `${vidModel ? ` · ${vidModel}` : ""}${vidImgs}`;
-  // Enhancement already ran at enqueue time (the bg placeholder showed "正在增强提示词"),
+  // Enhancement already ran at enqueue time (the bg placeholder showed "enhancing prompt"),
   // so by here we go straight to the generating status.
   sink.start("video", `${t("msg_generatingVideo")}${vidSuffix}`);
   // Let the browser PAINT the just-mounted bubble before the heavy synchronous
@@ -816,7 +816,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     // animate render (estPasses > 1). Use estPasses (not N) as the total: a single
     // segment can emit several sampler ramps that are NOT user-facing segments —
     // the rv2v "still" pose-adoption pass, or a model's two-expert high+low MoE —
-    // and those would otherwise inflate the total to a bogus "第 3/3 段" / "3/2".
+    // and those would otherwise inflate the total to a bogus "segment 3/3" / "3/2".
     if (estPasses > 1) {
       sink.seg(t("msg_chunkBadge", { seg: Math.min(_passesDone + 1, estPasses), total: estPasses }));
     }
@@ -883,14 +883,14 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       const list = videoSeeds.map((s, i) => `#${i + 1} ${s !== null ? s : "?"}`).join(" · ");
       doneLine += `\n${t("msg_seedsBatch", { list }, plang)}`;
     }
-    // 升格 (frame interpolation): either it ran (note the new fps + multiplier) or it
+    // Framerate boost (frame interpolation): either it ran (note the new fps + multiplier) or it
     // was skipped because the source was already at/above the requested target fps.
     if (lastData.interpolated >= 2 && lastData.fps) {
       doneLine += `\n${t("msg_interpDone", { fps: lastData.fps, mult: lastData.interpolated, method: (lastData.interpMethod || "rife").toUpperCase() }, plang)}`;
     } else if (lastData.interpWarning) {
       doneLine += `\n${t("msg_interpSkipped", { base: lastData.interpWarning.baseFps, target: lastData.interpWarning.targetFps }, plang)}`;
     }
-    // 高清 (upscale) — name the model + denoise algorithm actually used (video-enhance).
+    // HD (upscale) — name the model + denoise algorithm actually used (video-enhance).
     if (lastData.upscaleModel) {
       doneLine += `\n${t("msg_upscaleUsed", { model: stripModelExt(lastData.upscaleModel) }, plang)}`;
     }
@@ -922,8 +922,8 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       }, plang) + "\n\n";
     }
     // First finished video replaces the placeholder with this result bubble, so the
-    // "正在生成视频 (N/M)" placeholder (label + bar) is gone — while more are still
-    // rendering, append a live "还在生成中…" line so the user knows it isn't done yet.
+    // "generating video (N/M)" placeholder (label + bar) is gone — while more are still
+    // rendering, append a live "still generating…" line so the user knows it isn't done yet.
     // Drops off automatically on the final render (allVideos.length === count).
     const stillGen = allVideos.length < count
       ? `\n\n${t("msg_batchStillGenerating", { done: allVideos.length, total: count }, plang)}`
@@ -954,8 +954,9 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // Surface a fatal "nothing generated" error in the bubble and bail.
   const failFatal = (errText) => {
     sink.clearBubble();
-    sink.fail(`视频生成失败：${errText || "未返回视频"}`);
-    sink.place({ role: "assistant", content: `视频生成失败：${errText || "未返回视频"}`, timestamp: Date.now() });
+    const failMsg = t("img_videoGenFailed", { err: errText || t("img_noVideoReturned") });
+    sink.fail(failMsg);
+    sink.place({ role: "assistant", content: failMsg, timestamp: Date.now() });
     setAvatarState("idle");
   };
 
@@ -1033,11 +1034,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       else if (count > 1) sink.label(`${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
       const resp = await requestVideo(perOptions, undefined, i === 0);
       let data = await resp.json();
-      // Nothing to do (e.g. 升格 off + 高清 off) → a plain notice in the bubble, NOT a
-      // "生成失败" error: the server did no ComfyUI work on purpose.
+      // Nothing to do (e.g. frame-interp off + HD off) → a plain notice in the bubble, NOT a
+      // "generation failed" error: the server did no ComfyUI work on purpose.
       if (data.noop) {
         sink.clearBubble();
-        sink.place({ role: "assistant", content: data.message || "无需处理。", timestamp: Date.now() });
+        sink.place({ role: "assistant", content: data.message || t("img_nothingToDo"), timestamp: Date.now() });
         setAvatarState("idle");
         return;
       }
@@ -1064,8 +1065,9 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     sink.clearBubble();
     // Videos finished before a stop/error are already shown via renderReply().
     if (error.name !== "AbortError" && !allVideos.length) {
-      sink.fail(`视频生成出错：${error.message}`);
-      sink.place({ role: "assistant", content: `视频生成出错：${error.message}`, timestamp: Date.now() });
+      const errMsg = t("img_videoGenError", { err: error.message });
+      sink.fail(errMsg);
+      sink.place({ role: "assistant", content: errMsg, timestamp: Date.now() });
     }
     setAvatarState("idle");
   } finally {
@@ -1178,7 +1180,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   let errorCount = 0;
   let lastError = "";
   let noopMessage = null; // server did nothing on purpose (e.g. upscale=Off) → plain notice, not an error
-  let upscaleModelUsed = null, upscaleDenoiseUsed = 0; // 高清放大算法 used → shown in the done line
+  let upscaleModelUsed = null, upscaleDenoiseUsed = 0; // HD upscale algorithm used → shown in the done line
   // Seed actually used (random unless --seed was pinned) → surfaced on the done line
   // so a single result can be reproduced. Only meaningful for a single output.
   let usedSeed = null;
@@ -1196,7 +1198,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       for (let i = 0; i < parsed.count; i++) {
         const reqOptions = { ...parsed.options };
         // Image upscale always outputs the model's native ~4×. Drop the default image
-        // size (parseImagineCommand fills width/height from the "默认尺寸" setting) so it
+        // size (parseImagineCommand fills width/height from the "default size" setting) so it
         // doesn't downscale the result — only an explicit --size still resizes.
         if (comfyModel === "image-upscale" && !parsed.sizeExplicit) {
           delete reqOptions.width;
@@ -1259,9 +1261,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 data = await readOllamaImageStream(r, setProgress);
               }
               if (r.ok && data.noop) {
-                // Nothing to do (e.g. image upscale with 放大模型=Off) — surface the
-                // server's notice as a plain message, not a "生成失败".
-                noopMessage = data.message || "无需处理。";
+                // Nothing to do (e.g. image upscale with upscale-model=Off) — surface the
+                // server's notice as a plain message, not a "generation failed".
+                noopMessage = data.message || t("img_nothingToDo");
               } else if (r.ok) {
                 const imgs = (data.images || []).filter((s) => s && s.length > 100);
                 if (data.upscaleModel) { upscaleModelUsed = data.upscaleModel; upscaleDenoiseUsed = data.upscaleDenoise || 0; }
@@ -1303,11 +1305,11 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       content += `**${t("msg_enhancedPrompt")}**\n${enhancedPromptsShown.map((p) => `> ${p}`).join("\n")}\n\n`;
     }
     if (errorCount > 0 && generatedImages.length > 0) {
-      content += `⚠️ ${errorCount} 张图片生成失败\n\n`;
+      content += `⚠️ ${t("img_imagesFailedCount", { n: errorCount })}\n\n`;
     } else if (errorCount > 0 && generatedImages.length === 0) {
       content = lastError
-        ? `图片生成失败：${lastError}`
-        : "图片生成失败，请检查模型是否正确安装并支持图像生成。";
+        ? t("img_imageGenFailed", { err: lastError })
+        : t("img_imageGenFailedCheckModel");
       sink.fail(content);   // total failure — keep the job listed with the reason
     } else if (noopMessage && generatedImages.length === 0) {
       content = noopMessage; // server intentionally did nothing → plain notice
@@ -1335,7 +1337,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         const list = seeds.map((s, i) => `#${i + 1} ${s !== null ? s : "?"}`).join(" · ");
         doneLine += `\n${t("msg_seedsBatch", { list }, plang)}`;
       }
-      // 高清放大 (image-upscale) — name the model + denoise algorithm actually used.
+      // HD upscale (image-upscale) — name the model + denoise algorithm actually used.
       if (upscaleModelUsed) doneLine += `\n${t("msg_upscaleUsed", { model: stripModelExt(upscaleModelUsed) }, plang)}`;
       if (upscaleDenoiseUsed > 0) doneLine += `\n${t("msg_denoiseUsed", { pct: Math.round(upscaleDenoiseUsed * 100) }, plang)}`;
     }
@@ -1363,7 +1365,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       // clearBubble already removed the bubble (live or restored).
     } else if (generatedImages.length > 0) {
       // Preserve already-generated images even when an error occurs
-      let content = `⚠️ 图片生成出错：${error.message}\n\n`;
+      let content = `⚠️ ${t("img_imageGenError", { err: error.message })}\n\n`;
       if (enhancedPromptsShown.length > 0) {
         content = `**${t("msg_enhancedPrompt")}**\n${enhancedPromptsShown.map((p) => `> ${p}`).join("\n")}\n\n` + content;
       }
@@ -1387,8 +1389,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       sink.place(replyMsg);
     } else {
       // Failed with no images — surface the error as a normal message.
-      sink.fail(`图片生成出错：${error.message}`);
-      sink.place({ role: "assistant", content: `图片生成出错：${error.message}`, timestamp: Date.now() });
+      const imgErrMsg = t("img_imageGenError", { err: error.message });
+      sink.fail(imgErrMsg);
+      sink.place({ role: "assistant", content: imgErrMsg, timestamp: Date.now() });
     }
     setAvatarState("idle");
   } finally {

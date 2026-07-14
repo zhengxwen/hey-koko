@@ -1,4 +1,4 @@
-// Per-doc relation graph — renders a distill card's «§ 关系» section as a small
+// Per-doc relation graph — renders a distill card's «§ Relations» section as a small
 // node-link SVG diagram (entities = nodes, relations = directed labelled edges).
 // Zero-dependency: a tiny Fruchterman-Reingold force layout + hand-built SVG. The card
 // text stays authoritative; this just visualizes the relations already parsed from it.

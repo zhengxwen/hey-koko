@@ -6,7 +6,7 @@ import { dom, state, refreshScrollState } from './state.js';
 import { readFileAsDataUrl, convertToJpeg, normalizeOrientation, makePreview, escapeHtml, genId } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
-import { initAvatar, updateCloudBadge } from './avatar.js';
+import { initAvatar, updateCloudBadge, relocalizeAvatarPicker } from './avatar.js';
 import { pauseOrStopSpeech, populateVoiceList } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
@@ -188,6 +188,7 @@ dom.uiLanguageSelect.addEventListener("change", () => {
   populateVoiceList(); // re-localize voice optgroup + option labels
   renderMemoryList();   // empty-state text is localized (memory_empty)
   renderReminderList(); // empty-state text is localized (reminder_listEmpty)
+  relocalizeAvatarPicker(); // avatar tooltips are localized (avatar_*)
   renderChat();
   saveCurrentSettings();
 });
@@ -919,7 +920,7 @@ dom.stopTranslateBtn.addEventListener("click", stopTranslation);
     dom.messagesEl.appendChild(thinkingBubble);
     dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
 
-    // Show "暂停" button
+    // Show the "pause" button
     askSuggestAbort = new AbortController();
     setGenerating(true);
     state.currentAbortController = askSuggestAbort;
@@ -950,7 +951,7 @@ dom.stopTranslateBtn.addEventListener("click", stopTranslation);
       });
 
       if (!response.ok) {
-        throw new Error("请求失败");
+        throw new Error("Request failed");
       }
 
       // Read streaming ndjson response
@@ -1026,7 +1027,7 @@ dom.stopTranslateBtn.addEventListener("click", stopTranslation);
       if (error.name !== "AbortError") {
         const errBubble = document.createElement("div");
         errBubble.className = "message system";
-        errBubble.textContent = "生成问题失败";
+        errBubble.textContent = t("msg_genQuestionFailed");
         dom.messagesEl.appendChild(errBubble);
       }
     } finally {
@@ -1142,12 +1143,12 @@ function exportJson(tab) {
   const payload = { title: tab.title, personality: cp ? cp.name : tab.personality };
   payload.messages = messages;
   const data = JSON.stringify(payload, null, 2);
-  downloadBlob(`${tab.title || "对话"}.json`, data, "application/json");
+  downloadBlob(`${tab.title || t("msg_defaultChatTitle")}.json`, data, "application/json");
 }
 
 function exportMarkdown(tab) {
   const { you, ai } = exportNames();
-  const lines = [`# ${tab.title || "对话"}`, "", `*${exportTimeStr(Date.now())} · ${you} & ${ai}*`, ""];
+  const lines = [`# ${tab.title || t("msg_defaultChatTitle")}`, "", `*${exportTimeStr(Date.now())} · ${you} & ${ai}*`, ""];
   for (const m of tab.messages) {
     if (m.role !== "user" && m.role !== "assistant") continue;
     const who = m.role === "user" ? you : ai;
@@ -1155,10 +1156,10 @@ function exportMarkdown(tab) {
     lines.push(`### ${who}${ts}`, "");
     if (m.content) lines.push(m.content);
     const imgs = exportImages(m);
-    if (imgs.length) lines.push(`${m.content ? "\n" : ""}_[图片 ×${imgs.length}]_`);
+    if (imgs.length) lines.push(`${m.content ? "\n" : ""}_${t("msg_exportImageCount", { n: imgs.length })}_`);
     lines.push("");
   }
-  downloadBlob(`${tab.title || "对话"}.md`, lines.join("\n"), "text/markdown");
+  downloadBlob(`${tab.title || t("msg_defaultChatTitle")}.md`, lines.join("\n"), "text/markdown");
 }
 
 function exportPdf(tab) {
@@ -1188,7 +1189,8 @@ function exportPdf(tab) {
     code{font-family:ui-monospace,Menlo,monospace}
     table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px 8px}
     @media print{.msg{background:#fff !important;border:1px solid #eee}}`;
-  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(tab.title || "对话")}</title><style>${css}</style></head><body><h1>${escapeHtml(tab.title || "对话")}</h1><div class="meta">${exportTimeStr(Date.now())} · ${escapeHtml(you)} &amp; ${escapeHtml(ai)}</div>${rows}<script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script></body></html>`);
+  const pdfTitle = escapeHtml(tab.title || t("msg_defaultChatTitle"));
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${pdfTitle}</title><style>${css}</style></head><body><h1>${pdfTitle}</h1><div class="meta">${exportTimeStr(Date.now())} · ${escapeHtml(you)} &amp; ${escapeHtml(ai)}</div>${rows}<script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script></body></html>`);
   win.document.close();
 }
 
@@ -1222,7 +1224,7 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      if (!Array.isArray(data.messages)) throw new Error("无效的对话文件");
+      if (!Array.isArray(data.messages)) throw new Error(t("msg_invalidChatFile"));
       const messages = await Promise.all(data.messages.map(async (msg) => {
         const m = { ...msg };
         if (!m.id) m.id = genId();   // exports drop the internal id → mint a fresh one
@@ -1263,13 +1265,13 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
       // data.persona is intentionally ignored even when present: persona text is
       // hey-koko-local and always comes from the local resolution.
       const resolved = resolveImportedPersonality(data.personality);
-      const tab = createTab(data.title || "导入的对话", messages, resolved.personality);
+      const tab = createTab(data.title || t("msg_importedChatTitle"), messages, resolved.personality);
       if (resolved.persona != null) tab.persona = resolved.persona;
       state.tabs.unshift(tab);
     } catch (e) {
       const msgEl = document.createElement("div");
       msgEl.className = "message system";
-      msgEl.textContent = `导入失败（${file.name}）：${e.message}`;
+      msgEl.textContent = t("msg_importFailed", { name: file.name, error: e.message });
       dom.messagesEl.appendChild(msgEl);
     }
   }
@@ -1403,13 +1405,13 @@ function renderStagedImagePreview() {
     const el = document.createElement("img");
     el.className = "multiPreviewImg";
     el.src = img.preview;
-    el.alt = "预览";
+    el.alt = t("msg_previewAlt");
     thumb.appendChild(el);
 
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "previewThumbRemove";
-    btn.setAttribute("aria-label", "移除图片");
+    btn.setAttribute("aria-label", t("msg_removeImage"));
     btn.textContent = "×";
     btn.addEventListener("click", () => removeStagedImage(idx));
     thumb.appendChild(btn);
@@ -1422,8 +1424,8 @@ function renderStagedImagePreview() {
       const maskBtn = document.createElement("button");
       maskBtn.type = "button";
       maskBtn.className = "previewThumbMask" + (img.mask ? " hasMask" : "");
-      maskBtn.title = img.mask ? "编辑修改区域蒙版（已设置）" : "涂抹要修改的区域（局部重绘）";
-      maskBtn.setAttribute("aria-label", "涂抹蒙版");
+      maskBtn.title = img.mask ? t("msg_maskEditTitle") : t("msg_maskPaintTitle");
+      maskBtn.setAttribute("aria-label", t("msg_maskPaintAria"));
       maskBtn.textContent = "🖌";
       maskBtn.addEventListener("click", async () => {
         // Paint on the full-res image (reconstruct a data URL from the raw base64),
@@ -1433,7 +1435,7 @@ function renderStagedImagePreview() {
           ? `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`
           : img.preview;
         const result = await openMaskModal(fullSrc, img.mask || null);
-        // null = cancelled (X / 取消 / Esc) → keep the existing mask untouched.
+        // null = cancelled (X / Cancel / Esc) → keep the existing mask untouched.
         // "" = cleared via apply → drop it. A data URL → the new mask.
         if (result !== null) {
           img.mask = result || undefined;
@@ -1495,7 +1497,7 @@ function renderStagedVideoPreview() {
     const rm = document.createElement("button");
     rm.type = "button";
     rm.className = "videoChipRemove";
-    rm.setAttribute("aria-label", "移除视频");
+    rm.setAttribute("aria-label", t("msg_removeVideo"));
     rm.textContent = "×";
     rm.addEventListener("click", () => removeStagedVideo(idx));
     chip.appendChild(rm);
@@ -1580,7 +1582,7 @@ async function selectFile(file) {
   if (!isImage && !isVideo && !isDocument) {
     const msgEl = document.createElement("div");
     msgEl.className = "message system";
-    msgEl.textContent = "不支持的文件类型。请选择图片、视频、PDF、DOCX、PPTX、EML、TXT 或 MD 文件。";
+    msgEl.textContent = t("msg_unsupportedFileType");
     dom.messagesEl.appendChild(msgEl);
     return;
   }
@@ -1591,7 +1593,7 @@ async function selectFile(file) {
     if (file.size > 100 * 1024 * 1024) {
       const msgEl = document.createElement("div");
       msgEl.className = "message system";
-      msgEl.textContent = "视频太大了，请选择 100MB 以内的视频。";
+      msgEl.textContent = t("msg_videoTooLarge");
       dom.messagesEl.appendChild(msgEl);
       return;
     }
@@ -1622,7 +1624,7 @@ async function selectFile(file) {
     if (file.size > 8 * 1024 * 1024) {
       const msgEl = document.createElement("div");
       msgEl.className = "message system";
-      msgEl.textContent = "图片太大了，请选择 8MB 以内的图片。";
+      msgEl.textContent = t("msg_imageTooLarge");
       dom.messagesEl.appendChild(msgEl);
       clearSelectedImage();
       return;
@@ -1645,7 +1647,7 @@ async function selectFile(file) {
   if (file.size > 20 * 1024 * 1024) {
     const msgEl = document.createElement("div");
     msgEl.className = "message system";
-    msgEl.textContent = "文件太大了，请选择 20MB 以内的文件。";
+    msgEl.textContent = t("msg_fileTooLarge");
     dom.messagesEl.appendChild(msgEl);
     return;
   }
@@ -1682,7 +1684,7 @@ async function selectFile(file) {
     if (!text.trim() && images.length === 0) {
       const msgEl = document.createElement("div");
       msgEl.className = "message system";
-      msgEl.textContent = "无法从该文件中提取内容。";
+      msgEl.textContent = t("msg_noContentExtracted");
       dom.messagesEl.appendChild(msgEl);
       return;
     }
@@ -1703,7 +1705,7 @@ async function selectFile(file) {
   } catch (e) {
     const msgEl = document.createElement("div");
     msgEl.className = "message system";
-    msgEl.textContent = `文件解析失败：${e.message}`;
+    msgEl.textContent = t("msg_fileParseFailed", { error: e.message });
     dom.messagesEl.appendChild(msgEl);
   }
 }
@@ -1717,7 +1719,7 @@ async function selectMultipleFiles(files) {
     if (files.some(f => !f.type.startsWith("video/"))) {
       const msgEl = document.createElement("div");
       msgEl.className = "message system";
-      msgEl.textContent = "视频请和图片 / 文件分开上传。";
+      msgEl.textContent = t("msg_videoSeparate");
       dom.messagesEl.appendChild(msgEl);
       return;
     }
@@ -1727,7 +1729,7 @@ async function selectMultipleFiles(files) {
       if (file.size > 100 * 1024 * 1024) {
         const msgEl = document.createElement("div");
         msgEl.className = "message system";
-        msgEl.textContent = `视频 ${file.name} 太大了（超过 100MB），已跳过。`;
+        msgEl.textContent = t("msg_videoTooLargeSkip", { name: file.name });
         dom.messagesEl.appendChild(msgEl);
         continue;
       }
@@ -1752,7 +1754,7 @@ async function selectMultipleFiles(files) {
   if (hasImage && hasNonImage) {
     const msgEl = document.createElement("div");
     msgEl.className = "message system";
-    msgEl.textContent = "多文件上传时，如果包含图片，则所有文件都必须是图片。";
+    msgEl.textContent = t("msg_mixedImageFiles");
     dom.messagesEl.appendChild(msgEl);
     return;
   }
@@ -1765,7 +1767,7 @@ async function selectMultipleFiles(files) {
       if (file.size > 8 * 1024 * 1024) {
         const msgEl = document.createElement("div");
         msgEl.className = "message system";
-        msgEl.textContent = `图片 ${file.name} 太大了（超过 8MB），已跳过。`;
+        msgEl.textContent = t("msg_imageTooLargeSkip", { name: file.name });
         dom.messagesEl.appendChild(msgEl);
         continue;
       }
@@ -1795,14 +1797,14 @@ async function selectMultipleFiles(files) {
       if (!isDocument) {
         const msgEl = document.createElement("div");
         msgEl.className = "message system";
-        msgEl.textContent = `不支持的文件类型：${file.name}`;
+        msgEl.textContent = t("msg_unsupportedFileNamed", { name: file.name });
         dom.messagesEl.appendChild(msgEl);
         continue;
       }
       if (file.size > 20 * 1024 * 1024) {
         const msgEl = document.createElement("div");
         msgEl.className = "message system";
-        msgEl.textContent = `文件 ${file.name} 太大了（超过 20MB），已跳过。`;
+        msgEl.textContent = t("msg_fileTooLargeSkip", { name: file.name });
         dom.messagesEl.appendChild(msgEl);
         continue;
       }
@@ -1844,7 +1846,7 @@ async function tryServerParse(file, onProgress = null, pdfEngine = null) {
       if (!onProgress) {
         progressEl = document.createElement("div");
         progressEl.className = "message system fileParseProgress";
-        progressEl.textContent = "⏳ 正在解析文件...";
+        progressEl.textContent = t("msg_parsingFile");
         dom.messagesEl.appendChild(progressEl);
         dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
       }
@@ -1902,7 +1904,7 @@ async function parseAndSendFile(content, fileInfo) {
   pending.className = "message assistant thinking";
   const body = document.createElement("div");
   body.className = "markdownBody";
-  body.innerHTML = '<span class="thinking-text">正在解析文件<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>';
+  body.innerHTML = `<span class="thinking-text">${t("msg_parsingFileShort")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
   pending.appendChild(body);
   dom.messagesEl.appendChild(pending);
   dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
@@ -1965,7 +1967,7 @@ async function parseAndSendFile(content, fileInfo) {
             const label = engine === "mineru" ? "MinerU" : "Unlimited-OCR";
             const msgEl = document.createElement("div");
             msgEl.className = "message system";
-            msgEl.textContent = `❌ ${label} 解析失败或超时，已停止（未回退纯文本）。请重试，或在「模型设定」里改用其他 PDF 引擎。`;
+            msgEl.textContent = t("msg_ocrFailed", { label });
             dom.messagesEl.appendChild(msgEl);
             dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
             return;
@@ -2001,7 +2003,7 @@ async function parseAndSendFile(content, fileInfo) {
       pending.remove();
       const msgEl = document.createElement("div");
       msgEl.className = "message system";
-      msgEl.textContent = "无法从该文件中提取内容。";
+      msgEl.textContent = t("msg_noContentExtracted");
       dom.messagesEl.appendChild(msgEl);
       return;
     }
@@ -2013,7 +2015,7 @@ async function parseAndSendFile(content, fileInfo) {
     pending.remove();
     const msgEl = document.createElement("div");
     msgEl.className = "message system";
-    msgEl.textContent = `文件解析失败：${e.message}`;
+    msgEl.textContent = t("msg_fileParseFailed", { error: e.message });
     dom.messagesEl.appendChild(msgEl);
   }
 }
@@ -2083,7 +2085,7 @@ async function parseDocumentHeadless(fileB64, name, ext, content, onProgress) {
     } else if (chosenOcr) {
       // User explicitly chose an OCR engine — fail the job instead of silently
       // degrading to pdf.js text-only (which would drop all figures).
-      throw new Error(`${chosenOcr} 解析失败或超时（未回退纯文本）。请重试或改用其他 PDF 引擎。`);
+      throw new Error(t("msg_ocrFailedShort", { engine: chosenOcr }));
     } else if (ext === ".pdf") {
       text = await extractPdfText(rawFile); tool = "pdf.js";
     } else if (ext === ".pptx") {

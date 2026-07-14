@@ -57,7 +57,7 @@ const jobControllers = new Map();
 let _enqueueSeq = 0;
 
 // Running tally of successfully-completed jobs in the CURRENT draining batch — shown in the
-// drawer summary ("… · 已完成 N") so the user sees progress as a big queue drains. Resets to
+// drawer summary ("… · N done") so the user sees progress as a big queue drains. Resets to
 // 0 once nothing is left to run (the next batch counts from zero). Not persisted — a live
 // progress indicator, so a reload naturally restarts it.
 let bgDoneCount = 0;
@@ -279,7 +279,7 @@ export function enqueueBgJob({ tabId, kind, label, payload, insertIndex = -1, st
     noPlaceholder,        // drawer-only job (e.g. library imports): no in-chat placeholder bubble
     label: label || '',
     // The queued/enqueue-time label (persisted, never overwritten by a running-phase
-    // label). A running job's label is swapped to an "in progress" text (e.g. "正在获取内容")
+    // label). A running job's label is swapped to an "in progress" text (e.g. "fetching content")
     // — on reload a re-queued job restores baseLabel so a NOT-yet-started row never shows it.
     baseLabel: label || '',
     // 'enhancing' = prompt is being rewritten up-front (foreground); pumpLane only
@@ -433,9 +433,9 @@ async function runJob(job) {
   const p = job.payload || {};
   // Client-run jobs execute right here in the browser (fetch / LLM chat), never touching the
   // server GPU queue — so no onProgress SSE ever flips them to 'running'. Left alone they'd sit
-  // at their enqueue label + "排队中" the whole run, and every sink.label() would stash into
+  // at their enqueue label + "queued" the whole run, and every sink.label() would stash into
   // _runLabel (invisible) instead of updating the placeholder — e.g. /url never showing
-  // "正在获取内容" → "正在想". Flip them now; they genuinely start now (unlike GPU jobs that the
+  // "fetching content" → "thinking". Flip them now; they genuinely start now (unlike GPU jobs that the
   // server serializes, which must stay queued until their turn). markRunning no-ops on the rest.
   if (job.kind === 'url' || job.kind === 'doc' || job.kind === 'chat' || job.kind === 'docfull') {
     sink.markRunning();
@@ -595,11 +595,11 @@ function makeBgSink(job, controller) {
     // it alone knows which job is actually on the GPU. We must NOT flip from the ComfyUI
     // progress WS here: ComfyUI broadcasts the running prompt's progress/preview frames to
     // EVERY open client socket, so a sibling still queued behind it would otherwise be
-    // fooled into showing 'running' too (the "三个一起运行" bug). markRunning stays the flip
+    // fooled into showing 'running' too (the "all three run at once" bug). markRunning stays the flip
     // path only for a count>1 job, whose N sub-runs share no single serverJobId to track.
     if (job.serverJobId) return;
     job.status = 'running';
-    if (job._runLabel) job.label = job._runLabel;   // now show the generator's "正在生成…" label
+    if (job._runLabel) job.label = job._runLabel;   // now show the generator's "generating…" label
     if (!job.startedAt) job.startedAt = Date.now();  // elapsed clock starts NOW (actual run), not at fire time
     startElapsedTicker();
     persist();
@@ -619,7 +619,7 @@ function makeBgSink(job, controller) {
     lock() {},                 // never lock the send button for a background run
     started() { return true; }, // placeholder already exists
     // While the job is still QUEUED on the server (fired up front but not yet its turn on
-    // the GPU), keep the queued label — stash the generator's "正在生成…" label and only
+    // the GPU), keep the queued label — stash the generator's "generating…" label and only
     // apply it once the job actually starts (markRunning / onProgress).
     start(kind, label) { if (label) { if (job.status === 'running') job.label = label; else job._runLabel = label; } refreshPlaceholders(); },
     label(l) { if (job.status === 'running') job.label = l; else job._runLabel = l; refreshPlaceholders(); },
@@ -662,7 +662,7 @@ function makeBgSink(job, controller) {
       renderDrawer();
     },
     eta() {},
-    // Multi-segment video: "第 N/M 段" — surface which chunk is rendering. Changes only
+    // Multi-segment video: "segment N/M" — surface which chunk is rendering. Changes only
     // at chunk boundaries; refresh the drawer/placeholder then (progress() also redraws).
     seg(x) { markRunning(); if (job.status !== 'running') return; if (job.seg !== x) { job.seg = x; renderDrawer(); updatePlaceholderBar(job); } },
     indeterminate() {},
@@ -709,7 +709,7 @@ function syncPlaceholder(job) {
   found.msg.label = job.label;
   found.msg.error = job.error;
   found.msg.progress = job.progress;   // so a renderChat redraws the bar at the right %
-  found.msg.seg = job.seg;             // "第 N/M 段" for multi-segment video
+  found.msg.seg = job.seg;             // "segment N/M" for multi-segment video
   found.msg.elapsed = runningElapsed(job);   // "1:23" elapsed since the job started
   found.msg.queuePos = queuePosition(job);
   found.msg.enhancedPrompt = job.enhancedPrompt;   // server-side --enhance preview (before render)
@@ -731,14 +731,14 @@ function updatePlaceholderBar(job) {
   const el = document.querySelector(`[data-msg-id="${job.msgId}"]`);
   if (!el) return;
   // Follow the job's label in place so the in-chat placeholder tracks phase changes
-  // (e.g. a /url youtube job going 正在获取内容… → 正在整理字幕（i/n）…), matching the
+  // (e.g. a /url youtube job going fetching content… → formatting subtitles (i/n)…), matching the
   // drawer. Same " · " split as the bubble's initial render (main label + detail).
   const parts = (job.label || '').split(' · ');
   const labelEl = el.querySelector('.bgPhLabel');
   if (labelEl) labelEl.textContent = parts[0] || '';
   const modelEl = el.querySelector('.bgPhModel');
   if (modelEl) modelEl.textContent = parts.slice(1).join(' · ');
-  const segEl = el.querySelector('.bgPhStatus');   // live "第 N/M 段 · 1:23"
+  const segEl = el.querySelector('.bgPhStatus');   // live "segment N/M · 1:23"
   if (segEl) segEl.textContent = phStatusText(job);
   const bar = el.querySelector('.bgPhBar');
   const fill = el.querySelector('.bgPhBarFill');
@@ -989,7 +989,7 @@ function fmtElapsed(ms) {
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}` : `${m}:${String(x).padStart(2, '0')}`;
 }
 function runningElapsed(job) { return job.startedAt ? fmtElapsed(Date.now() - job.startedAt) : ''; }
-// Combined running status for a placeholder bubble: "第 N/M 段 · 1:23".
+// Combined running status for a placeholder bubble: "segment N/M · 1:23".
 function phStatusText(job) { return [job.seg, runningElapsed(job)].filter(Boolean).join(' · '); }
 
 // 1-second ticker that refreshes the elapsed time on every running job (drawer rows +
@@ -1018,7 +1018,7 @@ function statusText(job) {
       const pct = job.progress && job.progress.max
         ? Math.min(100, Math.round(job.progress.value / job.progress.max * 100)) : null;
       const base = pct != null ? t('bg_statusRunningPct', { pct }) : t('bg_statusRunning');
-      const head = job.seg ? `${job.seg} · ${base}` : base;   // "第 N/M 段 · 运行中 94%"
+      const head = job.seg ? `${job.seg} · ${base}` : base;   // "segment N/M · running 94%"
       const el = runningElapsed(job);
       return el ? `${head} · ${el}` : head;                    // … · 1:23
     }
@@ -1073,7 +1073,7 @@ function reorderQueued(srcId, tgtId, after) {
     .filter((j) => j.status === 'queued' && laneOf(j) === lane && j.serverJobId)
     .map((j) => j.serverJobId);
   if (orderedIds.length) reorderServerJobs(orderedIds);
-  refreshPlaceholders();    // updates queue positions (排队第 N 位) + redraws the drawer
+  refreshPlaceholders();    // updates queue positions (queue position N) + redraws the drawer
 }
 
 export function renderDrawer() {
@@ -1308,11 +1308,11 @@ function jobDetail(job) {
     return clipCtx(m.comfyModel || m.imageModel || '', 44);
   } else if (job.kind === 'libimport') {
     // Once a YouTube import has fetched the video title (early, before the whisper pass),
-    // show "YouTube · <视频标题>" in place of the URL (the full URL stays in the tooltip).
+    // show "YouTube · <video title>" in place of the URL (the full URL stays in the tooltip).
     if (job.videoTitle) return 'YouTube · ' + clipCtx(job.videoTitle, 44);
     // file / text imports (a paper's PDF, a .txt): the stage label ("parsing"/"importing"/
     // "distilling") overwrites job.label mid-run, so surface the source filename HERE — it
-    // keeps "知识库 · <文件名>" visible on the top line for the whole job.
+    // keeps "Knowledge Library · <filename>" visible on the top line for the whole job.
     if (p.type === 'file' || p.type === 'text') { if (p.name) return clipCtx(p.name, 44); }
     // url/youtube imports: a page's label IS its URL, but youtube's is a generic
     // "fetching" text → show the address only when it isn't already the label.
@@ -1476,10 +1476,10 @@ export async function restoreBgJobsOnLoad() {
     // snapshot delivers the result). In-page jobs (no serverJobId) can't resume → interrupted.
     if (j.status === 'running') {
       // Keep the persisted progress/seg on a resumable server job so it shows the
-      // last-known % (e.g. "运行中 47%") right away, then live updates resume once the
+      // last-known % (e.g. "running 47%") right away, then live updates resume once the
       // re-run re-subscribes to ComfyUI with the job's stable comfyClientId — instead
       // of snapping back to 0%. In-page jobs can't resume → interrupted (clear progress).
-      // Re-queued but NOT yet re-started → drop the "in progress" label (e.g. "正在获取内容")
+      // Re-queued but NOT yet re-started → drop the "in progress" label (e.g. "fetching content")
       // back to the queued label; the re-run re-applies the running label once it starts.
       if (j.serverJobId) { j.status = 'queued'; if (j.baseLabel) j.label = j.baseLabel; }
       else { j.status = 'interrupted'; j.progress = null; j.seg = null; }
