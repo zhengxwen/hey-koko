@@ -1931,6 +1931,14 @@ async function handleSearchCommand(raw, tab, tabId, fullContent, insertIndex = -
   }
 }
 
+// Run one tool but never let a hung tool (slow fetch, etc.) stall the whole loop.
+function runToolWithTimeout(name, args, ms = 25000) {
+  return Promise.race([
+    Promise.resolve(executeTool(name, args)),
+    new Promise((resolve) => setTimeout(() => resolve(`Tool "${name}" timed out after ${Math.round(ms / 1000)}s.`), ms)),
+  ]).catch((e) => `Tool "${name}" failed: ${e && e.message ? e.message : e}`);
+}
+
 // Agentic reply: model can call tools (datetime/calculate/web_search/recall_memory)
 // in a loop. Uses stream:false (local models call tools more reliably non-streamed),
 // so the final answer renders at once after a "using tools" indicator.
@@ -1965,6 +1973,15 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
 
   const genStart = Date.now();
   const messages = buildMessages(tabId, contextEndIndex);
+  // Tell the model what tools exist and when to use them (in the prompt language).
+  // Mention search_library only when the knowledge-library tool is actually active.
+  if (messages[0] && messages[0].role === "system") {
+    let toolsHint = getPrompt("toolsSystem");
+    if (activeToolSchemas().some((s) => s.function.name === "search_library")) {
+      toolsHint += ` ${getPrompt("toolsSystemLibrary")}`;
+    }
+    messages[0].content += `\n\n${toolsHint}`;
+  }
   setSendingImageCount(countOutgoingImages(messages));
   const toolSteps = [];
   const seen = new Map(); // tool-call signature -> cached result (kills repeat loops)
@@ -2000,25 +2017,29 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
         // cloud backend can replay them verbatim before the tool_use — required
         // when thinking is on. Undefined for local Ollama, so it's dropped there.
         messages.push({ role: "assistant", content: msg.content || "", tool_calls: toolCalls, thinking_blocks: msg.thinking_blocks });
-        let anyNew = false;
-        for (const call of toolCalls) {
-          const fn = call.function || {};
-          const sig = fn.name + ":" + JSON.stringify(fn.arguments || {});
-          let result;
-          if (seen.has(sig)) {
-            result = seen.get(sig); // already computed — reuse, don't re-run
-          } else {
-            anyNew = true;
-            setPending(`🔧 ${t("tools_using", { tool: getToolLabel(fn.name, fn.arguments) })}`);
-            setAvatarState("thinking");
-            result = await executeTool(fn.name, fn.arguments);
-            seen.set(sig, result);
+        // Execute this turn's NEW tool calls in parallel (deduped), each with a timeout.
+        const toSig = (c) => (c.function?.name || "") + ":" + JSON.stringify(c.function?.arguments || {});
+        const newBySig = new Map();
+        for (const c of toolCalls) {
+          const sig = toSig(c);
+          if (!seen.has(sig) && !newBySig.has(sig)) newBySig.set(sig, c);
+        }
+        if (newBySig.size) {
+          setPending(`🔧 ${t("tools_using", { tool: toolCalls.map((c) => getToolLabel(c.function?.name, c.function?.arguments)).join(" · ") })}`);
+          setAvatarState("thinking");
+          await Promise.all([...newBySig.values()].map(async (c) => {
+            const fn = c.function || {};
+            const result = await runToolWithTimeout(fn.name, fn.arguments);
+            seen.set(toSig(c), result);
             toolSteps.push({ name: fn.name, args: fn.arguments, result: String(result) });
-          }
-          messages.push({ role: "tool", tool_name: fn.name, content: String(result).slice(0, 4000) });
+          }));
+        }
+        // Feed a tool result back for every call the model made, in its order.
+        for (const call of toolCalls) {
+          messages.push({ role: "tool", tool_name: call.function?.name, content: String(seen.get(toSig(call)) ?? "").slice(0, 4000) });
         }
         // Model only re-asked tools it already ran → it's looping; force a text answer next.
-        if (!anyNew) forceText = true;
+        if (!newBySig.size) forceText = true;
         setPending(t("msg_thinking"));
         continue;
       }

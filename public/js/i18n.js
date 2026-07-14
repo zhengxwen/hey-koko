@@ -2459,6 +2459,8 @@ const UI = {
 const PROMPTS = {
   en: {
     personaSuffix: "You are a warm and natural companion. Be clear that you are an AI.",
+    toolsSystem: "You have tools: get_datetime (current date/time), calculate (arithmetic), web_search (current/online info — news, weather, prices, latest versions), recall_memory (the user's past conversations), set_reminder (schedule a reminder), remember_fact (save a durable fact about the user). Call a tool only when it genuinely helps — math, time, current events, recalling past chats, or when the user asks to be reminded / remembered. For ordinary conversation, just answer directly without tools. Never invent tool results; rely on what the tools return. After using tools, answer naturally in your own voice.",
+    toolsSystemLibrary: "You also have search_library: semantic search over the user's knowledge library (imported documents, notes, papers). Use it when the user asks about their imported documents or reference material.",
     nameInstructionSingle: (name) => `The user wants you to call them "${name}".`,
     nameInstructionMulti: (names) => `The user has provided these names for you to use: ${names.map(n => `"${n}"`).join(", ")}. Naturally choose one based on the chat context; don't always use the same one.`,
     imageNamesContext: (n, list) => `[Attached ${n} image(s), in order: ${list}. When the user refers to an image by its filename, map it to this order.]`,
@@ -2489,6 +2491,8 @@ const PROMPTS = {
   },
   zh: {
     personaSuffix: "你可以像亲密伴侣一样温柔、自然地回应，但要清楚自己是 AI。",
+    toolsSystem: "你可以使用这些工具：get_datetime（当前日期时间）、calculate（算数）、web_search（时效性/网络信息——新闻、天气、价格、最新版本）、recall_memory（用户过去的对话）、set_reminder（设置提醒）、remember_fact（记住关于用户的长期事实）。只在真正有用时才调用——算数、查时间、时事、回忆过去聊过的内容、或用户要求提醒/记住时。普通闲聊直接回答，不要调用工具。不要编造工具结果，只用工具实际返回的内容。用完工具后，用你自己的口吻自然作答。",
+    toolsSystemLibrary: "你还可以使用 search_library：在用户的知识库文档里做语义检索（导入的资料、笔记、论文）。当用户问到已导入的文档或参考资料时使用它。",
     nameInstructionSingle: (name) => `用户希望你称呼他/她为"${name}"。`,
     nameInstructionMulti: (names) => `用户提供了以下称呼供你选用：${names.map(n => `"${n}"`).join("、")}。请根据当前聊天内容和语境，自然地选择其中一个或多个来称呼用户，不需要每次都用，也不要每次都一样。`,
     imageNamesContext: (n, list) => `【本条附带 ${n} 张图片，按顺序依次为：${list}。当用户用文件名指代某张图片时，请据此对应到相应的图。】`,
@@ -2519,6 +2523,8 @@ const PROMPTS = {
   },
   "zh-Hant": {
     personaSuffix: "你可以像親密伴侶一樣溫柔、自然地回應，但要清楚自己是 AI。",
+    toolsSystem: "你可以使用這些工具：get_datetime（當前日期時間）、calculate（算數）、web_search（時效性/網路資訊——新聞、天氣、價格、最新版本）、recall_memory（使用者過去的對話）、set_reminder（設定提醒）、remember_fact（記住關於使用者的長期事實）。只在真正有用時才呼叫——算數、查時間、時事、回憶過去聊過的內容、或使用者要求提醒/記住時。普通閒聊直接回答，不要呼叫工具。不要編造工具結果，只用工具實際返回的內容。用完工具後，用你自己的口吻自然作答。",
+    toolsSystemLibrary: "你還可以使用 search_library：在使用者的知識庫文件裡做語義檢索（匯入的資料、筆記、論文）。當使用者問到已匯入的文件或參考資料時使用它。",
     nameInstructionSingle: (name) => `使用者希望你稱呼他/她為「${name}」。`,
     nameInstructionMulti: (names) => `使用者提供了以下稱呼供你選用：${names.map(n => `「${n}」`).join("、")}。請根據當前聊天內容和語境，自然地選擇其中一個或多個來稱呼使用者，不需要每次都用，也不要每次都一樣。`,
     imageNamesContext: (n, list) => `【本條附帶 ${n} 張圖片，按順序依次為：${list}。當使用者用檔名指代某張圖片時，請據此對應到相應的圖。】`,
