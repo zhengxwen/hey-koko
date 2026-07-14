@@ -7,7 +7,7 @@ import { readFileAsDataUrl, convertToJpeg, normalizeOrientation, makePreview, es
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
 import { initAvatar, updateCloudBadge } from './avatar.js';
-import { stopSpeech, populateVoiceList, speakAdjacent } from './speech.js';
+import { pauseOrStopSpeech, populateVoiceList } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
@@ -234,22 +234,10 @@ dom.speechRateInput.addEventListener("input", () => {
   dom.speechRateValue.textContent = dom.speechRateInput.value;
 });
 
-// ESC to stop speech
+// ESC while reading: first press pauses, a second press (while paused) stops.
 document.addEventListener("keydown", (e) => {
   if (!state.activeSpeechButton) return;
-  if (e.key === "Escape") {
-    stopSpeech();
-    return;
-  }
-  // While reading, ←/→ read the previous/next message — only when focus is
-  // inside the bubble being read (so arrow keys elsewhere, e.g. the composer,
-  // are untouched).
-  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-    const curMsg = state.activeSpeechButton.closest(".message");
-    if (!curMsg || !curMsg.contains(document.activeElement)) return;
-    e.preventDefault();
-    speakAdjacent(e.key === "ArrowLeft" ? -1 : 1);
-  }
+  if (e.key === "Escape") pauseOrStopSpeech();
 });
 
 // Chat form submit

@@ -168,12 +168,101 @@ function getChineseVoice() {
   return options.length > 0 ? options[0].value : null;
 }
 
+// ── Playback control state (one read-aloud session at a time) ──────────────
+// Session-scoped; reset by stopSpeech. Seek/pause work by nudging these and
+// interrupting the current sentence — the reading loop in speakMessage reacts.
+let currentAudio = null; // <audio> of the sentence being played (or primed while paused)
+let speechPaused = false;
+let seekRequest = null; // sentence index to jump to, consumed by the reading loop
+let audioCache = null; // Map<segIndex, Promise<blobUrl|null>> — resolved sentences stay for back-jumps
+let segClickBody = null; // bodyEl carrying the click-to-seek delegate
+let segClickHandler = null;
+let removeLongPress = null;
+let suppressClick = false; // swallow the click that trails a long-press stop
+let lastToggleAt = 0; // double-click-to-stop detection on the speak button
+
+// Sentences further than this behind the playhead get their audio revoked —
+// bounds memory on long articles while keeping recent back-jumps instant.
+const CACHE_KEEP_BEHIND = 20;
+
+function evictAudioCache(playhead) {
+  if (!audioCache) return;
+  for (const k of audioCache.keys()) {
+    if (k < playhead - CACHE_KEEP_BEHIND) {
+      audioCache.get(k).then((u) => { if (u) URL.revokeObjectURL(u); });
+      audioCache.delete(k);
+    }
+  }
+}
+
+function setSpeechButtonLabel() {
+  const btn = state.activeSpeechButton;
+  if (!btn) return;
+  btn.textContent = speechPaused ? t("btn_resumeSpeak") : t("btn_pauseSpeak");
+  btn.classList.toggle("isPaused", speechPaused);
+}
+
+function togglePauseSpeech() {
+  speechPaused = !speechPaused;
+  if (speechPaused) currentAudio?.pause();
+  else currentAudio?.play().catch(() => {});
+  setSpeechButtonLabel();
+}
+
+// Jump the reading loop to sentence j: interrupt the current sentence (its
+// playUrl promise resolves) and let the loop pick up seekRequest. Seeking
+// while paused implies resume — you clicked a sentence to hear it.
+function seekToSegment(j) {
+  seekRequest = j;
+  if (speechPaused) {
+    speechPaused = false;
+    setSpeechButtonLabel();
+  }
+  currentAudio?._ttsInterrupt?.();
+}
+
+// Long-press (600ms) on the speak button = full stop. The click event that
+// fires on release is swallowed via suppressClick so it doesn't restart.
+function attachLongPress(button) {
+  let timer = null;
+  const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  const down = () => {
+    clear();
+    timer = setTimeout(() => {
+      suppressClick = true;
+      // Safety: if the trailing click never arrives (pointer dragged away),
+      // don't let the flag eat the next legitimate speak click.
+      setTimeout(() => { suppressClick = false; }, 500);
+      stopSpeech();
+    }, 600);
+  };
+  button.addEventListener("pointerdown", down);
+  button.addEventListener("pointerup", clear);
+  button.addEventListener("pointerleave", clear);
+  return () => {
+    clear();
+    button.removeEventListener("pointerdown", down);
+    button.removeEventListener("pointerup", clear);
+    button.removeEventListener("pointerleave", clear);
+  };
+}
+
 export function stopSpeech() {
   // Aborting cancels in-flight synthesis fetches AND pauses the playing
   // <audio> (playUrl listens on the same signal). No server call needed —
   // playback is browser-side.
   state.speechAbortController?.abort();
   state.speechAbortController = null;
+  currentAudio = null;
+  speechPaused = false;
+  seekRequest = null;
+  if (audioCache) {
+    for (const p of audioCache.values()) p.then((u) => { if (u) URL.revokeObjectURL(u); });
+    audioCache = null;
+  }
+  if (segClickBody && segClickHandler) segClickBody.removeEventListener("click", segClickHandler);
+  segClickBody = segClickHandler = null;
+  if (removeLongPress) { removeLongPress(); removeLongPress = null; }
   const bodyEl = document.querySelector(".markdownBody[data-original-html]");
   if (bodyEl) {
     bodyEl.innerHTML = bodyEl.dataset.originalHtml;
@@ -181,28 +270,18 @@ export function stopSpeech() {
   }
   if (state.activeSpeechButton) {
     state.activeSpeechButton.textContent = t("btn_speak");
-    state.activeSpeechButton.classList.remove("isSpeaking");
+    state.activeSpeechButton.title = t("btn_speak");
+    state.activeSpeechButton.classList.remove("isSpeaking", "isPaused");
     state.activeSpeechButton = null;
   }
 }
 
-// While reading, ←/→ jump to the previous/next speakable message. Finds the
-// nearest sibling .message that has a Speak button and clicks it (its handler
-// reads that message); moves focus along so further arrow presses keep working.
-// Returns true if it navigated. No-op (returns false) at the ends.
-export function speakAdjacent(dir) {
-  if (!state.activeSpeechButton) return false;
-  const cur = state.activeSpeechButton.closest(".message");
-  if (!cur) return false;
-  let sib = dir < 0 ? cur.previousElementSibling : cur.nextElementSibling;
-  while (sib) {
-    if (sib.classList.contains("message")) {
-      const btn = sib.querySelector(".speakMessage");
-      if (btn) { btn.focus(); btn.click(); return true; }
-    }
-    sib = dir < 0 ? sib.previousElementSibling : sib.nextElementSibling;
-  }
-  return false;
+// ESC control: first press pauses, a second press while paused stops.
+// (Resume stays on the speak button / clicking a sentence.)
+export function pauseOrStopSpeech() {
+  if (!state.activeSpeechButton) return;
+  if (speechPaused) stopSpeech();
+  else togglePauseSpeech();
 }
 
 // ── Natural sentence segmentation (zh + en) ───────────────────────────────
@@ -433,15 +512,21 @@ function segmentBody(bodyEl) {
 }
 
 // Play one synthesized sentence (blob URL) to completion. Resolves on ended /
-// error / abort — never rejects, so the reading loop always advances. The
-// abort listener pauses playback, which is how stopSpeech interrupts audio.
+// error / abort / seek-interrupt — never rejects, so the reading loop always
+// advances. The abort listener pauses playback (stopSpeech); _ttsInterrupt is
+// the same teardown triggered by a seek, which resolves without aborting the
+// whole session. The element is published on currentAudio so pause/resume can
+// reach it; if the session is paused when a sentence arrives (pause hit
+// between sentences), playback is primed but not started — resume starts it.
 function playUrl(url, signal) {
   return new Promise((resolve) => {
     const audio = new Audio(url);
+    currentAudio = audio;
     let settled = false;
     const done = () => {
       if (settled) return;
       settled = true;
+      if (currentAudio === audio) currentAudio = null;
       signal.removeEventListener("abort", onAbort);
       resolve();
     };
@@ -450,10 +535,11 @@ function playUrl(url, signal) {
       audio.src = "";
       done();
     };
+    audio._ttsInterrupt = onAbort;
     signal.addEventListener("abort", onAbort);
     audio.addEventListener("ended", done);
     audio.addEventListener("error", done);
-    audio.play().catch(done);
+    if (!speechPaused) audio.play().catch(done);
   });
 }
 
@@ -465,12 +551,27 @@ function highlightSegment(bodyEl, segIndex) {
 }
 
 export async function speakMessage(content, button) {
+  // A long-press stop already handled this interaction; eat the trailing click.
+  if (suppressClick) {
+    suppressClick = false;
+    return;
+  }
   if (button === state.activeSpeechButton) {
-    stopSpeech();
+    // Single click = pause/resume; a second click within the window = stop.
+    // Pause-then-stop is harmless, so the first click acts immediately (no
+    // double-click delay) and the second escalates.
+    const now = Date.now();
+    if (now - lastToggleAt < 350) {
+      stopSpeech();
+      return;
+    }
+    lastToggleAt = now;
+    togglePauseSpeech();
     return;
   }
 
   stopSpeech();
+  lastToggleAt = 0;
   const messageEl = button.closest(".message");
   let bodyEl = messageEl?.querySelector(":scope > .markdownBody");
 
@@ -496,42 +597,77 @@ export async function speakMessage(content, button) {
   const rate = parseFloat(dom.speechRateInput.value) || 1;
 
   state.activeSpeechButton = button;
-  state.activeSpeechButton.textContent = t("btn_stop");
-  state.activeSpeechButton.classList.add("isSpeaking");
+  button.title = t("tip_speakControls");
+  button.classList.add("isSpeaking");
+  setSpeechButtonLabel();
+  removeLongPress = attachLongPress(button);
 
   state.speechAbortController = new AbortController();
   const signal = state.speechAbortController.signal;
 
-  // Fetch one sentence's audio from the server. null on failure / nothing
-  // speakable (204) — the loop skips that sentence but keeps highlighting.
-  const fetchAudio = (text) =>
-    fetch("/api/speak-audio", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, voice, rate }),
-      signal,
-    })
-      .then((r) => (r.ok && r.status !== 204 ? r.blob() : null))
-      .then((blob) => (blob && blob.size ? URL.createObjectURL(blob) : null))
-      .catch(() => null);
+  // Click a sentence to jump the playhead there (segmented bodies only). A
+  // click that ends a text selection is ignored so highlighting still works.
+  if (bodyEl) {
+    segClickBody = bodyEl;
+    segClickHandler = (e) => {
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) return;
+      const seg = e.target.closest?.(".tts-seg");
+      if (!seg || !bodyEl.contains(seg)) return;
+      const j = parseInt(seg.dataset.seg, 10);
+      if (Number.isNaN(j)) return;
+      highlightSegment(bodyEl, j); // immediate visual feedback
+      seekToSegment(j);
+    };
+    bodyEl.addEventListener("click", segClickHandler);
+  }
 
-  // Prefetch pipeline: while sentence i plays in the browser, sentence i+1 is
-  // already synthesizing on the server — no per-sentence gap, and audio comes
-  // to THIS machine (frontend and backend may be different hosts).
-  let next = fetchAudio(sentences[0]);
-  for (let i = 0; i < sentences.length; i++) {
-    const url = await next;
-    if (signal.aborted) {
-      if (url) URL.revokeObjectURL(url);
-      return;
+  // Fetch one sentence's audio from the server, memoized by sentence index —
+  // prefetches resolve instantly when played, and recently played sentences
+  // replay without re-synthesis on a back-jump (evicted past CACHE_KEEP_BEHIND).
+  // null on failure / nothing speakable (204) — the loop skips that sentence
+  // but keeps highlighting.
+  audioCache = new Map();
+  const fetchAudio = (i) => {
+    if (!audioCache.has(i)) {
+      audioCache.set(
+        i,
+        fetch("/api/speak-audio", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: sentences[i], voice, rate }),
+          signal,
+        })
+          .then((r) => (r.ok && r.status !== 204 ? r.blob() : null))
+          .then((blob) => (blob && blob.size ? URL.createObjectURL(blob) : null))
+          .catch(() => null),
+      );
     }
-    next = i + 1 < sentences.length ? fetchAudio(sentences[i + 1]) : null;
+    return audioCache.get(i);
+  };
+
+  // Reading loop with a movable playhead. Prefetch pipeline: while sentence i
+  // plays in the browser, sentence i+1 is already synthesizing on the server —
+  // no per-sentence gap, and audio comes to THIS machine (frontend and backend
+  // may be different hosts). A seek (click on a sentence) interrupts the
+  // current playback, sets seekRequest, and the loop re-enters at that index.
+  let i = 0;
+  while (i < sentences.length) {
+    if (seekRequest != null) {
+      i = seekRequest;
+      seekRequest = null;
+    }
+    const url = await fetchAudio(i);
+    if (signal.aborted) return;
+    if (seekRequest != null) continue; // seek arrived mid-fetch — restart at target
+    if (i + 1 < sentences.length) fetchAudio(i + 1); // prefetch into the cache
     if (bodyEl) highlightSegment(bodyEl, i);
     if (url) {
       await playUrl(url, signal);
-      URL.revokeObjectURL(url);
       if (signal.aborted) return;
     }
+    evictAudioCache(i);
+    if (seekRequest == null) i++; // seek interrupt: keep i, top of loop jumps
   }
   stopSpeech(); // natural finish: restores the un-segmented DOM + button label
 }

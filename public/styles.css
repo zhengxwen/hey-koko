@@ -657,7 +657,7 @@ p {
   gap: 5px;
 }
 
-/* Two params side by side (e.g. 升格 target fps + interpolation engine). */
+/* Two params side by side (e.g. frame-interpolation target fps + engine). */
 .comfyParamRow {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1588,7 +1588,8 @@ button.secondary:disabled {
 }
 
 .chatArea::after {
-  content: "松开添加文件";
+  /* Drop hint text comes from i18n (applyUILanguage sets data-drop-hint). */
+  content: attr(data-drop-hint);
   position: absolute;
   inset: 14px;
   display: grid;
@@ -1970,7 +1971,8 @@ button.secondary:disabled {
   padding-left: 16px;
 }
 
-/* 顶层列表整体再缩进 20px，与正文拉开层次（嵌套层级在此基础上每层再 +20） */
+/* Indent top-level lists an extra 20px to set them off from body text
+   (each nesting level adds another 20 on top of this). */
 .markdownBody > ul,
 .markdownBody > ol,
 .plainBody > ul,
@@ -2008,7 +2010,8 @@ button.secondary:disabled {
   color: #3c454c;
 }
 
-/* 引用块内（递归渲染的段落/列表）首尾不留多余边距 */
+/* No stray leading/trailing margins inside blockquotes (recursively rendered
+   paragraphs/lists). */
 .markdownBody blockquote > :first-child,
 .plainBody blockquote > :first-child {
   margin-top: 0;
@@ -2018,7 +2021,7 @@ button.secondary:disabled {
   margin-bottom: 0;
 }
 
-/* 渲染的 SVG block（```svg 代码块） */
+/* Rendered SVG block (```svg code fences) */
 .markdownBody .svg-block,
 .plainBody .svg-block {
   margin: 0 0 6px;
@@ -2231,15 +2234,28 @@ button.secondary:disabled {
   background: #d93025;
 }
 
-/* 朗读时高亮当前句子（句子级锚点，朗读时切换 .tts-active）。
-   反相显示（reverse video）：背景=文字色、文字=背景色 —— 浅色主题黑底白字、
-   深色主题白底黑字，即"黑点白点互换"，和任何加亮色都截然不同。 */
+/* Highlight the sentence currently being read aloud (sentence-level anchors;
+   .tts-active moves as reading advances). Reverse video: background = text
+   color, text = background color — dark-on-light themes flip to light-on-dark
+   and vice versa, unmistakable next to any additive highlight color. */
 .tts-seg.tts-active {
   background-color: var(--ink);
   color: var(--panel);
   border-radius: 3px;
   padding: 1px 2px;
   transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+/* During a read-aloud session (data-original-html exists only then) sentences
+   are click-to-seek targets: pointer cursor + faint hover tint signal
+   clickability; the active sentence's reverse-video highlight is unaffected. */
+.markdownBody[data-original-html] .tts-seg {
+  cursor: pointer;
+}
+
+.markdownBody[data-original-html] .tts-seg:hover:not(.tts-active) {
+  background-color: color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 3px;
 }
 
 .message.isDragging {
@@ -3093,7 +3109,7 @@ button.secondary:disabled {
 .mentionPopup .commandItem-name { font-weight: 500; }
 .mentionPopup .commandItem-desc { font-size: 0.82em; }
 
-/* "📚 检索知识库中…" pulses while /ask retrieves */
+/* The "📚 searching the library…" status bubble pulses while /ask retrieves */
 .message.librarySearching .markdownBody { animation: libSearchPulse 1.3s ease-in-out infinite; }
 @keyframes libSearchPulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
 
@@ -3309,7 +3325,7 @@ button.secondary:disabled {
   flex-wrap: wrap;
 }
 
-/* 🔍 打字抠图 (SAM3) row above the canvas. */
+/* 🔍 type-to-segment (SAM3 text prompt) row above the canvas. */
 .maskAutoTextRow {
   display: flex;
   gap: 8px;
@@ -3387,7 +3403,7 @@ button.secondary:disabled {
   cursor: pointer;
 }
 
-/* Press feedback so a momentary action (扩张边缘 etc.) visibly registers the click,
+/* Press feedback so a momentary action (grow-edges etc.) visibly registers the click,
    including in Safari where the default button active-state is subtle. */
 .maskControls button:active {
   transform: translateY(1px);
@@ -4593,7 +4609,7 @@ button.secondary:disabled {
 
 /* /analyze extracted-frame thumbnails (in the folded thinking block): each thumb
    displays at its natural aspect (capped 240×260 by .generatedImage — portrait video
-   frames stay narrow, NOT stretched to 240 wide) and is captioned "第N帧 · Xs".
+   frames stay narrow, NOT stretched to 240 wide) and is captioned "frame N · Xs".
    Scene-change picks get just a ⚡ badge in the top-left corner (no border ring, so
    the thumbnail stays compact). */
 .frameThumbGrid { gap: 8px; align-items: flex-start; }
@@ -5423,7 +5439,7 @@ button.secondary:disabled {
   cursor: pointer;
 }
 .bgPhRetry { background: var(--surface-hover); color: var(--ink); }
-/* "前往后台任务" reads as a quiet link until hovered — ghost at rest, blue fill on hover. */
+/* The "go to background jobs" link reads quiet until hovered — ghost at rest, blue fill on hover. */
 .bgPhGoto {
   background: transparent;
   color: var(--accent);
@@ -5601,7 +5617,7 @@ button.secondary:disabled {
 /* Distill-card heading chevron: only the chevron folds the card (heading text still renames). */
 .libDocCardChevron { cursor: pointer; margin-right: 5px; font-size: 0.75em; color: var(--muted); user-select: none; vertical-align: middle; }
 .libDocCardChevron:hover { color: var(--accent); }
-/* Tag-bar "+N ▾ / 收起 ▴" expander chip: same shape as a tag, visually a control. */
+/* Tag-bar "+N ▾ / collapse ▴" expander chip: same shape as a tag, visually a control. */
 .libraryTagMore { background: var(--surface) !important; border: 1px dashed var(--muted); cursor: pointer; opacity: 0.85; }
 .libraryTagMore:hover { opacity: 1; border-color: var(--accent); }
 /* "🔗 Related" chips row under the per-doc toolbar (top-5 similar docs, clickable).
@@ -5611,7 +5627,7 @@ button.secondary:disabled {
 .libRelatedLabel { font-size: 0.85em; opacity: 0.75; white-space: nowrap; }
 .libRelatedChip { font-size: 0.82em; font-weight: 500; min-height: 0; line-height: 1.5; color: var(--ink); padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); cursor: pointer; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .libRelatedChip:hover { border-color: var(--accent); color: var(--accent); background: var(--panel); }
-/* per-doc relation graph (distill card «§ 关系» visualized) */
+/* per-doc relation graph (the distill card's relations section visualized) */
 .relGraph { margin: 8px 0 2px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-alpha, var(--panel)); overflow: hidden; }
 .relGraphSummary { cursor: pointer; padding: 6px 10px; font-size: 0.82em; color: var(--muted); user-select: none; list-style: none; }
 .relGraphSummary::-webkit-details-marker { display: none; }
@@ -6193,7 +6209,7 @@ button.secondary:disabled {
 .feedMgrInput { width: auto; flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--paper); color: var(--ink); font-size: 13px; }
 .feedMgrName { flex: 0 0 160px; }
-/* "✅ 站点" picker: button + anchored dropdown listing every registered site handler. */
+/* "✅ sites" picker: button + anchored dropdown listing every registered site handler. */
 .feedMgrSitesWrap { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; }
 .feedMgrSitesMenu { position: absolute; top: calc(100% + 5px); left: 0; z-index: 40;
   min-width: 300px; max-width: 460px; max-height: 320px; overflow-y: auto;

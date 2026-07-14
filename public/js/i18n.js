@@ -566,6 +566,10 @@ const UI = {
     tooltip_file: "Upload file",
     // Message action buttons
     btn_speak: "Speak",
+    hint_dropFiles: "Release to add file",
+    btn_pauseSpeak: "Pause",
+    btn_resumeSpeak: "Resume",
+    tip_speakControls: "Click or ESC to pause · double-click, long-press, or ESC again to stop · click a sentence to jump",
     btn_resend: "Resend",
     btn_translateEn: "En",
     btn_translateZh: "Ch",
@@ -1378,6 +1382,10 @@ const UI = {
     tooltip_askSuggest: "AI 帮你提问",
     tooltip_file: "上传文件",
     btn_speak: "朗读",
+    hint_dropFiles: "松开添加文件",
+    btn_pauseSpeak: "暂停",
+    btn_resumeSpeak: "继续",
+    tip_speakControls: "单击或 ESC 暂停 · 双击、长按或再按 ESC 停止 · 点击句子跳读",
     btn_resend: "重发",
     btn_translateEn: "英",
     btn_translateZh: "中",
@@ -2186,6 +2194,10 @@ const UI = {
     tooltip_askSuggest: "AI 幫你提問",
     tooltip_file: "上傳檔案",
     btn_speak: "朗讀",
+    hint_dropFiles: "鬆開添加檔案",
+    btn_pauseSpeak: "暫停",
+    btn_resumeSpeak: "繼續",
+    tip_speakControls: "單擊或 ESC 暫停 · 雙擊、長按或再按 ESC 停止 · 點擊句子跳讀",
     btn_resend: "重發",
     btn_translateEn: "英",
     btn_translateZh: "中",
@@ -2792,6 +2804,8 @@ const BINDINGS = [
   { sel: '.themeColorDot[data-theme="mint"]', key: "theme_mint", attr: "title" },
   { sel: '.themeColorDot[data-theme="slate"]', key: "theme_slate", attr: "title" },
   // Chat area
+  // Drag-drop hint lives in CSS as content: attr(data-drop-hint) on .chatArea::after
+  { sel: ".chatArea", key: "hint_dropFiles", attr: "data-drop-hint" },
   { sel: "#messageInput", key: "input_placeholder", attr: "placeholder" },
   { sel: "#quickPromptBtn", key: "tooltip_quickPrompt", attr: "title" },
   { sel: "#askSuggestBtn", key: "tooltip_askSuggest", attr: "title" },
@@ -2824,6 +2838,9 @@ export function applyUILanguage() {
       // Replace last text node (e.g. import button label after <input>)
       const nodes = Array.from(el.childNodes).filter(n => n.nodeType === Node.TEXT_NODE);
       if (nodes.length) nodes[nodes.length - 1].textContent = "\n              " + text + "\n            ";
+    } else if (attr) {
+      // Any other attribute name is set verbatim (e.g. data-* consumed by CSS attr()).
+      el.setAttribute(attr, text);
     } else {
       el.textContent = text;
     }

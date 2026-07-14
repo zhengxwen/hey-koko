@@ -832,11 +832,17 @@ function buildQwenEdit({ model, prompt, imageName, maskName, seed, cfg, comp }) 
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
   // Masked Qwen-Image-Edit: gate the latent so the instruction only repaints the
-  // painted region (the conditioning still sees the whole image for context).
+  // painted region (the conditioning still sees the whole image for context), then
+  // COMPOSITE the original image back OUTSIDE the mask so the background stays
+  // pixel-for-pixel identical (SetLatentNoiseMask alone still VAE round-trips the
+  // whole frame). Output = input size, so the decode (9) + original (4) align 1:1;
+  // ImageCompositeMasked resizes the mask to match internally.
   if (maskName) {
     wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
     wf["21"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["7", 0], mask: ["20", 0] } };
     wf["8"].inputs.latent_image = ["21", 0];
+    wf["22"] = { class_type: "ImageCompositeMasked", inputs: { destination: ["4", 0], source: ["9", 0], x: 0, y: 0, resize_source: false, mask: ["20", 0] } };
+    wf["10"].inputs.images = ["22", 0];
   }
   return wf;
 }
