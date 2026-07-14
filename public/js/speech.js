@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // Text-to-Speech functionality
-import { dom, state } from './state.js';
+import { dom, state, refreshScrollState } from './state.js';
 import { t, getUILanguage } from './i18n.js';
 
 // Localized display labels for the neural-engine preset voices (the dropdown's
@@ -171,7 +171,12 @@ function getChineseVoice() {
 // ── Playback control state (one read-aloud session at a time) ──────────────
 // Session-scoped; reset by stopSpeech. Seek/pause work by nudging these and
 // interrupting the current sentence — the reading loop in speakMessage reacts.
-let currentAudio = null; // <audio> of the sentence being played (or primed while paused)
+let currentAudio = null; // the shared <audio> while a sentence is playing (or primed while paused)
+// ONE media element reused for every sentence of every session. Creating a new
+// Audio per sentence looks harmless but each one holds a Chrome WebMediaPlayer
+// until GC, and a tab caps out around ~75 — long articles got slower and
+// slower and eventually froze the UI. Reuse + explicit release keeps it at 1.
+let sharedAudio = null;
 let speechPaused = false;
 let seekRequest = null; // sentence index to jump to, consumed by the reading loop
 let audioCache = null; // Map<segIndex, Promise<blobUrl|null>> — resolved sentences stay for back-jumps
@@ -253,6 +258,7 @@ export function stopSpeech() {
   // playback is browser-side.
   state.speechAbortController?.abort();
   state.speechAbortController = null;
+  releaseSharedAudio(); // idle between sentences / natural finish: nothing aborted the element
   currentAudio = null;
   speechPaused = false;
   seekRequest = null;
@@ -274,6 +280,7 @@ export function stopSpeech() {
     state.activeSpeechButton.classList.remove("isSpeaking", "isPaused");
     state.activeSpeechButton = null;
   }
+  refreshScrollState(); // reading suppressed the jump-to-bottom button; re-evaluate
 }
 
 // ESC control: first press pauses, a second press while paused stops.
@@ -511,28 +518,42 @@ function segmentBody(bodyEl) {
   return ranges.map((r) => flat.slice(r.start, r.end));
 }
 
-// Play one synthesized sentence (blob URL) to completion. Resolves on ended /
-// error / abort / seek-interrupt — never rejects, so the reading loop always
-// advances. The abort listener pauses playback (stopSpeech); _ttsInterrupt is
-// the same teardown triggered by a seek, which resolves without aborting the
-// whole session. The element is published on currentAudio so pause/resume can
-// reach it; if the session is paused when a sentence arrives (pause hit
-// between sentences), playback is primed but not started — resume starts it.
+// Fully release the shared element's media pipeline (src stays bound otherwise).
+function releaseSharedAudio() {
+  if (!sharedAudio) return;
+  sharedAudio.pause();
+  sharedAudio.removeAttribute("src");
+  sharedAudio.load();
+}
+
+// Play one synthesized sentence (blob URL) to completion on the shared <audio>.
+// Resolves on ended / error / abort / seek-interrupt — never rejects, so the
+// reading loop always advances. The abort listener pauses playback (stopSpeech);
+// _ttsInterrupt is the same teardown triggered by a seek, which resolves without
+// aborting the whole session. The element is published on currentAudio so
+// pause/resume can reach it; if the session is paused when a sentence arrives
+// (pause hit between sentences), playback is primed but not started — resume
+// starts it. Per-sentence listeners are removed in done() so the shared element
+// never accumulates them.
 function playUrl(url, signal) {
   return new Promise((resolve) => {
-    const audio = new Audio(url);
+    if (!sharedAudio) sharedAudio = new Audio();
+    const audio = sharedAudio;
+    audio.src = url;
     currentAudio = audio;
     let settled = false;
     const done = () => {
       if (settled) return;
       settled = true;
       if (currentAudio === audio) currentAudio = null;
+      audio._ttsInterrupt = null;
       signal.removeEventListener("abort", onAbort);
+      audio.removeEventListener("ended", done);
+      audio.removeEventListener("error", done);
       resolve();
     };
     const onAbort = () => {
-      audio.pause();
-      audio.src = "";
+      releaseSharedAudio();
       done();
     };
     audio._ttsInterrupt = onAbort;
@@ -601,6 +622,7 @@ export async function speakMessage(content, button) {
   button.classList.add("isSpeaking");
   setSpeechButtonLabel();
   removeLongPress = attachLongPress(button);
+  refreshScrollState(); // hide the jump-to-bottom button for the whole session
 
   state.speechAbortController = new AbortController();
   const signal = state.speechAbortController.signal;

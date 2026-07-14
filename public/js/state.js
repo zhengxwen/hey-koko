@@ -178,10 +178,13 @@ export function scrollChatToEndIfPinned() {
 
 // Recompute "pinned to bottom?" from live geometry and toggle the floating
 // jump-to-bottom button. Called on user scroll and after each auto-scroll.
+// While reading aloud the button stays hidden: the highlight auto-scroll
+// intentionally follows sentences far above the bottom, and jumping down
+// mid-read would fight it.
 export function refreshScrollState() {
   const el = dom.messagesEl;
   if (!el) return;
   const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
   state.stickToBottom = distance <= 40;
-  if (dom.scrollToBottomBtn) dom.scrollToBottomBtn.hidden = distance <= 80;
+  if (dom.scrollToBottomBtn) dom.scrollToBottomBtn.hidden = distance <= 80 || !!state.activeSpeechButton;
 }
