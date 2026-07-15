@@ -366,6 +366,10 @@ body.isResizingPanel {
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+  /* The 160px avatar makes this row taller than the name+picker beside it, so
+     centring leaves ~25px of dead space under the picker. Pull the tabs back up
+     rather than un-centring the name. */
+  margin-bottom: -22px;
 }
 
 .profile-side {
