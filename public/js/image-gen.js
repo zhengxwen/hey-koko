@@ -682,6 +682,20 @@ function animateSegmentCap(pixelBudget, torchCompile = false) {
   return torchCompile ? 17 : 33;           // beyond 1080p
 }
 
+// SCAIL-2's "animate" MODE sentinel (scail2_animate) also matches /animate/, while its
+// other entry is the raw filename and matches neither — so a bare /animate/ test both
+// misfires and splits SCAIL-2's two entries. Route by these instead.
+const isScail2Model = (m) => /scail/i.test(m || "");
+const isWanAnimateModel = (m) => /animate/i.test(m || "") && !isScail2Model(m);
+// Both pose-transfer pipelines take exactly ONE reference image (the character).
+const usesOneRefImage = (m) => isWanAnimateModel(m) || isScail2Model(m);
+// Frames per chained pass. SCAIL-2's is a FIXED 81 (mirrors SCAIL2_FRAMES in
+// server/comfy.js) — its cost doesn't scale with resolution the way Animate's does.
+const SCAIL2_SEG_FRAMES = 81;
+const SEG_OVERLAP = 5; // same in both pipelines
+const segmentCapFor = (m, pixelBudget, torchCompile) =>
+  isScail2Model(m) ? SCAIL2_SEG_FRAMES : animateSegmentCap(pixelBudget, torchCompile);
+
 export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null, sink = null, comfyUrl = null) {
   const tab = getTab(tabId);
   if (!tab) return;
@@ -725,11 +739,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   setAvatarState("thinking");
 
   const vidModel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
-  // Wan Animate (with a source video) uses only ONE reference image (the character);
-  // any extra attached images are ignored. Say so instead of the generic "N images"
-  // count, so the user doesn't think the extras took effect.
+  // Wan Animate / SCAIL-2 (with a source video) use only ONE reference image (the
+  // character); any extra attached images are ignored. Say so instead of the generic
+  // "N images" count, so the user doesn't think the extras took effect.
   const vidImgs = refImages && refImages.length > 1
-    ? (/animate/i.test(model || "")
+    ? (usesOneRefImage(model)
         ? ` · ${t("msg_animateFirstImageOnly", { n: refImages.length })}`
         : ` · ${t("msg_inputImages", { n: refImages.length })}`)
     : "";
@@ -771,12 +785,12 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   const videoPrompt = parsed.enhancedPrompt || parsed.prompt;
   const promptWasEnhanced = !!parsed.enhancedPrompt;
 
-  // Estimated chunk count for a chained Wan Animate (each chunk = one KSampler pass).
-  // Drives both the scaled timeout (below) and the overall progress / ETA. The server
-  // decides the real count; ±1 here is fine for an estimate.
+  // Estimated chunk count for a chained Wan Animate / SCAIL-2 (each chunk = one
+  // sampler pass). Drives both the scaled timeout (below) and the overall progress /
+  // ETA. The server decides the real count; ±1 here is fine for an estimate.
   const animBudgetEta = (reqOptions.width && reqOptions.height) ? reqOptions.width * reqOptions.height : 640 * 640;
-  const estPasses = (/animate/i.test(model) && sourceVideoFrames > 0 && !reqOptions.length)
-    ? Math.max(1, Math.ceil(sourceVideoFrames / Math.max(1, animateSegmentCap(animBudgetEta, !!reqOptions.torchCompile) - 5)))
+  const estPasses = (usesOneRefImage(model) && sourceVideoFrames > 0 && !reqOptions.length)
+    ? Math.max(1, Math.ceil(sourceVideoFrames / Math.max(1, segmentCapFor(model, animBudgetEta, !!reqOptions.torchCompile) - SEG_OVERLAP)))
     : 1;
 
   // Live progress bar + preview frames via ComfyUI's WebSocket. The browser owns
@@ -1005,13 +1019,14 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       : fetch("/api/generate-comfy", { method: "POST", headers: { "Content-Type": "application/json" }, signal: abortController.signal, body: JSON.stringify(vbody) });
   };
 
-  // Wan Animate: a source longer than the single-pass cap is generated in segments
-  // and merged — unless the user pinned a ⚙ length (forces one bounded pass). The
-  // cap shrinks at higher output resolutions (VRAM headroom). Budget = the selected
-  // ⚙/--size area, or the 640×640 default (mirrors the server's sizing). Only used to
-  // pick the "seamless long video" label — the SERVER does the actual chunking in-graph.
+  // Wan Animate / SCAIL-2: a source longer than the single-pass cap is generated in
+  // segments and merged — unless the user pinned a ⚙ length (forces one bounded pass).
+  // Animate's cap shrinks at higher output resolutions (VRAM headroom); SCAIL-2's is
+  // fixed. Budget = the selected ⚙/--size area, or the 640×640 default (mirrors the
+  // server's sizing). Only used to pick the "seamless long video" label — the SERVER
+  // does the actual chunking in-graph.
   const animBudget = (reqOptions.width && reqOptions.height) ? reqOptions.width * reqOptions.height : 640 * 640;
-  const willChunk = /animate/i.test(model) && !!sourceVideoName && sourceVideoFrames > animateSegmentCap(animBudget, !!reqOptions.torchCompile) && !reqOptions.length;
+  const willChunk = usesOneRefImage(model) && !!sourceVideoName && sourceVideoFrames > segmentCapFor(model, animBudget, !!reqOptions.torchCompile) && !reqOptions.length;
   // Total output duration of the long video (full source: frames ÷ fps), e.g. 5.4.
   const fullSec = (willChunk && sourceVideoFps > 0) ? Math.round(sourceVideoFrames / sourceVideoFps * 10) / 10 : 0;
 
@@ -1101,8 +1116,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // Wan Animate SINGLE-FRAME (still pose transfer): animate model, NO source video, and
   // ≥2 images (1st = pose, 2nd = character) → an IMAGE result. Fall through to the image
   // path below (which sends the images and renders the returned still) instead of the
-  // video path.
-  const isAnimateStill = /animate/i.test(comfyModel || "") && !initVideo && Array.isArray(refImages) && refImages.length >= 2;
+  // video path. SCAIL-2 is excluded: it has no still path (the driving video IS the
+  // input), so it must stay on the video path and report the missing-video error.
+  const isAnimateStill = isWanAnimateModel(comfyModel) && !initVideo && Array.isArray(refImages) && refImages.length >= 2;
 
   // A selected ComfyUI VIDEO model routes to the dedicated video path. Pass the
   // sink + the worker url through so a background video job stays headless + on-target.

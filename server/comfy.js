@@ -196,9 +196,13 @@ function videoTypeOf(model) {
   // Video enhance (interpolate + upscale): a model-free post-process (frame interpolation +
   // AI upscale) on a source video. A fixed sentinel, not a checkpoint filename.
   if (/^video-enhance$/i.test(model)) return "enhance";
-  // Bernini (video-edit) and Animate (pose-transfer) are WAN-2.2 variants whose
-  // filenames contain "wan" — check them BEFORE the generic /wan/ branch.
+  // Bernini (video-edit), Animate (pose-transfer) and SCAIL-2 (character animation)
+  // are all WAN variants whose filenames contain "wan" — check them BEFORE the
+  // generic /wan/ branch.
+  // scail BEFORE animate: the "scail-2 (animate)" sentinel contains BOTH words, and
+  // no real filename contains the other's keyword — so this order is unambiguous.
   if (/bernini/i.test(model)) return "bernini";
+  if (/scail/i.test(model)) return "scail2";
   if (/animate/i.test(model)) return "animate";
   if (/wan/i.test(model)) return "wan";
   if (/ltx/i.test(model)) return "ltx";
@@ -235,6 +239,17 @@ async function resolveBerniniAuto() {
 // blacked-out background so the character is composited back into the source scene).
 // Resolved at generation time to the real animate UNET filename.
 const ANIMATE_REPLACE = "wan_animate_replace";
+
+// Sentinel for the "scail-2 (animate)" dropdown entry. SCAIL-2 has the same two
+// modes as Wan Animate but picks them with ONE node flag (replacement_mode), so
+// both entries resolve to the SAME UNET — Replacement is the model's own default
+// (and this dropdown's base entry), Animation is this sentinel.
+const SCAIL2_ANIMATE = "scail2_animate";
+
+async function resolveScail2Unet() {
+  const unets = await comfyEnum("UNETLoader", "unet_name");
+  return unets.find((n) => videoTypeOf(n) === "scail2") || null;
+}
 
 // Sentinel for the "video enhance" (interpolate + upscale) dropdown entry — a source video is
 // AI-upscaled and frame-interpolated to a target fps. Has no diffusion model, so it
@@ -298,6 +313,16 @@ async function proxyComfyModels(req, res) {
       if (vt === "animate") {
         videoModels.push({ name: n, type: "animate", label: "wan animate (move)", needsVideo: true });
         videoModels.push({ name: ANIMATE_REPLACE, type: "animate", label: "wan animate (replace)", needsVideo: true });
+        continue;
+      }
+      // SCAIL-2 (character animation) — one UNET, two modes, same split as Animate:
+      //  • replace → character REPLACES the tracked person in the source video
+      //  • animate → character performs the source video's motion
+      // Unlike Animate it feeds the driving video to the model DIRECTLY (no DWPose
+      // stick-figure step), and it tracks the subject with SAM3 instead of SAM2.
+      if (vt === "scail2") {
+        videoModels.push({ name: SCAIL2_ANIMATE, type: "scail2", label: "scail-2 (animate)", needsVideo: true });
+        videoModels.push({ name: n, type: "scail2", label: "scail-2 (replace)", needsVideo: true });
         continue;
       }
       const is14b = /14b/i.test(n);
@@ -1540,6 +1565,168 @@ async function animateCompanions() {
   return { clip, vae, clipVision, loraSpeed, loraRelight };
 }
 
+// SCAIL-2 companions. Shares umt5 / clip_vision_h / the Wan 2.1 VAE / the lightx2v
+// distill LoRA with Wan Animate, and adds its own DPO LoRA + the SAM3 checkpoint
+// (loaded as a plain CheckpointLoaderSimple — its CLIP output drives the
+// open-vocabulary text query that picks the subject to track).
+async function scail2Companions() {
+  const [clips, vaes, loras, cvs, ckpts] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+    comfyEnum("LoraLoaderModelOnly", "lora_name"),
+    comfyEnum("CLIPVisionLoader", "clip_name"),
+    comfyEnum("CheckpointLoaderSimple", "ckpt_name"),
+  ]);
+  const find = (list, re) => list.find((x) => re.test(x));
+  const clip = find(clips, /umt5/i);
+  // The template pins the bf16 Wan 2.1 VAE; any Wan 2.1 VAE works.
+  const vae = find(vaes, /wan.?2[._]1.*vae/i) || find(vaes, /wan.*vae/i);
+  const clipVision = find(cvs, /clip_vision_h|clip.?vision.*h\b/i) || find(cvs, /clip.?vision/i);
+  const loraDistill = find(loras, /lightx2v.*i2v.*14b.*distill|lightx2v_I2V_14B/i);
+  const loraDpo = find(loras, /scail.*dpo|dpo.*scail/i);
+  const sam3 = find(ckpts, /sam3/i);
+  const missing = [];
+  if (!clip) missing.push("umt5_xxl_fp8_e4m3fn_scaled.safetensors → text_encoders/");
+  if (!vae) missing.push("Wan2_1_VAE_bf16.safetensors → vae/");
+  if (!clipVision) missing.push("clip_vision_h.safetensors → clip_vision/");
+  if (!loraDistill) missing.push("lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors → loras/");
+  if (!loraDpo) missing.push("wan2.1_SCAIL_2_DPO_lora_bf16.safetensors → loras/");
+  if (!sam3) missing.push("sam3.1_multiplex_fp16.safetensors → checkpoints/");
+  if (missing.length) throw new Error("Missing files required by SCAIL-2:\n- " + missing.join("\n- "));
+  return { clip, vae, clipVision, loraDistill, loraDpo, sam3 };
+}
+
+// SCAIL-2 (zai-org, built on Wan 2.1) — end-to-end character animation. A reference
+// character image + a driving video → the character performs the motion (Animation)
+// or replaces the tracked person in the source scene (Replacement, the model's own
+// default). Flattened from the official "SCAIL-2: Character Replacement" template
+// (Base + Extend subgraphs) — LIVE-VERIFIED end-to-end in both modes.
+//
+// Unlike Wan Animate there is NO intermediate pose representation: the driving video
+// goes straight into the model, so there's no DWPose step to wait on. SAM3 tracks the
+// subject in BOTH the driving video and the reference image via an open-vocabulary
+// text query ("human" by default); SCAIL2ColoredMask turns the two tracks into the
+// colour-coded masks that bind body regions between them. Its background colour is
+// what actually selects the mode, hence the single `replace` flag driving both nodes.
+//
+// The template's Primitive/Switch/MathExpression plumbing is resolved here in JS, and
+// ResizeImageMaskNode → ImageScale (the template's own "scale dimensions"+area+center).
+//
+// LONG SOURCES: the official workflow needs ONE MANUAL RUN PER SEGMENT (its note says
+// WanSCAILToVideo "cannot queue all segments automatically"). We emit the whole chain
+// in ONE graph instead: segment k slices the source at STRIDE·k, takes segment k−1's
+// frames as `previous_frames` (the node reuses the last `previous_frame_count`), drops
+// its regenerated overlap, and colour-matches to the previous segment's last frame —
+// then ImageBatch concatenates. `segments` = [{offset,length}, …] (length 1 = one pass).
+const SCAIL2_FRAMES = 81;                          // template default frame_count, 4n+1
+const SCAIL2_OVERLAP = 5;                          // previous_frame_count
+const SCAIL2_STRIDE = SCAIL2_FRAMES - SCAIL2_OVERLAP; // 76 — pose offset per segment
+
+// Segment schedule for a source of `total` frames, capped at `cap` frames per pass.
+function scail2Segments(total, cap = SCAIL2_FRAMES) {
+  const snap4 = (n) => Math.max(1, Math.floor((n - 1) / 4) * 4 + 1); // 4n+1, ≤ n
+  const per = snap4(Math.max(5, Math.min(cap, SCAIL2_FRAMES)));
+  const stride = per - SCAIL2_OVERLAP;
+  const segs = [];
+  if (!(total > 0)) return [{ offset: 0, length: per }];
+  for (let k = 0; k < 400; k++) {
+    const offset = stride * k;
+    const avail = total - offset;
+    if (avail <= 0) break;
+    const length = snap4(Math.min(per, avail));
+    if (length < 5) break;
+    // Test the SNAPPED length, not `avail`: a later segment drops its first
+    // SCAIL2_OVERLAP frames, so one that snaps down to exactly the overlap would
+    // contribute nothing and hand ColorTransfer an empty batch.
+    if (k > 0 && length <= SCAIL2_OVERLAP) break;
+    segs.push({ offset, length });
+    if (avail <= per) break;
+  }
+  return segs.length ? segs : [{ offset: 0, length: per }];
+}
+
+function buildScail2({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, segments, replace = false, turbo = true, poseStrength = 1, poseStart = 0, poseEnd = 1, sam3VideoObject = "human", sam3ImageObject = "human" }) {
+  const segs = (Array.isArray(segments) && segments.length) ? segments : [{ offset: 0, length: SCAIL2_FRAMES }];
+  // The template leaves the negative EMPTY (cfg 1 in turbo, so it does nothing);
+  // honour an explicit one for the 40-step/cfg-5 non-turbo path.
+  const neg = negative && negative.trim() ? negative : "";
+  const steps = turbo ? 6 : 40;
+  const cfg = turbo ? 1 : 5;
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    // The DPO (quality) LoRA is ALWAYS applied; the distill LoRA is the turbo branch.
+    "2": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.loraDpo, strength_model: 1 } },
+    "5": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
+    "6": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "7": { class_type: "CLIPVisionLoader", inputs: { clip_name: comp.clipVision } },
+    "8": { class_type: "CLIPTextEncode", inputs: { clip: ["5", 0], text: prompt } },
+    "9": { class_type: "CLIPTextEncode", inputs: { clip: ["5", 0], text: neg } },
+    "10": { class_type: "LoadImage", inputs: { image: refImageName } },
+    "11": { class_type: "CLIPVisionEncode", inputs: { clip_vision: ["7", 0], image: ["10", 0], crop: "none" } },
+    "12": { class_type: "LoadVideo", inputs: { file: videoName } },
+    "15": { class_type: "GetVideoComponents", inputs: { video: ["12", 0] } },
+    // SAM3 open-vocabulary tracking. Node 23 tracks the REFERENCE image once and is
+    // shared by every segment; each segment tracks its own slice of the driving video.
+    "20": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: comp.sam3 } },
+    "21": { class_type: "CLIPTextEncode", inputs: { clip: ["20", 1], text: sam3VideoObject } },
+    "22": { class_type: "CLIPTextEncode", inputs: { clip: ["20", 1], text: sam3ImageObject } },
+    "23": { class_type: "SAM3_VideoTrack", inputs: { images: ["10", 0], model: ["20", 0], detection_threshold: 0.5, max_objects: 4, detect_interval: 1, conditioning: ["22", 0] } },
+    "27": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
+  };
+  if (turbo) wf["3"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraDistill, strength_model: 0.8 } };
+  const modelSrc = turbo ? "3" : "2";
+  wf["4"] = { class_type: "ModelSamplingSD3", inputs: { model: [modelSrc, 0], shift: 5 } };
+  // Mirrors the template: BasicScheduler taps the LoRA'd model BEFORE ModelSamplingSD3.
+  wf["18"] = { class_type: "BasicScheduler", inputs: { model: [modelSrc, 0], scheduler: "simple", steps, denoise: 1 } };
+
+  let acc = null, prevOut = null;
+  segs.forEach((sg, k) => {
+    // 20 apart: a segment spans b+0 … b+11, so a 10-stride would silently overwrite
+    // the previous segment's nodes — still-valid JSON, corrupted graph.
+    const b = 100 + k * 20;
+    const F = String(b), R = String(b + 1), G = String(b + 2), T = String(b + 3),
+          MK = String(b + 4), S = String(b + 5), K = String(b + 6), D = String(b + 7);
+    // The pose offset is applied by SLICING the source; the node's own
+    // video_frame_offset stays 0 (exactly what the template does).
+    wf[F] = { class_type: "ImageFromBatch", inputs: { image: ["15", 0], batch_index: sg.offset, length: sg.length } };
+    wf[R] = { class_type: "ImageScale", inputs: { image: [F, 0], upscale_method: "area", width, height, crop: "center" } };
+    // Size + length come from the RESIZED slice, so a short tail segment self-corrects.
+    wf[G] = { class_type: "GetImageSize", inputs: { image: [R, 0] } };
+    wf[T] = { class_type: "SAM3_VideoTrack", inputs: { images: [R, 0], model: ["20", 0], detection_threshold: 0.5, max_objects: 4, detect_interval: 1, conditioning: ["21", 0] } };
+    wf[MK] = { class_type: "SCAIL2ColoredMask", inputs: { driving_track_data: [T, 0], ref_track_data: ["23", 0], object_indices: "", sort_by: "left_to_right", replacement_mode: replace } };
+    const si = {
+      positive: ["8", 0], negative: ["9", 0], vae: ["6", 0],
+      pose_video: [R, 0], pose_video_mask: [MK, 0],
+      reference_image: ["10", 0], reference_image_mask: [MK, 1],
+      clip_vision_output: ["11", 0],
+      width: [G, 0], height: [G, 1], length: [G, 2],
+      batch_size: 1, pose_strength: poseStrength, pose_start: poseStart, pose_end: poseEnd,
+      video_frame_offset: 0, previous_frame_count: SCAIL2_OVERLAP, replacement_mode: replace,
+    };
+    if (k > 0) si.previous_frames = prevOut;
+    wf[S] = { class_type: "WanSCAILToVideo", inputs: si };
+    wf[K] = { class_type: "SamplerCustom", inputs: { model: ["4", 0], add_noise: true, noise_seed: seed, cfg, positive: [S, 0], negative: [S, 1], sampler: ["27", 0], sigmas: ["18", 0], latent_image: [S, 2] } };
+    wf[D] = { class_type: "VAEDecode", inputs: { samples: [K, 1], vae: ["6", 0] } };
+    let out = [D, 0];
+    if (k > 0) {
+      // Drop the regenerated overlap, then colour-match to the previous segment's
+      // last frame so the join can't drift in exposure/tint.
+      const C1 = String(b + 8), P1 = String(b + 9), CT = String(b + 10);
+      wf[C1] = { class_type: "ImageFromBatch", inputs: { image: [D, 0], batch_index: SCAIL2_OVERLAP, length: 4096 } };
+      wf[P1] = { class_type: "ImageFromBatch", inputs: { image: prevOut, batch_index: -1, length: 1 } };
+      wf[CT] = { class_type: "ColorTransfer", inputs: { image_target: [C1, 0], image_ref: [P1, 0], method: "reinhard_lab", source_stats: "per_frame", strength: 1 } };
+      out = [CT, 0];
+    }
+    if (k === 0) acc = out;
+    else { const B = String(b + 11); wf[B] = { class_type: "ImageBatch", inputs: { image1: acc, image2: out } }; acc = [B, 0]; }
+    prevOut = out;
+  });
+  // One CreateVideo over every segment — the output keeps the SOURCE fps + audio.
+  wf["90"] = { class_type: "CreateVideo", inputs: { images: acc, audio: ["15", 1], fps: ["15", 2] } };
+  wf["91"] = { class_type: "SaveVideo", inputs: { video: ["90", 0], filename_prefix: "heykoko_scail2", format: "auto", codec: "auto" } };
+  return wf;
+}
+
 // Wan 2.2 Animate — MOVE mode (pose transfer). A reference person image + a source
 // video → the character performs the video's motion. Flattened from the official
 // "Wan2.2 14B Animate" template (Move = no background_video / character_mask).
@@ -1955,6 +2142,16 @@ async function generateComfyImage(req, res) {
         return;
       }
     }
+    // SCAIL-2 ANIMATE shares the Replace UNET — only the replacement_mode flag differs.
+    let scail2Replace = videoTypeOf(model) === "scail2"; // the base entry IS Replacement
+    if (model === SCAIL2_ANIMATE) {
+      model = await resolveScail2Unet();
+      scail2Replace = false;
+      if (!model) {
+        sendJson(res, 400, { error: "SCAIL-2 model file not found (diffusion_models/ needs a *SCAIL* UNET)." });
+        return;
+      }
+    }
     const isMultiImage = Array.isArray(images) && images.length >= 2;
     // Output size for img2img edits, keeping the input's aspect ratio. Only
     // OVERRIDE the builder's natural sizing when we must: a size is specified
@@ -2128,6 +2325,42 @@ async function generateComfyImage(req, res) {
           videoDims = { width: outW || undefined, height: outH || undefined, fps: outFps };
         }
         if (srcFrames > 0) videoDims.length = (srcFrames - 1) * mult + 1; // for the done-line duration
+      } else if (videoType === "scail2") {
+        // SCAIL-2: a reference character image + a driving video. Needs BOTH — the
+        // model has no still/single-frame path (the driving motion IS the input).
+        if (!sourceVideo && !sourceVideoName) { sendJson(res, 400, { error: "SCAIL-2 needs a source video (the driving motion) plus a character reference image." }); return; }
+        if (!(Array.isArray(images) && images.length)) { sendJson(res, 400, { error: "SCAIL-2 needs a character reference image (plus the attached driving video)." }); return; }
+        const comp = await scail2Companions();
+        // Output follows the SOURCE video's aspect at the preset (or --size) budget.
+        // /32 — the template floors both dims to 32 before the resize.
+        let aspW = Number(sourceVideoWidth), aspH = Number(sourceVideoHeight);
+        let aw = snapDim(opts.width || 640, 32);
+        let ah = snapDim(opts.height || 640, 32);
+        if (aspW > 0 && aspH > 0) {
+          const aspect = aspW / aspH;
+          const budget = (opts.width && opts.height) ? opts.width * opts.height : 640 * 640;
+          aw = snapDim(Math.sqrt(budget * aspect), 32);
+          ah = snapDim(Math.sqrt(budget / aspect), 32);
+        }
+        // Segment schedule. A ⚙ length pins ONE bounded pass; otherwise the whole
+        // source is tiled into chained 81-frame segments (all in one graph).
+        const srcFrames = Number(sourceVideoFrames) || 0;
+        let segments, truncatedFrom;
+        if (opts.length) {
+          segments = scail2Segments(Math.min(opts.length, SCAIL2_FRAMES), Math.min(opts.length, SCAIL2_FRAMES)).slice(0, 1);
+          if (srcFrames > segments[0].length) truncatedFrom = srcFrames;
+        } else {
+          segments = scail2Segments(srcFrames);
+        }
+        // Total output = segment 0 in full + each later segment minus its overlap.
+        const totalFrames = segments.reduce((a, s, i) => a + s.length - (i > 0 ? SCAIL2_OVERLAP : 0), 0);
+        const sfps = Number(sourceVideoFps) || opts.fps || 16;
+        const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+        const refImageName = await uploadImage(images[0], controller.signal, "heykoko_scailref.png");
+        imagesUsed = 1;
+        workflow = buildScail2({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, segments, replace: scail2Replace });
+        videoDims = { width: aw, height: ah, length: totalFrames, fps: sfps, segments: segments.length };
+        if (truncatedFrom) videoDims.truncatedFrom = truncatedFrom;
       } else if (videoType === "animate" && !sourceVideo && !sourceVideoName) {
         // Wan Animate SINGLE-FRAME (no source video, TWO images → an IMAGE):
         //  • MOVE still    → image[0] = pose source, image[1] = character; the character

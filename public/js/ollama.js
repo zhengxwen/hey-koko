@@ -383,7 +383,10 @@ export function updateComfyParamVisibility() {
   if (!m) return;
   const upscale = /upscale|video-enhance/i.test(m);   // image-upscale / video-enhance → an upscale-model pipeline (no sampler/prompt)
   const video = !!(state.comfyVideoModels && state.comfyVideoModels.has(m)) || /video-enhance/i.test(m);
-  const animate = /animate/i.test(m);
+  // Wan Animate only — NOT SCAIL-2, whose "animate" mode sentinel also matches
+  // /animate/ but shares none of these knobs (no torch.compile toggle, no relight
+  // LoRA, and SAM3 picks the subject by text rather than a clicked point).
+  const animate = /animate/i.test(m) && !/scail/i.test(m);
   const diffusion = !upscale;                          // samples + takes a prompt (everything except the upscale pipelines)
   // Hide a field by its <label> (or, for the frame-interpolation pair, the shared .comfyParamRow; the
   // pick-person button has no label, so fall back to the element itself).
