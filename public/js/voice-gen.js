@@ -7,7 +7,7 @@
 // (rendered as an <audio> + download button in chat.js).
 import { dom, state } from './state.js';
 import { t } from './i18n.js';
-import { setAvatarState } from './avatar.js';
+import { setAvatarState, showExpression } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab } from './tabs.js';
 import { ttsFetch } from './server-queue.js';   // Option B: run TTS on the server queue
@@ -118,8 +118,7 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
       timestamp: Date.now(),
       genMs: Date.now() - genStart,
     });
-    setAvatarState("happy");
-    setTimeout(() => setAvatarState("idle"), 2000);
+    showExpression("happy");
   } catch (error) {
     sink.clearBubble();
     if (error.name !== "AbortError") {

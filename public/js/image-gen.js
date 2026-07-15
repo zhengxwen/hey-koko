@@ -6,7 +6,7 @@ import { dom, state } from './state.js';
 import { SIZE_PRESETS } from './constants.js';
 import { t, getPromptLanguage } from './i18n.js';
 import { makePreview, escapeHtml } from './utils.js';
-import { setAvatarState } from './avatar.js';
+import { setAvatarState, showExpression } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab } from './tabs.js';
 import { foregroundSink } from './gen-sink.js';
@@ -1089,8 +1089,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       renderReply(); // show this completed video immediately
     }
     sink.clearBubble();
-    setAvatarState("happy");
-    setTimeout(() => setAvatarState("idle"), 2000);
+    showExpression("happy");
   } catch (error) {
     sink.clearBubble();
     // Videos finished before a stop/error are already shown via renderReply().
@@ -1388,8 +1387,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     // grid stays visible right up until the final message replaces it.
     sink.clearBubble();
     sink.place(replyMsg);
-    setAvatarState("happy");
-    setTimeout(() => setAvatarState("idle"), 2000);
+    showExpression("happy");
   } catch (error) {
     sink.clearBubble();
     if (error.name === "AbortError") {

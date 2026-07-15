@@ -45,9 +45,12 @@
     <main class="shell">
       <aside class="panel">
         <div class="profile">
-          <div class="avatar-container" id="avatarContainer" aria-hidden="true">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" class="avatar-svg" id="avatarSvg"></svg>
-            <div class="avatar-cloud-badge" id="avatarCloudBadge" title="云端模型" hidden>☁️</div>
+          <div class="avatar-container" id="avatarContainer">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" class="avatar-svg" id="avatarSvg" aria-hidden="true"></svg>
+            <!-- The face above is decoration; this badge is not. It is the "your
+                 words leave this machine" cue, so it stays outside the svg's
+                 aria-hidden. Label and tooltip are set by updateCloudBadge(). -->
+            <div class="avatar-cloud-badge" id="avatarCloudBadge" role="img" hidden>☁️</div>
           </div>
           <div class="profile-side">
             <div class="profile-text">

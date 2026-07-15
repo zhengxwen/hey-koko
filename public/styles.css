@@ -513,7 +513,15 @@ body.isResizingPanel {
   display: none; /* beats display:flex above */
 }
 
+/* These are <button>s so they are tabbable. That drags in the global `button`
+   rule, which is written for pills — min-height:42px and an accent background
+   would turn a 34px round portrait into a green lozenge. Reset it here rather
+   than exempting these from the global rule. */
 .avatar-picker-item {
+  appearance: none;
+  min-height: 0;
+  font: inherit;
+  color: inherit;
   width: 34px;
   height: 34px;
   border: 2px solid var(--line);
@@ -526,9 +534,16 @@ body.isResizingPanel {
   background: var(--panel);
 }
 
+/* Also beats `button:hover`, which would paint the thumb accent-green. */
 .avatar-picker-item:hover {
   border-color: var(--accent);
   transform: scale(1.1);
+  background: var(--panel);
+}
+
+.avatar-picker-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .avatar-picker-item.is-active {
@@ -539,6 +554,7 @@ body.isResizingPanel {
 .avatar-picker-item svg {
   width: 100%;
   height: 100%;
+  display: block; /* no inline baseline gap inside the button box */
 }
 
 .avatar-container {
@@ -588,14 +604,14 @@ body.isResizingPanel {
   75% { transform: translateY(-1px) rotate(3deg); }
 }
 
-.avatar-container.is-thinking #avatarEyeLeft,
-.avatar-container.is-thinking #avatarEyeRight {
+.avatar-container.is-thinking .avatarEyeLeft,
+.avatar-container.is-thinking .avatarEyeRight {
   transform: translateY(-2px);
   transition: transform 0.3s ease;
 }
 
 /* Talking state */
-.avatar-container.is-talking #avatarMouthOpen {
+.avatar-container.is-talking .avatarMouthOpen {
   animation: avatarTalk 0.4s ease-in-out infinite alternate;
 }
 
@@ -604,38 +620,38 @@ body.isResizingPanel {
   100% { opacity: 1; ry: 5; }
 }
 
-.avatar-container.is-talking #avatarMouthNeutral {
+.avatar-container.is-talking .avatarMouthNeutral {
   opacity: 0;
 }
 
 /* Happy state */
-.avatar-container.is-happy #avatarEyes {
+.avatar-container.is-happy .avatarEyes {
   opacity: 0;
 }
 
-.avatar-container.is-happy #avatarHappyEyes {
+.avatar-container.is-happy .avatarHappyEyes {
   opacity: 1;
 }
 
-.avatar-container.is-happy #avatarMouthNeutral {
+.avatar-container.is-happy .avatarMouthNeutral {
   opacity: 0;
 }
 
-.avatar-container.is-happy #avatarMouthSmile {
+.avatar-container.is-happy .avatarMouthSmile {
   opacity: 1;
 }
 
-.avatar-container.is-happy #avatarCheeks {
+.avatar-container.is-happy .avatarCheeks {
   opacity: 1;
 }
 
 /* Shy state */
-.avatar-container.is-shy #avatarCheeks {
+.avatar-container.is-shy .avatarCheeks {
   opacity: 1;
 }
 
-.avatar-container.is-shy #avatarEyeLeft,
-.avatar-container.is-shy #avatarEyeRight {
+.avatar-container.is-shy .avatarEyeLeft,
+.avatar-container.is-shy .avatarEyeRight {
   transform: scaleY(0.6);
   transition: transform 0.3s ease;
 }
@@ -650,19 +666,51 @@ body.isResizingPanel {
 }
 
 /* Blink animation class (applied via JS) */
-.avatar-blink #avatarEyelidLeft,
-.avatar-blink #avatarEyelidRight {
+.avatar-blink .avatarEyelidLeft,
+.avatar-blink .avatarEyelidRight {
   transform: scale(1, 1);
   transition: transform 0.08s ease-in;
 }
 
+/* The parts above are classes, not ids: the picker thumbs and the flyout each
+   parse a full copy of a style's SVG, so an id would exist 3-7 times over. Keep
+   these rules scoped to .avatar-container — the thumbs are static portraits and
+   must not inherit the animated face's transitions. */
+
 /* Smooth transitions for all SVG elements */
-#avatarEyes, #avatarHappyEyes, #avatarMouthNeutral, #avatarMouthOpen, #avatarMouthSmile, #avatarCheeks {
+.avatar-container .avatarEyes,
+.avatar-container .avatarHappyEyes,
+.avatar-container .avatarMouthNeutral,
+.avatar-container .avatarMouthOpen,
+.avatar-container .avatarMouthSmile,
+.avatar-container .avatarCheeks {
   transition: opacity 0.3s ease;
 }
 
-#avatarEyeLeft, #avatarEyeRight {
+.avatar-container .avatarEyeLeft,
+.avatar-container .avatarEyeRight {
   transition: transform 0.3s ease;
+}
+
+/* Bella breathes, rocks and tilts on loops that never end. Under reduced motion
+   drop the whole-face movement: it is decoration, and the states that rely on it
+   stay legible without it — happy and shy still swap in their drawn parts (happy
+   eyes, smile, cheeks), and the send-status pill carries the same thinking cue.
+   Same selectors as the rules above, so equal specificity + later source order
+   wins. Blinking is a JS timer and CSS cannot stop it — see startBlinkLoop. */
+@media (prefers-reduced-motion: reduce) {
+  .avatar-svg,
+  .avatar-container.is-thinking .avatar-svg,
+  .avatar-container.is-shy .avatar-svg {
+    animation: none;
+  }
+
+  /* The mouth is the "streaming right now" signal rather than decoration, so it
+     stays — slowed, the way .starMapStatusBox already tames its busy pulse
+     instead of killing it. It animates the mouth, not the face, so no rocking. */
+  .avatar-container.is-talking .avatarMouthOpen {
+    animation-duration: 1.2s;
+  }
 }
 
 h1 {
