@@ -789,9 +789,25 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // sampler pass). Drives both the scaled timeout (below) and the overall progress /
   // ETA. The server decides the real count; ±1 here is fine for an estimate.
   const animBudgetEta = (reqOptions.width && reqOptions.height) ? reqOptions.width * reqOptions.height : 640 * 640;
-  const estPasses = (usesOneRefImage(model) && sourceVideoFrames > 0 && !reqOptions.length)
-    ? Math.max(1, Math.ceil(sourceVideoFrames / Math.max(1, segmentCapFor(model, animBudgetEta, !!reqOptions.torchCompile) - SEG_OVERLAP)))
-    : 1;
+  // Frames that actually get chained into segments — the ⚙ length rule DIFFERS per
+  // pipeline (mirrors the server): it bounds Wan Animate to ONE pass, but for SCAIL-2
+  // it only CAPS how much source is used, and SCAIL-2 still chains to reach it (its
+  // 81/pass is a model constraint, not a VRAM tier). 0 = not a chained run.
+  const chainFrames = (usesOneRefImage(model) && sourceVideoFrames > 0)
+    ? (reqOptions.length
+        ? (isScail2Model(model) ? Math.min(reqOptions.length, sourceVideoFrames) : 0)
+        : sourceVideoFrames)
+    : 0;
+  // Segment 0 covers a FULL cap-sized pass; only later ones trim the overlap, so the
+  // count is 1 + ceil((frames − cap) / (cap − overlap)) — true of both pipelines. The
+  // old `ceil(frames / (cap − overlap))` over-counted by one whenever the source fit
+  // in a single pass (81 frames at an 81 cap read as 2 → the badge showed "1/2").
+  const estPasses = (() => {
+    if (chainFrames <= 0) return 1;
+    const cap = Math.max(1, segmentCapFor(model, animBudgetEta, !!reqOptions.torchCompile));
+    if (chainFrames <= cap) return 1;
+    return 1 + Math.ceil((chainFrames - cap) / Math.max(1, cap - SEG_OVERLAP));
+  })();
 
   // Live progress bar + preview frames via ComfyUI's WebSocket. The browser owns
   // the clientId and hands it to the server so both subscribe to the same stream.
@@ -1019,16 +1035,15 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       : fetch("/api/generate-comfy", { method: "POST", headers: { "Content-Type": "application/json" }, signal: abortController.signal, body: JSON.stringify(vbody) });
   };
 
-  // Wan Animate / SCAIL-2: a source longer than the single-pass cap is generated in
-  // segments and merged — unless the user pinned a ⚙ length (forces one bounded pass).
-  // Animate's cap shrinks at higher output resolutions (VRAM headroom); SCAIL-2's is
-  // fixed. Budget = the selected ⚙/--size area, or the 640×640 default (mirrors the
-  // server's sizing). Only used to pick the "seamless long video" label — the SERVER
-  // does the actual chunking in-graph.
+  // Wan Animate / SCAIL-2: more chained frames than fit in one pass → generated as
+  // segments and merged. Animate's cap shrinks at higher output resolutions (VRAM
+  // headroom); SCAIL-2's is fixed. Budget = the selected ⚙/--size area, or the
+  // 640×640 default (mirrors the server's sizing). Only used to pick the "seamless
+  // long video" label — the SERVER does the actual chunking in-graph.
   const animBudget = (reqOptions.width && reqOptions.height) ? reqOptions.width * reqOptions.height : 640 * 640;
-  const willChunk = usesOneRefImage(model) && !!sourceVideoName && sourceVideoFrames > segmentCapFor(model, animBudget, !!reqOptions.torchCompile) && !reqOptions.length;
-  // Total output duration of the long video (full source: frames ÷ fps), e.g. 5.4.
-  const fullSec = (willChunk && sourceVideoFps > 0) ? Math.round(sourceVideoFrames / sourceVideoFps * 10) / 10 : 0;
+  const willChunk = !!sourceVideoName && chainFrames > segmentCapFor(model, animBudget, !!reqOptions.torchCompile);
+  // Total output duration of the long video (chained frames ÷ fps), e.g. 5.4.
+  const fullSec = (willChunk && sourceVideoFps > 0) ? Math.round(chainFrames / sourceVideoFps * 10) / 10 : 0;
 
   try {
     for (let i = 0; i < count; i++) {

@@ -2342,13 +2342,20 @@ async function generateComfyImage(req, res) {
           aw = snapDim(Math.sqrt(budget * aspect), 32);
           ah = snapDim(Math.sqrt(budget / aspect), 32);
         }
-        // Segment schedule. A ⚙ length pins ONE bounded pass; otherwise the whole
-        // source is tiled into chained 81-frame segments (all in one graph).
+        // Segment schedule. A ⚙ length caps how much of the source is used; without
+        // one the whole source is tiled. Either way the frames are chained into
+        // 81-frame segments in ONE graph.
+        //
+        // NOT Animate's "a pinned length forces one bounded pass" rule: Animate's cap
+        // is a VRAM tier (241 frames at low res, so one pass really does cover most
+        // clips), while SCAIL-2's 81 is a fixed MODEL constraint. Bounding the pass
+        // here would silently clamp every request over 81 frames down to 81.
         const srcFrames = Number(sourceVideoFrames) || 0;
         let segments, truncatedFrom;
         if (opts.length) {
-          segments = scail2Segments(Math.min(opts.length, SCAIL2_FRAMES), Math.min(opts.length, SCAIL2_FRAMES)).slice(0, 1);
-          if (srcFrames > segments[0].length) truncatedFrom = srcFrames;
+          const want = srcFrames > 0 ? Math.min(opts.length, srcFrames) : opts.length;
+          segments = scail2Segments(want);
+          if (srcFrames > want) truncatedFrom = srcFrames; // pinned length cut the clip
         } else {
           segments = scail2Segments(srcFrames);
         }
