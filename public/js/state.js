@@ -84,6 +84,7 @@ export const dom = {
   modeToggle: document.querySelector("#modeToggle"),
   themeColorPicker: document.querySelector("#themeColorPicker"),
   avatarContainer: document.querySelector("#avatarContainer"),
+  avatarFace: document.querySelector("#avatarFace"),
   avatarSvg: document.querySelector("#avatarSvg"),
   avatarCloudBadge: document.querySelector("#avatarCloudBadge"),
   avatarPicker: document.querySelector("#avatarPicker"),

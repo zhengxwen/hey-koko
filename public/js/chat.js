@@ -7,7 +7,7 @@ import { TAG_COLORS } from './constants.js';
 import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
 import { renderRelationGraph } from './relation-graph.js';
-import { setAvatarState, showExpression, detectExpression, isCloudModel } from './avatar.js';
+import { setAvatarState, showExpression, detectExpression, isCloudModel, resetAvatarIdle } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.js';
@@ -1808,7 +1808,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
     state.streamingInfo = null;
     setGenerating(false);
     state.currentAbortController = null;
-    setAvatarState("idle");
+    resetAvatarIdle();   // leaves a just-set expression alone; it reverts itself
   }
 }
 
@@ -2085,7 +2085,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
   }
 
   // Always clear generation state — no throw can reach here now (render is guarded).
-  setAvatarState("idle");
+  resetAvatarIdle();   // leaves a just-set expression alone; it reverts itself
   setGenerating(false);
   state.currentAbortController = null;
 }
@@ -2490,7 +2490,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
   } finally {
     if (!bg) {
       setGenerating(false);
-      setAvatarState("idle");
+      resetAvatarIdle();   // leaves a just-set expression alone; it reverts itself
       state.currentAbortController = null;
     }
   }

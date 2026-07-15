@@ -203,6 +203,27 @@ export function updateCloudBadge() {
   dom.avatarCloudBadge.setAttribute("aria-label", label);
 }
 
+// Clicking the face steps through the states and holds there. An expression only
+// lasts 2.5s and lands while you are reading the reply, not watching the panel —
+// so without this there is no way to see what Bella actually did, or to preview a
+// style you are about to pick. Real activity overrides it: the next request sets
+// thinking like always.
+const EXPRESSION_CYCLE = ["idle", "thinking", "talking", "happy", "shy"];
+
+function cycleExpression() {
+  const i = EXPRESSION_CYCLE.indexOf(state.avatarState);
+  setAvatarState(EXPRESSION_CYCLE[(i + 1) % EXPRESSION_CYCLE.length]);
+}
+
+// The button needs a name anyway, so spend it on the thing that is otherwise
+// impossible to know: which expression is on screen right now.
+function updateFaceLabel() {
+  if (!dom.avatarFace) return;
+  const label = `${t(`avatar_state_${state.avatarState}`)} · ${t("avatar_cycleHint")}`;
+  dom.avatarFace.title = label;
+  dom.avatarFace.setAttribute("aria-label", label);
+}
+
 // Avatar state machine
 export function setAvatarState(newState) {
   state.avatarState = newState;
@@ -223,6 +244,7 @@ export function setAvatarState(newState) {
     stopBlinkLoop();
     dom.avatarContainer.classList.remove("avatar-blink");
   }
+  updateFaceLabel();
 }
 
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -297,6 +319,16 @@ export function detectExpression(text) {
   return null;
 }
 
+// Clear the face once a request finishes — unless an expression is on screen, in
+// which case showExpression already armed the revert and owns the face until it
+// fires. Callers that reset unconditionally wipe the expression in the same tick
+// it was set, so it never paints at all; use this instead of setAvatarState in
+// any end-of-request cleanup that can run right after a reply lands.
+export function resetAvatarIdle() {
+  if (state.expressionTimer) return;
+  setAvatarState("idle");
+}
+
 export function showExpression(expression) {
   if (!expression) {
     setAvatarState("idle");
@@ -313,6 +345,7 @@ export function relocalizeAvatarPicker() {
     el.title = el.dataset.opensFlyout ? t("avatar_more") : t(`avatar_${el.dataset.style}`);
     el.setAttribute("aria-label", el.title);
   });
+  updateFaceLabel();   // names the current expression, so it is language-bound too
 }
 
 export function initAvatar() {
@@ -324,5 +357,7 @@ export function initAvatar() {
   window.addEventListener("resize", () => hideFlyout());
   reduceMotion.addEventListener("change", refreshBlinkLoop);
   document.addEventListener("visibilitychange", refreshBlinkLoop);
+  dom.avatarFace?.addEventListener("click", cycleExpression);
+  updateFaceLabel();
   startBlinkLoop();
 }

@@ -564,6 +564,32 @@ body.isResizingPanel {
   position: relative;
 }
 
+/* Wraps the face so it can be clicked and tabbed to. Like .avatar-picker-item
+   this has to undo the global `button` rule, which is written for pills — its
+   accent background and 42px min-height would park a green box behind Bella. */
+.avatar-face {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+}
+
+/* Also beats `button:hover`, which would paint the accent behind her. */
+.avatar-face:hover {
+  background: none;
+}
+
+.avatar-face:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
+}
+
 /* Persistent ☁️ badge on the avatar when the selected model is a cloud (Claude)
    model — a standing "this leaves your machine" cue. Toggled by updateCloudBadge(). */
 .avatar-cloud-badge {
@@ -690,6 +716,14 @@ body.isResizingPanel {
 .avatar-container .avatarEyeLeft,
 .avatar-container .avatarEyeRight {
   transition: transform 0.3s ease;
+  /* An SVG element's transform-origin defaults to the user-space 0 0, not the
+     element — so is-shy's scaleY(0.6) squashed the eyes toward the top of the
+     viewBox and flung them 24 units up the face instead of narrowing them in
+     place. fill-box re-bases the origin on each eye's own box; the eyelids solve
+     the same problem with a hard-coded transform-origin attribute, but that has
+     to know the style's eye height, and this does not. */
+  transform-box: fill-box;
+  transform-origin: center;
 }
 
 /* Bella breathes, rocks and tilts on loops that never end. Under reduced motion

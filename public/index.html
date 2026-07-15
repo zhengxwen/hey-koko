@@ -46,7 +46,12 @@
       <aside class="panel">
         <div class="profile">
           <div class="avatar-container" id="avatarContainer">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" class="avatar-svg" id="avatarSvg" aria-hidden="true"></svg>
+            <!-- A real button, not a click handler on the face: expressions last
+                 2.5s and are easy to miss while reading the reply, so clicking
+                 steps through them and holds. Its label names the current one. -->
+            <button type="button" class="avatar-face" id="avatarFace">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" class="avatar-svg" id="avatarSvg" aria-hidden="true"></svg>
+            </button>
             <!-- The face above is decoration; this badge is not. It is the "your
                  words leave this machine" cue, so it stays outside the svg's
                  aria-hidden. Label and tooltip are set by updateCloudBadge(). -->
