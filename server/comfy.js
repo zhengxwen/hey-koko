@@ -252,8 +252,8 @@ function precisionBase(name) {
 
 // Swap `name` for its sibling at the preferred precision. PER-FILE best effort: a
 // tier the sibling doesn't ship in keeps the name unchanged rather than failing —
-// which is what makes a half-quantised MoE pair (mxfp8 high + fp8 low, the only
-// bernini combination that exists today) load instead of 404.
+// which is what lets a half-quantised MoE pair (mxfp8 high + fp8 low) load instead
+// of 404 while only one twin has been re-quantised.
 function pickPrecision(all, name, pref) {
   if (!name || !pref || pref === "auto") return name;
   if (precisionOf(name) === pref) return name;
@@ -276,8 +276,8 @@ async function comfyModelFiles() {
 //
 // A two-expert MoE (bernini / WAN 2.2 14B) is resolved PER EXPERT: the twins are
 // separate UNETLoaders, so a tier only one of them ships in runs mixed rather than
-// failing. That is the only way to use bernini's mxfp8 high today — no mxfp8 low
-// exists — and the mix is surfaced on the done-line.
+// failing, and the mix is surfaced on the done-line. Quantised twins tend to land
+// one at a time, so a pair is half-converted for as long as that takes.
 // Best file for one expert: the asked-for tier, else fp8 (what the app loaded before
 // the ⚙ preference existed), else whatever that model ships. null = no such model.
 function pickByBase(all, base, pref) {
@@ -289,7 +289,11 @@ function pickByBase(all, base, pref) {
 }
 
 async function resolvePrecision(model, pref) {
-  const out = { model, experts: null, note: null };
+  // `used` names the tier actually loaded and is always filled in, including under
+  // "auto" — the done-line states it every time, so it cannot depend on a preference
+  // having been expressed. `note` is the narrower "you did not get what you asked
+  // for" signal and stays null when the request was honoured.
+  const out = { model, experts: null, note: null, used: precisionOf(model) };
   if (!model || !pref || pref === "auto") return out;
   const all = await comfyModelFiles();
   // A two-expert MoE is identified by its NAME. It must NOT be identified by "does the
@@ -304,8 +308,9 @@ async function resolvePrecision(model, pref) {
       out.experts = { high: h, low: l };
       out.model = /low_noise/i.test(model) ? l : h;
       const th = precisionOf(h), tl = precisionOf(l);
-      if (th !== tl) out.note = `${th} + ${tl}`;        // mixed — one twin lacks the tier
-      else if (th !== pref) out.note = th || "unknown";  // neither twin ships the tier
+      out.used = th === tl ? th : `${th} + ${tl}`;
+      if (th !== tl) out.note = out.used;                 // mixed — one twin lacks the tier
+      else if (th !== pref) out.note = th || "unknown";   // neither twin ships the tier
       return out;
     }
     // Only one half is on disk — not a usable pair; fall through and treat it as a
@@ -313,6 +318,7 @@ async function resolvePrecision(model, pref) {
   }
   out.model = pickPrecision(all, model, pref);
   const t = precisionOf(out.model);
+  out.used = t;
   if (t !== pref) out.note = t || "unknown";            // no sibling at the asked tier
   return out;
 }
@@ -448,6 +454,12 @@ async function proxyComfyModels(req, res) {
     // an upscale model + the Frame-Interpolation nodes (both checked at gen time). The
     // source video is interpolated to the target fps (/imagine <fps>) AND AI-upscaled.
     videoModels.push({ name: VIDEO_ENHANCE, type: "enhance", label: "Video interpolate + upscale", needsVideo: true });
+    // Whether the ⚙ sampler / scheduler / steps / cfg fields do anything for this model.
+    // Only the preset-driven builders read them (resolveVideoConfig merges the ⚙ values
+    // over the preset); scail2 / animate / bernini hardcode a schedule their distill LoRA
+    // is bound to, and silently ignore the fields. Decided HERE rather than by a type list
+    // on the frontend so adding a model can't leave the two out of step.
+    for (const m of videoModels) m.samplerTunable = !!videoPreset(m.type, m.name, true);
     // txt2img list: plain checkpoints (excluding edit/video/HiDream) + HiDream-I1
     // (a diffusion model loaded specially with QuadrupleCLIPLoader). HiDream E1/O1
     // are not wired yet, so they're left out to avoid broken options.
@@ -1790,8 +1802,34 @@ function scail2Segments(total, cap = SCAIL2_FRAMES) {
   return segs.length ? segs : [{ offset: 0, length: per }];
 }
 
-function buildScail2({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, segments, replace = false, turbo = true, poseStrength = 1, poseStart = 0, poseEnd = 1, sam3VideoObject = "human", sam3ImageObject = "human" }) {
+function buildScail2({ model, prompt, negative, comp, videoName, refImageName, refImageNames, width, height, seed, segments, replace = false, turbo = true, poseStrength = 1, poseStart = 0, poseEnd = 1, sam3VideoObject = "human", sam3ImageObject = "", objectIndices = "", sortBy = "left_to_right", detectionThreshold = 0.5, maxObjects = 4 }) {
   const segs = (Array.isArray(segments) && segments.length) ? segments : [{ offset: 0, length: SCAIL2_FRAMES }];
+  // Clamp to the node's own declared ranges — a ⚙ field is free text until it isn't.
+  const clamp = (v, lo, hi, dflt) => (typeof v === "number" && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt);
+  const pStrength = clamp(poseStrength, 0, 10, 1);
+  const pStart = clamp(poseStart, 0, 1, 0);
+  // pose_end below pose_start would open an empty conditioning window — the node takes
+  // it without complaint and simply drops the pose, which reads as "the knob did nothing".
+  const pEnd = Math.max(pStart, clamp(poseEnd, 0, 1, 1));
+  const sam3Vid = String(sam3VideoObject || "").trim() || "human";
+  // The reference subject DEFAULTS TO THE DRIVING ONE, so it must default to empty
+  // above — a "human" default here would swallow the fallback and quietly pin the
+  // reference to "human" whenever the driving subject was something else.
+  const sam3Ref = String(sam3ImageObject || "").trim() || sam3Vid;
+  // "0, 2" and "0,2" must mean the same thing; the node parses a bare comma list.
+  const indices = String(objectIndices || "").split(",").map((s) => s.trim()).filter((s) => /^\d+$/.test(s)).join(",");
+  const sort = ["left_to_right", "area", "none"].includes(sortBy) ? sortBy : "left_to_right";
+  // SAM3 detection, applied identically to the reference and the driving video — the two
+  // masks are only comparable if they were found under the same rules.
+  const detThresh = clamp(detectionThreshold, 0, 1, 0.5);
+  const maxObj = Math.round(clamp(maxObjects, 0, 64, 4)); // 0 = the node's internal cap of 64
+  // ADDITIONAL REFERENCE VIEWS. reference_image is a BATCH: [0] is the primary, and the
+  // rest are further views of the same character (back, close-up, occluded background).
+  // Verified to carry information the primary cannot imply — with a plain-fronted hoodie
+  // whose BACK reads "47", a front-only reference renders a blank back while front+back
+  // renders the 47. reference_image and reference_image_mask pair up by BATCH INDEX, so
+  // the very same batch has to feed SAM3 (which produces the masks) and WanSCAILToVideo.
+  const refs = (Array.isArray(refImageNames) && refImageNames.length ? refImageNames : [refImageName]).filter(Boolean);
   // The template leaves the negative EMPTY (cfg 1 in turbo, so it does nothing);
   // honour an explicit one for the 40-step/cfg-5 non-turbo path.
   const neg = negative && negative.trim() ? negative : "";
@@ -1806,18 +1844,32 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, w
     "7": { class_type: "CLIPVisionLoader", inputs: { clip_name: comp.clipVision } },
     "8": { class_type: "CLIPTextEncode", inputs: { clip: ["5", 0], text: prompt } },
     "9": { class_type: "CLIPTextEncode", inputs: { clip: ["5", 0], text: neg } },
-    "10": { class_type: "LoadImage", inputs: { image: refImageName } },
+    "10": { class_type: "LoadImage", inputs: { image: refs[0] } },
+    // CLIP vision stays on the PRIMARY view only — it is one conditioning vector for
+    // "who this is", not a per-view input; the extra views exist to fill in surfaces the
+    // primary cannot show, which is the mask/reference batch's job, not this one's.
     "11": { class_type: "CLIPVisionEncode", inputs: { clip_vision: ["7", 0], image: ["10", 0], crop: "none" } },
     "12": { class_type: "LoadVideo", inputs: { file: videoName } },
     "15": { class_type: "GetVideoComponents", inputs: { video: ["12", 0] } },
     // SAM3 open-vocabulary tracking. Node 23 tracks the REFERENCE image once and is
     // shared by every segment; each segment tracks its own slice of the driving video.
     "20": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: comp.sam3 } },
-    "21": { class_type: "CLIPTextEncode", inputs: { clip: ["20", 1], text: sam3VideoObject } },
-    "22": { class_type: "CLIPTextEncode", inputs: { clip: ["20", 1], text: sam3ImageObject } },
-    "23": { class_type: "SAM3_VideoTrack", inputs: { images: ["10", 0], model: ["20", 0], detection_threshold: 0.5, max_objects: 4, detect_interval: 1, conditioning: ["22", 0] } },
+    "21": { class_type: "CLIPTextEncode", inputs: { clip: ["20", 1], text: sam3Vid } },
+    "22": { class_type: "CLIPTextEncode", inputs: { clip: ["20", 1], text: sam3Ref } },
+    "23": { class_type: "SAM3_VideoTrack", inputs: { images: ["10", 0], model: ["20", 0], detection_threshold: detThresh, max_objects: maxObj, detect_interval: 1, conditioning: ["22", 0] } },
     "27": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
   };
+  // Chain the extra views onto the primary. SAM3 reads the batch as consecutive "video
+  // frames" and tracks the subject across them, so each view comes back masked in the
+  // SAME identity colour — which is exactly the pairing WanSCAILToVideo expects.
+  let refBatch = ["10", 0];
+  refs.slice(1).forEach((name, i) => {
+    const L = String(30 + i * 2), B = String(31 + i * 2);
+    wf[L] = { class_type: "LoadImage", inputs: { image: name } };
+    wf[B] = { class_type: "ImageBatch", inputs: { image1: refBatch, image2: [L, 0] } };
+    refBatch = [B, 0];
+  });
+  wf["23"].inputs.images = refBatch;
   if (turbo) wf["3"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraDistill, strength_model: 0.8 } };
   const modelSrc = turbo ? "3" : "2";
   wf["4"] = { class_type: "ModelSamplingSD3", inputs: { model: [modelSrc, 0], shift: 5 } };
@@ -1837,15 +1889,15 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, w
     wf[R] = { class_type: "ImageScale", inputs: { image: [F, 0], upscale_method: "area", width, height, crop: "center" } };
     // Size + length come from the RESIZED slice, so a short tail segment self-corrects.
     wf[G] = { class_type: "GetImageSize", inputs: { image: [R, 0] } };
-    wf[T] = { class_type: "SAM3_VideoTrack", inputs: { images: [R, 0], model: ["20", 0], detection_threshold: 0.5, max_objects: 4, detect_interval: 1, conditioning: ["21", 0] } };
-    wf[MK] = { class_type: "SCAIL2ColoredMask", inputs: { driving_track_data: [T, 0], ref_track_data: ["23", 0], object_indices: "", sort_by: "left_to_right", replacement_mode: replace } };
+    wf[T] = { class_type: "SAM3_VideoTrack", inputs: { images: [R, 0], model: ["20", 0], detection_threshold: detThresh, max_objects: maxObj, detect_interval: 1, conditioning: ["21", 0] } };
+    wf[MK] = { class_type: "SCAIL2ColoredMask", inputs: { driving_track_data: [T, 0], ref_track_data: ["23", 0], object_indices: indices, sort_by: sort, replacement_mode: replace } };
     const si = {
       positive: ["8", 0], negative: ["9", 0], vae: ["6", 0],
       pose_video: [R, 0], pose_video_mask: [MK, 0],
-      reference_image: ["10", 0], reference_image_mask: [MK, 1],
+      reference_image: refBatch, reference_image_mask: [MK, 1],
       clip_vision_output: ["11", 0],
       width: [G, 0], height: [G, 1], length: [G, 2],
-      batch_size: 1, pose_strength: poseStrength, pose_start: poseStart, pose_end: poseEnd,
+      batch_size: 1, pose_strength: pStrength, pose_start: pStart, pose_end: pEnd,
       video_frame_offset: 0, previous_frame_count: SCAIL2_OVERLAP, replacement_mode: replace,
     };
     if (k > 0) si.previous_frames = prevOut;
@@ -2240,7 +2292,8 @@ async function waitForOutputs(promptId, signal, deadline) {
 async function generateComfyImage(req, res) {
   let clientGone = false; // set if the client disconnects before we respond
   let isVideoReq = false; // for a video-aware timeout message in the catch
-  let precisionNote = null; // tiers actually loaded, when they differ from the ⚙ request
+  let precisionUsed = null; // tier(s) actually loaded — always reported
+  let precisionNote = null; // set only when those differ from the ⚙ request
   try {
     const body = await readBody(req);
     // Target the ComfyUI endpoint this job was routed to (parallel lanes); default global.
@@ -2302,11 +2355,12 @@ async function generateComfyImage(req, res) {
     // filename and BEFORE anything reads `model`, so each builder just receives the
     // file it should load. Two-expert models also get their pair pre-resolved —
     // buildWan14B / buildBernini would otherwise derive the twin off the SWAPPED
-    // name and ask for e.g. bernini's low_noise_mxfp8, which does not exist.
+    // name and ask for a file at a tier that twin may not ship in.
     const prec = await resolvePrecision(model, opts.precision);
     model = prec.model;
     const expertPair = prec.experts;
     precisionNote = prec.note;
+    precisionUsed = prec.used;
     const isMultiImage = Array.isArray(images) && images.length >= 2;
     // Output size for img2img edits, keeping the input's aspect ratio. Only
     // OVERRIDE the builder's natural sizing when we must: a size is specified
@@ -2518,9 +2572,34 @@ async function generateComfyImage(req, res) {
         const totalFrames = segments.reduce((a, s, i) => a + s.length - (i > 0 ? SCAIL2_OVERLAP : 0), 0);
         const sfps = Number(sourceVideoFps) || opts.fps || 16;
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
-        const refImageName = await uploadImage(images[0], controller.signal, "heykoko_scailref.png");
-        imagesUsed = 1;
-        workflow = buildScail2({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, segments, replace: scail2Replace });
+        // Every attached image is a VIEW of the one character — image[0] is the primary,
+        // the rest fill in what it can't show (back, close-up). This is NOT how several
+        // characters are given: multiple people go IN one reference image, where SAM3
+        // finds them as separate identities and swaps them all at once.
+        // Distinct filenames — a shared name would overwrite on upload and every view
+        // would end up being the same picture.
+        const refImageNames = [];
+        for (let i = 0; i < images.length; i++) {
+          refImageNames.push(await uploadImage(images[i], controller.signal, `heykoko_scailref${i}.png`));
+        }
+        imagesUsed = refImageNames.length;
+        workflow = buildScail2({
+          model, prompt, negative: negative_prompt || "", comp, videoName, refImageNames,
+          width: aw, height: ah, seed, segments, replace: scail2Replace,
+          // SAM3 is open-vocabulary: the subject is text, not a fixed "human". The
+          // reference falls back to the driving subject inside the builder — they only
+          // differ when the driving text targets one person in a crowd ("person in a red
+          // shirt") while the reference holds just the character.
+          sam3VideoObject: opts.scailSubject,
+          sam3ImageObject: opts.scailRefSubject,
+          objectIndices: opts.scailIndices,
+          sortBy: opts.scailSortBy,
+          poseStrength: opts.poseStrength,
+          poseStart: opts.poseStart,
+          poseEnd: opts.poseEnd,
+          detectionThreshold: opts.scailThreshold,
+          maxObjects: opts.scailMaxObjects,
+        });
         videoDims = { width: aw, height: ah, length: totalFrames, fps: sfps, segments: segments.length };
         if (truncatedFrom) videoDims.truncatedFrom = truncatedFrom;
       } else if (videoType === "animate" && !sourceVideo && !sourceVideoName) {
@@ -2947,7 +3026,7 @@ async function generateComfyImage(req, res) {
         // Single-frame Wan Animate → an IMAGE result (not a video).
         console.log(`${ts} [comfy-gen] model=${model}, mode=animate:still, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, images=${outImages.length}`);
         if (!outImages.length) { sendJson(res, 502, { error: "ComfyUI finished but produced no image. Please retry." }); return; }
-        sendJson(res, 200, { images: outImages, model, seed, precisionNote, width: videoDims?.width, height: videoDims?.height, imagesUsed });
+        sendJson(res, 200, { images: outImages, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, imagesUsed });
       } else if (videoType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
         // Ran to completion but no video file came back — tell the client why rather
@@ -2957,11 +3036,11 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI finished but produced no video file (output nodes: ${nodeIds}). Make sure the workflow includes a SaveVideo node, or retry.` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);
-        sendJson(res, 200, { images: outImages, model, seed, precisionNote, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined });
+        sendJson(res, 200, { images: outImages, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined });
       }
     } finally {
       clearTimeout(timeout);

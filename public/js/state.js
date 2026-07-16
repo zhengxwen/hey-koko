@@ -67,6 +67,15 @@ export const dom = {
   comfyParamUpscaleModel: document.querySelector("#comfyParamUpscaleModel"),
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),
   comfyParamRelight: document.querySelector("#comfyParamRelight"),
+  comfyParamScailSubject: document.querySelector("#comfyParamScailSubject"),
+  comfyParamScailRefSubject: document.querySelector("#comfyParamScailRefSubject"),
+  comfyParamScailThreshold: document.querySelector("#comfyParamScailThreshold"),
+  comfyParamScailMaxObjects: document.querySelector("#comfyParamScailMaxObjects"),
+  comfyParamScailIndices: document.querySelector("#comfyParamScailIndices"),
+  comfyParamScailSortBy: document.querySelector("#comfyParamScailSortBy"),
+  comfyParamPoseStrength: document.querySelector("#comfyParamPoseStrength"),
+  comfyParamPoseStart: document.querySelector("#comfyParamPoseStart"),
+  comfyParamPoseEnd: document.querySelector("#comfyParamPoseEnd"),
   comfyMaskPointBtn: document.querySelector("#comfyMaskPointBtn"),
   comfyMaskPointLabel: document.querySelector("#comfyMaskPointLabel"),
   maskPointModal: document.querySelector("#maskPointModal"),
@@ -156,6 +165,7 @@ export const state = {
   bgWorkers: [],                     // ComfyUI worker endpoints: { id, url, label, enabled, online, models:{image,edit,video,videoIn,multiImage} }
   bgDrawerOpen: false,               // whether the Background Jobs drawer is visible
   comfyVideoModels: new Set(),       // ComfyUI model names that generate video
+  comfySamplerTunable: new Set(),    // video models whose ⚙ sampler/steps/cfg reach the graph (server-decided)
   comfyVideoInModels: new Set(),     // ComfyUI video models that need a SOURCE video (fps follows source)
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
   scrollPin: null,                   // when set (resend/edit in place), auto-scroll holds this scrollTop instead of jumping to the bottom

@@ -58,6 +58,15 @@ export function saveCurrentSettings() {
         upscaleModel: dom.comfyParamUpscaleModel?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
         relight: dom.comfyParamRelight?.value || "",
+        scailSubject: dom.comfyParamScailSubject?.value || "",
+        scailRefSubject: dom.comfyParamScailRefSubject?.value || "",
+        scailThreshold: dom.comfyParamScailThreshold?.value || "",
+        scailMaxObjects: dom.comfyParamScailMaxObjects?.value || "",
+        scailIndices: dom.comfyParamScailIndices?.value || "",
+        scailSortBy: dom.comfyParamScailSortBy?.value || "",
+        poseStrength: dom.comfyParamPoseStrength?.value || "",
+        poseStart: dom.comfyParamPoseStart?.value || "",
+        poseEnd: dom.comfyParamPoseEnd?.value || "",
       },
       defaultImageSize: dom.defaultImageSize.value,
       requestTimeout: dom.requestTimeoutInput.value,
@@ -219,6 +228,15 @@ export function loadSavedSettings() {
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
     if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";
+    if (dom.comfyParamScailSubject) dom.comfyParamScailSubject.value = cp.scailSubject || "";
+    if (dom.comfyParamScailRefSubject) dom.comfyParamScailRefSubject.value = cp.scailRefSubject || "";
+    if (dom.comfyParamScailThreshold) dom.comfyParamScailThreshold.value = cp.scailThreshold || "";
+    if (dom.comfyParamScailMaxObjects) dom.comfyParamScailMaxObjects.value = cp.scailMaxObjects || "";
+    if (dom.comfyParamScailIndices) dom.comfyParamScailIndices.value = cp.scailIndices || "";
+    if (dom.comfyParamScailSortBy) dom.comfyParamScailSortBy.value = cp.scailSortBy || "";
+    if (dom.comfyParamPoseStrength) dom.comfyParamPoseStrength.value = cp.poseStrength || "";
+    if (dom.comfyParamPoseStart) dom.comfyParamPoseStart.value = cp.poseStart || "";
+    if (dom.comfyParamPoseEnd) dom.comfyParamPoseEnd.value = cp.poseEnd || "";
   }
   if (savedSettings.defaultImageSize) dom.defaultImageSize.value = savedSettings.defaultImageSize;
   if (savedSettings.requestTimeout) {

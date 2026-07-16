@@ -220,6 +220,10 @@ function applyComfyModels(data) {
     const editModels = data.editModels || [];         // instruction-edit models (need a ref image)
     const videoModels = data.videoModels || [];       // text→video / image→video
     state.comfyVideoModels = new Set(videoModels.map((m) => m.name));
+    // Video models whose ⚙ sampler / scheduler / steps / cfg actually reach the graph.
+    // The server decides this (it knows which builders read a preset); the rest hardcode
+    // a schedule, so showing the fields for them would promise something that never happens.
+    state.comfySamplerTunable = new Set(videoModels.filter((m) => m.samplerTunable).map((m) => m.name));
     // Source-video models (bernini / animate): output fps follows the source video.
     state.comfyVideoInModels = new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name));
     // Qwen-Image-Edit accepts 2-3 reference images (multi-image composition).
@@ -387,6 +391,7 @@ export function updateComfyParamVisibility() {
   // /animate/ but shares none of these knobs (no torch.compile toggle, no relight
   // LoRA, and SAM3 picks the subject by text rather than a clicked point).
   const animate = /animate/i.test(m) && !/scail/i.test(m);
+  const scail2 = /scail/i.test(m);                     // both SCAIL-2 entries — the real filename and the "animate" sentinel
   const diffusion = !upscale;                          // samples + takes a prompt (everything except the upscale pipelines)
   // Hide a field by its <label> (or, for the frame-interpolation pair, the shared .comfyParamRow; the
   // pick-person button has no label, so fall back to the element itself).
@@ -397,6 +402,12 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // frame-interpolation + interpolation-engine row
   // Wan Animate only.
   for (const el of [dom.comfyParamTorchCompile, dom.comfyParamRelight, dom.comfyMaskPointBtn]) setVis(el, animate);
+  // SCAIL-2 only — SAM3 open-vocabulary subject + identity ordering + the pose schedule.
+  // These are Animate's counterparts to relight/🎯: same intent, different mechanism.
+  for (const el of [dom.comfyParamScailSubject, dom.comfyParamScailRefSubject, dom.comfyParamScailThreshold,
+                    dom.comfyParamScailMaxObjects, dom.comfyParamScailIndices,
+                    dom.comfyParamScailSortBy, dom.comfyParamPoseStrength, dom.comfyParamPoseStart,
+                    dom.comfyParamPoseEnd]) setVis(el, scail2);
   // Upscale-model pipelines only (image-upscale / video-enhance) — the upscale-denoise % + the upscale-model picker.
   for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel]) setVis(el, upscale);
   // Image-edit / txt2img only.
@@ -404,8 +415,16 @@ export function updateComfyParamVisibility() {
   // Quantisation preference — diffusion models only (the upscale pipelines load an
   // upscale model, which has no precision variants).
   setVis(dom.comfyParamPrecision, diffusion);
-  // Sampler + prompt knobs — diffusion models only (an upscale pipeline runs no sampler / steps / prompt).
-  for (const el of [dom.comfyParamPositive, dom.comfyParamNegative, dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps, dom.comfyParamCfg, dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion);
+  // Prompt add-ons — every diffusion model reads them (an upscale pipeline takes no prompt).
+  for (const el of [dom.comfyParamPositive, dom.comfyParamNegative]) setVis(el, diffusion);
+  // Guidance + img2img denoise are IMAGE-only: no video builder accepts either
+  // (resolveVideoConfig doesn't even carry them).
+  for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video);
+  // Sampler / scheduler / steps / cfg: honoured by every image model, but only by the
+  // preset-driven video models. SCAIL-2 / Wan Animate / bernini hardcode a schedule
+  // bound to their distill LoRA and ignore these — so hide rather than lie.
+  const samplerTunable = !video || !!(state.comfySamplerTunable && state.comfySamplerTunable.has(m));
+  for (const el of [dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps, dom.comfyParamCfg]) setVis(el, diffusion && samplerTunable);
 }
 
 export async function loadEmbedModels() {
@@ -554,6 +573,15 @@ function initComfyParamsModal() {
     dom.comfyParamUpscaleDenoise,
     dom.comfyParamUpscaleModel,
     dom.comfyParamRelight,
+    dom.comfyParamScailSubject,
+    dom.comfyParamScailRefSubject,
+    dom.comfyParamScailThreshold,
+    dom.comfyParamScailMaxObjects,
+    dom.comfyParamScailIndices,
+    dom.comfyParamScailSortBy,
+    dom.comfyParamPoseStrength,
+    dom.comfyParamPoseStart,
+    dom.comfyParamPoseEnd,
   ];
 
   // Reflect the current Wan Animate Replace target point on the picker button.

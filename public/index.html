@@ -787,6 +787,47 @@
             <input id="comfyParamRelight" type="number" min="0" max="2" step="0.05" placeholder="Auto (1.0)" />
           </label>
           <button id="comfyMaskPointBtn" type="button" class="secondary" title="Wan Animate Replace only: click the person in the source video / scene image you want to swap out. Default = the one nearest the centre.">🎯 <span id="comfyMaskPointLabel">Pick person to replace</span></button>
+          <label title="SCAIL-2 only: what to track in the SOURCE VIDEO, in plain words (SAM3 open-vocabulary). Default 'human'. Use a description to target one person in a crowd, e.g. 'person in a red shirt'. Non-human subjects ('dog') are accepted but the model is trained on people.">
+            <span id="comfyParamScailSubjectLabel">Subject to track (SCAIL-2)</span>
+            <input id="comfyParamScailSubject" type="text" placeholder="Auto (human)" />
+          </label>
+          <label title="SCAIL-2 only: what to track in the REFERENCE IMAGE. Empty = same as the source-video subject. Set this only when the two differ — e.g. the video targets 'person in a red shirt' but the reference just holds your character ('human'). IMPORTANT: both sides must match the SAME NUMBER of subjects. Identities are bound by order, and each side is numbered from 0 independently — so a mismatch is not reported, it silently binds the wrong people.">
+            <span id="comfyParamScailRefSubjectLabel">Subject in reference (SCAIL-2)</span>
+            <input id="comfyParamScailRefSubject" type="text" placeholder="Same as above" />
+          </label>
+          <label title="SCAIL-2 only: how confident SAM3 must be to call something a match. 0.5 = default, applied to both the reference and the source video. Mostly useful LOWERED, when a subject isn't being found at all — raising it changes nothing for a subject SAM3 is already sure about. Careful: lowering it also admits faint detections, which take up subject slots and can renumber the subjects, so re-check the subject order if you change it.">
+            <span id="comfyParamScailThresholdLabel">Detection threshold (SCAIL-2)</span>
+            <input id="comfyParamScailThreshold" type="number" min="0" max="1" step="0.05" placeholder="Auto (0.5)" />
+          </label>
+          <label title="SCAIL-2 only: how many subjects to track at most. 4 = default; anything beyond it is silently dropped, so raise this for a crowd. 0 = the node's own cap of 64. The reference and the source video must end up matching the SAME NUMBER of subjects.">
+            <span id="comfyParamScailMaxObjectsLabel">Max subjects (SCAIL-2)</span>
+            <input id="comfyParamScailMaxObjects" type="number" min="0" max="64" step="1" placeholder="Auto (4)" />
+          </label>
+          <label title="SCAIL-2 only: which tracked subjects to include, by index, e.g. '0,2'. Empty = all of them. Indices follow the order below. A reference image with several people swaps them all at once.">
+            <span id="comfyParamScailIndicesLabel">Which subjects (SCAIL-2)</span>
+            <input id="comfyParamScailIndices" type="text" placeholder="All" />
+          </label>
+          <label title="SCAIL-2 only: the order subjects are numbered in, which is also what binds each reference person to a person in the video. Subjects appearing in earlier frames always come first; this decides the order within a frame. left_to_right = by position, area = biggest first, none = SAM3's own order.">
+            <span id="comfyParamScailSortByLabel">Subject order (SCAIL-2)</span>
+            <select id="comfyParamScailSortBy">
+              <option value="">Auto (left to right)</option>
+              <option value="left_to_right">left_to_right</option>
+              <option value="area">area (biggest first)</option>
+              <option value="none">none (SAM3 order)</option>
+            </select>
+          </label>
+          <label title="SCAIL-2 only: how strongly the source video's motion drives the character. 1 = default. Lower loosens the motion (useful when the character's build differs a lot from the person in the video); higher forces closer adherence.">
+            <span id="comfyParamPoseStrengthLabel">Pose strength (SCAIL-2)</span>
+            <input id="comfyParamPoseStrength" type="number" min="0" max="10" step="0.05" placeholder="Auto (1.0)" />
+          </label>
+          <label title="SCAIL-2 only: the fraction of the denoising run over which the pose guides generation. Start 0 / end 1 = the whole run (default). An end below 1 lets the model free-run the later steps — looser, more natural motion at the cost of accuracy.">
+            <span id="comfyParamPoseStartLabel">Pose guidance start (SCAIL-2)</span>
+            <input id="comfyParamPoseStart" type="number" min="0" max="1" step="0.05" placeholder="Auto (0)" />
+          </label>
+          <label title="SCAIL-2 only: where pose guidance stops, as a fraction of the denoising run. 1 = guides all the way (default). Try 0.7–0.9 for looser, more natural motion. Values below the start are raised to it.">
+            <span id="comfyParamPoseEndLabel">Pose guidance end (SCAIL-2)</span>
+            <input id="comfyParamPoseEnd" type="number" min="0" max="1" step="0.05" placeholder="Auto (1.0)" />
+          </label>
         </div>
       </div>
     </div>

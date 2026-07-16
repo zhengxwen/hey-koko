@@ -70,6 +70,25 @@ function comfyOverrides() {
   const relight = num(dom.comfyParamRelight?.value);
   if (relight !== undefined) ov.relightStrength = relight; // Wan Animate: relight LoRA strength
   if (state.animateMaskPoint) ov.maskPoint = state.animateMaskPoint; // Wan Animate Replace: which person to swap
+  // SCAIL-2. The subject fields are free text (SAM3 is open-vocabulary), so they go
+  // over trimmed but otherwise untouched — the server clamps/normalises the rest.
+  const scailSubject = (dom.comfyParamScailSubject?.value || "").trim();
+  if (scailSubject) ov.scailSubject = scailSubject;               // SAM3 text for the source video (empty = "human")
+  const scailRefSubject = (dom.comfyParamScailRefSubject?.value || "").trim();
+  if (scailRefSubject) ov.scailRefSubject = scailRefSubject;      // SAM3 text for the reference (empty = same as above)
+  const scailThreshold = num(dom.comfyParamScailThreshold?.value);
+  if (scailThreshold !== undefined) ov.scailThreshold = scailThreshold;   // SAM3 detection confidence
+  const scailMaxObjects = num(dom.comfyParamScailMaxObjects?.value);
+  if (scailMaxObjects !== undefined) ov.scailMaxObjects = scailMaxObjects; // SAM3 max tracked subjects (0 = node cap 64)
+  const scailIndices = (dom.comfyParamScailIndices?.value || "").trim();
+  if (scailIndices) ov.scailIndices = scailIndices;               // which tracked subjects, e.g. "0,2" (empty = all)
+  if (dom.comfyParamScailSortBy?.value) ov.scailSortBy = dom.comfyParamScailSortBy.value; // identity ordering
+  const poseStrength = num(dom.comfyParamPoseStrength?.value);
+  if (poseStrength !== undefined) ov.poseStrength = poseStrength;
+  const poseStart = num(dom.comfyParamPoseStart?.value);
+  if (poseStart !== undefined) ov.poseStart = poseStart;
+  const poseEnd = num(dom.comfyParamPoseEnd?.value);
+  if (poseEnd !== undefined) ov.poseEnd = poseEnd;
   return ov;
 }
 
@@ -689,8 +708,16 @@ function animateSegmentCap(pixelBudget, torchCompile = false) {
 // misfires and splits SCAIL-2's two entries. Route by these instead.
 const isScail2Model = (m) => /scail/i.test(m || "");
 const isWanAnimateModel = (m) => /animate/i.test(m || "") && !isScail2Model(m);
-// Both pose-transfer pipelines take exactly ONE reference image (the character).
-const usesOneRefImage = (m) => isWanAnimateModel(m) || isScail2Model(m);
+// Wan Animate takes exactly ONE reference (the character) and ignores any extras.
+// SCAIL-2 does NOT: its reference is a batch — image 1 is the character and the rest are
+// additional VIEWS of that same character (back, close-up), which is how it renders
+// surfaces the primary view cannot imply. Several CHARACTERS is a different thing again:
+// they go inside ONE image, where SAM3 finds them as separate identities.
+const usesOneRefImage = (m) => isWanAnimateModel(m);
+// Whether the model chains segments out of a source video — a separate question from how
+// many reference images it reads, and the two answers stopped agreeing once SCAIL-2
+// learned to take extra views.
+const isPoseTransfer = (m) => isWanAnimateModel(m) || isScail2Model(m);
 // Frames per chained pass. SCAIL-2's is a FIXED 81 (mirrors SCAIL2_FRAMES in
 // server/comfy.js) — its cost doesn't scale with resolution the way Animate's does.
 const SCAIL2_SEG_FRAMES = 81;
@@ -741,13 +768,15 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   setAvatarState("thinking");
 
   const vidModel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
-  // Wan Animate / SCAIL-2 (with a source video) use only ONE reference image (the
-  // character); any extra attached images are ignored. Say so instead of the generic
-  // "N images" count, so the user doesn't think the extras took effect.
+  // Name what the extra images actually did. Wan Animate ignores them — say so, or the
+  // user assumes they landed. SCAIL-2 uses them as additional views of the character, so
+  // it gets its own wording rather than the generic "N images" count.
   const vidImgs = refImages && refImages.length > 1
     ? (usesOneRefImage(model)
         ? ` · ${t("msg_animateFirstImageOnly", { n: refImages.length })}`
-        : ` · ${t("msg_inputImages", { n: refImages.length })}`)
+        : isScail2Model(model)
+          ? ` · ${t("msg_scailViews", { n: refImages.length - 1 })}`
+          : ` · ${t("msg_inputImages", { n: refImages.length })}`)
     : "";
   const vidSuffix = `${vidModel ? ` · ${vidModel}` : ""}${vidImgs}`;
   // Enhancement already ran at enqueue time (the bg placeholder showed "enhancing prompt"),
@@ -795,7 +824,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // pipeline (mirrors the server): it bounds Wan Animate to ONE pass, but for SCAIL-2
   // it only CAPS how much source is used, and SCAIL-2 still chains to reach it (its
   // 81/pass is a model constraint, not a VRAM tier). 0 = not a chained run.
-  const chainFrames = (usesOneRefImage(model) && sourceVideoFrames > 0)
+  const chainFrames = (isPoseTransfer(model) && sourceVideoFrames > 0)
     ? (reqOptions.length
         ? (isScail2Model(model) ? Math.min(reqOptions.length, sourceVideoFrames) : 0)
         : sourceVideoFrames)
@@ -905,8 +934,13 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     }
     const dur = metaParts.length ? `, ${metaParts.join(", ")}` : "";
     const sizeLine = t("msg_videoDone", { w: lastData.width || "?", h: lastData.height || "?", dur }, plang);
+    // The tier that actually loaded rides alongside the model name — a model can ship
+    // several quantisations and they differ in both speed and fidelity, so which one
+    // ran is part of reading the result. Absent for models whose filename carries no
+    // precision token.
     let doneLine = (count > 1 ? `${sizeLine} ×${allVideos.length}${allVideos.length < count ? `/${count}` : ""}` : sizeLine)
-      + (vidModel ? ` · ${vidModel}` : "");
+      + (vidModel ? ` · ${vidModel}` : "")
+      + (lastData.precisionUsed ? ` · ${lastData.precisionUsed}` : "");
     // Seed(s) used → lets the user reproduce via --seed. Single video shows one;
     // a batch lists each video's seed in display order so any one can be reproduced.
     if (count === 1 && typeof lastData.seed === "number") {
@@ -915,12 +949,12 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       const list = videoSeeds.map((s, i) => `#${i + 1} ${s !== null ? s : "?"}`).join(" · ");
       doneLine += `\n${t("msg_seedsBatch", { list }, plang)}`;
     }
-    // ⚙ precision: only spoken about when it did NOT get what was asked for — either
-    // the model has no build at that tier, or a two-expert pair ran half-and-half
-    // because only one twin ships it. Silence means the request was honoured.
+    // The tier itself is already on the line above; this only explains WHY it isn't the
+    // one that was asked for — the model has no build at that tier, or a two-expert pair
+    // ran half-and-half because only one twin ships it. Silence = request honoured.
     if (lastData.precisionNote) {
       const key = lastData.precisionNote.includes("+") ? "msg_precisionMixed" : "msg_precisionFallback";
-      doneLine += `\n${t(key, { got: lastData.precisionNote }, plang)}`;
+      doneLine += `\n${t(key, {}, plang)}`;
     }
     // Framerate boost (frame interpolation): either it ran (note the new fps + multiplier) or it
     // was skipped because the source was already at/above the requested target fps.
@@ -1220,6 +1254,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   let lastError = "";
   let noopMessage = null; // server did nothing on purpose (e.g. upscale=Off) → plain notice, not an error
   let upscaleModelUsed = null, upscaleDenoiseUsed = 0; // HD upscale algorithm used → shown in the done line
+  let precisionUsedTier = null; // precision tier actually loaded → always named in the done line
   let precisionNoteUsed = null; // ⚙ precision fallback/mix, when the request could not be honoured
   // Seed actually used (random unless --seed was pinned) → surfaced on the done line
   // so a single result can be reproduced. Only meaningful for a single output.
@@ -1307,6 +1342,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
               } else if (r.ok) {
                 const imgs = (data.images || []).filter((s) => s && s.length > 100);
                 if (data.upscaleModel) { upscaleModelUsed = data.upscaleModel; upscaleDenoiseUsed = data.upscaleDenoise || 0; }
+                if (data.precisionUsed) precisionUsedTier = data.precisionUsed;
                 if (data.precisionNote) precisionNoteUsed = data.precisionNote;
                 if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
                 generatedImages.push(...imgs);
@@ -1369,8 +1405,10 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       doneLine = totalCount > 1
         ? t("msg_imageDoneBatch", { done: generatedImages.length, total: totalCount, ...dims }, plang)
         : t("msg_imageDone", dims, plang);
-      // Append the model used (selected name, extension stripped).
+      // Append the model used (selected name, extension stripped) + the precision tier
+      // that actually loaded. See the video done-line for why the tier is always named.
       if (shortModel) doneLine += ` · ${shortModel}`;
+      if (precisionUsedTier) doneLine += ` · ${precisionUsedTier}`;
       // Seed used (single output only) → lets the user reproduce via --seed.
       if (usedSeed !== null) doneLine += `\n${t("msg_seedUsed", { seed: usedSeed }, plang)}`;
       // Batch: list each image's seed (grid order) so any one can be reproduced.
@@ -1378,10 +1416,10 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         const list = seeds.map((s, i) => `#${i + 1} ${s !== null ? s : "?"}`).join(" · ");
         doneLine += `\n${t("msg_seedsBatch", { list }, plang)}`;
       }
-      // ⚙ precision: mentioned ONLY when the requested tier wasn't what loaded.
+      // ⚙ precision: the tier is on the line above; this explains why it isn't the one asked for.
       if (precisionNoteUsed) {
         const key = precisionNoteUsed.includes("+") ? "msg_precisionMixed" : "msg_precisionFallback";
-        doneLine += `\n${t(key, { got: precisionNoteUsed }, plang)}`;
+        doneLine += `\n${t(key, {}, plang)}`;
       }
       // HD upscale (image-upscale) — name the model + denoise algorithm actually used.
       if (upscaleModelUsed) doneLine += `\n${t("msg_upscaleUsed", { model: stripModelExt(upscaleModelUsed) }, plang)}`;

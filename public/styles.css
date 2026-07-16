@@ -825,7 +825,9 @@ p {
 /* Read-only "key workflow components" line for the selected model. */
 .comfyModelInfo {
   margin: 0;
-  padding: 8px 10px;
+  /* Half the usual box padding — this is a dense one-or-two-line reference strip,
+     not a panel, so it should hug its text. */
+  padding: 4px 5px;
   border-radius: 8px;
   background: var(--panel-alpha);
   border: 1px solid var(--line);
