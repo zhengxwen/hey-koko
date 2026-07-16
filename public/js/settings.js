@@ -48,6 +48,7 @@ export function saveCurrentSettings() {
         guidance: dom.comfyParamGuidance?.value || "",
         imageCfg: dom.comfyParamImageCfg?.value || "",
         denoise: dom.comfyParamDenoise?.value || "",
+        precision: dom.comfyParamPrecision?.value || "",
         length: dom.comfyParamLength?.value || "",
         fps: dom.comfyParamFps?.value || "",
         timeout: dom.comfyParamTimeout?.value || "",
@@ -207,6 +208,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamGuidance) dom.comfyParamGuidance.value = cp.guidance || "";
     if (dom.comfyParamImageCfg) dom.comfyParamImageCfg.value = cp.imageCfg || "";
     if (dom.comfyParamDenoise) dom.comfyParamDenoise.value = cp.denoise || "";
+    if (dom.comfyParamPrecision) dom.comfyParamPrecision.value = cp.precision || "";
     if (dom.comfyParamLength) dom.comfyParamLength.value = cp.length || "";
     if (dom.comfyParamFps) dom.comfyParamFps.value = cp.fps || "";
     if (dom.comfyParamTimeout) dom.comfyParamTimeout.value = cp.timeout || "";

@@ -661,7 +661,10 @@
           <button id="comfyParamsClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
         </div>
         <div class="comfyParamsBody">
-          <p class="hint" id="comfyParamsHint">Leave empty = auto-pick the optimal params for the selected model</p>
+          <div class="comfyParamsTopRow">
+            <p class="hint" id="comfyParamsHint">Leave empty = auto-pick the optimal params for the selected model</p>
+            <button id="comfyParamsReset" type="button" class="secondary comfyParamsReset">Reset to auto</button>
+          </div>
           <div class="comfyModelInfo" id="comfyModelInfo" hidden></div>
           <label>
             <span id="comfyParamPositiveLabel" title="A persistent positive prompt APPENDED to every image &amp; video prompt (e.g. a fixed style / quality booster). Like the negative below, but it adds to your prompt rather than replacing it. Empty = off.">Positive add-on (appended to every prompt)</span>
@@ -670,6 +673,16 @@
           <label>
             <span id="comfyParamNegativeLabel">Negative prompt</span>
             <textarea id="comfyParamNegative" rows="2" placeholder="e.g. blurry, low quality, extra fingers (overridden by --no)"></textarea>
+          </label>
+          <label title="When a model ships in several quantisations (fp8 / mxfp8 / nvfp4 / int8 / fp16), prefer this one. Auto = whatever is installed (fp8 when both exist). A model with no build at the chosen precision keeps its own — for a two-expert video model each expert falls back on its own, and the done-line then reports the mix.">
+            <span id="comfyParamPrecisionLabel">Model precision</span>
+            <select id="comfyParamPrecision">
+              <option value="">Auto</option>
+              <option value="fp8">fp8</option>
+              <option value="mxfp8">mxfp8</option>
+              <option value="nvfp4">nvfp4</option>
+              <option value="fp16">fp16 / bf16</option>
+            </select>
           </label>
           <label>
             <span id="comfyParamSamplerLabel">Sampler</span>
@@ -774,7 +787,6 @@
             <input id="comfyParamRelight" type="number" min="0" max="2" step="0.05" placeholder="Auto (1.0)" />
           </label>
           <button id="comfyMaskPointBtn" type="button" class="secondary" title="Wan Animate Replace only: click the person in the source video / scene image you want to swap out. Default = the one nearest the centre.">🎯 <span id="comfyMaskPointLabel">Pick person to replace</span></button>
-          <button id="comfyParamsReset" type="button" class="secondary comfyParamsReset">Reset to auto</button>
         </div>
       </div>
     </div>

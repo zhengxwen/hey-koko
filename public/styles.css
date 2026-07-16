@@ -866,6 +866,71 @@ p {
 .comfyParamRow[hidden],
 .comfyParamsBody button[hidden] { display: none; }
 
+/* The ⚙ ComfyUI params form carries 20+ fields — give it ~2× the shared 360px modal
+   width and flow the fields into columns so most of it fits without scrolling.
+   Scoped BY ID on purpose: .comfyParamsModal is also worn by the /ask-params modal,
+   and .comfyParamsBody by the mask-point / URL-import / YouTube modals — all short
+   forms that must stay single-column at the default width. */
+#comfyParamsModal .comfyParamsModal {
+  width: min(760px, 94vw);
+  /* Two columns halve the height, so lift the shared 70vh cap to use the room the
+     wider box buys — most models' field set then fits with no scrolling at all. */
+  max-height: 88vh;
+}
+
+#comfyParamsModal .comfyParamsBody {
+  display: grid;
+  /* ~2 columns at the 760px width, collapsing to 1 on a narrow screen. */
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px 16px;
+  /* Bottom-align so inputs sharing a row line up even when one label wraps to two
+     lines (the same trick .comfyParamRow already uses). */
+  align-items: end;
+}
+
+/* Full-width items: the hint/reset header, the model-info banner, and the
+   interpolation pair (already a 2-up grid of its own). The positive/negative prompts
+   stay in the columns — they're a natural pair and `align-items: end` keeps their
+   boxes level despite the longer positive label wrapping. */
+#comfyParamsModal .comfyParamsBody > .comfyParamsTopRow,
+#comfyParamsModal .comfyParamsBody > .comfyModelInfo,
+#comfyParamsModal .comfyParamsBody > .comfyParamRow {
+  grid-column: 1 / -1;
+}
+
+/* Header row: the "leave empty = auto" hint and the Reset button share one line,
+   hint left, button right. Sits tight against the model-info banner it introduces —
+   the -5px trims the body's 12px row gap without loosening every other row. */
+#comfyParamsModal .comfyParamsBody > .comfyParamsTopRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: -5px;
+}
+/* .comfyParamsReset's `align-self: flex-start` + top margin were for the old
+   single-column flex body; inside this row they'd knock it out of alignment. The
+   size overrides fight the GLOBAL `button { min-height: 42px }`, which otherwise
+   makes this header twice as tall as the one line of hint text beside it. */
+#comfyParamsModal .comfyParamsTopRow > .comfyParamsReset {
+  align-self: center;
+  margin-top: 0;
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+#comfyParamsModal .comfyParamsTopRow > .hint {
+  margin: 0;
+}
+
+/* Buttons: a grid cell would STRETCH them to the full column width (flex's
+   `align-self: flex-start` on .comfyParamsReset only governed the old flex column). */
+#comfyParamsModal .comfyParamsBody > button {
+  justify-self: start;
+}
+
 .comfyParamsBody .hint {
   margin: 0 0 2px;
   font-size: 12px;

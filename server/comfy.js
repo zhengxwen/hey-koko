@@ -210,6 +210,113 @@ function videoTypeOf(model) {
   return null;
 }
 
+// ── Quantisation variants ────────────────────────────────────────────────────
+// The same weights ship as sibling files differing ONLY by a quantisation token
+// (wan2.2_bernini_r_high_noise_{fp8_scaled,mxfp8}.safetensors). Strip the token and
+// two files that are the same model collapse to one "base"; the ⚙ precision
+// preference then picks which sibling to actually load.
+//
+// Tokens are matched longest-first so fp8_e4m3fn_scaled doesn't degrade to "fp8"
+// and leave "_e4m3fn_scaled" glued to the base. NOTE the HF filename
+// wan2.1_14B_SCAIL_2_nvfp4_mxpf8_mix has "mxPF8" — a typo upstream, not mxfp8; it's
+// an nvfp4 file and must not be matched by the mxfp8 rule.
+//
+// This list is RECOGNITION, not the ⚙ menu (which is the <option> set in index.html).
+// int8 stays here despite not being offerable: an installed int8 build must still be
+// recognised as a variant so it collapses into its model's single dropdown entry
+// instead of showing up as a separate model.
+const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|int8_convrot|int8|fp16|bf16";
+const PRECISION_RE = new RegExp(`(?:^|[_-])(${PRECISION_TOKENS})(?=[_.-]|$)`, "i");
+const PRECISION_RE_G = new RegExp(`(?:^|[_-])(?:${PRECISION_TOKENS})(?=[_.-]|$)`, "ig");
+function precisionOf(name) {
+  const m = PRECISION_RE.exec(name || "");
+  if (!m) return null;
+  const tok = m[1].toLowerCase();
+  if (tok.startsWith("nvfp4")) return "nvfp4";
+  if (tok === "mxfp8") return "mxfp8";
+  if (tok.startsWith("fp8")) return "fp8";
+  if (tok.startsWith("int8")) return "int8";
+  return "fp16"; // fp16 / bf16 — the unquantised tier
+}
+
+// Filename minus its quantisation token + extension — the identity a set of
+// precision variants share.
+function precisionBase(name) {
+  return String(name || "")
+    .replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "")
+    .replace(PRECISION_RE_G, "")
+    .replace(/[_-]{2,}/g, "_")
+    .replace(/^[_-]+|[_-]+$/g, "")
+    .toLowerCase();
+}
+
+// Swap `name` for its sibling at the preferred precision. PER-FILE best effort: a
+// tier the sibling doesn't ship in keeps the name unchanged rather than failing —
+// which is what makes a half-quantised MoE pair (mxfp8 high + fp8 low, the only
+// bernini combination that exists today) load instead of 404.
+function pickPrecision(all, name, pref) {
+  if (!name || !pref || pref === "auto") return name;
+  if (precisionOf(name) === pref) return name;
+  const base = precisionBase(name);
+  return (all || []).find((n) => precisionBase(n) === base && precisionOf(n) === pref) || name;
+}
+
+// Every model file ComfyUI can load (both loaders) — the pool pickPrecision searches.
+async function comfyModelFiles() {
+  const [unets, ckpts] = await Promise.all([
+    comfyEnum("UNETLoader", "unet_name").catch(() => []),
+    comfyEnum("CheckpointLoaderSimple", "ckpt_name").catch(() => []),
+  ]);
+  return [...unets, ...ckpts];
+}
+
+// Apply the ⚙ precision preference to a selection. Returns the file(s) to load plus
+// a note naming the tiers ACTUALLY used whenever they differ from the request, so a
+// fallback is never silent.
+//
+// A two-expert MoE (bernini / WAN 2.2 14B) is resolved PER EXPERT: the twins are
+// separate UNETLoaders, so a tier only one of them ships in runs mixed rather than
+// failing. That is the only way to use bernini's mxfp8 high today — no mxfp8 low
+// exists — and the mix is surfaced on the done-line.
+// Best file for one expert: the asked-for tier, else fp8 (what the app loaded before
+// the ⚙ preference existed), else whatever that model ships. null = no such model.
+function pickByBase(all, base, pref) {
+  const group = (all || []).filter((n) => precisionBase(n) === base);
+  if (!group.length) return null;
+  return group.find((n) => precisionOf(n) === pref)
+      || group.find((n) => precisionOf(n) === "fp8")
+      || group[0];
+}
+
+async function resolvePrecision(model, pref) {
+  const out = { model, experts: null, note: null };
+  if (!model || !pref || pref === "auto") return out;
+  const all = await comfyModelFiles();
+  // A two-expert MoE is identified by its NAME. It must NOT be identified by "does the
+  // same-precision twin exist", which looks equivalent but isn't: bernini's mxfp8 high
+  // has no mxfp8 low, so that test reads an already-mxfp8 selection as a single model,
+  // leaves experts unset, and lets the builder derive — and 404 on — low_noise_mxfp8.
+  // Matching each twin by its precision-stripped BASE sidesteps that entirely.
+  if (/high_noise|low_noise/i.test(model)) {
+    const h = pickByBase(all, precisionBase(model.replace(/low_noise/i, "high_noise")), pref);
+    const l = pickByBase(all, precisionBase(model.replace(/high_noise/i, "low_noise")), pref);
+    if (h && l) {
+      out.experts = { high: h, low: l };
+      out.model = /low_noise/i.test(model) ? l : h;
+      const th = precisionOf(h), tl = precisionOf(l);
+      if (th !== tl) out.note = `${th} + ${tl}`;        // mixed — one twin lacks the tier
+      else if (th !== pref) out.note = th || "unknown";  // neither twin ships the tier
+      return out;
+    }
+    // Only one half is on disk — not a usable pair; fall through and treat it as a
+    // single model rather than inventing a twin.
+  }
+  out.model = pickPrecision(all, model, pref);
+  const t = precisionOf(out.model);
+  if (t !== pref) out.note = t || "unknown";            // no sibling at the asked tier
+  return out;
+}
+
 // Sentinel for the merged WAN 2.2 14B dropdown entry — resolved at generation
 // time to the real t2v or i2v high_noise checkpoint depending on whether the
 // user attached a reference image.
@@ -356,9 +463,43 @@ async function proxyComfyModels(req, res) {
     // boogu_image_edit is an instruction-edit model → excluded here (it's picked
     // up by editTypeOf into editModels instead).
     const boogu = all.filter((n) => /boogu/i.test(n) && !editTypeOf(n));
+    // Collapse quantisation variants: a model published as fp8 + mxfp8 + nvfp4 … is
+    // ONE dropdown entry, and the ⚙ precision preference decides which sibling loads
+    // (see resolvePrecision). Without this, five SCAIL-2 precisions would become ten
+    // entries (×2 modes). The entry keeps a REAL filename as its value — the swap
+    // happens at generation time — so a saved model choice keeps resolving.
+    const dedupePrecision = (list, nameOf, relabel) => {
+      const seen = new Map();
+      for (const item of list) {
+        const b = precisionBase(nameOf(item));
+        if (!seen.has(b)) seen.set(b, []);
+        seen.get(b).push(item);
+      }
+      const out = [];
+      for (const [, group] of seen) {
+        // Representative = the fp8 build when present (what the app loaded before this
+        // existed), else whatever came first — a stable, precision-independent choice.
+        const rep = group.find((x) => precisionOf(nameOf(x)) === "fp8") || group[0];
+        out.push(group.length > 1 && relabel ? relabel(rep, group) : rep);
+      }
+      return out;
+    };
+    // Strip the precision token from a collapsed entry's label — the value still names
+    // one variant, but the ⚙ setting is what actually picks the tier, so showing
+    // "…_fp8_scaled" on an entry that may load mxfp8 would be a lie.
+    const baseLabel = (n) => n.replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "").replace(PRECISION_RE_G, "").replace(/[_-]{2,}/g, "_").replace(/^[_-]+|[_-]+$/g, "");
+    // Strip the token from an EXISTING label too (the 14B entries pre-label themselves
+    // with the filename); a label with no precision token passes through untouched.
+    const relabel = (rep) => ({ ...rep, label: baseLabel(rep.label || rep.name) });
+    const videoOut = dedupePrecision(videoModels, (m) => m.name, relabel);
+    const editOut = dedupePrecision(editModels, (m) => m.name, relabel);
     // Image upscale (image HD): always offered — needs only an upscale model (checked
     // at gen time) + an attached image. Sits in the image model list as a sentinel.
-    sendJson(res, 200, { models: [...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, IMAGE_UPSCALE], editModels, videoModels, upscaleModels, hostname });
+    // `models` is a bare string list (the bg-worker lane sets consume it as such), so a
+    // collapsed group here shows the representative's own filename rather than a base
+    // label — harmless while no IMAGE model ships multiple precisions.
+    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu], (n) => n, null);
+    sendJson(res, 200, { models: [...imageOut, IMAGE_UPSCALE], editModels: editOut, videoModels: videoOut, upscaleModels, hostname });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [], upscaleModels: [] });
   }
@@ -1289,10 +1430,13 @@ const WAN_DEFAULT_NEGATIVE =
 // derive the low-noise twin from the selected high-noise name. t2v uses an empty
 // latent; i2v uses WanImageToVideo; first-last-frame (start + end image, FLF2V)
 // uses WanFirstLastFrameToVideo — all three just swap node 7 and its conditioning.
-function buildWan14B({ model, prompt, negative, comp, imageName, endImageName, seed, v }) {
+function buildWan14B({ model, prompt, negative, comp, imageName, endImageName, seed, v, experts }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
-  const highModel = model.replace(/low_noise/i, "high_noise");
-  const lowModel = model.replace(/high_noise/i, "low_noise");
+  // `experts` = the pair already resolved to the ⚙ precision tier (each twin
+  // independently — see resolvePrecision). Absent → derive the twin by name, which
+  // is right whenever both ship in the same precision.
+  const highModel = (experts && experts.high) || model.replace(/low_noise/i, "high_noise");
+  const lowModel = (experts && experts.low) || model.replace(/high_noise/i, "low_noise");
   const flf = !!endImageName;     // first-last-frame (start + end)
   const i2v = !!imageName && !flf; // plain image-to-video (start only)
   const boundary = Math.max(1, Math.floor(v.steps / 2)); // expert switch at ~50%
@@ -1488,9 +1632,10 @@ const BERNINI_SYS_I2V = "You are a helpful assistant specialized in image-to-vid
 // (distill LoRA mounted) = cfg 1 / 6 steps / split 3 (high str 3, low 1.5);
 // non-turbo = cfg 5 / 40 steps / split 20. v2v/rv2v keep the SOURCE video's fps +
 // audio (CreateVideo reads them from GetVideoComponents); i2v uses an explicit fps.
-function buildBernini({ model, prompt, negative, comp, videoName, refImageName, width, height, length, seed, turbo, fps, refMaxSize }) {
-  const highModel = model.replace(/low_noise/i, "high_noise");
-  const lowModel = model.replace(/high_noise/i, "low_noise");
+function buildBernini({ model, prompt, negative, comp, videoName, refImageName, width, height, length, seed, turbo, fps, refMaxSize, experts }) {
+  // See buildWan14B: `experts` carries the ⚙-precision-resolved twins when set.
+  const highModel = (experts && experts.high) || model.replace(/low_noise/i, "high_noise");
+  const lowModel = (experts && experts.low) || model.replace(/high_noise/i, "low_noise");
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   const i2v = !videoName; // image-to-video: no source clip to edit
   const sys = i2v ? BERNINI_SYS_I2V : (refImageName ? BERNINI_SYS_RV2V : BERNINI_SYS_V2V);
@@ -2095,6 +2240,7 @@ async function waitForOutputs(promptId, signal, deadline) {
 async function generateComfyImage(req, res) {
   let clientGone = false; // set if the client disconnects before we respond
   let isVideoReq = false; // for a video-aware timeout message in the catch
+  let precisionNote = null; // tiers actually loaded, when they differ from the ⚙ request
   try {
     const body = await readBody(req);
     // Target the ComfyUI endpoint this job was routed to (parallel lanes); default global.
@@ -2152,6 +2298,15 @@ async function generateComfyImage(req, res) {
         return;
       }
     }
+    // ⚙ precision preference. Runs AFTER every sentinel has resolved to a real
+    // filename and BEFORE anything reads `model`, so each builder just receives the
+    // file it should load. Two-expert models also get their pair pre-resolved —
+    // buildWan14B / buildBernini would otherwise derive the twin off the SWAPPED
+    // name and ask for e.g. bernini's low_noise_mxfp8, which does not exist.
+    const prec = await resolvePrecision(model, opts.precision);
+    model = prec.model;
+    const expertPair = prec.experts;
+    precisionNote = prec.note;
     const isMultiImage = Array.isArray(images) && images.length >= 2;
     // Output size for img2img edits, keeping the input's aspect ratio. Only
     // OVERRIDE the builder's natural sizing when we must: a size is specified
@@ -2262,7 +2417,7 @@ async function generateComfyImage(req, res) {
         const videoName = sourceVideoName || (sourceVideo ? await uploadVideo(sourceVideo, controller.signal, sourceVideoMime) : null);
         const refImageName = hasImage ? await uploadImage(images[0], controller.signal) : null;
         imagesUsed = refImageName ? 1 : 0;
-        workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: bw, height: bh, length: bl, seed, turbo, fps: bfps, refMaxSize: refMax });
+        workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: bw, height: bh, length: bl, seed, turbo, fps: bfps, refMaxSize: refMax, experts: expertPair });
         // v2v/rv2v keep the source video's fps; i2v uses bfps (so it can show duration).
         videoDims = { width: bw, height: bh, length: bl, fps: hasVideo ? undefined : bfps };
       } else if (videoType === "enhance") {
@@ -2514,7 +2669,7 @@ async function generateComfyImage(req, res) {
           imagesUsed = 1;
           if (isFLF) { endImageName = await uploadImage(images[1], controller.signal, "heykoko_end.png"); imagesUsed = 2; }
         }
-        workflow = buildVideoWorkflow(videoType, { model, prompt, negative: negative_prompt || "", comp, imageName, endImageName, imageNames, seed, v });
+        workflow = buildVideoWorkflow(videoType, { model, prompt, negative: negative_prompt || "", comp, imageName, endImageName, imageNames, seed, v, experts: expertPair });
       } else if (editType) {
         // Instruction-edit. Checkpoint-based models (ip2p) bundle CLIP+VAE;
         // HiDream-E1 needs the 4 HiDream encoders; the rest (Kontext/Qwen) pick
@@ -2792,7 +2947,7 @@ async function generateComfyImage(req, res) {
         // Single-frame Wan Animate → an IMAGE result (not a video).
         console.log(`${ts} [comfy-gen] model=${model}, mode=animate:still, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, images=${outImages.length}`);
         if (!outImages.length) { sendJson(res, 502, { error: "ComfyUI finished but produced no image. Please retry." }); return; }
-        sendJson(res, 200, { images: outImages, model, seed, width: videoDims?.width, height: videoDims?.height, imagesUsed });
+        sendJson(res, 200, { images: outImages, model, seed, precisionNote, width: videoDims?.width, height: videoDims?.height, imagesUsed });
       } else if (videoType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
         // Ran to completion but no video file came back — tell the client why rather
@@ -2802,11 +2957,11 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI finished but produced no video file (output nodes: ${nodeIds}). Make sure the workflow includes a SaveVideo node, or retry.` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);
-        sendJson(res, 200, { images: outImages, model, seed, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined });
+        sendJson(res, 200, { images: outImages, model, seed, precisionNote, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined });
       }
     } finally {
       clearTimeout(timeout);

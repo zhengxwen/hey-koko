@@ -52,6 +52,8 @@ function comfyOverrides() {
   if (imageCfg !== undefined) ov.imageCfg = imageCfg;
   const denoise = num(dom.comfyParamDenoise?.value);
   if (denoise !== undefined) ov.denoise = denoise;
+  const precision = dom.comfyParamPrecision?.value || "";
+  if (precision) ov.precision = precision; // ⚙ quantisation tier preference (empty = auto)
   const length = num(dom.comfyParamLength?.value);
   if (length !== undefined) ov.length = length;
   const fps = num(dom.comfyParamFps?.value);
@@ -913,6 +915,13 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       const list = videoSeeds.map((s, i) => `#${i + 1} ${s !== null ? s : "?"}`).join(" · ");
       doneLine += `\n${t("msg_seedsBatch", { list }, plang)}`;
     }
+    // ⚙ precision: only spoken about when it did NOT get what was asked for — either
+    // the model has no build at that tier, or a two-expert pair ran half-and-half
+    // because only one twin ships it. Silence means the request was honoured.
+    if (lastData.precisionNote) {
+      const key = lastData.precisionNote.includes("+") ? "msg_precisionMixed" : "msg_precisionFallback";
+      doneLine += `\n${t(key, { got: lastData.precisionNote }, plang)}`;
+    }
     // Framerate boost (frame interpolation): either it ran (note the new fps + multiplier) or it
     // was skipped because the source was already at/above the requested target fps.
     if (lastData.interpolated >= 2 && lastData.fps) {
@@ -1211,6 +1220,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   let lastError = "";
   let noopMessage = null; // server did nothing on purpose (e.g. upscale=Off) → plain notice, not an error
   let upscaleModelUsed = null, upscaleDenoiseUsed = 0; // HD upscale algorithm used → shown in the done line
+  let precisionNoteUsed = null; // ⚙ precision fallback/mix, when the request could not be honoured
   // Seed actually used (random unless --seed was pinned) → surfaced on the done line
   // so a single result can be reproduced. Only meaningful for a single output.
   let usedSeed = null;
@@ -1297,6 +1307,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
               } else if (r.ok) {
                 const imgs = (data.images || []).filter((s) => s && s.length > 100);
                 if (data.upscaleModel) { upscaleModelUsed = data.upscaleModel; upscaleDenoiseUsed = data.upscaleDenoise || 0; }
+                if (data.precisionNote) precisionNoteUsed = data.precisionNote;
                 if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
                 generatedImages.push(...imgs);
                 for (let k = 0; k < imgs.length; k++) seeds.push(typeof data.seed === "number" ? data.seed : null);
@@ -1366,6 +1377,11 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       else if (totalCount > 1 && seeds.some((s) => s !== null)) {
         const list = seeds.map((s, i) => `#${i + 1} ${s !== null ? s : "?"}`).join(" · ");
         doneLine += `\n${t("msg_seedsBatch", { list }, plang)}`;
+      }
+      // ⚙ precision: mentioned ONLY when the requested tier wasn't what loaded.
+      if (precisionNoteUsed) {
+        const key = precisionNoteUsed.includes("+") ? "msg_precisionMixed" : "msg_precisionFallback";
+        doneLine += `\n${t(key, { got: precisionNoteUsed }, plang)}`;
       }
       // HD upscale (image-upscale) — name the model + denoise algorithm actually used.
       if (upscaleModelUsed) doneLine += `\n${t("msg_upscaleUsed", { model: stripModelExt(upscaleModelUsed) }, plang)}`;

@@ -401,6 +401,9 @@ export function updateComfyParamVisibility() {
   for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel]) setVis(el, upscale);
   // Image-edit / txt2img only.
   setVis(dom.comfyParamImageCfg, diffusion && !video);
+  // Quantisation preference — diffusion models only (the upscale pipelines load an
+  // upscale model, which has no precision variants).
+  setVis(dom.comfyParamPrecision, diffusion);
   // Sampler + prompt knobs — diffusion models only (an upscale pipeline runs no sampler / steps / prompt).
   for (const el of [dom.comfyParamPositive, dom.comfyParamNegative, dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps, dom.comfyParamCfg, dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion);
 }
@@ -543,6 +546,7 @@ function initComfyParamsModal() {
     dom.comfyParamGuidance,
     dom.comfyParamImageCfg,
     dom.comfyParamDenoise,
+    dom.comfyParamPrecision,
     dom.comfyParamLength,
     dom.comfyParamFps,
     dom.comfyParamTimeout,

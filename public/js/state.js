@@ -57,6 +57,7 @@ export const dom = {
   comfyParamGuidance: document.querySelector("#comfyParamGuidance"),
   comfyParamImageCfg: document.querySelector("#comfyParamImageCfg"),
   comfyParamDenoise: document.querySelector("#comfyParamDenoise"),
+  comfyParamPrecision: document.querySelector("#comfyParamPrecision"),
   comfyParamLength: document.querySelector("#comfyParamLength"),
   comfyParamFps: document.querySelector("#comfyParamFps"),
   comfyParamTimeout: document.querySelector("#comfyParamTimeout"),
