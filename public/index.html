@@ -787,6 +787,10 @@
             <input id="comfyParamBerniniQuality" type="checkbox" />
             <span id="comfyParamBerniniQualityLabel">Quality mode: 40 steps, no turbo LoRA (bernini)</span>
           </label>
+          <label title="Phantom only: image-guidance scale (g_img). How hard the subject's appearance from the reference images is enforced against the text prompt. The text-guidance scale is the ⚙ CFG field above. Upstream default 5.0; raise to keep the subject more faithful, lower to let the prompt reshape it more.">
+            <span id="comfyParamPhantomImgCfgLabel">Subject fidelity / image CFG (Phantom)</span>
+            <input id="comfyParamPhantomImgCfg" type="number" min="0" max="30" step="0.5" placeholder="Auto (5.0)" />
+          </label>
           <label title="Bernini only: caps the LONG EDGE of each reference image / reference video. References keep their own aspect ratio and are never cropped — this only limits their resolution, so a higher value preserves more identity/detail from the reference. Official default is 848; the template suggests 1280 for 720p. Costs VRAM and time. Auto = 848, or the output's long edge when that is larger.">
             <span id="comfyParamRefMaxSizeLabel">Reference detail / ref_max_size (bernini)</span>
             <input id="comfyParamRefMaxSize" type="number" min="16" max="8192" step="16" placeholder="Auto (848)" />

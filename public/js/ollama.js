@@ -495,13 +495,20 @@ function applyComfyModels(data) {
 // model — WAN 14B is 16fps/81f, NOT the generic 24/49.
 function videoAutoDefaults(modelName) {
   const m = (modelName || "").toLowerCase();
-  if (/ltx/.test(m)) return { fps: 24, length: 97 };
-  if (/hunyuan/.test(m)) return { fps: 24, length: 49 };
+  // steps/cfg are included only where they DON'T depend on turbo (installed speed
+  // LoRAs, which the frontend can't see): the placeholder shows "Auto (N)" when set,
+  // else plain "Auto". Mirrors videoPreset in server/comfy.js. WAN 14B is left without
+  // steps/cfg on purpose — its schedule flips between turbo (4/cfg1) and full (20/3.5).
+  if (/ltx/.test(m)) return { fps: 24, length: 97, steps: 30, cfg: 3 };
+  if (/hunyuan/.test(m)) return { fps: 24, length: 49, steps: 20, cfg: 6 };
+  // Phantom: fixed 50-step / cfg 7.5 (uni_pc) — no distill LoRA, so it never varies.
+  if (/phantom/.test(m)) return { fps: 24, length: 81, steps: 50, cfg: 7.5 };
   // Bernini matches none of the rules below (its name carries no "wan"), so without
   // this it fell through to null and the ⚙ showed the generic Auto (24) / Auto (49)
-  // rather than the 16 / 81 the server actually uses.
+  // rather than the 16 / 81 the server actually uses. (Its steps field is hidden —
+  // bernini isn't samplerTunable — so no steps/cfg needed here.)
   if (/bernini/.test(m)) return { fps: 16, length: 81 };
-  if (/wan/.test(m)) return /14b/.test(m) ? { fps: 16, length: 81 } : { fps: 24, length: 49 };
+  if (/wan/.test(m)) return /14b/.test(m) ? { fps: 16, length: 81 } : { fps: 24, length: 49, steps: 20, cfg: 5 };
   return null;
 }
 
@@ -559,6 +566,7 @@ function comfyModelComponents(name) {
   // "scail2_animate", so a bare /animate/ test claimed it ran Wan Animate's pipeline.
   if (/scail/.test(n)) return "SCAIL-2 (character animation) · UNETLoader + lightx2v + DPO LoRA · SAM3 open-vocabulary subject tracking (no DWPose) · WanSCAILToVideo · reference_image batch + mask, paired by batch index";
   if (/animate/.test(n)) return "Wan Animate (pose transfer) · UNETLoader + lightx2v + relight LoRA · ModelSamplingSD3 · LoadVideo→DWPose(pose+face) · WanAnimateToVideo · segment length adapts to resolution (≤640: 241f · 720p: 161f · 1080p: 65f) — a longer source is generated in chunks with continue_motion for seamless joins, then merged";
+  if (/phantom/.test(n)) return "Phantom (subject→video) · UNETLoader · CLIP umt5(wan) · VAE wan_2.1 · ModelSamplingSD3 · WanPhantomSubjectToVideo (reference subjects, no driving video) · DualCFGGuider(regular: g_text + g_img) · SamplerCustomAdvanced (uni_pc)";
   if (/bernini/.test(n)) return "WAN2.2 MoE · UNETLoader ×2 · CLIP umt5(wan) · VAE wan_2.1 · BerniniConditioning · SamplerCustom ×2 · v2v: LoadVideo→GetVideoComponents (keeps source fps + audio) · attach a video to edit it (v2v), + images as reference views (rv2v), or images alone → image-to-video · turbo: LightX2V distill LoRA";
   if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b"
     ? "WAN2.2 14B MoE · UNETLoader ×2 · CLIP umt5 · VAE wan_2.1 · WanImageToVideo · KSamplerAdvanced ×2 · turbo: LightX2V 4-step LoRA"
@@ -605,6 +613,11 @@ export function updateComfyMultiHint() {
   // when it exceeds the single-pass cap); other models use a fixed preset length.
   const lengthFollowsSource = !!(v && /animate/i.test(v));
   if (dom.comfyParamLength) dom.comfyParamLength.placeholder = lengthFollowsSource ? t("comfy_length_source") : `Auto (${auto ? auto.length : 49})`;
+  // Steps / CFG show the model's real auto value when it's fixed (Phantom 50, LTX 30,
+  // …). WAN 14B's flips with turbo, which the frontend can't detect — it keeps a bare
+  // "Auto" rather than commit to a number that may be wrong.
+  if (dom.comfyParamSteps) dom.comfyParamSteps.placeholder = auto && auto.steps != null ? `Auto (${auto.steps})` : "Auto";
+  if (dom.comfyParamCfg) dom.comfyParamCfg.placeholder = auto && auto.cfg != null ? `Auto (${auto.cfg})` : "Auto";
   // "What is this model for" — under the dropdown, and on the closed select's own
   // tooltip. Re-applied to every option here too (rather than only at build time) so a
   // language switch relocalizes them without rebuilding the list.
@@ -653,6 +666,8 @@ export function updateComfyParamVisibility() {
   // Bernini only — turbo is otherwise forced on by the mere presence of the distill
   // LoRA, and ref_max_size is the only knob on how much reference detail survives.
   for (const el of [dom.comfyParamBerniniQuality, dom.comfyParamRefMaxSize]) setVis(el, /bernini/i.test(m));
+  // Phantom only — the image-guidance scale (its second, subject-fidelity CFG).
+  setVis(dom.comfyParamPhantomImgCfg, /phantom/i.test(m));
   // SCAIL-2 only — SAM3 open-vocabulary subject + identity ordering + the pose schedule.
   // These are Animate's counterparts to relight/🎯: same intent, different mechanism.
   for (const el of [dom.comfyParamScailSubject, dom.comfyParamScailRefSubject, dom.comfyParamScailThreshold,
@@ -825,6 +840,7 @@ function initComfyParamsModal() {
     dom.comfyParamUpscaleModel,
     dom.comfyParamRelight,
     dom.comfyParamRefMaxSize,
+    dom.comfyParamPhantomImgCfg,
     dom.comfyParamScailSubject,
     dom.comfyParamScailRefSubject,
     dom.comfyParamScailThreshold,

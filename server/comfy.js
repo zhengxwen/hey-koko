@@ -204,6 +204,10 @@ function videoTypeOf(model) {
   if (/bernini/i.test(model)) return "bernini";
   if (/scail/i.test(model)) return "scail2";
   if (/animate/i.test(model)) return "animate";
+  // Phantom BEFORE the generic /wan/ branch: its name contains "wan", and it must NOT
+  // fall into buildWan14B — Phantom is a SINGLE Wan-2.1 UNET, not a high/low MoE, so
+  // the /14b/ MoE path would load one file as both experts and skip its subject nodes.
+  if (/phantom/i.test(model)) return "phantom";
   if (/wan/i.test(model)) return "wan";
   if (/ltx/i.test(model)) return "ltx";
   if (/hunyuan.?video/i.test(model)) return "hunyuan";
@@ -1357,6 +1361,12 @@ function videoPreset(videoType, model, turbo) {
     }
     return { sampler: "uni_pc", scheduler: "simple", cfg: 5, steps: 20, shift: 8.0, width: 704, height: 480, length: 49, fps: 24, dimMult: 16, lenMult: 4 };
   }
+  if (videoType === "phantom") {
+    // Upstream s2v defaults (phantom_wan generate.py): uni_pc, 50 steps, shift 5.0,
+    // g_text 7.5 (this cfg = cfg_conds), g_img 5.0 (handled separately in buildPhantom).
+    // 14B example runs 121 frames @ 24 fps; keep the 81/16 preset and let ⚙ raise it.
+    return { sampler: "uni_pc", scheduler: "simple", cfg: 7.5, steps: 50, shift: 5.0, width: 832, height: 480, length: 81, fps: 24, dimMult: 16, lenMult: 4 };
+  }
   if (videoType === "hunyuan") {
     return { sampler: "euler", scheduler: "simple", cfg: 6, steps: 20, shift: 7.0, width: 720, height: 480, length: 49, fps: 24, dimMult: 16, lenMult: 4 };
   }
@@ -1698,6 +1708,86 @@ function buildVideoWorkflow(videoType, args) {
   if (videoType === "hunyuan") return buildHunyuanVideo(args);
   if (videoType === "ltx") return buildLtxVideo(args);
   return null;
+}
+
+// Phantom README caps reliable subject references at 4; the node itself takes more but
+// quality falls off, and each adds a full vae.encode + a frame to the time axis.
+const PHANTOM_MAX_REFS = 4;
+
+// Phantom-Wan companions: umt5 (CLIPLoader type "wan") + the WAN 2.1 VAE. Phantom is
+// a single Wan-2.1-based UNET (no high/low MoE, no distill LoRA), so this is all it
+// needs beyond the UNET itself.
+async function phantomCompanions() {
+  const [clips, vaes] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+  ]);
+  const find = (list, re) => list.find((x) => re.test(x));
+  const clip = find(clips, /umt5/i);
+  const vae = find(vaes, /wan.?2[._]1.*vae/i) || find(vaes, /wan.*vae/i);
+  const missing = [];
+  if (!clip) missing.push("umt5_xxl_fp8_e4m3fn_scaled.safetensors → text_encoders/");
+  if (!vae) missing.push("wan_2.1_vae.safetensors → vae/");
+  if (missing.length) throw new Error("Missing files required by Phantom:\n- " + missing.join("\n- "));
+  return { clip, vae };
+}
+
+// Phantom (WanPhantomSubjectToVideo) — subject-to-video: reference subject image(s) +
+// a prompt → a video that keeps those subjects' identity, with NO driving video.
+//
+// The node emits THREE conditionings whose slot NAMES are counter-intuitive (verified
+// against comfy_extras/nodes_wan.py):
+//   slot 0 "positive"          = pos text + REAL reference-image latent
+//   slot 1 "negative_text"     = neg text + REAL reference-image latent   ← has the image
+//   slot 2 "negative_img_text" = neg text + ZEROED latent                 ← image removed
+// Phantom's upstream CFG (phantom_wan/subject2video.py) is a triple-forward blend with
+// two independent scales:
+//   pred = neg + g_img·(pos_i − neg) + g_text·(pos_it − pos_i)
+// where pos_it=slot0, pos_i=slot1, neg=slot2. That is EXACTLY DualCFGGuider "regular"
+// (pred = negative + cfg_conds·(cond1 − cond2) + cfg_cond2_negative·(cond2 − negative))
+// under cond1=slot0, cond2=slot1, negative=slot2, cfg_conds=g_text, cfg_cond2_negative=
+// g_img. So no custom node is needed — the same guider hey-koko already uses for ip2p
+// consumes Phantom's three outputs verbatim. Upstream s2v defaults: g_text 7.5, g_img
+// 5.0, 50 steps, uni_pc, shift 5.0, ≤4 reference images.
+function buildPhantom({ model, prompt, negative, comp, imageNames, seed, v, imgCfg }) {
+  const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
+  const refs = (imageNames || []).filter(Boolean).slice(0, PHANTOM_MAX_REFS);
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "ModelSamplingSD3", inputs: { model: ["1", 0], shift: v.shift } },
+    "3": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan" } },
+    "4": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "5": { class_type: "CLIPTextEncode", inputs: { clip: ["3", 0], text: prompt } },
+    "6": { class_type: "CLIPTextEncode", inputs: { clip: ["3", 0], text: neg } },
+    // 7 = WanPhantomSubjectToVideo (images wired below); 8 = DualCFGGuider.
+    "7": { class_type: "WanPhantomSubjectToVideo", inputs: { positive: ["5", 0], negative: ["6", 0], vae: ["4", 0], width: v.width, height: v.height, length: v.length, batch_size: 1 } },
+    "8": { class_type: "DualCFGGuider", inputs: { model: ["2", 0], cond1: ["7", 0], cond2: ["7", 1], negative: ["7", 2], cfg_conds: v.cfg, cfg_cond2_negative: imgCfg, style: "regular" } },
+    "9": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
+    "10": { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
+    "11": { class_type: "BasicScheduler", inputs: { model: ["2", 0], scheduler: v.scheduler, steps: v.steps, denoise: 1 } },
+    "12": { class_type: "SamplerCustomAdvanced", inputs: { noise: ["9", 0], guider: ["8", 0], sampler: ["10", 0], sigmas: ["11", 0], latent_image: ["7", 3] } },
+    "13": { class_type: "VAEDecode", inputs: { samples: ["12", 0], vae: ["4", 0] } },
+    "14": { class_type: "CreateVideo", inputs: { images: ["13", 0], fps: v.fps } },
+    "15": { class_type: "SaveVideo", inputs: { video: ["14", 0], filename_prefix: "heykoko_phantom", format: "mp4", codec: "h264" } },
+  };
+  // Reference subjects → a single IMAGE batch. The node resizes the whole batch to
+  // width×height itself, then vae.encodes each frame; ImageBatch takes two at a time,
+  // so N images fold left: batch(batch(i0,i1),i2)…. One image needs no batch node.
+  if (refs.length) {
+    const loadIds = refs.map((name, i) => {
+      const id = String(20 + i);
+      wf[id] = { class_type: "LoadImage", inputs: { image: name } };
+      return [id, 0];
+    });
+    let acc = loadIds[0];
+    for (let i = 1; i < loadIds.length; i++) {
+      const bid = String(40 + i); // 40+ keeps clear of the 20+ LoadImage block
+      wf[bid] = { class_type: "ImageBatch", inputs: { image1: acc, image2: loadIds[i] } };
+      acc = [bid, 0];
+    }
+    wf["7"].inputs.images = acc;
+  }
+  return wf;
 }
 
 // Bernini-R companions: umt5 (CLIPLoader type "wan") + the WAN 2.1 VAE + the
@@ -2887,6 +2977,31 @@ async function generateComfyImage(req, res) {
         workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, fps: afps, torchCompile: !!opts.torchCompile, chunks, replace: animateReplace, relightStrength: opts.relightStrength, maskPoint: opts.maskPoint });
         videoDims = { width: aw, height: ah, length: totalFrames, fps: afps, segments: chunks.length };
         if (truncatedFrom) videoDims.truncatedFrom = truncatedFrom;
+      } else if (videoType === "phantom") {
+        // Phantom subject-to-video: reference subject image(s) + prompt → a video that
+        // keeps those subjects, NO driving video. Needs at least one image.
+        const hasImage = Array.isArray(images) && images.length > 0;
+        if (!hasImage) { sendJson(res, 400, { error: "Phantom needs at least one reference image of the subject(s) to keep. Attach 1-4 images, then use /imagine <description of the scene/action>." }); return; }
+        const comp = await phantomCompanions();
+        // Size follows the FIRST reference's aspect at the preset budget (a portrait
+        // subject → a portrait video), same as the i2v path. --size sets the budget.
+        let aspW = Number(refImageWidth), aspH = Number(refImageHeight);
+        if (!(aspW > 0 && aspH > 0)) { const d = imageDims(images[0]); if (d) { aspW = d.width; aspH = d.height; } }
+        const vOpts = { ...opts };
+        if (aspW > 0 && aspH > 0) vOpts.aspect = aspW / aspH;
+        const v = resolveVideoConfig("phantom", vOpts, model, false);
+        // g_img (cfg_cond2_negative) — the second, image-fidelity scale, controlling how
+        // hard the subject's appearance is enforced vs. the text. Its own ⚙ knob (the
+        // ip2p imageCfg field is a different range/meaning); v.cfg carries g_text.
+        const imgCfg = opts.phantomImgCfg > 0 ? opts.phantomImgCfg : 5.0;
+        // Up to PHANTOM_MAX_REFS subjects, distinct filenames (shared name + overwrite
+        // would collapse them to the last image).
+        const refs = images.slice(0, PHANTOM_MAX_REFS);
+        const imageNames = [];
+        for (let i = 0; i < refs.length; i++) imageNames.push(await uploadImage(refs[i], controller.signal, `heykoko_phantom${i}.png`));
+        imagesUsed = imageNames.length;
+        workflow = buildPhantom({ model, prompt, negative: negative_prompt || "", comp, imageNames, seed, v, imgCfg });
+        videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
       } else if (videoType) {
         // Video. WAN 5B ti2v + 14B i2v do image→video; WAN 14B t2v / Hunyuan are
         // text→video only. The dedicated WAN 2.2 14B i2v model needs a ref image.

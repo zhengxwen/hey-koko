@@ -59,6 +59,7 @@ export function saveCurrentSettings() {
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
         berniniQuality: dom.comfyParamBerniniQuality?.checked || false,
         refMaxSize: dom.comfyParamRefMaxSize?.value || "",
+        phantomImgCfg: dom.comfyParamPhantomImgCfg?.value || "",
         relight: dom.comfyParamRelight?.value || "",
         scailSubject: dom.comfyParamScailSubject?.value || "",
         scailRefSubject: dom.comfyParamScailRefSubject?.value || "",
@@ -231,6 +232,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
     if (dom.comfyParamBerniniQuality) dom.comfyParamBerniniQuality.checked = !!cp.berniniQuality;
     if (dom.comfyParamRefMaxSize) dom.comfyParamRefMaxSize.value = cp.refMaxSize || "";
+    if (dom.comfyParamPhantomImgCfg) dom.comfyParamPhantomImgCfg.value = cp.phantomImgCfg || "";
     if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";
     if (dom.comfyParamScailSubject) dom.comfyParamScailSubject.value = cp.scailSubject || "";
     if (dom.comfyParamScailRefSubject) dom.comfyParamScailRefSubject.value = cp.scailRefSubject || "";

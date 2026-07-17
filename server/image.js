@@ -173,6 +173,19 @@ const VIDEO_ENHANCE_PROMPTS = {
   "zh-Hant": "你是「文生視訊模型」（如 WAN、Hunyuan、LTX）的提示詞專家。請把使用者的簡短描述擴展成一段生動的英文視訊提示詞，重點描述隨時間發生的【運動】：主體在做什麼、如何移動、鏡頭運動（平移/推拉/變焦/固定）、整體氛圍與光線。要描述一個連續的鏡頭，而不是靜止畫面。控制在150字以內。只輸出增強後的提示詞，不要有其他解釋或前綴。",
 };
 
+// Phantom (subject-to-video) rephraser. Phantom binds each reference image to a
+// subject in the scene BY APPEARANCE, not by position, and its paper shows multi-
+// subject success jumps 65%→95% when every subject gets a DISTINCT appearance
+// description (generic group nouns like "a family of three" cause identity mixing).
+// This runs with the reference images ATTACHED (a vision model), so it can read each
+// subject's real look. Output stays in the user's language — umt5 is multilingual and
+// Phantom's own examples are richly-described long sentences.
+const PHANTOM_ENHANCE_PROMPTS = {
+  en: "You are a prompt engineer for Phantom, a subject-to-video model. You are shown ONE OR MORE reference images — each is a distinct subject (person / character / object) that MUST appear in the video — followed by the user's short scene idea. Write ONE video prompt in the SAME LANGUAGE as the user's idea that: (1) gives EACH subject its own vivid, DISTINCT appearance description taken from its reference image (hair, clothing colour, accessories, distinguishing features) so no two subjects can be confused; (2) uses a clear label per subject (the woman / the man / the old man / the girl / the dog / the red dress) anchored to those looks; (3) then states the shared action / scene / camera and mood. NEVER use a generic group noun (\"two people\", \"a couple\", \"a family of three\") — describe each individual separately. Do not invent subjects that are not in the images. Output ONLY the final prompt, no explanations.",
+  zh: "你是「主体生视频」模型 Phantom 的提示词专家。你会看到一张或多张参考图——每张是一个必须出现在视频里的独立主体（人物/角色/物体），随后是用户的简短场景想法。请用【与用户想法相同的语言】写出一条视频提示词，要求：(1) 依据每张参考图，给【每个主体】各自生动且【互相区分】的外观描述（发型、发色、服装颜色、配饰、可辨识特征），确保任意两个主体不会混淆；(2) 每个主体用清晰的标签词（女子/男子/老人/女孩/狗/红裙）并锚定其外观；(3) 再陈述共同的动作/场景/镜头与氛围。【禁止】使用泛化群体名词（\"两个人\"\"一对情侣\"\"一家三口\"），必须逐一分别描述。不要虚构参考图里没有的主体。只输出最终提示词，不要任何解释。",
+  "zh-Hant": "你是「主體生視訊」模型 Phantom 的提示詞專家。你會看到一張或多張參考圖——每張是一個必須出現在影片裡的獨立主體（人物/角色/物體），隨後是使用者的簡短場景想法。請用【與使用者想法相同的語言】寫出一條影片提示詞，要求：(1) 依據每張參考圖，給【每個主體】各自生動且【互相區分】的外觀描述（髮型、髮色、服裝顏色、配飾、可辨識特徵），確保任意兩個主體不會混淆；(2) 每個主體用清晰的標籤詞（女子/男子/老人/女孩/狗/紅裙）並錨定其外觀；(3) 再陳述共同的動作/場景/鏡頭與氛圍。【禁止】使用泛化群體名詞（\"兩個人\"\"一對情侶\"\"一家三口\"），必須逐一分別描述。不要虛構參考圖裡沒有的主體。只輸出最終提示詞，不要任何解釋。",
+};
+
 function getPromptByLang(templates, lang) {
   return templates[lang] || templates.zh || templates.en;
 }
@@ -183,25 +196,32 @@ function getPromptByLang(templates, lang) {
 // model returns nothing); THROWS on a bad request / Ollama error. Reused by both the
 // standalone /api/enhance-prompt endpoint AND server-side generation (so an enqueued
 // job can be enhanced at RUN time, not in the browser — survives a frozen tab).
-async function enhancePromptText({ model, prompt, language, edit, video }) {
+async function enhancePromptText({ model, prompt, language, edit, video, subjectRef, images }) {
   if (!model || !prompt) throw new Error("model and prompt are required");
-  // Video wins over edit (i2v still needs motion described).
-  const template = video ? VIDEO_ENHANCE_PROMPTS : edit ? EDIT_ENHANCE_PROMPTS : ENHANCE_PROMPTS;
+  // Phantom subject-ref rephrase wins over the generic video motion prompt: it needs
+  // the reference images described distinctly, not a camera-motion expansion. Requires
+  // a vision-capable chat model (images ride on the user message); a text-only model
+  // simply won't use them, and enhancement is opt-in and falls back to the raw prompt.
+  const refImages = subjectRef && Array.isArray(images) ? images.filter(Boolean) : [];
+  const template = refImages.length ? PHANTOM_ENHANCE_PROMPTS
+    : video ? VIDEO_ENHANCE_PROMPTS : edit ? EDIT_ENHANCE_PROMPTS : ENHANCE_PROMPTS;
   const systemPrompt = getPromptByLang(template, language || "en");
+  // The user message carries the images (all three providers read `m.images`).
+  const userMsg = refImages.length ? { role: "user", content: prompt, images: refImages } : { role: "user", content: prompt };
 
   // Cloud model: call Claude directly (this server-side path bypasses the
   // /api/chat router that would otherwise route by model name).
   if (claude.isClaudeModel(model)) {
     const text = await claude.complete(model, [
       { role: "system", content: systemPrompt },
-      { role: "user", content: prompt },
+      userMsg,
     ]);
     return text.trim() || prompt;
   }
   if (openai.isOpenAIModel(model)) {
     const text = await openai.complete(model, [
       { role: "system", content: systemPrompt },
-      { role: "user", content: prompt },
+      userMsg,
     ]);
     return text.trim() || prompt;
   }
@@ -214,7 +234,7 @@ async function enhancePromptText({ model, prompt, language, edit, video }) {
       stream: false,
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: prompt },
+        userMsg,
       ],
     }),
   });
@@ -230,12 +250,12 @@ async function enhancePromptText({ model, prompt, language, edit, video }) {
 async function enhancePrompt(req, res) {
   try {
     const body = await readBody(req);
-    const { model, prompt, language, edit, video } = body;
+    const { model, prompt, language, edit, video, subjectRef, images } = body;
     if (!model || !prompt) {
       sendJson(res, 400, { error: "model and prompt are required" });
       return;
     }
-    const enhanced = await enhancePromptText({ model, prompt, language, edit, video });
+    const enhanced = await enhancePromptText({ model, prompt, language, edit, video, subjectRef, images });
     sendJson(res, 200, { enhanced, original: prompt });
   } catch (error) {
     sendJson(res, 500, { error: "Prompt enhancement failed", detail: error.message });

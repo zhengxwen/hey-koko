@@ -278,6 +278,12 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
   // the validCmds array → payload). Store the result on the command (read at run time as
   // enhancedPrompt||prompt; raw prompt kept for the record/resend) and clear the flag.
   const mode = isVideo ? "video" : (images ? "edit" : "plain");
+  // Phantom subject-to-video: rephrase from the REFERENCE IMAGES (a vision model
+  // describes each subject distinctly — see PHANTOM_ENHANCE_PROMPTS). Only for the
+  // Phantom comfy model with images attached; every other model keeps the text-only
+  // enhancer. The reference images ride along so the rephraser can actually see them.
+  const isPhantom = /phantom/i.test(dom.comfyModelSelect?.value || "");
+  const subjectRef = isPhantom && Array.isArray(images) && images.length > 0;
   try {
     for (const cmd of validCmds) {
       if (!(cmd.enhance && cmd.prompt && cmd.prompt.trim())) continue;
@@ -286,7 +292,7 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: enhanceAbort.signal,
-          body: JSON.stringify({ model: dom.modelSelect.value, prompt: cmd.prompt, language: getPromptLanguage(), edit: mode === "edit", video: mode === "video" }),
+          body: JSON.stringify({ model: dom.modelSelect.value, prompt: cmd.prompt, language: getPromptLanguage(), edit: mode === "edit", video: mode === "video", subjectRef, images: subjectRef ? images : undefined }),
         });
         const d = await r.json();
         if (r.ok && d.enhanced && d.enhanced.trim()) cmd.enhancedPrompt = d.enhanced.trim();

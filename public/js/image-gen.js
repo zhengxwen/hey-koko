@@ -70,6 +70,8 @@ function comfyOverrides() {
   if (dom.comfyParamBerniniQuality?.checked) ov.berniniQuality = true; // Bernini: 40-step/cfg 5 instead of the turbo LoRA
   const refMaxSize = num(dom.comfyParamRefMaxSize?.value);
   if (refMaxSize !== undefined) ov.refMaxSize = refMaxSize; // Bernini: reference long-edge cap
+  const phantomImgCfg = num(dom.comfyParamPhantomImgCfg?.value);
+  if (phantomImgCfg !== undefined) ov.phantomImgCfg = phantomImgCfg; // Phantom: image-guidance scale (g_img)
   const relight = num(dom.comfyParamRelight?.value);
   if (relight !== undefined) ov.relightStrength = relight; // Wan Animate: relight LoRA strength
   if (state.animateMaskPoint) ov.maskPoint = state.animateMaskPoint; // Wan Animate Replace: which person to swap
