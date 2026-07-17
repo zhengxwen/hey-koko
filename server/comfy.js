@@ -1711,7 +1711,14 @@ async function berniniCompanions() {
   const find = (list, re) => list.find((x) => re.test(x));
   const clip = find(clips, /umt5/i);
   const vae = find(vaes, /wan.?2[._]1.*vae/i) || find(vaes, /wan.*vae/i); // Bernini uses the WAN 2.1 VAE
-  const lora = find(loras, /lightx2v.*t2v.*14b.*distill|cfg_step_distill/i); // distill turbo LoRA (optional)
+  // Turbo distill LoRA (optional). The official template pins the T2V one
+  // (lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank64_bf16). The previous pattern had a
+  // loose `cfg_step_distill` alternative that ALSO matched Wan Animate's
+  // lightx2v_I2V_14B_480p_cfg_step_distill file — and since that name sorts first, every
+  // turbo run silently mounted the I2V LoRA at strength 3.0 on a T2V model. Never accept
+  // an i2v file here: with no T2V distill LoRA on disk, turbo simply stays off and the
+  // 40-step official schedule runs instead, which is the honest fallback.
+  const lora = find(loras, /lightx2v.*t2v.*14b.*cfg_step_distill/i) || find(loras, /lightx2v.*t2v.*distill/i);
   const missing = [];
   if (!clip) missing.push("umt5_xxl_fp8_e4m3fn_scaled.safetensors → text_encoders/");
   if (!vae) missing.push("wan_2.1_vae.safetensors → vae/");
@@ -1726,9 +1733,15 @@ async function berniniCompanions() {
 // only while the index stays a single digit, which this cap also guarantees.
 const BERNINI_MAX_REFS = 8;
 
+// Exact lines from the official template's task table (the "Select Per-Line Text by
+// Index" node in video_bernini_r_video_editing) — the model was trained with these,
+// so they are quoted verbatim rather than paraphrased.
 const BERNINI_SYS_V2V = "You are a helpful assistant specialized in video editing.";
 const BERNINI_SYS_RV2V = "You are a helpful assistant specialized in video editing with reference.";
+// Table line [5]. The task table has no "reference-to-video" line, and r2v (references
+// only, no source clip) has to pick one — this is the only refs→video entry.
 const BERNINI_SYS_I2V = "You are a helpful assistant specialized in image-to-video generation.";
+const BERNINI_SYS_ADS2V = "You are a helpful assistant specialized in ads insertion.";
 
 // Bernini-R (WAN 2.2 MoE). The node picks its task from WHICH INPUTS ARE CONNECTED,
 // so each mode here is just a different wiring of the same graph:
@@ -1754,10 +1767,7 @@ function buildBernini({ model, prompt, negative, comp, videoName, refImageName, 
   // extra views carry information the primary cannot imply (a back view, a close-up).
   const refs = (Array.isArray(refImageNames) && refImageNames.length ? refImageNames : [refImageName])
     .filter(Boolean).slice(0, BERNINI_MAX_REFS);
-  // ads2v's own system prompt isn't documented anywhere we can see; the with-reference
-  // one is the closest of the three we know. UNVERIFIED — if insert results come out
-  // ignoring the instruction, this line is the first suspect.
-  const sys = insertImageName ? BERNINI_SYS_RV2V
+  const sys = insertImageName ? BERNINI_SYS_ADS2V
     : (i2v ? BERNINI_SYS_I2V : (refs.length ? BERNINI_SYS_RV2V : BERNINI_SYS_V2V));
   const useTurbo = turbo && !!comp.lora;
   const steps = useTurbo ? 6 : 40;
@@ -2614,9 +2624,18 @@ async function generateComfyImage(req, res) {
         // trims the rest). Tell the client instead of silently returning a short clip.
         const truncatedFrames = srcFrames > bl ? srcFrames : 0;
         const bfps = opts.fps || 16; // i2v output fps (v2v/rv2v keep the source's)
-        // The reference resolution must track the output size — a fixed large
-        // ref_max_size (848) crops the reference into a small output frame.
-        const refMax = snapDim(Math.max(bw, bh), 16);
+        // ref_max_size caps the reference's LONG EDGE only: references keep their own
+        // aspect and are never cropped or fitted to the canvas (only source_video is —
+        // see _resize_long_edge, which just shrinks). Tracking the output size, as this
+        // used to, therefore only ever threw detail away: a 512×768 run capped the refs
+        // at 768, below the official 848 default. Floor at that default and still scale
+        // up for bigger outputs — the template's advice for 720p is to raise it to 1280.
+        // ⚙ refMaxSize overrides outright: it's the only lever on how much of a
+        // reference's identity/detail survives, so an explicit value is never second-
+        // guessed — just clamped to the node's own declared 16…8192 range.
+        const refMax = opts.refMaxSize > 0
+          ? snapDim(Math.min(8192, Math.max(16, opts.refMaxSize)), 16)
+          : snapDim(Math.max(848, bw, bh), 16);
         // Prefer a pre-uploaded video (multipart /api/comfy-upload-video) → its
         // ComfyUI filename; else fall back to inline base64.
         const videoName = sourceVideoName || (sourceVideo ? await uploadVideo(sourceVideo, controller.signal, sourceVideoMime) : null);

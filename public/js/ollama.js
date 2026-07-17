@@ -589,8 +589,9 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // frame-interpolation + interpolation-engine row
   // Wan Animate only.
   for (const el of [dom.comfyParamTorchCompile, dom.comfyParamRelight, dom.comfyMaskPointBtn]) setVis(el, animate);
-  // Bernini only — turbo is otherwise forced on by the mere presence of the distill LoRA.
-  setVis(dom.comfyParamBerniniQuality, /bernini/i.test(m));
+  // Bernini only — turbo is otherwise forced on by the mere presence of the distill
+  // LoRA, and ref_max_size is the only knob on how much reference detail survives.
+  for (const el of [dom.comfyParamBerniniQuality, dom.comfyParamRefMaxSize]) setVis(el, /bernini/i.test(m));
   // SCAIL-2 only — SAM3 open-vocabulary subject + identity ordering + the pose schedule.
   // These are Animate's counterparts to relight/🎯: same intent, different mechanism.
   for (const el of [dom.comfyParamScailSubject, dom.comfyParamScailRefSubject, dom.comfyParamScailThreshold,
@@ -762,6 +763,7 @@ function initComfyParamsModal() {
     dom.comfyParamUpscaleDenoise,
     dom.comfyParamUpscaleModel,
     dom.comfyParamRelight,
+    dom.comfyParamRefMaxSize,
     dom.comfyParamScailSubject,
     dom.comfyParamScailRefSubject,
     dom.comfyParamScailThreshold,

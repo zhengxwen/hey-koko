@@ -68,6 +68,8 @@ function comfyOverrides() {
   if (dom.comfyParamUpscaleModel?.value) ov.upscaleModel = dom.comfyParamUpscaleModel.value; // manual upscale model (empty = auto)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
   if (dom.comfyParamBerniniQuality?.checked) ov.berniniQuality = true; // Bernini: 40-step/cfg 5 instead of the turbo LoRA
+  const refMaxSize = num(dom.comfyParamRefMaxSize?.value);
+  if (refMaxSize !== undefined) ov.refMaxSize = refMaxSize; // Bernini: reference long-edge cap
   const relight = num(dom.comfyParamRelight?.value);
   if (relight !== undefined) ov.relightStrength = relight; // Wan Animate: relight LoRA strength
   if (state.animateMaskPoint) ov.maskPoint = state.animateMaskPoint; // Wan Animate Replace: which person to swap

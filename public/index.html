@@ -786,6 +786,10 @@
             <input id="comfyParamBerniniQuality" type="checkbox" />
             <span id="comfyParamBerniniQualityLabel">Quality mode: 40 steps, no turbo LoRA (bernini)</span>
           </label>
+          <label title="Bernini only: caps the LONG EDGE of each reference image / reference video. References keep their own aspect ratio and are never cropped — this only limits their resolution, so a higher value preserves more identity/detail from the reference. Official default is 848; the template suggests 1280 for 720p. Costs VRAM and time. Auto = 848, or the output's long edge when that is larger.">
+            <span id="comfyParamRefMaxSizeLabel">Reference detail / ref_max_size (bernini)</span>
+            <input id="comfyParamRefMaxSize" type="number" min="16" max="8192" step="16" placeholder="Auto (848)" />
+          </label>
           <label title="Wan Animate only: how strongly the character is re-lit to match the scene's lighting. 0 = keep the reference image's own light, 1 = full default (matches the scene). Especially relevant for Replace.">
             <span id="comfyParamRelightLabel">Relight strength (Wan Animate)</span>
             <input id="comfyParamRelight" type="number" min="0" max="2" step="0.05" placeholder="Auto (1.0)" />

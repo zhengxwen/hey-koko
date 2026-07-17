@@ -58,6 +58,7 @@ export function saveCurrentSettings() {
         upscaleModel: dom.comfyParamUpscaleModel?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
         berniniQuality: dom.comfyParamBerniniQuality?.checked || false,
+        refMaxSize: dom.comfyParamRefMaxSize?.value || "",
         relight: dom.comfyParamRelight?.value || "",
         scailSubject: dom.comfyParamScailSubject?.value || "",
         scailRefSubject: dom.comfyParamScailRefSubject?.value || "",
@@ -229,6 +230,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
     if (dom.comfyParamBerniniQuality) dom.comfyParamBerniniQuality.checked = !!cp.berniniQuality;
+    if (dom.comfyParamRefMaxSize) dom.comfyParamRefMaxSize.value = cp.refMaxSize || "";
     if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";
     if (dom.comfyParamScailSubject) dom.comfyParamScailSubject.value = cp.scailSubject || "";
     if (dom.comfyParamScailRefSubject) dom.comfyParamScailRefSubject.value = cp.scailRefSubject || "";
