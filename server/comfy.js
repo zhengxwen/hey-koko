@@ -460,10 +460,14 @@ async function proxyComfyModels(req, res) {
     // is bound to, and silently ignore the fields. Decided HERE rather than by a type list
     // on the frontend so adding a model can't leave the two out of step.
     for (const m of videoModels) m.samplerTunable = !!videoPreset(m.type, m.name, true);
-    // txt2img list: plain checkpoints (excluding edit/video/HiDream) + HiDream-I1
-    // (a diffusion model loaded specially with QuadrupleCLIPLoader). HiDream E1/O1
-    // are not wired yet, so they're left out to avoid broken options.
-    const plainCkpts = ckpts.filter((n) => !editTypeOf(n) && !videoTypeOf(n) && !/hidream/i.test(n));
+    // Checkpoints that are COMPANIONS to another model rather than something to
+    // generate with. SAM3 is a segmentation model SCAIL-2 loads for subject tracking —
+    // it sits in checkpoints/ and matches none of the edit/video tests, so it would
+    // otherwise fall through into txt2img as a pickable (and instantly broken) option.
+    const isCompanionModel = (n) => /sam[-_]?[23]|segment.?anything/i.test(n);
+    // txt2img list: plain checkpoints (excluding edit/video/HiDream/companions) +
+    // HiDream-I1 (a diffusion model loaded specially with QuadrupleCLIPLoader).
+    const plainCkpts = ckpts.filter((n) => !editTypeOf(n) && !videoTypeOf(n) && !/hidream/i.test(n) && !isCompanionModel(n));
     const hidreamImage = all.filter((n) => /hidream.?i1/i.test(n));
     // HiDream-O1 (pixel-space UiT): a CheckpointLoaderSimple model that does BOTH
     // txt2img and reference editing — surfaced in the main image list (attach an
@@ -475,6 +479,10 @@ async function proxyComfyModels(req, res) {
     // boogu_image_edit is an instruction-edit model → excluded here (it's picked
     // up by editTypeOf into editModels instead).
     const boogu = all.filter((n) => /boogu/i.test(n) && !editTypeOf(n));
+    // Qwen-Image BASE (txt2img) — a UNETLoader model, so it needs listing here just like
+    // z-image/boogu. `!editTypeOf` is what separates it from Qwen-Image-EDIT, which is a
+    // different model that lands in editModels.
+    const qwenImage = all.filter((n) => /qwen.?image/i.test(n) && !editTypeOf(n));
     // Collapse quantisation variants: a model published as fp8 + mxfp8 + nvfp4 … is
     // ONE dropdown entry, and the ⚙ precision preference decides which sibling loads
     // (see resolvePrecision). Without this, five SCAIL-2 precisions would become ten
@@ -507,11 +515,21 @@ async function proxyComfyModels(req, res) {
     const editOut = dedupePrecision(editModels, (m) => m.name, relabel);
     // Image upscale (image HD): always offered — needs only an upscale model (checked
     // at gen time) + an attached image. Sits in the image model list as a sentinel.
-    // `models` is a bare string list (the bg-worker lane sets consume it as such), so a
-    // collapsed group here shows the representative's own filename rather than a base
-    // label — harmless while no IMAGE model ships multiple precisions.
-    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu], (n) => n, null);
-    sendJson(res, 200, { models: [...imageOut, IMAGE_UPSCALE], editModels: editOut, videoModels: videoOut, upscaleModels, hostname });
+    //
+    // `models` is a bare string list — its entries are BOTH the label and the value, so
+    // unlike the video/edit lists it cannot be relabelled without changing what gets
+    // sent back. A collapsed group therefore shows one variant's filename while the ⚙
+    // tier decides what actually loads, which reads as a lie the moment an image model
+    // ships more than one precision (z-image and boogu now do). The entry keeps naming a
+    // REAL file — a saved choice must keep resolving, and generateComfyImage re-applies
+    // the ⚙ preference to whatever name it receives — so the fix is to hide the token in
+    // the frontend's OPTION TEXT, not to invent a fake value here.
+    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage], (n) => n, null);
+    // The image entries that stand for a COLLAPSED group, so the frontend can drop the
+    // precision token from their option text. It can't work this out for itself — it
+    // only ever sees the surviving representative, never the siblings it stands for.
+    const imageCollapsed = imageOut.filter((n) => all.filter((x) => precisionBase(x) === precisionBase(n)).length > 1);
+    sendJson(res, 200, { models: [...imageOut, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, upscaleModels, hostname });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [], upscaleModels: [] });
   }
@@ -627,6 +645,15 @@ function familyPreset(model) {
     }
     return { sampler: "res_multistep", scheduler: "simple", cfg: 4.5, guidance: null, steps: 28, sd3Latent: true };
   }
+  // Qwen-Image txt2img (the BASE model — the edit variant is handled above). Exact from
+  // the official "Qwen-Image: Text to Image" template's non-turbo branch. Without this it
+  // would fall through to the SD1.5 default (dpmpp_2m/karras/cfg 7), which resolveConfig
+  // then hands to buildQwenImage — overriding its own defaults and wrecking the output.
+  // The turbo branch (8 steps / cfg 1) needs the Lightning LoRA, which buildQwenImage
+  // switches to on its own when the LoRA is installed.
+  if (/qwen.?image/i.test(model)) {
+    return { sampler: "euler", scheduler: "simple", cfg: 4, guidance: null, steps: 20, sd3Latent: true };
+  }
   if (/flux/i.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: 3.5, steps: 20, sd3Latent: true };
   }
@@ -728,6 +755,54 @@ function buildHiDreamImage({ model, prompt, negative, width, height, seed, cfg, 
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
+}
+
+// Qwen-Image (txt2img) companions — the same encoder + VAE the EDIT variant uses, plus
+// the OPTIONAL Lightning speed LoRA. Absent LoRA = the full 20-step / cfg-4 schedule
+// (same "turbo iff the LoRA is installed" rule as bernini / WAN 14B).
+async function qwenImageCompanions() {
+  const [clips, vaes, loras] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+  ]);
+  const find = (list, re) => list.find((x) => re.test(x));
+  // The 7B Qwen2.5-VL encoder, preferred if present — matches editCompanions("qwen").
+  const clip = clips.find((x) => /qwen.*vl/i.test(x) && /7b/i.test(x)) || find(clips, /qwen.*vl/i);
+  const vae = find(vaes, /qwen.*image.*vae|qwen[-_]?image|qwen.*vae/i);
+  const lora = find(loras, /qwen.?image.?lightning/i); // optional turbo
+  const missing = [];
+  if (!clip) missing.push("qwen_2.5_vl_7b_fp8_scaled.safetensors → text_encoders/");
+  if (!vae) missing.push("qwen_image_vae.safetensors → vae/");
+  if (missing.length) throw new Error("Missing files required by Qwen-Image:\n- " + missing.join("\n- "));
+  return { clip, vae, lora };
+}
+
+// Qwen-Image (txt2img), flattened from the official "Qwen-Image: Text to Image" template
+// (its chain lives in a subgraph, and its steps/cfg come from Switch nodes selecting
+// between a turbo and a full branch). UNETLoader → optional Lightning LoRA →
+// ModelSamplingAuraFlow(3.1) → KSampler, with CLIPLoader type "qwen_image" and the
+// dedicated qwen_image_vae. turbo (LoRA present) = 8 steps / cfg 1; else 20 / cfg 4.
+function buildQwenImage({ model, prompt, negative, width, height, seed, comp, cfg }) {
+  const turbo = !!comp.lora;
+  const steps = (cfg && cfg.steps) || (turbo ? 8 : 20);
+  const guide = (cfg && cfg.cfg != null) ? cfg.cfg : (turbo ? 1 : 4);
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "qwen_image", device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "4": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: prompt } },
+    // Unlike Z-Image (cfg 1 → a zeroed-out negative), the full schedule runs cfg 4, so
+    // the negative is a real prompt and an empty string is a legitimate one.
+    "5": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: negative || "" } },
+    "6": { class_type: "EmptySD3LatentImage", inputs: { width, height, batch_size: 1 } },
+    "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+  };
+  if (turbo) wf["11"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.lora, strength_model: 1 } };
+  wf["7"] = { class_type: "ModelSamplingAuraFlow", inputs: { model: [turbo ? "11" : "1", 0], shift: 3.1 } };
+  wf["8"] = { class_type: "KSampler", inputs: { seed, steps, cfg: guide, sampler_name: (cfg && cfg.sampler) || "euler", scheduler: (cfg && cfg.scheduler) || "simple", denoise: 1, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } };
+  return wf;
 }
 
 // Z-Image-Turbo companions: the Qwen3-4B text encoder (loaded via CLIPLoader
@@ -2856,6 +2931,11 @@ async function generateComfyImage(req, res) {
         // Z-Image-Turbo txt2img (UNET + CLIPLoader lumina2 + ae VAE).
         const comp = await zimageCompanions();
         workflow = buildZImage({ model, prompt, width, height, seed, cfg, comp });
+      } else if (/qwen.?image/i.test(model)) {
+        // Qwen-Image txt2img. Only the BASE model reaches here — editTypeOf routes
+        // anything matching /qwen.*edit/ down the edit path long before this.
+        const comp = await qwenImageCompanions();
+        workflow = buildQwenImage({ model, prompt, negative: negative_prompt || "", width, height, seed, cfg, comp });
       } else if (/boogu/i.test(model)) {
         // boogu txt2img / img2img (UNET + CLIPLoader "boogu" + flux VAE).
         const comp = await boogiCompanions();

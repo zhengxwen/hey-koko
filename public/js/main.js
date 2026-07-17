@@ -10,7 +10,7 @@ import { initAvatar, updateCloudBadge, relocalizeAvatarPicker } from './avatar.j
 import { pauseOrStopSpeech, populateVoiceList } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
-import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint } from './ollama.js';
+import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint, openModelBrowser, BROWSE_MODELS_VALUE } from './ollama.js';
 import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsMask } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
@@ -390,7 +390,16 @@ dom.messageInput.addEventListener("input", () => {
 dom.messageInput.addEventListener("blur", () => setTimeout(hideMentionPopup, 150));
 
 // Auto-save when model selections change
+let lastPickedModel = dom.modelSelect.value;
 dom.modelSelect.addEventListener("change", () => {
+  // The last dropdown entry is an ACTION, not a model: restore the previous
+  // selection and open the full-catalog picker instead.
+  if (dom.modelSelect.value === BROWSE_MODELS_VALUE) {
+    dom.modelSelect.value = lastPickedModel;
+    openModelBrowser();
+    return;
+  }
+  lastPickedModel = dom.modelSelect.value;
   saveCurrentSettings();
   refreshModelMaxContext(dom.modelSelect.value);
   updateCloudBadge();

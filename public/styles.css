@@ -868,36 +868,54 @@ p {
 .comfyParamRow[hidden],
 .comfyParamsBody button[hidden] { display: none; }
 
-/* The ⚙ ComfyUI params form carries 20+ fields — give it ~2× the shared 360px modal
+/* The ⚙ ComfyUI params form carries 30+ fields — give it ~3× the shared 360px modal
    width and flow the fields into columns so most of it fits without scrolling.
    Scoped BY ID on purpose: .comfyParamsModal is also worn by the /ask-params modal,
    and .comfyParamsBody by the mask-point / URL-import / YouTube modals — all short
    forms that must stay single-column at the default width. */
 #comfyParamsModal .comfyParamsModal {
-  width: min(760px, 94vw);
-  /* Two columns halve the height, so lift the shared 70vh cap to use the room the
-     wider box buys — most models' field set then fits with no scrolling at all. */
+  width: min(1040px, 96vw);
+  /* Columns cut the height, so lift the shared 70vh cap to use the room the wider box
+     buys — most models' field set then fits with no scrolling at all. */
   max-height: 88vh;
 }
 
 #comfyParamsModal .comfyParamsBody {
   display: grid;
-  /* ~2 columns at the 760px width, collapsing to 1 on a narrow screen. */
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  /* Three columns, collapsing to 2 then 1 as the viewport narrows. The count is the
+     minmax floor and the width in league: the body is `width - 2*16px padding`, and
+     auto-fit takes N columns while `N*floor + (N-1)*16px gap` still fits. At 1040px
+     that's 1008px of body — three 280s need 872 (fits), four need 1168 (doesn't).
+     Widen the modal past ~1200px, or drop the floor, and a 4th column appears. */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 12px 16px;
   /* Bottom-align so inputs sharing a row line up even when one label wraps to two
      lines (the same trick .comfyParamRow already uses). */
   align-items: end;
 }
 
-/* Full-width items: the hint/reset header, the model-info banner, and the
-   interpolation pair (already a 2-up grid of its own). The positive/negative prompts
-   stay in the columns — they're a natural pair and `align-items: end` keeps their
-   boxes level despite the longer positive label wrapping. */
+/* Full-width items: the hint/reset header and the model-info banner. The
+   positive/negative prompts stay in the columns — they're a natural pair and
+   `align-items: end` keeps their boxes level despite the longer positive label
+   wrapping. */
 #comfyParamsModal .comfyParamsBody > .comfyParamsTopRow,
-#comfyParamsModal .comfyParamsBody > .comfyModelInfo,
-#comfyParamsModal .comfyParamsBody > .comfyParamRow {
+#comfyParamsModal .comfyParamsBody > .comfyModelInfo {
   grid-column: 1 / -1;
+}
+
+/* The interpolation pair is a 2-up grid whose only job is to sit two fields side by
+   side in a single-COLUMN form. Here the outer grid already does that, so dissolve the
+   wrapper and let its two labels flow as ordinary columns — otherwise they'd have to
+   span some fixed number of tracks and would end up visibly wider than every other
+   field (or overflow once the grid collapses on a narrow screen). */
+#comfyParamsModal .comfyParamsBody > .comfyParamRow {
+  display: contents;
+}
+/* `display: contents` is ID-scoped and so outranks the plain `.comfyParamRow[hidden]`
+   reset above — without restating it here, the row updateComfyParamVisibility() hides
+   for non-video models would keep showing. Same trap as the label[hidden] rule. */
+#comfyParamsModal .comfyParamsBody > .comfyParamRow[hidden] {
+  display: none;
 }
 
 /* Header row: the "leave empty = auto" hint and the Reset button share one line,
@@ -6517,6 +6535,36 @@ button.secondary:disabled {
 .feedMgrInterval-in { width: 56px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--paper); color: var(--ink); font-size: 12px; }
 @media (max-width: 640px) { .feedMgrRow { flex-direction: column; } .feedMgrActions { justify-content: flex-start; } .feedMgrName { flex-basis: 110px; } }
+
+
+/* ---- Model browser: the full online catalog, opened from the model dropdown's
+   last entry ("🔍 browse all models"). Reuses the .zoteroImport* modal chrome. ---- */
+.modelBrowserDialog { width: min(720px, 94vw); height: min(620px, 88vh); }
+.modelBrowserBar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+/* class beats the global `input{width:100%}` element rule → sizes cleanly inside the flex row */
+.modelBrowserSearch { width: auto; flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--paper); color: var(--ink); font-size: 13px; }
+.modelBrowserCount { flex: 0 0 auto; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* .zoteroImportBody is display:flex (a ROW, for the zotero two-pane layout) — that would
+   make the list a flex item and shrink it to its widest row. This dialog just wants a
+   plain scrolling column, so override back to block. */
+.modelBrowserBody { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px; display: block; }
+/* Compact: hundreds of models, so rows are dense — hairline separators instead of
+   per-row cards/gaps, and a tighter use button. */
+.modelBrowserList { display: flex; flex-direction: column; gap: 0; font-size: 12.5px; color: var(--muted); }
+.modelBrowserRow { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 5px 8px; border-radius: 6px; border-bottom: 1px solid var(--line); background: none; }
+.modelBrowserRow:last-child { border-bottom: 0; }
+.modelBrowserRow:hover { background: var(--surface-hover, var(--line)); }
+.modelBrowserMain { min-width: 0; flex: 1; }
+.modelBrowserId { font-weight: 600; font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; line-height: 1.35; }
+.modelBrowserMeta { font-size: 11px; color: var(--muted); line-height: 1.3; }
+/* source of the model (OpenRouter / OpenAI / DeepSeek / …) — labelled by endpoint host */
+.modelBrowserSrc { display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 4px;
+  background: var(--surface); border: 1px solid var(--line); color: var(--muted);
+  font-size: 10px; font-weight: 600; vertical-align: 1px; white-space: nowrap; }
+.modelBrowserUse { flex: 0 0 auto; padding: 3px 10px; min-height: 0; font-size: 11.5px; }
+@media (max-width: 640px) { .modelBrowserRow { flex-direction: column; align-items: flex-start; } }
 
 /* Empty library block (e.g. a Zotero paper's «Abstract» placeholder when Zotero has no
    abstract): keep it visible + clickable with a faint "double-click to add" hint instead

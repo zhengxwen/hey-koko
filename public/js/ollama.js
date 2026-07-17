@@ -80,12 +80,40 @@ const NON_LLM_RE = /embed|z-image|flux/i;
 // a dead endpoint must show as "none detected", not silently keep the old
 // machine's list). The default keeps the lenient page-load behavior (Ollama
 // may simply not be up yet).
+// ---- "browse all models" picker -------------------------------------------
+// The provider config's `models[]` curates the dropdown; these are the user's
+// ad-hoc picks from the browse dialog, remembered in the browser only. The server
+// still routes them (a slashed provider/model id resolves to OpenRouter), so no
+// config file is ever rewritten.
+export const BROWSE_MODELS_VALUE = "__browseAll__";
+const EXTRA_MODELS_KEY = "hk_extra_models";
+
+function loadExtraModels() {
+  try { const a = JSON.parse(localStorage.getItem(EXTRA_MODELS_KEY) || "[]"); return Array.isArray(a) ? a : []; }
+  catch { return []; }
+}
+function saveExtraModel(name) {
+  const list = loadExtraModels();
+  if (!list.includes(name)) { list.push(name); localStorage.setItem(EXTRA_MODELS_KEY, JSON.stringify(list)); }
+}
+// Last entry of the model dropdown: an ACTION, not a model (main.js reverts the
+// selection and opens the dialog when it's chosen).
+function appendBrowseOption() {
+  const opt = document.createElement("option");
+  opt.value = BROWSE_MODELS_VALUE;
+  opt.textContent = "🔍 " + t("model_browseAll");
+  dom.modelSelect.appendChild(opt);
+}
+
 export async function loadModels({ force = false } = {}) {
   const response = await fetch("/api/models");
   const data = await response.json();
   // Keep the objects (not just names) so we can badge cloud vs local models.
   const entries = (data.models || [])
     .filter((m) => m.name && !NON_LLM_RE.test(m.name));
+  // Merge the user's ad-hoc picks (absent from the provider allowlist).
+  const known = new Set(entries.map((m) => m.name));
+  for (const name of loadExtraModels()) if (!known.has(name)) entries.push({ name, model: name, cloud: true });
 
   if (entries.length === 0) {
     if (!force) return;
@@ -96,6 +124,7 @@ export async function loadModels({ force = false } = {}) {
     opt.disabled = true;
     opt.selected = true;
     dom.modelSelect.appendChild(opt);
+    appendBrowseOption();   // still offer the picker (cloud may be configured but uncurated)
     updateCloudBadge();
     return;
   }
@@ -112,6 +141,7 @@ export async function loadModels({ force = false } = {}) {
     if (m.cloud) option.dataset.cloud = "1";  // lets the send-status pill badge cloud requests
     dom.modelSelect.appendChild(option);
   }
+  appendBrowseOption();   // last entry — opens the full-catalog picker
 
   if (current && names.includes(current)) {
     dom.modelSelect.value = current;
@@ -121,6 +151,129 @@ export async function loadModels({ force = false } = {}) {
   }
 
   updateCloudBadge();  // reflect whether the (re)selected model is cloud
+}
+
+// Friendly source label per endpoint host. `provider:"openai"` only means "came from
+// openai.json", which may be any OpenAI-compatible endpoint — so label by HOST and fall
+// back to the bare host for anything unrecognized (a relay, a local server…).
+const PROVIDER_LABELS = {
+  "openrouter.ai": "OpenRouter",
+  "api.openai.com": "OpenAI",
+  "api.deepseek.com": "DeepSeek",
+  "api.x.ai": "xAI",
+  "dashscope.aliyuncs.com": "Qwen",
+  "dashscope-intl.aliyuncs.com": "Qwen",
+  "api.moonshot.cn": "Kimi",
+  "api.groq.com": "Groq",
+  "api.mistral.ai": "Mistral",
+};
+function providerLabel(m) {
+  const host = String(m.host || "").replace(/^www\./, "");
+  return PROVIDER_LABELS[host] || host || (m.provider === "openrouter" ? "OpenRouter" : "OpenAI");
+}
+
+// Full-catalog model picker. Lists every online chat model from the configured
+// cloud providers (ignores the curated allowlist), searchable; picking one adds it
+// to the dropdown (remembered in localStorage) and selects it.
+export async function openModelBrowser() {
+  const overlay = document.createElement("div");
+  overlay.className = "zoteroImportOverlay";   // reuse the modal chrome
+  overlay.innerHTML = `
+    <div class="zoteroImportDialog modelBrowserDialog" role="dialog" aria-modal="true">
+      <div class="zoteroImportHead">
+        <span class="zoteroImportTitle">🔍 ${t("mb_title")}</span>
+        <button type="button" class="zoteroImportClose" title="${t("mb_close")}">✕</button>
+      </div>
+      <div class="modelBrowserBar">
+        <input type="text" id="mbSearch" class="modelBrowserSearch" placeholder="${t("mb_search")}" />
+        <span class="modelBrowserCount" id="mbCount"></span>
+      </div>
+      <div class="zoteroImportBody modelBrowserBody"><div class="modelBrowserList" id="mbList"></div></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const close = () => { document.removeEventListener("keydown", onEsc); overlay.remove(); };
+  const onEsc = (e) => { if (e.key === "Escape") close(); };
+  overlay.querySelector(".zoteroImportClose").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.addEventListener("keydown", onEsc);
+
+  const listEl = overlay.querySelector("#mbList");
+  const countEl = overlay.querySelector("#mbCount");
+  const searchEl = overlay.querySelector("#mbSearch");
+  listEl.textContent = t("mb_loading");
+
+  let all = [];
+  try {
+    const r = await fetch("/api/cloud-models/all");
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    all = d.models || [];
+  } catch (e) {
+    listEl.textContent = t("mb_failed", { error: (e && e.message) || "?" });
+    return;
+  }
+  if (!all.length) { listEl.textContent = t("mb_empty"); return; }
+
+  const render = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    const shown = q
+      ? all.filter((m) => m.id.toLowerCase().includes(q) || (m.name || "").toLowerCase().includes(q)
+                       || providerLabel(m).toLowerCase().includes(q))   // searchable by source too
+      : all;
+    listEl.textContent = "";
+    countEl.textContent = t("mb_count", { shown: shown.length, total: all.length });
+    if (!shown.length) { listEl.textContent = t("mb_none"); return; }
+    for (const m of shown) {
+      // Built with DOM APIs, not innerHTML: ids/descriptions come from an external
+      // API, so they go through textContent and can never inject markup.
+      const row = document.createElement("div");
+      row.className = "modelBrowserRow";
+      const main = document.createElement("div");
+      main.className = "modelBrowserMain";
+      // id line: [source chip] provider/model-id
+      const id = document.createElement("div");
+      id.className = "modelBrowserId";
+      const chip = document.createElement("span");
+      chip.className = "modelBrowserSrc";
+      chip.textContent = providerLabel(m);
+      id.appendChild(chip);
+      id.appendChild(document.createTextNode(m.id));
+      const meta = document.createElement("div");
+      meta.className = "modelBrowserMeta";
+      const bits = [];
+      if (m.contextLength) bits.push(t("mb_ctx", { n: Math.round(m.contextLength / 1000) }));
+      if (m.pricing) {
+        const pIn = parseFloat(m.pricing.prompt) || 0;
+        const pOut = parseFloat(m.pricing.completion) || 0;
+        if (!pIn && !pOut) bits.push(t("mb_free"));
+        else {
+          if (pIn) bits.push(t("mb_priceIn", { p: (pIn * 1e6).toFixed(2) }));   // per-token → per-million
+          if (pOut) bits.push(t("mb_priceOut", { p: (pOut * 1e6).toFixed(2) }));
+        }
+      }
+      meta.textContent = bits.join(" · ");
+      main.appendChild(id);
+      main.appendChild(meta);
+      const use = document.createElement("button");
+      use.type = "button";
+      use.className = "zoteroImportGo modelBrowserUse";
+      use.textContent = t("mb_use");
+      use.addEventListener("click", async () => {
+        saveExtraModel(m.id);
+        await loadModels({ force: true });
+        dom.modelSelect.value = m.id;
+        dom.modelSelect.dispatchEvent(new Event("change"));   // context meter + settings save
+        close();
+      });
+      row.appendChild(main);
+      row.appendChild(use);
+      listEl.appendChild(row);
+    }
+  };
+  searchEl.addEventListener("input", render);
+  render();
+  searchEl.focus();
 }
 
 // Show the image generation options (size/timeout) whenever EITHER an Ollama
@@ -189,6 +342,10 @@ export async function refreshBgWorkers() {
     : [urlFromDisplay(dom.comfyUrlDisplay)].filter(Boolean);
   if (!targets.length) { loadComfyModels(); return; }
   const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uUpscale = new Map();
+  // Union of the collapsed-group representatives across lanes — without carrying this
+  // through, a multi-precision image model would keep its token in the label on the
+  // multi-endpoint path while the single-endpoint path hides it.
+  const uCollapsed = new Set();
   await Promise.all(targets.map(async (url) => {
     try {
       const d = await (await fetch(`/api/comfy-models?comfyUrl=${encodeURIComponent(url)}`)).json();
@@ -203,12 +360,13 @@ export async function refreshBgWorkers() {
       };
       const online = (models.length + editModels.length + videoModels.length) > 0;
       setBgWorkerStatus(url, { online, models: sets, hostname: d.hostname || "" });
+      for (const n of (d.imageCollapsed || [])) uCollapsed.add(n);
       for (const n of models) if (!uModels.has(n)) uModels.set(n, n);
       for (const m of editModels) if (!uEdit.has(m.name)) uEdit.set(m.name, m);
       for (const m of videoModels) if (!uVideo.has(m.name)) uVideo.set(m.name, m);
     } catch { setBgWorkerStatus(url, { online: false }); }
   }));
-  applyComfyModels({ models: [...uModels.values()], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], upscaleModels: [...uUpscale.values()] });
+  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], upscaleModels: [...uUpscale.values()] });
 }
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
@@ -262,6 +420,11 @@ function applyComfyModels(data) {
       // Display without the file extension; the value keeps the full filename
       // (the server matches models by filename). An explicit label wins as-is.
       const stripExt = (n) => n.replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
+      // Mirrors PRECISION_TOKENS in server/comfy.js. Display only — never applied to a
+      // value, so a drift here costs a cosmetic token in a label, not a broken model name.
+      const stripPrecision = (n) => n
+        .replace(/(?:^|[_-])(?:fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|int8_convrot|int8|fp16|bf16)(?=[_.-]|$)/ig, "")
+        .replace(/[_-]{2,}/g, "_").replace(/^[_-]+|[_-]+$/g, "");
       const addOption = (parent, name, label) => {
         const option = document.createElement("option");
         option.value = name;
@@ -272,7 +435,17 @@ function applyComfyModels(data) {
         const group = document.createElement("optgroup");
         group.dataset.i18n = "comfy_image_group";
         group.label = t("comfy_image_group");
-        for (const name of models) addOption(group, name, name === "image-upscale" ? t("comfy_imageUpscale_label") : undefined);
+        // An image entry standing for several quantisations keeps a real filename as its
+        // VALUE (a saved choice must keep resolving, and the server re-applies the ⚙ tier
+        // to whatever name it gets) — but showing "…_bf16" on an entry that may well load
+        // nvfp4 would be a lie, so the token comes out of the label only.
+        const collapsed = new Set(data.imageCollapsed || []);
+        for (const name of models) {
+          const label = name === "image-upscale" ? t("comfy_imageUpscale_label")
+            : collapsed.has(name) ? stripPrecision(stripExt(name))
+            : undefined;
+          addOption(group, name, label);
+        }
         dom.comfyModelSelect.appendChild(group);
       }
       if (editModels.length) {

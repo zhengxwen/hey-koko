@@ -131,9 +131,15 @@ function resolveProvider(model) {
   for (const p of loadProviders()) {
     if (p.models.length) {
       if (p.models.includes(model)) return p;
-    } else if (p.kind !== "openrouter" && PREFIX_RE.test(model)) {
-      // openrouter without models[] is never in `loadProviders`, so this branch
-      // only ever prefix-routes the openai.json provider.
+      // Ad-hoc pick from the "browse all models" dialog: a slashed `provider/model`
+      // id is unmistakably OpenRouter's namespace, so route it there even when it
+      // isn't in the curated allowlist. The allowlist still drives what the DROPDOWN
+      // lists (that's what `models[]` is required for) — this only affects routing.
+      if (p.kind === "openrouter" && model.includes("/")) return p;
+    } else if (p.kind !== "openrouter" && !model.includes("/") && PREFIX_RE.test(model)) {
+      // Bare names only: a slashed id belongs to OpenRouter's namespace and must never
+      // be prefix-routed to the openai.json provider (e.g. `deepseek/…` starts with
+      // "deepseek" but must not be sent to api.openai.com).
       return p;
     }
   }
@@ -586,6 +592,60 @@ async function complete(model, messages, { signal, temperature } = {}) {
   return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
 }
 
+// --- Full catalog (for the "browse all models" dialog) ---------------------
+
+// Every online CHAT model from every configured provider, NOT filtered by the
+// allowlist — `models[]` curates the dropdown, this powers the browse dialog so a
+// model can be picked ad-hoc (routing accepts slashed ids, see resolveProvider).
+// Returns [] when nothing is configured / reachable; a failing provider is skipped.
+async function listAllModels() {
+  const out = [];
+  for (const cfg of loadProviders()) {
+    // The endpoint host — the honest source label. `kind:"openai"` only means "configured
+    // in openai.json", which may well be DeepSeek/xAI/Qwen, so the UI labels by host.
+    let host = "";
+    try { host = new URL(cfg.baseUrl).host; } catch { host = cfg.baseUrl; }
+    let data;
+    const controller = new AbortController();
+    const to = setTimeout(() => controller.abort(), 15000);
+    try {
+      const r = await fetch(`${apiBase(cfg)}/models`, {
+        headers: { Authorization: `Bearer ${cfg.apiKey}` },
+        signal: controller.signal,
+      });
+      clearTimeout(to);
+      if (!r.ok) continue;
+      data = await r.json();
+    } catch { clearTimeout(to); continue; }
+
+    for (const m of data.data || []) {
+      if (!m.id) continue;
+      if (cfg.kind === "openrouter") {
+        // OpenRouter ids are slashed (miss PREFIX_RE) — filter on its richer metadata:
+        // keep text-OUTPUT models, drop embeddings / pure image+audio generators.
+        const arch = m.architecture || {};
+        const outMod = arch.output_modalities || (typeof arch.modality === "string" ? [arch.modality.split("->").pop()] : []);
+        if (outMod.length && !outMod.some((x) => /text/i.test(x))) continue;
+        if (/embed/i.test(m.id)) continue;
+        out.push({
+          id: m.id,
+          provider: "openrouter",
+          host,
+          name: m.name || m.id,
+          contextLength: m.context_length || 0,
+          // Strings like "0.0000001" (per token) — the UI decides how to show them.
+          pricing: m.pricing ? { prompt: m.pricing.prompt, completion: m.pricing.completion } : null,
+          description: String(m.description || "").slice(0, 300),
+        });
+      } else {
+        if (!isChatModelId(m.id)) continue;
+        out.push({ id: m.id, provider: "openai", host, name: m.id, contextLength: contextLengthFor(m.id), pricing: null, description: "" });
+      }
+    }
+  }
+  return out;
+}
+
 // --- Embeddings ------------------------------------------------------------
 
 // The provider that owns this model via an EXPLICIT allowlist entry (never a
@@ -625,4 +685,4 @@ async function embed(model, texts) {
   return (data.data || []).slice().sort((a, b) => (a.index || 0) - (b.index || 0)).map((d) => d.embedding);
 }
 
-module.exports = { isOpenAIModel, contextLengthFor, listModels, injectModels, proxyChat, complete, isCloudEmbedModel, embed };
+module.exports = { isOpenAIModel, contextLengthFor, listModels, injectModels, proxyChat, complete, isCloudEmbedModel, embed, listAllModels };
