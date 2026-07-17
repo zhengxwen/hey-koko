@@ -840,6 +840,20 @@ p {
   display: none;
 }
 
+/* "What is this model for" line under the model dropdown. Plain text rather than the
+   boxed strip above: it sits in the main sidebar flow, where a second bordered box
+   next to the URL row would read as another control. */
+.comfyModelHint {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.comfyModelHint[hidden] {
+  display: none;
+}
+
 /* ComfyUI advanced-params modal: scrollable form inside the shared modal shell. */
 .comfyParamsBody {
   display: flex;

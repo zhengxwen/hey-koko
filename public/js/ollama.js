@@ -432,6 +432,10 @@ function applyComfyModels(data) {
         const option = document.createElement("option");
         option.value = name;
         option.textContent = label || stripExt(name);
+        // Native <select> popups on macOS are drawn by the OS and generally ignore an
+        // option's title, so this is a bonus for the platforms that do honour it — the
+        // hint line under the dropdown is what actually guarantees the text is readable.
+        option.title = comfyModelHint(name);
         parent.appendChild(option);
       };
       if (models.length) {
@@ -501,6 +505,48 @@ function videoAutoDefaults(modelName) {
   return null;
 }
 
+// What a model is FOR, in one line — "what it does + when to pick it". Unlike
+// comfyModelComponents (which describes the wiring), this is the chooser's text: it
+// goes under the dropdown and on each option's tooltip. Keyed off the same filename
+// ladder, so a model that gains a description here needs no other change.
+//
+// Order matters exactly as it does below: the sentinels overlap ("scail2_animate"
+// contains "animate", "bernini_insert" contains "bernini"), so the MOST specific
+// name has to be tested first.
+function comfyModelHint(name) {
+  const n = (name || "").toLowerCase();
+  if (!n) return "";
+  // Pipelines that aren't really "models" (sentinels for a whole workflow).
+  if (/image-upscale/.test(n)) return t("oll_hint_imageUpscale");
+  if (/video-enhance/.test(n)) return t("oll_hint_videoEnhance");
+  // Video, needs a source clip. scail BEFORE animate — see above.
+  if (/scail/.test(n)) return /animate/.test(n) ? t("oll_hint_scail2Animate") : t("oll_hint_scail2Replace");
+  if (/animate/.test(n)) return /replace/.test(n) ? t("oll_hint_animateReplace") : t("oll_hint_animateMove");
+  if (/bernini/.test(n)) return /insert/.test(n) ? t("oll_hint_berniniInsert") : t("oll_hint_bernini");
+  // Video, generates from text/image.
+  if (/phantom/.test(n)) return t("oll_hint_phantom");
+  if (/vace/.test(n)) return t("oll_hint_vace");
+  if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b" ? t("oll_hint_wan14b") : t("oll_hint_wan5b");
+  if (/hunyuan/.test(n)) return t("oll_hint_hunyuan");
+  if (/ltx/.test(n)) return t("oll_hint_ltx");
+  // Image edit (needs a reference image + an instruction).
+  if (/kontext/.test(n)) return t("oll_hint_kontext");
+  if (/boogu.*edit/.test(n)) return t("oll_hint_booguEdit");
+  if (/qwen.*edit/.test(n)) return t("oll_hint_qwenEdit");
+  if (/omnigen/.test(n)) return t("oll_hint_omnigen");
+  if (/pix2pix|ip2p|instruct/.test(n)) return t("oll_hint_pix2pix");
+  if (/hidream.?e1/.test(n)) return t("oll_hint_hidreamE1");
+  // Image generation.
+  if (/hidream.?o1/.test(n)) return t("oll_hint_hidreamO1");
+  if (/hidream.?i1/.test(n)) return t("oll_hint_hidreamI1");
+  if (/z.?image/.test(n)) return t("oll_hint_zImage");
+  if (/boogu/.test(n)) return /turbo/.test(n) ? t("oll_hint_booguTurbo") : t("oll_hint_booguBase");
+  if (/qwen.?image/.test(n)) return t("oll_hint_qwenImage");
+  if (/flux/.test(n)) return t("oll_hint_flux");
+  if (/pony|xl\b|sdxl/.test(n)) return t("oll_hint_sdxl");
+  return t("oll_hint_generic");
+}
+
 // The key ComfyUI workflow components hey-koko wires for a model — inferred from
 // its filename (mirrors the build functions in server/comfy.js). Shown in the ⚙
 // panel so the user can see the pipeline a model actually runs.
@@ -509,6 +555,9 @@ function comfyModelComponents(name) {
   // Video
   if (/image-upscale/.test(n)) return t("oll_comp_imageUpscale");
   if (/video-enhance/.test(n)) return t("oll_comp_videoEnhance");
+  // scail BEFORE animate: the "scail-2 (animate)" sentinel is literally
+  // "scail2_animate", so a bare /animate/ test claimed it ran Wan Animate's pipeline.
+  if (/scail/.test(n)) return "SCAIL-2 (character animation) · UNETLoader + lightx2v + DPO LoRA · SAM3 open-vocabulary subject tracking (no DWPose) · WanSCAILToVideo · reference_image batch + mask, paired by batch index";
   if (/animate/.test(n)) return "Wan Animate (pose transfer) · UNETLoader + lightx2v + relight LoRA · ModelSamplingSD3 · LoadVideo→DWPose(pose+face) · WanAnimateToVideo · segment length adapts to resolution (≤640: 241f · 720p: 161f · 1080p: 65f) — a longer source is generated in chunks with continue_motion for seamless joins, then merged";
   if (/bernini/.test(n)) return "WAN2.2 MoE · UNETLoader ×2 · CLIP umt5(wan) · VAE wan_2.1 · BerniniConditioning · SamplerCustom ×2 · v2v: LoadVideo→GetVideoComponents (keeps source fps + audio) · attach a video to edit it (v2v), + images as reference views (rv2v), or images alone → image-to-video · turbo: LightX2V distill LoRA";
   if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b"
@@ -556,6 +605,18 @@ export function updateComfyMultiHint() {
   // when it exceeds the single-pass cap); other models use a fixed preset length.
   const lengthFollowsSource = !!(v && /animate/i.test(v));
   if (dom.comfyParamLength) dom.comfyParamLength.placeholder = lengthFollowsSource ? t("comfy_length_source") : `Auto (${auto ? auto.length : 49})`;
+  // "What is this model for" — under the dropdown, and on the closed select's own
+  // tooltip. Re-applied to every option here too (rather than only at build time) so a
+  // language switch relocalizes them without rebuilding the list.
+  const hint = comfyModelHint(v);
+  if (dom.comfyModelHint) {
+    dom.comfyModelHint.textContent = hint;
+    dom.comfyModelHint.hidden = !hint;
+  }
+  if (dom.comfyModelSelect) {
+    dom.comfyModelSelect.title = hint;
+    for (const o of dom.comfyModelSelect.options) if (o.value) o.title = comfyModelHint(o.value);
+  }
   if (dom.comfyModelInfo) {
     const comps = comfyModelComponents(v);
     dom.comfyModelInfo.textContent = comps;

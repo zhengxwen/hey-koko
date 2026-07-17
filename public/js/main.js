@@ -186,6 +186,7 @@ dom.uiLanguageSelect.addEventListener("change", () => {
     if (isBuiltinKey(sel)) dom.persona.value = resolvePersonaText(sel);
   }
   populateVoiceList(); // re-localize voice optgroup + option labels
+  updateComfyMultiHint(); // model hint line / option tooltips / ⚙ placeholders are localized
   renderMemoryList();   // empty-state text is localized (memory_empty)
   renderReminderList(); // empty-state text is localized (reminder_listEmpty)
   relocalizeAvatarPicker(); // avatar tooltips are localized (avatar_*)
