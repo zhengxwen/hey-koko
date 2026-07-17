@@ -384,6 +384,9 @@ function applyComfyModels(data) {
     state.comfySamplerTunable = new Set(videoModels.filter((m) => m.samplerTunable).map((m) => m.name));
     // Source-video models (bernini / animate): output fps follows the source video.
     state.comfyVideoInModels = new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name));
+    // …of which some (bernini) also run WITHOUT a source video (image→video), where
+    // fps/length are the request's own again rather than the source's.
+    state.comfyVideoOptionalModels = new Set(videoModels.filter((m) => m.videoOptional).map((m) => m.name));
     // Qwen-Image-Edit accepts 2-3 reference images (multi-image composition).
     state.comfyMultiImageModels = new Set(editModels.filter((m) => m.type === "qwen").map((m) => m.name));
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
@@ -490,6 +493,10 @@ function videoAutoDefaults(modelName) {
   const m = (modelName || "").toLowerCase();
   if (/ltx/.test(m)) return { fps: 24, length: 97 };
   if (/hunyuan/.test(m)) return { fps: 24, length: 49 };
+  // Bernini matches none of the rules below (its name carries no "wan"), so without
+  // this it fell through to null and the ⚙ showed the generic Auto (24) / Auto (49)
+  // rather than the 16 / 81 the server actually uses.
+  if (/bernini/.test(m)) return { fps: 16, length: 81 };
   if (/wan/.test(m)) return /14b/.test(m) ? { fps: 16, length: 81 } : { fps: 24, length: 49 };
   return null;
 }
@@ -503,7 +510,7 @@ function comfyModelComponents(name) {
   if (/image-upscale/.test(n)) return t("oll_comp_imageUpscale");
   if (/video-enhance/.test(n)) return t("oll_comp_videoEnhance");
   if (/animate/.test(n)) return "Wan Animate (pose transfer) · UNETLoader + lightx2v + relight LoRA · ModelSamplingSD3 · LoadVideo→DWPose(pose+face) · WanAnimateToVideo · segment length adapts to resolution (≤640: 241f · 720p: 161f · 1080p: 65f) — a longer source is generated in chunks with continue_motion for seamless joins, then merged";
-  if (/bernini/.test(n)) return "WAN2.2 MoE · UNETLoader ×2 · CLIP umt5(wan) · VAE wan_2.1 · BerniniConditioning · SamplerCustom ×2 · v2v: LoadVideo→GetVideoComponents · turbo: LightX2V distill LoRA";
+  if (/bernini/.test(n)) return "WAN2.2 MoE · UNETLoader ×2 · CLIP umt5(wan) · VAE wan_2.1 · BerniniConditioning · SamplerCustom ×2 · v2v: LoadVideo→GetVideoComponents (keeps source fps + audio) · attach a video to edit it (v2v), + images as reference views (rv2v), or images alone → image-to-video · turbo: LightX2V distill LoRA";
   if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b"
     ? "WAN2.2 14B MoE · UNETLoader ×2 · CLIP umt5 · VAE wan_2.1 · WanImageToVideo · KSamplerAdvanced ×2 · turbo: LightX2V 4-step LoRA"
     : "WAN2.2 5B · UNETLoader · CLIP umt5 · VAE wan_2.2 · WanImageToVideo · KSampler";
@@ -537,7 +544,14 @@ export function updateComfyMultiHint() {
   // Source-video models (bernini / animate): "auto" fps mirrors the source video,
   // not a fixed preset — make that explicit in the placeholder.
   const followsSource = !!(v && state.comfyVideoInModels && state.comfyVideoInModels.has(v));
-  if (dom.comfyParamFps) dom.comfyParamFps.placeholder = followsSource ? t("comfy_fps_source") : `Auto (${auto ? auto.fps : 24})`;
+  // …but bernini also runs source-less (i2v), where its own fps applies — promising
+  // "same as source" there names a source that doesn't exist.
+  const sourceOptional = !!(v && state.comfyVideoOptionalModels && state.comfyVideoOptionalModels.has(v));
+  if (dom.comfyParamFps) {
+    dom.comfyParamFps.placeholder = sourceOptional
+      ? t("comfy_fps_source_opt", { fps: auto ? auto.fps : 16 })
+      : (followsSource ? t("comfy_fps_source") : `Auto (${auto ? auto.fps : 24})`);
+  }
   // Wan Animate "auto" length = the FULL source clip (generated in segments + merged
   // when it exceeds the single-pass cap); other models use a fixed preset length.
   const lengthFollowsSource = !!(v && /animate/i.test(v));
@@ -575,6 +589,8 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // frame-interpolation + interpolation-engine row
   // Wan Animate only.
   for (const el of [dom.comfyParamTorchCompile, dom.comfyParamRelight, dom.comfyMaskPointBtn]) setVis(el, animate);
+  // Bernini only — turbo is otherwise forced on by the mere presence of the distill LoRA.
+  setVis(dom.comfyParamBerniniQuality, /bernini/i.test(m));
   // SCAIL-2 only — SAM3 open-vocabulary subject + identity ordering + the pose schedule.
   // These are Animate's counterparts to relight/🎯: same intent, different mechanism.
   for (const el of [dom.comfyParamScailSubject, dom.comfyParamScailRefSubject, dom.comfyParamScailThreshold,
@@ -790,6 +806,7 @@ function initComfyParamsModal() {
     el?.addEventListener("change", () => saveCurrentSettings());
   }
   dom.comfyParamTorchCompile?.addEventListener("change", () => saveCurrentSettings());
+  dom.comfyParamBerniniQuality?.addEventListener("change", () => saveCurrentSettings());
   // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset
   // restores that rather than an empty value.
   dom.comfyParamInterpMethod?.addEventListener("change", () => saveCurrentSettings());
@@ -797,6 +814,7 @@ function initComfyParamsModal() {
   dom.comfyParamsReset?.addEventListener("click", () => {
     for (const el of fields) if (el) el.value = "";
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = false;
+    if (dom.comfyParamBerniniQuality) dom.comfyParamBerniniQuality.checked = false;
     if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = "rife";
     state.animateMaskPoint = null; // back to auto-centre target
     syncMaskPointLabel();

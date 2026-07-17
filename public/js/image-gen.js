@@ -67,6 +67,7 @@ function comfyOverrides() {
   if (upDenoise !== undefined && upDenoise > 0) ov.upscaleDenoise = Math.min(1, upDenoise / 100); // upscale denoise % → 0–1
   if (dom.comfyParamUpscaleModel?.value) ov.upscaleModel = dom.comfyParamUpscaleModel.value; // manual upscale model (empty = auto)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
+  if (dom.comfyParamBerniniQuality?.checked) ov.berniniQuality = true; // Bernini: 40-step/cfg 5 instead of the turbo LoRA
   const relight = num(dom.comfyParamRelight?.value);
   if (relight !== undefined) ov.relightStrength = relight; // Wan Animate: relight LoRA strength
   if (state.animateMaskPoint) ov.maskPoint = state.animateMaskPoint; // Wan Animate Replace: which person to swap
@@ -986,13 +987,21 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       // Wan Animate long source: generated in N chunks and merged into one clip.
       capNote += t("msg_videoMerged", { n: lastData.segments }, plang) + "\n\n";
     }
-    // Wan Animate: source clip longer than the single-pass cap → was truncated.
+    // Source clip longer than what one pass covers → was truncated. Bernini states it
+    // in frames only: its output keeps the SOURCE's fps, which the server leaves unset
+    // here, so a seconds figure would silently be computed off the wrong rate.
     if (lastData.truncatedFrom && lastData.length) {
-      const fps = lastData.fps || 16;
-      capNote += t("msg_videoTruncated", {
-        full: lastData.truncatedFrom, used: lastData.length,
-        fullS: (lastData.truncatedFrom / fps).toFixed(1), usedS: (lastData.length / fps).toFixed(1),
-      }, plang) + "\n\n";
+      if (lastData.truncatedNoChain) {
+        capNote += t("msg_videoTruncatedNoChain", {
+          full: lastData.truncatedFrom, used: lastData.length,
+        }, plang) + "\n\n";
+      } else {
+        const fps = lastData.fps || 16;
+        capNote += t("msg_videoTruncated", {
+          full: lastData.truncatedFrom, used: lastData.length,
+          fullS: (lastData.truncatedFrom / fps).toFixed(1), usedS: (lastData.length / fps).toFixed(1),
+        }, plang) + "\n\n";
+      }
     }
     // First finished video replaces the placeholder with this result bubble, so the
     // "generating video (N/M)" placeholder (label + bar) is gone — while more are still

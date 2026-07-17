@@ -66,6 +66,7 @@ export const dom = {
   comfyParamUpscaleDenoise: document.querySelector("#comfyParamUpscaleDenoise"),
   comfyParamUpscaleModel: document.querySelector("#comfyParamUpscaleModel"),
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),
+  comfyParamBerniniQuality: document.querySelector("#comfyParamBerniniQuality"),
   comfyParamRelight: document.querySelector("#comfyParamRelight"),
   comfyParamScailSubject: document.querySelector("#comfyParamScailSubject"),
   comfyParamScailRefSubject: document.querySelector("#comfyParamScailRefSubject"),
@@ -167,6 +168,7 @@ export const state = {
   comfyVideoModels: new Set(),       // ComfyUI model names that generate video
   comfySamplerTunable: new Set(),    // video models whose ⚙ sampler/steps/cfg reach the graph (server-decided)
   comfyVideoInModels: new Set(),     // ComfyUI video models that need a SOURCE video (fps follows source)
+  comfyVideoOptionalModels: new Set(), // …of those, the ones a source video is OPTIONAL for (bernini: image alone → i2v)
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
   scrollPin: null,                   // when set (resend/edit in place), auto-scroll holds this scrollTop instead of jumping to the bottom
   _pinClearTimer: null,              // delayed release of scrollPin once generation fully ends

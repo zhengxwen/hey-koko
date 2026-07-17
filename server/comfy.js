@@ -342,6 +342,13 @@ async function resolveWan14bAuto(isImg2Img) {
 // the real high_noise GGUF/safetensors (the low twin is derived from the name).
 const BERNINI_AUTO = "bernini";
 
+// Sentinel for the "bernini (insert)" entry — ads2v. Same model and same two experts
+// as the plain entry; the only difference is WHERE the attached image is bound. Plain
+// bernini binds it to reference_images (an in-context subject reference → rv2v), while
+// insert binds it to reference_video (the thing to composite INTO the clip → ads2v).
+// One image can't be both, so the mode has to be picked in the dropdown.
+const BERNINI_INSERT = "bernini_insert";
+
 async function resolveBerniniAuto() {
   const unets = await comfyEnum("UNETLoader", "unet_name");
   return unets.find((n) => /bernini/i.test(n) && /high_noise/i.test(n)) || null;
@@ -416,7 +423,15 @@ async function proxyComfyModels(req, res) {
       // grouped separately from the text/image→video generators in the UI.
       if (vt === "bernini") {
         if (/low_noise/i.test(n)) continue; // hidden — derived from the high twin
-        if (!addedBernini) { videoModels.push({ name: BERNINI_AUTO, type: "bernini", label: "bernini (i2v / video edit)", needsVideo: true }); addedBernini = true; }
+        // videoOptional: a source video selects video-edit (v2v/rv2v), but an image
+        // alone is also a valid input (i2v) — unlike animate / scail2, which reject
+        // a request with no source clip.
+        if (!addedBernini) {
+          videoModels.push({ name: BERNINI_AUTO, type: "bernini", label: "bernini (i2v / video edit)", needsVideo: true, videoOptional: true });
+          // ads2v — needs BOTH a source clip and an image, so no videoOptional here.
+          videoModels.push({ name: BERNINI_INSERT, type: "bernini", label: "bernini (insert image into video)", needsVideo: true });
+          addedBernini = true;
+        }
         continue;
       }
       // Wan Animate (pose transfer) — one UNET, two modes:
@@ -1706,26 +1721,44 @@ async function berniniCompanions() {
 
 // Bernini's task system prompts (prepended to the user's instruction — the model
 // was trained with these). v2v = plain video edit; rv2v = edit with a reference.
+// reference_images is a COMFY_AUTOGROW_V3 slot list whose template declares max 8
+// (reference_image_0 … _7). The node reads the slots in sorted() NAME order — safe
+// only while the index stays a single digit, which this cap also guarantees.
+const BERNINI_MAX_REFS = 8;
+
 const BERNINI_SYS_V2V = "You are a helpful assistant specialized in video editing.";
 const BERNINI_SYS_RV2V = "You are a helpful assistant specialized in video editing with reference.";
 const BERNINI_SYS_I2V = "You are a helpful assistant specialized in image-to-video generation.";
 
-// Bernini-R (WAN 2.2 MoE). Three modes, all verified end-to-end:
-//   • v2v  — source video + instruction → edited video.
-//   • rv2v — source video + reference image + instruction.
-//   • i2v  — reference image only (NO source video) → generated video.
+// Bernini-R (WAN 2.2 MoE). The node picks its task from WHICH INPUTS ARE CONNECTED,
+// so each mode here is just a different wiring of the same graph:
+//   • v2v   — source video + instruction → edited video.
+//   • rv2v  — source video + reference image(s) + instruction.
+//   • i2v   — reference image only (NO source video) → generated video (the node's own
+//             docs call this r2v and list no "i2v"; whether BERNINI_SYS_I2V is the
+//             prompt this task was trained with is UNVERIFIED).
+//   • ads2v — source video + insert image (reference_video) → the image composited in.
 // Two-expert CUSTOM sampling: BasicScheduler → SplitSigmas at `split`, then two
 // SamplerCustom (high adds noise, low continues), each on its sigma slice. turbo
 // (distill LoRA mounted) = cfg 1 / 6 steps / split 3 (high str 3, low 1.5);
 // non-turbo = cfg 5 / 40 steps / split 20. v2v/rv2v keep the SOURCE video's fps +
 // audio (CreateVideo reads them from GetVideoComponents); i2v uses an explicit fps.
-function buildBernini({ model, prompt, negative, comp, videoName, refImageName, width, height, length, seed, turbo, fps, refMaxSize, experts }) {
+function buildBernini({ model, prompt, negative, comp, videoName, refImageName, refImageNames, insertImageName, width, height, length, seed, turbo, fps, refMaxSize, experts }) {
   // See buildWan14B: `experts` carries the ⚙-precision-resolved twins when set.
   const highModel = (experts && experts.high) || model.replace(/low_noise/i, "high_noise");
   const lowModel = (experts && experts.low) || model.replace(/high_noise/i, "low_noise");
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   const i2v = !videoName; // image-to-video: no source clip to edit
-  const sys = i2v ? BERNINI_SYS_I2V : (refImageName ? BERNINI_SYS_RV2V : BERNINI_SYS_V2V);
+  // reference_images is an AUTOGROW slot list (reference_image_0, _1, …): [0] is the
+  // primary, the rest are further views of the same subject. See buildScail2 — the
+  // extra views carry information the primary cannot imply (a back view, a close-up).
+  const refs = (Array.isArray(refImageNames) && refImageNames.length ? refImageNames : [refImageName])
+    .filter(Boolean).slice(0, BERNINI_MAX_REFS);
+  // ads2v's own system prompt isn't documented anywhere we can see; the with-reference
+  // one is the closest of the three we know. UNVERIFIED — if insert results come out
+  // ignoring the instruction, this line is the first suspect.
+  const sys = insertImageName ? BERNINI_SYS_RV2V
+    : (i2v ? BERNINI_SYS_I2V : (refs.length ? BERNINI_SYS_RV2V : BERNINI_SYS_V2V));
   const useTurbo = turbo && !!comp.lora;
   const steps = useTurbo ? 6 : 40;
   const split = useTurbo ? 3 : 20;
@@ -1763,11 +1796,19 @@ function buildBernini({ model, prompt, negative, comp, videoName, refImageName, 
   }
   wf["15"] = { class_type: "SamplerCustom", inputs: { add_noise: true, noise_seed: seed, cfg, model: highRef, positive: ["9", 0], negative: ["9", 1], sampler: ["12", 0], sigmas: ["11", 0], latent_image: ["9", 2] } };
   wf["16"] = { class_type: "SamplerCustom", inputs: { add_noise: false, noise_seed: 0, cfg, model: lowRef, positive: ["9", 0], negative: ["9", 1], sampler: ["12", 0], sigmas: ["11", 1], latent_image: ["15", 0] } };
-  // Reference image — rv2v (alongside a source video) OR i2v (the image is the
-  // whole basis). Same autogrow slot either way.
-  if (refImageName) {
-    wf["20"] = { class_type: "LoadImage", inputs: { image: refImageName } };
-    wf["9"].inputs["reference_images.reference_image_0"] = ["20", 0];
+  // Reference images — rv2v (alongside a source video) OR i2v (the image is the
+  // whole basis). Same autogrow slots either way. Node ids start above the highest
+  // fixed id (19) so the loop can never overwrite one of them.
+  refs.forEach((name, i) => {
+    const id = String(20 + i);
+    wf[id] = { class_type: "LoadImage", inputs: { image: name } };
+    wf["9"].inputs[`reference_images.reference_image_${i}`] = [id, 0];
+  });
+  // ads2v: reference_video takes an IMAGE, so a still is simply a one-frame clip. Id 30
+  // sits clear of the 20+i reference block (capped at 8 → 20…27).
+  if (insertImageName) {
+    wf["30"] = { class_type: "LoadImage", inputs: { image: insertImageName } };
+    wf["9"].inputs.reference_video = ["30", 0];
   }
   return wf;
 }
@@ -2416,6 +2457,19 @@ async function generateComfyImage(req, res) {
         return;
       }
     }
+    // Bernini's two dropdown entries are both sentinels for the same MoE pair (insert
+    // only rebinds the image), so resolve them HERE — before resolvePrecision. Left in
+    // the bernini branch below, resolution happened AFTER it, and a sentinel matches no
+    // file on disk: the ⚙ tier silently did nothing (whichever high_noise twin came
+    // first won) and the done-line reported the tier as "unknown".
+    const berniniInsert = model === BERNINI_INSERT;
+    if (model === BERNINI_AUTO || model === BERNINI_INSERT) {
+      model = await resolveBerniniAuto();
+      if (!model) {
+        sendJson(res, 400, { error: "Bernini model file not found (need wan2.2_bernini_r_high_noise…)." });
+        return;
+      }
+    }
     // SCAIL-2 ANIMATE shares the Replace UNET — only the replacement_mode flag differs.
     let scail2Replace = videoTypeOf(model) === "scail2"; // the base entry IS Replacement
     if (model === SCAIL2_ANIMATE) {
@@ -2504,16 +2558,23 @@ async function generateComfyImage(req, res) {
         // Bernini-R video EDIT: a SOURCE VIDEO (required) + instruction → edited
         // video (v2v); + a reference image → rv2v. Resolve the merged entry to the
         // real high_noise model, upload the source video (and any ref image).
-        if (model === BERNINI_AUTO) {
-          model = await resolveBerniniAuto();
-          if (!model) { sendJson(res, 400, { error: "Bernini model file not found (need wan2.2_bernini_r_high_noise…)." }); return; }
-        }
+        const insertMode = berniniInsert; // sentinel already resolved above, with the mode read off it
         const hasVideo = !!(sourceVideo || sourceVideoName);
         const hasImage = Array.isArray(images) && images.length > 0;
         // Source video → v2v (+ ref image → rv2v); image only → i2v.
         if (!hasVideo && !hasImage) { sendJson(res, 400, { error: "Bernini needs a source video (video edit, v2v) or an image (image-to-video, i2v), then use /imagine <description>." }); return; }
+        // ads2v composites the image INTO the clip, so unlike the other modes neither
+        // input is optional — with one missing there is nothing to insert, or nowhere
+        // to insert it.
+        if (insertMode && !(hasVideo && hasImage)) {
+          sendJson(res, 400, { error: "Bernini (insert) needs BOTH a source video and an image to insert into it, then use /imagine <where/how to place it>." });
+          return;
+        }
         const comp = await berniniCompanions();
-        const turbo = !!comp.lora;
+        // The distill LoRA being INSTALLED used to be the whole condition, which left
+        // buildBernini's 40-step/cfg-5 schedule unreachable on any machine that had it.
+        // ⚙ quality mode opts out per request.
+        const turbo = !!comp.lora && !opts.berniniQuality;
         // Size to the SOURCE's aspect (video for v2v/rv2v, image for i2v) so frames
         // aren't stretched, at the preset pixel budget (832×480) — or the --size
         // budget if the user set one. Falls back to 832×480.
@@ -2536,7 +2597,22 @@ async function generateComfyImage(req, res) {
           bw = snapDim(Math.sqrt(budget * aspect), 16);
           bh = snapDim(Math.sqrt(budget / aspect), 16);
         }
-        const bl = Math.max(5, Math.round(((opts.length || 81) - 1) / 4) * 4 + 1); // 4n+1
+        // BerniniConditioning sizes its empty latent from `length` ALONE, but encodes
+        // only the frames the source actually has (it trims with a plain `[:length]`).
+        // A `length` above the real frame count leaves latent and context mismatched —
+        // the node does not check this, it hands the mismatch to the sampler. So clamp
+        // to the source, and snap DOWN to 4n+1: rounding to the NEAREST 4n+1 would put
+        // a 50-frame source back up at 53 and re-open the very gap this closes.
+        const srcFrames = hasVideo ? (Number(sourceVideoFrames) || 0) : 0;
+        // 5 = the shortest legal length (4n+1, n≥1). A source below that can't be
+        // edited at all — say so rather than ship a guaranteed latent mismatch.
+        if (srcFrames > 0 && srcFrames < 5) { sendJson(res, 400, { error: `Source video is too short to edit (${srcFrames} frames; Bernini needs at least 5).` }); return; }
+        let wantLen = opts.length || 81;
+        if (srcFrames > 0) wantLen = Math.min(wantLen, srcFrames);
+        const bl = Math.max(5, Math.floor((wantLen - 1) / 4) * 4 + 1); // 4n+1, never above the source
+        // Source longer than one pass → only the first `bl` frames get edited (the node
+        // trims the rest). Tell the client instead of silently returning a short clip.
+        const truncatedFrames = srcFrames > bl ? srcFrames : 0;
         const bfps = opts.fps || 16; // i2v output fps (v2v/rv2v keep the source's)
         // The reference resolution must track the output size — a fixed large
         // ref_max_size (848) crops the reference into a small output frame.
@@ -2544,11 +2620,30 @@ async function generateComfyImage(req, res) {
         // Prefer a pre-uploaded video (multipart /api/comfy-upload-video) → its
         // ComfyUI filename; else fall back to inline base64.
         const videoName = sourceVideoName || (sourceVideo ? await uploadVideo(sourceVideo, controller.signal, sourceVideoMime) : null);
-        const refImageName = hasImage ? await uploadImage(images[0], controller.signal) : null;
-        imagesUsed = refImageName ? 1 : 0;
-        workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: bw, height: bh, length: bl, seed, turbo, fps: bfps, refMaxSize: refMax, experts: expertPair });
+        const refImageNames = [];
+        let insertImageName = null;
+        if (insertMode) {
+          // ads2v is documented as source_video + reference_video ONLY — extra images
+          // have no slot in that combination, so only the first is used.
+          insertImageName = await uploadImage(images[0], controller.signal, "heykoko_berniniinsert.png");
+          imagesUsed = 1;
+        } else {
+          // Every attached image is a reference view (see buildBernini), up to the
+          // autogrow template's own max of 8 slots. Distinct filenames — a shared one
+          // would have each upload overwrite the last.
+          const refSrc = hasImage ? images.slice(0, BERNINI_MAX_REFS) : [];
+          for (let i = 0; i < refSrc.length; i++) {
+            refImageNames.push(await uploadImage(refSrc[i], controller.signal, `heykoko_berniniref${i}.png`));
+          }
+          imagesUsed = refImageNames.length;
+        }
+        workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageNames, insertImageName, width: bw, height: bh, length: bl, seed, turbo, fps: bfps, refMaxSize: refMax, experts: expertPair });
         // v2v/rv2v keep the source video's fps; i2v uses bfps (so it can show duration).
         videoDims = { width: bw, height: bh, length: bl, fps: hasVideo ? undefined : bfps };
+        // truncatedNoChain distinguishes this from Wan Animate's truncation: there, the
+        // advice is "clear ⚙ Length and it chains the full source". BerniniConditioning
+        // has no offset/continue input at all, so that advice would be a lie here.
+        if (truncatedFrames) { videoDims.truncatedFrom = truncatedFrames; videoDims.truncatedNoChain = true; }
       } else if (videoType === "enhance") {
         // Interpolate + upscale: source video → AI-upscaled AND frame-interpolated to a target fps.
         // The /imagine "prompt" is just the target fps number (empty / non-numeric →
@@ -3116,7 +3211,7 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI finished but produced no video file (output nodes: ${nodeIds}). Make sure the workflow includes a SaveVideo node, or retry.` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);

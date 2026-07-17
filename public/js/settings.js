@@ -57,6 +57,7 @@ export function saveCurrentSettings() {
         upscaleDenoise: dom.comfyParamUpscaleDenoise?.value || "",
         upscaleModel: dom.comfyParamUpscaleModel?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
+        berniniQuality: dom.comfyParamBerniniQuality?.checked || false,
         relight: dom.comfyParamRelight?.value || "",
         scailSubject: dom.comfyParamScailSubject?.value || "",
         scailRefSubject: dom.comfyParamScailRefSubject?.value || "",
@@ -227,6 +228,7 @@ export function loadSavedSettings() {
     // Best-effort — applyComfyModels re-applies this once the option list has loaded.
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
+    if (dom.comfyParamBerniniQuality) dom.comfyParamBerniniQuality.checked = !!cp.berniniQuality;
     if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";
     if (dom.comfyParamScailSubject) dom.comfyParamScailSubject.value = cp.scailSubject || "";
     if (dom.comfyParamScailRefSubject) dom.comfyParamScailRefSubject.value = cp.scailRefSubject || "";
