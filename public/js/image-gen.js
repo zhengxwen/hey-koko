@@ -67,7 +67,10 @@ function comfyOverrides() {
   if (upDenoise !== undefined && upDenoise > 0) ov.upscaleDenoise = Math.min(1, upDenoise / 100); // upscale denoise % → 0–1
   if (dom.comfyParamUpscaleModel?.value) ov.upscaleModel = dom.comfyParamUpscaleModel.value; // manual upscale model (empty = auto)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
-  if (dom.comfyParamBerniniQuality?.checked) ov.berniniQuality = true; // Bernini: 40-step/cfg 5 instead of the turbo LoRA
+  // Bernini sampling recipe (one dropdown → the server's two mode flags).
+  const berniniMode = dom.comfyParamBerniniMode?.value || "";
+  if (berniniMode === "quality") ov.berniniQuality = true;   // 40-step / cfg 5, no LoRA
+  else if (berniniMode === "lightx2v") ov.berniniLightx2v = true; // LightX2V 4-step recipe
   const refMaxSize = num(dom.comfyParamRefMaxSize?.value);
   if (refMaxSize !== undefined) ov.refMaxSize = refMaxSize; // Bernini: reference long-edge cap
   const phantomImgCfg = num(dom.comfyParamPhantomImgCfg?.value);

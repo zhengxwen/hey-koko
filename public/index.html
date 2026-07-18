@@ -783,9 +783,13 @@
             <input id="comfyParamTorchCompile" type="checkbox" />
             <span id="comfyParamTorchCompileLabel">torch.compile speedup (Wan Animate)</span>
           </label>
-          <label class="checkboxLabel comfyParamCheck" title="Bernini only: drop the LightX2V distill LoRA and sample the full 40-step / cfg 5 schedule instead of the 6-step turbo one. Much slower (~6× the steps) for higher fidelity. No effect when the distill LoRA isn't installed — that setup already runs the 40-step schedule.">
-            <input id="comfyParamBerniniQuality" type="checkbox" />
-            <span id="comfyParamBerniniQualityLabel">Quality mode: 40 steps, no turbo LoRA (bernini)</span>
+          <label title="Bernini only: which sampling recipe / step count to use. Turbo (default) = 6-step distill LoRA. LightX2V = the newer 4-step recipe (KSamplerAdvanced ×2, ModelSamplingSD3 shift 8, dedicated high+low LoRA pair at strength 1.0 — author reports sharper hands / cleaner fast motion; needs the Bernini-R_LightX2V LoRA pair, else falls back to turbo). Quality = full 40-step / cfg 5, no speed LoRA, much slower and highest fidelity.">
+            <span id="comfyParamBerniniModeLabel">Sampling recipe (bernini)</span>
+            <select id="comfyParamBerniniMode">
+              <option value="">Auto (turbo · 6 steps)</option>
+              <option value="lightx2v">LightX2V · 4 steps (sharper hands/motion)</option>
+              <option value="quality">Quality · 40 steps (no turbo LoRA)</option>
+            </select>
           </label>
           <label title="Phantom only: image-guidance scale (g_img). How hard the subject's appearance from the reference images is enforced against the text prompt. The text-guidance scale is the ⚙ CFG field above. Upstream default 5.0; raise to keep the subject more faithful, lower to let the prompt reshape it more.">
             <span id="comfyParamPhantomImgCfgLabel">Subject fidelity / image CFG (Phantom)</span>

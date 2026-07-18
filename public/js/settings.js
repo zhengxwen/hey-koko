@@ -57,7 +57,7 @@ export function saveCurrentSettings() {
         upscaleDenoise: dom.comfyParamUpscaleDenoise?.value || "",
         upscaleModel: dom.comfyParamUpscaleModel?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
-        berniniQuality: dom.comfyParamBerniniQuality?.checked || false,
+        berniniMode: dom.comfyParamBerniniMode?.value || "",
         refMaxSize: dom.comfyParamRefMaxSize?.value || "",
         phantomImgCfg: dom.comfyParamPhantomImgCfg?.value || "",
         relight: dom.comfyParamRelight?.value || "",
@@ -230,7 +230,9 @@ export function loadSavedSettings() {
     // Best-effort — applyComfyModels re-applies this once the option list has loaded.
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
-    if (dom.comfyParamBerniniQuality) dom.comfyParamBerniniQuality.checked = !!cp.berniniQuality;
+    // berniniMode replaced the two separate checkboxes — fall back to the old keys so
+    // a saved quality/lightx2v choice survives the upgrade.
+    if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = cp.berniniMode || (cp.berniniLightx2v ? "lightx2v" : cp.berniniQuality ? "quality" : "");
     if (dom.comfyParamRefMaxSize) dom.comfyParamRefMaxSize.value = cp.refMaxSize || "";
     if (dom.comfyParamPhantomImgCfg) dom.comfyParamPhantomImgCfg.value = cp.phantomImgCfg || "";
     if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";

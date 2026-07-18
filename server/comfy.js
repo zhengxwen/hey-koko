@@ -1809,11 +1809,17 @@ async function berniniCompanions() {
   // an i2v file here: with no T2V distill LoRA on disk, turbo simply stays off and the
   // 40-step official schedule runs instead, which is the honest fallback.
   const lora = find(loras, /lightx2v.*t2v.*14b.*cfg_step_distill/i) || find(loras, /lightx2v.*t2v.*distill/i);
+  // Bernini-R LightX2V speed LoRAs — a dedicated HIGH/LOW pair (Bernini-R_LightX2V_
+  // high_noise / low_noise), distinct from the single T2V distill LoRA above. When
+  // both are present the ⚙ "LightX2V 4-step" option can run the author's 4-step /
+  // KSamplerAdvanced / shift-8 recipe (strength 1.0 each).
+  const loraLxHigh = find(loras, /bernini.*lightx2v.*high/i);
+  const loraLxLow = find(loras, /bernini.*lightx2v.*low/i);
   const missing = [];
   if (!clip) missing.push("umt5_xxl_fp8_e4m3fn_scaled.safetensors → text_encoders/");
   if (!vae) missing.push("wan_2.1_vae.safetensors → vae/");
   if (missing.length) throw new Error("Missing files required by Bernini:\n- " + missing.join("\n- "));
-  return { clip, vae, lora };
+  return { clip, vae, lora, loraLxHigh, loraLxLow };
 }
 
 // Bernini's task system prompts (prepended to the user's instruction — the model
@@ -1846,7 +1852,7 @@ const BERNINI_SYS_ADS2V = "You are a helpful assistant specialized in ads insert
 // (distill LoRA mounted) = cfg 1 / 6 steps / split 3 (high str 3, low 1.5);
 // non-turbo = cfg 5 / 40 steps / split 20. v2v/rv2v keep the SOURCE video's fps +
 // audio (CreateVideo reads them from GetVideoComponents); i2v uses an explicit fps.
-function buildBernini({ model, prompt, negative, comp, videoName, refImageName, refImageNames, insertImageName, width, height, length, seed, turbo, fps, refMaxSize, experts }) {
+function buildBernini({ model, prompt, negative, comp, videoName, refImageName, refImageNames, insertImageName, width, height, length, seed, turbo, lightx2v, fps, refMaxSize, experts }) {
   // See buildWan14B: `experts` carries the ⚙-precision-resolved twins when set.
   const highModel = (experts && experts.high) || model.replace(/low_noise/i, "high_noise");
   const lowModel = (experts && experts.low) || model.replace(/high_noise/i, "low_noise");
@@ -1859,10 +1865,18 @@ function buildBernini({ model, prompt, negative, comp, videoName, refImageName, 
     .filter(Boolean).slice(0, BERNINI_MAX_REFS);
   const sys = insertImageName ? BERNINI_SYS_ADS2V
     : (i2v ? BERNINI_SYS_I2V : (refs.length ? BERNINI_SYS_RV2V : BERNINI_SYS_V2V));
-  const useTurbo = turbo && !!comp.lora;
-  const steps = useTurbo ? 6 : 40;
-  const split = useTurbo ? 3 : 20;
-  const cfg = useTurbo ? 1 : 5;
+  // Three sampling modes, most-specific first:
+  //   lightx2v — the author's Bernini-R LightX2V recipe: KSamplerAdvanced ×2 +
+  //     ModelSamplingSD3 shift 8, 4 steps split at 2, cfg 1, dpmpp_2m_sde / sgm_uniform,
+  //     the dedicated high/low LoRA pair at strength 1.0. Needs the pair installed.
+  //   turbo    — the older single-distill-LoRA path: SamplerCustom + SplitSigmas,
+  //     6 steps, cfg 1, LoRA str 3 / 1.5.
+  //   quality  — no LoRA: SamplerCustom + SplitSigmas, 40 steps, cfg 5.
+  const useLx = lightx2v && !!(comp.loraLxHigh && comp.loraLxLow);
+  const useTurbo = !useLx && turbo && !!comp.lora;
+  const steps = useLx ? 4 : useTurbo ? 6 : 40;
+  const split = useLx ? 2 : useTurbo ? 3 : 20;
+  const cfg = (useLx || useTurbo) ? 1 : 5;
   const wf = {
     "1": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
     "2": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
@@ -1871,9 +1885,6 @@ function buildBernini({ model, prompt, negative, comp, videoName, refImageName, 
     "7": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 0], text: `${sys}\n${prompt}` } },
     "8": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 0], text: neg } },
     "9": { class_type: "BerniniConditioning", inputs: { positive: ["7", 0], negative: ["8", 0], vae: ["2", 0], width, height, length, batch_size: 1, ref_max_size: refMaxSize || Math.max(width, height) } },
-    "10": { class_type: "BasicScheduler", inputs: { model: ["4", 0], scheduler: "simple", steps, denoise: 1 } },
-    "11": { class_type: "SplitSigmas", inputs: { sigmas: ["10", 0], step: split } },
-    "12": { class_type: "KSamplerSelect", inputs: { sampler_name: "res_multistep" } },
     "17": { class_type: "VAEDecode", inputs: { samples: ["16", 0], vae: ["2", 0] } },
     "19": { class_type: "SaveVideo", inputs: { video: ["18", 0], filename_prefix: "heykoko_bernini", format: "auto", codec: "auto" } },
   };
@@ -1887,15 +1898,32 @@ function buildBernini({ model, prompt, negative, comp, videoName, refImageName, 
   } else {
     wf["18"] = { class_type: "CreateVideo", inputs: { images: ["17", 0], fps: fps || 16 } };
   }
-  // Models feeding the two samplers — turbo mounts the distill LoRA on each.
-  let highRef = ["3", 0], lowRef = ["4", 0];
-  if (useTurbo) {
-    wf["13"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["3", 0], lora_name: comp.lora, strength_model: 3 } };
-    wf["14"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["4", 0], lora_name: comp.lora, strength_model: 1.5 } };
-    highRef = ["13", 0]; lowRef = ["14", 0];
+  if (useLx) {
+    // Author's verified recipe — mirrors buildWan14B's KSamplerAdvanced two-expert
+    // split: UNETLoader → LoRA(str 1.0) → ModelSamplingSD3(shift 8) → KSamplerAdvanced.
+    // High runs steps 0→2 leaving residual noise; low continues 2→4. Node ids 31/32
+    // (ModelSamplingSD3) sit clear of the 20-27 reference block and 30 (ads2v).
+    const LX_SHIFT = 8;
+    wf["13"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["3", 0], lora_name: comp.loraLxHigh, strength_model: 1.0 } };
+    wf["14"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["4", 0], lora_name: comp.loraLxLow, strength_model: 1.0 } };
+    wf["31"] = { class_type: "ModelSamplingSD3", inputs: { model: ["13", 0], shift: LX_SHIFT } };
+    wf["32"] = { class_type: "ModelSamplingSD3", inputs: { model: ["14", 0], shift: LX_SHIFT } };
+    wf["15"] = { class_type: "KSamplerAdvanced", inputs: { model: ["31", 0], add_noise: "enable", noise_seed: seed, steps, cfg, sampler_name: "dpmpp_2m_sde", scheduler: "sgm_uniform", positive: ["9", 0], negative: ["9", 1], latent_image: ["9", 2], start_at_step: 0, end_at_step: split, return_with_leftover_noise: "enable" } };
+    wf["16"] = { class_type: "KSamplerAdvanced", inputs: { model: ["32", 0], add_noise: "disable", noise_seed: 0, steps, cfg, sampler_name: "dpmpp_2m_sde", scheduler: "sgm_uniform", positive: ["9", 0], negative: ["9", 1], latent_image: ["15", 0], start_at_step: split, end_at_step: steps, return_with_leftover_noise: "disable" } };
+  } else {
+    // SamplerCustom + SplitSigmas (turbo single-LoRA, or quality no-LoRA).
+    wf["10"] = { class_type: "BasicScheduler", inputs: { model: ["4", 0], scheduler: "simple", steps, denoise: 1 } };
+    wf["11"] = { class_type: "SplitSigmas", inputs: { sigmas: ["10", 0], step: split } };
+    wf["12"] = { class_type: "KSamplerSelect", inputs: { sampler_name: "res_multistep" } };
+    let highRef = ["3", 0], lowRef = ["4", 0];
+    if (useTurbo) {
+      wf["13"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["3", 0], lora_name: comp.lora, strength_model: 3 } };
+      wf["14"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["4", 0], lora_name: comp.lora, strength_model: 1.5 } };
+      highRef = ["13", 0]; lowRef = ["14", 0];
+    }
+    wf["15"] = { class_type: "SamplerCustom", inputs: { add_noise: true, noise_seed: seed, cfg, model: highRef, positive: ["9", 0], negative: ["9", 1], sampler: ["12", 0], sigmas: ["11", 0], latent_image: ["9", 2] } };
+    wf["16"] = { class_type: "SamplerCustom", inputs: { add_noise: false, noise_seed: 0, cfg, model: lowRef, positive: ["9", 0], negative: ["9", 1], sampler: ["12", 0], sigmas: ["11", 1], latent_image: ["15", 0] } };
   }
-  wf["15"] = { class_type: "SamplerCustom", inputs: { add_noise: true, noise_seed: seed, cfg, model: highRef, positive: ["9", 0], negative: ["9", 1], sampler: ["12", 0], sigmas: ["11", 0], latent_image: ["9", 2] } };
-  wf["16"] = { class_type: "SamplerCustom", inputs: { add_noise: false, noise_seed: 0, cfg, model: lowRef, positive: ["9", 0], negative: ["9", 1], sampler: ["12", 0], sigmas: ["11", 1], latent_image: ["15", 0] } };
   // Reference images — rv2v (alongside a source video) OR i2v (the image is the
   // whole basis). Same autogrow slots either way. Node ids start above the highest
   // fixed id (19) so the loop can never overwrite one of them.
@@ -2675,6 +2703,9 @@ async function generateComfyImage(req, res) {
         // buildBernini's 40-step/cfg-5 schedule unreachable on any machine that had it.
         // ⚙ quality mode opts out per request.
         const turbo = !!comp.lora && !opts.berniniQuality;
+        // ⚙ LightX2V 4-step recipe (its own high/low LoRA pair). Only when requested AND
+        // the pair is on disk; otherwise buildBernini falls back to turbo/quality.
+        const lightx2v = !!opts.berniniLightx2v && !!(comp.loraLxHigh && comp.loraLxLow);
         // Size to the SOURCE's aspect (video for v2v/rv2v, image for i2v) so frames
         // aren't stretched, at the preset pixel budget (832×480) — or the --size
         // budget if the user set one. Falls back to 832×480.
@@ -2746,7 +2777,7 @@ async function generateComfyImage(req, res) {
           }
           imagesUsed = refImageNames.length;
         }
-        workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageNames, insertImageName, width: bw, height: bh, length: bl, seed, turbo, fps: bfps, refMaxSize: refMax, experts: expertPair });
+        workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageNames, insertImageName, width: bw, height: bh, length: bl, seed, turbo, lightx2v, fps: bfps, refMaxSize: refMax, experts: expertPair });
         // v2v/rv2v keep the source video's fps; i2v uses bfps (so it can show duration).
         videoDims = { width: bw, height: bh, length: bl, fps: hasVideo ? undefined : bfps };
         // truncatedNoChain distinguishes this from Wan Animate's truncation: there, the

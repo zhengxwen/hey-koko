@@ -665,7 +665,7 @@ export function updateComfyParamVisibility() {
   for (const el of [dom.comfyParamTorchCompile, dom.comfyParamRelight, dom.comfyMaskPointBtn]) setVis(el, animate);
   // Bernini only — turbo is otherwise forced on by the mere presence of the distill
   // LoRA, and ref_max_size is the only knob on how much reference detail survives.
-  for (const el of [dom.comfyParamBerniniQuality, dom.comfyParamRefMaxSize]) setVis(el, /bernini/i.test(m));
+  for (const el of [dom.comfyParamBerniniMode, dom.comfyParamRefMaxSize]) setVis(el, /bernini/i.test(m));
   // Phantom only — the image-guidance scale (its second, subject-fidelity CFG).
   setVis(dom.comfyParamPhantomImgCfg, /phantom/i.test(m));
   // SCAIL-2 only — SAM3 open-vocabulary subject + identity ordering + the pose schedule.
@@ -885,7 +885,7 @@ function initComfyParamsModal() {
     el?.addEventListener("change", () => saveCurrentSettings());
   }
   dom.comfyParamTorchCompile?.addEventListener("change", () => saveCurrentSettings());
-  dom.comfyParamBerniniQuality?.addEventListener("change", () => saveCurrentSettings());
+  dom.comfyParamBerniniMode?.addEventListener("change", () => saveCurrentSettings());
   // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset
   // restores that rather than an empty value.
   dom.comfyParamInterpMethod?.addEventListener("change", () => saveCurrentSettings());
@@ -893,7 +893,7 @@ function initComfyParamsModal() {
   dom.comfyParamsReset?.addEventListener("click", () => {
     for (const el of fields) if (el) el.value = "";
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = false;
-    if (dom.comfyParamBerniniQuality) dom.comfyParamBerniniQuality.checked = false;
+    if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = "";
     if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = "rife";
     state.animateMaskPoint = null; // back to auto-centre target
     syncMaskPointLabel();
