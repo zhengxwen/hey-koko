@@ -853,6 +853,32 @@ p {
 .comfyModelHint[hidden] {
   display: none;
 }
+/* Warning shown when an unverified / not-fully-wired model is selected. */
+.comfyModelWarn {
+  margin: 3px 0 0;
+  padding: 4px 8px;
+  color: #d98a00;
+  background: rgba(217, 138, 0, 0.10);
+  border: 1px solid rgba(217, 138, 0, 0.35);
+  border-radius: 6px;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.comfyModelWarn[hidden] {
+  display: none;
+}
+/* Capability-dot legend under the model dropdown (🔵 image · 🟠 edit · …). */
+.comfyModelLegend {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.comfyModelLegend[hidden] {
+  display: none;
+}
 
 /* ComfyUI advanced-params modal: scrollable form inside the shared modal shell. */
 .comfyParamsBody {

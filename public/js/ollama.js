@@ -346,6 +346,10 @@ export async function refreshBgWorkers() {
   // through, a multi-precision image model would keep its token in the label on the
   // multi-endpoint path while the single-endpoint path hides it.
   const uCollapsed = new Set();
+  // Union of per-model display metadata (market name + capability dots) — same
+  // reason as uCollapsed: without it the multi-endpoint path loses the clean
+  // labels and dots the single-endpoint path shows.
+  const uMeta = {};
   await Promise.all(targets.map(async (url) => {
     try {
       const d = await (await fetch(`/api/comfy-models?comfyUrl=${encodeURIComponent(url)}`)).json();
@@ -361,12 +365,13 @@ export async function refreshBgWorkers() {
       const online = (models.length + editModels.length + videoModels.length) > 0;
       setBgWorkerStatus(url, { online, models: sets, hostname: d.hostname || "" });
       for (const n of (d.imageCollapsed || [])) uCollapsed.add(n);
+      for (const [k, v] of Object.entries(d.modelMeta || {})) if (!uMeta[k]) uMeta[k] = v;
       for (const n of models) if (!uModels.has(n)) uModels.set(n, n);
       for (const m of editModels) if (!uEdit.has(m.name)) uEdit.set(m.name, m);
       for (const m of videoModels) if (!uVideo.has(m.name)) uVideo.set(m.name, m);
     } catch { setBgWorkerStatus(url, { online: false }); }
   }));
-  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], upscaleModels: [...uUpscale.values()] });
+  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()] });
 }
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
@@ -412,6 +417,11 @@ function applyComfyModels(data) {
     }
     const allNames = [...models, ...editModels.map((m) => m.name), ...videoModels.map((m) => m.name)];
     dom.comfyModelSelect.innerHTML = "";
+    // Capability-dot legend under the dropdown — only meaningful once there are models.
+    if (dom.comfyModelLegend) {
+      dom.comfyModelLegend.textContent = t("comfy_caps_legend");
+      dom.comfyModelLegend.hidden = allNames.length === 0;
+    }
 
     if (allNames.length === 0) {
       const option = document.createElement("option");
@@ -428,10 +438,37 @@ function applyComfyModels(data) {
       const stripPrecision = (n) => n
         .replace(/(?:^|[_-])(?:fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|int8_convrot|int8|fp16|bf16)(?=[_.-]|$)/ig, "")
         .replace(/[_-]{2,}/g, "_").replace(/^[_-]+|[_-]+$/g, "");
+      // Per-model metadata from the server: a clean market name + capability tags.
+      // The tags render as coloured dots after the label (the ONLY way to get colour
+      // into a native <select> — the OS draws options as plain text, so CSS/HTML can't
+      // reach them; an emoji is just a character and renders). CAP_LEGEND (i18n) below
+      // explains them. Absent meta (older server) → fall back to the label/stripExt.
+      const meta = data.modelMeta || {};
+      const CAP_DOT = { image: "🔵", edit: "🟠", t2v: "🟢", i2v: "🟡", v2v: "🟣", tool: "⚪" };
+      const capDots = (name) => {
+        const caps = (meta[name] && meta[name].caps) || [];
+        const dots = caps.map((c) => CAP_DOT[c] || "").join("");
+        return dots ? "  " + dots : "";
+      };
+      // Readiness map (verified + fully wired) for the warning shown on selection. A
+      // model absent from modelMeta is assumed ready (older server / no metadata).
+      const readyMap = {};
+      const isReady = (name) => !meta[name] || meta[name].ready !== false;
       const addOption = (parent, name, label) => {
         const option = document.createElement("option");
         option.value = name;
-        option.textContent = label || stripExt(name);
+        // Market name wins; then an explicit label (video/edit sentinels); then a
+        // precision-free filename. Capability dots are appended to whichever we land on.
+        const base = (meta[name] && meta[name].label) || label || stripExt(name);
+        const ready = isReady(name);
+        readyMap[name] = ready;
+        // Not-ready (unverified / not-yet-wired) models: a ⚠️ text marker — the ONLY
+        // cross-platform signal, since macOS draws options itself and ignores an
+        // option's colour (same constraint as the capability dots). Still selectable
+        // (a warning fires on pick) so it can be tested and then promoted. The colour
+        // is a best-effort bonus for platforms that DO honour it.
+        option.textContent = (ready ? "" : "⚠️ ") + base + capDots(name);
+        if (!ready) { option.style.color = "#9a9aa2"; option.dataset.unverified = "1"; }
         // Native <select> popups on macOS are drawn by the OS and generally ignore an
         // option's title, so this is a bonus for the platforms that do honour it — the
         // hint line under the dropdown is what actually guarantees the text is readable.
@@ -481,6 +518,9 @@ function applyComfyModels(data) {
         dom.comfyModelSelect.appendChild(group);
       }
       dom.comfyModelSelect.value = allNames.includes(current) ? current : allNames[0];
+      // Readiness by model name — updateComfyMultiHint reads this to warn when the
+      // selected model is unverified / not fully wired.
+      state.comfyModelReady = readyMap;
     }
   } catch {
     /* leave placeholder */
@@ -625,6 +665,13 @@ export function updateComfyMultiHint() {
   if (dom.comfyModelHint) {
     dom.comfyModelHint.textContent = hint;
     dom.comfyModelHint.hidden = !hint;
+  }
+  // Unverified / not-fully-wired model selected → prominent warning (the option's
+  // ⚠️ marker is easy to miss once the dropdown is closed).
+  if (dom.comfyModelWarn) {
+    const unverified = !!(v && state.comfyModelReady && state.comfyModelReady[v] === false);
+    dom.comfyModelWarn.textContent = unverified ? t("comfy_model_unverified") : "";
+    dom.comfyModelWarn.hidden = !unverified;
   }
   if (dom.comfyModelSelect) {
     dom.comfyModelSelect.title = hint;

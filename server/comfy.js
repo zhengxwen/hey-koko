@@ -385,6 +385,151 @@ const VIDEO_ENHANCE = "video-enhance";
 // dispatch matches it by exact name (no diffusion model, no companion files).
 const IMAGE_UPSCALE = "image-upscale";
 
+// ── Dropdown display metadata ────────────────────────────────────────────────
+// The picker used to show raw filenames in scan order, so the same list mixed
+// clean labels ("wan2.2_14B") with precision-suffixed ones ("…_fp8_e4m3fn") and
+// the entries fell in whatever order the disk returned. These helpers give every
+// model ONE consistent market name, a stable within-group order, and a set of
+// capability tags — the frontend renders the tags as coloured dots + a legend.
+
+// A clean, precision-free display name. `precisionBase` has already dropped the
+// quantisation token + extension + collapsed separators, so matching happens on
+// that normalised form; returns null when no family rule applies (caller falls
+// back to `baseLabel`, which is the same normalised string title-cased as-is).
+function marketName(name) {
+  const sentinels = {
+    [WAN14B_AUTO]: "Wan 2.2 14B",
+    [BERNINI_AUTO]: "Bernini (i2v / video edit)",
+    [BERNINI_INSERT]: "Bernini (insert image)",
+    [ANIMATE_REPLACE]: "Wan Animate (replace)",
+    [SCAIL2_ANIMATE]: "SCAIL-2 (animate)",
+    [VIDEO_ENHANCE]: "Video interpolate + upscale",
+  };
+  if (name in sentinels) return sentinels[name];
+  const b = precisionBase(name);
+  // Ordered: a more specific pattern must precede the family it belongs to
+  // (kontext before flux, image-edit before image, phantom-14b before phantom).
+  const rules = [
+    [/flux.*kontext/, "Flux.1 Kontext"],
+    [/flux1?.?dev/, "Flux.1 dev"],
+    [/pony/, "Pony Diffusion V6 XL"],
+    [/hidream.?i1/, "HiDream-I1"],
+    [/hidream.?o1/, "HiDream-O1"],
+    [/hidream.?e1/, "HiDream-E1.1"],
+    [/z.?image.?turbo/, "Z-Image Turbo"],
+    [/boogu.*edit/, "Boogu Edit"],
+    [/boogu.*base/, "Boogu (base)"],
+    [/boogu.*turbo/, "Boogu (turbo)"],
+    [/qwen.?image.?edit/, "Qwen-Image-Edit 2509"],
+    [/qwen.?image/, "Qwen-Image"],
+    [/omnigen/, "OmniGen2"],
+    [/pix2pix|instruct.?pix/, "Instruct-Pix2Pix"],
+    [/ltx/, "LTX-2.3 22B"],
+    [/phantom.*14b/, "Phantom-Wan 14B"],
+    [/phantom/, "Phantom-Wan 1.3B"],
+    [/hunyuan/, "HunyuanVideo"],
+    [/fun.?vace/, "Wan 2.2 Fun-VACE"],
+    [/ti2v.*5b/, "Wan 2.2 TI2V 5B"],
+    [/animate/, "Wan Animate (move)"],
+    [/scail/, "SCAIL-2 (replace)"],
+  ];
+  for (const [re, label] of rules) if (re.test(b)) return label;
+  return null;
+}
+
+// Capability tags shown as coloured dots after the model. Codes travel to the
+// frontend (which owns the emoji + legend), so the palette lives in one place.
+//   image → txt2img/img2img · edit → instruction edit · t2v/i2v → video gen
+//   v2v   → needs a source video (video-edit / pose transfer) · tool → model-free
+// `group` is "image" | "edit" | "video"; `entry` is the video-list object.
+function capsFor(name, group, type, entry) {
+  if (name === IMAGE_UPSCALE || name === VIDEO_ENHANCE) return ["tool"];
+  if (group === "image") return /hidream.?o1/i.test(name) ? ["image", "edit"] : ["image"];
+  if (group === "edit") return ["edit"];
+  // video: a source-video model is v2v; bernini also accepts a plain image (i2v).
+  if (entry && entry.needsVideo) return name === BERNINI_AUTO ? ["i2v", "v2v"] : ["v2v"];
+  switch (type) {
+    case "phantom": return ["i2v"];
+    case "hunyuan": return ["t2v"];
+    case "ltx": return ["t2v", "i2v"];
+    case "wan": return /fun.?vace/i.test(name) ? ["t2v", "v2v"] : ["t2v", "i2v"];
+    default: return ["t2v"];
+  }
+}
+
+// Stable within-group order (was disk-scan order). Lower rank sorts first;
+// the sentinels are pinned relative to the base file they split from (animate
+// move before replace, scail animate before replace).
+function imageRank(n) {
+  if (/flux/i.test(n)) return 1;
+  if (/pony/i.test(n)) return 2;
+  if (/hidream.?i1/i.test(n)) return 3;
+  if (/hidream.?o1/i.test(n)) return 4;
+  if (/z.?image/i.test(n)) return 5;
+  if (/boogu.*base/i.test(n)) return 6;
+  if (/boogu.*turbo/i.test(n)) return 7;
+  if (/qwen/i.test(n)) return 8;
+  return 50;
+}
+function editRank(n) {
+  if (/kontext/i.test(n)) return 1;
+  if (/qwen/i.test(n)) return 2;
+  if (/hidream/i.test(n)) return 3;
+  if (/omnigen/i.test(n)) return 4;
+  if (/boogu/i.test(n)) return 5;
+  if (/pix2pix|instruct.?pix/i.test(n)) return 6;
+  return 50;
+}
+function videoRank(n) {
+  if (n === WAN14B_AUTO) return 1;
+  if (/ti2v.*5b/i.test(n)) return 2;
+  if (/fun.?vace/i.test(n)) return 3;
+  if (/phantom.*14b/i.test(n)) return 4;
+  if (/phantom/i.test(n)) return 5;
+  if (/hunyuan/i.test(n)) return 6;
+  if (/ltx/i.test(n)) return 7;
+  // scail BEFORE animate: the "scail2_animate" sentinel contains "animate", so the
+  // generic /animate/ test would otherwise claim it (same ordering trap as videoTypeOf).
+  if (n === SCAIL2_ANIMATE) return 10;
+  if (/scail/i.test(n)) return 11;
+  if (n === ANIMATE_REPLACE) return 9;
+  if (/animate/i.test(n)) return 8;
+  if (n === BERNINI_AUTO) return 12;
+  if (n === BERNINI_INSERT) return 13;
+  if (n === VIDEO_ENHANCE) return 14;
+  return 50;
+}
+
+// Whether a model's integration is READY — end-to-end verified on real hardware
+// AND fully wired into a build graph. An allowlist: anything not matched here is
+// treated as NOT ready (greyed + warned in the picker, but still selectable so it
+// can be tested and then promoted). This is CURATED developer knowledge — the code
+// can't tell a verified integration from a merely-wired one — so it's meant to be
+// edited by hand as models get verified. Seeded from the project roadmap.
+function isModelReady(name, group, type) {
+  if (name === IMAGE_UPSCALE || name === VIDEO_ENHANCE) return true; // model-free tools
+  // Sentinels carry a synthetic name (not a filename) — match them by exact id.
+  if (name === WAN14B_AUTO) return true;    // Wan 2.2 14B t2v+i2v — verified
+  if (name === BERNINI_AUTO) return true;   // Bernini v2v / rv2v — verified end-to-end
+  if (name === SCAIL2_ANIMATE) return true; // SCAIL-2 animate — verified
+  if (name === ANIMATE_REPLACE) return false; // only the "move" mode is verified
+  if (name === BERNINI_INSERT) return false;  // ads2v — wired but never live-verified
+  const b = precisionBase(name);
+  // fun_vace is surfaced via the generic /wan/ branch but has NO VACE-specific
+  // builder (buildWan14B would run it as a plain t2v, ignoring the control/ref
+  // inputs) — treat as not-yet-wired until a real VACE graph exists.
+  if (/fun.?vace/i.test(b)) return false;
+  const READY = [
+    /flux1?.?dev/, /flux.*kontext/, /pony/,          // classic txt2img + kontext edit
+    /z.?image/, /boogu/, /hidream/, /qwen.?image/,   // image gen + edit families
+    /omnigen/, /pix2pix|instruct.?pix/,              // instruction edit
+    /animate/,                                        // animate MOVE (base unet)
+    /scail/,                                          // scail replace (base unet)
+    /ti2v.*5b/, /hunyuan/, /ltx/, /phantom/,          // video generators
+  ];
+  return READY.some((re) => re.test(b));
+}
+
 async function resolveAnimateUnet() {
   const unets = await comfyEnum("UNETLoader", "unet_name");
   return unets.find((n) => videoTypeOf(n) === "animate") || null;
@@ -548,7 +693,25 @@ async function proxyComfyModels(req, res) {
     // precision token from their option text. It can't work this out for itself — it
     // only ever sees the surviving representative, never the siblings it stands for.
     const imageCollapsed = imageOut.filter((n) => all.filter((x) => precisionBase(x) === precisionBase(n)).length > 1);
-    sendJson(res, 200, { models: [...imageOut, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, upscaleModels, hostname });
+    // Logical within-group order (was disk-scan order) — sort in place before the
+    // frontend renders them. IMAGE_UPSCALE is appended after, so it stays last.
+    imageOut.sort((a, b) => imageRank(a) - imageRank(b));
+    editOut.sort((a, b) => editRank(a.name) - editRank(b.name));
+    videoOut.sort((a, b) => videoRank(a.name) - videoRank(b.name));
+    // Per-model display metadata: a clean market name (precision stripped) and the
+    // capability tags the frontend turns into coloured dots. Keyed by the value the
+    // option carries, so lookup is O(1) regardless of which group it came from.
+    const modelMeta = {};
+    const setMeta = (name, group, type, entry) => {
+      modelMeta[name] = { label: marketName(name) || baseLabel(name), caps: capsFor(name, group, type, entry), ready: isModelReady(name, group, type) };
+    };
+    for (const n of imageOut) setMeta(n, "image", null, null);
+    // The upscale sentinel keeps its localized frontend label ("Image HD"), so send
+    // no name here — only the ⚪ tool dot.
+    modelMeta[IMAGE_UPSCALE] = { label: null, caps: ["tool"], ready: true };
+    for (const m of editOut) setMeta(m.name, "edit", m.type, m);
+    for (const m of videoOut) setMeta(m.name, "video", m.type, m);
+    sendJson(res, 200, { models: [...imageOut, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, modelMeta, upscaleModels, hostname });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [], upscaleModels: [] });
   }

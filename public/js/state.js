@@ -67,6 +67,8 @@ export const dom = {
   comfyParamUpscaleModel: document.querySelector("#comfyParamUpscaleModel"),
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),
   comfyModelHint: document.querySelector("#comfyModelHint"),
+  comfyModelLegend: document.querySelector("#comfyModelLegend"),
+  comfyModelWarn: document.querySelector("#comfyModelWarn"),
   comfyParamBerniniMode: document.querySelector("#comfyParamBerniniMode"),
   comfyParamRefMaxSize: document.querySelector("#comfyParamRefMaxSize"),
   comfyParamPhantomImgCfg: document.querySelector("#comfyParamPhantomImgCfg"),
