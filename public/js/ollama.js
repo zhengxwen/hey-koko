@@ -462,6 +462,11 @@ function applyComfyModels(data) {
       // reach them; an emoji is just a character and renders). CAP_LEGEND (i18n) below
       // explains them. Absent meta (older server) → fall back to the label/stripExt.
       const meta = data.modelMeta || {};
+      // Per-model list of quantisation tiers actually installed — the ⚙ precision menu
+      // greys out the rest. Kept on state because the menu is rebuilt on model change,
+      // long after this function has returned.
+      state.comfyModelPrec = {};
+      for (const [k, v] of Object.entries(meta)) if (v && v.prec) state.comfyModelPrec[k] = v.prec;
       // The coloured circles are input→output MODES and read as a set. "audio" is a
       // different axis — an extra property of the output, not another mode — so it gets
       // a pictograph rather than one more colour in the row.
@@ -589,21 +594,38 @@ function ltxLoraHint(name) {
   return "";
 }
 
-// Grey out LoRAs already baked into the selected checkpoint, keeping them visible
-// (with the reason) rather than silently absent. A pick that becomes invalid after a
-// model change falls back to None so the picker never shows a LoRA that won't apply.
-function syncLtxLoraOptions(model) {
-  const sel = dom.comfyParamLtxLora;
+// Disable the options a <select> can't honour for the current model, keeping them
+// VISIBLE with the reason appended — removing them reads as "this app doesn't support
+// it" and invites hunting for a file that is already installed. The original label is
+// stashed on first call so repeated calls restore it instead of stacking annotations.
+// A selection that becomes invalid falls back to the "" (auto / none) option.
+function annotateOptions(sel, isBlocked, reasonKey) {
   if (!sel) return;
   let reset = false;
   for (const o of sel.options) {
     if (!o.dataset.baseLabel) o.dataset.baseLabel = o.textContent;
-    const baked = !!o.value && LORA_BAKED_IN_RE.some((re) => re.test(model) && re.test(o.value));
-    o.disabled = baked;
-    o.textContent = baked ? `${o.dataset.baseLabel} — ${t("comfy_ltxLora_bakedIn")}` : o.dataset.baseLabel;
-    if (baked && sel.value === o.value) reset = true;
+    const blocked = !!o.value && isBlocked(o.value);   // the "" option is never blocked
+    o.disabled = blocked;
+    o.textContent = blocked ? `${o.dataset.baseLabel} — ${t(reasonKey)}` : o.dataset.baseLabel;
+    if (blocked && sel.value === o.value) reset = true;
   }
   if (reset) sel.value = "";
+}
+
+// LoRAs already baked into the selected checkpoint (Sulphur ships as both).
+function syncLtxLoraOptions(model) {
+  annotateOptions(dom.comfyParamLtxLora,
+    (v) => LORA_BAKED_IN_RE.some((re) => re.test(model) && re.test(v)),
+    "comfy_ltxLora_bakedIn");
+}
+
+// Quantisation tiers the selected model doesn't ship in. `prec` absent = the server
+// couldn't tell (no precision token on any file in the group) — restrict nothing
+// rather than grey out everything on a model we know nothing about.
+function syncPrecisionOptions(model) {
+  const tiers = state.comfyModelPrec && state.comfyModelPrec[model];
+  if (!tiers) { annotateOptions(dom.comfyParamPrecision, () => false, "comfy_precision_absent"); return; }
+  annotateOptions(dom.comfyParamPrecision, (v) => !tiers.includes(v), "comfy_precision_absent");
 }
 
 // The "auto" fps/length the server picks per video model (mirrors videoPreset in
@@ -615,7 +637,12 @@ function videoAutoDefaults(modelName) {
   // LoRAs, which the frontend can't see): the placeholder shows "Auto (N)" when set,
   // else plain "Auto". Mirrors videoPreset in server/comfy.js. WAN 14B is left without
   // steps/cfg on purpose — its schedule flips between turbo (4/cfg1) and full (20/3.5).
-  if (LTX_RE.test(m)) return { fps: 24, length: 97, steps: 30, cfg: 3 };
+  // LTX: steps/cfg are omitted for the same reason as WAN 14B — they flip with the
+  // two-stage cascade (fixed sigma tables at cfg 1) vs the single-stage fallback
+  // (30 steps / cfg 3), and the frontend can't see whether the distilled LoRA and
+  // upscaler are installed. fps DOES differ per finetune: ltx-2.3's templates run
+  // 25, Sulphur's run 24.
+  if (LTX_RE.test(m)) return { fps: /sulphur/.test(m) ? 24 : 25, length: 97 };
   if (/hunyuan/.test(m)) return { fps: 24, length: 49, steps: 20, cfg: 6 };
   // Phantom: fixed 50-step / cfg 7.5 (uni_pc) — no distill LoRA, so it never varies.
   if (/phantom/.test(m)) return { fps: 24, length: 81, steps: 50, cfg: 7.5 };
@@ -916,8 +943,12 @@ export function updateComfyParamVisibility() {
   const ltx = video && LTX_RE.test(m.toLowerCase());
   for (const el of [dom.comfyParamLtxLora, dom.comfyParamLtxLoraStrength]) setVis(el, ltx);
   if (ltx) syncLtxLoraOptions(m);
-  // Phantom only — the image-guidance scale (its second, subject-fidelity CFG).
+  // Phantom only — the image-guidance scale (its second, subject-fidelity CFG), and the
+  // step-distill turbo switch. The
+  // switch is 14B-only: no 1.3B step-distill LoRA is published, so on 1.3B it would be
+  // a control that does nothing.
   setVis(dom.comfyParamPhantomImgCfg, /phantom/i.test(m));
+  setVis(dom.comfyParamPhantomTurbo, /phantom/i.test(m) && /14b/i.test(m));
   // SCAIL-2 only — SAM3 open-vocabulary subject + identity ordering + the pose schedule.
   // These are Animate's counterparts to relight/🎯: same intent, different mechanism.
   for (const el of [dom.comfyParamScailSubject, dom.comfyParamScailRefSubject, dom.comfyParamScailThreshold,
@@ -931,6 +962,7 @@ export function updateComfyParamVisibility() {
   // Quantisation preference — diffusion models only (the upscale pipelines load an
   // upscale model, which has no precision variants).
   setVis(dom.comfyParamPrecision, diffusion);
+  if (diffusion) syncPrecisionOptions(m);
   // Prompt add-ons — every diffusion model reads them (an upscale pipeline takes no prompt).
   for (const el of [dom.comfyParamPositive, dom.comfyParamNegative]) setVis(el, diffusion);
   // Guidance + img2img denoise are IMAGE-only: no video builder accepts either

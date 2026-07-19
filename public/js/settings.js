@@ -63,6 +63,7 @@ export function saveCurrentSettings() {
         ltxLora: dom.comfyParamLtxLora?.value || "",
         ltxLoraStrength: dom.comfyParamLtxLoraStrength?.value || "",
         phantomImgCfg: dom.comfyParamPhantomImgCfg?.value || "",
+        phantomTurbo: dom.comfyParamPhantomTurbo?.checked || false,
         relight: dom.comfyParamRelight?.value || "",
         scailSubject: dom.comfyParamScailSubject?.value || "",
         scailRefSubject: dom.comfyParamScailRefSubject?.value || "",
@@ -242,6 +243,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamLtxLora && cp.ltxLora) dom.comfyParamLtxLora.value = cp.ltxLora;
     if (dom.comfyParamLtxLoraStrength) dom.comfyParamLtxLoraStrength.value = cp.ltxLoraStrength || "";
     if (dom.comfyParamPhantomImgCfg) dom.comfyParamPhantomImgCfg.value = cp.phantomImgCfg || "";
+    if (dom.comfyParamPhantomTurbo) dom.comfyParamPhantomTurbo.checked = !!cp.phantomTurbo;
     if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";
     if (dom.comfyParamScailSubject) dom.comfyParamScailSubject.value = cp.scailSubject || "";
     if (dom.comfyParamScailRefSubject) dom.comfyParamScailRefSubject.value = cp.scailRefSubject || "";

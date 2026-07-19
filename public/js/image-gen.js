@@ -82,6 +82,7 @@ function comfyOverrides() {
   if (dom.comfyParamLtxLora?.value) ov.ltxLora = dom.comfyParamLtxLora.value;
   const ltxLoraStrength = num(dom.comfyParamLtxLoraStrength?.value);
   if (ltxLoraStrength !== undefined) ov.ltxLoraStrength = ltxLoraStrength;
+  if (dom.comfyParamPhantomTurbo?.checked) ov.phantomTurbo = true; // Phantom: step-distill LoRA (dual-CFG collapses)
   const phantomImgCfg = num(dom.comfyParamPhantomImgCfg?.value);
   if (phantomImgCfg !== undefined) ov.phantomImgCfg = phantomImgCfg; // Phantom: image-guidance scale (g_img)
   const relight = num(dom.comfyParamRelight?.value);
@@ -990,6 +991,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     // LTX LoRA actually mounted. Stated because the picker can hold a choice the
     // server declines to apply (Sulphur's LoRA on the Sulphur checkpoint, which
     // already contains it) — this line is what distinguishes applied from ignored.
+    // Phantom turbo. Reported because the request can be declined (1.3B, or no LoRA
+    // installed) — and because the run it produces is a materially different one.
+    if (lastData.phantomTurbo && lastData.phantomTurbo.lora) {
+      doneLine += `\n${t("msg_phantomTurbo", {}, plang)}`;
+    }
     if (lastData.ltxLora && lastData.ltxLora.name) {
       doneLine += `\n${t("msg_ltxLoraUsed", { lora: stripModelExt(lastData.ltxLora.name), strength: lastData.ltxLora.strength }, plang)}`;
     }

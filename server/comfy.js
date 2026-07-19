@@ -208,7 +208,10 @@ const LTX_MODEL_RE = /ltx|sulphur/i;
 // sulphur_lora_rank_768.safetensors applies, and upstream says not to use both —
 // stacking them applies the same finetune twice. So a LoRA is suppressed when the
 // selected checkpoint is from the same family. The LoRA's real use is over a
-// DIFFERENT base (plain LTX-2.3, or a distilled checkpoint for speed).
+// DIFFERENT base: plain ltx-2.3 + sulphur_lora_rank_768 at strength 1.0 is the
+// unmerged route to the same finetune (its metadata — dim/alpha 768/768, module
+// networks.lora_ltx2 — marks it as a style/content layer, NOT a step-distiller;
+// don't set it to a distiller's 0.4–0.7).
 const LORA_BAKED_IN = [/sulphur/i];
 function loraBakedIn(model, lora) {
   return LORA_BAKED_IN.some((re) => re.test(model || "") && re.test(lora || ""));
@@ -256,7 +259,10 @@ function videoTypeOf(model) {
 // int8 stays here despite not being offerable: an installed int8 build must still be
 // recognised as a variant so it collapses into its model's single dropdown entry
 // instead of showing up as a separate model.
-const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|int8_convrot|int8|fp16|bf16";
+// fp8mixed (Sulphur's naming) sits BEFORE the bare fp8 alternative — alternation takes
+// the first match, so "fp8|fp8mixed" would match "fp8" and then fail the [_.-]|$
+// lookahead on the trailing "mixed", leaving the file unclassified.
+const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8mixed|fp8_mixed|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|int8_convrot|int8|fp16|bf16";
 const PRECISION_RE = new RegExp(`(?:^|[_-])(${PRECISION_TOKENS})(?=[_.-]|$)`, "i");
 const PRECISION_RE_G = new RegExp(`(?:^|[_-])(?:${PRECISION_TOKENS})(?=[_.-]|$)`, "ig");
 function precisionOf(name) {
@@ -656,9 +662,9 @@ async function proxyComfyModels(req, res) {
         // alone is also a valid input (i2v) — unlike animate / scail2, which reject
         // a request with no source clip.
         if (!addedBernini) {
-          videoModels.push({ name: BERNINI_AUTO, type: "bernini", label: "bernini (i2v / video edit)", needsVideo: true, videoOptional: true });
+          videoModels.push({ name: BERNINI_AUTO, type: "bernini", label: "bernini (i2v / video edit)", needsVideo: true, videoOptional: true, precFrom: n });
           // ads2v — needs BOTH a source clip and an image, so no videoOptional here.
-          videoModels.push({ name: BERNINI_INSERT, type: "bernini", label: "bernini (insert image into video)", needsVideo: true });
+          videoModels.push({ name: BERNINI_INSERT, type: "bernini", label: "bernini (insert image into video)", needsVideo: true, precFrom: n });
           addedBernini = true;
         }
         continue;
@@ -669,7 +675,7 @@ async function proxyComfyModels(req, res) {
       // Both need a source video; replace is resolved back to this UNET at gen time.
       if (vt === "animate") {
         videoModels.push({ name: n, type: "animate", label: "wan animate (move)", needsVideo: true });
-        videoModels.push({ name: ANIMATE_REPLACE, type: "animate", label: "wan animate (replace)", needsVideo: true });
+        videoModels.push({ name: ANIMATE_REPLACE, type: "animate", label: "wan animate (replace)", needsVideo: true, precFrom: n });
         continue;
       }
       // SCAIL-2 (character animation) — one UNET, two modes, same split as Animate:
@@ -678,14 +684,14 @@ async function proxyComfyModels(req, res) {
       // Unlike Animate it feeds the driving video to the model DIRECTLY (no DWPose
       // stick-figure step), and it tracks the subject with SAM3 instead of SAM2.
       if (vt === "scail2") {
-        videoModels.push({ name: SCAIL2_ANIMATE, type: "scail2", label: "scail-2 (animate)", needsVideo: true });
+        videoModels.push({ name: SCAIL2_ANIMATE, type: "scail2", label: "scail-2 (animate)", needsVideo: true, precFrom: n });
         videoModels.push({ name: n, type: "scail2", label: "scail-2 (replace)", needsVideo: true });
         continue;
       }
       const is14b = /14b/i.test(n);
       if (is14b && /low_noise/i.test(n)) continue; // hidden — derived from the high twin
       if (merge14b && is14b && (/t2v/i.test(n) || /i2v/i.test(n))) {
-        if (!added14bAuto) { videoModels.push({ name: WAN14B_AUTO, type: "wan", label: "wan2.2_14B" }); added14bAuto = true; }
+        if (!added14bAuto) { videoModels.push({ name: WAN14B_AUTO, type: "wan", label: "wan2.2_14B", precFrom: n }); added14bAuto = true; }
         continue;
       }
       if (is14b && /high_noise/i.test(n)) {
@@ -794,8 +800,37 @@ async function proxyComfyModels(req, res) {
     // capability tags the frontend turns into coloured dots. Keyed by the value the
     // option carries, so lookup is O(1) regardless of which group it came from.
     const modelMeta = {};
+    // Which quantisation tiers this model actually ships in on disk, so the ⚙ precision
+    // menu can grey out the rest instead of offering a tier that silently falls back.
+    // Derived from the model's precision GROUP (every file sharing a precisionBase) —
+    // the same grouping that collapsed the variants into one dropdown entry.
+    //
+    // An EMPTY result means "no precision token anywhere in this group", i.e. we cannot
+    // tell what it ships in — a single untagged file, say. That is reported as absent
+    // (no `prec` key) and the frontend then restricts nothing: greying every option on
+    // a model we know nothing about would be worse than the status quo.
+    const tiersFor = (name) => {
+      // A two-expert MoE resolves PER EXPERT, so a tier only ONE twin ships in still
+      // loads (mixed, and said so on the done-line). The offer is therefore the UNION
+      // over both twins — reading only the high twin would grey out a tier that works.
+      const bases = [precisionBase(name)];
+      if (/high_noise/i.test(name)) bases.push(precisionBase(name.replace(/high_noise/ig, "low_noise")));
+      const tiers = [];
+      for (const f of all) {
+        if (!bases.includes(precisionBase(f))) continue;
+        const t = precisionOf(f);
+        if (t && !tiers.includes(t)) tiers.push(t);
+      }
+      return tiers;
+    };
     const setMeta = (name, group, type, entry) => {
+      // Sentinel entries (wan2.2_14B auto, bernini, animate replace, scail animate) carry
+      // a synthetic name that matches no file, so tiers are read off the real checkpoint
+      // they were derived from — otherwise the models with the most precision variants
+      // would be exactly the ones the menu can't describe.
+      const tiers = tiersFor((entry && entry.precFrom) || name);
       modelMeta[name] = { label: marketName(name) || baseLabel(name), caps: capsFor(name, group, type, entry), ready: isModelReady(name, group, type) };
+      if (tiers.length) modelMeta[name].prec = tiers;
     };
     for (const n of imageOut) setMeta(n, "image", null, null);
     for (const n of berniniT2i) setMeta(n, "image", null, null);
@@ -1615,15 +1650,24 @@ async function videoCompanions(videoType, model, opts = {}) {
     // doubles the stage-1 latent before the refine pass. Both must be present or the
     // builder falls back to the single-stage LTXVScheduler path — running the 8-step
     // distilled schedule WITHOUT the LoRA produces noise, so this is a hard pairing.
-    // Only ltx-2.3's own distilled LoRA qualifies: sulphur ships a same-size sibling
-    // (sulphur_lora_rank_768) whose role is unverified, so it is NOT auto-mounted —
-    // it stays available through the ⚙ "LTX LoRA" picker.
-    const distillLora = /sulphur/i.test(model || "")
-      ? null
+    //
+    // Sulphur gets its OWN recipe rather than ltx-2.3's. Its metadata marks it a
+    // style/content finetune (title ltxxx_lora_v2, dim/alpha 768/768, module
+    // networks.lora_ltx2), not a step-distiller, and it does not survive ltx-2.3's
+    // fixed sigma table — verified live: Sulphur + that table blurs badly, whether it
+    // arrives baked into the checkpoint (sulphur_dev_*) or stacked as a LoRA over a
+    // plain ltx-2.3 base. Its own distilled workflow computes the base schedule with
+    // LTXVScheduler at a much larger shift instead; LTX_RECIPES.sulphur carries that.
+    const sulphurSelected = /sulphur/i.test(model || "") || /sulphur/i.test(lora || "");
+    const recipe = sulphurSelected ? "sulphur" : "base";
+    // Sulphur's workflow pins the "condsafe" re-ranked distiller specifically; the
+    // ltx-2.3 templates use the 1.1 distilled LoRA. Fall back to any LTX distiller.
+    const distillLora = sulphurSelected
+      ? (find(loras, /ltx.*condsafe/i) || find(loras, /ltx.*distill/i))
       : (find(loras, /ltx.*distill.*1\.1/i) || find(loras, /ltx.*distill/i));
     const upscaleModels = await comfyEnum("LatentUpscaleModelLoader", "model_name").catch(() => []);
     const upscaler = find(upscaleModels, /ltx.*spatial.*upscal/i) || find(upscaleModels, /ltx.*upscal/i);
-    return { encoder, lora, loraStrength, distillLora, distillStrength: 0.5, upscaler };
+    return { encoder, lora, loraStrength, distillLora, upscaler, recipe };
   }
   throw new Error("This video model is not wired up yet (currently supported: WAN 2.2, Hunyuan, LTX-2).");
 }
@@ -1648,6 +1692,12 @@ function videoPreset(videoType, model, turbo) {
     // Upstream s2v defaults (phantom_wan generate.py): uni_pc, 50 steps, shift 5.0,
     // g_text 7.5 (this cfg = cfg_conds), g_img 5.0 (handled separately in buildPhantom).
     // 14B example runs 121 frames @ 24 fps; keep the 81/16 preset and let ⚙ raise it.
+    //
+    // turbo = the lightx2v step-distill LoRA is mounted. It was trained with CFG
+    // distilled away, so cfg MUST drop to 1 (the caller drops g_img to 1 to match) and
+    // the step count collapses to 8. Leaving cfg at 7.5 with the LoRA on produces
+    // burnt, over-saturated output — the two settings are one package, not two knobs.
+    if (turbo) return { sampler: "uni_pc", scheduler: "simple", cfg: 1, steps: 8, shift: 5.0, width: 832, height: 480, length: 81, fps: 24, dimMult: 16, lenMult: 4 };
     return { sampler: "uni_pc", scheduler: "simple", cfg: 7.5, steps: 50, shift: 5.0, width: 832, height: 480, length: 81, fps: 24, dimMult: 16, lenMult: 4 };
   }
   if (videoType === "hunyuan") {
@@ -1662,7 +1712,11 @@ function videoPreset(videoType, model, turbo) {
       // the halved stage-1 latent to stay /32. cfg 1 and the step counts are fixed
       // by the hand-tuned sigma tables in buildLtxVideo (8 + 3); `steps` is carried
       // only so the ⚙ field and the done-line have something coherent to show.
-      return { sampler: "euler", scheduler: "simple", cfg: 1, steps: 11, shift: 0, width: 1280, height: 704, length: 97, fps: 25, dimMult: 64, lenMult: 8 };
+      // fps follows each finetune's own workflow: ltx-2.3's templates run 25, both
+      // Sulphur workflows run 24. It reaches LTXVConditioning + the audio latent, so
+      // it isn't only a mux setting — keep each family on the rate it was tuned at.
+      const fps = /sulphur/i.test(model || "") ? 24 : 25;
+      return { sampler: "euler", scheduler: "simple", cfg: 1, steps: 11, shift: 0, width: 1280, height: 704, length: 97, fps, dimMult: 64, lenMult: 8 };
     }
     // Fallback (no distilled LoRA / no upscaler): the older single-stage path with
     // LTXVScheduler. dims /32. The 22b model is undersampled at 20 steps (motion
@@ -1961,24 +2015,56 @@ function buildLtxVideo(args) {
 // latent.
 const LTX_SIGMAS_BASE = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0";
 const LTX_SIGMAS_REFINE = "0.85, 0.7250, 0.4219, 0.0";
+
+// Per-finetune cascade recipes. The GRAPH is identical for both — half-size base pass,
+// latent ×2 upscale, short refine — only the schedule/sampler/LoRA-strength numbers
+// differ, so they live here as data instead of forking the builder.
+//
+// "sulphur" is derived from the user's own ltx23_t2v_distilled workflow, read off the
+// live ComfyUI and reduced to the nodes actually REACHABLE from its SaveVideo (that
+// file also carries three abandoned ManualSigmas presets and a spare distilled-LoRA
+// loader left unconnected on the canvas — dumping widgets without walking the links
+// picks up those dead values). The load-bearing difference: Sulphur's base pass does
+// NOT use a hand-written sigma list at all. It runs LTXVScheduler with max_shift 4 /
+// base_shift 1.5 — far above LTX's 2.05 / 0.95 defaults — which is exactly why
+// borrowing ltx-2.3's fixed table blurred: the shift was wrong for this finetune.
+// `i2v` holds the parameters that only apply when a still is conditioning the clip:
+// the two LTXVImgToVideoInplace strengths, the LTXVPreprocess compression, and — for
+// Sulphur — a stage-2 sampler that DIFFERS from its own t2v workflow (lcm for t2v,
+// euler_ancestral_cfg_pp for i2v; the two workflows really do disagree here).
+const LTX_RECIPES = {
+  base: {
+    stage1: { sigmas: { manual: LTX_SIGMAS_BASE }, sampler: "euler", distill: 0.5 },
+    stage2: { sigmas: { manual: LTX_SIGMAS_REFINE }, sampler: "euler", distill: 0.5 },
+    i2v: { stage1Strength: 0.7, stage2Strength: 1.0, imgCompression: 18 },
+    tiledDecode: true,
+  },
+  sulphur: {
+    stage1: { sigmas: { scheduler: { steps: 8, max_shift: 4, base_shift: 1.5, stretch: true, terminal: 0.1 } }, sampler: "euler_ancestral_cfg_pp", distill: 0.7 },
+    stage2: { sigmas: { manual: LTX_SIGMAS_REFINE }, sampler: "lcm", distill: 0.5 },
+    i2v: { stage1Strength: 0.8, stage2Strength: 1.0, imgCompression: 38, stage2Sampler: "euler_ancestral_cfg_pp" },
+    tiledDecode: false,
+  },
+};
 // The refine pass takes FIXED noise in the official template, so re-rolling the seed
 // varies the composition (stage 1) without also reshuffling the upscale detail.
 const LTX_REFINE_NOISE = 42;
-// LTXVPreprocess compression for guide/conditioning images (template value; the node
-// default of 35 is a heavier compression than the LTX-2.3 workflows use).
-const LTX_IMG_COMPRESSION = 18;
 
-// Official LTX-2.3 two-stage cascade: sample at HALF the target size on the distilled
-// 8-step schedule → LTXVLatentUpsampler doubles the video latent (spatial upscaler
-// model) → a 3-step refine at the full size → VAEDecodeTiled. The audio latent rides
-// along: stage 1 starts it empty, stage 2 continues the SAMPLED audio latent from
-// stage 1, so the soundtrack is refined with the picture rather than regenerated.
-// Guides are stripped once, by the LTXVCropGuides between the stages, whose cleaned
-// conditioning also drives the refine pass.
+// Two-stage cascade: sample at HALF the target size → LTXVLatentUpsampler doubles the
+// video latent (spatial upscaler model) → a short refine at the full size → decode.
+// The audio latent rides along: stage 1 starts it empty, stage 2 continues the SAMPLED
+// audio latent from stage 1, so the soundtrack is refined with the picture rather than
+// regenerated. Guides are stripped once, by the LTXVCropGuides between the stages,
+// whose cleaned conditioning also drives the refine pass.
+//
+// The per-stage numbers come from comp.recipe (LTX_RECIPES). The two stages get their
+// OWN model chains because they run the distilled LoRA at different strengths — that
+// is the only reason the source workflows build the LoRA stack twice.
 function buildLtxCascade({ model, prompt, negative, comp, imageName, imageNames, seed, v }) {
   const neg = negative && negative.trim() ? negative : LTX_DEFAULT_NEGATIVE;
   const kf = Array.isArray(imageNames) && imageNames.length >= 2 ? imageNames : null;
   const i2v = !kf && !!imageName;
+  const recipe = LTX_RECIPES[comp.recipe] || LTX_RECIPES.base;
   // Stage-1 canvas: half the final size, snapped back to /32 (the latent step). The
   // upscaler then doubles it, so the delivered frame is exactly 2× this — which is
   // why the preset's dims are /64.
@@ -1992,22 +2078,36 @@ function buildLtxCascade({ model, prompt, negative, comp, imageName, imageNames,
     "5": { class_type: "LTXVConditioning", inputs: { positive: ["3", 0], negative: ["4", 0], frame_rate: v.fps } },
     "20": { class_type: "LTXVAudioVAELoader", inputs: { ckpt_name: model } },
     "21": { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: v.length, frame_rate: v.fps, batch_size: 1, audio_vae: ["20", 0] } },
-    "9": { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
     "7": { class_type: "EmptyLTXVLatentVideo", inputs: { width: w1, height: h1, length: v.length, batch_size: 1 } },
-    "81": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.distillLora, strength_model: comp.distillStrength != null ? comp.distillStrength : 0.5 } },
     "82": { class_type: "LatentUpscaleModelLoader", inputs: { model_name: comp.upscaler } },
-    "85": { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_BASE } },
-    "91": { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_REFINE } },
+    "9": { class_type: "KSamplerSelect", inputs: { sampler_name: recipe.stage1.sampler } },
+    "94": { class_type: "KSamplerSelect", inputs: { sampler_name: (i2v && recipe.i2v.stage2Sampler) || recipe.stage2.sampler } },
     "84": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
     "90": { class_type: "RandomNoise", inputs: { noise_seed: LTX_REFINE_NOISE } },
   };
-  // A user-chosen ⚙ LoRA stacks ON TOP of the distilled one (which the schedule
-  // depends on), never in place of it.
-  let modelRef = ["81", 0];
-  if (comp.lora) {
-    wf["80"] = { class_type: "LoraLoaderModelOnly", inputs: { model: modelRef, lora_name: comp.lora, strength_model: comp.loraStrength != null ? comp.loraStrength : 1 } };
-    modelRef = ["80", 0];
-  }
+  // One LoRA stack per stage: the distilled LoRA at that stage's strength, then any
+  // user-chosen ⚙ LoRA (the Sulphur style layer arrives this way on an unmerged base)
+  // on top. `mk` returns the chain's output ref.
+  const mkChain = (distillStrength, idDistill, idUser) => {
+    wf[idDistill] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.distillLora, strength_model: distillStrength } };
+    let ref = [idDistill, 0];
+    if (comp.lora) {
+      wf[idUser] = { class_type: "LoraLoaderModelOnly", inputs: { model: ref, lora_name: comp.lora, strength_model: comp.loraStrength != null ? comp.loraStrength : 1 } };
+      ref = [idUser, 0];
+    }
+    return ref;
+  };
+  const model1 = mkChain(recipe.stage1.distill, "81", "80");
+  const model2 = mkChain(recipe.stage2.distill, "96", "97");
+  // Stage sigmas: either a fixed hand-written list, or LTXVScheduler computing them
+  // live from a step count + shift pair. Sulphur needs the latter (its shift is well
+  // above LTX's defaults); ltx-2.3 needs the former.
+  const mkSigmas = (spec, id, latentRef) => {
+    wf[id] = spec.manual
+      ? { class_type: "ManualSigmas", inputs: { sigmas: spec.manual } }
+      : { class_type: "LTXVScheduler", inputs: { ...spec.scheduler, latent: latentRef } };
+    return [id, 0];
+  };
   // Stage-1 video latent + conditioning. Guide images are prepared once (node 15)
   // and reused by both stages.
   let pos = ["5", 0], negCond = ["5", 1], lat1 = ["7", 0];
@@ -2017,22 +2117,23 @@ function buildLtxCascade({ model, prompt, negative, comp, imageName, imageNames,
       const load = String(30 + idx), prep = String(50 + idx), guide = String(70 + idx);
       const frameIdx = N === 1 ? 0 : Math.round((idx * (v.length - 1)) / (N - 1)); // 0 … length-1, evenly spaced
       wf[load] = { class_type: "LoadImage", inputs: { image: nm } };
-      wf[prep] = { class_type: "LTXVPreprocess", inputs: { image: [load, 0], img_compression: LTX_IMG_COMPRESSION } };
+      wf[prep] = { class_type: "LTXVPreprocess", inputs: { image: [load, 0], img_compression: recipe.i2v.imgCompression } };
       wf[guide] = { class_type: "LTXVAddGuide", inputs: { positive: pos, negative: negCond, vae: ["1", 2], latent: lat1, image: [prep, 0], frame_idx: frameIdx, strength: 1.0 } };
       pos = [guide, 0]; negCond = [guide, 1]; lat1 = [guide, 2];
     });
   } else if (i2v) {
     wf["14"] = { class_type: "LoadImage", inputs: { image: imageName } };
-    wf["15"] = { class_type: "LTXVPreprocess", inputs: { image: ["14", 0], img_compression: LTX_IMG_COMPRESSION } };
+    wf["15"] = { class_type: "LTXVPreprocess", inputs: { image: ["14", 0], img_compression: recipe.i2v.imgCompression } };
     // Inplace writes the still into the existing latent instead of returning a longer
     // one, so no guide frames are added and the conditioning stays untouched. Stage 1
-    // holds it at 0.7 (leaves the sampler room to build motion), stage 2 at 1.0.
-    wf["16"] = { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["1", 2], image: ["15", 0], latent: ["7", 0], strength: 0.7, bypass: false } };
+    // holds it below 1 (leaving the sampler room to build motion), stage 2 pins it.
+    wf["16"] = { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["1", 2], image: ["15", 0], latent: ["7", 0], strength: recipe.i2v.stage1Strength, bypass: false } };
     lat1 = ["16", 0];
   }
   wf["22"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: lat1, audio_latent: ["21", 0] } };
-  wf["83"] = { class_type: "CFGGuider", inputs: { model: modelRef, positive: pos, negative: negCond, cfg: v.cfg } };
-  wf["10"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["84", 0], guider: ["83", 0], sampler: ["9", 0], sigmas: ["85", 0], latent_image: ["22", 0] } };
+  const sigmas1 = mkSigmas(recipe.stage1.sigmas, "85", ["22", 0]);
+  wf["83"] = { class_type: "CFGGuider", inputs: { model: model1, positive: pos, negative: negCond, cfg: v.cfg } };
+  wf["10"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["84", 0], guider: ["83", 0], sampler: ["9", 0], sigmas: sigmas1, latent_image: ["22", 0] } };
   wf["23"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["10", 0] } };
   // Strip the guide frames (keyframe mode) and hand the cleaned conditioning to the
   // refine pass. A no-op for t2v/i2v, where nothing added guides — the official
@@ -2041,16 +2142,20 @@ function buildLtxCascade({ model, prompt, negative, comp, imageName, imageNames,
   wf["86"] = { class_type: "LTXVLatentUpsampler", inputs: { samples: ["25", 2], upscale_model: ["82", 0], vae: ["1", 2] } };
   let lat2 = ["86", 0];
   if (i2v) {
-    wf["87"] = { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["1", 2], image: ["15", 0], latent: ["86", 0], strength: 1.0, bypass: false } };
+    wf["87"] = { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["1", 2], image: ["15", 0], latent: ["86", 0], strength: recipe.i2v.stage2Strength, bypass: false } };
     lat2 = ["87", 0];
   }
   wf["88"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: lat2, audio_latent: ["23", 1] } };
-  wf["89"] = { class_type: "CFGGuider", inputs: { model: modelRef, positive: ["25", 0], negative: ["25", 1], cfg: v.cfg } };
-  wf["92"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["90", 0], guider: ["89", 0], sampler: ["9", 0], sigmas: ["91", 0], latent_image: ["88", 0] } };
+  const sigmas2 = mkSigmas(recipe.stage2.sigmas, "91", ["88", 0]);
+  wf["89"] = { class_type: "CFGGuider", inputs: { model: model2, positive: ["25", 0], negative: ["25", 1], cfg: v.cfg } };
+  wf["92"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["90", 0], guider: ["89", 0], sampler: ["94", 0], sigmas: sigmas2, latent_image: ["88", 0] } };
   wf["93"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["92", 0] } };
-  // Tiled decode: the refined latent is full-size, and a plain VAEDecode of a 22B
-  // AV latent at 1280×704×97 is where this pipeline runs out of VRAM.
-  wf["11"] = { class_type: "VAEDecodeTiled", inputs: { samples: ["93", 0], vae: ["1", 2], tile_size: 768, overlap: 64, temporal_size: 4096, temporal_overlap: 4 } };
+  // The ltx-2.3 template decodes the full-size refined latent tiled (a plain VAEDecode
+  // of a 22B AV latent is where this pipeline runs out of VRAM); the Sulphur workflow
+  // decodes it whole, so each recipe keeps its own choice.
+  wf["11"] = recipe.tiledDecode
+    ? { class_type: "VAEDecodeTiled", inputs: { samples: ["93", 0], vae: ["1", 2], tile_size: 768, overlap: 64, temporal_size: 4096, temporal_overlap: 4 } }
+    : { class_type: "VAEDecode", inputs: { samples: ["93", 0], vae: ["1", 2] } };
   wf["24"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["93", 1], audio_vae: ["20", 0] } };
   wf["12"] = { class_type: "CreateVideo", inputs: { images: ["11", 0], fps: v.fps, audio: ["24", 0] } };
   wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
@@ -2137,7 +2242,7 @@ const PHANTOM_MAX_REFS = 4;
 // Phantom-Wan companions: umt5 (CLIPLoader type "wan") + the WAN 2.1 VAE. Phantom is
 // a single Wan-2.1-based UNET (no high/low MoE, no distill LoRA), so this is all it
 // needs beyond the UNET itself.
-async function phantomCompanions() {
+async function phantomCompanions(model, turbo) {
   const [clips, vaes] = await Promise.all([
     comfyEnum("CLIPLoader", "clip_name"),
     comfyEnum("VAELoader", "vae_name"),
@@ -2149,7 +2254,22 @@ async function phantomCompanions() {
   if (!clip) missing.push("umt5_xxl_fp8_e4m3fn_scaled.safetensors → text_encoders/");
   if (!vae) missing.push("wan_2.1_vae.safetensors → vae/");
   if (missing.length) throw new Error("Missing files required by Phantom:\n- " + missing.join("\n- "));
-  return { clip, vae };
+  // ⚙ turbo: a Wan2.1-14B cfg-step-distill LoRA. Phantom-Wan-14B is a Wan2.1 14B
+  // finetune (it loads the same umt5 + wan_2.1_vae companions), so the generic
+  // lightx2v LoRAs apply — there is no Phantom-specific one, and upstream ships none.
+  // Prefer the T2V build: Phantom's base is Wan2.1 T2V, and it takes no start frame.
+  //
+  // 14B ONLY. The 1.3B variant is a different width — the rank-64 14B LoRA does not
+  // fit it, and only 14B LoRAs are published. Asking for turbo on 1.3B is ignored
+  // rather than errored (the model still runs; the done-line reports what happened).
+  let lora = null;
+  if (turbo && /14b/i.test(model || "")) {
+    const loras = await comfyEnum("LoraLoaderModelOnly", "lora_name");
+    lora = find(loras, /lightx2v.*t2v.*14b.*cfg_step_distill/i)
+        || find(loras, /lightx2v.*t2v.*14b.*distill/i)
+        || find(loras, /lightx2v.*i2v.*14b.*distill/i);
+  }
+  return { clip, vae, lora };
 }
 
 // Phantom (WanPhantomSubjectToVideo) — subject-to-video: reference subject image(s) +
@@ -2174,7 +2294,13 @@ function buildPhantom({ model, prompt, negative, comp, imageNames, seed, v, imgC
   const refs = (imageNames || []).filter(Boolean).slice(0, PHANTOM_MAX_REFS);
   const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
-    "2": { class_type: "ModelSamplingSD3", inputs: { model: ["1", 0], shift: v.shift } },
+    // ⚙ turbo (node 60 — clear of the 20+ LoadImage block and the 40+ ImageBatch
+    // chain the reference images use): a Wan2.1-14B step-distill LoRA. It is cfg-DISTILLED, so the
+    // caller also drops both DualCFGGuider scales to 1 — at which point the guider's
+    // formula reduces to the plain conditional prediction and Phantom's two-scale
+    // subject guidance is gone entirely, not merely weakened. That trade is the whole
+    // point of the switch, and the done-line states it.
+    "2": { class_type: "ModelSamplingSD3", inputs: { model: comp.lora ? ["60", 0] : ["1", 0], shift: v.shift } },
     "3": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan" } },
     "4": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
     "5": { class_type: "CLIPTextEncode", inputs: { clip: ["3", 0], text: prompt } },
@@ -2186,6 +2312,7 @@ function buildPhantom({ model, prompt, negative, comp, imageNames, seed, v, imgC
     "10": { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
     "11": { class_type: "BasicScheduler", inputs: { model: ["2", 0], scheduler: v.scheduler, steps: v.steps, denoise: 1 } },
     "12": { class_type: "SamplerCustomAdvanced", inputs: { noise: ["9", 0], guider: ["8", 0], sampler: ["10", 0], sigmas: ["11", 0], latent_image: ["7", 3] } },
+    ...(comp.lora ? { "60": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.lora, strength_model: 1.0 } } } : {}),
     "13": { class_type: "VAEDecode", inputs: { samples: ["12", 0], vae: ["4", 0] } },
     "14": { class_type: "CreateVideo", inputs: { images: ["13", 0], fps: v.fps } },
     "15": { class_type: "SaveVideo", inputs: { video: ["14", 0], filename_prefix: "heykoko_phantom", format: "mp4", codec: "h264" } },
@@ -3001,6 +3128,7 @@ async function generateComfyImage(req, res) {
   let isVideoReq = false; // for a video-aware timeout message in the catch
   let precisionUsed = null; // tier(s) actually loaded — always reported
   let ltxLoraUsed = null;   // { name, strength } when an LTX LoRA was actually mounted
+  let phantomTurboUsed = null; // { lora } when Phantom's step-distill LoRA was mounted
   let precisionNote = null; // set only when those differ from the ⚙ request
   try {
     const body = await readBody(req);
@@ -3487,18 +3615,28 @@ async function generateComfyImage(req, res) {
         // keeps those subjects, NO driving video. Needs at least one image.
         const hasImage = Array.isArray(images) && images.length > 0;
         if (!hasImage) { sendJson(res, 400, { error: "Phantom needs at least one reference image of the subject(s) to keep. Attach 1-4 images, then use /imagine <description of the scene/action>." }); return; }
-        const comp = await phantomCompanions();
+        // ⚙ turbo is a REQUEST — companions only mount the LoRA when one is installed
+        // and the model is 14B, so everything downstream keys off comp.lora, never off
+        // the request. Asking for turbo on 1.3B silently runs the normal recipe.
+        const comp = await phantomCompanions(model, !!opts.phantomTurbo);
+        const phTurbo = !!comp.lora;
+        if (phTurbo) phantomTurboUsed = { lora: comp.lora };
         // Size follows the FIRST reference's aspect at the preset budget (a portrait
         // subject → a portrait video), same as the i2v path. --size sets the budget.
         let aspW = Number(refImageWidth), aspH = Number(refImageHeight);
         if (!(aspW > 0 && aspH > 0)) { const d = imageDims(images[0]); if (d) { aspW = d.width; aspH = d.height; } }
         const vOpts = { ...opts };
         if (aspW > 0 && aspH > 0) vOpts.aspect = aspW / aspH;
-        const v = resolveVideoConfig("phantom", vOpts, model, false);
+        const v = resolveVideoConfig("phantom", vOpts, model, phTurbo);
         // g_img (cfg_cond2_negative) — the second, image-fidelity scale, controlling how
         // hard the subject's appearance is enforced vs. the text. Its own ⚙ knob (the
         // ip2p imageCfg field is a different range/meaning); v.cfg carries g_text.
-        const imgCfg = opts.phantomImgCfg > 0 ? opts.phantomImgCfg : 5.0;
+        // g_img must follow cfg to 1 under turbo: with both scales at 1 the guider's
+        // formula (neg + a*(pos_i - neg) + b*(pos_it - pos_i)) reduces to pos_it, which
+        // is exactly the un-guided input a cfg-distilled LoRA expects. A user-set g_img
+        // is ignored here rather than honoured — honouring it would re-introduce the
+        // guidance the LoRA was trained without, and burn the output.
+        const imgCfg = phTurbo ? 1 : (opts.phantomImgCfg > 0 ? opts.phantomImgCfg : 5.0);
         // Up to PHANTOM_MAX_REFS subjects, distinct filenames (shared name + overwrite
         // would collapse them to the last image).
         const refs = images.slice(0, PHANTOM_MAX_REFS);
@@ -3895,7 +4033,7 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI finished but produced no video file (output nodes: ${nodeIds}). Make sure the workflow includes a SaveVideo node, or retry.` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, ltxLora: ltxLoraUsed || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);

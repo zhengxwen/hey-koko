@@ -74,6 +74,7 @@ export const dom = {
   comfyParamBerniniTask: document.querySelector("#comfyParamBerniniTask"),
   comfyParamRefMaxSize: document.querySelector("#comfyParamRefMaxSize"),
   comfyParamPhantomImgCfg: document.querySelector("#comfyParamPhantomImgCfg"),
+  comfyParamPhantomTurbo: document.querySelector("#comfyParamPhantomTurbo"),
   comfyParamLtxLora: document.querySelector("#comfyParamLtxLora"),
   comfyParamLtxLoraStrength: document.querySelector("#comfyParamLtxLoraStrength"),
   comfyParamRelight: document.querySelector("#comfyParamRelight"),

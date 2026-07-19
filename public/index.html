@@ -750,8 +750,8 @@
             <input id="comfyParamLength" type="number" min="5" max="241" step="4" placeholder="Auto (49)" title="Frame count must be 4n+1 (WAN/Hunyuan) or 8n+1 (LTX) — values auto-snap to the nearest valid one. Duration = frames ÷ fps." />
           </label>
           <label>
-            <span id="comfyParamFpsLabel">Video FPS</span>
-            <input id="comfyParamFps" type="number" min="8" max="60" step="1" placeholder="Auto (24)" />
+            <span id="comfyParamFpsLabel" title="Leave on Auto unless you want slow motion. Lowering FPS does NOT generate more movement — the same frames are just spread over more time. For a longer clip raise Video length; for smoother playback use Smooth to FPS.">Video FPS</span>
+            <input id="comfyParamFps" type="number" min="8" max="60" step="1" placeholder="Auto (24)" title="Leave on Auto unless you want slow motion. Lowering FPS does NOT generate more movement — the same frames are just spread over more time. For a longer clip raise Video length; for smoother playback use Smooth to FPS." />
           </label>
           <label>
             <span id="comfyParamTimeoutLabel" title="Video only — how long the server waits for a render before giving up. EMPTY = default 4 hours. 0 = no limit (wait forever; only Stop cancels). A number = that many minutes. Long Wan Animate videos can take hours.">Video timeout (min)</span>
@@ -798,6 +798,10 @@
           <label title="LTX models only: how strongly the LoRA above is applied. Empty = 1.0 (full effect). Lower it when the LoRA overpowers your prompt or distorts anatomy/colour; raise it when its effect is too faint. Style/finetune LoRAs such as Sulphur are meant for roughly 0.8-1.0; LTX distilled/speed LoRAs are used around 0.5 (the value they were tuned for, not a dial to taste). Ignored when no LoRA is selected.">
             <span id="comfyParamLtxLoraStrengthLabel">LTX LoRA strength</span>
             <input id="comfyParamLtxLoraStrength" type="number" min="0" max="3" step="0.05" placeholder="1.0" />
+          </label>
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="Phantom 14B only: mount the Wan2.1 step-distill LoRA and sample in 8 steps instead of 50 — roughly an order of magnitude faster. THE TRADE: that LoRA was trained with CFG distilled away, so both of Phantom's guidance scales drop to 1, and its dual-CFG subject guidance then cancels out of the formula entirely (not merely weakened). Identity/likeness will hold less well, and the g_img knob above stops doing anything. Use it to iterate on framing and motion quickly, then turn it off for the final take. Ignored on the 1.3B model — the LoRA is 14B-only, and the run proceeds at the normal 50-step recipe.">
+            <input id="comfyParamPhantomTurbo" type="checkbox" />
+            <span id="comfyParamPhantomTurboLabel">Phantom turbo (8 steps, drops dual-CFG subject guidance)</span>
           </label>
           <label class="checkboxLabel comfyParamCheck" title="Wan Animate only: compile the model (inductor) for ~20–30% faster sampling. First run at each resolution pays a one-time compile (tens of seconds); best for fixed-resolution batches. Uses extra VRAM — when on, segments are auto-shortened to avoid OOM; at 720p+ it may still OOM, then turn this off or lower the size.">
             <input id="comfyParamTorchCompile" type="checkbox" />
