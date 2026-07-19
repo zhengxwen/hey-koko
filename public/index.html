@@ -803,6 +803,17 @@
             <input id="comfyParamTorchCompile" type="checkbox" />
             <span id="comfyParamTorchCompileLabel">torch.compile speedup (Wan Animate)</span>
           </label>
+          <label title="Bernini video only: which EDIT TASK to tell the model it is doing. Bernini picks its task from which inputs are connected, but several video-edit tasks share the same wiring (source video only) and differ only by this instruction line — so they can only be reached explicitly. Auto = infer from the attachments (video → edit, image → image-to-video, nothing → text-to-video). Relight/restyle adjusts lighting, colours, textures and style. Action adjusts the subject's action or position. Content propagation is the specialised propagation task. Generic uses the plain assistant line.">
+            <span id="comfyParamBerniniTaskLabel">Edit task (bernini video)</span>
+            <select id="comfyParamBerniniTask">
+              <option value="">Auto (from attachments)</option>
+              <option value="edit">Video editing (v2v)</option>
+              <option value="restyle">Relight / restyle (lighting, colours, textures)</option>
+              <option value="action">Adjust subject's action or position</option>
+              <option value="propagate">Content propagation</option>
+              <option value="generic">Generic assistant</option>
+            </select>
+          </label>
           <label title="Bernini only: which sampling recipe / step count to use. Turbo (default) = 6-step distill LoRA. LightX2V = the newer 4-step recipe (KSamplerAdvanced ×2, ModelSamplingSD3 shift 8, dedicated high+low LoRA pair at strength 1.0 — author reports sharper hands / cleaner fast motion; needs the Bernini-R_LightX2V LoRA pair, else falls back to turbo). Quality = full 40-step / cfg 5, no speed LoRA, much slower and highest fidelity.">
             <span id="comfyParamBerniniModeLabel">Sampling recipe (bernini)</span>
             <select id="comfyParamBerniniMode">

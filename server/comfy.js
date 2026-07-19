@@ -1604,13 +1604,26 @@ async function videoCompanions(videoType, model, opts = {}) {
     // the whole graph, and skipped outright when the checkpoint already bakes it in.
     let lora = null, loraStrength = 1;
     const want = String(opts.ltxLora || "").trim();
+    const loras = await comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []);
     if (want && !loraBakedIn(model, want)) {
-      const loras = await comfyEnum("LoraLoaderModelOnly", "lora_name");
       lora = loras.find((x) => x === want) || null;
       const s = Number(opts.ltxLoraStrength);
       loraStrength = isFinite(s) && s > 0 ? Math.min(3, s) : 1;
     }
-    return { encoder, lora, loraStrength };
+    // Two-stage cascade parts (the official LTX-2.3 recipe): the distilled LoRA that
+    // makes the short hand-tuned sigma schedules valid, and the spatial upscaler that
+    // doubles the stage-1 latent before the refine pass. Both must be present or the
+    // builder falls back to the single-stage LTXVScheduler path — running the 8-step
+    // distilled schedule WITHOUT the LoRA produces noise, so this is a hard pairing.
+    // Only ltx-2.3's own distilled LoRA qualifies: sulphur ships a same-size sibling
+    // (sulphur_lora_rank_768) whose role is unverified, so it is NOT auto-mounted —
+    // it stays available through the ⚙ "LTX LoRA" picker.
+    const distillLora = /sulphur/i.test(model || "")
+      ? null
+      : (find(loras, /ltx.*distill.*1\.1/i) || find(loras, /ltx.*distill/i));
+    const upscaleModels = await comfyEnum("LatentUpscaleModelLoader", "model_name").catch(() => []);
+    const upscaler = find(upscaleModels, /ltx.*spatial.*upscal/i) || find(upscaleModels, /ltx.*upscal/i);
+    return { encoder, lora, loraStrength, distillLora, distillStrength: 0.5, upscaler };
   }
   throw new Error("This video model is not wired up yet (currently supported: WAN 2.2, Hunyuan, LTX-2).");
 }
@@ -1641,9 +1654,19 @@ function videoPreset(videoType, model, turbo) {
     return { sampler: "euler", scheduler: "simple", cfg: 6, steps: 20, shift: 7.0, width: 720, height: 480, length: 49, fps: 24, dimMult: 16, lenMult: 4 };
   }
   if (videoType === "ltx") {
-    // LTX uses its own LTXVScheduler (scheduler/shift here are unused); dims must
-    // be /32, frames 8n+1. cfg is low (~3). The 22b model is undersampled at 20
-    // steps (motion ghosting / trailing edges) — 30 is the quality sweet spot.
+    // `turbo` here = the two-stage cascade is available (distilled LoRA + spatial
+    // upscaler both installed). Frames are 8n+1 either way.
+    if (turbo) {
+      // Official LTX-2.3 recipe: sample at HALF these dims, upscale the latent ×2,
+      // then refine — so width/height are the FINAL frame size and must be /64 for
+      // the halved stage-1 latent to stay /32. cfg 1 and the step counts are fixed
+      // by the hand-tuned sigma tables in buildLtxVideo (8 + 3); `steps` is carried
+      // only so the ⚙ field and the done-line have something coherent to show.
+      return { sampler: "euler", scheduler: "simple", cfg: 1, steps: 11, shift: 0, width: 1280, height: 704, length: 97, fps: 25, dimMult: 64, lenMult: 8 };
+    }
+    // Fallback (no distilled LoRA / no upscaler): the older single-stage path with
+    // LTXVScheduler. dims /32. The 22b model is undersampled at 20 steps (motion
+    // ghosting / trailing edges) — 30 is the quality sweet spot, but slow.
     return { sampler: "euler", scheduler: "simple", cfg: 3, steps: 30, shift: 0, width: 768, height: 512, length: 97, fps: 24, dimMult: 32, lenMult: 8 };
   }
   return null;
@@ -1805,6 +1828,10 @@ function buildImageUpscale({ imageName, upscaleModel, outW, outH, denoise }) {
 const WAN_DEFAULT_NEGATIVE =
   "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走";
 
+// LTX's own default negative. Note the cascade runs at cfg 1, where the negative
+// branch carries no weight — it matters only on the single-stage fallback (cfg 3).
+const LTX_DEFAULT_NEGATIVE = "worst quality, inconsistent motion, blurry, jittery, distorted";
+
 // WAN 2.2 14B is a two-expert MoE: the high-noise expert denoises the early
 // (high-noise) half of the schedule, then the low-noise expert finishes — chained
 // via two KSamplerAdvanced nodes (the first returns leftover noise, the second
@@ -1910,20 +1937,134 @@ function buildHunyuanVideo({ model, prompt, negative, comp, seed, v }) {
   };
 }
 
-// LTX-2 (ltx-2.3-22b) — an AUDIO+VIDEO model. Checkpoint provides MODEL + video
-// VAE + audio VAE; LTXAVTextEncoderLoader loads the Gemma text encoder with the
-// right projection (plain CLIPLoader gives a dim mismatch). The pipeline builds a
-// combined AV latent (video latent + empty audio latent → LTXVConcatAVLatent),
-// samples it, splits it back (LTXVSeparateAVLatent), decodes video + audio
-// separately, then CreateVideo muxes the audio into the mp4. t2v uses
-// EmptyLTXVLatentVideo; i2v uses LTXVImgToVideo (also yields conditioning).
-// Three input modes: t2v (no image); i2v (one image → LTXVImgToVideo); and
-// keyframes (2+ images → each pinned at an evenly-spaced frame via a chain of
-// LTXVAddGuide, then LTXVCropGuides trims the guide frames after sampling). Only
-// the video-latent source + conditioning + decode-latent differ between modes;
-// the audio path and sampler are shared.
-function buildLtxVideo({ model, prompt, negative, comp, imageName, imageNames, seed, v }) {
-  const neg = negative && negative.trim() ? negative : "worst quality, inconsistent motion, blurry, jittery, distorted";
+// LTX-2 (ltx-2.3-22b, and the same-architecture "sulphur" release) — an AUDIO+VIDEO
+// model. The checkpoint provides MODEL + video VAE + audio VAE; LTXAVTextEncoderLoader
+// loads the Gemma text encoder with the right projection (a plain CLIPLoader gives a
+// dim mismatch). Every path builds a combined AV latent (video latent + audio latent
+// → LTXVConcatAVLatent), samples it, splits it back (LTXVSeparateAVLatent), decodes
+// video and audio separately, then CreateVideo muxes the audio into the mp4.
+//
+// Two implementations, picked by whether the cascade parts are installed:
+//   • buildLtxCascade     — the official LTX-2.3 recipe (distilled LoRA + upscaler)
+//   • buildLtxSingleStage — the older one-pass LTXVScheduler path (fallback)
+// Both support the same three input modes: t2v (no image), i2v (one image), and
+// keyframes (2+ images pinned at evenly-spaced frames via a chain of LTXVAddGuide).
+function buildLtxVideo(args) {
+  const comp = args.comp || {};
+  return comp.distillLora && comp.upscaler ? buildLtxCascade(args) : buildLtxSingleStage(args);
+}
+
+// The hand-tuned sigma schedules from the official LTX-2.3 templates. These are NOT
+// derivable from a step count — they belong to the distilled LoRA, which is why the
+// cascade only runs when that LoRA is present. Stage 1 is 8 steps (9 sigmas) from
+// pure noise; stage 2 is a 3-step (4 sigmas) refine starting at 0.85 on the upscaled
+// latent.
+const LTX_SIGMAS_BASE = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0";
+const LTX_SIGMAS_REFINE = "0.85, 0.7250, 0.4219, 0.0";
+// The refine pass takes FIXED noise in the official template, so re-rolling the seed
+// varies the composition (stage 1) without also reshuffling the upscale detail.
+const LTX_REFINE_NOISE = 42;
+// LTXVPreprocess compression for guide/conditioning images (template value; the node
+// default of 35 is a heavier compression than the LTX-2.3 workflows use).
+const LTX_IMG_COMPRESSION = 18;
+
+// Official LTX-2.3 two-stage cascade: sample at HALF the target size on the distilled
+// 8-step schedule → LTXVLatentUpsampler doubles the video latent (spatial upscaler
+// model) → a 3-step refine at the full size → VAEDecodeTiled. The audio latent rides
+// along: stage 1 starts it empty, stage 2 continues the SAMPLED audio latent from
+// stage 1, so the soundtrack is refined with the picture rather than regenerated.
+// Guides are stripped once, by the LTXVCropGuides between the stages, whose cleaned
+// conditioning also drives the refine pass.
+function buildLtxCascade({ model, prompt, negative, comp, imageName, imageNames, seed, v }) {
+  const neg = negative && negative.trim() ? negative : LTX_DEFAULT_NEGATIVE;
+  const kf = Array.isArray(imageNames) && imageNames.length >= 2 ? imageNames : null;
+  const i2v = !kf && !!imageName;
+  // Stage-1 canvas: half the final size, snapped back to /32 (the latent step). The
+  // upscaler then doubles it, so the delivered frame is exactly 2× this — which is
+  // why the preset's dims are /64.
+  const half = (n) => Math.max(32, Math.round(n / 2 / 32) * 32);
+  const w1 = half(v.width), h1 = half(v.height);
+  const wf = {
+    "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: model } },
+    "2": { class_type: "LTXAVTextEncoderLoader", inputs: { text_encoder: comp.encoder, ckpt_name: model, device: "default" } },
+    "3": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: prompt } },
+    "4": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: neg } },
+    "5": { class_type: "LTXVConditioning", inputs: { positive: ["3", 0], negative: ["4", 0], frame_rate: v.fps } },
+    "20": { class_type: "LTXVAudioVAELoader", inputs: { ckpt_name: model } },
+    "21": { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: v.length, frame_rate: v.fps, batch_size: 1, audio_vae: ["20", 0] } },
+    "9": { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
+    "7": { class_type: "EmptyLTXVLatentVideo", inputs: { width: w1, height: h1, length: v.length, batch_size: 1 } },
+    "81": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.distillLora, strength_model: comp.distillStrength != null ? comp.distillStrength : 0.5 } },
+    "82": { class_type: "LatentUpscaleModelLoader", inputs: { model_name: comp.upscaler } },
+    "85": { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_BASE } },
+    "91": { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_REFINE } },
+    "84": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
+    "90": { class_type: "RandomNoise", inputs: { noise_seed: LTX_REFINE_NOISE } },
+  };
+  // A user-chosen ⚙ LoRA stacks ON TOP of the distilled one (which the schedule
+  // depends on), never in place of it.
+  let modelRef = ["81", 0];
+  if (comp.lora) {
+    wf["80"] = { class_type: "LoraLoaderModelOnly", inputs: { model: modelRef, lora_name: comp.lora, strength_model: comp.loraStrength != null ? comp.loraStrength : 1 } };
+    modelRef = ["80", 0];
+  }
+  // Stage-1 video latent + conditioning. Guide images are prepared once (node 15)
+  // and reused by both stages.
+  let pos = ["5", 0], negCond = ["5", 1], lat1 = ["7", 0];
+  if (kf) {
+    const N = kf.length;
+    kf.forEach((nm, idx) => {
+      const load = String(30 + idx), prep = String(50 + idx), guide = String(70 + idx);
+      const frameIdx = N === 1 ? 0 : Math.round((idx * (v.length - 1)) / (N - 1)); // 0 … length-1, evenly spaced
+      wf[load] = { class_type: "LoadImage", inputs: { image: nm } };
+      wf[prep] = { class_type: "LTXVPreprocess", inputs: { image: [load, 0], img_compression: LTX_IMG_COMPRESSION } };
+      wf[guide] = { class_type: "LTXVAddGuide", inputs: { positive: pos, negative: negCond, vae: ["1", 2], latent: lat1, image: [prep, 0], frame_idx: frameIdx, strength: 1.0 } };
+      pos = [guide, 0]; negCond = [guide, 1]; lat1 = [guide, 2];
+    });
+  } else if (i2v) {
+    wf["14"] = { class_type: "LoadImage", inputs: { image: imageName } };
+    wf["15"] = { class_type: "LTXVPreprocess", inputs: { image: ["14", 0], img_compression: LTX_IMG_COMPRESSION } };
+    // Inplace writes the still into the existing latent instead of returning a longer
+    // one, so no guide frames are added and the conditioning stays untouched. Stage 1
+    // holds it at 0.7 (leaves the sampler room to build motion), stage 2 at 1.0.
+    wf["16"] = { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["1", 2], image: ["15", 0], latent: ["7", 0], strength: 0.7, bypass: false } };
+    lat1 = ["16", 0];
+  }
+  wf["22"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: lat1, audio_latent: ["21", 0] } };
+  wf["83"] = { class_type: "CFGGuider", inputs: { model: modelRef, positive: pos, negative: negCond, cfg: v.cfg } };
+  wf["10"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["84", 0], guider: ["83", 0], sampler: ["9", 0], sigmas: ["85", 0], latent_image: ["22", 0] } };
+  wf["23"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["10", 0] } };
+  // Strip the guide frames (keyframe mode) and hand the cleaned conditioning to the
+  // refine pass. A no-op for t2v/i2v, where nothing added guides — the official
+  // template runs it unconditionally too.
+  wf["25"] = { class_type: "LTXVCropGuides", inputs: { positive: pos, negative: negCond, latent: ["23", 0] } };
+  wf["86"] = { class_type: "LTXVLatentUpsampler", inputs: { samples: ["25", 2], upscale_model: ["82", 0], vae: ["1", 2] } };
+  let lat2 = ["86", 0];
+  if (i2v) {
+    wf["87"] = { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["1", 2], image: ["15", 0], latent: ["86", 0], strength: 1.0, bypass: false } };
+    lat2 = ["87", 0];
+  }
+  wf["88"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: lat2, audio_latent: ["23", 1] } };
+  wf["89"] = { class_type: "CFGGuider", inputs: { model: modelRef, positive: ["25", 0], negative: ["25", 1], cfg: v.cfg } };
+  wf["92"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["90", 0], guider: ["89", 0], sampler: ["9", 0], sigmas: ["91", 0], latent_image: ["88", 0] } };
+  wf["93"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["92", 0] } };
+  // Tiled decode: the refined latent is full-size, and a plain VAEDecode of a 22B
+  // AV latent at 1280×704×97 is where this pipeline runs out of VRAM.
+  wf["11"] = { class_type: "VAEDecodeTiled", inputs: { samples: ["93", 0], vae: ["1", 2], tile_size: 768, overlap: 64, temporal_size: 4096, temporal_overlap: 4 } };
+  wf["24"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["93", 1], audio_vae: ["20", 0] } };
+  wf["12"] = { class_type: "CreateVideo", inputs: { images: ["11", 0], fps: v.fps, audio: ["24", 0] } };
+  wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  return wf;
+}
+
+// Single-stage fallback (no distilled LoRA / no spatial upscaler installed): one
+// SamplerCustom over an LTXVScheduler ramp at the full size. t2v uses
+// EmptyLTXVLatentVideo; i2v uses LTXVImgToVideo (which also yields conditioning);
+// keyframes chain LTXVAddGuide and let LTXVCropGuides trim the guide frames after
+// sampling. Only the video-latent source + conditioning + decode-latent differ
+// between modes; the audio path and sampler are shared.
+function buildLtxSingleStage({ model, prompt, negative, comp, imageName, imageNames, seed, v }) {
+  const neg = negative && negative.trim() ? negative : LTX_DEFAULT_NEGATIVE;
   const kf = Array.isArray(imageNames) && imageNames.length >= 2 ? imageNames : null;
   const i2v = !kf && !!imageName;
   const wf = {
@@ -2120,6 +2261,14 @@ const BERNINI_SYS_ADS2V = "You are a helpful assistant specialized in ads insert
 // Image-side task lines, taken VERBATIM from the official image-editing template's
 // per-line prompt table (indices [1] / [3] / [4]) — never hand-written: an invented
 // line is silently accepted and just degrades the result (the ads2v lesson).
+// The remaining task lines, also verbatim from the table. [6]/[7]/[10]/[11] all share
+// v2v's wiring (source_video only) — they differ ONLY by this line, which is why they
+// are a ⚙ task selector on the one bernini entry rather than four dropdown models.
+const BERNINI_SYS_GENERIC = "You are a helpful assistant.";                                  // [0]
+const BERNINI_SYS_T2V = "You are a helpful assistant specialized in text-to-video generation."; // [2]
+const BERNINI_SYS_PROPAGATE = "You are a helpful assistant specialized in video editing on content propagation."; // [7]
+const BERNINI_SYS_ACTION = "You are a helpful assistant for editing. You may need to adjust the subject's action or position."; // [10]
+const BERNINI_SYS_RESTYLE = "You are a helpful assistant for editing. You might need to adjust the video's style, lighting, colors, textures, and the subject's pose or action."; // [11]
 const BERNINI_SYS_T2I = "You are a helpful assistant specialized in text-to-image generation.";
 const BERNINI_SYS_I2I = "You are a helpful assistant specialized in image editing.";
 const BERNINI_SYS_R2I = "You are a helpful assistant specialized in subject-to-image generation.";
@@ -2137,7 +2286,7 @@ const BERNINI_SYS_R2I = "You are a helpful assistant specialized in subject-to-i
 // (distill LoRA mounted) = cfg 1 / 6 steps / split 3 (high str 3, low 1.5);
 // non-turbo = cfg 5 / 40 steps / split 20. v2v/rv2v keep the SOURCE video's fps +
 // audio (CreateVideo reads them from GetVideoComponents); i2v uses an explicit fps.
-function buildBernini({ model, prompt, negative, comp, videoName, refImageName, refImageNames, insertImageName, sourceImageName, imageMode, imageTask, width, height, length, seed, turbo, lightx2v, fps, refMaxSize, experts }) {
+function buildBernini({ model, prompt, negative, comp, videoName, refImageName, refImageNames, insertImageName, sourceImageName, imageMode, imageTask, videoTask, width, height, length, seed, turbo, lightx2v, fps, refMaxSize, experts }) {
   // See buildWan14B: `experts` carries the ⚙-precision-resolved twins when set.
   const highModel = (experts && experts.high) || model.replace(/low_noise/i, "high_noise");
   const lowModel = (experts && experts.low) || model.replace(/high_noise/i, "low_noise");
@@ -2152,10 +2301,23 @@ function buildBernini({ model, prompt, negative, comp, videoName, refImageName, 
   // extra views carry information the primary cannot imply (a back view, a close-up).
   const refs = (Array.isArray(refImageNames) && refImageNames.length ? refImageNames : [refImageName])
     .filter(Boolean).slice(0, BERNINI_MAX_REFS);
+  // Video task line. An explicit ⚙ choice WINS (it's the only way to reach the
+  // source_video-only variants — [7]/[10]/[11] are indistinguishable from plain v2v
+  // by wiring alone); otherwise infer from what's connected, as before. With nothing
+  // connected at all the task is t2v [2].
+  const VIDEO_TASK_SYS = {
+    generic: BERNINI_SYS_GENERIC,
+    edit: BERNINI_SYS_V2V,
+    restyle: BERNINI_SYS_RESTYLE,
+    action: BERNINI_SYS_ACTION,
+    propagate: BERNINI_SYS_PROPAGATE,
+  };
   const sys = imgMode
     ? (imageTask === "i2i" ? BERNINI_SYS_I2I : imageTask === "r2i" ? BERNINI_SYS_R2I : BERNINI_SYS_T2I)
     : insertImageName ? BERNINI_SYS_ADS2V
-    : (i2v ? BERNINI_SYS_I2V : (refs.length ? BERNINI_SYS_RV2V : BERNINI_SYS_V2V));
+    : (videoTask && VIDEO_TASK_SYS[videoTask]) ? VIDEO_TASK_SYS[videoTask]
+    : i2v ? (refs.length ? BERNINI_SYS_I2V : BERNINI_SYS_T2V)
+    : (refs.length ? BERNINI_SYS_RV2V : BERNINI_SYS_V2V);
   // Three sampling modes, most-specific first:
   //   lightx2v — the author's Bernini-R LightX2V recipe: KSamplerAdvanced ×2 +
   //     ModelSamplingSD3 shift 8, 4 steps split at 2, cfg 1, dpmpp_2m_sde / sgm_uniform,
@@ -3000,8 +3162,9 @@ async function generateComfyImage(req, res) {
         const insertMode = berniniInsert; // sentinel already resolved above, with the mode read off it
         const hasVideo = !!(sourceVideo || sourceVideoName);
         const hasImage = Array.isArray(images) && images.length > 0;
-        // Source video → v2v (+ ref image → rv2v); image only → i2v.
-        if (!hasVideo && !hasImage) { sendJson(res, 400, { error: "Bernini needs a source video (video edit, v2v) or an image (image-to-video, i2v), then use /imagine <description>." }); return; }
+        // Source video → v2v (+ ref image → rv2v); image only → i2v; NEITHER → t2v
+        // (a legal task: the node simply gets no media). The outer guard already
+        // guarantees a prompt when nothing is attached, so t2v can't run empty.
         // ads2v composites the image INTO the clip, so unlike the other modes neither
         // input is optional — with one missing there is nothing to insert, or nowhere
         // to insert it.
@@ -3088,7 +3251,7 @@ async function generateComfyImage(req, res) {
           }
           imagesUsed = refImageNames.length;
         }
-        workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageNames, insertImageName, width: bw, height: bh, length: bl, seed, turbo, lightx2v, fps: bfps, refMaxSize: refMax, experts: expertPair });
+        workflow = buildBernini({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageNames, insertImageName, videoTask: opts.berniniTask || "", width: bw, height: bh, length: bl, seed, turbo, lightx2v, fps: bfps, refMaxSize: refMax, experts: expertPair });
         // v2v/rv2v keep the source video's fps; i2v uses bfps (so it can show duration).
         videoDims = { width: bw, height: bh, length: bl, fps: hasVideo ? undefined : bfps };
         // truncatedNoChain distinguishes this from Wan Animate's truncation: there, the
@@ -3353,8 +3516,11 @@ async function generateComfyImage(req, res) {
         }
         const comp = await videoCompanions(videoType, model, opts);
         if (comp.lora) ltxLoraUsed = { name: comp.lora, strength: comp.loraStrength };
-        // WAN 14B with the LightX2V LoRAs installed → 4-step/cfg-1 turbo preset.
-        const turbo = !!(comp.loraHigh && comp.loraLow);
+        // "turbo" = this model's fast, distilled recipe is available. WAN 14B: both
+        // LightX2V expert LoRAs installed → 4-step/cfg-1. LTX: the distilled LoRA +
+        // spatial upscaler installed → the two-stage cascade preset (which sizes
+        // differently, so the flag has to reach resolveVideoConfig).
+        const turbo = !!(comp.loraHigh && comp.loraLow) || !!(comp.distillLora && comp.upscaler);
         // For i2v, match the output to the input's aspect ratio so the
         // conditioning frame isn't stretched (avoids ghosted/doubled edges).
         // A specified size sets the pixel BUDGET (kept at the input ratio);

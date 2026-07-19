@@ -71,6 +71,10 @@ function comfyOverrides() {
   const berniniMode = dom.comfyParamBerniniMode?.value || "";
   if (berniniMode === "quality") ov.berniniQuality = true;   // 40-step / cfg 5, no LoRA
   else if (berniniMode === "lightx2v") ov.berniniLightx2v = true; // LightX2V 4-step recipe
+  // Which Bernini video-edit task line to use. Several tasks share v2v's wiring, so an
+  // explicit pick is the ONLY way to reach them; empty = infer from the attachments.
+  const berniniTask = dom.comfyParamBerniniTask?.value || "";
+  if (berniniTask) ov.berniniTask = berniniTask;
   const refMaxSize = num(dom.comfyParamRefMaxSize?.value);
   if (refMaxSize !== undefined) ov.refMaxSize = refMaxSize; // Bernini: reference long-edge cap
   // LTX LoRA. Sent even when the picker is showing a baked-in choice — the server

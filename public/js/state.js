@@ -71,6 +71,7 @@ export const dom = {
   comfyModelHint: document.querySelector("#comfyModelHint"),
   comfyModelWarn: document.querySelector("#comfyModelWarn"),
   comfyParamBerniniMode: document.querySelector("#comfyParamBerniniMode"),
+  comfyParamBerniniTask: document.querySelector("#comfyParamBerniniTask"),
   comfyParamRefMaxSize: document.querySelector("#comfyParamRefMaxSize"),
   comfyParamPhantomImgCfg: document.querySelector("#comfyParamPhantomImgCfg"),
   comfyParamLtxLora: document.querySelector("#comfyParamLtxLora"),
@@ -202,15 +203,42 @@ export function scrollChatToEndIfPinned() {
   if (state.stickToBottom) scrollChatToEnd();
 }
 
+// Pending reveal of the jump-to-bottom button (see refreshScrollState).
+let scrollBtnRevealTimer = null;
+const SCROLL_BTN_REVEAL_MS = 5000;
+
 // Recompute "pinned to bottom?" from live geometry and toggle the floating
 // jump-to-bottom button. Called on user scroll and after each auto-scroll.
 // While reading aloud the button stays hidden: the highlight auto-scroll
 // intentionally follows sentences far above the bottom, and jumping down
 // mid-read would fight it.
+//
+// Leaving the bottom reveals the button only after a 5s dwell, so briefly
+// scrolling up doesn't flash it. Returning to the bottom hides it immediately.
 export function refreshScrollState() {
   const el = dom.messagesEl;
   if (!el) return;
   const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
   state.stickToBottom = distance <= 40;
-  if (dom.scrollToBottomBtn) dom.scrollToBottomBtn.hidden = distance <= 80 || !!state.activeSpeechButton;
+  const btn = dom.scrollToBottomBtn;
+  if (!btn) return;
+
+  const eligible = distance > 80 && !state.activeSpeechButton;
+  if (!eligible) {
+    // Back at the bottom (or reading aloud): hide at once, drop any pending reveal.
+    clearTimeout(scrollBtnRevealTimer);
+    scrollBtnRevealTimer = null;
+    btn.hidden = true;
+    return;
+  }
+  // Arm the reveal once. This runs on EVERY scroll event, so restarting the
+  // timer here would let continuous scrolling postpone the button forever.
+  if (btn.hidden && scrollBtnRevealTimer === null) {
+    scrollBtnRevealTimer = setTimeout(() => {
+      scrollBtnRevealTimer = null;
+      // Re-check on fire: the user may have returned to the bottom meanwhile.
+      const d = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (d > 80 && !state.activeSpeechButton) btn.hidden = false;
+    }, SCROLL_BTN_REVEAL_MS);
+  }
 }

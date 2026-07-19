@@ -909,6 +909,8 @@ export function updateComfyParamVisibility() {
   // Bernini only — turbo is otherwise forced on by the mere presence of the distill
   // LoRA, and ref_max_size is the only knob on how much reference detail survives.
   for (const el of [dom.comfyParamBerniniMode, dom.comfyParamRefMaxSize]) setVis(el, /bernini/i.test(m));
+  // Edit-task lines are VIDEO tasks — hide them for the bernini image entries.
+  setVis(dom.comfyParamBerniniTask, /bernini/i.test(m) && !/bernini_(image_edit|subject_image|text_image)/i.test(m));
   // LTX family only (incl. Sulphur) — the optional LoRA slot. It is the one builder
   // with a user-pickable LoRA; every other model mounts its LoRAs automatically.
   const ltx = video && LTX_RE.test(m.toLowerCase());
@@ -1134,6 +1136,7 @@ function initComfyParamsModal() {
   }
   dom.comfyParamTorchCompile?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamBerniniMode?.addEventListener("change", () => saveCurrentSettings());
+  dom.comfyParamBerniniTask?.addEventListener("change", () => saveCurrentSettings());
   // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset
   // restores that rather than an empty value.
   dom.comfyParamInterpMethod?.addEventListener("change", () => saveCurrentSettings());
@@ -1142,6 +1145,7 @@ function initComfyParamsModal() {
     for (const el of fields) if (el) el.value = "";
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = false;
     if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = "";
+    if (dom.comfyParamBerniniTask) dom.comfyParamBerniniTask.value = "";
     if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = "rife";
     state.animateMaskPoint = null; // back to auto-centre target
     syncMaskPointLabel();
