@@ -41,6 +41,8 @@ export const dom = {
   requestTimeoutValue: document.querySelector("#requestTimeoutValue"),
   imageGenOptions: document.querySelector("#imageGenOptions"),
   comfyModelSelect: document.querySelector("#comfyModelSelect"),
+  comfyModelPickBtn: document.querySelector("#comfyModelPickBtn"),
+  comfyModelPickLabel: document.querySelector("#comfyModelPickLabel"),
   comfyUrlDisplay: document.querySelector("#comfyUrlDisplay"),
   comfyParamsBtn: document.querySelector("#comfyParamsBtn"),
   comfyMultiHint: document.querySelector("#comfyMultiHint"),
@@ -67,11 +69,12 @@ export const dom = {
   comfyParamUpscaleModel: document.querySelector("#comfyParamUpscaleModel"),
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),
   comfyModelHint: document.querySelector("#comfyModelHint"),
-  comfyModelLegend: document.querySelector("#comfyModelLegend"),
   comfyModelWarn: document.querySelector("#comfyModelWarn"),
   comfyParamBerniniMode: document.querySelector("#comfyParamBerniniMode"),
   comfyParamRefMaxSize: document.querySelector("#comfyParamRefMaxSize"),
   comfyParamPhantomImgCfg: document.querySelector("#comfyParamPhantomImgCfg"),
+  comfyParamLtxLora: document.querySelector("#comfyParamLtxLora"),
+  comfyParamLtxLoraStrength: document.querySelector("#comfyParamLtxLoraStrength"),
   comfyParamRelight: document.querySelector("#comfyParamRelight"),
   comfyParamScailSubject: document.querySelector("#comfyParamScailSubject"),
   comfyParamScailRefSubject: document.querySelector("#comfyParamScailRefSubject"),
@@ -170,6 +173,7 @@ export const state = {
   bgLanes: new Set(),                // workerIds whose serial runner loop is currently draining (parallel across lanes)
   bgWorkers: [],                     // ComfyUI worker endpoints: { id, url, label, enabled, online, models:{image,edit,video,videoIn,multiImage} }
   bgDrawerOpen: false,               // whether the Background Jobs drawer is visible
+  comfyModelGroups: [],              // [{key,items}] per model type — feeds the 4-column picker
   comfyVideoModels: new Set(),       // ComfyUI model names that generate video
   comfySamplerTunable: new Set(),    // video models whose ⚙ sampler/steps/cfg reach the graph (server-decided)
   comfyVideoInModels: new Set(),     // ComfyUI video models that need a SOURCE video (fps follows source)

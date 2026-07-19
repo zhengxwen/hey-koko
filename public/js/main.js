@@ -10,7 +10,7 @@ import { initAvatar, updateCloudBadge, relocalizeAvatarPicker } from './avatar.j
 import { pauseOrStopSpeech, populateVoiceList } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
-import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint, openModelBrowser, BROWSE_MODELS_VALUE } from './ollama.js';
+import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint, openModelBrowser, openComfyModelPicker, syncComfyModelPickLabel, BROWSE_MODELS_VALUE } from './ollama.js';
 import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsMask } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
@@ -406,7 +406,10 @@ dom.modelSelect.addEventListener("change", () => {
   updateCloudBadge();
 });
 dom.imageModelSelect.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); renderStagedImagePreview(); renderChat(); });
-dom.comfyModelSelect?.addEventListener("change", () => { saveCurrentSettings(); updateImageGenOptions(); updateComfyMultiHint(); applyInputPlaceholder(); renderStagedImagePreview(); renderChat(); });
+dom.comfyModelSelect?.addEventListener("change", () => { syncComfyModelPickLabel(); saveCurrentSettings(); updateImageGenOptions(); updateComfyMultiHint(); applyInputPlaceholder(); renderStagedImagePreview(); renderChat(); });
+// The <select> is hidden behind a 4-column picker (one column per model type) — the
+// flat list had grown past what a dropdown can usefully convey.
+dom.comfyModelPickBtn?.addEventListener("click", () => openComfyModelPicker());
 dom.voiceSelect.addEventListener("change", saveCurrentSettings);
 // Persist the default image size as soon as it's picked (not only on send/Save).
 dom.defaultImageSize?.addEventListener("change", saveCurrentSettings);

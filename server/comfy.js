@@ -175,6 +175,11 @@ async function comfyReachable(timeoutMs = 5000) {
 // CheckpointLoaderSimple) and each needs its own workflow + companion files.
 function editTypeOf(model) {
   if (!model) return null;
+  // Bernini image sentinels route through the instruction-edit dispatch (they take
+  // an attached image + an instruction). Checked first — no real filename can equal
+  // a sentinel, so this can't shadow a model on disk.
+  if (model === BERNINI_IMG_EDIT) return "bernini-i2i";
+  if (model === BERNINI_IMG_SUBJECT) return "bernini-r2i";
   if (/kontext/i.test(model)) return "kontext";
   if (/qwen.*edit|qwen[-_]?image[-_]?edit/i.test(model)) return "qwen";
   if (/omnigen/i.test(model)) return "omnigen";
@@ -191,6 +196,24 @@ function editIsCheckpoint(editType) {
 }
 
 // Video models (text→video / image→video). Detected by filename.
+// LTX-family checkpoints. "sulphur" carries no "ltx" in its filename but is the same
+// architecture — VERIFIED by running it through buildLtxVideo unchanged (clean video +
+// generated audio, same as ltx-2.3-22b). Without it the file falls through to
+// plainCkpts and is offered as a txt2img checkpoint, which would run the generic SD
+// path. One constant because the family is matched by NAME in four separate places.
+const LTX_MODEL_RE = /ltx|sulphur/i;
+
+// Finetunes distributed BOTH as a full checkpoint and as a standalone LoRA of the
+// same training. Sulphur is one: sulphur_dev_*.safetensors already contains what
+// sulphur_lora_rank_768.safetensors applies, and upstream says not to use both —
+// stacking them applies the same finetune twice. So a LoRA is suppressed when the
+// selected checkpoint is from the same family. The LoRA's real use is over a
+// DIFFERENT base (plain LTX-2.3, or a distilled checkpoint for speed).
+const LORA_BAKED_IN = [/sulphur/i];
+function loraBakedIn(model, lora) {
+  return LORA_BAKED_IN.some((re) => re.test(model || "") && re.test(lora || ""));
+}
+
 function videoTypeOf(model) {
   if (!model) return null;
   // Video enhance (interpolate + upscale): a model-free post-process (frame interpolation +
@@ -201,6 +224,10 @@ function videoTypeOf(model) {
   // generic /wan/ branch.
   // scail BEFORE animate: the "scail-2 (animate)" sentinel contains BOTH words, and
   // no real filename contains the other's keyword — so this order is unambiguous.
+  // Bernini's IMAGE sentinels contain "bernini" but are not video — they must be
+  // rejected before the generic /bernini/ test claims them (same ordering trap as
+  // scail-before-animate below).
+  if (BERNINI_IMAGE_SENTINELS.has(model)) return null;
   if (/bernini/i.test(model)) return "bernini";
   if (/scail/i.test(model)) return "scail2";
   if (/animate/i.test(model)) return "animate";
@@ -209,7 +236,7 @@ function videoTypeOf(model) {
   // the /14b/ MoE path would load one file as both experts and skip its subject nodes.
   if (/phantom/i.test(model)) return "phantom";
   if (/wan/i.test(model)) return "wan";
-  if (/ltx/i.test(model)) return "ltx";
+  if (LTX_MODEL_RE.test(model)) return "ltx";
   if (/hunyuan.?video/i.test(model)) return "hunyuan";
   return null;
 }
@@ -353,9 +380,29 @@ const BERNINI_AUTO = "bernini";
 // One image can't be both, so the mode has to be picked in the dropdown.
 const BERNINI_INSERT = "bernini_insert";
 
+// ── Bernini IMAGE side ───────────────────────────────────────────────────────
+// Bernini-R is not video-only: the SAME BerniniConditioning graph produces a
+// still when `length = 1` (verified from the official image-editing template —
+// its subgraph exposes the real node input `source_video` (IMAGE) and ships
+// length=1). Three image tasks, split into their own dropdown entries because
+// they differ ONLY by which input the attached image is bound to:
+//   • i2i — image → source_video  (edit this picture: relight, swap background…)
+//   • r2i — image(s) → reference_images  (compose a NEW picture from subjects)
+//   • t2i — nothing connected     (plain text→image)
+// i2i and r2i take the same user input (images), so the mode can't be inferred.
+const BERNINI_IMG_EDIT = "bernini_image_edit";
+const BERNINI_IMG_SUBJECT = "bernini_subject_image";
+const BERNINI_T2I = "bernini_text_image";
+// The image sentinels resolve to the same weights as the video ones.
+const BERNINI_IMAGE_SENTINELS = new Set([BERNINI_IMG_EDIT, BERNINI_IMG_SUBJECT, BERNINI_T2I]);
+
 async function resolveBerniniAuto() {
   const unets = await comfyEnum("UNETLoader", "unet_name");
-  return unets.find((n) => /bernini/i.test(n) && /high_noise/i.test(n)) || null;
+  // Exclude the S2V (speech-to-video) weights: they share the bernini + high_noise
+  // naming but are a DIFFERENT model type (WAN22_S2V) that the plain
+  // BerniniConditioning graph cannot drive — picking one here would silently break
+  // every working Bernini mode. See the Bernini-R S2V notes.
+  return unets.find((n) => /bernini/i.test(n) && /high_noise/i.test(n) && !/_s2v\b|_s2v[._]/i.test(n)) || null;
 }
 
 // Sentinel for the "wan animate (replace)" dropdown entry. Replace mode reuses the
@@ -401,6 +448,9 @@ function marketName(name) {
     [WAN14B_AUTO]: "Wan 2.2 14B",
     [BERNINI_AUTO]: "Bernini (i2v / video edit)",
     [BERNINI_INSERT]: "Bernini (insert image)",
+    [BERNINI_IMG_EDIT]: "Bernini (image edit / relight)",
+    [BERNINI_IMG_SUBJECT]: "Bernini (subject → image)",
+    [BERNINI_T2I]: "Bernini (text → image)",
     [ANIMATE_REPLACE]: "Wan Animate (replace)",
     [SCAIL2_ANIMATE]: "SCAIL-2 (animate)",
     [VIDEO_ENHANCE]: "Video interpolate + upscale",
@@ -424,6 +474,7 @@ function marketName(name) {
     [/qwen.?image/, "Qwen-Image"],
     [/omnigen/, "OmniGen2"],
     [/pix2pix|instruct.?pix/, "Instruct-Pix2Pix"],
+    [/sulphur/, "LTX-2 Sulphur"],
     [/ltx/, "LTX-2.3 22B"],
     [/phantom.*14b/, "Phantom-Wan 14B"],
     [/phantom/, "Phantom-Wan 1.3B"],
@@ -444,6 +495,8 @@ function marketName(name) {
 // `group` is "image" | "edit" | "video"; `entry` is the video-list object.
 function capsFor(name, group, type, entry) {
   if (name === IMAGE_UPSCALE || name === VIDEO_ENHANCE) return ["tool"];
+  if (name === BERNINI_T2I) return ["image"];
+  if (name === BERNINI_IMG_EDIT || name === BERNINI_IMG_SUBJECT) return ["edit"];
   if (group === "image") return /hidream.?o1/i.test(name) ? ["image", "edit"] : ["image"];
   if (group === "edit") return ["edit"];
   // video: a source-video model is v2v; bernini also accepts a plain image (i2v).
@@ -451,7 +504,11 @@ function capsFor(name, group, type, entry) {
   switch (type) {
     case "phantom": return ["i2v"];
     case "hunyuan": return ["t2v"];
-    case "ltx": return ["t2v", "i2v"];
+    // LTX is the only model that GENERATES a soundtrack (its own audio VAE decodes an
+    // audio latent sampled alongside the video). bernini / animate / scail also ship
+    // video with sound, but that is the SOURCE clip's audio carried through — not the
+    // same claim, so they don't get this tag.
+    case "ltx": return ["t2v", "i2v", "audio"];
     case "wan": return /fun.?vace/i.test(name) ? ["t2v", "v2v"] : ["t2v", "i2v"];
     default: return ["t2v"];
   }
@@ -461,6 +518,7 @@ function capsFor(name, group, type, entry) {
 // the sentinels are pinned relative to the base file they split from (animate
 // move before replace, scail animate before replace).
 function imageRank(n) {
+  if (n === BERNINI_T2I) return 9; // after the dedicated txt2img models
   if (/flux/i.test(n)) return 1;
   if (/pony/i.test(n)) return 2;
   if (/hidream.?i1/i.test(n)) return 3;
@@ -472,6 +530,9 @@ function imageRank(n) {
   return 50;
 }
 function editRank(n) {
+  // Bernini's image tasks group together at the end of the edit list.
+  if (n === BERNINI_IMG_EDIT) return 7;
+  if (n === BERNINI_IMG_SUBJECT) return 8;
   if (/kontext/i.test(n)) return 1;
   if (/qwen/i.test(n)) return 2;
   if (/hidream/i.test(n)) return 3;
@@ -487,7 +548,7 @@ function videoRank(n) {
   if (/phantom.*14b/i.test(n)) return 4;
   if (/phantom/i.test(n)) return 5;
   if (/hunyuan/i.test(n)) return 6;
-  if (/ltx/i.test(n)) return 7;
+  if (LTX_MODEL_RE.test(n)) return 7;
   // scail BEFORE animate: the "scail2_animate" sentinel contains "animate", so the
   // generic /animate/ test would otherwise claim it (same ordering trap as videoTypeOf).
   if (n === SCAIL2_ANIMATE) return 10;
@@ -512,20 +573,34 @@ function isModelReady(name, group, type) {
   if (name === WAN14B_AUTO) return true;    // Wan 2.2 14B t2v+i2v — verified
   if (name === BERNINI_AUTO) return true;   // Bernini v2v / rv2v — verified end-to-end
   if (name === SCAIL2_ANIMATE) return true; // SCAIL-2 animate — verified
-  if (name === ANIMATE_REPLACE) return false; // only the "move" mode is verified
+  if (name === ANIMATE_REPLACE) return true; // Replace verified end-to-end (scene kept, person swapped)
   if (name === BERNINI_INSERT) return false;  // ads2v — wired but never live-verified
+  // Bernini image side (i2i / r2i / t2i) — all three VERIFIED end-to-end on the live
+  // box: t2i 11s, i2i relight 7s (identity held: shape/colour/position untouched),
+  // r2i 2-ref compose 7s turbo / 40s quality. fp8, 848×480.
+  if (BERNINI_IMAGE_SENTINELS.has(name)) return true;
   const b = precisionBase(name);
   // fun_vace is surfaced via the generic /wan/ branch but has NO VACE-specific
   // builder (buildWan14B would run it as a plain t2v, ignoring the control/ref
   // inputs) — treat as not-yet-wired until a real VACE graph exists.
   if (/fun.?vace/i.test(b)) return false;
+  // HiDream-O1 REGRESSED on ComfyUI 0.27.0 — every run (t2i and reference-edit,
+  // any resolution) dies in SamplerCustom with "The size of tensor a (32) must
+  // match the size of tensor b (8) at non-singleton dimension 1". Upstream bug,
+  // not a graph one: our build matches the official image_hidream_o1 template
+  // link-for-link, and the crash is inside comfy/ldm/hidream_o1/attention.py's
+  // two_pass_attention, which calls scaled_dot_product_attention WITHOUT the
+  // GQA kwargs llama.py hands it (32 query heads vs 8 kv heads). 32/8 are model
+  // head counts, so no graph-side parameter can work around it. Re-promote once
+  // ComfyUI ships a fix — the builder itself needs no change.
+  if (/hidream.?o1/i.test(b)) return false;
   const READY = [
     /flux1?.?dev/, /flux.*kontext/, /pony/,          // classic txt2img + kontext edit
     /z.?image/, /boogu/, /hidream/, /qwen.?image/,   // image gen + edit families
     /omnigen/, /pix2pix|instruct.?pix/,              // instruction edit
     /animate/,                                        // animate MOVE (base unet)
     /scail/,                                          // scail replace (base unet)
-    /ti2v.*5b/, /hunyuan/, /ltx/, /phantom/,          // video generators
+    /ti2v.*5b/, /hunyuan/, /ltx/, /sulphur/, /phantom/, // video generators (sulphur = LTX family, verified)
   ];
   return READY.some((re) => re.test(b));
 }
@@ -543,12 +618,17 @@ async function proxyComfyModels(req, res) {
     const q = new URL(req.url, "http://x").searchParams.get("comfyUrl");
     const scanUrl = normComfyUrl(q) || config.comfyUrl;
     comfyCtx.enterWith({ comfyUrl: scanUrl });
-    const [ckpts, unets, upscaleModels, hostname] = await Promise.all([
+    const [ckpts, unets, upscaleModels, allLoras, hostname] = await Promise.all([
       comfyEnum("CheckpointLoaderSimple", "ckpt_name"),
       comfyEnum("UNETLoader", "unet_name"),
       comfyEnum("UpscaleModelLoader", "model_name").catch(() => []),
+      comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
       hostnameFor(scanUrl).catch(() => ""),
     ]);
+    // LTX is the only family with a user-pickable LoRA slot (⚙ "LTX LoRA"), so the
+    // list is filtered to LTX-family files by the same name test the checkpoints use.
+    // Other builders mount their LoRAs automatically and take no input here.
+    const ltxLoras = allLoras.filter((n) => LTX_MODEL_RE.test(n));
     // Edit/video models can be either diffusion models (UNETLoader) or full
     // checkpoints (instruct-pix2pix, ltx). Plain checkpoints stay in `models`.
     const all = [...ckpts, ...unets];
@@ -618,6 +698,14 @@ async function proxyComfyModels(req, res) {
     // an upscale model + the Frame-Interpolation nodes (both checked at gen time). The
     // source video is interpolated to the target fps (/imagine <fps>) AND AI-upscaled.
     videoModels.push({ name: VIDEO_ENHANCE, type: "enhance", label: "Video interpolate + upscale", needsVideo: true });
+    // Bernini also renders STILLS (same weights + graph at length 1) — surface its
+    // three image tasks once the weights are present. i2i/r2i take an attached image
+    // so they belong in the instruction-edit group; t2i takes none, so it joins the
+    // plain image list further down.
+    if (addedBernini) {
+      editModels.push({ name: BERNINI_IMG_EDIT, type: "bernini-i2i" });
+      editModels.push({ name: BERNINI_IMG_SUBJECT, type: "bernini-r2i" });
+    }
     // Whether the ⚙ sampler / scheduler / steps / cfg fields do anything for this model.
     // Only the preset-driven builders read them (resolveVideoConfig merges the ⚙ values
     // over the preset); scail2 / animate / bernini hardcode a schedule their distill LoRA
@@ -647,6 +735,10 @@ async function proxyComfyModels(req, res) {
     // z-image/boogu. `!editTypeOf` is what separates it from Qwen-Image-EDIT, which is a
     // different model that lands in editModels.
     const qwenImage = all.filter((n) => /qwen.?image/i.test(n) && !editTypeOf(n));
+    // Bernini text→image (length 1, nothing connected). A sentinel, not a filename —
+    // it must stay OUT of dedupePrecision (no precision siblings to collapse) and is
+    // appended after it, next to the other image sentinel (IMAGE_UPSCALE).
+    const berniniT2i = addedBernini ? [BERNINI_T2I] : [];
     // Collapse quantisation variants: a model published as fp8 + mxfp8 + nvfp4 … is
     // ONE dropdown entry, and the ⚙ precision preference decides which sibling loads
     // (see resolvePrecision). Without this, five SCAIL-2 precisions would become ten
@@ -706,14 +798,15 @@ async function proxyComfyModels(req, res) {
       modelMeta[name] = { label: marketName(name) || baseLabel(name), caps: capsFor(name, group, type, entry), ready: isModelReady(name, group, type) };
     };
     for (const n of imageOut) setMeta(n, "image", null, null);
+    for (const n of berniniT2i) setMeta(n, "image", null, null);
     // The upscale sentinel keeps its localized frontend label ("Image HD"), so send
     // no name here — only the ⚪ tool dot.
     modelMeta[IMAGE_UPSCALE] = { label: null, caps: ["tool"], ready: true };
     for (const m of editOut) setMeta(m.name, "edit", m.type, m);
     for (const m of videoOut) setMeta(m.name, "video", m.type, m);
-    sendJson(res, 200, { models: [...imageOut, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, modelMeta, upscaleModels, hostname });
+    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, modelMeta, upscaleModels, ltxLoras, hostname });
   } catch {
-    sendJson(res, 200, { models: [], editModels: [], videoModels: [], upscaleModels: [] });
+    sendJson(res, 200, { models: [], editModels: [], videoModels: [], upscaleModels: [], ltxLoras: [] });
   }
 }
 
@@ -1397,11 +1490,13 @@ function buildInstructPix2Pix({ model, prompt, negative, imageName, maskName, se
 // negative is a ConditioningZeroOut, the canvas is a VAEEncode of the primary
 // reference, and the KSampler runs at denoise 1 (the edit is driven by the
 // conditioning, not a partial denoise). The node's reference input is a
-// COMFY_AUTOGROW_V3 named `images` that takes a LIST of image links
-// (`[[id,0],[id,0],…]`) — VERIFIED on the live node: the indexed `image_1` keys
-// and the hand-export's singular `image` both fail at execute(); a single link
-// errors "Boolean value of Tensor ambiguous"; only the list form runs. Same
-// AuraFlow shift-3 + flux-VAE stack.
+// COMFY_AUTOGROW_V3 named `images`, addressed with DOTTED per-slot keys
+// (`images.image_1` … `images.image_12`, the node's own template names) — same
+// convention as HiDreamO1ReferenceImages. The bare LIST form (`images: [[id,0],…]`)
+// is accepted by /prompt validation and reports no node_errors, but the references
+// never reach the conditioning: a three-way live A/B (no images / list / dotted)
+// showed the list output pixel-equivalent to passing no reference at all, while
+// only the dotted form produced a real edit. Same AuraFlow shift-3 + flux-VAE stack.
 function buildBooguEdit({ model, prompt, negative, imageName, imageNames, maskName, seed, cfg, comp }) {
   const refs = imageNames && imageNames.length ? imageNames : (imageName ? [imageName] : []);
   const wf = {
@@ -1412,12 +1507,13 @@ function buildBooguEdit({ model, prompt, negative, imageName, imageNames, maskNa
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
-  const imageLinks = refs.map((name, i) => {
+  const encInputs = { prompt, negative_prompt: negative || "", clip: ["2", 0], vae: ["3", 0] };
+  refs.slice(0, 12).forEach((name, i) => {
     const id = String(30 + i);
     wf[id] = { class_type: "LoadImage", inputs: { image: name } };
-    return [id, 0];
+    encInputs["images.image_" + (i + 1)] = [id, 0];
   });
-  wf["4"] = { class_type: "TextEncodeBooguEdit", inputs: { prompt, negative_prompt: negative || "", clip: ["2", 0], vae: ["3", 0], images: imageLinks } };
+  wf["4"] = { class_type: "TextEncodeBooguEdit", inputs: encInputs };
   wf["5"] = { class_type: "ConditioningZeroOut", inputs: { conditioning: ["4", 0] } };
   // Reference latent = VAEEncode of the primary image (LoadImage node 30).
   wf["6"] = { class_type: "VAEEncode", inputs: { pixels: ["30", 0], vae: ["3", 0] } };
@@ -1454,7 +1550,7 @@ function buildEditWorkflow(editType, args) {
 
 // ── Video workflows ─────────────────────────────────────────────────────────
 
-async function videoCompanions(videoType, model) {
+async function videoCompanions(videoType, model, opts = {}) {
   const [clips, vaes] = await Promise.all([
     comfyEnum("CLIPLoader", "clip_name"),
     comfyEnum("VAELoader", "vae_name"),
@@ -1503,7 +1599,18 @@ async function videoCompanions(videoType, model) {
     // the wrong one.
     const encoder = find(clips, /gemma.*12b/i) || find(clips, /gemma_?3/i) || find(clips, /gemma/i) || find(clips, /t5xxl/i);
     if (!encoder) throw new Error("Missing LTX-2 text encoder:\n- gemma_3_12B_it…safetensors (or t5xxl) → text_encoders/");
-    return { encoder };
+    // Optional LTX-family LoRA (⚙ "LTX LoRA"). Re-checked against the live enum so a
+    // saved choice for a since-deleted file degrades to "no LoRA" instead of failing
+    // the whole graph, and skipped outright when the checkpoint already bakes it in.
+    let lora = null, loraStrength = 1;
+    const want = String(opts.ltxLora || "").trim();
+    if (want && !loraBakedIn(model, want)) {
+      const loras = await comfyEnum("LoraLoaderModelOnly", "lora_name");
+      lora = loras.find((x) => x === want) || null;
+      const s = Number(opts.ltxLoraStrength);
+      loraStrength = isFinite(s) && s > 0 ? Math.min(3, s) : 1;
+    }
+    return { encoder, lora, loraStrength };
   }
   throw new Error("This video model is not wired up yet (currently supported: WAN 2.2, Hunyuan, LTX-2).");
 }
@@ -1855,7 +1962,16 @@ function buildLtxVideo({ model, prompt, negative, comp, imageName, imageNames, s
     videoLatentRef = ["7", 0]; posRef = ["5", 0]; negRef = ["5", 1]; decodeLatentRef = ["23", 0];
   }
   wf["22"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: videoLatentRef, audio_latent: ["21", 0] } };
-  wf["6"] = { class_type: "ModelSamplingLTXV", inputs: { model: ["1", 0], max_shift: 2.05, base_shift: 0.95, latent: ["22", 0] } };
+  // Optional LTX-family LoRA, patched onto the checkpoint's model before sampling.
+  // Model-ONLY: LTX loads its text encoder separately (LTXAVTextEncoderLoader), so
+  // there is no CLIP output on node 1 to patch. Node id 80 is clear of the keyframe
+  // branch, which allocates 30+i / 50+i / 70+i for up to 8 guides.
+  let modelRef = ["1", 0];
+  if (comp.lora) {
+    wf["80"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.lora, strength_model: comp.loraStrength != null ? comp.loraStrength : 1 } };
+    modelRef = ["80", 0];
+  }
+  wf["6"] = { class_type: "ModelSamplingLTXV", inputs: { model: modelRef, max_shift: 2.05, base_shift: 0.95, latent: ["22", 0] } };
   wf["8"] = { class_type: "LTXVScheduler", inputs: { steps: v.steps, max_shift: 2.05, base_shift: 0.95, stretch: true, terminal: 0.1, latent: ["22", 0] } };
   wf["10"] = { class_type: "SamplerCustom", inputs: { model: ["6", 0], add_noise: true, noise_seed: seed, cfg: v.cfg, positive: posRef, negative: negRef, sampler: ["9", 0], sigmas: ["8", 0], latent_image: ["22", 0] } };
   wf["23"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["10", 0] } };
@@ -2001,32 +2117,44 @@ const BERNINI_SYS_RV2V = "You are a helpful assistant specialized in video editi
 // only, no source clip) has to pick one — this is the only refs→video entry.
 const BERNINI_SYS_I2V = "You are a helpful assistant specialized in image-to-video generation.";
 const BERNINI_SYS_ADS2V = "You are a helpful assistant specialized in ads insertion.";
+// Image-side task lines, taken VERBATIM from the official image-editing template's
+// per-line prompt table (indices [1] / [3] / [4]) — never hand-written: an invented
+// line is silently accepted and just degrades the result (the ads2v lesson).
+const BERNINI_SYS_T2I = "You are a helpful assistant specialized in text-to-image generation.";
+const BERNINI_SYS_I2I = "You are a helpful assistant specialized in image editing.";
+const BERNINI_SYS_R2I = "You are a helpful assistant specialized in subject-to-image generation.";
 
 // Bernini-R (WAN 2.2 MoE). The node picks its task from WHICH INPUTS ARE CONNECTED,
 // so each mode here is just a different wiring of the same graph:
 //   • v2v   — source video + instruction → edited video.
 //   • rv2v  — source video + reference image(s) + instruction.
 //   • i2v   — reference image only (NO source video) → generated video (the node's own
-//             docs call this r2v and list no "i2v"; whether BERNINI_SYS_I2V is the
-//             prompt this task was trained with is UNVERIFIED).
+//             docs call this r2v and list no "i2v"). VERIFIED working end-to-end with the
+//             BERNINI_SYS_I2V prompt; behaves as reference-driven i2v.
 //   • ads2v — source video + insert image (reference_video) → the image composited in.
 // Two-expert CUSTOM sampling: BasicScheduler → SplitSigmas at `split`, then two
 // SamplerCustom (high adds noise, low continues), each on its sigma slice. turbo
 // (distill LoRA mounted) = cfg 1 / 6 steps / split 3 (high str 3, low 1.5);
 // non-turbo = cfg 5 / 40 steps / split 20. v2v/rv2v keep the SOURCE video's fps +
 // audio (CreateVideo reads them from GetVideoComponents); i2v uses an explicit fps.
-function buildBernini({ model, prompt, negative, comp, videoName, refImageName, refImageNames, insertImageName, width, height, length, seed, turbo, lightx2v, fps, refMaxSize, experts }) {
+function buildBernini({ model, prompt, negative, comp, videoName, refImageName, refImageNames, insertImageName, sourceImageName, imageMode, imageTask, width, height, length, seed, turbo, lightx2v, fps, refMaxSize, experts }) {
   // See buildWan14B: `experts` carries the ⚙-precision-resolved twins when set.
   const highModel = (experts && experts.high) || model.replace(/low_noise/i, "high_noise");
   const lowModel = (experts && experts.low) || model.replace(/high_noise/i, "low_noise");
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
-  const i2v = !videoName; // image-to-video: no source clip to edit
+  // Image mode: same graph, length 1, decoded to a still instead of muxed to a clip.
+  // `sourceImageName` binds a LoadImage to source_video (the node's slot is IMAGE —
+  // a still is simply a one-frame "video"), which is what selects the i2i task.
+  const imgMode = !!imageMode;
+  const i2v = !videoName && !sourceImageName; // image-to-video: no source clip to edit
   // reference_images is an AUTOGROW slot list (reference_image_0, _1, …): [0] is the
   // primary, the rest are further views of the same subject. See buildScail2 — the
   // extra views carry information the primary cannot imply (a back view, a close-up).
   const refs = (Array.isArray(refImageNames) && refImageNames.length ? refImageNames : [refImageName])
     .filter(Boolean).slice(0, BERNINI_MAX_REFS);
-  const sys = insertImageName ? BERNINI_SYS_ADS2V
+  const sys = imgMode
+    ? (imageTask === "i2i" ? BERNINI_SYS_I2I : imageTask === "r2i" ? BERNINI_SYS_R2I : BERNINI_SYS_T2I)
+    : insertImageName ? BERNINI_SYS_ADS2V
     : (i2v ? BERNINI_SYS_I2V : (refs.length ? BERNINI_SYS_RV2V : BERNINI_SYS_V2V));
   // Three sampling modes, most-specific first:
   //   lightx2v — the author's Bernini-R LightX2V recipe: KSamplerAdvanced ×2 +
@@ -2049,17 +2177,27 @@ function buildBernini({ model, prompt, negative, comp, videoName, refImageName, 
     "8": { class_type: "CLIPTextEncode", inputs: { clip: ["1", 0], text: neg } },
     "9": { class_type: "BerniniConditioning", inputs: { positive: ["7", 0], negative: ["8", 0], vae: ["2", 0], width, height, length, batch_size: 1, ref_max_size: refMaxSize || Math.max(width, height) } },
     "17": { class_type: "VAEDecode", inputs: { samples: ["16", 0], vae: ["2", 0] } },
-    "19": { class_type: "SaveVideo", inputs: { video: ["18", 0], filename_prefix: "heykoko_bernini", format: "auto", codec: "auto" } },
   };
-  // Source clip (v2v/rv2v): LoadVideo → GetVideoComponents feeds source_video and
-  // the output's audio + fps. i2v has no source — CreateVideo gets an explicit fps.
-  if (!i2v) {
-    wf["5"] = { class_type: "LoadVideo", inputs: { file: videoName } };
-    wf["6"] = { class_type: "GetVideoComponents", inputs: { video: ["5", 0] } };
-    wf["9"].inputs.source_video = ["6", 0];
-    wf["18"] = { class_type: "CreateVideo", inputs: { images: ["17", 0], audio: ["6", 1], fps: ["6", 2] } };
+  if (imgMode) {
+    // Still output: the decoded single frame goes straight to SaveImage — no
+    // CreateVideo/SaveVideo. A source image (i2i) rides the source_video slot.
+    if (sourceImageName) {
+      wf["5"] = { class_type: "LoadImage", inputs: { image: sourceImageName } };
+      wf["9"].inputs.source_video = ["5", 0];
+    }
+    wf["19"] = { class_type: "SaveImage", inputs: { images: ["17", 0], filename_prefix: "heykoko" } };
   } else {
-    wf["18"] = { class_type: "CreateVideo", inputs: { images: ["17", 0], fps: fps || 16 } };
+    wf["19"] = { class_type: "SaveVideo", inputs: { video: ["18", 0], filename_prefix: "heykoko_bernini", format: "auto", codec: "auto" } };
+    // Source clip (v2v/rv2v): LoadVideo → GetVideoComponents feeds source_video and
+    // the output's audio + fps. i2v has no source — CreateVideo gets an explicit fps.
+    if (!i2v) {
+      wf["5"] = { class_type: "LoadVideo", inputs: { file: videoName } };
+      wf["6"] = { class_type: "GetVideoComponents", inputs: { video: ["5", 0] } };
+      wf["9"].inputs.source_video = ["6", 0];
+      wf["18"] = { class_type: "CreateVideo", inputs: { images: ["17", 0], audio: ["6", 1], fps: ["6", 2] } };
+    } else {
+      wf["18"] = { class_type: "CreateVideo", inputs: { images: ["17", 0], fps: fps || 16 } };
+    }
   }
   if (useLx) {
     // Author's verified recipe — mirrors buildWan14B's KSamplerAdvanced two-expert
@@ -2700,6 +2838,7 @@ async function generateComfyImage(req, res) {
   let clientGone = false; // set if the client disconnects before we respond
   let isVideoReq = false; // for a video-aware timeout message in the catch
   let precisionUsed = null; // tier(s) actually loaded — always reported
+  let ltxLoraUsed = null;   // { name, strength } when an LTX LoRA was actually mounted
   let precisionNote = null; // set only when those differ from the ⚙ request
   try {
     const body = await readBody(req);
@@ -2754,7 +2893,12 @@ async function generateComfyImage(req, res) {
     // file on disk: the ⚙ tier silently did nothing (whichever high_noise twin came
     // first won) and the done-line reported the tier as "unknown".
     const berniniInsert = model === BERNINI_INSERT;
-    if (model === BERNINI_AUTO || model === BERNINI_INSERT) {
+    // The IMAGE sentinels resolve to the same weights; remember which task was picked
+    // (i2i / r2i / t2i) before the name is overwritten with the real filename.
+    const berniniImageTask = model === BERNINI_IMG_EDIT ? "i2i"
+      : model === BERNINI_IMG_SUBJECT ? "r2i"
+      : model === BERNINI_T2I ? "t2i" : null;
+    if (model === BERNINI_AUTO || model === BERNINI_INSERT || berniniImageTask) {
       model = await resolveBerniniAuto();
       if (!model) {
         sendJson(res, 400, { error: "Bernini model file not found (need wan2.2_bernini_r_high_noise…)." });
@@ -2807,7 +2951,11 @@ async function generateComfyImage(req, res) {
     // Per-model defaults merged with any user overrides from the params modal.
     const cfg = resolveConfig(model, opts);
     const editType = editTypeOf(model);
-    const videoType = videoTypeOf(model);
+    // The bernini image sentinels have already been resolved to a real bernini
+    // filename, which videoTypeOf would (correctly, for the video entries) call
+    // "bernini" and send down the VIDEO path — force it to null so the image
+    // branch below claims them instead.
+    const videoType = berniniImageTask ? null : videoTypeOf(model);
 
     // Instruction-edit models require a reference image to edit.
     if (editType && !isImg2Img) {
@@ -3203,7 +3351,8 @@ async function generateComfyImage(req, res) {
           sendJson(res, 400, { error: "This model is for image-to-video. Attach a reference image first, then use /imagine <description>." });
           return;
         }
-        const comp = await videoCompanions(videoType, model);
+        const comp = await videoCompanions(videoType, model, opts);
+        if (comp.lora) ltxLoraUsed = { name: comp.lora, strength: comp.loraStrength };
         // WAN 14B with the LightX2V LoRAs installed → 4-step/cfg-1 turbo preset.
         const turbo = !!(comp.loraHigh && comp.loraLow);
         // For i2v, match the output to the input's aspect ratio so the
@@ -3247,6 +3396,47 @@ async function generateComfyImage(req, res) {
           if (isFLF) { endImageName = await uploadImage(images[1], controller.signal, "heykoko_end.png"); imagesUsed = 2; }
         }
         workflow = buildVideoWorkflow(videoType, { model, prompt, negative: negative_prompt || "", comp, imageName, endImageName, imageNames, seed, v, experts: expertPair });
+      } else if (berniniImageTask) {
+        // Bernini IMAGE side — the video graph at length 1, decoded to a still.
+        //   i2i → the attached image rides source_video (edit this picture)
+        //   r2i → the attached image(s) ride reference_images (compose a new one)
+        //   t2i → nothing connected
+        // Same companions and the same three sampling recipes as the video path.
+        if (berniniImageTask !== "t2i" && !isImg2Img) {
+          sendJson(res, 400, { error: "This Bernini image mode needs an attached image first, then use /imagine <instruction>." });
+          return;
+        }
+        const comp = await berniniCompanions();
+        // Output size: an explicit ⚙ --size wins; otherwise follow the FIRST attached
+        // image's aspect so an edit comes back framed like its source (the template
+        // resizes source_video to width×height and centre-crops, so a mismatched
+        // aspect would crop the picture).
+        let bw = snapDim(width, 16), bh = snapDim(height, 16);
+        if (isImg2Img && !(opts.width && opts.height)) {
+          const ts = editTargetSize(images, opts);
+          if (ts) { bw = snapDim(ts.width, 16); bh = snapDim(ts.height, 16); }
+        }
+        let sourceImageName = null;
+        const refImageNames = [];
+        if (berniniImageTask === "i2i") {
+          sourceImageName = await uploadImage(images[0], controller.signal, "heykoko_bimg.png");
+          imagesUsed = 1;
+        } else if (berniniImageTask === "r2i") {
+          // Multi-subject compose: DISTINCT filenames (a shared name + overwrite would
+          // collapse every reference to the last one). Prompt must name image0/image1…
+          const refs = images.slice(0, BERNINI_MAX_REFS);
+          for (let ri = 0; ri < refs.length; ri++) refImageNames.push(await uploadImage(refs[ri], controller.signal, `heykoko_bref${ri}.png`));
+          imagesUsed = refImageNames.length;
+        }
+        workflow = buildBernini({
+          model, prompt, negative: negative_prompt || "", comp,
+          imageMode: true, imageTask: berniniImageTask, sourceImageName, refImageNames,
+          width: bw, height: bh, length: 1, seed,
+          turbo: !!comp.lora && !opts.berniniQuality,
+          lightx2v: !!opts.berniniLightx2v && !!(comp.loraLxHigh && comp.loraLxLow),
+          refMaxSize: opts.refMaxSize > 0 ? snapDim(Math.min(8192, Math.max(16, opts.refMaxSize)), 16) : 848,
+          experts: expertPair,
+        });
       } else if (editType) {
         // Instruction-edit. Checkpoint-based models (ip2p) bundle CLIP+VAE;
         // HiDream-E1 needs the 4 HiDream encoders; the rest (Kontext/Qwen) pick
@@ -3539,7 +3729,7 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI finished but produced no video file (output nodes: ${nodeIds}). Make sure the workflow includes a SaveVideo node, or retry.` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, ltxLora: ltxLoraUsed || undefined, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);

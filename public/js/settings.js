@@ -59,6 +59,8 @@ export function saveCurrentSettings() {
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
         berniniMode: dom.comfyParamBerniniMode?.value || "",
         refMaxSize: dom.comfyParamRefMaxSize?.value || "",
+        ltxLora: dom.comfyParamLtxLora?.value || "",
+        ltxLoraStrength: dom.comfyParamLtxLoraStrength?.value || "",
         phantomImgCfg: dom.comfyParamPhantomImgCfg?.value || "",
         relight: dom.comfyParamRelight?.value || "",
         scailSubject: dom.comfyParamScailSubject?.value || "",
@@ -234,6 +236,9 @@ export function loadSavedSettings() {
     // a saved quality/lightx2v choice survives the upgrade.
     if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = cp.berniniMode || (cp.berniniLightx2v ? "lightx2v" : cp.berniniQuality ? "quality" : "");
     if (dom.comfyParamRefMaxSize) dom.comfyParamRefMaxSize.value = cp.refMaxSize || "";
+    // ltxLora is best-effort too — applyComfyModels re-applies it once loras have loaded.
+    if (dom.comfyParamLtxLora && cp.ltxLora) dom.comfyParamLtxLora.value = cp.ltxLora;
+    if (dom.comfyParamLtxLoraStrength) dom.comfyParamLtxLoraStrength.value = cp.ltxLoraStrength || "";
     if (dom.comfyParamPhantomImgCfg) dom.comfyParamPhantomImgCfg.value = cp.phantomImgCfg || "";
     if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";
     if (dom.comfyParamScailSubject) dom.comfyParamScailSubject.value = cp.scailSubject || "";

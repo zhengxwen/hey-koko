@@ -4,7 +4,8 @@
 // Chat rendering, message handling, and sending
 import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState } from './state.js';
 import { TAG_COLORS } from './constants.js';
-import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis } from './utils.js';
+import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis,
+         readFileAsDataUrl, makePreview, convertToJpeg, normalizeOrientation } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
 import { renderRelationGraph } from './relation-graph.js';
 import { setAvatarState, showExpression, detectExpression, isCloudModel, resetAvatarIdle } from './avatar.js';
@@ -2863,6 +2864,52 @@ function imageExtFromSrc(src) {
 // timestampStamp + mediaFilename now live in utils.js (shared with archive/library
 // so their lightbox captions use the same names).
 
+// "Replace image" overlay, sitting just left of the download button on a user
+// bubble's image. Picks a new file and writes it back over that slot, mirroring
+// the upload pipeline (EXIF-normalise / convert exotic formats / 360px preview)
+// so the swapped image behaves exactly like an originally-uploaded one.
+function makeReplaceImageButton(msgIndex, imgIdx) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "messageReplaceBtn";
+  btn.title = t("chat_replaceImgTitle");
+  btn.setAttribute("aria-label", t("chat_replaceImgTitle"));
+  btn.textContent = "⬆";
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();          // don't open the lightbox
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      if (file.size > 8 * 1024 * 1024) { alert(t("msg_imageTooLarge")); return; }
+      const tab = getActiveTab();
+      const msg = tab?.messages?.[msgIndex];
+      if (!msg) return;
+      const dataUrl = await readFileAsDataUrl(file);
+      // Same normalisation as a fresh upload: bake EXIF orientation for standard
+      // formats, transcode exotic ones to JPEG.
+      const needsConvert = !/^image\/(jpeg|png|gif|webp)$/i.test(file.type);
+      const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : await normalizeOrientation(dataUrl, file.type);
+      const preview = await makePreview(sendDataUrl);
+      if (!Array.isArray(msg.contextImages)) return;
+      msg.contextImages[imgIdx] = sendDataUrl.split(",")[1];
+      if (Array.isArray(msg.displayImages)) msg.displayImages[imgIdx] = preview;
+      // imageNames is optional (pasted images have none) — materialise it so the
+      // new file's name is used for the download/caption and the model prompt.
+      if (!Array.isArray(msg.imageNames)) msg.imageNames = new Array(msg.contextImages.length).fill(null);
+      msg.imageNames[imgIdx] = file.name;
+      // A mask is painted on image #0; it no longer lines up with a new picture.
+      if (imgIdx === 0 && msg.mask) delete msg.mask;
+      saveChat();
+      renderChat();
+    });
+    input.click();
+  });
+  return btn;
+}
+
 // The small bottom-right "download" overlay shared by image/video previews.
 // The tooltip (title + aria-label) carries the filename and, when known, size.
 function makeDownloadButton(className, href, filename, bytes, actionLabel) {
@@ -3213,6 +3260,11 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         : src;
       const fname = mediaFilename(dlNames?.[imgIdx], timestamp, "image", imageExtFromSrc(dlSrc), imgIdx, previews.length);
       image.dataset.filename = fname; // shown as the lightbox caption
+      // Swap this image for a different file (user bubbles only — the message has
+      // to be addressable by index so the new bytes can be written back).
+      if (role === "user" && Number.isInteger(index)) {
+        wrapper.appendChild(makeReplaceImageButton(index, imgIdx));
+      }
       wrapper.appendChild(makeDownloadButton("imageDownloadBtn", dlSrc, fname, base64ByteLength(dlSrc), t("btn_downloadImage")));
       // Inpaint mask: on the FIRST image of a USER bubble, when a mask-capable
       // ComfyUI model is selected, float a 🖌 button (top-right) to paint/edit the

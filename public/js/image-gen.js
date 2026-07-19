@@ -73,6 +73,11 @@ function comfyOverrides() {
   else if (berniniMode === "lightx2v") ov.berniniLightx2v = true; // LightX2V 4-step recipe
   const refMaxSize = num(dom.comfyParamRefMaxSize?.value);
   if (refMaxSize !== undefined) ov.refMaxSize = refMaxSize; // Bernini: reference long-edge cap
+  // LTX LoRA. Sent even when the picker is showing a baked-in choice — the server
+  // re-applies the same suppression rule, so the two can't disagree.
+  if (dom.comfyParamLtxLora?.value) ov.ltxLora = dom.comfyParamLtxLora.value;
+  const ltxLoraStrength = num(dom.comfyParamLtxLoraStrength?.value);
+  if (ltxLoraStrength !== undefined) ov.ltxLoraStrength = ltxLoraStrength;
   const phantomImgCfg = num(dom.comfyParamPhantomImgCfg?.value);
   if (phantomImgCfg !== undefined) ov.phantomImgCfg = phantomImgCfg; // Phantom: image-guidance scale (g_img)
   const relight = num(dom.comfyParamRelight?.value);
@@ -977,6 +982,12 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     }
     if (lastData.upscaleDenoise > 0) {
       doneLine += `\n${t("msg_denoiseUsed", { pct: Math.round(lastData.upscaleDenoise * 100) }, plang)}`;
+    }
+    // LTX LoRA actually mounted. Stated because the picker can hold a choice the
+    // server declines to apply (Sulphur's LoRA on the Sulphur checkpoint, which
+    // already contains it) — this line is what distinguishes applied from ignored.
+    if (lastData.ltxLora && lastData.ltxLora.name) {
+      doneLine += `\n${t("msg_ltxLoraUsed", { lora: stripModelExt(lastData.ltxLora.name), strength: lastData.ltxLora.strength }, plang)}`;
     }
     // If more images were attached than the model can use, tell the user how many
     // were actually consumed (2 = first-last-frame, 1 = plain image-to-video).

@@ -341,7 +341,7 @@ export async function refreshBgWorkers() {
     ? workers.map((w) => w.url)
     : [urlFromDisplay(dom.comfyUrlDisplay)].filter(Boolean);
   if (!targets.length) { loadComfyModels(); return; }
-  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uUpscale = new Map();
+  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uUpscale = new Map(), uLtxLora = new Map();
   // Union of the collapsed-group representatives across lanes — without carrying this
   // through, a multi-precision image model would keep its token in the label on the
   // multi-endpoint path while the single-endpoint path hides it.
@@ -355,6 +355,7 @@ export async function refreshBgWorkers() {
       const d = await (await fetch(`/api/comfy-models?comfyUrl=${encodeURIComponent(url)}`)).json();
       const models = d.models || [], editModels = d.editModels || [], videoModels = d.videoModels || [];
       for (const n of (d.upscaleModels || [])) if (!uUpscale.has(n)) uUpscale.set(n, n);
+      for (const n of (d.ltxLoras || [])) if (!uLtxLora.has(n)) uLtxLora.set(n, n);
       const sets = {
         image: new Set(models),
         edit: new Set(editModels.map((m) => m.name)),
@@ -371,7 +372,7 @@ export async function refreshBgWorkers() {
       for (const m of videoModels) if (!uVideo.has(m.name)) uVideo.set(m.name, m);
     } catch { setBgWorkerStatus(url, { online: false }); }
   }));
-  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()] });
+  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], ltxLoras: [...uLtxLora.values()] });
 }
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
@@ -393,7 +394,9 @@ function applyComfyModels(data) {
     // fps/length are the request's own again rather than the source's.
     state.comfyVideoOptionalModels = new Set(videoModels.filter((m) => m.videoOptional).map((m) => m.name));
     // Qwen-Image-Edit accepts 2-3 reference images (multi-image composition).
-    state.comfyMultiImageModels = new Set(editModels.filter((m) => m.type === "qwen").map((m) => m.name));
+    // Multi-reference compose: Qwen-Image-Edit-2509, and Bernini subject→image
+    // (r2i is inherently multi-ref — "image0 wearing image1 in image2's scene").
+    state.comfyMultiImageModels = new Set(editModels.filter((m) => m.type === "qwen" || m.type === "bernini-r2i").map((m) => m.name));
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
     const current = saved.comfyModel || dom.comfyModelSelect.value;
     // ⚙ "upscale model" manual picker: Auto + each model installed in upscale_models/.
@@ -415,13 +418,28 @@ function applyComfyModels(data) {
       }
       dom.comfyParamUpscaleModel.value = (savedUp === "off" || ups.includes(savedUp)) ? savedUp : "";
     }
+    // ⚙ "LTX LoRA": None + every LTX-family LoRA installed. The per-option baked-in
+    // check (Sulphur's LoRA vs the Sulphur checkpoint) is re-run on every model change
+    // by updateComfyParamVisibility, so it isn't applied here.
+    if (dom.comfyParamLtxLora) {
+      state.comfyLtxLoras = data.ltxLoras || [];
+      const savedLora = (saved.comfyParams && saved.comfyParams.ltxLora) || "";
+      dom.comfyParamLtxLora.innerHTML = "";
+      const noneOpt = document.createElement("option");
+      noneOpt.value = ""; noneOpt.textContent = t("comfy_ltxLora_none");
+      dom.comfyParamLtxLora.appendChild(noneOpt);
+      for (const n of state.comfyLtxLoras) {
+        const o = document.createElement("option");
+        const base = n.replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
+        const hint = ltxLoraHint(n);
+        o.value = n; o.textContent = hint ? `${base} — ${hint}` : base;
+        dom.comfyParamLtxLora.appendChild(o);
+      }
+      dom.comfyParamLtxLora.value = state.comfyLtxLoras.includes(savedLora) ? savedLora : "";
+    }
     const allNames = [...models, ...editModels.map((m) => m.name), ...videoModels.map((m) => m.name)];
     dom.comfyModelSelect.innerHTML = "";
     // Capability-dot legend under the dropdown — only meaningful once there are models.
-    if (dom.comfyModelLegend) {
-      dom.comfyModelLegend.textContent = t("comfy_caps_legend");
-      dom.comfyModelLegend.hidden = allNames.length === 0;
-    }
 
     if (allNames.length === 0) {
       const option = document.createElement("option");
@@ -444,7 +462,10 @@ function applyComfyModels(data) {
       // reach them; an emoji is just a character and renders). CAP_LEGEND (i18n) below
       // explains them. Absent meta (older server) → fall back to the label/stripExt.
       const meta = data.modelMeta || {};
-      const CAP_DOT = { image: "🔵", edit: "🟠", t2v: "🟢", i2v: "🟡", v2v: "🟣", tool: "⚪" };
+      // The coloured circles are input→output MODES and read as a set. "audio" is a
+      // different axis — an extra property of the output, not another mode — so it gets
+      // a pictograph rather than one more colour in the row.
+      const CAP_DOT = { image: "🔵", edit: "🟠", t2v: "🟢", i2v: "🟡", v2v: "🟣", tool: "⚪", audio: "🔊" };
       const capDots = (name) => {
         const caps = (meta[name] && meta[name].caps) || [];
         const dots = caps.map((c) => CAP_DOT[c] || "").join("");
@@ -454,7 +475,10 @@ function applyComfyModels(data) {
       // model absent from modelMeta is assumed ready (older server / no metadata).
       const readyMap = {};
       const isReady = (name) => !meta[name] || meta[name].ready !== false;
-      const addOption = (parent, name, label) => {
+      // The picker needs the same rows the <select> gets, so collect them as they're
+      // built rather than re-deriving (and risking a second, drifting source of truth).
+      const groups = [];
+      const addOption = (parent, name, label, bucket) => {
         const option = document.createElement("option");
         option.value = name;
         // Market name wins; then an explicit label (video/edit sentinels); then a
@@ -474,6 +498,7 @@ function applyComfyModels(data) {
         // hint line under the dropdown is what actually guarantees the text is readable.
         option.title = comfyModelHint(name);
         parent.appendChild(option);
+        if (bucket) bucket.push({ name, label: base, ready, dots: capDots(name).trim(), hint: option.title });
       };
       if (models.length) {
         const group = document.createElement("optgroup");
@@ -484,20 +509,24 @@ function applyComfyModels(data) {
         // to whatever name it gets) — but showing "…_bf16" on an entry that may well load
         // nvfp4 would be a lie, so the token comes out of the label only.
         const collapsed = new Set(data.imageCollapsed || []);
+        const bucket = [];
         for (const name of models) {
           const label = name === "image-upscale" ? t("comfy_imageUpscale_label")
             : collapsed.has(name) ? stripPrecision(stripExt(name))
             : undefined;
-          addOption(group, name, label);
+          addOption(group, name, label, bucket);
         }
         dom.comfyModelSelect.appendChild(group);
+        groups.push({ key: "comfy_image_group", items: bucket });
       }
       if (editModels.length) {
         const group = document.createElement("optgroup");
         group.dataset.i18n = "comfy_edit_group";
         group.label = t("comfy_edit_group");
-        for (const m of editModels) addOption(group, m.name);
+        const bucket = [];
+        for (const m of editModels) addOption(group, m.name, undefined, bucket);
         dom.comfyModelSelect.appendChild(group);
+        groups.push({ key: "comfy_edit_group", items: bucket });
       }
       // Split video models: text/image→video generators vs. ones that need a
       // SOURCE VIDEO input (video-edit / pose transfer).
@@ -507,27 +536,74 @@ function applyComfyModels(data) {
         const group = document.createElement("optgroup");
         group.dataset.i18n = "comfy_video_group";
         group.label = t("comfy_video_group");
-        for (const m of videoGen) addOption(group, m.name, m.label);
+        const bucket = [];
+        for (const m of videoGen) addOption(group, m.name, m.label, bucket);
         dom.comfyModelSelect.appendChild(group);
+        groups.push({ key: "comfy_video_group", items: bucket });
       }
       if (videoIn.length) {
         const group = document.createElement("optgroup");
         group.dataset.i18n = "comfy_video_input_group";
         group.label = t("comfy_video_input_group");
-        for (const m of videoIn) addOption(group, m.name, m.label);
+        const bucket = [];
+        for (const m of videoIn) addOption(group, m.name, m.label, bucket);
         dom.comfyModelSelect.appendChild(group);
+        groups.push({ key: "comfy_video_input_group", items: bucket });
       }
       dom.comfyModelSelect.value = allNames.includes(current) ? current : allNames[0];
       // Readiness by model name — updateComfyMultiHint reads this to warn when the
       // selected model is unverified / not fully wired.
       state.comfyModelReady = readyMap;
+      // The 4-column picker renders from this; the <select> stays authoritative.
+      state.comfyModelGroups = groups.filter((g) => g.items.length);
     }
   } catch {
     /* leave placeholder */
   } finally {
+    // In `finally` on purpose: the picker button must also reflect the "no models" /
+    // error placeholder, not just a successful rebuild.
+    syncComfyModelPickLabel();
     updateImageGenOptions();
     updateComfyMultiHint();
   }
+}
+
+// Mirrors LTX_MODEL_RE in server/comfy.js — "sulphur" is an LTX-family checkpoint whose
+// filename says nothing about LTX. Display-side only (auto-defaults / hint / component
+// summary), so a drift here costs a wrong hint, never a wrong workflow.
+const LTX_RE = /ltx|sulphur/;
+
+// Mirrors LORA_BAKED_IN in server/comfy.js: finetunes shipped BOTH as a checkpoint
+// and as a LoRA of the same training, which must not be stacked on their own base.
+// The server enforces this regardless; here it only greys the option and says why.
+const LORA_BAKED_IN_RE = [/sulphur/i];
+
+// Short "what is this and what strength" hint appended to each LoRA option. It goes
+// in the VISIBLE label rather than an <option title> because option tooltips are
+// unreliable across browsers — and the choice has to be makeable inside the picker.
+// Only families we have real evidence for get a hint; anything else stays bare
+// rather than inventing guidance for a LoRA we know nothing about.
+function ltxLoraHint(name) {
+  if (/sulphur/i.test(name)) return t("comfy_ltxLora_hint_sulphur");
+  if (/distill/i.test(name)) return t("comfy_ltxLora_hint_distill");
+  return "";
+}
+
+// Grey out LoRAs already baked into the selected checkpoint, keeping them visible
+// (with the reason) rather than silently absent. A pick that becomes invalid after a
+// model change falls back to None so the picker never shows a LoRA that won't apply.
+function syncLtxLoraOptions(model) {
+  const sel = dom.comfyParamLtxLora;
+  if (!sel) return;
+  let reset = false;
+  for (const o of sel.options) {
+    if (!o.dataset.baseLabel) o.dataset.baseLabel = o.textContent;
+    const baked = !!o.value && LORA_BAKED_IN_RE.some((re) => re.test(model) && re.test(o.value));
+    o.disabled = baked;
+    o.textContent = baked ? `${o.dataset.baseLabel} — ${t("comfy_ltxLora_bakedIn")}` : o.dataset.baseLabel;
+    if (baked && sel.value === o.value) reset = true;
+  }
+  if (reset) sel.value = "";
 }
 
 // The "auto" fps/length the server picks per video model (mirrors videoPreset in
@@ -539,7 +615,7 @@ function videoAutoDefaults(modelName) {
   // LoRAs, which the frontend can't see): the placeholder shows "Auto (N)" when set,
   // else plain "Auto". Mirrors videoPreset in server/comfy.js. WAN 14B is left without
   // steps/cfg on purpose — its schedule flips between turbo (4/cfg1) and full (20/3.5).
-  if (/ltx/.test(m)) return { fps: 24, length: 97, steps: 30, cfg: 3 };
+  if (LTX_RE.test(m)) return { fps: 24, length: 97, steps: 30, cfg: 3 };
   if (/hunyuan/.test(m)) return { fps: 24, length: 49, steps: 20, cfg: 6 };
   // Phantom: fixed 50-step / cfg 7.5 (uni_pc) — no distill LoRA, so it never varies.
   if (/phantom/.test(m)) return { fps: 24, length: 81, steps: 50, cfg: 7.5 };
@@ -569,13 +645,18 @@ function comfyModelHint(name) {
   // Video, needs a source clip. scail BEFORE animate — see above.
   if (/scail/.test(n)) return /animate/.test(n) ? t("oll_hint_scail2Animate") : t("oll_hint_scail2Replace");
   if (/animate/.test(n)) return /replace/.test(n) ? t("oll_hint_animateReplace") : t("oll_hint_animateMove");
+  // Bernini image tasks BEFORE the generic bernini branch — their sentinels all
+  // contain "bernini" and would otherwise get the video-edit hint.
+  if (/bernini_image_edit/.test(n)) return t("oll_hint_berniniImgEdit");
+  if (/bernini_subject_image/.test(n)) return t("oll_hint_berniniSubjectImg");
+  if (/bernini_text_image/.test(n)) return t("oll_hint_berniniT2i");
   if (/bernini/.test(n)) return /insert/.test(n) ? t("oll_hint_berniniInsert") : t("oll_hint_bernini");
   // Video, generates from text/image.
   if (/phantom/.test(n)) return t("oll_hint_phantom");
   if (/vace/.test(n)) return t("oll_hint_vace");
   if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b" ? t("oll_hint_wan14b") : t("oll_hint_wan5b");
   if (/hunyuan/.test(n)) return t("oll_hint_hunyuan");
-  if (/ltx/.test(n)) return t("oll_hint_ltx");
+  if (LTX_RE.test(n)) return t("oll_hint_ltx");
   // Image edit (needs a reference image + an instruction).
   if (/kontext/.test(n)) return t("oll_hint_kontext");
   if (/boogu.*edit/.test(n)) return t("oll_hint_booguEdit");
@@ -592,6 +673,112 @@ function comfyModelHint(name) {
   if (/flux/.test(n)) return t("oll_hint_flux");
   if (/pony|xl\b|sdxl/.test(n)) return t("oll_hint_sdxl");
   return t("oll_hint_generic");
+}
+
+// Mirror the <select>'s current choice onto the picker button. The option's own text
+// already carries the ⚠️ marker and capability dots, so reuse it verbatim rather than
+// rebuilding the label (one formatting rule, not two).
+export function syncComfyModelPickLabel() {
+  if (!dom.comfyModelPickLabel || !dom.comfyModelSelect) return;
+  const sel = dom.comfyModelSelect.selectedOptions && dom.comfyModelSelect.selectedOptions[0];
+  dom.comfyModelPickLabel.textContent = sel ? sel.textContent : t("comfy_model_none");
+  if (dom.comfyModelPickBtn) dom.comfyModelPickBtn.title = comfyModelHint(dom.comfyModelSelect.value);
+}
+
+// 4-column ComfyUI model picker — one column per model TYPE (image / edit / video /
+// video-editing), which is what the flat dropdown had grown too long to convey. Picking
+// writes back into the hidden <select> and fires `change`, so every existing reader
+// (saved settings, multi-hint, ⚙ visibility, placeholders…) keeps working untouched.
+export function openComfyModelPicker() {
+  const groups = state.comfyModelGroups || [];
+  if (!groups.length) return;
+  const current = dom.comfyModelSelect ? dom.comfyModelSelect.value : "";
+
+  const overlay = document.createElement("div");
+  overlay.className = "zoteroImportOverlay";   // reuse the modal chrome
+  overlay.innerHTML = `
+    <div class="zoteroImportDialog comfyPickDialog" role="dialog" aria-modal="true" aria-label="${t("cmp_title")}">
+      <div class="zoteroImportHead">
+        <span class="zoteroImportTitle">🎛 ${t("cmp_title")}</span>
+        <button type="button" class="zoteroImportClose" title="${t("mb_close")}">✕</button>
+      </div>
+      <div class="modelBrowserBar">
+        <input type="text" class="modelBrowserSearch comfyPickSearch" placeholder="${t("cmp_search")}" />
+        <span class="modelBrowserCount comfyPickCount"></span>
+      </div>
+      <div class="zoteroImportBody comfyPickBody"><div class="comfyPickCols"></div></div>
+      <div class="comfyPickLegend"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const close = () => { document.removeEventListener("keydown", onEsc); overlay.remove(); };
+  const onEsc = (e) => { if (e.key === "Escape") close(); };
+  overlay.querySelector(".zoteroImportClose").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.addEventListener("keydown", onEsc);
+  overlay.querySelector(".comfyPickLegend").textContent = t("comfy_caps_legend");
+
+  const colsEl = overlay.querySelector(".comfyPickCols");
+  const countEl = overlay.querySelector(".comfyPickCount");
+  const searchEl = overlay.querySelector(".comfyPickSearch");
+
+  const pick = (name) => {
+    if (!dom.comfyModelSelect) return;
+    dom.comfyModelSelect.value = name;
+    // The <select> is authoritative; everything downstream listens for its change.
+    dom.comfyModelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    syncComfyModelPickLabel();
+    close();
+  };
+
+  const render = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    colsEl.textContent = "";
+    let shown = 0, total = 0;
+    for (const g of groups) {
+      const items = g.items.filter((it) => {
+        total++;
+        return !q || it.label.toLowerCase().includes(q) || it.name.toLowerCase().includes(q);
+      });
+      shown += items.length;
+      const col = document.createElement("div");
+      col.className = "comfyPickCol";
+      const head = document.createElement("div");
+      head.className = "comfyPickColHead";
+      head.textContent = t(g.key);
+      col.appendChild(head);
+      if (!items.length) {
+        const none = document.createElement("div");
+        none.className = "comfyPickNone";
+        none.textContent = q ? t("cmp_noMatch") : "—";
+        col.appendChild(none);
+      }
+      for (const it of items) {
+        // DOM APIs, not innerHTML: these labels come from model FILENAMES on disk.
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "comfyPickRow" + (it.name === current ? " isCurrent" : "") + (it.ready ? "" : " isUnverified");
+        row.title = it.hint || "";
+        const nameEl = document.createElement("span");
+        nameEl.className = "comfyPickName";
+        nameEl.textContent = (it.ready ? "" : "⚠️ ") + it.label;
+        row.appendChild(nameEl);
+        if (it.dots) {
+          const dotsEl = document.createElement("span");
+          dotsEl.className = "comfyPickDots";
+          dotsEl.textContent = it.dots;
+          row.appendChild(dotsEl);
+        }
+        row.addEventListener("click", () => pick(it.name));
+        col.appendChild(row);
+      }
+      colsEl.appendChild(col);
+    }
+    countEl.textContent = t("mb_count", { shown, total });
+  };
+  render();
+  searchEl.addEventListener("input", render);
+  searchEl.focus();
 }
 
 // The key ComfyUI workflow components hey-koko wires for a model — inferred from
@@ -612,7 +799,7 @@ function comfyModelComponents(name) {
     ? "WAN2.2 14B MoE · UNETLoader ×2 · CLIP umt5 · VAE wan_2.1 · WanImageToVideo · KSamplerAdvanced ×2 · turbo: LightX2V 4-step LoRA"
     : "WAN2.2 5B · UNETLoader · CLIP umt5 · VAE wan_2.2 · WanImageToVideo · KSampler";
   if (/hunyuan/.test(n)) return "HunyuanVideo · UNETLoader · CLIP clip_l + llava · VAE hunyuan · KSampler";
-  if (/ltx/.test(n)) return "LTX-2 · CheckpointLoader · LTXAVTextEncoder(gemma) · LTXVConditioning · KSampler (+audio)";
+  if (LTX_RE.test(n)) return "LTX-2 · CheckpointLoader · LTXAVTextEncoder(gemma) · LTXVConditioning · KSampler (+audio)";
   // Edit
   if (/kontext/.test(n)) return "FLUX Kontext · UNETLoader · DualCLIP(t5+clip_l) · VAE ae · ReferenceLatent · FluxGuidance · KSampler";
   if (/boogu.*edit/.test(n)) return "boogu edit · UNETLoader · CLIP qwen3vl(boogu) · VAE flux1 · TextEncodeBooguEdit · ModelSamplingAuraFlow · KSampler";
@@ -677,6 +864,9 @@ export function updateComfyMultiHint() {
     dom.comfyModelSelect.title = hint;
     for (const o of dom.comfyModelSelect.options) if (o.value) o.title = comfyModelHint(o.value);
   }
+  // Keep the picker button showing whatever the <select> currently holds. Called from
+  // here so a LANGUAGE SWITCH (which routes through this function) refreshes it too.
+  syncComfyModelPickLabel();
   if (dom.comfyModelInfo) {
     const comps = comfyModelComponents(v);
     dom.comfyModelInfo.textContent = comps;
@@ -699,6 +889,10 @@ export function updateComfyParamVisibility() {
   // /animate/ but shares none of these knobs (no torch.compile toggle, no relight
   // LoRA, and SAM3 picks the subject by text rather than a clicked point).
   const animate = /animate/i.test(m) && !/scail/i.test(m);
+  // The 🎯 pick-person point ONLY reaches the graph in Replace mode (buildWanAnimate wires
+  // maskPoint inside `if (replace)`); Move has no person to select, so the button is dead
+  // there. Gate it on Replace alone so it doesn't imply an effect it can't have.
+  const animateReplace = animate && /replace/i.test(m);
   const scail2 = /scail/i.test(m);                     // both SCAIL-2 entries — the real filename and the "animate" sentinel
   const diffusion = !upscale;                          // samples + takes a prompt (everything except the upscale pipelines)
   // Hide a field by its <label> (or, for the frame-interpolation pair, the shared .comfyParamRow; the
@@ -708,11 +902,18 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamLength, video && diffusion);
   for (const el of [dom.comfyParamFps, dom.comfyParamTimeout]) setVis(el, video);
   setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // frame-interpolation + interpolation-engine row
-  // Wan Animate only.
-  for (const el of [dom.comfyParamTorchCompile, dom.comfyParamRelight, dom.comfyMaskPointBtn]) setVis(el, animate);
+  // Wan Animate (both modes): torch.compile speed + relight strength.
+  for (const el of [dom.comfyParamTorchCompile, dom.comfyParamRelight]) setVis(el, animate);
+  // Replace only: which person in the source to swap out.
+  setVis(dom.comfyMaskPointBtn, animateReplace);
   // Bernini only — turbo is otherwise forced on by the mere presence of the distill
   // LoRA, and ref_max_size is the only knob on how much reference detail survives.
   for (const el of [dom.comfyParamBerniniMode, dom.comfyParamRefMaxSize]) setVis(el, /bernini/i.test(m));
+  // LTX family only (incl. Sulphur) — the optional LoRA slot. It is the one builder
+  // with a user-pickable LoRA; every other model mounts its LoRAs automatically.
+  const ltx = video && LTX_RE.test(m.toLowerCase());
+  for (const el of [dom.comfyParamLtxLora, dom.comfyParamLtxLoraStrength]) setVis(el, ltx);
+  if (ltx) syncLtxLoraOptions(m);
   // Phantom only — the image-guidance scale (its second, subject-fidelity CFG).
   setVis(dom.comfyParamPhantomImgCfg, /phantom/i.test(m));
   // SCAIL-2 only — SAM3 open-vocabulary subject + identity ordering + the pose schedule.

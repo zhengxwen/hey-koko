@@ -166,16 +166,24 @@
             <div class="comfyModelRow">
               <label id="comfyModelLabel">
                 <span id="comfyModelLabelText">ComfyUI model</span>
-                <select id="comfyModelSelect">
+                <!-- The <select> stays the SOURCE OF TRUTH (saved settings restore into
+                     it, ~30 call sites read its value, one change listener drives the
+                     rest of the UI) — it is only hidden. The button opens a 4-column
+                     picker that writes back into it and fires `change`, so none of that
+                     wiring had to move. -->
+                <select id="comfyModelSelect" hidden>
                   <option value="">No ComfyUI model detected</option>
                 </select>
+                <button id="comfyModelPickBtn" type="button" class="comfyModelPickBtn">
+                  <span id="comfyModelPickLabel">No ComfyUI model detected</span>
+                  <span class="comfyModelPickCaret" aria-hidden="true">▼</span>
+                </button>
               </label>
               <button id="comfyParamsBtn" type="button" class="secondary comfyParamsBtn" title="Advanced generation parameters">⚙</button>
             </div>
             <div class="urlRow"><button id="editComfyUrl" type="button" class="urlEditBtn" title="Edit address">✎</button><span id="comfyUrlDisplay" class="urlDisplay">127.0.0.1:8188</span></div>
             <div class="comfyModelWarn" id="comfyModelWarn" hidden></div>
             <div class="comfyModelHint" id="comfyModelHint" hidden></div>
-            <div class="comfyModelLegend" id="comfyModelLegend" hidden></div>
             <div class="hintRow">
               <button id="scanComfy" type="button" class="secondary scanBtn" title="Scan local network for ComfyUI instances">Scan</button>
               <p class="hint" id="comfyHint">Run ComfyUI first (used when the image model is empty)</p>
@@ -780,6 +788,16 @@
               <option value="">Auto (RealESRGAN first)</option>
               <option value="off">Off (no upscale)</option>
             </select>
+          </label>
+          <label title="LTX models only (LTX-2.3 / Sulphur): an optional LoRA patched onto the checkpoint. HOW TO CHOOSE — None: the plain model, and the right answer unless you want one of the effects below. A style/finetune LoRA (e.g. Sulphur): gives another model's look while keeping this one's schedule; use it over plain LTX-2.3 at ~0.8-1.0. A distilled/speed LoRA: only pays off if you ALSO lower steps and set cfg to 1 by hand (this preset is the 30-step / cfg 3 dev schedule), around 0.5. Each option carries its own hint. Greyed out = that finetune is already baked into the selected checkpoint (Sulphur ships as both a checkpoint and a LoRA, and stacking them applies it twice) — pick the plain LTX-2.3 checkpoint to use it. The done line reports which LoRA was actually applied. Options are the LTX-family files in ComfyUI/models/loras/.">
+            <span id="comfyParamLtxLoraLabel">LTX LoRA</span>
+            <select id="comfyParamLtxLora">
+              <option value="">None</option>
+            </select>
+          </label>
+          <label title="LTX models only: how strongly the LoRA above is applied. Empty = 1.0 (full effect). Lower it when the LoRA overpowers your prompt or distorts anatomy/colour; raise it when its effect is too faint. Style/finetune LoRAs such as Sulphur are meant for roughly 0.8-1.0; LTX distilled/speed LoRAs are used around 0.5 (the value they were tuned for, not a dial to taste). Ignored when no LoRA is selected.">
+            <span id="comfyParamLtxLoraStrengthLabel">LTX LoRA strength</span>
+            <input id="comfyParamLtxLoraStrength" type="number" min="0" max="3" step="0.05" placeholder="1.0" />
           </label>
           <label class="checkboxLabel comfyParamCheck" title="Wan Animate only: compile the model (inductor) for ~20–30% faster sampling. First run at each resolution pays a one-time compile (tens of seconds); best for fixed-resolution batches. Uses extra VRAM — when on, segments are auto-shortened to avoid OOM; at 720p+ it may still OOM, then turn this off or lower the size.">
             <input id="comfyParamTorchCompile" type="checkbox" />
