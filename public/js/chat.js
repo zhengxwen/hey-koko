@@ -2911,7 +2911,8 @@ function makeReplaceImageButton(msgIndex, imgIdx) {
 }
 
 // The small bottom-right "download" overlay shared by image/video previews.
-// The tooltip (title + aria-label) carries the filename and, when known, size.
+// The tooltip (title + aria-label) leads with the action ("Download image") and
+// then the filename and, when known, the size.
 function makeDownloadButton(className, href, filename, bytes, actionLabel) {
   const dl = document.createElement("a");
   dl.className = className;
@@ -2935,8 +2936,9 @@ function makeDownloadButton(className, href, filename, bytes, actionLabel) {
   dl.download = filename;
   const size = formatFileSize(bytes);
   const label = size ? `${filename} · ${size}` : filename;
-  dl.title = label;
-  dl.setAttribute("aria-label", actionLabel ? `${actionLabel}: ${label}` : label);
+  const full = actionLabel ? `${actionLabel}: ${label}` : label;
+  dl.title = full;
+  dl.setAttribute("aria-label", full);
   dl.textContent = "⬇";
   return dl;
 }

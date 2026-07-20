@@ -203,6 +203,15 @@ function editIsCheckpoint(editType) {
 // path. One constant because the family is matched by NAME in four separate places.
 const LTX_MODEL_RE = /ltx|sulphur/i;
 
+// LTX files that are COMPONENTS of a graph, not selectable models. The distilled
+// "transformer only" release carries no VAE or text encoder, so every builder here —
+// which pulls the VAE out of CheckpointLoaderSimple — would fail on it, and it sorts
+// into the video list with the same market name as the real checkpoint (two identical
+// "LTX-2.3 22B" entries, one of them broken). It has real uses (the MSR distilled
+// route, a future distilled cascade), but always alongside a full checkpoint that
+// supplies the VAE — never on its own.
+const LTX_COMPONENT_RE = /transformer[-_ ]?only/i;
+
 // Finetunes distributed BOTH as a full checkpoint and as a standalone LoRA of the
 // same training. Sulphur is one: sulphur_dev_*.safetensors already contains what
 // sulphur_lora_rank_768.safetensors applies, and upstream says not to use both —
@@ -239,7 +248,15 @@ function videoTypeOf(model) {
   // the /14b/ MoE path would load one file as both experts and skip its subject nodes.
   if (/phantom/i.test(model)) return "phantom";
   if (/wan/i.test(model)) return "wan";
-  if (LTX_MODEL_RE.test(model)) return "ltx";
+  // MSR is an IC-LoRA over the LTX stack, so it rides the "ltx" type; the sentinel name
+  // is what tells the builder + preset to take the MSR branch. Checked before the
+  // generic LTX test only for clarity — the sentinel carries no "ltx" in its name.
+  if (model === LTX_MSR) return "ltx";
+  // Union control also rides the LTX stack but needs a SOURCE VIDEO, so it gets its own
+  // type to reach a dedicated dispatch branch (the generic "ltx" branch has no video-in).
+  if (model === LTX_UNION) return "ltx-union";
+  // Component-only LTX files are not selectable models — see LTX_COMPONENT_RE.
+  if (LTX_MODEL_RE.test(model)) return LTX_COMPONENT_RE.test(model) ? null : "ltx";
   if (/hunyuan.?video/i.test(model)) return "hunyuan";
   return null;
 }
@@ -428,6 +445,130 @@ async function resolveScail2Unet() {
   return unets.find((n) => videoTypeOf(n) === "scail2") || null;
 }
 
+// Sentinel for LTX-2.3 MSR (Licon Multiple Subject Reference v2) — reference images of
+// people / clothing / objects keep their identity across the generated clip. Not a
+// checkpoint of its own: it is an IC-LoRA over the LTX-2.3 stack, so the entry only
+// appears when every part is installed (see ltxMsrParts). Sibling in spirit to Phantom
+// on the WAN side, but wired through LTX's IC-LoRA nodes.
+const LTX_MSR = "ltx-msr";
+// Subject slots on the LiconMSR node are literally named "1".."4"; a background image
+// is separate and — despite object_info marking it optional — is REQUIRED at execute().
+const LTX_MSR_MAX_SUBJECTS = 4;
+// The reference stills are packed into a short "pseudo-video" whose frame count must
+// stay BELOW the clip length, or LTXAddVideoICLoRAGuide fails with "Conditioning frames
+// exceed the length of the latent sequence". 17 is the smallest the node offers and the
+// value verified here — larger counts let the reference sequence bleed into the result
+// (65 against a 121-frame clip produced a visible double exposure).
+const LTX_MSR_REF_FRAMES = "17";
+
+// Sentinel for LTX-2.3 IC-LoRA Union Control — a DRIVING VIDEO's depth structure
+// (extracted by MoGe) plus a reference still drive a new clip: the output follows the
+// source video's motion / camera / geometry while its appearance comes from the
+// reference + prompt. NOT identity-preserving (unlike Animate / SCAIL-2) — this is
+// structure/motion transfer. Like MSR it's an IC-LoRA over LTX-2.3, so the entry only
+// appears when every piece is installed (see ltxUnionParts). Needs BOTH a source video
+// and a reference image, so it lives in the "needs source video" UI group.
+const LTX_UNION = "ltx-union";
+
+// Everything MSR needs, or null when a piece is absent (the entry is then hidden rather than
+// offered broken). Two routes, both end-to-end verified:
+//   • CLEAN (preferred) — ONE full distilled-fp8 checkpoint provides the transformer AND its
+//     own VAE / audio VAE / text projection. Verified 2026-07-20 to be sharpness- and
+//     identity-equivalent to the mashup (same seed/refs → near-identical faces, no blur): the
+//     distilled-fp8 transformer IS the one the 8-step sigma table was tuned for.
+//   • MASHUP (fallback) — the transformer-only distilled UNET + a separate dev checkpoint for
+//     VAE/audio/encoder, kept so MSR still runs if the full checkpoint isn't on disk.
+// The IC-LoRA nodes ship with ComfyUI-LTXVideo, LiconMSR with ComfyUI-Licon-MSR,
+// PromptRelayEncode with ComfyUI-PromptRelay.
+async function ltxMsrParts(pref) {
+  const [ckpts, unets, loras, clips, nodes] = await Promise.all([
+    comfyEnum("CheckpointLoaderSimple", "ckpt_name").catch(() => []),
+    comfyEnum("UNETLoader", "unet_name").catch(() => []),
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyEnum("CLIPLoader", "clip_name").catch(() => []),
+    comfyHasNodes(["LiconMSR", "LTXICLoRALoaderModelOnly", "LTXAddVideoICLoRAGuide", "PromptRelayEncode"]),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  const msrLora = find(loras, /licon.*msr|msr.*v2/i);
+  const encoder = find(clips, /gemma.*12b/i) || find(clips, /gemma_?3/i);
+  // Precision-by-TIER (not the generic pickPrecision base-swap): the mxfp8 files carry a
+  // "_block32" suffix, so their precisionBase differs and the base-match would silently miss.
+  const pickTier = (poolList) => (pref && pref !== "auto" && poolList.find((n) => precisionOf(n) === pref))
+    || poolList.find((n) => precisionOf(n) === "fp8") || poolList[0] || null;
+  // CLEAN path — the full distilled checkpoint (exclude the transformer-only component file).
+  const fullDistilled = (ckpts || []).filter((n) => /ltx.*distill/i.test(n) && !/transformer[-_ ]?only/i.test(n));
+  const fullCkpt = pickTier(fullDistilled);
+  if (nodes && fullCkpt && msrLora && encoder) {
+    return { clean: true, baseCkpt: fullCkpt, transformerTier: precisionOf(fullCkpt), msrLora, encoder };
+  }
+  // MASHUP fallback.
+  const transformers = (unets || []).filter((n) => /ltx.*transformer[-_ ]?only/i.test(n));
+  const distilled = transformers.filter((n) => /distill/i.test(n));
+  const transformer = pickTier(distilled.length ? distilled : transformers);
+  const parts = {
+    baseCkpt: find(ckpts, /ltx.?2\.3.*dev/i) || find(ckpts, /ltx/i),
+    transformer,
+    transformerTier: transformer ? precisionOf(transformer) : null,
+    msrLora, encoder,
+  };
+  const ok = nodes && parts.baseCkpt && parts.transformer && parts.msrLora && parts.encoder;
+  return ok ? parts : null;
+}
+
+// Everything Union Control needs, or null when a piece is absent. Unlike MSR this uses
+// the FULL distilled checkpoint (not the transformer-only file): its 8-step cfg-1 schedule
+// needs the distilled weights, and its VAE + audio VAE + text projection come from the same
+// checkpoint. MoGe turns the driving video into a depth sequence; the union-control IC-LoRA
+// (loaded via a plain LoraLoaderModelOnly, its params read by GetICLoRAParameters) locks the
+// generation to that structure. All nodes ship with ComfyUI-LTXVideo + the MoGe + video packs.
+async function ltxUnionParts(pref) {
+  const [ckpts, loras, clips, moge, nodes] = await Promise.all([
+    comfyEnum("CheckpointLoaderSimple", "ckpt_name").catch(() => []),
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyEnum("LTXAVTextEncoderLoader", "text_encoder").catch(() => []),
+    comfyEnum("LoadMoGeModel", "model_name").catch(() => []),
+    comfyHasNodes([
+      "LoraLoaderModelOnly", "GetICLoRAParameters", "LTXVAddGuide", "LTXVImgToVideoInplace",
+      "LoadMoGeModel", "MoGeInference", "MoGeRender", "GetVideoComponents", "Video Slice",
+      "LTXAVTextEncoderLoader", "LTXVAudioVAELoader", "LTXVConcatAVLatent", "LTXVSeparateAVLatent",
+      "LTXVCropGuides", "LTXVEmptyLatentAudio", "EmptyLTXVLatentVideo",
+    ]),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  // The FULL distilled checkpoint (exclude the transformer-only component file, which has
+  // no VAE). It can ship in several precisions (fp8 / mxfp8 / nvfp4); pick by ⚙ preference,
+  // else fp8 (the verified default), else whatever's present — precisionTierNote names it.
+  const distilled = (ckpts || []).filter((n) => /ltx.*distill/i.test(n) && !/transformer[-_ ]?only/i.test(n));
+  const ckpt = (pref && pref !== "auto" && distilled.find((n) => precisionOf(n) === pref))
+    || distilled.find((n) => precisionOf(n) === "fp8")
+    || distilled[0] || null;
+  const parts = {
+    ckpt,
+    ckptTier: ckpt ? precisionOf(ckpt) : null,
+    unionLora: find(loras, /union.?control/i),
+    encoder: find(clips, /gemma.*12b/i) || find(clips, /gemma_?3/i),
+    mogeModel: find(moge, /moge/i),
+  };
+  const ok = nodes && parts.ckpt && parts.unionLora && parts.encoder && parts.mogeModel;
+  return ok ? parts : null;
+}
+
+// Whether every named node class is registered on the target ComfyUI. Probed one by
+// one (/object_info/<name> returns {} for an unknown class) rather than pulling the
+// full node table, which is megabytes on a well-stocked install.
+async function comfyHasNodes(names) {
+  const base = currentComfyUrl();
+  const found = await Promise.all(names.map(async (n) => {
+    try {
+      const r = await fetch(`${base}/object_info/${n}`);
+      if (!r.ok) return false;
+      const d = await r.json();
+      return !!(d && d[n]);
+    } catch { return false; }
+  }));
+  return found.every(Boolean);
+}
+
 // Sentinel for the "video enhance" (interpolate + upscale) dropdown entry — a source video is
 // AI-upscaled and frame-interpolated to a target fps. Has no diffusion model, so it
 // resolves to nothing on disk; the pipeline is built directly at generation time.
@@ -459,6 +600,8 @@ function marketName(name) {
     [BERNINI_T2I]: "Bernini (text → image)",
     [ANIMATE_REPLACE]: "Wan Animate (replace)",
     [SCAIL2_ANIMATE]: "SCAIL-2 (animate)",
+    [LTX_MSR]: "LTX-2.3 MSR",
+    [LTX_UNION]: "LTX-2.3 Motion/Structure Transfer (depth)",
     [VIDEO_ENHANCE]: "Video interpolate + upscale",
   };
   if (name in sentinels) return sentinels[name];
@@ -506,7 +649,9 @@ function capsFor(name, group, type, entry) {
   if (group === "image") return /hidream.?o1/i.test(name) ? ["image", "edit"] : ["image"];
   if (group === "edit") return ["edit"];
   // video: a source-video model is v2v; bernini also accepts a plain image (i2v).
+  if (name === LTX_UNION) return ["v2v", "audio"]; // depth-driven; LTX decodes a soundtrack
   if (entry && entry.needsVideo) return name === BERNINI_AUTO ? ["i2v", "v2v"] : ["v2v"];
+  if (name === LTX_MSR) return ["i2v", "audio"];   // reference-image driven, generates a soundtrack
   switch (type) {
     case "phantom": return ["i2v"];
     case "hunyuan": return ["t2v"];
@@ -557,6 +702,7 @@ function videoRank(n) {
   if (LTX_MODEL_RE.test(n)) return 7;
   // scail BEFORE animate: the "scail2_animate" sentinel contains "animate", so the
   // generic /animate/ test would otherwise claim it (same ordering trap as videoTypeOf).
+  if (n === LTX_MSR) return 7.5;
   if (n === SCAIL2_ANIMATE) return 10;
   if (/scail/i.test(n)) return 11;
   if (n === ANIMATE_REPLACE) return 9;
@@ -579,6 +725,8 @@ function isModelReady(name, group, type) {
   if (name === WAN14B_AUTO) return true;    // Wan 2.2 14B t2v+i2v — verified
   if (name === BERNINI_AUTO) return true;   // Bernini v2v / rv2v — verified end-to-end
   if (name === SCAIL2_ANIMATE) return true; // SCAIL-2 animate — verified
+  if (name === LTX_MSR) return true;        // MSR V2 — verified (sharp, identity preserved)
+  if (name === LTX_UNION) return true;      // Union Control — verified end-to-end (depth transfer, sharp)
   if (name === ANIMATE_REPLACE) return true; // Replace verified end-to-end (scene kept, person swapped)
   if (name === BERNINI_INSERT) return false;  // ads2v — wired but never live-verified
   // Bernini image side (i2i / r2i / t2i) — all three VERIFIED end-to-end on the live
@@ -634,7 +782,14 @@ async function proxyComfyModels(req, res) {
     // LTX is the only family with a user-pickable LoRA slot (⚙ "LTX LoRA"), so the
     // list is filtered to LTX-family files by the same name test the checkpoints use.
     // Other builders mount their LoRAs automatically and take no input here.
-    const ltxLoras = allLoras.filter((n) => LTX_MODEL_RE.test(n));
+    //
+    // EXCLUDE the LoRAs the builders mount themselves: the MSR IC-LoRA (buildLtxMsr
+    // loads it via LTXICLoRALoaderModelOnly) and the distilled cascade LoRAs
+    // (buildLtxCascade / MSR load them as comp.distillLora). Offering those here is a
+    // trap — picking the MSR one would stack it a SECOND time on the already-applied
+    // MSR loader. Only genuine style/content LoRAs (Sulphur) belong in this slot.
+    const LTX_AUTO_LORA_RE = /licon|msr|distill/i;
+    const ltxLoras = allLoras.filter((n) => LTX_MODEL_RE.test(n) && !LTX_AUTO_LORA_RE.test(n));
     // Edit/video models can be either diffusion models (UNETLoader) or full
     // checkpoints (instruct-pix2pix, ltx). Plain checkpoints stay in `models`.
     const all = [...ckpts, ...unets];
@@ -704,6 +859,13 @@ async function proxyComfyModels(req, res) {
     // an upscale model + the Frame-Interpolation nodes (both checked at gen time). The
     // source video is interpolated to the target fps (/imagine <fps>) AND AI-upscaled.
     videoModels.push({ name: VIDEO_ENHANCE, type: "enhance", label: "Video interpolate + upscale", needsVideo: true });
+    // LTX MSR: only offered when every piece (weights AND the three node packs) is
+    // installed — an entry that always errors is worse than no entry.
+    if (await ltxMsrParts()) videoModels.push({ name: LTX_MSR, type: "ltx", label: "LTX-2.3 MSR", needsImages: 1 });
+    // LTX Union Control: depth-driven structure/motion transfer. Needs a SOURCE VIDEO (the
+    // motion) + a reference image (the appearance), so it joins the "needs source video"
+    // group. Gated on every weight + node being present, same as MSR.
+    if (await ltxUnionParts()) videoModels.push({ name: LTX_UNION, type: "ltx-union", label: "LTX-2.3 motion/structure transfer (depth · not identity)", needsVideo: true, needsImages: 1 });
     // Bernini also renders STILLS (same weights + graph at length 1) — surface its
     // three image tasks once the weights are present. i2i/r2i take an attached image
     // so they belong in the instruction-edit group; t2i takes none, so it joins the
@@ -839,6 +1001,25 @@ async function proxyComfyModels(req, res) {
     modelMeta[IMAGE_UPSCALE] = { label: null, caps: ["tool"], ready: true };
     for (const m of editOut) setMeta(m.name, "edit", m.type, m);
     for (const m of videoOut) setMeta(m.name, "video", m.type, m);
+    // MSR's precision tiers come from whichever pool its ACTIVE path uses, read by TIER
+    // directly — the mxfp8 file's "_block32" suffix breaks the precisionBase grouping
+    // tiersFor relies on, so that path would wrongly report fp8-only after mxfp8 is added.
+    // Clean path (preferred) selects from the full distilled checkpoints; only when none are
+    // present does it fall back to the transformer-only pool. Mirrors ltxMsrParts' own pick.
+    if (modelMeta[LTX_MSR]) {
+      const full = all.filter((n) => /ltx.*distill/i.test(n) && !/transformer[-_ ]?only/i.test(n));
+      const tfs = all.filter((n) => /ltx.*transformer[-_ ]?only/i.test(n));
+      const pool = full.length ? full : tfs;
+      const tiers = [...new Set(pool.map(precisionOf).filter(Boolean))];
+      if (tiers.length) modelMeta[LTX_MSR].prec = tiers;
+    }
+    // Union Control's tiers come from the FULL distilled checkpoint pool (same reasoning:
+    // the sentinel name carries no precision, and ltxUnionParts picks by TIER over that pool).
+    if (modelMeta[LTX_UNION]) {
+      const cks = all.filter((n) => /ltx.*distill/i.test(n) && !/transformer[-_ ]?only/i.test(n));
+      const tiers = [...new Set(cks.map(precisionOf).filter(Boolean))];
+      if (tiers.length) modelMeta[LTX_UNION].prec = tiers;
+    }
     sendJson(res, 200, { models: [...imageOut, ...berniniT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, modelMeta, upscaleModels, ltxLoras, hostname });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [], upscaleModels: [], ltxLoras: [] });
@@ -1626,6 +1807,34 @@ async function videoCompanions(videoType, model, opts = {}) {
     if (missing.length) throw new Error("Missing files required by Hunyuan video:\n- " + missing.join("\n- "));
     return { clipL, llava, vae };
   }
+  if (model === LTX_MSR) {
+    // The ⚙ precision preference selects the transformer tier (fp8_scaled default,
+    // mxfp8_block32 / int8_convrot / bf16 if downloaded and chosen).
+    const parts = await ltxMsrParts(opts.precision);
+    if (!parts) throw new Error("LTX MSR is missing pieces. It needs: a distilled LTX-2.3 checkpoint — either the FULL distilled-fp8 (checkpoints/, clean path) or the transformer-only file + a dev checkpoint for VAE (fallback) — plus the Licon MSR V2 LoRA (loras/), a gemma_3_12B text encoder, and the ComfyUI-LTXVideo + ComfyUI-Licon-MSR + ComfyUI-PromptRelay node packs.");
+    // Optional ⚙ LTX LoRA, stacked on the transformer BEFORE the MSR IC-LoRA (Sulphur
+    // is the intended one — content/style on top of MSR's identity conditioning). This
+    // is an UNVERIFIED combination: Sulphur was trained on plain LTX-2.3, not the MSR
+    // path, so it may erode the multi-subject consistency that is MSR's whole point —
+    // it's off by default and only applied when the user explicitly picks a LoRA. The
+    // base is the distilled transformer (no "sulphur" in its name), so loraBakedIn
+    // never suppresses the Sulphur LoRA here the way it would on a merged checkpoint.
+    let msrLora = null, msrLoraStrength = 1;
+    const wantLora = String(opts.ltxLora || "").trim();
+    if (wantLora) {
+      const loras = await comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []);
+      msrLora = loras.find((x) => x === wantLora) || null;
+      const s = Number(opts.ltxLoraStrength);
+      msrLoraStrength = isFinite(s) && s > 0 ? Math.min(3, s) : 1;
+    }
+    return { ...parts, msr: true, lora: msrLora, loraStrength: msrLoraStrength };
+  }
+  if (model === LTX_UNION) {
+    // ⚙ precision selects the distilled-checkpoint tier (fp8 default; mxfp8 / nvfp4 if present).
+    const parts = await ltxUnionParts(opts.precision);
+    if (!parts) throw new Error("LTX union control is missing pieces. It needs: the FULL distilled LTX-2.3 checkpoint (checkpoints/), the union-control IC-LoRA (loras/), a gemma_3_12B text encoder, a MoGe depth model (models/geometry_estimation/), and the ComfyUI-LTXVideo + MoGe + video node packs.");
+    return { ...parts, union: true };
+  }
   if (videoType === "ltx") {
     // LTX-2 uses a Gemma text encoder (loaded via LTXAVTextEncoderLoader with the
     // model's own ckpt); VAE comes from the checkpoint, so no separate VAE needed.
@@ -1702,6 +1911,26 @@ function videoPreset(videoType, model, turbo) {
   }
   if (videoType === "hunyuan") {
     return { sampler: "euler", scheduler: "simple", cfg: 6, steps: 20, shift: 7.0, width: 720, height: 480, length: 49, fps: 24, dimMult: 16, lenMult: 4 };
+  }
+  if (model === LTX_MSR) {
+    // MSR's own distilled route: single stage, no latent upscale, 8-step schedule at
+    // cfg 1 with euler_ancestral. The recipe/model-card value is 50 fps, but fps is a
+    // GENERATION parameter here (it feeds LTXVConditioning), and 30 was verified to look
+    // identical while matching the user's 30-fps delivery target — so 30 is the default
+    // and the ⚙ field raises it back to 50 when wanted. The clip must stay longer than
+    // the packed reference sequence, which the builder enforces on top of this.
+    return { sampler: "euler_ancestral", scheduler: "simple", cfg: 1, steps: 8, shift: 0, width: 1280, height: 704, length: 121, fps: 30, dimMult: 32, lenMult: 8 };
+  }
+  if (model === LTX_UNION) {
+    // Union control: single-pass KSampler on the distilled checkpoint — 8 steps, cfg 1,
+    // euler_ancestral + linear_quadratic (the template's schedule, verified end-to-end).
+    // `length` bounds the driving-video slice (the graph derives the real frame count from
+    // the depth sequence); 25 fps is the template rate. The KSampler scheduler string is
+    // carried on the preset so the builder reads it back. dimMult is 64 (not LTX's usual
+    // 32): the union IC-LoRA's reference_downscale_factor is 2, so the LATENT spatial dims
+    // (width/32, height/32) must each be even → width & height divisible by 64, or
+    // LTXVAddGuide fails ("Latent spatial size WxH must be divisible by 2").
+    return { sampler: "euler_ancestral", scheduler: "linear_quadratic", cfg: 1, steps: 8, shift: 0, width: 1280, height: 704, length: 97, fps: 25, dimMult: 64, lenMult: 8 };
   }
   if (videoType === "ltx") {
     // `turbo` here = the two-stage cascade is available (distilled LoRA + spatial
@@ -2005,7 +2234,131 @@ function buildHunyuanVideo({ model, prompt, negative, comp, seed, v }) {
 // keyframes (2+ images pinned at evenly-spaced frames via a chain of LTXVAddGuide).
 function buildLtxVideo(args) {
   const comp = args.comp || {};
+  if (comp.msr) return buildLtxMsr(args);
   return comp.distillLora && comp.upscaler ? buildLtxCascade(args) : buildLtxSingleStage(args);
+}
+
+// LTX-2.3 MSR V2 — reference-image identity transfer via IC-LoRA. LiconMSR packs the
+// subject stills (+ a mandatory background still) into a short "pseudo-video" batch;
+// LTXAddVideoICLoRAGuide injects that batch into the conditioning and the latent, and
+// LTXVCropGuides strips it again after sampling. The transformer is the distilled
+// transformer-only file, so the VAE / audio VAE / text encoder all come from a full
+// ltx-2.3 checkpoint loaded alongside it.
+//
+// Two pieces are load-bearing and easy to mistake for optional:
+//   • PromptRelayEncode produces the positive conditioning AND patches the model — it
+//     is not a text encoder that a CLIPTextEncode can stand in for. Its global prompt
+//     anchors the subjects ("Image 1: …"), its local prompts drive the timeline.
+//   • LTX2_NAG takes the model from that patch, and BOTH of its conditioning inputs
+//     are the guide's NEGATIVE output.
+// Substituting either one yields a clip that runs cleanly and looks like mush.
+function buildLtxMsr({ prompt, negative, comp, imageNames, backgroundName, seed, v }) {
+  const neg = negative && negative.trim() ? negative : LTX_DEFAULT_NEGATIVE;
+  // The prompt is split on the first blank line: the opening paragraph describes the
+  // reference images (the identity anchor), everything after it is the scene/action.
+  // With no blank line the whole prompt is treated as the scene.
+  const parts = String(prompt || "").split(/\n\s*\n/);
+  const globalPrompt = parts.length > 1 ? parts[0].trim() : "";
+  const localPrompts = (parts.length > 1 ? parts.slice(1).join("\n\n") : parts[0] || "").trim();
+  const subjects = (imageNames || []).slice(0, LTX_MSR_MAX_SUBJECTS);
+  // Model source feeding the MSR IC-LoRA:
+  //   • CLEAN  → the checkpoint (node 3) IS the transformer + VAE + audio + encoder.
+  //   • MASHUP → a separate transformer-only UNETLoader (node 191); node 3 is only for its VAE.
+  // An optional style/content LoRA (Sulphur) sits BETWEEN that source and the MSR IC-LoRA:
+  // <source> → [LoraLoaderModelOnly(192)] → LTXICLoRALoaderModelOnly(10). When absent, the MSR
+  // loader reads the source directly.
+  const rawModel = comp.clean ? ["3", 0] : ["191", 0];
+  const msrModelSrc = comp.lora ? ["192", 0] : rawModel;
+  const wf = {
+    "3":  { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: comp.baseCkpt } },
+    "26": { class_type: "LTXAVTextEncoderLoader", inputs: { text_encoder: comp.encoder, ckpt_name: comp.baseCkpt, device: "default" } },
+    "10": { class_type: "LTXICLoRALoaderModelOnly", inputs: { model: msrModelSrc, lora_name: comp.msrLora, strength_model: 1.0 } },
+    "8":  { class_type: "EmptyLTXVLatentVideo", inputs: { width: v.width, height: v.height, length: v.length, batch_size: 1 } },
+    "180":{ class_type: "PromptRelayEncode", inputs: { model: ["10", 0], clip: ["26", 0], latent: ["8", 0], global_prompt: globalPrompt, local_prompts: localPrompts, segment_lengths: "", epsilon: 0.0011 } },
+    "185":{ class_type: "CLIPTextEncode", inputs: { clip: ["26", 0], text: neg } },
+    "7":  { class_type: "LTXVConditioning", inputs: { positive: ["180", 1], negative: ["185", 0], frame_rate: v.fps } },
+    // LiconMSR's canvas follows the OUTPUT size — the workflow links it to the same
+    // width/height constants, and its own widget defaults (a portrait 736×1280) are
+    // stale leftovers that would build the reference strip in the wrong aspect.
+    "190":{ class_type: "LiconMSR", inputs: { width: v.width, height: v.height, frame_count: LTX_MSR_REF_FRAMES } },
+    "9":  { class_type: "LTXAddVideoICLoRAGuide", inputs: { positive: ["7", 0], negative: ["7", 1], vae: ["3", 2], latent: ["8", 0], image: ["190", 0], frame_idx: 0, strength: 1.0, latent_downscale_factor: 1.0, crop: "center", use_tiled_encode: false, tile_size: 256, tile_overlap: 64 } },
+    "121":{ class_type: "LTX2_NAG", inputs: { model: ["180", 0], nag_scale: 11, nag_alpha: 0.25, nag_tau: 2.5, nag_cond_video: ["9", 1], nag_cond_audio: ["9", 1], inplace: true } },
+    "21": { class_type: "LTXVAudioVAELoader", inputs: { ckpt_name: comp.baseCkpt } },
+    "22": { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: v.length, frame_rate: v.fps, batch_size: 1, audio_vae: ["21", 0] } },
+    "23": { class_type: "LTXVConcatAVLatent", inputs: { video_latent: ["9", 2], audio_latent: ["22", 0] } },
+    "13": { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
+    "27": { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_BASE } },
+    "15": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
+    "37": { class_type: "CFGGuider", inputs: { model: ["121", 0], positive: ["9", 0], negative: ["9", 1], cfg: v.cfg } },
+    "16": { class_type: "SamplerCustomAdvanced", inputs: { noise: ["15", 0], guider: ["37", 0], sampler: ["13", 0], sigmas: ["27", 0], latent_image: ["23", 0] } },
+    "24": { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["16", 0] } },
+    "17": { class_type: "LTXVCropGuides", inputs: { positive: ["9", 0], negative: ["9", 1], latent: ["24", 0] } },
+    "38": { class_type: "VAEDecode", inputs: { samples: ["17", 2], vae: ["3", 2] } },
+    "174":{ class_type: "LTXVAudioVAEDecode", inputs: { samples: ["24", 1], audio_vae: ["21", 0] } },
+    "172":{ class_type: "CreateVideo", inputs: { images: ["38", 0], fps: v.fps, audio: ["174", 0] } },
+    "173":{ class_type: "SaveVideo", inputs: { video: ["172", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } },
+  };
+  subjects.forEach((nm, i) => {
+    const id = String(200 + i);
+    wf[id] = { class_type: "LoadImage", inputs: { image: nm } };
+    wf["190"].inputs[String(i + 1)] = [id, 0];   // sockets are literally named "1".."4"
+  });
+  wf["210"] = { class_type: "LoadImage", inputs: { image: backgroundName } };
+  wf["190"].inputs.background = ["210", 0];
+  // MASHUP only: the separate transformer-only UNET. CLEAN reads the model straight off node 3.
+  if (!comp.clean) wf["191"] = { class_type: "UNETLoader", inputs: { unet_name: comp.transformer, weight_dtype: "default" } };
+  if (comp.lora) {
+    wf["192"] = { class_type: "LoraLoaderModelOnly", inputs: { model: rawModel, lora_name: comp.lora, strength_model: comp.loraStrength != null ? comp.loraStrength : 1 } };
+  }
+  return wf;
+}
+
+// LTX-2.3 IC-LoRA Union Control — depth-guided structure/motion transfer. Flattened from
+// the official `video_ltx2_3_ic_lora` template (two subgraphs → one graph), verified
+// end-to-end on the live box. Flow:
+//   • MoGe turns the driving video (sliced to `durationSec`) into a depth sequence; that
+//     sequence's frame count sets the clip length (GetImageSize → Empty{Video,Audio}Latent).
+//   • The reference still becomes the first frame (LTXVImgToVideoInplace).
+//   • The union-control IC-LoRA is applied with a PLAIN LoraLoaderModelOnly; its parameters
+//     (read by GetICLoRAParameters) feed LTXVAddGuide's optional `iclora_parameters` input —
+//     WITHOUT that link the depth frames would be an ordinary guide, not union control.
+//   • KSampler runs the distilled 8-step / cfg-1 / linear_quadratic schedule.
+// The FULL distilled checkpoint supplies MODEL / VAE (slot 2) / audio VAE / text projection.
+function buildLtxUnionControl({ prompt, negative, comp, imageName, videoName, durationSec, v, seed }) {
+  const neg = negative && negative.trim() ? negative : LTX_DEFAULT_NEGATIVE;
+  const CK = comp.ckpt;
+  return {
+    "ck":     { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: CK } },
+    "te":     { class_type: "LTXAVTextEncoderLoader", inputs: { text_encoder: comp.encoder, ckpt_name: CK, device: "default" } },
+    "avae":   { class_type: "LTXVAudioVAELoader", inputs: { ckpt_name: CK } },
+    "iclora": { class_type: "LoraLoaderModelOnly", inputs: { model: ["ck", 0], lora_name: comp.unionLora, strength_model: 1.0 } },
+    "icparams": { class_type: "GetICLoRAParameters", inputs: { iclora_model: ["iclora", 0] } },
+    "lv":     { class_type: "LoadVideo", inputs: { file: videoName } },
+    // start_time / duration are SECONDS; strict_duration false → returns fewer frames if the
+    // source is shorter than the window (never errors).
+    "vslice": { class_type: "Video Slice", inputs: { video: ["lv", 0], start_time: 0.0, duration: durationSec, strict_duration: false } },
+    "gvc":    { class_type: "GetVideoComponents", inputs: { video: ["vslice", 0] } },
+    "mogeload": { class_type: "LoadMoGeModel", inputs: { model_name: comp.mogeModel } },
+    "mogeinf": { class_type: "MoGeInference", inputs: { moge_model: ["mogeload", 0], image: ["gvc", 0], resolution_level: 9, fov_x_degrees: 0.0, batch_size: 4, force_projection: true, apply_mask: true } },
+    "depth":  { class_type: "MoGeRender", inputs: { moge_geometry: ["mogeinf", 0], output: "depth" } },
+    "gis":    { class_type: "GetImageSize", inputs: { image: ["depth", 0] } },
+    "pos":    { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: prompt || "" } },
+    "neg":    { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: neg } },
+    "emptyvid": { class_type: "EmptyLTXVLatentVideo", inputs: { width: v.width, height: v.height, length: ["gis", 2], batch_size: 1 } },
+    "emptyaud": { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: ["gis", 2], frame_rate: v.fps, batch_size: 1, audio_vae: ["avae", 0] } },
+    "li":     { class_type: "LoadImage", inputs: { image: imageName } },
+    "inplace": { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["ck", 2], image: ["li", 0], latent: ["emptyvid", 0], strength: 1.0, bypass: false } },
+    "cond":   { class_type: "LTXVConditioning", inputs: { positive: ["pos", 0], negative: ["neg", 0], frame_rate: v.fps } },
+    "addguide": { class_type: "LTXVAddGuide", inputs: { positive: ["cond", 0], negative: ["cond", 1], vae: ["ck", 2], latent: ["inplace", 0], image: ["depth", 0], frame_idx: 0, strength: 1.0, iclora_parameters: ["icparams", 0] } },
+    "concat": { class_type: "LTXVConcatAVLatent", inputs: { video_latent: ["addguide", 2], audio_latent: ["emptyaud", 0] } },
+    "ks":     { class_type: "KSampler", inputs: { model: ["iclora", 0], positive: ["addguide", 0], negative: ["addguide", 1], latent_image: ["concat", 0], seed, steps: v.steps, cfg: v.cfg, sampler_name: v.sampler, scheduler: v.scheduler, denoise: 1.0 } },
+    "sep":    { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["ks", 0] } },
+    "crop":   { class_type: "LTXVCropGuides", inputs: { positive: ["addguide", 0], negative: ["addguide", 1], latent: ["sep", 0] } },
+    "vdec":   { class_type: "VAEDecodeTiled", inputs: { samples: ["crop", 2], vae: ["ck", 2], tile_size: 768, overlap: 64, temporal_size: 4096, temporal_overlap: 64 } },
+    "adec":   { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep", 1], audio_vae: ["avae", 0] } },
+    "cv":     { class_type: "CreateVideo", inputs: { images: ["vdec", 0], audio: ["adec", 0], fps: v.fps } },
+    "save":   { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } },
+  };
 }
 
 // The hand-tuned sigma schedules from the official LTX-2.3 templates. These are NOT
@@ -3645,6 +3998,44 @@ async function generateComfyImage(req, res) {
         imagesUsed = imageNames.length;
         workflow = buildPhantom({ model, prompt, negative: negative_prompt || "", comp, imageNames, seed, v, imgCfg });
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
+      } else if (videoType === "ltx-union") {
+        // LTX Union Control: depth of the SOURCE VIDEO drives a new clip; the reference
+        // image sets appearance. Needs BOTH a source video and one reference image.
+        if (!sourceVideo && !sourceVideoName) { sendJson(res, 400, { error: "LTX union control needs a source video (the motion/structure to follow) plus a reference image (the appearance). Attach a video, then /imagine <description> with a reference image." }); return; }
+        if (!(Array.isArray(images) && images.length)) { sendJson(res, 400, { error: "LTX union control needs a reference image for the appearance (attach one image alongside the source video)." }); return; }
+        const comp = await videoCompanions("ltx-union", model, opts);
+        const v = resolveVideoConfig("ltx-union", opts, model, false);
+        // Output size follows the SOURCE video's aspect at the preset budget (depth is
+        // computed from that video, so matching its aspect keeps the structure aligned).
+        // Both dims MUST be /64 — the union IC-LoRA's reference_downscale_factor 2 needs the
+        // latent (dim/32) even, so /32 alone (an odd latent dim) makes LTXVAddGuide fail.
+        let aw = snapDim(v.width, 64), ah = snapDim(v.height, 64);
+        const sw = Number(sourceVideoWidth), sh = Number(sourceVideoHeight);
+        if (sw > 0 && sh > 0) {
+          const aspect = sw / sh;
+          const budget = (opts.width && opts.height) ? opts.width * opts.height : v.width * v.height;
+          aw = snapDim(Math.sqrt(budget * aspect), 64);
+          ah = snapDim(Math.sqrt(budget / aspect), 64);
+        } else if (opts.width && opts.height) { aw = snapDim(opts.width, 64); ah = snapDim(opts.height, 64); }
+        v.width = aw; v.height = ah;
+        // Length follows the DRIVING VIDEO by default — union control's whole job is to
+        // track that clip, so "auto" uses its full frame count (the preset's 97 is only the
+        // fallback when the source length is unknown). The cap is the single-pass ceiling:
+        // there is no in-graph chaining here (unlike Wan Animate), so the entire clip renders
+        // in one pass and a very long source (> ~10s) is truncated to UNION_HARD_CAP and
+        // noted. ⚙ length overrides — down for a quick test, up to the same ceiling.
+        const uFps = Number(sourceVideoFps) || v.fps || 25;
+        const srcFrames = Number(sourceVideoFrames) || 0;
+        const UNION_HARD_CAP = 241;
+        const wantFrames = opts.length ? Math.min(opts.length, UNION_HARD_CAP) : (srcFrames ? Math.min(srcFrames, UNION_HARD_CAP) : v.length);
+        const durationSec = wantFrames / uFps;
+        const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+        const refImageName = await uploadImage(images[0], controller.signal, "heykoko_unionref.png");
+        imagesUsed = 1;
+        workflow = buildLtxUnionControl({ prompt, negative: negative_prompt || "", comp, imageName: refImageName, videoName, durationSec, v, seed });
+        const outFrames = srcFrames ? Math.min(wantFrames, srcFrames) : wantFrames;
+        videoDims = { width: v.width, height: v.height, length: outFrames, fps: v.fps };
+        if (srcFrames > wantFrames) videoDims.truncatedFrom = srcFrames; // pinned/preset length cut the clip
       } else if (videoType) {
         // Video. WAN 5B ti2v + 14B i2v do image→video; WAN 14B t2v / Hunyuan are
         // text→video only. The dedicated WAN 2.2 14B i2v model needs a ref image.
@@ -3685,10 +4076,28 @@ async function generateComfyImage(req, res) {
         // LTX + 2+ imgs → arbitrary keyframes (each image pinned at an evenly-spaced
         // frame via LTXVAddGuide). Everything else uses only the first image.
         const isFLF = wantImage && videoType === "wan" && /14b/i.test(model) && /i2v/i.test(model) && images.length >= 2;
-        const isLtxKeyframes = wantImage && videoType === "ltx" && images.length >= 2;
+        // MSR reads its attachments as REFERENCES, not keyframes — so it must be
+        // checked before the keyframe branch, which would otherwise claim the same
+        // "ltx + 2 images" shape.
+        const isMsr = model === LTX_MSR;
+        const isLtxKeyframes = !isMsr && wantImage && videoType === "ltx" && images.length >= 2;
         const LTX_MAX_KEYFRAMES = 8;
-        let imageName = null, endImageName = null, imageNames = null;
-        if (wantImage && isLtxKeyframes) {
+        let imageName = null, endImageName = null, imageNames = null, backgroundName = null;
+        if (isMsr) {
+          // LiconMSR always needs a background still. With 2+ images the LAST one is
+          // that background and the ones before it are the subjects; with a SINGLE
+          // image it is BOTH the sole subject and the background (verified — the clip
+          // keeps the person's identity and uses the photo's own setting as the
+          // scene). So MSR never errors on image count here — wantImage already
+          // guarantees at least one.
+          const single = images.length === 1;
+          const subjects = single ? images.slice(0, 1) : images.slice(0, Math.min(images.length - 1, LTX_MSR_MAX_SUBJECTS));
+          imageNames = [];
+          for (let i = 0; i < subjects.length; i++) imageNames.push(await uploadImage(subjects[i], controller.signal, `heykoko_msr${i}.png`));
+          const bgSource = single ? images[0] : images[images.length - 1];
+          backgroundName = await uploadImage(bgSource, controller.signal, "heykoko_msrbg.png");
+          imagesUsed = single ? 1 : imageNames.length + 1;
+        } else if (wantImage && isLtxKeyframes) {
           imageNames = [];
           // DISTINCT filenames — uploadImage's default name + overwrite would clobber.
           const kfs = images.slice(0, LTX_MAX_KEYFRAMES);
@@ -3699,7 +4108,7 @@ async function generateComfyImage(req, res) {
           imagesUsed = 1;
           if (isFLF) { endImageName = await uploadImage(images[1], controller.signal, "heykoko_end.png"); imagesUsed = 2; }
         }
-        workflow = buildVideoWorkflow(videoType, { model, prompt, negative: negative_prompt || "", comp, imageName, endImageName, imageNames, seed, v, experts: expertPair });
+        workflow = buildVideoWorkflow(videoType, { model, prompt, negative: negative_prompt || "", comp, imageName, endImageName, imageNames, backgroundName, seed, v, experts: expertPair });
       } else if (berniniImageTask) {
         // Bernini IMAGE side — the video graph at length 1, decoded to a still.
         //   i2i → the attached image rides source_video (edit this picture)

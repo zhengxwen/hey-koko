@@ -642,6 +642,9 @@ function videoAutoDefaults(modelName) {
   // (30 steps / cfg 3), and the frontend can't see whether the distilled LoRA and
   // upscaler are installed. fps DOES differ per finetune: ltx-2.3's templates run
   // 25, Sulphur's run 24.
+  // MSR runs its own distilled recipe: 50 fps, 121 frames, and a fixed 8-step schedule
+  // (so steps/cfg stay bare "Auto" like the other distilled paths).
+  if (m === "ltx-msr") return { fps: 30, length: 121 };
   if (LTX_RE.test(m)) return { fps: /sulphur/.test(m) ? 24 : 25, length: 97 };
   if (/hunyuan/.test(m)) return { fps: 24, length: 49, steps: 20, cfg: 6 };
   // Phantom: fixed 50-step / cfg 7.5 (uni_pc) — no distill LoRA, so it never varies.
@@ -683,6 +686,9 @@ function comfyModelHint(name) {
   if (/vace/.test(n)) return t("oll_hint_vace");
   if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b" ? t("oll_hint_wan14b") : t("oll_hint_wan5b");
   if (/hunyuan/.test(n)) return t("oll_hint_hunyuan");
+  // MSR + Union Control before the generic LTX test — both are distinct LTX modes.
+  if (n === "ltx-msr") return t("oll_hint_ltxMsr");
+  if (n === "ltx-union") return t("oll_hint_ltxUnion");
   if (LTX_RE.test(n)) return t("oll_hint_ltx");
   // Image edit (needs a reference image + an instruction).
   if (/kontext/.test(n)) return t("oll_hint_kontext");
@@ -826,6 +832,8 @@ function comfyModelComponents(name) {
     ? "WAN2.2 14B MoE · UNETLoader ×2 · CLIP umt5 · VAE wan_2.1 · WanImageToVideo · KSamplerAdvanced ×2 · turbo: LightX2V 4-step LoRA"
     : "WAN2.2 5B · UNETLoader · CLIP umt5 · VAE wan_2.2 · WanImageToVideo · KSampler";
   if (/hunyuan/.test(n)) return "HunyuanVideo · UNETLoader · CLIP clip_l + llava · VAE hunyuan · KSampler";
+  if (n === "ltx-msr") return "LTX-2.3 MSR · UNETLoader(distilled) + ckpt VAE · LTXICLoRALoader · LiconMSR · LTXAddVideoICLoRAGuide · PromptRelayEncode · LTX2_NAG (+audio)";
+  if (n === "ltx-union") return "LTX-2.3 Union Control · CheckpointLoader(distilled) · LoraLoaderModelOnly(union-control IC-LoRA) → GetICLoRAParameters · LoadVideo→GetVideoComponents→MoGe depth · LTXVImgToVideoInplace(ref frame) · LTXVAddGuide(depth + iclora_parameters) · KSampler 8-step (+audio)";
   if (LTX_RE.test(n)) return "LTX-2 · CheckpointLoader · LTXAVTextEncoder(gemma) · LTXVConditioning · KSampler (+audio)";
   // Edit
   if (/kontext/.test(n)) return "FLUX Kontext · UNETLoader · DualCLIP(t5+clip_l) · VAE ae · ReferenceLatent · FluxGuidance · KSampler";
@@ -863,9 +871,10 @@ export function updateComfyMultiHint() {
       ? t("comfy_fps_source_opt", { fps: auto ? auto.fps : 16 })
       : (followsSource ? t("comfy_fps_source") : `Auto (${auto ? auto.fps : 24})`);
   }
-  // Wan Animate "auto" length = the FULL source clip (generated in segments + merged
-  // when it exceeds the single-pass cap); other models use a fixed preset length.
-  const lengthFollowsSource = !!(v && /animate/i.test(v));
+  // "auto" length = the FULL source clip for source-driven models: Wan Animate (segmented +
+  // merged past the single-pass cap) and LTX Union Control (single-pass, capped ≤241). Other
+  // models use a fixed preset length.
+  const lengthFollowsSource = !!(v && (/animate/i.test(v) || v === "ltx-union"));
   if (dom.comfyParamLength) dom.comfyParamLength.placeholder = lengthFollowsSource ? t("comfy_length_source") : `Auto (${auto ? auto.length : 49})`;
   // Steps / CFG show the model's real auto value when it's fixed (Phantom 50, LTX 30,
   // …). WAN 14B's flips with turbo, which the frontend can't detect — it keeps a bare
@@ -940,7 +949,8 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamBerniniTask, /bernini/i.test(m) && !/bernini_(image_edit|subject_image|text_image)/i.test(m));
   // LTX family only (incl. Sulphur) — the optional LoRA slot. It is the one builder
   // with a user-pickable LoRA; every other model mounts its LoRAs automatically.
-  const ltx = video && LTX_RE.test(m.toLowerCase());
+  // Union Control is excluded: it mounts its union IC-LoRA automatically, no user slot.
+  const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union";
   for (const el of [dom.comfyParamLtxLora, dom.comfyParamLtxLoraStrength]) setVis(el, ltx);
   if (ltx) syncLtxLoraOptions(m);
   // Phantom only — the image-guidance scale (its second, subject-fidelity CFG), and the

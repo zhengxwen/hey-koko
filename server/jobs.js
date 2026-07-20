@@ -89,6 +89,14 @@ function load() {
           return r ? { ...j, result: r } : null;
         })
         .filter(Boolean);
+      // Drop STALE undelivered finished jobs: a generated result the browser never acked
+      // within a day is not coming back to a waiting awaiter, and letting them pile up is
+      // what let the SSE snapshot grow unbounded in the first place. The orphan-result
+      // sweep just below then deletes their side files. (Non-terminal jobs are kept — a
+      // queued/paused job legitimately waits across restarts.)
+      const STALE_MS = 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      jobs = jobs.filter((j) => !(isTerminal(j) && (now - (j.finishedAt || j.createdAt || 0)) > STALE_MS));
     }
   } catch { jobs = []; }
   // Clean orphan result files (no matching undelivered 'done' job → already delivered / stale).
@@ -120,6 +128,19 @@ function broadcast(event) {
   for (const res of sseClients) { try { res.write(data); } catch {} }
 }
 const emitUpdate = (job) => broadcast({ type: "update", job: publicJob(job) });
+
+// A finished job's `result` holds the full generated media as base64 (a video can be tens
+// of MB). The SSE snapshot must therefore NEVER concatenate many results into one string:
+// enough undelivered media jobs push JSON.stringify past V8's max string length (~512MB),
+// which threw "Invalid string length" and killed streamEvents on connect — after which no
+// client received ANY event and every job appeared frozen at "queued". So the snapshot
+// carries only NON-TERMINAL jobs (queued/running/paused — their result is null), and each
+// finished job is delivered as its OWN event below (one result per stringify, always safe).
+const isTerminal = (j) => j.status === "done" || j.status === "error" || j.status === "interrupted";
+const liveJobs = () => jobs.filter((j) => !j.deliveredAt && !isTerminal(j));
+const terminalJobs = () => jobs.filter((j) => !j.deliveredAt && isTerminal(j));
+// Write one SSE event; a single oversized result is skipped rather than killing the stream.
+function writeEvent(res, event) { try { res.write(`data: ${JSON.stringify(event)}\n\n`); return true; } catch { return false; } }
 
 // ---- keep the host awake while the queue has work ---------------------------
 // The runner lives on THIS machine's server (ComfyUI is remote, but the queue,
@@ -688,7 +709,11 @@ async function uploadSpool(req, res) {
 function streamEvents(req, res) {
   res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache", Connection: "keep-alive" });
   res.write("retry: 3000\n\n");
-  res.write(`data: ${JSON.stringify({ type: "snapshot", jobs: jobs.filter((j) => !j.deliveredAt).map(publicJob) })}\n\n`);
+  // Light snapshot first (status/progress only), then each finished job's result on its own
+  // line — see the note by liveJobs(). A reconnecting client settles its awaiters from these
+  // per-job done/error events; the client keys off job.status, not the event `type`.
+  writeEvent(res, { type: "snapshot", jobs: liveJobs().map(publicJob) });
+  for (const j of terminalJobs()) writeEvent(res, { type: j.status === "done" ? "done" : "update", job: publicJob(j) });
   sseClients.add(res);
   const ka = setInterval(() => { try { res.write(": ka\n\n"); } catch {} }, 25000);
   req.on("close", () => { clearInterval(ka); sseClients.delete(res); });
@@ -725,7 +750,9 @@ async function reorderJobs(req, res) {
     const ranked = jobs.filter((j) => j.status === "queued" && rank.has(j.id)).sort((a, b) => rank.get(a.id) - rank.get(b.id));
     let qi = 0;
     jobs = jobs.map((j) => (j.status === "queued" && rank.has(j.id)) ? ranked[qi++] : j);
-    persist(); broadcast({ type: "snapshot", jobs: jobs.filter((j) => !j.deliveredAt).map(publicJob) });
+    // Reorder only moves QUEUED jobs, so a live-only snapshot is sufficient AND safe — never
+    // re-broadcast finished jobs' heavy results here (that path hit the same stringify crash).
+    persist(); broadcast({ type: "snapshot", jobs: liveJobs().map(publicJob) });
   }
   sendJson(res, 200, { ok: true });
 }
