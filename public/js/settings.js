@@ -57,6 +57,8 @@ export function saveCurrentSettings() {
         upscaleDenoise: dom.comfyParamUpscaleDenoise?.value || "",
         upscaleModel: dom.comfyParamUpscaleModel?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
+        videoCodec: dom.comfyParamVideoCodec?.value || "h264",
+        videoCrf: dom.comfyParamVideoCrf?.value || "",
         berniniMode: dom.comfyParamBerniniMode?.value || "",
         berniniTask: dom.comfyParamBerniniTask?.value || "",
         refMaxSize: dom.comfyParamRefMaxSize?.value || "",
@@ -234,6 +236,8 @@ export function loadSavedSettings() {
     // Best-effort — applyComfyModels re-applies this once the option list has loaded.
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
+    if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = cp.videoCodec || "h264";
+    if (dom.comfyParamVideoCrf) dom.comfyParamVideoCrf.value = cp.videoCrf || "";
     // berniniMode replaced the two separate checkboxes — fall back to the old keys so
     // a saved quality/lightx2v choice survives the upgrade.
     if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = cp.berniniMode || (cp.berniniLightx2v ? "lightx2v" : cp.berniniQuality ? "quality" : "");

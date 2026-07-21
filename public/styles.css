@@ -5004,6 +5004,22 @@ button.secondary:disabled {
   display: inline-block;
 }
 
+/* Shown only when a clip fails to decode (e.g. H.265 on a browser without HEVC) —
+   points the user at the download button, which is always present. */
+.videoUnplayableNote {
+  position: absolute;
+  left: 6px;
+  right: 40px; /* clear of the bottom-right download button */
+  bottom: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: none;
+}
+
 .videoDownloadBtn {
   position: absolute;
   right: 6px;

@@ -67,6 +67,9 @@ function comfyOverrides() {
   if (upDenoise !== undefined && upDenoise > 0) ov.upscaleDenoise = Math.min(1, upDenoise / 100); // upscale denoise % → 0–1
   if (dom.comfyParamUpscaleModel?.value) ov.upscaleModel = dom.comfyParamUpscaleModel.value; // manual upscale model (empty = auto)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
+  if (dom.comfyParamVideoCodec?.value) ov.videoCodec = dom.comfyParamVideoCodec.value; // video: h264 (default) | h265, via VHS_VideoCombine
+  const videoCrf = num(dom.comfyParamVideoCrf?.value);
+  if (videoCrf !== undefined) ov.videoCrf = videoCrf; // CRF for the selected codec (empty = codec default)
   // Bernini sampling recipe (one dropdown → the server's two mode flags).
   const berniniMode = dom.comfyParamBerniniMode?.value || "";
   if (berniniMode === "quality") ov.berniniQuality = true;   // 40-step / cfg 5, no LoRA
@@ -995,6 +998,13 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     // installed) — and because the run it produces is a materially different one.
     if (lastData.phantomTurbo && lastData.phantomTurbo.lora) {
       doneLine += `\n${t("msg_phantomTurbo", {}, plang)}`;
+    }
+    // Video codec — stated for every video (the codec affects where the file plays).
+    // A h265 request that fell back to h264 (VHS not installed) says so.
+    if (lastData.videoCodec === "h265") {
+      doneLine += `\n${t("msg_videoH265", {}, plang)}`;
+    } else if (lastData.videoCodec === "h264" && lastData.videoCodecNote === "vhs-missing") {
+      doneLine += `\n${t("msg_videoH265Fallback", {}, plang)}`;
     }
     if (lastData.ltxLora && lastData.ltxLora.name) {
       doneLine += `\n${t("msg_ltxLoraUsed", { lora: stripModelExt(lastData.ltxLora.name), strength: lastData.ltxLora.strength }, plang)}`;

@@ -3481,6 +3481,18 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       video.controls = true;
       video.loop = true;
       video.playsInline = true;
+      // If the browser can't decode this clip — an H.265 render on Firefox, or a Mac
+      // without a HEVC decoder — the <video> would just sit black with no explanation.
+      // On an actual decode/format error, surface a note pointing at the download button
+      // (already present below), so the file stays usable and the bubble still shows it.
+      // Fires only on failure, so a universally-playable h264 clip never shows it.
+      video.addEventListener("error", () => {
+        if (wrapper.querySelector(".videoUnplayableNote")) return;
+        const note = document.createElement("div");
+        note.className = "videoUnplayableNote";
+        note.textContent = t("msg_videoUnplayable");
+        wrapper.appendChild(note);
+      });
       // No autoplay — the user presses play. Muted by default so audio (LTX) never
       // surprises the user; they raise the volume themselves via the slider/icon or
       // the native controls. The poster shows immediately; the heavy video bytes load

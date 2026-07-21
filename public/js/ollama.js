@@ -916,6 +916,27 @@ export function updateComfyMultiHint() {
 // relight / pick-person) for non-animate, the upscale knob for non-upscale, and Image-CFG for
 // non-image. A pure upscale model shows only its own knob (no sampler / steps / prompt). No comfy
 // model selected (Ollama image path) → leave the modal untouched.
+// Per-codec default CRF — mirrors VIDEO_CRF_DEFAULT in server/comfy.js so the ⚙ CRF
+// placeholder shows the value the server will actually use when the field is left empty.
+const VIDEO_CRF_DEFAULT = { h264: 23, h265: 28 };
+
+// Whether THIS browser can play H.265/HEVC in an mp4. Runtime capability, not platform:
+// Safari yes; Chrome/Edge yes where the OS/GPU has a hardware HEVC decoder (common on
+// recent machines, Mac or Windows); Firefox no. Used to warn before choosing H.265 and
+// to decide whether a rendered H.265 clip needs the "download to view" fallback.
+export function canPlayHevc() {
+  const v = document.createElement("video");
+  return !!(v.canPlayType('video/mp4; codecs="hvc1"') || v.canPlayType('video/mp4; codecs="hev1"'));
+}
+
+// Show the selected codec's default CRF in the field's placeholder (23 h264 / 28 h265),
+// so an empty field visibly means "that codec's default", not "0".
+function syncVideoCrfPlaceholder() {
+  if (!dom.comfyParamVideoCrf) return;
+  const codec = dom.comfyParamVideoCodec?.value === "h265" ? "h265" : "h264";
+  dom.comfyParamVideoCrf.placeholder = `default ${VIDEO_CRF_DEFAULT[codec]} (${codec === "h265" ? "H.265" : "H.264"})`;
+}
+
 export function updateComfyParamVisibility() {
   const m = dom.comfyModelSelect?.value || "";
   if (!m) return;
@@ -937,6 +958,9 @@ export function updateComfyParamVisibility() {
   // Video timing — gen length is diffusion-only (an upscale / VFI keeps the source's own length).
   setVis(dom.comfyParamLength, video && diffusion);
   for (const el of [dom.comfyParamFps, dom.comfyParamTimeout]) setVis(el, video);
+  // Video codec + its CRF: every video model (the tail rewrite is builder-agnostic).
+  for (const el of [dom.comfyParamVideoCodec, dom.comfyParamVideoCrf]) setVis(el, video);
+  if (video) syncVideoCrfPlaceholder();
   setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // frame-interpolation + interpolation-engine row
   // Wan Animate (both modes): torch.compile speed + relight strength.
   for (const el of [dom.comfyParamTorchCompile, dom.comfyParamRelight]) setVis(el, animate);
@@ -1133,6 +1157,7 @@ function initComfyParamsModal() {
     dom.comfyParamRelight,
     dom.comfyParamRefMaxSize,
     dom.comfyParamPhantomImgCfg,
+    dom.comfyParamVideoCrf,
     dom.comfyParamScailSubject,
     dom.comfyParamScailRefSubject,
     dom.comfyParamScailThreshold,
@@ -1182,6 +1207,15 @@ function initComfyParamsModal() {
   // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset
   // restores that rather than an empty value.
   dom.comfyParamInterpMethod?.addEventListener("change", () => saveCurrentSettings());
+  // Video codec: keep the CRF placeholder showing the selected codec's default, and warn
+  // once when H.265 is picked in a browser that can't play it back.
+  dom.comfyParamVideoCodec?.addEventListener("change", () => {
+    if (dom.comfyParamVideoCodec.value === "h265" && !canPlayHevc() && !confirm(t("comfy_videoCodec_confirmHevc"))) {
+      dom.comfyParamVideoCodec.value = "h264"; // declined → back to the universal codec
+    }
+    syncVideoCrfPlaceholder();
+    saveCurrentSettings();
+  });
 
   dom.comfyParamsReset?.addEventListener("click", () => {
     for (const el of fields) if (el) el.value = "";
@@ -1189,6 +1223,8 @@ function initComfyParamsModal() {
     if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = "";
     if (dom.comfyParamBerniniTask) dom.comfyParamBerniniTask.value = "";
     if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = "rife";
+    if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = "h264"; // default codec, not empty
+    syncVideoCrfPlaceholder();
     state.animateMaskPoint = null; // back to auto-centre target
     syncMaskPointLabel();
     saveCurrentSettings();

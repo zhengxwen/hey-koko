@@ -68,6 +68,8 @@ export const dom = {
   comfyParamUpscaleDenoise: document.querySelector("#comfyParamUpscaleDenoise"),
   comfyParamUpscaleModel: document.querySelector("#comfyParamUpscaleModel"),
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),
+  comfyParamVideoCodec: document.querySelector("#comfyParamVideoCodec"),
+  comfyParamVideoCrf: document.querySelector("#comfyParamVideoCrf"),
   comfyModelHint: document.querySelector("#comfyModelHint"),
   comfyModelWarn: document.querySelector("#comfyModelWarn"),
   comfyParamBerniniMode: document.querySelector("#comfyParamBerniniMode"),

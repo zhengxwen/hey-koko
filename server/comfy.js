@@ -52,7 +52,7 @@ async function probeVideo(buf) {
 // Re-encode a video buffer to a target fps (ffmpeg -r). Used so a custom Animate
 // output fps produces correct timing (the model emits one frame per source frame).
 // Returns the new buffer, or null on failure (caller keeps the original).
-async function resampleVideo(buf, targetFps) {
+async function resampleVideo(buf, targetFps, h265) {
   let inP, outP;
   try {
     const id = crypto.randomUUID();
@@ -62,7 +62,11 @@ async function resampleVideo(buf, targetFps) {
     const ok = await new Promise((resolve) => {
       // Keep the audio (-c:a aac) — the merge step re-muxes the source soundtrack
       // onto the chunked output, so a resampled source must still carry its audio.
-      const p = spawn("ffmpeg", ["-y", "-i", inP, "-r", String(targetFps), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", outP]);
+      // Preserve the container codec: when the output was h265 (⚙ H.265 on), re-encode
+      // with Apple's hardware HEVC (hvc1-tagged) so this rare exact-fps pass doesn't
+      // quietly convert it back to h264; otherwise libx264 as before.
+      const vcodec = h265 ? ["-c:v", "hevc_videotoolbox", "-tag:v", "hvc1"] : ["-c:v", "libx264"];
+      const p = spawn("ffmpeg", ["-y", "-i", inP, "-r", String(targetFps), ...vcodec, "-pix_fmt", "yuv420p", "-c:a", "aac", outP]);
       p.on("close", (code) => resolve(code === 0)); p.on("error", () => resolve(false));
     });
     if (!ok) return null;
@@ -783,12 +787,14 @@ async function proxyComfyModels(req, res) {
     // list is filtered to LTX-family files by the same name test the checkpoints use.
     // Other builders mount their LoRAs automatically and take no input here.
     //
-    // EXCLUDE the LoRAs the builders mount themselves: the MSR IC-LoRA (buildLtxMsr
-    // loads it via LTXICLoRALoaderModelOnly) and the distilled cascade LoRAs
-    // (buildLtxCascade / MSR load them as comp.distillLora). Offering those here is a
-    // trap — picking the MSR one would stack it a SECOND time on the already-applied
-    // MSR loader. Only genuine style/content LoRAs (Sulphur) belong in this slot.
-    const LTX_AUTO_LORA_RE = /licon|msr|distill/i;
+    // EXCLUDE the LoRAs that don't belong in a plain LoraLoaderModelOnly slot:
+    //   • IC-LoRAs — the MSR (licon/msr) and Union Control (ic-lora / union-control) weights
+    //     REQUIRE the LTXICLoRALoaderModelOnly + GetICLoRAParameters / LTXVAddGuide mechanism;
+    //     stacked via a plain loader here they'd error or produce garbage (and picking the MSR
+    //     one would double-stack the already-applied MSR loader).
+    //   • distilled cascade LoRAs — buildLtxCascade / MSR mount those themselves (comp.distillLora).
+    // Only genuine style/content LoRAs (Sulphur) belong in this slot.
+    const LTX_AUTO_LORA_RE = /licon|msr|distill|ic.?lora|union.?control/i;
     const ltxLoras = allLoras.filter((n) => LTX_MODEL_RE.test(n) && !LTX_AUTO_LORA_RE.test(n));
     // Edit/video models can be either diffusion models (UNETLoader) or full
     // checkpoints (instruct-pix2pix, ltx). Plain checkpoints stay in `models`.
@@ -807,6 +813,14 @@ async function proxyComfyModels(req, res) {
     for (const n of all) {
       const vt = videoTypeOf(n);
       if (!vt) continue;
+      // The FULL distilled LTX checkpoint (ltx-2.3-…-distilled-fp8) is a COMPONENT consumed by
+      // MSR / Union Control (both resolve it by scanning disk directly), NOT a standalone t2v
+      // generator: buildLtxVideo's plain path would either double-distill it (cascade mounts a
+      // distill LoRA on an already-distilled base) or under-run it (single-stage 30-step). It
+      // otherwise collides with dev-fp8 as a second identical "LTX-2.3 22B" entry. Hide it here
+      // (keeping videoTypeOf="ltx" so it also stays OUT of the image/ckpt list). dev-fp8 remains
+      // the standalone LTX generator.
+      if (vt === "ltx" && /ltx.*distill/i.test(n) && !LTX_COMPONENT_RE.test(n)) continue;
       // Bernini = WAN 2.2 MoE video-edit. Collapse its high/low pair into ONE
       // "bernini" entry (v2v / rv2v auto-picked at generation time).
       // needsVideo: requires a SOURCE VIDEO input (video-edit / pose transfer) —
@@ -1996,6 +2010,58 @@ function resolveVideoConfig(videoType, opts, model, turbo) {
 // read fps from GetVideoComponents) — so `baseFps` MUST be that source fps for
 // those models. Mutates `wf` in place; returns the new numeric fps (or `baseFps`
 // unchanged when not applied).
+// Per-codec default CRF (quality → size). Chosen so each codec's default is a sensible
+// quality point for it: libx264 ~23, libx265 ~28 (HEVC's scale runs ~6 lower for the
+// same look, and 28 is where it reliably beats h264 on size). A ⚙ value overrides.
+const VIDEO_CRF_DEFAULT = { h264: 23, h265: 28 };
+
+// Rewrite a video workflow's tail (CreateVideo → SaveVideo) to VideoHelperSuite's
+// VHS_VideoCombine, used for BOTH codecs so h264 and h265 share ONE path and one CRF
+// quality knob:
+//   video/h264-mp4  (libx264)            — default, plays everywhere
+//   video/h265-mp4  (libx265 + hvc1 tag) — smaller, Safari / recent-Mac playback only
+// VHS_VideoCombine encodes straight from FRAMES, so it replaces BOTH tail nodes: it
+// reads the inputs CreateVideo was fed — images, fps (as frame_rate), and the optional
+// audio — and writes under SaveVideo's filename_prefix. LIVE-VERIFIED on the box: both
+// formats accept crf + pix_fmt, outputs land under the `gifs` key, frame_rate takes a
+// literal OR a FLOAT link (the edit builders' source fps), audio yields a single
+// "<prefix>_NNNNN-audio.mp4".
+//
+// MUST run AFTER applyVfi (which rewrites CreateVideo.images → the VFI node and bumps
+// its fps): reading CreateVideo's inputs here then picks up the interpolated frames and
+// rate. No-op returning false when there is no CreateVideo, so it is safe on any
+// workflow (image graphs, upscale-only) without a guard at the call site.
+function applyVideoCodec(wf, codec, crf) {
+  const c = codec === "h265" ? "h265" : "h264";
+  let createId = null, saveId = null;
+  for (const id in wf) {
+    const ct = wf[id].class_type;
+    if (ct === "CreateVideo") createId = id;
+    else if (ct === "SaveVideo") saveId = id;
+  }
+  if (!createId) return false;
+  const cv = wf[createId].inputs;
+  const prefix = (saveId && wf[saveId].inputs.filename_prefix) || "heykoko_vid";
+  const inputs = {
+    images: cv.images,
+    frame_rate: cv.fps,
+    loop_count: 0,
+    filename_prefix: prefix,
+    format: `video/${c}-mp4`,
+    pingpong: false,
+    save_output: true,
+    pix_fmt: "yuv420p",
+    crf: crf > 0 ? Math.min(51, crf) : VIDEO_CRF_DEFAULT[c],
+    save_metadata: false,
+  };
+  if (cv.audio != null) inputs.audio = cv.audio; // carry the soundtrack when the model has one
+  delete wf[createId];
+  if (saveId) delete wf[saveId];
+  // "vhsout" — a string id that can't collide with the numeric ids builders use.
+  wf["vhsout"] = { class_type: "VHS_VideoCombine", inputs };
+  return true;
+}
+
 function applyVfi(wf, mult, baseFps, method) {
   const m = Math.round(Number(mult) || 0);
   if (!wf || m < 2) return baseFps;
@@ -3482,6 +3548,8 @@ async function generateComfyImage(req, res) {
   let precisionUsed = null; // tier(s) actually loaded — always reported
   let ltxLoraUsed = null;   // { name, strength } when an LTX LoRA was actually mounted
   let phantomTurboUsed = null; // { lora } when Phantom's step-distill LoRA was mounted
+  let videoCodecUsed = null;   // "h264" | "h265" — codec the video was actually saved as
+  let videoCodecNote = null;   // "vhs-missing" when a h265 request fell back to native h264
   let precisionNote = null; // set only when those differ from the ⚙ request
   try {
     const body = await readBody(req);
@@ -4342,6 +4410,25 @@ async function generateComfyImage(req, res) {
         }
       }
 
+      // Video codec: route the tail through VHS_VideoCombine so BOTH h264 and h265 get
+      // one CRF quality knob. Only for video workflows (they have a CreateVideo node);
+      // requires VideoHelperSuite. After applyVfi so the tail it reads is interpolated.
+      //   • VHS present → rewrite for the requested codec (default h264)
+      //   • VHS absent  → leave native SaveVideo (h264); a h265 request degrades to
+      //                   h264 and says so, rather than failing the whole render.
+      const isVideoTail = Object.values(workflow).some((n) => n.class_type === "CreateVideo");
+      if (isVideoTail) {
+        const wantCodec = opts.videoCodec === "h265" ? "h265" : "h264";
+        const crf = Number(opts.videoCrf) || 0;
+        const vhsOk = await comfyHasNodes(["VHS_VideoCombine"]);
+        if (vhsOk && applyVideoCodec(workflow, wantCodec, crf)) {
+          videoCodecUsed = wantCodec;
+        } else {
+          videoCodecUsed = "h264"; // native SaveVideo path
+          if (wantCodec === "h265") videoCodecNote = "vhs-missing"; // asked h265, VHS not installed
+        }
+      }
+
       // Queue the prompt.
       const queueResp = await fetch(`${currentComfyUrl()}/prompt`, {
         method: "POST",
@@ -4376,7 +4463,9 @@ async function generateComfyImage(req, res) {
       let videoMime = "video/mp4";
       let firstVideoBuf = null; // kept to ffprobe the real output frame count (animate chunking)
       for (const nodeId of Object.keys(outputs)) {
-        for (const img of outputs[nodeId].images || []) {
+        // SaveVideo/SaveImage report under `images`; VHS_VideoCombine (⚙ H.265) reports
+        // the saved file under `gifs` — same {filename,subfolder,type} shape for /view.
+        for (const img of [...(outputs[nodeId].images || []), ...(outputs[nodeId].gifs || [])]) {
           if (img.type === "temp") continue; // skip previews, keep final outputs
           const params = new URLSearchParams({
             filename: img.filename,
@@ -4403,7 +4492,7 @@ async function generateComfyImage(req, res) {
       if (exactTargetFps > 0 && outVideos.length && videoDims && videoDims.fps > exactTargetFps) {
         let anyResampled = false;
         for (let vi = 0; vi < outVideos.length; vi++) {
-          const rs = await resampleVideo(Buffer.from(outVideos[vi], "base64"), exactTargetFps);
+          const rs = await resampleVideo(Buffer.from(outVideos[vi], "base64"), exactTargetFps, videoCodecUsed === "h265");
           if (rs) { outVideos[vi] = rs.toString("base64"); anyResampled = true; }
         }
         // Report the exact fps + matching frame count (duration unchanged) — but only if
@@ -4442,7 +4531,7 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI finished but produced no video file (output nodes: ${nodeIds}). Make sure the workflow includes a SaveVideo node, or retry.` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, imagesUsed });
       } else {
         const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);

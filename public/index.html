@@ -807,6 +807,17 @@
             <input id="comfyParamTorchCompile" type="checkbox" />
             <span id="comfyParamTorchCompileLabel">torch.compile speedup (Wan Animate)</span>
           </label>
+          <label title="All video models: the codec the saved mp4 is encoded with (VideoHelperSuite, straight from frames — no re-encode). H.264 (libx264) is the default and plays in every browser and device. H.265/HEVC (libx265) is smaller for the same look on detailed / higher-resolution footage, but needs HEVC support to play: it works in Safari, and in Chrome/Edge on systems with a hardware HEVC decoder (common on recent machines) — but NOT in Firefox or where there's no decoder. This app checks YOUR current browser and asks before using H.265 if it can't play it — so it isn't Mac-only. Either way the audio track is kept, and the file is downloadable from the bubble even if it can't preview here.">
+            <span id="comfyParamVideoCodecLabel">Video codec</span>
+            <select id="comfyParamVideoCodec">
+              <option id="comfyVideoCodecOptH264" value="h264">H.264 · plays everywhere (default)</option>
+              <option id="comfyVideoCodecOptH265" value="h265">H.265 · smaller (needs HEVC support)</option>
+            </select>
+          </label>
+          <label title="Video quality vs size (CRF), for whichever codec is selected. EMPTY uses that codec's default — 23 for H.264, 28 for H.265 (HEVC's scale runs lower for the same look). Higher = smaller file but softer; lower = larger, sharper. Range 0–51. Raise it a few points to shrink files further; for H.265, ~28–30 is where it reliably beats H.264 on size. The placeholder shows the current codec's default.">
+            <span id="comfyParamVideoCrfLabel">Video quality (CRF)</span>
+            <input id="comfyParamVideoCrf" type="number" min="0" max="51" step="1" placeholder="default 23 (H.264)" />
+          </label>
           <label title="Bernini video only: which EDIT TASK to tell the model it is doing. Bernini picks its task from which inputs are connected, but several video-edit tasks share the same wiring (source video only) and differ only by this instruction line — so they can only be reached explicitly. Auto = infer from the attachments (video → edit, image → image-to-video, nothing → text-to-video). Relight/restyle adjusts lighting, colours, textures and style. Action adjusts the subject's action or position. Content propagation is the specialised propagation task. Generic uses the plain assistant line.">
             <span id="comfyParamBerniniTaskLabel">Edit task (bernini video)</span>
             <select id="comfyParamBerniniTask">
