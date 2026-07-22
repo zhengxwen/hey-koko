@@ -105,6 +105,16 @@ function loadProviderConfig({ file: filePath, kind, defaultBase, envKey, envBase
 const _warned = new Set();
 function warnOnce(key, msg) { if (!_warned.has(key)) { _warned.add(key); console.warn(msg); } }
 
+// Names of locally-installed Ollama models, recorded from every /api/models poll
+// (see injectModels). Ollama models are commonly namespaced with a slash
+// (`huihui_ai/gemma-4-abliterated:12b-qat`), which would otherwise collide with
+// the "any slashed id → OpenRouter" ad-hoc route below. The frontend always polls
+// /api/models before a chat request can be issued, so this is populated in time.
+const _localModels = new Set();
+function noteLocalModels(models) {
+  for (const m of models) if (m && !m.cloud && m.name) _localModels.add(m.name);
+}
+
 // All configured cloud providers, in ROUTING PRIORITY order. openai.json first
 // (the generic/official slot, prefix-routed), then openrouter.json (allowlist-
 // only). Each is independent — enable either, both, or neither.
@@ -135,7 +145,9 @@ function resolveProvider(model) {
       // id is unmistakably OpenRouter's namespace, so route it there even when it
       // isn't in the curated allowlist. The allowlist still drives what the DROPDOWN
       // lists (that's what `models[]` is required for) — this only affects routing.
-      if (p.kind === "openrouter" && model.includes("/")) return p;
+      // Exclude locally-installed Ollama models, which are ALSO slashed
+      // (`huihui_ai/gemma-…:tag`) and must stay on local Ollama.
+      if (p.kind === "openrouter" && model.includes("/") && !_localModels.has(model)) return p;
     } else if (p.kind !== "openrouter" && !model.includes("/") && PREFIX_RE.test(model)) {
       // Bare names only: a slashed id belongs to OpenRouter's namespace and must never
       // be prefix-routed to the openai.json provider (e.g. `deepseek/…` starts with
@@ -230,6 +242,7 @@ function contextLengthFor(model) {
 // place). Called by claude.listModels so /api/models carries all clouds.
 // cloud:true lets the frontend badge these (☁️) apart from local Ollama models.
 async function injectModels(models) {
+  noteLocalModels(models); // remember local Ollama names so routing won't hijack slashed ones
   const existing = new Set(models.map((m) => m.name));
   for (const cfg of loadProviders()) {
     let ids;

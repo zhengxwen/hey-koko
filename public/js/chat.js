@@ -37,11 +37,11 @@ import { applyHighlights, captureAnchor, highlightsInSelection, registerHighligh
 // trailing render so the final content always lands. Only one reply streams into
 // the active tab at a time, so a single module-level throttle is enough.
 //
-// 1000ms coalesces aggressively (kills the per-character flicker at the cost of a
-// chunkier feel). Lower it (~120ms ≈ 8 repaints/sec) for a smoother token-by-
-// token streaming look — with the tradeoff that fast models, which finish inside
-// one or two windows, appear to pop the whole bubble out at once at higher values.
-const STREAM_RENDER_MS = 1000;
+// 200ms ≈ 5 repaints/sec — a smooth token-by-token stream without the per-character
+// flicker (each render re-parses the whole message + swaps innerHTML). Raising it
+// (e.g. 1000ms) coalesces harder but feels chunky; lowering it (~120/60ms) is
+// smoother still at the cost of more full re-renders on long replies.
+const STREAM_RENDER_MS = 200;
 let _streamRenderTimer = null;
 let _streamRenderLast = 0;
 let _streamRenderPending = null;
@@ -72,6 +72,16 @@ function cancelStreamRender() {
   if (_streamRenderTimer) { clearTimeout(_streamRenderTimer); _streamRenderTimer = null; }
   _streamRenderPending = null;
   _streamRenderLast = 0;
+}
+
+// Render streaming thinking text into its box and keep it pinned to the newest
+// line. The box has a max-height (300px) so it becomes its own scroll container;
+// replacing innerHTML resets scrollTop to the top, hiding freshly-streamed lines
+// below the fold — so re-pin to the bottom after each render while it streams.
+function renderThinkingInto(el, md) {
+  if (!el) return;
+  el.innerHTML = markdownToHtml(md);
+  el.scrollTop = el.scrollHeight;
 }
 
 // "Sending/Receiving / Stopping" status pill (bottom-right, blue). Shown IMMEDIATELY on
@@ -1326,7 +1336,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
         if (state.activeTabId === tabId) {
           scheduleStreamRender(() => {
             const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
-            if (thinkEl) { thinkEl.innerHTML = markdownToHtml(thinkingContent); scrollChatToEndIfPinned(); }
+            if (thinkEl) { renderThinkingInto(thinkEl, thinkingContent); scrollChatToEndIfPinned(); }
           });
         }
         return;
@@ -1550,7 +1560,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
         if (state.activeTabId === tabId) {
           scheduleStreamRender(() => {
             const thinkEl = dom.messagesEl.querySelector('.streaming-bubble .thinking-content');
-            if (thinkEl) { thinkEl.innerHTML = markdownToHtml(thinkingContent); scrollChatToEndIfPinned(); }
+            if (thinkEl) { renderThinkingInto(thinkEl, thinkingContent); scrollChatToEndIfPinned(); }
           });
         }
         return;
@@ -1973,8 +1983,12 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
       if (refNode) dom.messagesEl.insertBefore(pending, refNode);
       else dom.messagesEl.appendChild(pending);
     }
-    pending.querySelector(".markdownBody").innerHTML =
-      `<span class="thinking-text">${text}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
+    // Reset to a clean single-body layout each call: a prior STREAMING turn may
+    // have restructured pending into thinking-details + content, and tool-status
+    // updates must land in the main bubble, not inside a collapsed thinking block.
+    pending.className = "message assistant thinking";
+    pending.innerHTML =
+      `<div class="markdownBody"><span class="thinking-text">${text}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span></div>`;
     scrollChatToEnd();
   };
   setPending(t("msg_thinking"));
@@ -1998,25 +2012,97 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
   let finalContent = "";
   let forceText = false;
   let genError = null;
+
+  // Run one agent turn and return an Ollama-shaped message {content, thinking,
+  // tool_calls}. LOCAL Ollama streams (stream:true) so text + thinking appear
+  // live (char-by-char) even in tool mode, while tool_calls are still collected
+  // to drive the loop. CLOUD models keep stream:false — the Claude/OpenAI proxies
+  // deliver tool-turns non-streaming by design (see server backends).
+  async function runAgentTurn(useTools) {
+    const isCloud = isCloudModel();
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abortController.signal,
+      body: JSON.stringify({
+        model: dom.modelSelect.value,
+        messages,
+        ...(useTools ? { tools: activeToolSchemas() } : {}),
+        ...(showThinking ? { think: true } : {}),
+        stream: !isCloud,
+        options: { temperature: 0.7, num_ctx: getNumCtx() },
+        timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
+      }),
+    });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(cleanErrorMessage(d.error) || t("chat_requestFailed")); }
+    if (isCloud) return (await res.json()).message || {};
+
+    // Stream the local turn into the pending bubble, live.
+    const reader = res.body.getReader();
+    cancelReaderOnAbort(reader, abortController.signal);   // WebKit: unblock a hung read() on Stop
+    const decoder = new TextDecoder();
+    let buffer = "", content = "", thinking = "", toolCalls = [];
+    let live = null;   // { md, thinkEl } — built lazily on the first token
+    const buildLive = () => {
+      if (live || state.activeTabId !== tabId || !pending) return;
+      pending.classList.remove("thinking");
+      pending.innerHTML = "";
+      let thinkEl = null;
+      if (showThinking) {
+        const details = document.createElement("details");
+        details.className = "thinking-details";
+        details.open = true;
+        details.innerHTML = `<summary><span class="thinking-text">${t("msg_thinkingInProgress")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span></summary><div class="thinking-content markdownBody"></div>`;
+        pending.appendChild(details);
+        thinkEl = details.querySelector(".thinking-content");
+      }
+      const md = document.createElement("div");
+      md.className = "markdownBody";
+      pending.appendChild(md);
+      live = { md, thinkEl };
+      setAvatarState("talking");
+    };
+    const flush = (line) => {
+      if (!line.trim()) return;
+      let data; try { data = JSON.parse(line); } catch { return; }
+      const m = data.message || {};
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length) toolCalls.push(...m.tool_calls);
+      if (m.thinking) {
+        thinking += m.thinking;   // always collect (stored on the reply); render only when shown
+        if (showThinking) {
+          buildLive();
+          if (live?.thinkEl) scheduleStreamRender(() => { if (live?.thinkEl) { renderThinkingInto(live.thinkEl, thinking); scrollChatToEndIfPinned(); } });
+        }
+      }
+      if (m.content) {
+        content += m.content;
+        buildLive();
+        // Real content began — collapse the live thinking block.
+        if (live?.thinkEl && thinking) {
+          const details = pending?.querySelector(".thinking-details");
+          if (details && details.open) { details.open = false; const s = details.querySelector("summary"); if (s) s.textContent = t("msg_thinkingSummary"); }
+        }
+        if (live?.md) scheduleStreamRender(() => { if (live?.md) { live.md.innerHTML = markdownToHtml(content); scrollChatToEndIfPinned(); } });
+      }
+    };
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const l of lines) flush(l);
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) flush(buffer);
+    cancelStreamRender();
+    return { content, thinking, tool_calls: toolCalls };
+  }
+
   try {
     for (let iter = 0; iter < 6; iter++) {
       const useTools = iter < 5 && !forceText; // last turn / repeat detected: force a text answer
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: abortController.signal,
-        body: JSON.stringify({
-          model: dom.modelSelect.value,
-          messages,
-          ...(useTools ? { tools: activeToolSchemas() } : {}),
-          ...(showThinking ? { think: true } : {}),
-          stream: false,
-          options: { temperature: 0.7, num_ctx: getNumCtx() },
-          timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
-        }),
-      });
-      if (!res.ok) { const d = await res.json(); throw new Error(cleanErrorMessage(d.error) || t("chat_requestFailed")); }
-      const msg = (await res.json()).message || {};
+      const msg = await runAgentTurn(useTools);
       if (msg.thinking) thinkingContent += (thinkingContent ? "\n\n" : "") + msg.thinking;
       const toolCalls = msg.tool_calls || [];
 
