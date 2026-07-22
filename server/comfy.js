@@ -493,7 +493,10 @@ async function ltxMsrParts(pref) {
     comfyHasNodes(["LiconMSR", "LTXICLoRALoaderModelOnly", "LTXAddVideoICLoRAGuide", "PromptRelayEncode"]),
   ]);
   const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
-  const msrLora = find(loras, /licon.*msr|msr.*v2/i);
+  // Prefer the V2 IC-LoRA explicitly. A bare first-match would pick V1 if both are on
+  // disk ("…-MSR-V1" sorts before "…-V2"), silently downgrading. Fall back to any
+  // Licon-MSR build so a machine with only V1 (or a renamed file) still works.
+  const msrLora = find(loras, /licon.*msr.*v2|msr.*v2/i) || find(loras, /licon.*msr/i);
   const encoder = find(clips, /gemma.*12b/i) || find(clips, /gemma_?3/i);
   // Precision-by-TIER (not the generic pickPrecision base-swap): the mxfp8 files carry a
   // "_block32" suffix, so their precisionBase differs and the base-match would silently miss.
