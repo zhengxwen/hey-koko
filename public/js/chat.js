@@ -3081,13 +3081,31 @@ function buildThinkingDetails(thinkingText, frames) {
 // whole file — once the video scrolls near the visible area. The object URLs are
 // revoked on the next renderChat so they don't leak.
 let videoLazyObserver = null;
+let videoPauseObserver = null;
 const videoObjectUrls = new Set();
 const videoLazyData = new WeakMap(); // video element → { data, mime } until loaded
 
 function resetVideoLazyLoading() {
   if (videoLazyObserver) { videoLazyObserver.disconnect(); videoLazyObserver = null; }
+  if (videoPauseObserver) { videoPauseObserver.disconnect(); videoPauseObserver = null; }
   for (const url of videoObjectUrls) URL.revokeObjectURL(url);
   videoObjectUrls.clear();
+}
+
+// Pause a playing clip once it scrolls fully out of the chat viewport, so a video
+// the user scrolled past doesn't keep playing (and blaring audio) off-screen. It
+// stays observed for the element's lifetime — scrolling it back into view just
+// leaves it paused (the user presses play again). Companion to videoLazyObserver
+// but with no rootMargin: it fires on ACTUAL visibility, not the load-ahead band.
+function observeVideoPause(video) {
+  if (!videoPauseObserver) {
+    videoPauseObserver = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting && !e.target.paused) e.target.pause();
+      }
+    }, { root: dom.messagesEl, threshold: 0 });
+  }
+  videoPauseObserver.observe(video);
 }
 
 function base64ToBlobUrl(b64, mime) {
@@ -3114,6 +3132,7 @@ state.loadVideoNow = loadVideoNow;
 function lazyLoadVideo(video, base64, mime) {
   video.preload = "none"; // nothing loads until it nears the viewport
   videoLazyData.set(video, { data: base64, mime });
+  observeVideoPause(video); // pause it if the user scrolls it out of view mid-play
   if (!videoLazyObserver) {
     videoLazyObserver = new IntersectionObserver((entries) => {
       for (const e of entries) {

@@ -128,6 +128,10 @@ export function switchTab(tabId) {
   if (!getTab(tabId)) return;
   if (tabId === state.activeTabId) return;
   stopSpeech();
+  // Pause any playing chat video before leaving this tab. renderChat() rebuilds
+  // messagesEl and destroys the elements anyway, but pause first so audio stops
+  // immediately (heavy tabs defer the re-render behind a double-rAF).
+  dom.messagesEl.querySelectorAll("video").forEach((v) => { if (!v.paused) v.pause(); });
   const currentTab = getActiveTab();
   if (currentTab) {
     currentTab.personality = dom.personalitySelect.value;
