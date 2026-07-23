@@ -377,8 +377,21 @@ export async function refreshBgWorkers() {
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
 // videoModels} dataset (a single endpoint or the union across worker lanes).
+// Last dataset applied to the dropdown, kept so a UI-language switch can rebuild
+// the options (optgroup labels + the i18n image-upscale label + capability dots)
+// with the new language — network-free. See relocalizeComfyModels.
+let _lastComfyData = null;
+
+// Repopulate the ComfyUI model dropdown from the cached dataset so its localized
+// bits (optgroup labels, the "image-upscale" label) follow a UI-language switch.
+// No-op until the first real population. Called from the language-change handler.
+export function relocalizeComfyModels() {
+  if (_lastComfyData) applyComfyModels(_lastComfyData);
+}
+
 function applyComfyModels(data) {
   if (!dom.comfyModelSelect) return;
+  _lastComfyData = data;
   try {
     const models = data.models || [];                 // checkpoints (txt2img / img2img)
     const editModels = data.editModels || [];         // instruction-edit models (need a ref image)

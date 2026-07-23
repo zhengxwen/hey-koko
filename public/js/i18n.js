@@ -877,7 +877,7 @@ const UI = {
     msg_upscaleUsed: "🔍 upscaled with ${model}",
     msg_ltxLoraUsed: "🧩 LoRA: ${lora} (strength ${strength})",
     msg_phantomTurbo: "⚡ turbo: 8 steps, dual-CFG subject guidance off",
-    msg_videoH265: "🗜 H.265 mp4 (smaller; needs HEVC support to play)",
+    msg_videoH265: "🗜 H.265 mp4 (needs HEVC support to play)",
     msg_videoH265Fallback: "⚠️ H.265 requested but VideoHelperSuite isn't installed — saved as H.264",
     msg_videoUnplayable: "⚠️ This H.265 video may not play in your browser — download it to view.",
     msg_denoiseUsed: "🧹 denoise / de-artifact ${pct}%",
@@ -1947,7 +1947,7 @@ const UI = {
     msg_upscaleUsed: "🔍 高清放大算法：${model}",
     msg_ltxLoraUsed: "🧩 LoRA：${lora}（强度 ${strength}）",
     msg_phantomTurbo: "⚡ 加速：8 步，双 CFG 主体引导已关闭",
-    msg_videoH265: "🗜 H.265 mp4（更小；需浏览器支持 HEVC）",
+    msg_videoH265: "🗜 H.265 mp4（需浏览器支持 HEVC）",
     msg_videoH265Fallback: "⚠️ 请求了 H.265，但未安装 VideoHelperSuite —— 已存为 H.264",
     msg_videoUnplayable: "⚠️ 此 H.265 视频可能无法在你的浏览器播放 —— 请下载后查看。",
     msg_denoiseUsed: "🧹 抗噪 / 降伪影 ${pct}%",
@@ -3016,7 +3016,7 @@ const UI = {
     msg_upscaleUsed: "🔍 高清放大演算法：${model}",
     msg_ltxLoraUsed: "🧩 LoRA：${lora}（強度 ${strength}）",
     msg_phantomTurbo: "⚡ 加速：8 步，雙 CFG 主體引導已關閉",
-    msg_videoH265: "🗜 H.265 mp4（更小；需瀏覽器支援 HEVC）",
+    msg_videoH265: "🗜 H.265 mp4（需瀏覽器支援 HEVC）",
     msg_videoH265Fallback: "⚠️ 請求了 H.265，但未安裝 VideoHelperSuite —— 已存為 H.264",
     msg_videoUnplayable: "⚠️ 此 H.265 影片可能無法在你的瀏覽器播放 —— 請下載後檢視。",
     msg_denoiseUsed: "🧹 抗噪 / 降偽影 ${pct}%",
@@ -3745,13 +3745,10 @@ export function applyUILanguage() {
     const empty = dom.imageModelSelect.querySelector('option[value=""]');
     if (empty) empty.textContent = dom.imageModelSelect.options.length > 1 ? t("image_model_empty") : t("image_model_none");
   }
-  // ComfyUI model dropdown: optgroup labels (and the "none" option) are tagged
-  // with data-i18n at build time so they can be re-localized without a refetch.
-  if (dom.comfyModelSelect) {
-    for (const g of dom.comfyModelSelect.querySelectorAll("optgroup[data-i18n]")) g.label = t(g.dataset.i18n);
-    const none = dom.comfyModelSelect.querySelector('option[data-i18n]');
-    if (none) none.textContent = t(none.dataset.i18n);
-  }
+  // ComfyUI model dropdown is re-localized separately (relocalizeComfyModels in
+  // the language-change handler) — it rebuilds optgroups, the i18n image-upscale
+  // label, and capability dots from the cached dataset, which a per-node relabel
+  // here couldn't reconstruct.
 }
 
 /** Get command list with localized descriptions */
