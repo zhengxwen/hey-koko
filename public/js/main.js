@@ -8,7 +8,7 @@ import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
 import { initAvatar, updateCloudBadge, relocalizeAvatarPicker } from './avatar.js';
 import { pauseOrStopSpeech, populateVoiceList } from './speech.js';
-import { saveCurrentSettings, saveTabs, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
+import { saveCurrentSettings, saveTabs, saveTabsNow, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint, openModelBrowser, openComfyModelPicker, syncComfyModelPickLabel, relocalizeComfyModels, BROWSE_MODELS_VALUE } from './ollama.js';
 import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsMask } from './image-gen.js';
@@ -1136,8 +1136,9 @@ function exportJson(tab) {
     // the exported conversation — drop it. Import backfills a fresh one.
     delete m.id;
     if (m.timestamp) m.timestamp = exportTimeStr(m.timestamp, true);
-    // Don't export the heavy video data — keep only the poster thumbnail.
-    if (m.generatedVideos) { delete m.generatedVideos; delete m.videoMime; }
+    // Videos ride along (generatedVideos + videoMime/videoMimes/videoNames/…, kept by
+    // the spread above) so the export replays them on import. This makes the JSON heavy
+    // — that's the intended trade-off for a self-contained export that includes video.
     // displayImages is just a 360px thumbnail of contextImages — redundant in the
     // export. Drop it; import regenerates the thumbnail from contextImages.
     if (m.contextImages?.length) delete m.displayImages;
@@ -1232,12 +1233,38 @@ function exportPdf(tab) {
 
 // Import chat
 document.querySelector("#importChat").addEventListener("change", async (event) => {
-  const files = event.target.files;
-  if (!files || files.length === 0) return;
+  const files = [...(event.target.files || [])];
+  if (files.length === 0) return;
+  const MB = 1024 * 1024;
+  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+  // A very large import (video-heavy JSON) parses on the main thread and can blow
+  // the JS string/parse limit — confirm before committing to the freeze/risk.
+  if (totalBytes > 150 * MB && !confirm(t("msg_importLargeConfirm", { size: Math.round(totalBytes / MB) }))) {
+    event.target.value = "";
+    return;
+  }
+  // Show the loading overlay across the blocking parse when it's big enough to
+  // freeze the UI (a double-rAF lets it PAINT before JSON.parse locks the thread).
+  const loadEl = document.querySelector("#chatLoading");
+  const showOverlay = !!loadEl && totalBytes > 20 * MB;
+  if (showOverlay) {
+    loadEl.hidden = false;
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  }
+  try {
   for (const file of files) {
     try {
-      const text = await file.text();
-      const data = JSON.parse(text);
+      let text, data;
+      try {
+        text = await file.text();
+        data = JSON.parse(text);
+      } catch (pe) {
+        // A file past the engine's max string / parse size throws RangeError — turn
+        // it into a clear "too large" message. Real JSON syntax errors rethrow so
+        // the outer catch still shows their detail.
+        if (pe instanceof RangeError) throw new Error(t("msg_importTooLarge", { name: file.name }));
+        throw pe;
+      }
       if (!Array.isArray(data.messages)) throw new Error(t("msg_invalidChatFile"));
       const messages = await Promise.all(data.messages.map(async (msg) => {
         const m = { ...msg };
@@ -1288,6 +1315,21 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
       msgEl.textContent = t("msg_importFailed", { name: file.name, error: e.message });
       dom.messagesEl.appendChild(msgEl);
     }
+  }
+  // Persist NOW (awaitable) so a storage-quota failure on a huge import surfaces
+  // here instead of being silently dropped by the debounced saveTabs — otherwise
+  // the chat looks imported but vanishes on reload.
+  try {
+    await saveTabsNow();
+  } catch (pe) {
+    const warn = document.createElement("div");
+    warn.className = "message system";
+    const quota = pe && (pe.name === "QuotaExceededError" || /quota/i.test(pe.message || ""));
+    warn.textContent = quota ? t("msg_importQuota") : t("msg_importFailed", { name: "", error: pe.message || String(pe) });
+    dom.messagesEl.appendChild(warn);
+  }
+  } finally {
+    if (showOverlay) loadEl.hidden = true;
   }
   switchTab(state.tabs[0].id);
   event.target.value = "";

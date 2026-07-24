@@ -608,7 +608,7 @@ function marketName(name) {
     [ANIMATE_REPLACE]: "Wan Animate (replace)",
     [SCAIL2_ANIMATE]: "SCAIL-2 (animate)",
     [LTX_MSR]: "LTX-2.3 MSR",
-    [LTX_UNION]: "LTX-2.3 Motion/Structure Transfer (depth)",
+    [LTX_UNION]: "LTX-2.3 Union",
     [VIDEO_ENHANCE]: "Video interpolate + upscale",
   };
   if (name in sentinels) return sentinels[name];
@@ -882,7 +882,7 @@ async function proxyComfyModels(req, res) {
     // LTX Union Control: depth-driven structure/motion transfer. Needs a SOURCE VIDEO (the
     // motion) + a reference image (the appearance), so it joins the "needs source video"
     // group. Gated on every weight + node being present, same as MSR.
-    if (await ltxUnionParts()) videoModels.push({ name: LTX_UNION, type: "ltx-union", label: "LTX-2.3 motion/structure transfer (depth · not identity)", needsVideo: true, needsImages: 1 });
+    if (await ltxUnionParts()) videoModels.push({ name: LTX_UNION, type: "ltx-union", label: "LTX-2.3 Union", needsVideo: true, needsImages: 1 });
     // Bernini also renders STILLS (same weights + graph at length 1) — surface its
     // three image tasks once the weights are present. i2i/r2i take an attached image
     // so they belong in the instruction-edit group; t2i takes none, so it joins the

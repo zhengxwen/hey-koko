@@ -735,6 +735,129 @@ export function syncComfyModelPickLabel() {
 // video-editing), which is what the flat dropdown had grown too long to convey. Picking
 // writes back into the hidden <select> and fires `change`, so every existing reader
 // (saved settings, multi-hint, ⚙ visibility, placeholders…) keeps working untouched.
+// Classify a video model NAME to an image→video family, for the 🟡 comparison table.
+// Classify a video model NAME to a family, for the legend comparison tables. Mirrors the
+// capsFor / videoTypeOf grouping in server/comfy.js. Order matters: scail before animate
+// (the "scail2_animate" sentinel contains "animate"), and union / msr before the generic
+// /ltx/. One classifier serves all three tables (i2v / t2v / v2v); each table's own row
+// set decides which of these families it actually lists.
+function videoFamilyOf(name) {
+  const n = (name || "").toLowerCase();
+  if (/scail/.test(n)) return "scail";
+  if (/animate/.test(n)) return "animate";
+  if (/phantom/.test(n)) return "phantom";
+  if (/bernini/.test(n)) return "bernini";
+  if (/union/.test(n)) return "ltxunion";            // before the generic /ltx/
+  if (/msr/.test(n)) return "ltxmsr";                // before the generic /ltx/
+  if (/ltx|sulphur/.test(n)) return "ltx";
+  if (/hunyuan/.test(n)) return "hunyuan";
+  if (/fun.?vace/.test(n)) return "funvace";
+  if (/14b/.test(n) || n === "wan2.2_14b") return "wan14b";
+  if (/ti2v.*5b/.test(n) || (/wan/.test(n) && /5b/.test(n))) return "wan5b";
+  return null;
+}
+
+// Classify a txt2img / img2img (🔵) model NAME to a family. `edit` must be excluded
+// (those are 🟠), but HiDream-O1 legitimately carries both — here it's the t2i side.
+function imageFamilyOf(name) {
+  const n = (name || "").toLowerCase();
+  if (/bernini/.test(n)) return "berniniT2i";
+  if (/hidream.?o1/.test(n)) return "hidreamo1";
+  if (/hidream.?i1/.test(n)) return "hidreami1";
+  if (/z.?image/.test(n)) return "zimage";
+  if (/boogu/.test(n)) return /turbo/.test(n) ? "booguturbo" : "boogubase";
+  if (/qwen/.test(n)) return "qwenimage";
+  if (/flux/.test(n)) return "flux";
+  if (/pony/.test(n)) return "pony";
+  return null;
+}
+
+// Classify an instruction-edit (🟠) model NAME to a family. Order matters: the *-edit
+// variants must beat the base model's token (qwen-edit vs qwen-image, boogu-edit vs boogu).
+function editFamilyOf(name) {
+  const n = (name || "").toLowerCase();
+  if (/kontext/.test(n)) return "kontext";
+  if (/qwen.*edit/.test(n)) return "qwenedit";
+  if (/boogu.*edit/.test(n)) return "booguedit";
+  if (/omnigen/.test(n)) return "omnigen";
+  if (/hidream.?e1/.test(n)) return "hidreame1";
+  if (/pix2pix|ip2p|instruct/.test(n)) return "ip2p";
+  if (/bernini/.test(n)) return "berniniEdit";
+  return null;
+}
+
+// The families present in the current picker for a given capability dot, using the
+// supplied classifier. Only READY, installed models count — an unverified/not-wired one
+// (fun_vace, the regressed HiDream-O1, …) is left out so the comparison only lists
+// options that actually work.
+function familiesPresent(dot, classify) {
+  const fams = new Set();
+  for (const g of state.comfyModelGroups || []) {
+    for (const it of g.items || []) {
+      if (!it.ready || !it.dots || !it.dots.includes(dot)) continue;
+      const f = classify(it.name);
+      if (f) fams.add(f);
+    }
+  }
+  return fams;
+}
+
+// Build one capability's comparison as a real <table> (rows = installed models with that
+// dot, columns = the traits that decide the choice). Rows are sorted by model name
+// (first letter), so the order doesn't depend on the i18n row order. Null if none.
+function buildCompareTable(dot, classify, colsKey, rowsKey) {
+  const present = familiesPresent(dot, classify);
+  if (!present.size) return null;
+  const cols = t(colsKey).split("‖");
+  const rows = t(rowsKey).split("\n")
+    .map((l) => l.split("‖"))
+    .filter((p) => present.has(p[0]))
+    .sort((a, b) => a[1].localeCompare(b[1])); // p[1] = display name → alphabetical
+  if (!rows.length) return null;
+  const table = document.createElement("table");
+  table.className = "comfyCapTable";
+  const htr = table.createTHead().insertRow();
+  for (const c of cols) { const th = document.createElement("th"); th.textContent = c; htr.appendChild(th); }
+  const tb = table.createTBody();
+  for (const p of rows) {
+    const tr = tb.insertRow();
+    // p = [familyKey, DisplayName, ...cells]; skip the family key.
+    for (let ci = 0; ci < cols.length; ci++) { tr.insertCell().textContent = p[ci + 1] || ""; }
+  }
+  return table;
+}
+
+// Attach a hover comparison card to a legend segment. The card is a fixed-position
+// element on <body> (so it escapes the modal's overflow), shown on enter, removed on
+// leave; openComfyModelPicker's close() also sweeps any stray card.
+function attachCompareTooltip(span, dot, classify, titleKey, colsKey, rowsKey) {
+  const table = buildCompareTable(dot, classify, colsKey, rowsKey);
+  if (!table) return; // no such models installed → leave the legend item plain
+  span.classList.add("hasCapTip");
+  let tip = null;
+  const show = () => {
+    if (tip) return;
+    tip = document.createElement("div");
+    tip.className = "comfyCapTooltip";
+    const title = document.createElement("div");
+    title.className = "comfyCapTipTitle";
+    title.textContent = t(titleKey);
+    tip.append(title, table);
+    document.body.appendChild(tip);
+    // Prefer above the legend (which sits at the modal's bottom); flip below if cramped.
+    const r = span.getBoundingClientRect();
+    const tr = tip.getBoundingClientRect();
+    const left = Math.min(Math.max(8, r.left), window.innerWidth - tr.width - 8);
+    let top = r.top - tr.height - 8;
+    if (top < 8) top = Math.min(r.bottom + 8, window.innerHeight - tr.height - 8);
+    tip.style.left = `${Math.max(8, left)}px`;
+    tip.style.top = `${Math.max(8, top)}px`;
+  };
+  const hide = () => { if (tip) { tip.remove(); tip = null; } };
+  span.addEventListener("mouseenter", show);
+  span.addEventListener("mouseleave", hide);
+}
+
 export function openComfyModelPicker() {
   const groups = state.comfyModelGroups || [];
   if (!groups.length) return;
@@ -757,12 +880,32 @@ export function openComfyModelPicker() {
     </div>`;
   document.body.appendChild(overlay);
 
-  const close = () => { document.removeEventListener("keydown", onEsc); overlay.remove(); };
+  const close = () => {
+    document.removeEventListener("keydown", onEsc);
+    document.querySelectorAll(".comfyCapTooltip").forEach((el) => el.remove()); // any open hover card
+    overlay.remove();
+  };
   const onEsc = (e) => { if (e.key === "Escape") close(); };
   overlay.querySelector(".zoteroImportClose").addEventListener("click", close);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   document.addEventListener("keydown", onEsc);
-  overlay.querySelector(".comfyPickLegend").textContent = t("comfy_caps_legend");
+  // Legend: split the "·"-joined caps into individual spans so the image→video (🟡)
+  // one can carry a rich hover comparison of the i2v models actually installed.
+  const legendEl = overlay.querySelector(".comfyPickLegend");
+  legendEl.textContent = "";
+  const legendSegs = t("comfy_caps_legend").split(" · ");
+  legendSegs.forEach((seg, i) => {
+    const span = document.createElement("span");
+    span.className = "comfyCapLegendItem";
+    span.textContent = seg;
+    if (seg.includes("🔵")) attachCompareTooltip(span, "🔵", imageFamilyOf, "comfy_img_cmpTitle", "comfy_img_cmpCols", "comfy_img_cmpRows");
+    else if (seg.includes("🟠")) attachCompareTooltip(span, "🟠", editFamilyOf, "comfy_edit_cmpTitle", "comfy_edit_cmpCols", "comfy_edit_cmpRows");
+    else if (seg.includes("🟡")) attachCompareTooltip(span, "🟡", videoFamilyOf, "comfy_i2v_cmpTitle", "comfy_i2v_cmpCols", "comfy_i2v_cmpRows");
+    else if (seg.includes("🟢")) attachCompareTooltip(span, "🟢", videoFamilyOf, "comfy_t2v_cmpTitle", "comfy_t2v_cmpCols", "comfy_t2v_cmpRows");
+    else if (seg.includes("🟣")) attachCompareTooltip(span, "🟣", videoFamilyOf, "comfy_v2v_cmpTitle", "comfy_v2v_cmpCols", "comfy_v2v_cmpRows");
+    legendEl.appendChild(span);
+    if (i < legendSegs.length - 1) legendEl.appendChild(document.createTextNode(" · "));
+  });
 
   const colsEl = overlay.querySelector(".comfyPickCols");
   const countEl = overlay.querySelector(".comfyPickCount");

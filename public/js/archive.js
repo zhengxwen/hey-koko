@@ -99,7 +99,8 @@ export function initArchive() {
       }
       return;
     }
-    // Active background tasks would be lost (archive doesn't keep videos) → confirm + cancel.
+    // Still-running background tasks haven't produced their result yet, so archiving
+    // now would lose them (finished videos ARE archived) → confirm + cancel.
     const nActive = tabActiveJobCount(tab.id);
     if (nActive > 0) {
       if (!confirm(t("bg_closeActiveJobs", { n: nActive }))) return;
@@ -120,7 +121,18 @@ export function initArchive() {
       if (msg.imageNames) m.imageNames = msg.imageNames;
       if (msg.generatedImages) m.generatedImages = msg.generatedImages;
       if (msg.generatedThumbnails) m.generatedThumbnails = msg.generatedThumbnails;
-      // Archive the video poster thumbnails, not the (heavy) videos themselves.
+      // Archive the videos themselves (heavy base64) so retrieval replays them, plus
+      // their poster thumbnails and per-clip metadata (mime/name/size). Retrieve
+      // spreads {...msg}, so every field listed here comes back on the restored tab.
+      if (msg.generatedVideos) m.generatedVideos = msg.generatedVideos;
+      if (msg.videoMime) m.videoMime = msg.videoMime;
+      if (msg.videoMimes) m.videoMimes = msg.videoMimes;
+      if (msg.videoNames) m.videoNames = msg.videoNames;
+      if (msg.videoName) m.videoName = msg.videoName;
+      if (msg.videoWidths) m.videoWidths = msg.videoWidths;
+      if (msg.videoHeights) m.videoHeights = msg.videoHeights;
+      if (msg.videoWidth != null) m.videoWidth = msg.videoWidth;
+      if (msg.videoHeight != null) m.videoHeight = msg.videoHeight;
       if (msg.generatedVideoThumbnails) m.generatedVideoThumbnails = msg.generatedVideoThumbnails.filter(Boolean);
       if (msg.isCompactSummary) m.isCompactSummary = true;
       if (msg.isFilePreview) m.isFilePreview = true;

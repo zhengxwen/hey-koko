@@ -6742,3 +6742,48 @@ button.secondary:disabled {
   flex: 0 0 auto; padding: 8px 16px; border-top: 1px solid var(--line);
   font-size: 11.5px; color: var(--muted);
 }
+/* The image→video (🟡) legend item carries a hover comparison — hint it's interactive. */
+.comfyCapLegendItem.hasCapTip {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+/* Hover comparison card for the i2v models. Fixed to the viewport (positioned in JS) so
+   it escapes the modal's overflow; dark surface reads over either theme. */
+.comfyCapTooltip {
+  position: fixed;
+  z-index: 100000;
+  max-width: min(94vw, 760px);
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #1b1b22;
+  color: #e8e8ee;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  pointer-events: none; /* never steal the hover from the legend item */
+}
+.comfyCapTipTitle {
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 6px;
+}
+.comfyCapTable {
+  border-collapse: collapse;
+  width: 100%;
+}
+.comfyCapTable th,
+.comfyCapTable td {
+  padding: 4px 9px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.comfyCapTable th {
+  font-weight: 600;
+  color: #fff;
+}
+.comfyCapTable td { color: #cfcfd6; }
+.comfyCapTable td:first-child { color: #fff; font-weight: 600; } /* model name column */
+.comfyCapTable tbody tr:last-child th,
+.comfyCapTable tbody tr:last-child td { border-bottom: none; }

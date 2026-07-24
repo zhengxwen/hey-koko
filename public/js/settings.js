@@ -189,21 +189,33 @@ function saveChatMessage(message) {
 
 let _saveTimer = null;
 
+function _serializeTabs() {
+  return state.tabs.map((tab) => ({
+    ...tab,
+    messages: tab.messages.map(saveChatMessage),
+    tags: tab.tags || [],
+    personality: tab.personality || "sweet",
+    persona: tab.persona || resolvePersonaText(tab.personality),
+  }));
+}
+
 export function saveTabs() {
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     _saveTimer = null;
-    const data = state.tabs.map((tab) => ({
-      ...tab,
-      messages: tab.messages.map(saveChatMessage),
-      tags: tab.tags || [],
-      personality: tab.personality || "sweet",
-      persona: tab.persona || resolvePersonaText(tab.personality),
-    }));
-    dbSaveTabs(data, state.activeTabId).catch((err) => {
+    dbSaveTabs(_serializeTabs(), state.activeTabId).catch((err) => {
       console.error("[saveTabs] IndexedDB write failed:", err);
     });
   }, 300);
+}
+
+// Persist immediately and RETURN the promise so the caller can await + catch a
+// failure (e.g. QuotaExceededError after importing a huge, video-heavy chat) —
+// unlike the debounced saveTabs, which fires later and swallows the error. Cancels
+// any pending debounced write so the two don't race.
+export function saveTabsNow() {
+  if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+  return dbSaveTabs(_serializeTabs(), state.activeTabId);
 }
 
 export function saveChat() {
