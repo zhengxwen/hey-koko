@@ -535,19 +535,19 @@ function deleteMessageImage(msgIndex, imgIndex) {
 // message, so resend / edit-then-enter re-trigger the video edit with the same
 // source clip. The uploaded source rides on the message's generatedVideos field.
 // Reconstruct ALL source-video objects from a stored user bubble (batch video-edit
-// stages several clips). Per-clip metadata is stored as parallel arrays; older
-// single-video bubbles used scalar videoName/videoWidth/videoHeight — fall back to
-// those so resend still works on legacy messages.
+// stages several clips). Per-clip metadata is stored as parallel arrays
+// (videoNames/videoMimes/videoWidths/videoHeights); legacy scalar fields are folded
+// into these on load (see migrateVideoFields), so only the arrays are read here.
 function messageSourceVideos(m) {
   if (!m || !Array.isArray(m.generatedVideos) || !m.generatedVideos.length) return [];
-  const names = Array.isArray(m.videoNames) ? m.videoNames : (m.videoName ? [m.videoName] : []);
+  const names = Array.isArray(m.videoNames) ? m.videoNames : [];
   const mimes = Array.isArray(m.videoMimes) ? m.videoMimes : [];
-  const widths = Array.isArray(m.videoWidths) ? m.videoWidths : (m.videoWidth != null ? [m.videoWidth] : []);
-  const heights = Array.isArray(m.videoHeights) ? m.videoHeights : (m.videoHeight != null ? [m.videoHeight] : []);
+  const widths = Array.isArray(m.videoWidths) ? m.videoWidths : [];
+  const heights = Array.isArray(m.videoHeights) ? m.videoHeights : [];
   const thumbs = Array.isArray(m.generatedVideoThumbnails) ? m.generatedVideoThumbnails : [];
   return m.generatedVideos.map((b64, i) => ({
     base64: b64,
-    mime: mimes[i] || m.videoMime || "video/mp4",
+    mime: mimes[i] || "video/mp4",
     name: names[i] || undefined,
     thumbnail: thumbs[i] || undefined,
     width: widths[i] ?? undefined,
@@ -570,11 +570,10 @@ function stagedVideoList(video) {
 // Stamp a user bubble with the staged source video(s). They reuse generatedVideos so
 // they render/persist like generated clips; per-clip metadata rides as parallel arrays
 // (videoNames/videoMimes/videoWidths/videoHeights) so each can be reconstructed for
-// resend / batch dispatch. videoMime stays scalar — it only drives the <video> type.
+// resend / batch dispatch.
 function attachVideosToMessage(userMessage, videos) {
   if (!videos || !videos.length) return;
   userMessage.generatedVideos = videos.map(v => v.base64);
-  userMessage.videoMime = videos[0].mime || "video/mp4";
   userMessage.videoMimes = videos.map(v => v.mime || "video/mp4");
   userMessage.videoNames = videos.map(v => v.name || null);
   if (videos.some(v => v.thumbnail)) userMessage.generatedVideoThumbnails = videos.map(v => v.thumbnail || null);
@@ -2337,7 +2336,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
         const hasImg = m.contextImages?.length, hasVid = m.generatedVideos?.length;
         if (!hasImg && !hasVid) continue;
         const imgs = hasImg ? m.contextImages.map(rawBase64) : [];
-        videoFrames = hasVid ? await framesFromVideo(m.generatedVideos[0], m.videoMime) : [];
+        videoFrames = hasVid ? await framesFromVideo(m.generatedVideos[0], m.videoMimes?.[0]) : [];
         imageCount = imgs.length;
         frameCount = videoFrames.length;
         images = [...imgs, ...videoFrames];
@@ -2909,9 +2908,11 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
 async function backfillVideoThumbnails(message) {
   if (message._thumbBackfilling) return;
   message._thumbBackfilling = true;
-  const vmime = message.videoMime || "video/mp4";
-  const thumbs = await Promise.all(message.generatedVideos.map((v) =>
-    videoThumbnail(v.startsWith("data:") ? v : `data:${vmime};base64,${v}`)));
+  const mimes = message.videoMimes || [];
+  const thumbs = await Promise.all(message.generatedVideos.map((v, i) => {
+    const vmime = mimes[i] || "video/mp4";
+    return videoThumbnail(v.startsWith("data:") ? v : `data:${vmime};base64,${v}`);
+  }));
   if (thumbs.some(Boolean)) {
     message.generatedVideoThumbnails = thumbs;
     saveChat();
@@ -3145,7 +3146,7 @@ function lazyLoadVideo(video, base64, mime) {
   videoLazyObserver.observe(video);
 }
 
-function renderMessage(role, content, displayImages, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMime, generatedAudio, audioMime, generatedVideoThumbnails) {
+function renderMessage(role, content, displayImages, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMimes, generatedAudio, audioMime, generatedVideoThumbnails) {
   const item = document.createElement("div");
   item.className = `message ${role}`;
 
@@ -3570,15 +3571,17 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
 
   // AI-generated videos (ComfyUI WAN etc.) — base64 mp4/webm as <video>.
   if (generatedVideos && generatedVideos.length > 0) {
-    const vmime = videoMime || "video/mp4";
+    const vmimes = Array.isArray(videoMimes) ? videoMimes : [];
     // User bubbles share the media row built above (images + video, same line,
     // above the text); everyone else gets a standalone grid below the text.
     const vgrid = mediaRowEnabled ? null : document.createElement("div");
     if (vgrid) vgrid.className = "videoGrid";
-    const vext = vmime.includes("webm") ? "webm" : vmime.includes("quicktime") ? "mov" : "mp4";
     for (let vi = 0; vi < generatedVideos.length; vi++) {
       const vData = generatedVideos[vi];
       if (!vData || vData.length < 100) continue;
+      // Per-clip mime (a batch can mix codecs); fall back to the first, then mp4.
+      const vmime = vmimes[vi] || vmimes[0] || "video/mp4";
+      const vext = vmime.includes("webm") ? "webm" : vmime.includes("quicktime") ? "mov" : "mp4";
       const wrapper = document.createElement("div");
       wrapper.className = "videoWrapper";
       const video = document.createElement("video");
@@ -3733,9 +3736,9 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       // Tooltip shows the filename and decoded byte size.
       // An uploaded clip keeps its own upload filename; generated clips fall back to
       // the timestamp. Uploaded source clips store per-clip names in videoNames[]
-      // (legacy single-video bubbles used the scalar videoName).
+      // (legacy scalar videoName is folded into it on load, see migrateVideoFields).
       const msg = Number.isInteger(index) ? getActiveTab().messages[index] : null;
-      const uploadedName = msg ? (Array.isArray(msg.videoNames) ? msg.videoNames[vi] : (generatedVideos.length === 1 ? msg.videoName : null)) : null;
+      const uploadedName = msg && Array.isArray(msg.videoNames) ? msg.videoNames[vi] : null;
       const vname = mediaFilename(uploadedName || null, timestamp, "video", vext, vi, generatedVideos.length);
       video.dataset.filename = vname; // shown as the lightbox caption
       // Lazy href: reuses the already-loaded blob URL if the video is loaded,
@@ -3885,7 +3888,7 @@ export function renderChat() {
       ? message.contextImages.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
       : undefined);
     const previews = message.displayImages;
-    const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails, message.generatedVideos, message.videoMime, message.generatedAudio, message.audioMime, message.generatedVideoThumbnails);
+    const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails, message.generatedVideos, message.videoMimes, message.generatedAudio, message.audioMime, message.generatedVideoThumbnails);
     // Tag with the stable id so the jobs drawer can scroll a finished job into view.
     if (el && message.id) el.dataset.msgId = message.id;
     // Backfill posters for videos generated before thumbnails existed, so they

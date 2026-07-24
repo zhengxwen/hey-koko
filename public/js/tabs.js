@@ -34,6 +34,24 @@ export function migrateImageFields(m) {
   delete m.previewImage;
   if (m.imageDisplayNames && !m.imageNames) m.imageNames = m.imageDisplayNames;
   delete m.imageDisplayNames;
+  migrateVideoFields(m);
+}
+
+// Legacy single-video bubbles stored scalar videoMime/videoName/videoWidth/videoHeight
+// alongside the array forms. Fold any scalar up into a per-clip array (so a batch of
+// clips is uniform) and drop the scalar — videoMimes/videoNames/videoWidths/videoHeights
+// are now the single source of truth. No-op on bubbles without video.
+export function migrateVideoFields(m) {
+  if (!m || !(m.generatedVideos && m.generatedVideos.length)) return;
+  const n = m.generatedVideos.length;
+  const fold = (arrKey, scalarKey) => {
+    if (!Array.isArray(m[arrKey]) && m[scalarKey] != null) m[arrKey] = Array.from({ length: n }, () => m[scalarKey]);
+    delete m[scalarKey];
+  };
+  fold("videoMimes", "videoMime");
+  fold("videoNames", "videoName");
+  fold("videoWidths", "videoWidth");
+  fold("videoHeights", "videoHeight");
 }
 
 function backfillMessageIds(tabs) {

@@ -1056,7 +1056,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
         role: "assistant",
         content: videoContent,
         generatedVideos: allVideos,
-        videoMime: vmime,
+        videoMimes: allVideos.map(() => vmime),
         generatedVideoThumbnails: allThumbs,
         imagePrompt: videoPrompt,
         timestamp: Date.now(),
@@ -1065,7 +1065,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       sink.place(replyMsg);
     } else {
       replyMsg.content = videoContent;
-      replyMsg.videoMime = vmime;
+      replyMsg.videoMimes = allVideos.map(() => vmime);
       replyMsg.genMs = Date.now() - genStart;
       sink.commit();
     }

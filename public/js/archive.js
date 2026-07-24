@@ -7,7 +7,7 @@ import { escapeHtml, mediaFilename } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { applyHighlights } from './highlight.js';
 import { saveTabs } from './settings.js';
-import { getActiveTab, createTab, closeTab, switchTab, renderTabs } from './tabs.js';
+import { getActiveTab, createTab, closeTab, switchTab, renderTabs, migrateVideoFields } from './tabs.js';
 import { t } from './i18n.js';
 import { tabActiveJobCount, cancelTabJobs } from './bg-jobs.js';   // Option B: warn + cancel jobs on archive
 import { initListKeyNav } from './list-keynav.js';
@@ -122,17 +122,13 @@ export function initArchive() {
       if (msg.generatedImages) m.generatedImages = msg.generatedImages;
       if (msg.generatedThumbnails) m.generatedThumbnails = msg.generatedThumbnails;
       // Archive the videos themselves (heavy base64) so retrieval replays them, plus
-      // their poster thumbnails and per-clip metadata (mime/name/size). Retrieve
-      // spreads {...msg}, so every field listed here comes back on the restored tab.
+      // their poster thumbnails and per-clip metadata (mime/name/size) as parallel
+      // arrays. Retrieve spreads {...msg}, so every field here comes back on the tab.
       if (msg.generatedVideos) m.generatedVideos = msg.generatedVideos;
-      if (msg.videoMime) m.videoMime = msg.videoMime;
       if (msg.videoMimes) m.videoMimes = msg.videoMimes;
       if (msg.videoNames) m.videoNames = msg.videoNames;
-      if (msg.videoName) m.videoName = msg.videoName;
       if (msg.videoWidths) m.videoWidths = msg.videoWidths;
       if (msg.videoHeights) m.videoHeights = msg.videoHeights;
-      if (msg.videoWidth != null) m.videoWidth = msg.videoWidth;
-      if (msg.videoHeight != null) m.videoHeight = msg.videoHeight;
       if (msg.generatedVideoThumbnails) m.generatedVideoThumbnails = msg.generatedVideoThumbnails.filter(Boolean);
       if (msg.isCompactSummary) m.isCompactSummary = true;
       if (msg.isFilePreview) m.isFilePreview = true;
@@ -701,6 +697,7 @@ export function initArchive() {
           if (typeof m.timestamp === "string") {
             m.timestamp = new Date(m.timestamp.replace(" ", "T")).getTime();
           }
+          migrateVideoFields(m); // fold any legacy scalar video fields into the arrays
           return m;
         });
         const tab = createTab(conv.title || t("arch_restoredConv"), messages, conv.personality || null);

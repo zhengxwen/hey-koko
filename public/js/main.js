@@ -1136,9 +1136,9 @@ function exportJson(tab) {
     // the exported conversation — drop it. Import backfills a fresh one.
     delete m.id;
     if (m.timestamp) m.timestamp = exportTimeStr(m.timestamp, true);
-    // Videos ride along (generatedVideos + videoMime/videoMimes/videoNames/…, kept by
-    // the spread above) so the export replays them on import. This makes the JSON heavy
-    // — that's the intended trade-off for a self-contained export that includes video.
+    // Videos ride along (generatedVideos + videoMimes/videoNames/videoWidths/videoHeights,
+    // kept by the spread above) so the export replays them on import. This makes the JSON
+    // heavy — the intended trade-off for a self-contained export that includes video.
     // displayImages is just a 360px thumbnail of contextImages — redundant in the
     // export. Drop it; import regenerates the thumbnail from contextImages.
     if (m.contextImages?.length) delete m.displayImages;
