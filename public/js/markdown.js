@@ -79,9 +79,12 @@ export function renderInlineMarkdown(value) {
       /\[([^\]]+)\]\((#[^\s)]+)\)/g,
       '<a href="$2">$1</a>'
     )
-    // Auto-link bare URLs (not already inside an href)
+    // Auto-link bare URLs (not already inside an href). The text is HTML-escaped
+    // above, so a query-string "&" is now "&amp;" — allow that entity to continue
+    // the URL (else a link like ...?a=1&b=2 truncates at the first "&"). Other
+    // entities (&quot;/&lt;/&gt;) still terminate it, marking attribute/tag edges.
     .replace(
-      /(?<!href=&quot;|href=")(https?:\/\/[^\s<&]+)/g,
+      /(?<!href=&quot;|href=")(https?:\/\/(?:[^\s<&]|&amp;)+)/g,
       '<a href="$1" target="_blank" rel="noreferrer">$1</a>'
     );
 
@@ -339,10 +342,14 @@ export function markdownToHtml(markdown) {
       continue;
     }
 
-    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    // Headings #..###### (standard markdown allows up to 6 hashes). Level maps
+    // #→h3 … and is capped at h6, so ####/#####/###### all render as h6 rather
+    // than leaving the literal "####" in the text (which the read-aloud DOM would
+    // otherwise speak, and which shows raw in the bubble).
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
       closeList();
-      const level = heading[1].length + 2;
+      const level = Math.min(6, heading[1].length + 2);
       html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
       continue;
     }
