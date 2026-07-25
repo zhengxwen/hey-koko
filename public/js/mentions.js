@@ -6,6 +6,8 @@
 // Modeled on the slash-command popup (commands.js); reuses its .commandPopup styles.
 import { dom, state } from './state.js';
 import { escapeHtml } from './utils.js';
+import { t } from './i18n.js';
+import { TOOL_CMD_ALIASES } from './tool-cmd.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", video: "📺", doc: "📝", chat: "💬", other: "📎" };
 export const kindIcon = (k) => KIND_ICON[k] || "📎";
@@ -59,17 +61,21 @@ export async function loadMentionArchives() {
 }
 
 // If the cursor sits inside an "@partial" (library docs) or "#partial" (conversation
-// archives) token within an "/ask …" line, return { sigil, partial, start }
-// (start = index of the sigil char); otherwise null.
+// archives) token within an "/ask …" line — or an "@partial" (tool alias) within a
+// "/tool …" line — return { sigil, partial, start, mode } (start = index of the
+// sigil char, mode = "ask" | "tool"); otherwise null.
 export function mentionContext(input) {
   if (!input) return null;
   const val = input.value;
-  if (!/^\/ask(\s|$)/.test(val) || val.includes("\n")) return null;
+  const isAsk = /^\/ask(\s|$)/.test(val);
+  const isTool = /^\/tool(\s|$)/.test(val);
+  if ((!isAsk && !isTool) || val.includes("\n")) return null;
   const cursor = input.selectionStart;
   const before = val.slice(0, cursor);
   const m = before.match(/(?:^|\s)([@#])(\S*)$/);   // '@'/'#' preceded by start/space, no space to cursor
   if (!m) return null;
-  return { sigil: m[1], partial: m[2], start: cursor - m[2].length - 1 };
+  if (isTool && m[1] === "#") return null;          // /tool has no archive scope
+  return { sigil: m[1], partial: m[2], start: cursor - m[2].length - 1, mode: isTool ? "tool" : "ask" };
 }
 
 function setMentionActive(index) {
@@ -99,10 +105,15 @@ function archiveShort(filename) {
   return String(filename).replace(/\.json(\.gz|\.zst)?$/, "");
 }
 
-export function showMentionPopup(filter, sigil = "@") {
+export function showMentionPopup(filter, sigil = "@", mode = "ask") {
   const f = (filter || "").toLowerCase();
   let items;
-  if (sigil === "#") {
+  if (mode === "tool") {
+    // "/tool @…" → the fixed tool-alias list (tool-cmd.js), not library docs.
+    items = TOOL_CMD_ALIASES
+      .filter((a) => !f || a.alias.startsWith(f))
+      .map((a) => ({ sigil: "@", token: a.alias, icon: a.icon, name: "@" + a.alias, desc: t(a.descKey) }));
+  } else if (sigil === "#") {
     // "#archive" → scope /ask to whole conversation archives (💬, insert "#filename").
     if (!_archives.length) loadMentionArchives();   // lazy prime; ready by next keystroke
     items = _archives

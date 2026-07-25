@@ -17,6 +17,7 @@ import { openMaskModal } from './mask-paint.js';
 import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
+import { parseToolCommand, handleToolCommand } from './tool-cmd.js';
 import { isTranscriptSection, transcriptMark, cardMark } from './library.js';
 import { parseAskCommand, handleAskCommand, handleAutoAsk } from './ask.js';
 import { kindIcon } from './mentions.js';
@@ -718,6 +719,25 @@ function resendChatMessage(index) {
     saveChat();
     renderChat();
     enqueueBgJob({ tabId: state.activeTabId, kind: "url", label: t("bg_fetchingUrl"), insertIndex: index + 1, payload: { entries: urlTarget.entries, fullContent: message.content } });
+    return;
+  }
+
+  // Handle /tool command on resend — drop the old output block (tagged urlPart, same
+  // contract as /url) and re-run the prefetch + reply in place.
+  const toolResend = parseToolCommand(message.content);
+  if (toolResend) {
+    while (tab.messages[index + 1]?.urlPart && !tab.messages[index + 1].locked) {
+      tab.messages.splice(index + 1, 1);
+    }
+    saveChat();
+    renderChat();
+    if (toolResend.error) {
+      tab.messages.splice(index + 1, 0, { role: "assistant", content: toolResend.error, timestamp: Date.now() });
+      saveChat();
+      renderChat();
+      return;
+    }
+    handleToolCommand(toolResend, tab, state.activeTabId, { pos: index + 1 }, true, message.content);
     return;
   }
 
@@ -2711,6 +2731,21 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     saveChat();
     if (state.activeTabId === tabId) renderChat();
     enqueueBgJob({ tabId, kind: "url", label: t("bg_fetchingUrl"), payload: { entries: urlTarget.entries, fullContent: content } });
+    return;
+  }
+
+  // Handle /tool command — explicit tool prefetch (run the named tool, splice its
+  // result in, then a normal streamed reply). Foreground: these fetches are seconds.
+  const toolCmd = content ? parseToolCommand(content) : null;
+  if (toolCmd) {
+    if (toolCmd.error) {
+      tab.messages.push({ role: "user", content, timestamp: Date.now() });
+      tab.messages.push({ role: "assistant", content: toolCmd.error, timestamp: Date.now() });
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+      return;
+    }
+    await handleToolCommand(toolCmd, tab, tabId, null, false, content);
     return;
   }
 

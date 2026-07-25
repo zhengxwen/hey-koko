@@ -16,6 +16,7 @@ import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
 import { renderChat, sendMessage, setGenerating, regenerateReply, analyzeMedia, generateProactiveReply, markStopping, showSendError, initHighlightUI } from './chat.js';
 import { setDeps as urlFetchSetDeps, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
+import { setToolCmdDeps } from './tool-cmd.js';
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
 import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup, hideMentionPopup, moveMentionSelection, selectActiveMention, isMentionPopupOpen } from './mentions.js';
 import { initLightbox, initVideoLightbox } from './lightbox.js';
@@ -51,6 +52,7 @@ translateSetRenderChat(renderChat);
 imageGenSetDeps({ setGenerating, renderChat });
 voiceGenSetDeps({ setGenerating, renderChat });
 urlFetchSetDeps({ setGenerating, renderChat, regenerateReply, showSendError });
+setToolCmdDeps({ setGenerating, renderChat, regenerateReply, showSendError });
 setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand, refreshWorkers: refreshBgWorkers, libraryImport: runLibraryImport, onJobsChanged: notifyLibraryJobsChanged, openLibrary: openLibraryPanel });
 
 // Background Jobs drawer toggle + close.
@@ -409,10 +411,10 @@ dom.messageInput.addEventListener("input", () => {
   }
 });
 
-// /ask autocomplete: pop the library-doc list on "@" (or the archive list on "#") inside "/ask …".
+// "@" autocomplete: library docs / "#" archives inside "/ask …", tool aliases inside "/tool …".
 dom.messageInput.addEventListener("input", () => {
   const ctx = mentionContext(dom.messageInput);
-  if (ctx) showMentionPopup(ctx.partial, ctx.sigil);
+  if (ctx) showMentionPopup(ctx.partial, ctx.sigil, ctx.mode);
   else hideMentionPopup();
 });
 dom.messageInput.addEventListener("blur", () => setTimeout(hideMentionPopup, 150));

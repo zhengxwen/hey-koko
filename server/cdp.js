@@ -20,7 +20,7 @@ const fs = require("fs");
 const { spawn, execFileSync } = require("child_process");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
-const { extractArticle, extractCleanContent, trafilaturaAvailable } = require("./url-fetch");
+const { extractArticle, extractCleanContent, trafilaturaAvailable, optimizeImage } = require("./url-fetch");
 
 // Fed back to the model as the tool result when the browser is unreachable, so it
 // can tell the user exactly how to start the shared browser.
@@ -61,6 +61,27 @@ function cdpEval(wsUrl, expression, timeoutMs = 15000) {
       const r = msg.result || {};
       if (r.exceptionDetails) return done(reject, new Error(r.exceptionDetails.text || "page JS exception"));
       done(resolve, r.result ? r.result.value : undefined);
+    };
+  });
+}
+
+// Viewport screenshot of a target (JPEG). Page.bringToFront first: a HEADFUL
+// background tab isn't being rendered, so capturing it fails without fronting —
+// a no-op for the already-active tab; the caller restores the user's tab after.
+function cdpCapture(wsUrl, timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    let ws;
+    try { ws = new WebSocket(wsUrl); } catch (e) { reject(e); return; }
+    const timer = setTimeout(() => { try { ws.close(); } catch { /* ignore */ } reject(new Error("CDP capture timeout")); }, timeoutMs);
+    const done = (fn, v) => { clearTimeout(timer); try { ws.close(); } catch { /* ignore */ } fn(v); };
+    ws.onerror = () => done(reject, new Error("CDP socket error"));
+    ws.onopen = () => ws.send(JSON.stringify({ id: 1, method: "Page.bringToFront" }));
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.error) return done(reject, new Error(msg.error.message || "CDP error"));
+      if (msg.id === 1) ws.send(JSON.stringify({ id: 2, method: "Page.captureScreenshot", params: { format: "jpeg", quality: 80 } }));
+      else if (msg.id === 2) done(resolve, (msg.result && msg.result.data) || "");
     };
   });
 }
@@ -145,26 +166,71 @@ async function browserRead(req, res) {
   }
   if (!target) target = targets.length > 1 ? await findActiveTarget(targets) : targets[0];
 
+  // Viewport screenshot, best-effort: Page.bringToFront is required for a headful
+  // BACKGROUND tab (not rendered otherwise), so remember the user's current tab and
+  // hand focus straight back afterwards. A capture failure never breaks the read.
+  const maybeCapture = async (target) => {
+    try {
+      const active = targets.length > 1 ? await findActiveTarget(targets) : targets[0];
+      const raw = await cdpCapture(target.webSocketDebuggerUrl);
+      if (active && active.id !== target.id) {
+        fetch(`${config.BROWSER_CDP.cdpBase}/json/activate/${active.id}`).catch(() => { /* focus restore is best-effort */ });
+      }
+      if (!raw) return null;
+      // Retina viewports capture at 2x (easily >1MB) — shrink via the shared
+      // image backend when present; keep the original when it's missing.
+      try {
+        const o = await optimizeImage(Buffer.from(raw, "base64"), "image/jpeg");
+        return { image: o.buf.toString("base64"), imageMime: o.ct };
+      } catch { return { image: raw, imageMime: "image/jpeg" }; }
+    } catch { return null; }
+  };
+
   try {
-    // One evaluate grabs everything: live title/url (SPAs mutate both after load),
-    // the user's selection (often the very thing they're asking about), full DOM.
-    const snap = await cdpEval(target.webSocketDebuggerUrl, `(() => ({
+    // Selection-only mode (--sel): repeated per-passage reads of a page whose full
+    // text is already in the conversation. Skips the outerHTML transfer AND the
+    // extraction pipeline — the snapshot is just title/url/selection.
+    const selOnly = body.selectionOnly === true;
+    const snapExpr = `(() => ({
       title: document.title || "",
       url: location.href,
       selection: String(window.getSelection ? window.getSelection().toString() : "").slice(0, 8000),
-      html: document.documentElement ? document.documentElement.outerHTML : "",
-    }))()`);
-    if (!snap || !snap.html) { sendJson(res, 200, { error: "empty page" }); return; }
+      html: ${selOnly ? '""' : '(document.documentElement ? document.documentElement.outerHTML : "")'},
+    }))()`;
+    // One evaluate grabs everything live (SPAs mutate title/url after load; the
+    // selection is often the very thing the user is asking about).
+    const snap = await cdpEval(target.webSocketDebuggerUrl, snapExpr);
 
+    if (selOnly) {
+      if (!snap) { sendJson(res, 200, { error: "empty page" }); return; }
+      if (!snap.selection) { sendJson(res, 200, { error: "no_selection" }); return; }
+      // No auto screenshot here — --sel is the deliberately lightweight mode.
+      const shot = body.vision === true ? await maybeCapture(target) : null;
+      sendJson(res, 200, {
+        title: snap.title, url: snap.url, text: "", selection: snap.selection,
+        truncated: false, ...(shot || {}),
+      });
+      return;
+    }
+
+    if (!snap || !snap.html) { sendJson(res, 200, { error: "empty page" }); return; }
     const ex = await extractFromHtml(snap.html, snap.url);
     const cap = Math.min(Number(body.maxChars) || 20000, config.URL_CONTENT_MAX_CHARS);
     const text = String(ex.text || "").trim();
+
+    // body.vision === true forces a screenshot; "auto" captures only when the
+    // extracted text is near-empty (canvas charts, embedded PDF viewer, WebGL —
+    // pages whose content the DOM extraction can't see).
+    const wantShot = body.vision === true || (body.vision === "auto" && text.length < 200);
+    const shot = wantShot ? await maybeCapture(target) : null;
+
     sendJson(res, 200, {
       title: ex.title || snap.title,
       url: snap.url,
       text: text.slice(0, cap),
       selection: snap.selection || "",
       truncated: text.length > cap,
+      ...(shot ? { ...shot, visionAuto: body.vision === "auto" } : {}),
     });
   } catch (e) {
     sendJson(res, 200, { error: e.message || "read failed" });
