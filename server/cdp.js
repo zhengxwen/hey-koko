@@ -255,11 +255,41 @@ function findChromeExe() {
   return "";
 }
 
+// Main browser process of the co-browsing instance: matches the dedicated profile
+// dir but NOT the "--type=" helper processes (renderer/gpu/utility) that inherit it.
+function findCobrowsePid(profileDir) {
+  try {
+    const out = execFileSync("ps", ["ax", "-o", "pid=,command="], { encoding: "utf8" });
+    for (const line of out.split("\n")) {
+      if (line.includes(`--user-data-dir=${profileDir}`) && !line.includes("--type=")) {
+        return Number(line.trim().split(/\s+/)[0]) || 0;
+      }
+    }
+  } catch { /* fall through */ }
+  return 0;
+}
+
+// Bring the already-running co-browsing Chrome to the foreground (macOS only).
+// Targeted by PID via System Events — `tell application "Google Chrome"` would be
+// ambiguous with the user's private Chrome running as a second app instance.
+// Best-effort: the first call may pop a one-time macOS automation permission prompt.
+function frontCobrowseChrome(profileDir) {
+  if (process.platform !== "darwin") return false;
+  const pid = findCobrowsePid(profileDir);
+  if (!pid) return false;
+  try {
+    execFileSync("osascript", ["-e",
+      `tell application "System Events" to set frontmost of (first process whose unix id is ${pid}) to true`,
+    ], { timeout: 5000, stdio: "ignore" });
+    return true;
+  } catch { return false; }
+}
+
 // POST /api/browser/launch — start the dedicated co-browsing Chrome on the SERVER
 // machine (the same machine the CDP bridge connects to, which matters when the
 // frontend is opened from another device). Same profile+port contract as
-// start-chrome.command. No-op with { already:true } when the port already answers —
-// a second launch would only pile on windows.
+// start-chrome.command. Already running → no relaunch (it would only pile on
+// windows); instead bring the existing instance to the foreground.
 async function browserLaunch(req, res) {
   let host = "127.0.0.1", port = 9222;
   try { const u = new URL(config.BROWSER_CDP.cdpBase); host = u.hostname; port = Number(u.port) || 9222; } catch { /* keep defaults */ }
@@ -267,7 +297,12 @@ async function browserLaunch(req, res) {
     sendJson(res, 200, { error: `cdpBase points at ${host} — start Chrome on that machine instead.` });
     return;
   }
-  try { await listPageTargets(); sendJson(res, 200, { ok: true, already: true }); return; } catch { /* not running — launch */ }
+  try {
+    await listPageTargets();
+    frontCobrowseChrome(path.join(config.DATA_DIR, "chrome"));
+    sendJson(res, 200, { ok: true, already: true });
+    return;
+  } catch { /* not running — launch (a fresh `open -na` fronts itself) */ }
 
   const args = [`--user-data-dir=${path.join(config.DATA_DIR, "chrome")}`, `--remote-debugging-port=${port}`];
   try {
