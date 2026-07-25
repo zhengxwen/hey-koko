@@ -171,7 +171,7 @@ export const state = {
   blinkTimer: null,
   expressionTimer: null,
   currentThemeMode: "system",
-  currentThemeAccent: "teal",
+  currentThemeAccent: "ocean",
   commandActiveIndex: 0,
   streamingInfo: null,
   pendingGen: null,                  // in-progress image/video/audio gen: { tabId, label, insertIndex }

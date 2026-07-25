@@ -12,7 +12,7 @@
         try {
           var s = JSON.parse(localStorage.getItem("local-ai-companion-settings") || "{}");
           var mode = s.themeMode || "system";
-          var theme = s.themeAccent || "teal";
+          var theme = s.themeAccent || "ocean";
           var resolved = mode;
           if (mode === "system") {
             resolved = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -272,9 +272,9 @@
             </div>
             <span class="themeSettingLabel" id="themeLabel">Theme Color</span>
             <div class="themeColorPicker" id="themeColorPicker">
-              <div class="themeColorDot isActive" data-theme="teal" style="background:#1f7a73" title="Fresh Natural"></div>
+              <div class="themeColorDot isActive" data-theme="ocean" style="background:#2563eb" title="Deep Ocean"></div>
               <div class="themeColorDot" data-theme="sakura" style="background:#d94f8a" title="Cherry Blossom"></div>
-              <div class="themeColorDot" data-theme="ocean" style="background:#2563eb" title="Deep Ocean"></div>
+              <div class="themeColorDot" data-theme="teal" style="background:#1f7a73" title="Fresh Natural"></div>
               <div class="themeColorDot" data-theme="violet" style="background:#7c3aed" title="Lavender Dream"></div>
               <div class="themeColorDot" data-theme="amber" style="background:#d97706" title="Warm Amber"></div>
               <div class="themeColorDot" data-theme="mint" style="background:#16a34a" title="Mint Green"></div>
