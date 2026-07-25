@@ -448,8 +448,15 @@ if (dom.numCtxSelect) {
     renderContextMeter();
   });
 }
+// Marks that the user EXPLICITLY picked a PDF engine (vs. the app-chosen default).
+// Needed because in WKWebView a `selected hidden` <option> silently falls through to
+// the first visible option (pdf.js) at load — see syncPdfEngineOptions.
+const PDF_ENGINE_PICKED_KEY = "heykoko-pdf-engine-picked";
 if (dom.pdfEngineSelect) {
-  dom.pdfEngineSelect.addEventListener("change", saveCurrentSettings);
+  dom.pdfEngineSelect.addEventListener("change", () => {
+    try { localStorage.setItem(PDF_ENGINE_PICKED_KEY, "1"); } catch {}
+    saveCurrentSettings();
+  });
 }
 if (dom.embedModelSelect) {
   // Capture the value before the user opens the dropdown (options load async).
@@ -1390,12 +1397,18 @@ function syncPdfEngineOptions() {
   if (dom.pdfEngineOptMineru) dom.pdfEngineOptMineru.hidden = !m;
   if (dom.pdfEngineOptUnlimited) dom.pdfEngineOptUnlimited.hidden = !u;
   if (dom.pdfEngineLabel) dom.pdfEngineLabel.hidden = !(m || u);
-  // If the selected engine is unavailable (e.g. an old saved pref, or MinerU absent),
-  // fall back to the first available option so the dropdown never shows a hidden choice.
+  // Resolve the effective selection. The intended default is MinerU, but in WKWebView
+  // the `selected hidden` MinerU <option> falls through to the first VISIBLE option
+  // (pdf.js) at load — so the value can't be trusted as a deliberate choice. Unless the
+  // user EXPLICITLY picked an engine (flag set in the change handler), default to the
+  // best available SERVER engine; otherwise a chat-attached PDF would silently use
+  // text-only pdf.js and never call MinerU. A still-valid explicit choice is honored.
   if (dom.pdfEngineSelect) {
+    const valid = (e) => (e === "mineru" && m) || (e === "unlimited" && u) || e === "pdfjs";
+    let userPicked = false;
+    try { userPicked = localStorage.getItem(PDF_ENGINE_PICKED_KEY) === "1"; } catch {}
     const v = dom.pdfEngineSelect.value;
-    const ok = (v === "mineru" && m) || (v === "unlimited" && u) || v === "pdfjs";
-    if (!ok) dom.pdfEngineSelect.value = m ? "mineru" : (u ? "unlimited" : "pdfjs");
+    if (!(userPicked && valid(v))) dom.pdfEngineSelect.value = m ? "mineru" : (u ? "unlimited" : "pdfjs");
   }
 }
 

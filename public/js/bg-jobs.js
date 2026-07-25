@@ -538,6 +538,10 @@ async function runDocFull(job, sink) {
 
   // PDF/DOCX auto-summarize: insert the reply at the cursor (just before placeholder).
   if (isPdfOrDocx) {
+    // Parsing is done — swap the stale MinerU progress line for an "analyzing" label
+    // so the placeholder reads as the AI working, not the last parser log line, until
+    // the reply streams in.
+    sink.label(t('bg_analyzingDoc'));
     await _regenerateReply(job.tabId, pos, pos - 1, {}, sink);
   }
   removePlaceholder(job);
