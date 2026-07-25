@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // Chat rendering, message handling, and sending
-import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState } from './state.js';
+import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState, setScrollTop } from './state.js';
 import { TAG_COLORS } from './constants.js';
 import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis,
          readFileAsDataUrl, makePreview, convertToJpeg, normalizeOrientation } from './utils.js';
@@ -4135,8 +4135,11 @@ export function renderChat() {
   // regenerating in place, restore the pinned position so the view stays put.
   // Otherwise, if the user had scrolled up, keep their spot instead of snapping
   // to the bottom; only a pinned (at-bottom) view follows new content down.
-  if (state.scrollPin != null) dom.messagesEl.scrollTop = state.scrollPin;
-  else if (keepPosition) dom.messagesEl.scrollTop = prevScrollTop;
+  // setScrollTop (not a raw assignment) so this restore counts as a PROGRAMMATIC
+  // scroll — otherwise a near-bottom pin restore would look like a user scroll and
+  // release the pin (see onMessagesScroll).
+  if (state.scrollPin != null) setScrollTop(state.scrollPin);
+  else if (keepPosition) setScrollTop(prevScrollTop);
   refreshScrollState();
   updateHighlightsUI();   // keep the highlights browser badge/list in sync
 }

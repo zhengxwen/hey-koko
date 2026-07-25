@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // Main entry point - imports and initializes all modules
-import { dom, state, refreshScrollState } from './state.js';
+import { dom, state, refreshScrollState, onMessagesScroll } from './state.js';
 import { readFileAsDataUrl, convertToJpeg, normalizeOrientation, makePreview, escapeHtml, genId } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
@@ -828,7 +828,7 @@ dom.maskPointConfirm?.addEventListener("click", () => {
 
 // Streaming auto-scroll yields to the user: track whether they're near the
 // bottom, and offer a one-click jump back when they've scrolled up.
-dom.messagesEl.addEventListener("scroll", refreshScrollState, { passive: true });
+dom.messagesEl.addEventListener("scroll", onMessagesScroll, { passive: true });
 dom.scrollToBottomBtn?.addEventListener("click", () => {
   dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
   refreshScrollState();

@@ -191,24 +191,65 @@ export const state = {
   animateMaskPoint: null,            // Wan Animate REPLACE: user's ⚙-picked {x,y} (0–1) of which person to replace; null = auto center
 };
 
+// ── Programmatic-scroll guard ──────────────────────────────────────────────
+// A native scrollbar drag fires NO wheel/touch events — only 'scroll' — so the
+// only way to tell a genuine user scroll from our own programmatic scroll is to
+// record what we last set and when. onMessagesScroll uses this to release the
+// resend/edit pin ONLY on a real user scroll, never on a reveal/auto scroll.
+let _autoScrollTop = -1;
+let _autoScrollAt = 0;
+// Set scrollTop programmatically and remember the (post-clamp) value + timestamp.
+// Exported so renderChat's position-restore counts as programmatic too.
+export function setScrollTop(top) {
+  const el = dom.messagesEl;
+  if (!el) return;
+  el.scrollTop = top;
+  _autoScrollTop = Math.round(el.scrollTop);
+  _autoScrollAt = performance.now();
+}
+
 // Auto-scroll the chat. Normally jumps to the bottom (new content), but while a
 // resend/edit regenerates in place, state.scrollPin holds the position so the
 // view doesn't jump away from the message being edited.
 export function scrollChatToEnd() {
-  if (state.scrollPin != null) dom.messagesEl.scrollTop = state.scrollPin;
-  else dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
+  setScrollTop(state.scrollPin != null ? state.scrollPin : dom.messagesEl.scrollHeight);
   refreshScrollState();
 }
 
-// Streaming/progress auto-scroll that yields to the user. Only follows while the
-// view sits at the bottom; a resend/edit that holds the view mid-conversation
-// (scrollPin, stickToBottom=false) is left exactly in place — no jump. If the user
-// themselves scrolls to the bottom mid-stream (stickToBottom flips true), release
-// the pin here so following the stream doesn't yank the view back to the pin.
+// While a resend/edit holds the view (scrollPin set), don't jump to the bottom —
+// but if the regenerating reply grew below the fold, scroll DOWN just enough to
+// reveal its newest text (never past the reply into the content after it, and
+// never up). Keeps scrollPin synced so it doesn't snap back.
+export function revealStreamingTail() {
+  const el = dom.messagesEl;
+  if (!el) return;
+  const bubble = el.querySelector(".streaming-bubble");
+  if (!bubble) return;
+  const overflow = bubble.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom;
+  if (overflow > 0) {
+    setScrollTop(el.scrollTop + overflow + 12);
+    state.scrollPin = el.scrollTop;
+  }
+}
+
+// Streaming/progress auto-scroll. Three cases: pinned (resend/edit) → reveal the
+// growing reply's tail without jumping; at the bottom → follow the stream down;
+// scrolled up to read → leave the view alone. The pin is released only by a real
+// user scroll (onMessagesScroll), so reveal can never snap to the conversation end.
 export function scrollChatToEndIfPinned() {
-  if (!state.stickToBottom) return;
-  state.scrollPin = null;
-  scrollChatToEnd();
+  if (state.scrollPin != null) revealStreamingTail();
+  else if (state.stickToBottom) scrollChatToEnd();
+}
+
+// The chat's 'scroll' event handler. Recomputes scroll state, and — crucially —
+// releases the resend/edit pin when the USER (not our own code) scrolls to the
+// bottom, so the stream starts following instead of the reveal holding them back.
+export function onMessagesScroll() {
+  const el = dom.messagesEl;
+  if (!el) return;
+  const programmatic = (performance.now() - _autoScrollAt < 200) && Math.abs(el.scrollTop - _autoScrollTop) <= 2;
+  refreshScrollState();
+  if (!programmatic && state.scrollPin != null && state.stickToBottom) state.scrollPin = null;
 }
 
 // Pending reveal of the jump-to-bottom button (see refreshScrollState).
