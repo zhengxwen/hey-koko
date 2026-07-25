@@ -67,6 +67,27 @@ export const TOOL_SCHEMAS = [
   {
     type: "function",
     function: {
+      name: "list_browser_tabs",
+      description: "List the tabs open in the user's co-browsing Chrome (the shared browser hey-koko can read). Use to locate a tab when the user refers to a page that is not the one they are currently viewing.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_browser_page",
+      description: "Read the main content of a page open in the user's co-browsing Chrome. Use when the user asks about 'this page', '当前网页/这个页面', or any tab they have open. Returns the page title, URL, extracted article text, and any text the user has selected on the page. With no arguments it reads the tab the user is currently looking at.",
+      parameters: {
+        type: "object",
+        properties: {
+          tab: { type: "string", description: "optional: a tab number from list_browser_tabs, or a URL/title substring; omit to read the active tab" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "set_reminder",
       description: "Schedule a reminder for the user. Use when they ask to be reminded of something at a time.",
       parameters: {
@@ -161,6 +182,39 @@ async function searchLibrary(query) {
   } catch (e) { return "Library search failed: " + e.message; }
 }
 
+// Co-browsing tools — thin wrappers over the server's CDP bridge (server/cdp.js).
+// Failures come back as instructive strings so the model can tell the user how to
+// start the shared browser instead of just apologizing.
+async function listBrowserTabs() {
+  try {
+    const res = await fetch("/api/browser/tabs");
+    const data = await res.json();
+    if (data.error === "unreachable") return data.hint;
+    if (data.error) return "Browser bridge failed: " + data.error;
+    const tabs = data.tabs || [];
+    if (!tabs.length) return "The co-browsing Chrome is running but has no web page tabs open.";
+    return tabs.map((t) => `${t.index}. ${t.active ? "▶ " : ""}${t.title || "(untitled)"}\n(${t.url})`).join("\n");
+  } catch (e) { return "Browser bridge failed: " + e.message; }
+}
+
+async function readBrowserPage(tab) {
+  try {
+    const res = await fetch("/api/browser/read", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tab: tab || "" }),
+    });
+    const data = await res.json();
+    if (data.error === "unreachable") return data.hint;
+    if (data.error === "no_tabs") return "The co-browsing Chrome is running but has no web page tabs open.";
+    if (data.error === "tab_not_found") return "No tab matched that. Open tabs:\n" + (data.tabs || []).join("\n");
+    if (data.error) return "Failed to read the page: " + data.error;
+    let out = `# ${data.title}\n${data.url}\n\n${data.text || "(no extractable text on this page)"}`;
+    if (data.selection) out = `Text the user has SELECTED on the page (likely what they're asking about):\n"""\n${data.selection}\n"""\n\n` + out;
+    if (data.truncated) out += "\n\n[content truncated]";
+    return out;
+  } catch (e) { return "Browser bridge failed: " + e.message; }
+}
+
 function setReminder(when, text) {
   const w = String(when || "").trim()
     .replace(/(\d+)\s*(?:minutes?|mins?)\b/i, "$1m")
@@ -187,6 +241,8 @@ export async function executeTool(name, args) {
     case "web_search": return await webSearch(args.query || "");
     case "recall_memory": return await recallMemory(args.query || "");
     case "search_library": return await searchLibrary(args.query || "");
+    case "list_browser_tabs": return await listBrowserTabs();
+    case "read_browser_page": return await readBrowserPage(args.tab || "");
     case "set_reminder": return setReminder(args.when, args.text);
     case "remember_fact": return rememberFact(args.fact);
     default: return `Unknown tool: ${name}`;
@@ -200,15 +256,23 @@ export function getToolLabel(name, args) {
   if (name === "search_library") return `search_library("${a.query || ""}")`;
   if (name === "calculate") return `calculate(${a.expression || ""})`;
   if (name === "get_datetime") return "get_datetime()";
+  if (name === "list_browser_tabs") return "list_browser_tabs()";
+  if (name === "read_browser_page") return `read_browser_page(${a.tab ? `"${a.tab}"` : ""})`;
   if (name === "set_reminder") return `set_reminder("${a.when || ""}", "${a.text || ""}")`;
   if (name === "remember_fact") return `remember_fact("${a.fact || ""}")`;
   return name;
 }
 
 // The tool set actually offered to the model: everything in TOOL_SCHEMAS, minus
-// search_library when the user has switched the knowledge-library tool off (its own
-// checkbox, independent of the master tool-use toggle). Default on when absent.
+// search_library / the co-browsing tools when their sub-checkboxes are off (each has
+// its own checkbox, independent of the master tool-use toggle). Default on when absent.
 export function activeToolSchemas() {
   const useLib = dom.libraryToolToggle ? dom.libraryToolToggle.checked : true;
-  return useLib ? TOOL_SCHEMAS : TOOL_SCHEMAS.filter((t) => t.function.name !== "search_library");
+  const useBrowser = dom.browserToolToggle ? dom.browserToolToggle.checked : true;
+  return TOOL_SCHEMAS.filter((t) => {
+    const n = t.function.name;
+    if (!useLib && n === "search_library") return false;
+    if (!useBrowser && (n === "list_browser_tabs" || n === "read_browser_page")) return false;
+    return true;
+  });
 }

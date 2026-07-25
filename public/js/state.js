@@ -124,6 +124,8 @@ export const dom = {
   sendTimeToggle: document.querySelector("#sendTime"),
   toolsToggle: document.querySelector("#toolsToggle"),
   libraryToolToggle: document.querySelector("#libraryToolToggle"),
+  browserToolToggle: document.querySelector("#browserToolToggle"),
+  browserLaunchBtn: document.querySelector("#browserLaunchBtn"),
   numCtxSelect: document.querySelector("#numCtxSelect"),
   numCtxDisplay: document.querySelector("#numCtxDisplay"),
   pdfEngineLabel: document.querySelector("#pdfEngineLabel"),

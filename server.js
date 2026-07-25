@@ -46,6 +46,7 @@ const { proxyOllamaImageModels, generateImage, enhancePrompt } = require("./serv
 const { proxyComfyModels, generateComfyImage, uploadComfyVideo, comfyAutoMask } = require("./server/comfy");
 const { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, expandYoutubeUrls } = require("./server/url-fetch");
 const { searchWeb } = require("./server/search");
+const { browserTabs, browserRead, browserLaunch } = require("./server/cdp");   // co-browsing CDP bridge
 const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
 const { listSystemVoices, speakAudio } = require("./server/speech");
 const { listTtsVoices, synthesize } = require("./server/tts");
@@ -161,6 +162,21 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/search") {
     searchWeb(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/browser/tabs") {
+    browserTabs(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/browser/read") {
+    browserRead(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/browser/launch") {
+    browserLaunch(req, res);
     return;
   }
 

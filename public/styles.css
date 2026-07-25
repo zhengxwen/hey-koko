@@ -5372,6 +5372,38 @@ button.secondary:disabled {
   color: var(--muted);
 }
 
+/* Co-browsing sub-row: checkbox label + "Open Chrome" launcher, button pinned right;
+   in the narrow panel the row wraps and the button drops to its own line. The label
+   keeps the canonical .checkboxLabel grid; min-width:0 on label AND text span defeats
+   the flex/grid auto min-size so long text wraps instead of underrunning the button. */
+.thinkingSetting .browserToolRow {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.browserToolRow .checkboxLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* .thinkingSetting label sets white-space:nowrap, which would clip this longer
+     label at the panel edge — let it wrap instead. */
+  white-space: normal;
+}
+.browserToolRow .checkboxLabel > span {
+  min-width: 0;
+}
+.browserToolRow .browserLaunchBtn {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 11.5px;
+  padding: 3px 10px;
+  /* the global button min-height (42px) is oversized next to a 12.5px sub-toggle row */
+  min-height: 28px;
+}
+.browserToolRow .browserLaunchBtn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .themeSettingLabel {
   font-weight: 650;
   font-size: 14px;

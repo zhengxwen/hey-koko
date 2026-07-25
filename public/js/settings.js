@@ -94,6 +94,7 @@ export function saveCurrentSettings() {
       sendTime: dom.sendTimeToggle?.checked ?? true,
       tools: dom.toolsToggle?.checked || false,
       libraryTool: dom.libraryToolToggle?.checked ?? true,
+      browserTool: dom.browserToolToggle?.checked ?? true,
       numCtx: dom.numCtxSelect?.value || "32768",
       pdfEngine: dom.pdfEngineSelect?.value || "mineru",
       embedModel: dom.embedModelSelect?.value || "qwen3-embedding:8b",
@@ -304,6 +305,7 @@ export function loadSavedSettings() {
   if (dom.toolsToggle) dom.toolsToggle.checked = savedSettings.tools !== undefined ? !!savedSettings.tools : true;
   // The knowledge-library tool sub-toggle: also default ON.
   if (dom.libraryToolToggle) dom.libraryToolToggle.checked = savedSettings.libraryTool !== undefined ? !!savedSettings.libraryTool : true;
+  if (dom.browserToolToggle) dom.browserToolToggle.checked = savedSettings.browserTool !== undefined ? !!savedSettings.browserTool : true;
   // Context window
   if (savedSettings.numCtx && dom.numCtxSelect) dom.numCtxSelect.value = savedSettings.numCtx;
   if (savedSettings.pdfEngine && dom.pdfEngineSelect) dom.pdfEngineSelect.value = savedSettings.pdfEngine;

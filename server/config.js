@@ -154,6 +154,16 @@ const config = {
     const apiBase = process.env.ZOTERO_API_BASE || file.apiBase || "http://127.0.0.1:23119";
     return { apiBase: String(apiBase).replace(/\/+$/, "") };
   })(),
+  // Co-browsing CDP bridge (server/cdp.js): the user's dedicated Chrome instance
+  // launched with --remote-debugging-port. Optional ~/.hey-koko/browser.json
+  // { "cdpBase": "http://127.0.0.1:9222" } overrides the default (e.g. Chrome on
+  // another machine via SSH tunnel); BROWSER_CDP_URL env wins over both.
+  BROWSER_CDP: (() => {
+    let file = {};
+    try { file = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "browser.json"), "utf8")) || {}; } catch { /* optional */ }
+    const cdpBase = process.env.BROWSER_CDP_URL || file.cdpBase || "http://127.0.0.1:9222";
+    return { cdpBase: String(cdpBase).replace(/\/+$/, "") };
+  })(),
   MIME_TYPES: {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",

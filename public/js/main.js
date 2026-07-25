@@ -204,15 +204,41 @@ if (dom.sendTimeToggle) {
   dom.sendTimeToggle.addEventListener("change", saveCurrentSettings);
 }
 if (dom.toolsToggle) {
-  // The "search the knowledge library" sub-option only makes sense while tool use is on,
-  // so hide its whole row when the master toggle is off (and reflect the loaded state).
-  const syncLibToolRow = () => {
-    const row = dom.libraryToolToggle?.closest(".toolSubToggle");
-    if (row) row.style.display = dom.toolsToggle.checked ? "" : "none";
+  // The sub-options (knowledge library / co-browsing Chrome) only make sense while
+  // tool use is on, so hide their rows when the master toggle is off (and reflect
+  // the loaded state). The launch button also greys out with its own checkbox off.
+  const syncToolSubRows = () => {
+    const show = dom.toolsToggle.checked;
+    for (const cb of [dom.libraryToolToggle, dom.browserToolToggle]) {
+      const row = cb?.closest(".toolSubToggle");
+      if (row) row.style.display = show ? "" : "none";
+    }
+    if (dom.browserLaunchBtn) dom.browserLaunchBtn.disabled = !(dom.browserToolToggle?.checked ?? true);
   };
-  dom.toolsToggle.addEventListener("change", () => { saveCurrentSettings(); syncLibToolRow(); });
+  dom.toolsToggle.addEventListener("change", () => { saveCurrentSettings(); syncToolSubRows(); });
   dom.libraryToolToggle?.addEventListener("change", saveCurrentSettings);
-  syncLibToolRow();
+  dom.browserToolToggle?.addEventListener("change", () => { saveCurrentSettings(); syncToolSubRows(); });
+  syncToolSubRows();
+}
+if (dom.browserLaunchBtn) {
+  // Launch the co-browsing Chrome on the server machine; flash the outcome on the
+  // button itself, then restore. Disabled while the request is in flight and
+  // whenever the co-browsing checkbox is off.
+  dom.browserLaunchBtn.addEventListener("click", async () => {
+    const btn = dom.browserLaunchBtn;
+    btn.disabled = true;
+    let msg = "btn_browserLaunchFailed";
+    try {
+      const res = await fetch("/api/browser/launch", { method: "POST" });
+      const data = await res.json();
+      if (!data.error) msg = data.already ? "btn_browserLaunchAlready" : "btn_browserLaunched";
+    } catch { /* keep failure message */ }
+    btn.textContent = t(msg);
+    setTimeout(() => {
+      btn.textContent = t("btn_browserLaunch");
+      btn.disabled = !(dom.browserToolToggle?.checked ?? true);
+    }, 2500);
+  });
 }
 if (dom.libraryDistillToggle) {
   dom.libraryDistillToggle.addEventListener("change", saveCurrentSettings);
