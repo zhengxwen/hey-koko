@@ -200,12 +200,15 @@ export function scrollChatToEnd() {
   refreshScrollState();
 }
 
-// Streaming/progress auto-scroll that yields to the user: only follows new
-// content while they're still near the bottom. Dragging up to read mid-stream
-// flips state.stickToBottom off (via refreshScrollState on the scroll event),
-// and this becomes a no-op until they return to the bottom.
+// Streaming/progress auto-scroll that yields to the user. Only follows while the
+// view sits at the bottom; a resend/edit that holds the view mid-conversation
+// (scrollPin, stickToBottom=false) is left exactly in place — no jump. If the user
+// themselves scrolls to the bottom mid-stream (stickToBottom flips true), release
+// the pin here so following the stream doesn't yank the view back to the pin.
 export function scrollChatToEndIfPinned() {
-  if (state.stickToBottom) scrollChatToEnd();
+  if (!state.stickToBottom) return;
+  state.scrollPin = null;
+  scrollChatToEnd();
 }
 
 // Pending reveal of the jump-to-bottom button (see refreshScrollState).
@@ -225,6 +228,10 @@ export function refreshScrollState() {
   if (!el) return;
   const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
   state.stickToBottom = distance <= 40;
+  // NOTE: do NOT release scrollPin here. refreshScrollState runs for PROGRAMMATIC
+  // scrolls too (scrollChatToEnd/renderChat), so clearing the pin on "near bottom"
+  // made a mid-conversation resend snap to the very bottom. The pin is released in
+  // scrollChatToEndIfPinned instead, which only runs on the streaming auto-scroll.
   const btn = dom.scrollToBottomBtn;
   if (!btn) return;
 
