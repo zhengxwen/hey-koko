@@ -3,7 +3,6 @@
 
 // Chat rendering, message handling, and sending
 import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState, setScrollTop } from './state.js';
-import { TAG_COLORS } from './constants.js';
 import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis,
          readFileAsDataUrl, makePreview, convertToJpeg, normalizeOrientation } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
@@ -702,10 +701,6 @@ function resendChatMessage(index) {
     handleCompactCommand(tab, state.activeTabId, index + 1, index);
     return;
   }
-  if (/^\/title(\s|$)/.test(message.content)) {
-    handleTitleCommand(tab, state.activeTabId, message.content);
-    return;
-  }
 
   // Handle /url command on resend — re-run the whole chain in the background queue
   // (reached only when the queue is empty; non-empty is blocked above with a dialog).
@@ -995,155 +990,6 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
   }
 }
 
-function getTagColor(tagName) {
-  // Match existing tag color across all tabs
-  for (const t of state.tabs) {
-    for (const tg of (t.tags || [])) {
-      if ((tg?.name || "").trim() === tagName) return tg.color;
-    }
-  }
-  // Random color for new tag
-  return TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)];
-}
-
-function parseTitleCommand(content) {
-  const raw = content.replace(/^\/title\s*/, '');
-  const tags = [];
-  let hasBrackets = false;
-  // Extract [tags] - content inside brackets, split by space or comma
-  const cleaned = raw.replace(/\[([^\]]*)\]/g, (_, inner) => {
-    hasBrackets = true;
-    inner.split(/[\s,，]+/).filter(Boolean).forEach(t => tags.push(t));
-    return '';
-  }).trim();
-  return { title: cleaned.replace(/[\r\n]+/g, ' ').trim(), tags, hasBrackets };
-}
-
-async function handleTitleCommand(tab, tabId, content) {
-  const { title, tags, hasBrackets } = parseTitleCommand(content);
-
-  // Add user message
-  tab.messages.push({ role: "user", content, timestamp: Date.now() });
-  saveChat();
-  if (state.activeTabId === tabId) renderChat();
-
-  let finalTitle = title;
-
-  // If no title provided, use AI to generate one
-  if (!finalTitle) {
-    if (tab.messages.filter(m => m.role === "user" || m.role === "assistant").length <= 1) {
-      finalTitle = `Chat ${state.tabs.indexOf(tab) + 1}`;
-    } else {
-      setAvatarState("thinking");
-      setGenerating(true);
-      const abortController = new AbortController();
-      state.currentAbortController = abortController;
-
-      // Show thinking bubble
-      state.streamingInfo = { tabId, content: '', phase: 'thinking', insertIndex: -1, thinkingText: t("msg_generatingTitle") };
-      if (state.activeTabId === tabId) {
-        const pending = document.createElement("div");
-        pending.className = "message assistant thinking streaming-bubble";
-        const body = document.createElement("div");
-        body.className = "markdownBody";
-        body.innerHTML = `<span class="thinking-text">${t("msg_generatingTitle")}<span class="thinking-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span></span>`;
-        pending.appendChild(body);
-        dom.messagesEl.appendChild(pending);
-        scrollChatToEnd();
-      }
-
-      try {
-        const recentMessages = tab.messages.filter(m => !m.isFilePreview && !m.isCompactSummary && !/^\/title(\s|$)/.test(m.content)).slice(0, 4);
-        const prompt = [
-          { role: "system", content: getPrompt("titleGeneration") },
-          ...recentMessages.map(m => ({ role: m.role, content: m.content })),
-        ];
-        const response = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: abortController.signal,
-          body: JSON.stringify({
-            model: dom.modelSelect.value,
-            messages: prompt,
-            options: { temperature: 0.3 },
-            timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
-          }),
-        });
-        if (response.ok) {
-          const reader = response.body.getReader();
-          cancelReaderOnAbort(reader, abortController.signal);   // WebKit: unblock a hung read() on Stop
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let result = "";
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-            for (const line of lines) {
-              if (!line.trim()) continue;
-              try {
-                const data = JSON.parse(line);
-                result += data.message?.content || "";
-              } catch {}
-            }
-          }
-          if (buffer.trim()) {
-            try { const data = JSON.parse(buffer); result += data.message?.content || ""; } catch {}
-          }
-          finalTitle = result.replace(/[\r\n]+/g, ' ').replace(/^["'"""'']+|["'"""'']+$/g, '').trim();
-          if (finalTitle.length > 16) finalTitle = finalTitle.slice(0, 16);
-        }
-      } catch (e) {
-        if (e.name !== "AbortError") {
-          finalTitle = tab.title; // Keep original on error
-          showSendError(e.message);
-        }
-      } finally {
-        state.streamingInfo = null;
-        const bubble = dom.messagesEl.querySelector('.streaming-bubble');
-        if (bubble) bubble.remove();
-        setAvatarState("idle");
-        setGenerating(false);
-        state.currentAbortController = null;
-      }
-    }
-  }
-
-  // Apply title
-  if (finalTitle) {
-    tab.title = finalTitle;
-  }
-
-  // Apply tags: only if brackets were present in the command
-  if (hasBrackets) {
-    if (tags.length === 0) {
-      // "/title []" clears tags
-      tab.tags = [];
-    } else {
-      if (!tab.tags) tab.tags = [];
-      for (const tagName of tags) {
-        const exists = tab.tags.some(t => (t?.name || "").trim() === tagName);
-        if (!exists) {
-          tab.tags.push({ name: tagName, color: getTagColor(tagName) });
-        }
-      }
-    }
-  }
-
-  saveTabs();
-  renderTabs();
-
-  // Show confirmation as assistant message
-  let confirmMsg = t("msg_titleUpdated", { title: tab.title });
-  if (hasBrackets && tags.length > 0) confirmMsg += t("msg_tagsAdded", { tags: tags.join(', ') });
-  if (hasBrackets && tags.length === 0) confirmMsg += t("msg_tagsCleared");
-  tab.messages.push({ role: "assistant", content: confirmMsg, timestamp: Date.now() });
-  saveChat();
-  if (state.activeTabId === tabId) renderChat();
-}
-
 function buildMessages(tabId = state.activeTabId, contextEndIndex = -1) {
   const tab = getTab(tabId) || getActiveTab();
   // Optionally only consider messages up to (and including) contextEndIndex.
@@ -1199,8 +1045,6 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
     }
     // Skip the /compact command itself
     if (msg.role === "user" && /^\/compact\s*$/.test(msg.content)) continue;
-    // Skip /title command and its response
-    if (msg.role === "user" && /^\/title(\s|$)/.test(msg.content)) continue;
     // Skip /memory command (the fact is already injected via long-term memory)
     if (msg.role === "user" && /^\/memory(\s|$)/.test(msg.content)) continue;
     // Skip /remind command line
@@ -1209,8 +1053,6 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
     if (msg.role === "user" && /^\/search(\s|$)/.test(msg.content)) continue;
     // Skip /analyze command line (its analysis is the assistant bubble that follows)
     if (msg.role === "user" && /^\/analyze(\s|$)/.test(msg.content)) continue;
-    // Skip the "title updated" confirmation bubble (msg_titleUpdated, any UI language).
-    if (msg.role === "assistant" && /^✅ (标题已更新为|標題已更新為|Title updated to)/.test(msg.content)) continue;
     // File preview bubbles: send to LLM as user-role (contains the parsed file content)
     if (msg.isFilePreview) {
       const message = { role: "user", content: msg.content };
@@ -2618,23 +2460,6 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
 
   markActivity();
 
-  // Handle /retry [Nx] — re-answer my last message N times, each a fresh reply
-  // appended after the previous (no duplicate user bubble; old replies kept).
-  const retryMatch = content && content.match(/^\/retry(?:\s+(\d+)x)?\s*$/i);
-  if (retryMatch) {
-    let lastUserIdx = -1;
-    for (let i = tab.messages.length - 1; i >= 0; i--) {
-      if (tab.messages[i].role === "user") { lastUserIdx = i; break; }
-    }
-    if (lastUserIdx === -1) return; // nothing to retry
-    const times = Math.min(8, Math.max(1, parseInt(retryMatch[1], 10) || 1));
-    for (let k = 0; k < times; k++) {
-      const wasAborted = await regenerateReply(tabId, -1, lastUserIdx);
-      if (wasAborted) break; // user hit stop — abandon the rest of the batch
-    }
-    return;
-  }
-
   // Handle /remind command — schedule a proactive reminder
   if (content && /^\/remind(\s|$)/.test(content)) {
     const parsed = parseRemind(content);
@@ -2714,12 +2539,6 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   // Handle /compact command
   if (content && /^\/compact\s*$/.test(content)) {
     await handleCompactCommand(tab, tabId);
-    return;
-  }
-
-  // Handle /title command
-  if (content && /^\/title(\s|$)/.test(content)) {
-    await handleTitleCommand(tab, tabId, content);
     return;
   }
 
