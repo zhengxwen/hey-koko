@@ -837,6 +837,51 @@ dom.scrollToBottomBtn?.addEventListener("click", () => {
   refreshScrollState();
 });
 
+// Composer resize handle — drag the invisible bar straddling the top of the input
+// box to make it taller/shorter. The composer's `auto` grid row grows/shrinks and
+// the messages area (the `1fr` row) absorbs the change. Session-only (not persisted);
+// double-click resets. A reload starts back at the default height.
+{
+  const resizer = document.querySelector("#composerResizer");
+  const input = dom.messageInput;
+  const MIN = 48;
+  const maxH = () => Math.max(MIN, Math.round((dom.chatArea?.clientHeight || window.innerHeight) * 0.6));
+  const applyHeight = (h) => {
+    const clamped = Math.max(MIN, Math.min(Math.round(h), maxH()));
+    input.style.height = clamped + "px";
+    input.style.maxHeight = clamped + "px";   // override the CSS 150px cap so it can grow past it
+  };
+  if (resizer && input) {
+    let startY = 0, startH = 0, dragging = false;
+    const onMove = (e) => { if (dragging) applyHeight(startH + (startY - e.clientY)); }; // drag up → grow
+    const onUp = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      resizer.classList.remove("isDragging");
+      document.body.classList.remove("isResizingComposer");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      try { resizer.releasePointerCapture(e.pointerId); } catch {}
+    };
+    resizer.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      startY = e.clientY;
+      startH = input.getBoundingClientRect().height;
+      resizer.classList.add("isDragging");
+      document.body.classList.add("isResizingComposer");
+      try { resizer.setPointerCapture(e.pointerId); } catch {}
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      e.preventDefault();
+    });
+    // Double-click restores the default (CSS-driven) height.
+    resizer.addEventListener("dblclick", () => {
+      input.style.height = "";
+      input.style.maxHeight = "";
+    });
+  }
+}
+
 // Stop translation button
 dom.stopTranslateBtn.addEventListener("click", stopTranslation);
 

@@ -804,6 +804,8 @@ const UI = {
     btn_downloadAudio: "Download audio",
     btn_downloadImage: "Download image",
     btn_scrollToBottom: "Scroll to bottom",
+    composer_resizeAria: "Resize input box",
+    composer_resizeTitle: "Drag to resize the input box (double-click to reset)",
     btn_file: "File",
     btn_stopTranslate: "Stop Translation",
     tooltip_quickPrompt: "Quick commands or prompts (type / or ? to trigger)",
@@ -1926,6 +1928,8 @@ const UI = {
     btn_downloadAudio: "下载音频",
     btn_downloadImage: "下载图片",
     btn_scrollToBottom: "回到底部",
+    composer_resizeAria: "调节输入框高度",
+    composer_resizeTitle: "拖动调节输入框高度（双击重置）",
     btn_file: "文件",
     btn_stopTranslate: "停止翻译",
     tooltip_quickPrompt: "快捷指令（输入 / 或 ? 触发）",
@@ -3043,6 +3047,8 @@ const UI = {
     btn_downloadAudio: "下載音訊",
     btn_downloadImage: "下載圖片",
     btn_scrollToBottom: "回到底部",
+    composer_resizeAria: "調節輸入框高度",
+    composer_resizeTitle: "拖動調節輸入框高度（雙擊重置）",
     btn_file: "檔案",
     btn_stopTranslate: "停止翻譯",
     tooltip_quickPrompt: "快捷指令（輸入 / 或 ? 觸發）",
@@ -3527,6 +3533,8 @@ export function getPrompt(key, ...args) {
 
 const BINDINGS = [
   { sel: "#scrollToBottomBtn .scrollToBottomText", key: "btn_scrollToBottom" },
+  { sel: "#composerResizer", key: "composer_resizeAria", attr: "aria-label" },
+  { sel: "#composerResizer", key: "composer_resizeTitle", attr: "title" },
   // Panel tabs
   { sel: '.panelTab[data-panel-tab="basic"]', key: "panelTab_basic" },
   { sel: '.panelTab[data-panel-tab="more"]', key: "panelTab_more" },

@@ -589,6 +589,10 @@
         </div>
 
         <form id="chatForm" class="composer">
+          <!-- Invisible full-width drag handle straddling the seam between the messages
+               area and the composer: drag up/down to resize the input box (and thus the
+               chat area). Double-click resets to the default height. -->
+          <div id="composerResizer" class="composerResizer" role="separator" aria-orientation="horizontal" aria-label="Resize input box" title="Drag to resize the input box (double-click to reset)"></div>
           <div class="inputStack">
             <div id="commandPopup" class="commandPopup" hidden></div>
             <div id="mentionPopup" class="commandPopup mentionPopup" hidden></div>

@@ -3204,6 +3204,44 @@ button.secondary:disabled {
   background: var(--panel-alpha);
 }
 
+/* Invisible resize handle straddling the composer's top border. Floats over the
+   seam (absolute, so it adds no layout gap), full width, ~9px tall grab area with a
+   row-resize cursor. A faint pill hint fades in on hover/drag so it's discoverable
+   without being visible at rest. */
+.composerResizer {
+  position: absolute;
+  top: -5px;
+  left: 0;
+  right: 0;
+  height: 10px;
+  cursor: row-resize;
+  z-index: 6;
+  touch-action: none;                 /* let the pointer drag instead of scrolling */
+  background: transparent;
+}
+.composerResizer::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.composerResizer:hover::after,
+.composerResizer.isDragging::after {
+  opacity: 0.55;
+}
+/* While dragging, kill text selection + force the resize cursor everywhere. */
+body.isResizingComposer {
+  cursor: row-resize;
+  user-select: none;
+}
+
 /* Delayed "Sending…/Stopping…" pill — floats above the composer, out of the grid
    flow (absolute), only shown when an op is slow (>2s). [hidden] keeps it gone. */
 .sendStatus {
