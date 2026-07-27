@@ -403,6 +403,8 @@ function applyComfyModels(data) {
     state.comfySamplerTunable = new Set(videoModels.filter((m) => m.samplerTunable).map((m) => m.name));
     // Source-video models (bernini / animate): output fps follows the source video.
     state.comfyVideoInModels = new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name));
+    // Of the video-in models, the ones that ALSO need a speech audio file (InfiniteTalk dubbing).
+    state.comfyAudioInModels = new Set(videoModels.filter((m) => m.needsAudio).map((m) => m.name));
     // …of which some (bernini) also run WITHOUT a source video (image→video), where
     // fps/length are the request's own again rather than the source's.
     state.comfyVideoOptionalModels = new Set(videoModels.filter((m) => m.videoOptional).map((m) => m.name));

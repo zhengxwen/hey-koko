@@ -91,12 +91,15 @@ function renderThinkingInto(el, md) {
 let _sendStatusTimer = null;
 let _sendStatusKind = null; // 'sending' | 'stopping' | 'error' | null
 let _sendStatusImageCount = 0; // images carried by the in-flight request (annotates the pill)
+let _sendStatusTrimCount = 0; // older messages dropped from the in-flight request (context full)
 // "Sending/Receiving…", upgraded to "…(incl. N images)" when the outgoing request
 // carries images. Computed live so setSendingImageCount can refresh the visible pill.
 function sendingStatusText() {
-  const base = _sendStatusImageCount > 0
+  let base = _sendStatusImageCount > 0
     ? t("status_sendingImages", { n: _sendStatusImageCount })
     : t("status_sending");
+  // Context-full trimming is never silent: annotate how many older messages were dropped.
+  if (_sendStatusTrimCount > 0) base += " " + t("status_sendingTrimmed", { n: _sendStatusTrimCount });
   // Cloud requests leave the machine — prefix the pill with ☁️ (mirrors the avatar badge).
   return isCloudModel() ? "☁️ " + base : base;
 }
@@ -105,7 +108,7 @@ function scheduleStatus(kind, key) {
   _sendStatusKind = kind;
   // Each fresh send resets the image annotation; the count is filled in once the
   // outgoing payload is built (setSendingImageCount), before the response returns.
-  if (kind === 'sending') _sendStatusImageCount = 0;
+  if (kind === 'sending') { _sendStatusImageCount = 0; _sendStatusTrimCount = 0; }
   const el = dom.sendStatus;
   if (!el) return;
   // Show the pill IMMEDIATELY (no 2s delay) so send/resend/edit get instant feedback;
@@ -128,6 +131,16 @@ function countOutgoingImages(messages) {
 // the response already started, or the user pressed stop).
 function setSendingImageCount(n) {
   _sendStatusImageCount = n || 0;
+  if (_sendStatusKind === 'sending' && dom.sendStatus && !dom.sendStatus.hidden) {
+    dom.sendStatus.textContent = sendingStatusText();
+  }
+}
+
+// Annotate the live "sending" pill with how many older messages the context-budget
+// trim dropped from this request (0 = full history sent). Same lifecycle as
+// setSendingImageCount.
+function setSendingTrimCount(n) {
+  _sendStatusTrimCount = n || 0;
   if (_sendStatusKind === 'sending' && dom.sendStatus && !dom.sendStatus.hidden) {
     dom.sendStatus.textContent = sendingStatusText();
   }
@@ -237,7 +250,7 @@ function bgImagineLabel(cmds, isVideo) {
 // Generation (image/video/audio) always runs through the background queue. This
 // builds the image/video job from the parsed /imagine commands — shared by a fresh
 // send and a resend so the model is snapshotted the same way in both.
-async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertIndex = -1) {
+async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertIndex = -1, audio = null) {
   // A ComfyUI video model (no Ollama image model) routes through generateVideo —
   // capture model + kind at submit time so a later dropdown change can't redirect it.
   const isVideo = !dom.imageModelSelect.value && dom.comfyModelSelect && state.comfyVideoModels.has(dom.comfyModelSelect.value);
@@ -265,7 +278,9 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
     payload: {
       parsedInput: validCmds,
       initImages: images || null,
-      initVideo: clip || null,
+      // Speech audio rides ON the source clip (InfiniteTalk needs both; a batch dubs
+      // every clip with the same track) — no separate payload field to thread through.
+      initVideo: clip ? (audio ? { ...clip, speechAudio: audio } : clip) : null,
       maskB64: mask || null,
       modelOverride,
     },
@@ -581,6 +596,23 @@ function attachVideosToMessage(userMessage, videos) {
   if (videos.some(v => v.height != null)) userMessage.videoHeights = videos.map(v => v.height ?? null);
 }
 
+// Stamp a user bubble with the staged speech audio (InfiniteTalk dubbing). Reuses the
+// /voice player fields (generatedAudio + audioMime → <audio> + download) so it renders
+// and persists like generated speech; name/duration ride along for resend.
+function attachAudioToMessage(userMessage, audio) {
+  if (!audio || !audio.base64) return;
+  userMessage.generatedAudio = audio.base64;
+  userMessage.audioMime = audio.mime || "audio/wav";
+  if (audio.name) userMessage.audioName = audio.name;
+  if (audio.duration) userMessage.audioDuration = audio.duration;
+}
+
+// Rebuild the staged-audio object from a user bubble (resend path).
+function messageSourceAudio(m) {
+  if (!m || m.role !== "user" || !m.generatedAudio) return null;
+  return { base64: m.generatedAudio, mime: m.audioMime || "audio/wav", name: m.audioName || undefined, duration: m.audioDuration || 0 };
+}
+
 // Stamp a user bubble with a staged image upload (single staged object, or a
 // { multi:[...] } selection). Parallel arrays carry the distinct roles:
 //   contextImages     — full-res base64, the ONLY images forwarded to the model
@@ -793,7 +825,7 @@ function resendChatMessage(index) {
       // Resend of image/video gen also goes to the background queue (reached only
       // when the queue is empty — a non-empty queue is blocked above with a dialog).
       // The placeholder lands right after the resent user bubble (index + 1).
-      enqueueImagineGen(validCmds, state.activeTabId, message.contextImages || null, srcVids, message.mask || null, index + 1);
+      enqueueImagineGen(validCmds, state.activeTabId, message.contextImages || null, srcVids, message.mask || null, index + 1, messageSourceAudio(message));
     }
   } else {
     // Truncate context to the resent bubble: only messages up to and including
@@ -1020,7 +1052,7 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
       break;
     }
   }
-  const relevantMessages = sourceMessages.slice(startIndex).slice(-24);
+  const relevantMessages = sourceMessages.slice(startIndex);
 
   // (B) Time-away awareness: when a user turn lands >4h after the previous included
   // turn, prepend a "the user replied N hours/days/weeks later" note (ephemeral —
@@ -1029,6 +1061,7 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
   let lastTs = null;
 
   const mapped = [];
+  let summaryMappedIdx = -1;
   for (const msg of relevantMessages) {
     // Folded bubbles are excluded from the model context entirely — this runs
     // before the compact-summary/file-preview branches so folding ANY bubble
@@ -1039,6 +1072,7 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
     if (msg.bgPlaceholder) continue;
     // Include compact summary as system context
     if (msg.isCompactSummary) {
+      summaryMappedIdx = mapped.length;
       mapped.push({ role: "system", content: `${getPrompt("summaryContext")}${msg.content}` });
       if (msg.timestamp) lastTs = msg.timestamp;
       continue;
@@ -1086,7 +1120,36 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
     if (msg.timestamp) lastTs = msg.timestamp;
   }
 
-  return [{ role: "system", content: system }, ...mapped];
+  // Fit the history into the configured context window (num_ctx) instead of a fixed
+  // message cap: estimate tokens, and only when the total exceeds the budget drop the
+  // OLDEST messages until it fits. The compact summary (if any) is pinned, and the
+  // newest message is always kept. Estimates are heuristic (CJK ≈ 1 token/char,
+  // other text ≈ 4 chars/token, image ≈ 768 tokens) — Ollama does the real count;
+  // this only decides which messages to include. What got dropped is surfaced on the
+  // tab (context meter + sending pill) so trimming is never silent.
+  const IMAGE_TOKENS = 768;
+  const estText = (s) => {
+    s = s || "";
+    const cjk = (s.match(/[\u2E80-\uFFFD]/g) || []).length;
+    return Math.ceil(cjk + (s.length - cjk) / 4);
+  };
+  const estMsg = (m) => estText(m.content) + (m.images?.length || 0) * IMAGE_TOKENS + 8;
+  const numCtx = getNumCtx();
+  const budget = numCtx - Math.max(1024, numCtx >> 3); // reserve room for the reply
+  let total = estText(system) + mapped.reduce((sum, m) => sum + estMsg(m), 0);
+  const dropFrom = summaryMappedIdx === 0 ? 1 : 0; // pin the compact summary
+  let dropTo = dropFrom;
+  while (total > budget && dropTo < mapped.length - 1) {
+    total -= estMsg(mapped[dropTo]);
+    dropTo++;
+  }
+  const omitted = dropTo - dropFrom;
+  const kept = dropFrom > 0 ? [mapped[0], ...mapped.slice(dropTo)] : mapped.slice(dropTo);
+  tab.ctxOmittedMsgs = omitted;
+  tab.ctxSentMsgs = kept.length;
+  if (tab === getActiveTab()) renderContextMeter();
+
+  return [{ role: "system", content: system }, ...kept];
 }
 
 // Handle /0 and /1 isolated context commands
@@ -1350,7 +1413,10 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     const messages = buildMessages(tabId, contextEndIndex);
     // Surface how many images this request carries on the "sending" pill (foreground only —
     // bg jobs run headless without it).
-    if (!bg) setSendingImageCount(countOutgoingImages(messages));
+    if (!bg) {
+      setSendingImageCount(countOutgoingImages(messages));
+      setSendingTrimCount((getTab(tabId) || getActiveTab())?.ctxOmittedMsgs || 0);
+    }
     const fetchBody = {
       model: dom.modelSelect.value,
       messages,
@@ -1866,6 +1932,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
     messages[0].content += `\n\n${toolsHint}`;
   }
   setSendingImageCount(countOutgoingImages(messages));
+  setSendingTrimCount((getTab(tabId) || getActiveTab())?.ctxOmittedMsgs || 0);
   const toolSteps = [];
   const seen = new Map(); // tool-call signature -> cached result (kills repeat loops)
   const showThinking = dom.showThinkingCheckbox?.checked || false;
@@ -2450,7 +2517,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
   }
 }
 
-export async function sendMessage(content, image, tabId = state.activeTabId, file = null, video = null) {
+export async function sendMessage(content, image, tabId = state.activeTabId, file = null, video = null, audio = null) {
   const tab = getTab(tabId);
   if (!tab) return;
   if (tab.locked) return;
@@ -2604,6 +2671,8 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     // the user bubble for display (reusing the generatedVideos field).
     const imagineVideos = stagedVideoList(video);
     attachVideosToMessage(userMessage, imagineVideos);
+    // Speech audio (InfiniteTalk dubbing) rides the user bubble + the gen payload.
+    attachAudioToMessage(userMessage, audio);
     tab.messages.push(userMessage);
     const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
     // A bare "/imagine" (no prompt) is valid only when something is attached
@@ -2623,7 +2692,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       // multiple clips fan out (cartesian with each command's count).
       saveChat();
       if (state.activeTabId === tabId) renderChat();
-      enqueueImagineGen(validCmds, tabId, userMessage.contextImages || null, imagineVideos, userMessage.mask || null);
+      enqueueImagineGen(validCmds, tabId, userMessage.contextImages || null, imagineVideos, userMessage.mask || null, -1, audio);
     }
     return;
   }
@@ -2740,6 +2809,9 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   // buildMessages() never forwards videos to the model — so there's no AI analysis.
   const plainVideos = stagedVideoList(video);
   attachVideosToMessage(userMessage, plainVideos);
+  // Uploaded speech audio: display-only on a plain send (a player on the bubble);
+  // it only drives generation via /imagine with an audio-capable video model.
+  attachAudioToMessage(userMessage, audio);
 
   tab.messages.push(userMessage);
   saveChat();

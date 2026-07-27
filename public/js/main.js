@@ -9,7 +9,7 @@ import { initTheme } from './theme.js';
 import { initAvatar, updateCloudBadge, relocalizeAvatarPicker } from './avatar.js';
 import { pauseOrStopSpeech, populateVoiceList } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveTabsNow, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
-import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
+import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, clearSelectedAudio, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint, openModelBrowser, openComfyModelPicker, syncComfyModelPickLabel, relocalizeComfyModels, BROWSE_MODELS_VALUE } from './ollama.js';
 import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsMask } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
@@ -290,7 +290,7 @@ dom.chatForm.addEventListener("submit", async (event) => {
   }
 
   const content = dom.messageInput.value.trim();
-  if (!content && !state.selectedImage && !state.selectedFile && !state.selectedVideo) return;
+  if (!content && !state.selectedImage && !state.selectedFile && !state.selectedVideo && !state.selectedAudio) return;
 
   // Sending always returns the user to the bottom, even if they'd scrolled up.
   state.stickToBottom = true;
@@ -299,6 +299,7 @@ dom.chatForm.addEventListener("submit", async (event) => {
   const image = state.selectedImage;
   const file = state.selectedFile;
   const video = state.selectedVideo;
+  const audio = state.selectedAudio;
   dom.messageInput.value = "";
   // Sent — drop the saved draft so it doesn't reappear on tab switch.
   const _activeTab = getActiveTab();
@@ -306,6 +307,7 @@ dom.chatForm.addEventListener("submit", async (event) => {
   clearSelectedImage();
   clearSelectedFile();
   clearSelectedVideo();
+  clearSelectedAudio();
 
   if (file && file.multi) {
     // Multiple documents: each becomes its own background job (the queue runs them
@@ -331,7 +333,7 @@ dom.chatForm.addEventListener("submit", async (event) => {
     renderChat();
     await enqueueDocParse(file.rawFile, file.name, file.ext, content);
   } else {
-    sendMessage(content, image, undefined, file, video);
+    sendMessage(content, image, undefined, file, video, audio);
   }
 });
 
@@ -759,6 +761,7 @@ dom.removeFile.addEventListener("click", clearSelectedFile);
 
 // Remove video button
 dom.removeVideo.addEventListener("click", clearSelectedVideo);
+if (dom.removeAudio) dom.removeAudio.addEventListener("click", clearSelectedAudio);
 
 // --- Wan Animate REPLACE: pick which person to swap (SAM2 seed point) ---
 // The source frame is whatever the replace job will use: the video's poster frame,
@@ -1576,6 +1579,59 @@ function getStagedVideos() {
   return [state.selectedVideo];
 }
 
+// Stage a speech audio file (single slot — a new pick replaces the previous one).
+async function selectAudioFile(file) {
+  if (file.size > 30 * 1024 * 1024) {
+    const msgEl = document.createElement("div");
+    msgEl.className = "message system";
+    msgEl.textContent = t("msg_audioTooLarge");
+    dom.messagesEl.appendChild(msgEl);
+    return;
+  }
+  const dataUrl = await readFileAsDataUrl(file);
+  const duration = await audioDurationOf(dataUrl);
+  state.selectedAudio = {
+    base64: dataUrl.split(",")[1],
+    mime: file.type || "audio/wav",
+    name: file.name,
+    duration: duration || 0,
+  };
+  clearSelectedFile(); // audio + documents are mutually exclusive (different send paths)
+  renderStagedAudioPreview();
+  dom.messageInput.focus();
+}
+
+// Probe an audio data-URL's duration (seconds; 0 on failure) via a detached <audio>.
+function audioDurationOf(src) {
+  return new Promise((resolve) => {
+    const a = document.createElement("audio");
+    a.preload = "metadata";
+    let done = false;
+    const finish = (val) => { if (done) return; done = true; clearTimeout(timer); resolve(val); };
+    a.addEventListener("loadedmetadata", () => finish(isFinite(a.duration) ? a.duration : 0), { once: true });
+    a.addEventListener("error", () => finish(0), { once: true });
+    const timer = setTimeout(() => finish(0), 4000);
+    a.src = src;
+  });
+}
+
+// Render the compose-area chip for the staged speech audio (single slot).
+function renderStagedAudioPreview() {
+  if (!dom.audioPreviewName) return;
+  dom.audioPreviewName.innerHTML = "";
+  const a = state.selectedAudio;
+  if (!a) {
+    dom.audioPreview.hidden = true;
+    return;
+  }
+  const chip = document.createElement("span");
+  chip.className = "fileChip audioChip";
+  const secs = a.duration ? ` · ${Math.round(a.duration)}s` : "";
+  chip.textContent = `🎤 ${a.name}${secs}`;
+  dom.audioPreviewName.appendChild(chip);
+  dom.audioPreview.hidden = false;
+}
+
 // Render the compose-area preview chips for the staged source video(s). Each chip
 // shows the original filename with its own × remove button.
 function renderStagedVideoPreview() {
@@ -1663,6 +1719,7 @@ function renderStagedFilePreview() {
 export function renderStagedAttachments() {
   renderStagedImagePreview();
   renderStagedVideoPreview();
+  renderStagedAudioPreview();
   renderStagedFilePreview();
   refreshMaskPointLabel();
 }
@@ -1674,13 +1731,23 @@ async function selectFile(file) {
   const ext = getFileExtension(file.name);
   const isImage = file.type.startsWith("image/");
   const isVideo = file.type.startsWith("video/");
+  const isAudio = file.type.startsWith("audio/");
   const isDocument = DOC_EXTENSIONS.includes(ext);
 
-  if (!isImage && !isVideo && !isDocument) {
+  if (!isImage && !isVideo && !isAudio && !isDocument) {
     const msgEl = document.createElement("div");
     msgEl.className = "message system";
     msgEl.textContent = t("msg_unsupportedFileType");
     dom.messagesEl.appendChild(msgEl);
+    return;
+  }
+
+  // Audio handling — a speech track for audio-driven video dubbing (InfiniteTalk:
+  // source video + this audio → the person re-lip-synced to it). ONE audio at a
+  // time (a new pick replaces the old); rides along with staged images/videos,
+  // exclusive with documents (those take a different send path).
+  if (isAudio) {
+    await selectAudioFile(file);
     return;
   }
 
@@ -1773,6 +1840,7 @@ async function selectFile(file) {
       }
       clearSelectedImage();
       clearSelectedVideo();
+      clearSelectedAudio();
       renderStagedFilePreview();
       dom.messageInput.focus();
       return;
@@ -1797,6 +1865,7 @@ async function selectFile(file) {
     }
     clearSelectedImage();
     clearSelectedVideo();
+    clearSelectedAudio();
     renderStagedFilePreview();
     dom.messageInput.focus();
   } catch (e) {
@@ -1809,6 +1878,15 @@ async function selectFile(file) {
 
 // Handle multiple file selection
 async function selectMultipleFiles(files) {
+  // Speech audio rides along with anything visual (video+audio is the natural drop
+  // for InfiniteTalk dubbing): peel audio files off first — the LAST one wins the
+  // single audio slot — and let the rest flow through the normal rules.
+  const audioFiles = files.filter(f => f.type.startsWith("audio/"));
+  if (audioFiles.length) {
+    await selectAudioFile(audioFiles[audioFiles.length - 1]);
+    files = files.filter(f => !f.type.startsWith("audio/"));
+    if (files.length === 0) return;
+  }
   // Videos batch together (each becomes its own source clip), but can't be mixed
   // with images/documents in one drop — they take different send paths.
   const hasVideo = files.some(f => f.type.startsWith("video/"));
@@ -1911,6 +1989,7 @@ async function selectMultipleFiles(files) {
     state.selectedFile = validFiles.length === 1 ? validFiles[0] : { multi: validFiles };
     clearSelectedImage();
     clearSelectedVideo();
+    clearSelectedAudio();
     // Show all file names in preview
     dom.filePreviewName.innerHTML = "";
     for (const f of validFiles) {

@@ -31,6 +31,9 @@ export const dom = {
   videoPreview: document.querySelector("#videoPreview"),
   videoPreviewName: document.querySelector("#videoPreviewName"),
   removeVideo: document.querySelector("#removeVideo"),
+  audioPreview: document.querySelector("#audioPreview"),
+  audioPreviewName: document.querySelector("#audioPreviewName"),
+  removeAudio: document.querySelector("#removeAudio"),
   voiceSelect: document.querySelector("#voiceSelect"),
   autoSpeakCheckbox: document.querySelector("#autoSpeak"),
   speechRateInput: document.querySelector("#speechRate"),
@@ -164,6 +167,7 @@ export const state = {
   selectedImage: null,
   selectedFile: null,
   selectedVideo: null,
+  selectedAudio: null,               // staged speech audio (InfiniteTalk dubbing): { base64, mime, name, duration }
   activeSpeechButton: null,
   speechAbortController: null,
   activeTranslationAbort: null,
@@ -184,6 +188,7 @@ export const state = {
   comfySamplerTunable: new Set(),    // video models whose ⚙ sampler/steps/cfg reach the graph (server-decided)
   comfyVideoInModels: new Set(),     // ComfyUI video models that need a SOURCE video (fps follows source)
   comfyVideoOptionalModels: new Set(), // …of those, the ones a source video is OPTIONAL for (bernini: image alone → i2v)
+  comfyAudioInModels: new Set(),     // …video-in models that ALSO need a SPEECH AUDIO file (InfiniteTalk dubbing)
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
   scrollPin: null,                   // when set (resend/edit in place), auto-scroll holds this scrollTop instead of jumping to the bottom
   _pinClearTimer: null,              // delayed release of scrollPin once generation fully ends

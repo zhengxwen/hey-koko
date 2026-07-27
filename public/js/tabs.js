@@ -162,6 +162,7 @@ export function switchTab(tabId) {
       selectedImage: state.selectedImage,
       selectedFile: state.selectedFile,
       selectedVideo: state.selectedVideo,
+      selectedAudio: state.selectedAudio,
       animateMaskPoint: state.animateMaskPoint,
     });
   }
@@ -169,12 +170,14 @@ export function switchTab(tabId) {
   clearSelectedImage();
   clearSelectedFile();
   clearSelectedVideo();
+  clearSelectedAudio();
   const newTab = getActiveTab();
   // Restore the new tab's staged attachments (empty if it had none).
   const att = tabAttachments.get(tabId);
   state.selectedImage = (att && att.selectedImage) || null;
   state.selectedFile = (att && att.selectedFile) || null;
   state.selectedVideo = (att && att.selectedVideo) || null;
+  state.selectedAudio = (att && att.selectedAudio) || null;
   state.animateMaskPoint = (att && att.animateMaskPoint) || null;
   if (_renderAttachments) _renderAttachments();
   if (newTab && newTab.personality) {
@@ -250,6 +253,12 @@ export function clearSelectedVideo() {
   if (dom.videoPreview) dom.videoPreview.hidden = true;
 }
 
+export function clearSelectedAudio() {
+  state.selectedAudio = null;
+  if (dom.audioPreviewName) dom.audioPreviewName.textContent = "";
+  if (dom.audioPreview) dom.audioPreview.hidden = true;
+}
+
 function finishRename(tab, input) {
   const newTitle = input.value.replace(/[\r\n]+/g, ' ').trim();
   if (newTitle && newTitle !== tab.title) {
@@ -310,10 +319,12 @@ function closeTab(tabId) {
     clearSelectedImage();
     clearSelectedFile();
     clearSelectedVideo();
+    clearSelectedAudio();
     const att = tabAttachments.get(state.activeTabId);
     state.selectedImage = (att && att.selectedImage) || null;
     state.selectedFile = (att && att.selectedFile) || null;
     state.selectedVideo = (att && att.selectedVideo) || null;
+    state.selectedAudio = (att && att.selectedAudio) || null;
     state.animateMaskPoint = (att && att.animateMaskPoint) || null;
     if (_renderAttachments) _renderAttachments();
   }

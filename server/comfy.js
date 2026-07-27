@@ -244,6 +244,13 @@ function videoTypeOf(model) {
   // rejected before the generic /bernini/ test claims them (same ordering trap as
   // scail-before-animate below).
   if (BERNINI_IMAGE_SENTINELS.has(model)) return null;
+  // InfiniteTalk: the sentinel gets its own type; the REAL files it consumes are
+  // COMPONENTS that must not be claimed by the generic /wan/ test below —
+  // the infiniteTalk model patches ship a copy in diffusion_models/ (the wrapper's
+  // MultiTalkModelLoader scans there) and the Kijai Wan2.1-I2V-480p UNET is the
+  // wrapper's base model, not a standalone hey-koko entry.
+  if (/infinitetalk|multitalk/i.test(model)) return model === INFINITETALK ? "infinitetalk" : null;
+  if (/wan2[._]1-i2v/i.test(model)) return null; // Kijai Wan2_1-I2V-14B-480p_…_KJ — wrapper component
   if (/bernini/i.test(model)) return "bernini";
   if (/scail/i.test(model)) return "scail2";
   if (/animate/i.test(model)) return "animate";
@@ -474,6 +481,18 @@ const LTX_MSR_REF_FRAMES = "17";
 // and a reference image, so it lives in the "needs source video" UI group.
 const LTX_UNION = "ltx-union";
 
+// Sentinel for InfiniteTalk V2V (audio-driven video dubbing / lip re-sync) — a SOURCE
+// VIDEO plus a SPEECH AUDIO file: the clip is regenerated following the source's motion,
+// identity and scene while the mouth/face follow the new audio. Runs on Kijai's
+// ComfyUI-WanVideoWrapper (the native WanInfiniteTalkToVideo node has NO source-video
+// input — image+audio only), over the Wan2.1 I2V 480p model + the InfiniteTalk model
+// patch + a wav2vec2 audio encoder. Recipe LIVE-VERIFIED on the box (92-frame dub,
+// identity/motion/scene preserved): 4-step lightx2v distill, cfg 1, dpm++_sde, shift 11,
+// start_step 2 + add_noise_to_samples — the "keep the source's structure, denoise only
+// the tail steps" v2v trick. Long audio is windowed IN the sampler (81-frame windows,
+// 9-frame motion overlap) — no client-side chunking.
+const INFINITETALK = "infinitetalk";
+
 // Everything MSR needs, or null when a piece is absent (the entry is then hidden rather than
 // offered broken). Two routes, both end-to-end verified:
 //   • CLEAN (preferred) — ONE full distilled-fp8 checkpoint provides the transformer AND its
@@ -560,6 +579,55 @@ async function ltxUnionParts(pref) {
   return ok ? parts : null;
 }
 
+// Everything InfiniteTalk V2V needs. Wrapper-based (WanVideoWrapper node family), so the
+// loaders are the wrapper's own: WanVideoModelLoader scans diffusion_models/,
+// MultiTalkModelLoader too (hence the patch copies there), Wav2VecModelLoader scans
+// models/wav2vec2/. The text encoder is the NATIVE CLIPLoader + WanVideoTextEmbedBridge:
+// the wrapper's own text encoders reject comfy's scaled-fp8 umt5 ("fp8 scaled is not
+// supported"), while the native loader handles it — bridging CONDITIONING across is the
+// verified path that avoids an 11GB duplicate umt5 download.
+const INFINITETALK_NODES = [
+  "WanVideoModelLoader", "MultiTalkModelLoader", "Wav2VecModelLoader", "MultiTalkWav2VecEmbeds",
+  "WanVideoImageToVideoMultiTalk", "WanVideoSampler", "WanVideoDecode", "WanVideoEncode",
+  "WanVideoVAELoader", "WanVideoBlockSwap", "WanVideoLoraSelect", "WanVideoClipVisionEncode",
+  "WanVideoTextEmbedBridge", "ImageResizeKJv2", "GetImageRangeFromBatch", "GetImageSizeAndCount",
+];
+async function infinitetalkParts() {
+  const [wrapModels, patches, wav2vec, clips, cvs, loras, nodes] = await Promise.all([
+    comfyEnum("WanVideoModelLoader", "model").catch(() => []),
+    comfyEnum("MultiTalkModelLoader", "model").catch(() => []),
+    comfyEnum("Wav2VecModelLoader", "model").catch(() => []),
+    comfyEnum("CLIPLoader", "clip_name").catch(() => []),
+    comfyEnum("CLIPVisionLoader", "clip_name").catch(() => []),
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyHasNodes(INFINITETALK_NODES),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  // The wrapper's VAE loader lists vae/ files under its own combo; probe it separately
+  // (its input is model_name, unlike the native VAELoader's vae_name).
+  const wrapVaes = await comfyEnum("WanVideoVAELoader", "model_name").catch(() => []);
+  const parts = {
+    // Wan2.1 I2V 480p base (the Kijai fp8-scaled repack is what was verified).
+    model: find(wrapModels, /wan2[._]1-i2v.*480p/i) || find(wrapModels, /wan.?2[._]1.*i2v.*14b/i),
+    // Prefer the single-speaker patch (single-person dubbing); fall back to multi.
+    patch: find(patches, /infinitetalk.*single/i) || find(patches, /infinitetalk/i),
+    wav2vec: (wav2vec || [])[0] || null,
+    clip: find(clips, /umt5/i),
+    vae: find(wrapVaes, /wan.?2[._]1.*vae/i) || find(wrapVaes, /wan.*vae/i),
+    clipVision: find(cvs, /clip_vision_h|clip.?vision.*h\b/i) || find(cvs, /clip.?vision/i),
+    // The 4-step cfg-1 schedule is bound to this distill LoRA — required, not optional.
+    lora: find(loras, /lightx2v.*i2v.*14b.*distill|lightx2v_I2V_14B/i),
+  };
+  const ok = nodes && parts.model && parts.patch && parts.wav2vec && parts.clip && parts.vae && parts.clipVision && parts.lora;
+  return ok ? parts : null;
+}
+// Gen-time variant: same lookups, but a missing piece THROWS with the shopping list.
+async function infinitetalkCompanions() {
+  const parts = await infinitetalkParts();
+  if (parts) return parts;
+  throw new Error("Missing pieces required by InfiniteTalk V2V:\n- ComfyUI-WanVideoWrapper custom node (git clone into custom_nodes/)\n- diffusion_models/Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors\n- diffusion_models/wan2.1_infiniteTalk_single_fp16.safetensors (copy of the model_patches file)\n- models/wav2vec2/wav2vec2-chinese-base_fp16.safetensors\n- vae/Wan2_1_VAE_bf16.safetensors · text_encoders/umt5_xxl…scaled · clip_vision_h · loras/lightx2v_I2V_14B_480p…");
+}
+
 // Whether every named node class is registered on the target ComfyUI. Probed one by
 // one (/object_info/<name> returns {} for an unknown class) rather than pulling the
 // full node table, which is megabytes on a well-stocked install.
@@ -609,6 +677,7 @@ function marketName(name) {
     [SCAIL2_ANIMATE]: "SCAIL-2 (animate)",
     [LTX_MSR]: "LTX-2.3 MSR",
     [LTX_UNION]: "LTX-2.3 Union",
+    [INFINITETALK]: "InfiniteTalk (dub / lip-sync)",
     [VIDEO_ENHANCE]: "Video interpolate + upscale",
   };
   if (name in sentinels) return sentinels[name];
@@ -657,6 +726,7 @@ function capsFor(name, group, type, entry) {
   if (group === "edit") return ["edit"];
   // video: a source-video model is v2v; bernini also accepts a plain image (i2v).
   if (name === LTX_UNION) return ["v2v", "audio"]; // depth-driven; LTX decodes a soundtrack
+  if (name === INFINITETALK) return ["v2v", "audio"]; // audio-DRIVEN dubbing (lip re-sync to a speech file)
   if (entry && entry.needsVideo) return name === BERNINI_AUTO ? ["i2v", "v2v"] : ["v2v"];
   if (name === LTX_MSR) return ["i2v", "audio"];   // reference-image driven, generates a soundtrack
   switch (type) {
@@ -716,6 +786,7 @@ function videoRank(n) {
   if (/animate/i.test(n)) return 8;
   if (n === BERNINI_AUTO) return 12;
   if (n === BERNINI_INSERT) return 13;
+  if (n === INFINITETALK) return 13.5;
   if (n === VIDEO_ENHANCE) return 14;
   return 50;
 }
@@ -735,6 +806,7 @@ function isModelReady(name, group, type) {
   if (name === LTX_MSR) return true;        // MSR V2 — verified (sharp, identity preserved)
   if (name === LTX_UNION) return true;      // Union Control — verified end-to-end (depth transfer, sharp)
   if (name === ANIMATE_REPLACE) return true; // Replace verified end-to-end (scene kept, person swapped)
+  if (name === INFINITETALK) return true;    // V2V dub recipe verified live (92-frame lip re-sync, trim tail exact)
   if (name === BERNINI_INSERT) return false;  // ads2v — wired but never live-verified
   // Bernini image side (i2i / r2i / t2i) — all three VERIFIED end-to-end on the live
   // box: t2i 11s, i2i relight 7s (identity held: shape/colour/position untouched),
@@ -883,6 +955,10 @@ async function proxyComfyModels(req, res) {
     // motion) + a reference image (the appearance), so it joins the "needs source video"
     // group. Gated on every weight + node being present, same as MSR.
     if (await ltxUnionParts()) videoModels.push({ name: LTX_UNION, type: "ltx-union", label: "LTX-2.3 Union", needsVideo: true, needsImages: 1 });
+    // InfiniteTalk V2V (audio-driven dubbing / lip re-sync): needs a SOURCE VIDEO plus a
+    // SPEECH AUDIO file (needsAudio — the frontend gates on it). Wrapper-based; only
+    // offered when the whole node+weight set is installed, same policy as MSR/Union.
+    if (await infinitetalkParts()) videoModels.push({ name: INFINITETALK, type: "infinitetalk", label: "InfiniteTalk (dub / lip-sync)", needsVideo: true, needsAudio: true });
     // Bernini also renders STILLS (same weights + graph at length 1) — surface its
     // three image tasks once the weights are present. i2i/r2i take an attached image
     // so they belong in the instruction-edit group; t2i takes none, so it joins the
@@ -2955,6 +3031,67 @@ function buildBernini({ model, prompt, negative, comp, videoName, refImageName, 
 
 // Wan 2.2 Animate (Move/pose-transfer) companions: umt5 + WAN 2.1 VAE + clip_vision_h
 // + the lightx2v I2V distill LoRA + the relight LoRA. All required.
+// InfiniteTalk V2V (audio-driven video dubbing) — Kijai WanVideoWrapper graph, flattened
+// from wanvideo_2_1_14B_V2V_InfiniteTalk_example_02.json and LIVE-VERIFIED on the box
+// (adapted: GGUF→installed safetensors, vocal-separation stage dropped, side-by-side
+// comparison tail dropped, native text encode bridged in).
+//
+// Shape: the SOURCE VIDEO is VAE-encoded whole and handed to the sampler as `samples`;
+// with start_step 2 (of 4) + add_noise_to_samples the first half of the schedule is
+// skipped, so the source's motion/identity/scene survive and only the audio-conditioned
+// detail (lips/face) is re-synthesised. Speech drives lips via wav2vec2 embeds; the
+// InfiniteTalk patch windows long clips internally (81-frame windows, 9-frame motion
+// overlap) — ONE graph regardless of length, no client-side chunking. If the audio
+// outlasts the clip, generation extends from the last frame; output length = audio
+// length exactly (decoded frames are trimmed to the embeds' real frame count, and the
+// loudness-normalised audio is muxed back in).
+//
+// Sizing: output follows the source video's aspect at the 832×480 budget, dims /16
+// (ImageResizeKJv2 crops/resizes the source; start frame + gen size derive from it).
+function buildInfiniteTalk({ prompt, negative, comp, videoName, audioName, width, height, fps, maxFrames, seed }) {
+  const pos = prompt || "a person is talking to the camera, natural speech, lips moving in sync with the audio";
+  const neg = negative || "bright tones, overexposed, static, blurred details, subtitles, worst quality, low quality, deformed, disfigured, extra fingers, still picture, messy background";
+  return {
+    // Model stack: base UNET + InfiniteTalk patch + lightx2v distill LoRA (the 4-step
+    // cfg-1 schedule below is bound to it) + 20-block swap (VRAM headroom; harmless
+    // when there is plenty). sdpa attention — safe everywhere, no sage dependency.
+    "1": { class_type: "WanVideoModelLoader", inputs: { model: comp.model, base_precision: "fp16_fast", quantization: "fp8_e4m3fn_scaled", load_device: "offload_device", attention_mode: "sdpa", block_swap_args: ["2", 0], lora: ["3", 0], multitalk_model: ["4", 0] } },
+    "2": { class_type: "WanVideoBlockSwap", inputs: { blocks_to_swap: 20, offload_img_emb: false, offload_txt_emb: false, use_non_blocking: true, vace_blocks_to_swap: 0, prefetch_blocks: 1, block_swap_debug: false } },
+    "3": { class_type: "WanVideoLoraSelect", inputs: { lora: comp.lora, strength: 1.0, low_mem_load: false, merge_loras: false } },
+    "4": { class_type: "MultiTalkModelLoader", inputs: { model: comp.patch } },
+    "5": { class_type: "WanVideoVAELoader", inputs: { model_name: comp.vae, precision: "bf16" } },
+    "6": { class_type: "CLIPVisionLoader", inputs: { clip_name: comp.clipVision } },
+    // Source video → resized to the output size (crop keeps the aspect we computed
+    // from the source, so this is effectively a clean resize) → full-clip VAE encode.
+    "7": { class_type: "LoadVideo", inputs: { file: videoName } },
+    "8": { class_type: "GetVideoComponents", inputs: { video: ["7", 0] } },
+    "9": { class_type: "ImageResizeKJv2", inputs: { image: ["8", 0], width, height, upscale_method: "lanczos", keep_proportion: "crop", pad_color: "0, 0, 0", crop_position: "center", divisible_by: 16, device: "cpu" } },
+    // First frame → clip-vision + start image; gen width/height read back off it.
+    "10": { class_type: "GetImageRangeFromBatch", inputs: { images: ["9", 0], start_index: 0, num_frames: 1 } },
+    "11": { class_type: "GetImageSizeAndCount", inputs: { image: ["10", 0] } },
+    "12": { class_type: "WanVideoClipVisionEncode", inputs: { clip_vision: ["6", 0], image_1: ["11", 0], strength_1: 1.0, strength_2: 1.0, crop: "center", combine_embeds: "average", force_offload: true, tiles: 0, ratio: 0.5 } },
+    // Text: NATIVE loader + bridge. The wrapper's own text encoders reject comfy's
+    // scaled-fp8 umt5 ("fp8 scaled is not supported by this node").
+    "23": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
+    "24": { class_type: "CLIPTextEncode", inputs: { clip: ["23", 0], text: pos } },
+    "25": { class_type: "CLIPTextEncode", inputs: { clip: ["23", 0], text: neg } },
+    "13": { class_type: "WanVideoTextEmbedBridge", inputs: { positive: ["24", 0], negative: ["25", 0] } },
+    "14": { class_type: "WanVideoImageToVideoMultiTalk", inputs: { vae: ["5", 0], width: ["11", 1], height: ["11", 2], frame_window_size: 81, motion_frame: 9, force_offload: false, colormatch: "disabled", start_image: ["11", 0], tiled_vae: false, clip_embeds: ["12", 0], mode: "infinitetalk" } },
+    // Speech → wav2vec2 embeds. num_frames is a CAP (actual = audio duration × fps);
+    // outputs: [0] embeds, [1] loudness-normalised audio, [2] REAL frame count.
+    "15": { class_type: "Wav2VecModelLoader", inputs: { model: comp.wav2vec, base_precision: "fp16", load_device: "main_device" } },
+    "16": { class_type: "LoadAudio", inputs: { audio: audioName } },
+    "17": { class_type: "MultiTalkWav2VecEmbeds", inputs: { wav2vec_model: ["15", 0], audio_1: ["16", 0], normalize_loudness: true, num_frames: maxFrames, fps, audio_scale: 1.0, audio_cfg_scale: 1.0, multi_audio_type: "para" } },
+    "18": { class_type: "WanVideoEncode", inputs: { vae: ["5", 0], image: ["9", 0], enable_vae_tiling: false, tile_x: 272, tile_y: 272, tile_stride_x: 144, tile_stride_y: 128, noise_aug_strength: 0.0, latent_strength: 1.0 } },
+    "19": { class_type: "WanVideoSampler", inputs: { model: ["1", 0], image_embeds: ["14", 0], text_embeds: ["13", 0], samples: ["18", 0], multitalk_embeds: ["17", 0], steps: 4, cfg: 1.0, shift: 11.0, seed, force_offload: true, scheduler: "dpm++_sde", riflex_freq_index: 0, denoise_strength: 1.0, batched_cfg: false, rope_function: "comfy", start_step: 2, end_step: -1, add_noise_to_samples: true } },
+    "20": { class_type: "WanVideoDecode", inputs: { vae: ["5", 0], samples: ["19", 0], enable_vae_tiling: false, tile_x: 272, tile_y: 272, tile_stride_x: 144, tile_stride_y: 128 } },
+    // Trim the last window's padding to the REAL audio frame count, mux the audio.
+    "26": { class_type: "GetImageRangeFromBatch", inputs: { images: ["20", 0], start_index: 0, num_frames: ["17", 2] } },
+    "21": { class_type: "CreateVideo", inputs: { images: ["26", 0], fps, audio: ["17", 1] } },
+    "22": { class_type: "SaveVideo", inputs: { video: ["21", 0], filename_prefix: "heykoko_infinitetalk", format: "auto", codec: "auto" } },
+  };
+}
+
 async function animateCompanions() {
   const [clips, vaes, loras, cvs] = await Promise.all([
     comfyEnum("CLIPLoader", "clip_name"),
@@ -3467,6 +3604,45 @@ async function uploadVideo(b64, signal, mime = "video/mp4") {
   return uploadVideoBuffer(buf, mime, signal);
 }
 
+// ffprobe an AUDIO buffer's duration in seconds (0 if ffprobe absent/fails). Drives the
+// InfiniteTalk length estimate: output frames = duration × fps.
+async function probeAudioDuration(buf) {
+  let tmp;
+  try {
+    tmp = path.join(os.tmpdir(), `hk_ad_${crypto.randomUUID()}.bin`);
+    await fsp.writeFile(tmp, buf);
+    return await new Promise((resolve) => {
+      let out = "";
+      const p = spawn("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", tmp]);
+      p.stdout.on("data", (d) => { out += d; });
+      p.on("close", () => resolve(parseFloat(out.trim()) || 0));
+      p.on("error", () => resolve(0));
+    });
+  } catch { return 0; }
+  finally { if (tmp) fsp.unlink(tmp).catch(() => {}); }
+}
+
+// Upload a speech/audio file to ComfyUI's input dir (same /upload/image endpoint — it
+// accepts audio too; LoadAudio reads from the input dir). Content-hashed filename, same
+// dedupe/no-collision rationale as uploadVideoBuffer.
+async function uploadAudioBuffer(buf, mime, signal) {
+  const m = mime || "audio/wav";
+  const ext = /mpeg|mp3/i.test(m) ? "mp3" : /ogg|opus/i.test(m) ? "ogg" : /flac/i.test(m) ? "flac" : /m4a|mp4|aac/i.test(m) ? "m4a" : "wav";
+  const hash = crypto.createHash("sha256").update(buf).digest("hex").slice(0, 16);
+  const form = new FormData();
+  form.append("image", new Blob([buf], { type: m }), `heykoko_speech_${hash}.${ext}`);
+  form.append("overwrite", "true");
+  const r = await fetch(`${currentComfyUrl()}/upload/image`, { method: "POST", body: form, signal });
+  if (!r.ok) throw new Error(`audio upload failed (${r.status})`);
+  const data = await r.json();
+  return data.subfolder ? `${data.subfolder}/${data.name}` : data.name;
+}
+
+async function uploadAudio(b64, signal, mime = "audio/wav") {
+  const clean = typeof b64 === "string" && b64.startsWith("data:") ? b64.split(",")[1] : b64;
+  return uploadAudioBuffer(Buffer.from(clean, "base64"), mime, signal);
+}
+
 // POST /api/comfy-upload-video — the browser sends the source video as the RAW
 // request body (a Blob, not base64-in-JSON), we forward it to ComfyUI's input dir
 // and return its filename. Keeps the heavy video OFF the generation request body.
@@ -3495,6 +3671,27 @@ async function uploadComfyVideo(req, res) {
       probeVideo(buf),
     ]);
     sendJson(res, 200, { name, frames: probe.frames, fps: probe.fps });
+  } catch (e) {
+    sendJson(res, 500, { error: String((e && e.message) || e) });
+  }
+}
+
+// POST /api/comfy-upload-audio — the browser sends the speech audio as the RAW request
+// body (Blob, not base64-in-JSON), we forward it to ComfyUI's input dir and return its
+// filename + duration. Same raw-body contract as /api/comfy-upload-video.
+async function uploadComfyAudio(req, res) {
+  try {
+    comfyCtx.enterWith({ comfyUrl: normComfyUrl(req.headers["x-comfy-url"]) || config.comfyUrl });
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const buf = Buffer.concat(chunks);
+    if (!buf.length) { sendJson(res, 400, { error: "empty audio body" }); return; }
+    const mime = req.headers["content-type"] || "audio/wav";
+    const [name, duration] = await Promise.all([
+      uploadAudioBuffer(buf, mime),
+      probeAudioDuration(buf),
+    ]);
+    sendJson(res, 200, { name, duration });
   } catch (e) {
     sendJson(res, 500, { error: String((e && e.message) || e) });
   }
@@ -3558,7 +3755,7 @@ async function generateComfyImage(req, res) {
     const body = await readBody(req);
     // Target the ComfyUI endpoint this job was routed to (parallel lanes); default global.
     comfyCtx.enterWith({ comfyUrl: normComfyUrl(body.comfyUrl) || config.comfyUrl });
-    const { prompt, negative_prompt, options, images, mask, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, continueVideoName, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
+    const { prompt, negative_prompt, options, images, mask, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, continueVideoName, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
     let model = body.model;
 
     // A prompt is only required for pure txt2img — attachment-driven gen (img2img /
@@ -4069,6 +4266,33 @@ async function generateComfyImage(req, res) {
         imagesUsed = imageNames.length;
         workflow = buildPhantom({ model, prompt, negative: negative_prompt || "", comp, imageNames, seed, v, imgCfg });
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
+      } else if (videoType === "infinitetalk") {
+        // InfiniteTalk V2V dubbing: SOURCE VIDEO (motion/identity/scene) + SPEECH AUDIO
+        // (drives the lips). Both required; the prompt is optional flavour text.
+        if (!(sourceVideo || sourceVideoName)) { sendJson(res, 400, { error: "InfiniteTalk needs a source video (the clip to re-lip-sync). Attach a video plus a speech audio file, then /imagine." }); return; }
+        if (!(sourceAudio || sourceAudioName)) { sendJson(res, 400, { error: "InfiniteTalk needs a speech audio file (the new voice track). Attach one alongside the source video." }); return; }
+        const comp = await infinitetalkCompanions();
+        // Output follows the SOURCE's aspect at the model's native 832×480 budget
+        // (or the ⚙/--size budget), both dims /16.
+        let iw = snapDim(opts.width || 832, 16), ih = snapDim(opts.height || 480, 16);
+        const sw = Number(sourceVideoWidth), sh = Number(sourceVideoHeight);
+        if (sw > 0 && sh > 0) {
+          const aspect = sw / sh;
+          const budget = (opts.width && opts.height) ? opts.width * opts.height : 832 * 480;
+          iw = snapDim(Math.sqrt(budget * aspect), 16);
+          ih = snapDim(Math.sqrt(budget / aspect), 16);
+        }
+        // Output length = AUDIO length (frames = duration × fps, at the source's fps).
+        // num_frames on the embeds node is only a CAP; ⚙ length lowers it (e.g. quick
+        // tests). If the audio outruns the clip, the tail extends from the last frame.
+        const iFps = Number(sourceVideoFps) || opts.fps || 25;
+        const maxFrames = opts.length ? Math.max(5, Math.round(opts.length)) : 1000;
+        const audioName = sourceAudioName || await uploadAudio(sourceAudio, controller.signal, sourceAudioMime);
+        const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+        workflow = buildInfiniteTalk({ prompt, negative: negative_prompt || "", comp, videoName, audioName, width: iw, height: ih, fps: iFps, maxFrames, seed });
+        const audioFrames = Number(sourceAudioDuration) > 0 ? Math.round(Number(sourceAudioDuration) * iFps) : 0;
+        videoDims = { width: iw, height: ih, fps: iFps };
+        if (audioFrames) videoDims.length = Math.min(audioFrames, maxFrames);
       } else if (videoType === "ltx-union") {
         // LTX Union Control: depth of the SOURCE VIDEO drives a new clip; the reference
         // image sets appearance. Needs BOTH a source video and one reference image.
@@ -4684,4 +4908,4 @@ async function comfyAutoMask(req, res) {
   }
 }
 
-module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, comfyAutoMask };
+module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, uploadComfyAudio, comfyAutoMask };

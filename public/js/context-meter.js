@@ -100,27 +100,37 @@ export function renderContextMeter() {
   // which is roughly the base of the next turn.
   const used = prompt + gen;
   const total = getNumCtx();
+  // Set by buildMessages: how many older messages the context budget dropped from
+  // the last outgoing request (0 = the full history was sent).
+  const omitted = tab?.ctxOmittedMsgs || 0;
+  const trimNote = omitted ? " " + t("ctx_meterTrimmed", { n: omitted }) : "";
+  const trimTip = omitted
+    ? "\n" + t("ctx_meterTrimmedTip", { n: omitted, sent: tab?.ctxSentMsgs || 0 })
+    : "";
 
   // Always show the current context window next to the usage.
   if (dom.numCtxDisplay) dom.numCtxDisplay.textContent = fmt(total);
 
   if (!used) {
     dom.contextMeterFill.style.width = "0%";
-    dom.contextMeter.classList.remove("isWarn", "isFull");
-    dom.contextMeterText.textContent = t("ctx_meterEmpty");
-    dom.contextMeter.title = "";
+    dom.contextMeter.classList.toggle("isWarn", omitted > 0);
+    dom.contextMeter.classList.remove("isFull");
+    dom.contextMeterText.textContent = t("ctx_meterEmpty") + trimNote;
+    dom.contextMeter.title = trimTip.trim();
     return;
   }
 
   const pct = Math.min(100, Math.round((used / total) * 100));
   dom.contextMeterFill.style.width = pct + "%";
-  dom.contextMeter.classList.toggle("isWarn", pct >= 75 && pct < 90);
+  // Trimming means the window is effectively full — keep the warn color on even
+  // when the token percentage alone wouldn't trigger it.
+  dom.contextMeter.classList.toggle("isWarn", (pct >= 75 || omitted > 0) && pct < 90);
   dom.contextMeter.classList.toggle("isFull", pct >= 90);
-  dom.contextMeterText.textContent = t("ctx_meter", { used: fmt(used), total: fmt(total), pct });
+  dom.contextMeterText.textContent = t("ctx_meter", { used: fmt(used), total: fmt(total), pct }) + trimNote;
   dom.contextMeter.title = t("ctx_meterTooltip", {
     prompt,
     gen,
     speed: tab?.ctxTokensPerSec ? tab.ctxTokensPerSec.toFixed(1) : "—",
     total,
-  });
+  }) + trimTip;
 }

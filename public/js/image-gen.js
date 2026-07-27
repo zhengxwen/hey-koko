@@ -600,6 +600,20 @@ function interruptComfy(comfyHost) {
 // binary, so the generation request body stays tiny (vs a 30MB+ base64 in JSON
 // that freezes the tab). Returns the ComfyUI filename. The data-URL→Blob decode is
 // browser-native, off the hot path.
+// Upload the speech audio (InfiniteTalk dubbing) the same way — raw binary via the
+// server proxy; returns the ComfyUI filename + probed duration (drives the length
+// estimate on the done-line).
+async function uploadComfySourceAudio(audio, signal, comfyHost) {
+  const mime = audio.mime || "audio/wav";
+  const blob = await (await fetch(`data:${mime};base64,${audio.base64}`)).blob();
+  const headers = { "Content-Type": mime };
+  if (comfyHost) headers["X-Comfy-Url"] = comfyHost;
+  const r = await fetch("/api/comfy-upload-audio", { method: "POST", headers, body: blob, signal });
+  if (!r.ok) throw new Error(`speech audio upload failed (${r.status})`);
+  const d = await r.json();
+  return { name: d.name, duration: d.duration || 0 };
+}
+
 async function uploadComfySourceVideo(video, signal, targetFps, comfyHost) {
   const mime = video.mime || "video/mp4";
   const blob = await (await fetch(`data:${mime};base64,${video.base64}`)).blob();
@@ -828,6 +842,33 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
         return;
       }
       /* non-fatal: fall back to sending the base64 inline below */
+    }
+  }
+
+  // Speech audio (InfiniteTalk dubbing) rides on the source clip. Models flagged
+  // needsAudio require it — fail fast with a clear message instead of uploading a
+  // clip only for the server to reject the job.
+  const speechAudio = sourceVideo?.speechAudio || null;
+  if (state.comfyAudioInModels && state.comfyAudioInModels.has(model) && !(speechAudio && speechAudio.base64)) {
+    sink.fail(t("msg_needSpeechAudio"));
+    setAvatarState("idle");
+    return;
+  }
+  let sourceAudioName = null;
+  let sourceAudioDuration = 0;
+  if (speechAudio?.base64) {
+    try {
+      const upA = await uploadComfySourceAudio(speechAudio, abortController.signal, comfyHost);
+      sourceAudioName = upA.name;
+      sourceAudioDuration = upA.duration || speechAudio.duration || 0;
+    } catch (e) {
+      if (e.name === "AbortError") {
+        sink.clearBubble(); setAvatarState("idle");
+        sink.done(); sink.cleanup();
+        return;
+      }
+      /* non-fatal: fall back to sending the base64 inline below */
+      sourceAudioDuration = speechAudio.duration || 0;
     }
   }
 
@@ -1106,6 +1147,12 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       sourceVideoHeight: sourceVideo?.height || undefined,
       sourceVideoFrames: sourceVideoFrames || undefined, // Wan Animate full-length
       sourceVideoFps: sourceVideoFps || undefined,       // output fps = source (or resampled) fps
+      // InfiniteTalk dubbing speech track — prefer the pre-uploaded filename (tiny);
+      // inline base64 only if that upload failed. Ignored by other video models.
+      sourceAudioName: sourceAudioName || undefined,
+      sourceAudio: (speechAudio && !sourceAudioName) ? speechAudio.base64 : undefined,
+      sourceAudioMime: speechAudio?.mime || undefined,
+      sourceAudioDuration: sourceAudioDuration || undefined,
       // Bernini i2v: reference image's natural size → source-aspect output.
       refImageWidth: refImageDims?.w || undefined,
       refImageHeight: refImageDims?.h || undefined,
