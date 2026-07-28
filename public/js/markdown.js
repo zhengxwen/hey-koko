@@ -23,7 +23,7 @@ function mathHtml(rawTex, displayMode, block) {
   return `<${tag} class="${cls}" data-tts-tex="${escapeHtml(rawTex)}">${renderMath(rawTex, displayMode)}</${tag}>`;
 }
 
-export function renderInlineMarkdown(value) {
+export function renderInlineMarkdown(value, opts) {
   const placeholders = [];
   let idx = 0;
 
@@ -57,6 +57,19 @@ export function renderInlineMarkdown(value) {
   value = value.replace(/\\\(([\s\S]+?)\\\)/g, (_, math) => {
     const key = `\x00PH${idx++}\x00`;
     placeholders.push(mathHtml(math, false, false));
+    return key;
+  });
+
+  // Image ![alt](url): render an inline thumbnail ONLY when a resolver maps the
+  // url to a same-bubble image; otherwise leave the literal text untouched (it
+  // falls through to normal escaping → "正常显示文字 ![]()").
+  value = value.replace(/!\[([^\]]*)\]\(([^\s)]+)\)/g, (m, alt, url) => {
+    const src = opts && typeof opts.resolveImage === "function" ? opts.resolveImage(url) : null;
+    if (!src) return m;
+    const key = `\x00PH${idx++}\x00`;
+    placeholders.push(
+      `<img class="mdBubbleThumb" src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" title="${escapeHtml(alt || url)}" loading="lazy">`
+    );
     return key;
   });
 
@@ -107,7 +120,7 @@ function sanitizeSvg(svg) {
     .replace(/((?:xlink:)?href)\s*=\s*("|')?\s*javascript:[^"'>]*\2?/gi, "");
 }
 
-export function markdownToHtml(markdown) {
+export function markdownToHtml(markdown, opts) {
   const lines = markdown.split(/\r?\n/);
   const html = [];
   let inCodeBlock = false;
@@ -134,7 +147,7 @@ export function markdownToHtml(markdown) {
     if (!inQuote) return;
     // Render the quote's inner markdown recursively so multi-paragraph quotes,
     // bold, lists, etc. (and blank `>` separator lines) all work.
-    html.push(`<blockquote>${markdownToHtml(quoteLines.join("\n"))}</blockquote>`);
+    html.push(`<blockquote>${markdownToHtml(quoteLines.join("\n"), opts)}</blockquote>`);
     quoteLines = [];
     inQuote = false;
   }
@@ -188,7 +201,7 @@ export function markdownToHtml(markdown) {
   function closeTable() {
     if (tableRows.length < 2) {
       for (const row of tableRows) {
-        html.push(`<p>${renderInlineMarkdown(row)}</p>`);
+        html.push(`<p>${renderInlineMarkdown(row, opts)}</p>`);
       }
       tableRows = [];
       inTable = false;
@@ -208,7 +221,7 @@ export function markdownToHtml(markdown) {
     let tableHtml = "<table><thead><tr>";
     for (let i = 0; i < headerCells.length; i++) {
       const align = aligns[i] ? ` style="text-align:${aligns[i]}"` : "";
-      tableHtml += `<th${align}>${renderInlineMarkdown(headerCells[i])}\n</th>`;
+      tableHtml += `<th${align}>${renderInlineMarkdown(headerCells[i], opts)}\n</th>`;
     }
     tableHtml += "</tr></thead><tbody>";
 
@@ -217,7 +230,7 @@ export function markdownToHtml(markdown) {
       tableHtml += "<tr>";
       for (let i = 0; i < headerCells.length; i++) {
         const align = aligns[i] ? ` style="text-align:${aligns[i]}"` : "";
-        tableHtml += `<td${align}>${renderInlineMarkdown(cells[i] || "")}\n</td>`;
+        tableHtml += `<td${align}>${renderInlineMarkdown(cells[i] || "", opts)}\n</td>`;
       }
       tableHtml += "</tr>";
     }
@@ -271,7 +284,7 @@ export function markdownToHtml(markdown) {
     if (detailsOpen) { closeList(); if (inTable) closeTable(); html.push(`<details${detailsOpen[1] ? " open" : ""}>`); continue; }
     if (/^<\/details>\s*$/i.test(line.trim())) { closeList(); html.push("</details>"); continue; }
     const summaryLine = line.trim().match(/^<summary>([\s\S]*?)<\/summary>$/i);
-    if (summaryLine) { closeList(); html.push(`<summary>${renderInlineMarkdown(summaryLine[1])}</summary>`); continue; }
+    if (summaryLine) { closeList(); html.push(`<summary>${renderInlineMarkdown(summaryLine[1], opts)}</summary>`); continue; }
 
     if (line.trim() === "$$") {
       if (inMathBlock) {
@@ -350,7 +363,7 @@ export function markdownToHtml(markdown) {
     if (heading) {
       closeList();
       const level = Math.min(6, heading[1].length + 2);
-      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2], opts)}</h${level}>`);
       continue;
     }
 
@@ -387,9 +400,9 @@ export function markdownToHtml(markdown) {
       const checkboxMatch = tag === "ul" && content.match(/^\[([ xX])\]\s*(.*)/);
       if (checkboxMatch) {
         const checked = checkboxMatch[1] !== " " ? " checked disabled" : " disabled";
-        html.push(`<li class="task-list-item"><input type="checkbox"${checked}> ${renderInlineMarkdown(checkboxMatch[2])}`);
+        html.push(`<li class="task-list-item"><input type="checkbox"${checked}> ${renderInlineMarkdown(checkboxMatch[2], opts)}`);
       } else {
-        html.push(`<li>${renderInlineMarkdown(content)}`);
+        html.push(`<li>${renderInlineMarkdown(content, opts)}`);
       }
       continue;
     }
@@ -403,7 +416,7 @@ export function markdownToHtml(markdown) {
     // Handle hard line breaks: trailing \ or two+ spaces
     const hasHardBreak = /\\$/.test(line) || / {2,}$/.test(line);
     const trimmedLine = line.replace(/\\$/, '').replace(/ {2,}$/, '');
-    const rendered = renderInlineMarkdown(trimmedLine);
+    const rendered = renderInlineMarkdown(trimmedLine, opts);
     // Merge with previous <p> if it ended with <br>
     if (html.length && html[html.length - 1].endsWith("<br></p>")) {
       html[html.length - 1] = html[html.length - 1].slice(0, -4) + rendered + (hasHardBreak ? "<br>" : "") + "</p>";

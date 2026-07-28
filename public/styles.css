@@ -2334,6 +2334,16 @@ button.secondary:disabled {
   margin-bottom: 0;
 }
 
+/* Inline thumbnail for markdown ![](name) that resolves to a same-bubble image */
+.markdownBody .mdBubbleThumb,
+.plainBody .mdBubbleThumb {
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 6px;
+  margin: 2px 0;
+  vertical-align: middle;
+}
+
 /* Rendered SVG block (```svg code fences) */
 .markdownBody .svg-block,
 .plainBody .svg-block {

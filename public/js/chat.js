@@ -3072,6 +3072,40 @@ function lazyLoadVideo(video, base64, mime) {
   videoLazyObserver.observe(video);
 }
 
+// Build a resolver that maps a markdown ![](name) filename to THIS bubble's own
+// image thumbnail src (exact filename match against the bubble's name arrays).
+// Only same-bubble images resolve; anything else returns null → stays literal text.
+function buildBubbleImageResolver(genThumbs, genFull, genNames, userThumbs, userNames) {
+  const norm = (s) => {
+    if (!s || typeof s !== "string") return null;
+    if (s.startsWith("data:") || s.startsWith("http")) return s;
+    if (s.length < 100) return null; // a filename/short string, not a base64 image
+    return `data:${s.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${s}`;
+  };
+  const map = new Map();
+  const add = (name, src) => {
+    if (!name || !src) return;
+    const k = String(name).trim().toLowerCase();
+    if (!k) return;
+    if (!map.has(k)) map.set(k, src);
+    const base = k.split(/[\\/]/).pop();
+    if (base && !map.has(base)) map.set(base, src);
+  };
+  const feed = (names, thumbs, full) => {
+    if (!Array.isArray(names)) return;
+    names.forEach((nm, i) => add(nm, norm(thumbs?.[i]) || norm(full?.[i])));
+  };
+  feed(genNames, genThumbs, genFull);   // generated / doc images
+  feed(userNames, userThumbs, null);    // user-attached images in the same bubble
+  if (!map.size) return null;
+  return (url) => {
+    let k;
+    try { k = decodeURIComponent(String(url).trim()); } catch { k = String(url).trim(); }
+    k = k.toLowerCase();
+    return map.get(k) || map.get(k.split(/[\\/]/).pop()) || null;
+  };
+}
+
 function renderMessage(role, content, displayImages, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMimes, generatedAudio, audioMime, generatedVideoThumbnails) {
   const item = document.createElement("div");
   item.className = `message ${role}`;
@@ -3337,7 +3371,13 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
   if (content) {
     const text = document.createElement("div");
     text.className = role === "assistant" ? "markdownBody" : "plainBody";
-    text.innerHTML = markdownToHtml(content);
+    // Resolve markdown ![](name) against THIS bubble's own images (e.g. library-doc
+    // inline refs) → inline thumbnail; refs to anything not in this bubble stay text.
+    const resolveImage = buildBubbleImageResolver(
+      generatedThumbnails, generatedImages, _libMsg?.generatedImageNames,
+      displayImages, _libMsg?.imageNames
+    );
+    text.innerHTML = markdownToHtml(content, resolveImage ? { resolveImage } : undefined);
     // Re-apply persisted highlights/notes (content-anchored, so they survive
     // re-renders and markdown edits that don't touch the highlighted phrase).
     if (_libMsg?.highlights?.length) applyHighlights(text, _libMsg.highlights);
