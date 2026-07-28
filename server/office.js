@@ -193,6 +193,24 @@ return prevApp & rs & px & rs & py & rs & pw & rs & ph`, 15000);
 
 // ---- Outlook (legacy scripting): the message(s) selected in the reading pane ----
 
+// Image MIME types we extract from Outlook attachments.
+const IMG_MIME_RE = /^image\/(png|jpe?g|gif|heic|webp)$/i;
+const IMG_EXT_SET = new Set(["png", "jpg", "jpeg", "gif", "heic", "webp"]);
+
+// Minimum size thresholds to filter out tiny signature logos.
+const IMG_MIN_BYTES = 8 * 1024;   // 8 KB
+const IMG_MAX_COUNT = Infinity;
+
+// Map MIME type to file extension for uniform image naming.
+function mimeToExt(mime) {
+  if (/jpeg|jpg/i.test(mime)) return "jpg";
+  if (/png/i.test(mime)) return "png";
+  if (/gif/i.test(mime)) return "gif";
+  if (/webp/i.test(mime)) return "webp";
+  if (/heic/i.test(mime)) return "heic";
+  return "jpg";
+}
+
 async function readOutlook() {
   const out = await runOsa(
     RUNNING_GATE(APPS.outlook) +
@@ -218,6 +236,20 @@ tell application "Microsoft Outlook"
 	try
 		set sndr to (name of sender of m) & " <" & sndr & ">"
 	end try
+	-- Exchange accounts often leave sender properties empty; fall back to the raw
+	-- From: header which is always populated.
+	if sndr is "" or sndr is " <>" then
+		try
+			set hdr to headers of m
+			set paras to paragraphs of hdr
+			repeat with p in paras
+				if p starts with "From:" then
+					set sndr to text 7 thru -1 of p
+					exit repeat
+				end if
+			end repeat
+		end try
+	end if
 	set dt to ""
 	try
 		set dt to (time received of m) as string
@@ -229,7 +261,273 @@ tell application "Microsoft Outlook"
 	return subj & rs & sndr & rs & dt & rs & bodyTxt
 end tell`);
   const [subject, from, date, text] = out.split(RS);
-  return { app: "outlook", subject: subject || "", from: from || "", date: date || "", text: normalizeText(text) };
+  const result = { app: "outlook", subject: subject || "", from: from || "", date: date || "", text: normalizeText(text) };
+
+  // ---- image extraction (best-effort: never blocks the text result) ----
+  try {
+    const extracted = await extractOutlookImages();
+    if (extracted.images.length) {
+      result.images = extracted.images;
+      result.imageNames = extracted.imageNames;
+    }
+    if (extracted.text) result.text = normalizeText(extracted.text);
+  } catch { /* silent degrade to text-only */ }
+  return result;
+}
+
+// Read the HTML body of the selected Outlook message (shared helper for annotation).
+async function readOutlookHtml() {
+  return runOsa(
+    RUNNING_GATE(APPS.outlook) +
+    `tell application "Microsoft Outlook"
+	set sel to {}
+	try
+		set sel to selected objects
+	on error
+		set sel to selection
+	end try
+	if sel is missing value or (count of sel) is 0 then return ""
+	set m to item 1 of sel
+	set h to ""
+	try
+		set h to content of m
+	end try
+	return h
+end tell`, 15000);
+}
+
+// Convert HTML email body to plain text, inserting [📷 N](ImageN.ext) markers
+// where extracted images appeared. `imageKeys` is a Map<identifier, 1-based-index>
+// (URL for remote images, attachment filename for cid: inlines).
+// `imageNames` is an optional array of uniform filenames parallel to images.
+function htmlToAnnotatedText(html, imageKeys, imageNames) {
+  let h = html;
+  h = h.replace(/<!--[\s\S]*?-->/g, "");
+  h = h.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
+  h = h.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  // Replace <img> of extracted images with position markers; drop the rest.
+  h = h.replace(/<img\b[^>]*>/gi, (tag) => {
+    const src = (tag.match(/\bsrc\s*=\s*"([^"]+)"/i) || [])[1] || "";
+    const alt = (tag.match(/\balt\s*=\s*"([^"]+)"/i) || [])[1] || "";
+    for (const [key, idx] of imageKeys) {
+      const fname = imageNames ? (imageNames[idx - 1] || "") : "";
+      if (src === key || alt === key) return `\n[📷 ${idx}](${fname})\n`;
+      // cid: inline images — match by filename stem in the cid URL
+      if (src.startsWith("cid:") && key.includes(".")) {
+        const stem = key.replace(/\.[^.]+$/, "");
+        if (src.toLowerCase().includes(stem.toLowerCase())) return `\n[📷 ${idx}](${fname})\n`;
+      }
+    }
+    return "";
+  });
+  h = h.replace(/<\/(p|div|tr|li|h[1-6]|blockquote|section|article|header|footer)>/gi, "\n");
+  h = h.replace(/<(br|hr)\b[^>]*\/?>/gi, "\n");
+  h = h.replace(/<\/td>/gi, "  ");
+  h = h.replace(/<[^>]+>/g, "");
+  h = h.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#0*39;/g, "'")
+    .replace(/&#\d+;/g, "").replace(/&\w+;/g, " ");
+  h = h.replace(/[ \t]+/g, " ").replace(/\n[ \t]+/g, "\n").replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n").trim();
+  return h;
+}
+
+// Extract images from the selected message. Returns { images: [{base64,mime}], text?: string }.
+// `text` is the body annotated with [📷 N]() markers when images were found.
+// Tries attachments first (covers both explicit attachments and cid: inlines),
+// then falls back to downloading remote <img src="https://..."> from the HTML body.
+async function extractOutlookImages() {
+  // ---- Path 1: image attachments ----
+  const { images: fromAtt, names: attNames } = await extractFromAttachments();
+  if (fromAtt.length) {
+    // Generate uniform filenames: Image1.jpg, Image2.png, etc.
+    const imageNames = fromAtt.map((im, i) => `Image${i + 1}.${mimeToExt(im.mime)}`);
+    let text = null;
+    try {
+      const html = await readOutlookHtml();
+      if (html && attNames.length) {
+        const keys = new Map();
+        attNames.forEach((name, i) => keys.set(name, i + 1));
+        text = htmlToAnnotatedText(html, keys, imageNames);
+      }
+    } catch { /* annotation is best-effort */ }
+    return { images: fromAtt, imageNames, text };
+  }
+
+  // ---- Path 2: remote images in HTML body (newsletter-style emails) ----
+  return extractFromHtmlBody();
+}
+
+// Path 1: save image attachments from the selected message.
+// Returns { images: [{base64,mime}], names: string[] } (names parallel to images,
+// used to locate each image in the HTML for position markers).
+async function extractFromAttachments() {
+  const tmpDir = path.join(os.tmpdir(), `hk_outlook_img_${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const saved = [];
+  const savedNames = [];
+  try {
+    const infoOut = await runOsa(
+      RUNNING_GATE(APPS.outlook) +
+      `set rs to character id 30
+set lf to character id 10
+tell application "Microsoft Outlook"
+	set sel to {}
+	try
+		set sel to selected objects
+	on error
+		set sel to selection
+	end try
+	if sel is missing value or (count of sel) is 0 then return ""
+	set m to item 1 of sel
+	set attList to attachments of m
+	if (count of attList) is 0 then return ""
+	set info to ""
+	repeat with att in attList
+		set attName to name of att
+		set attSize to file size of att
+		set info to info & attName & rs & (attSize as string) & lf
+	end repeat
+	return info
+end tell`, 30000);
+    if (!infoOut || !infoOut.trim()) return { images: [], names: [] };
+
+    const lines = infoOut.trim().split("\n");
+    const candidates = [];
+    for (const line of lines) {
+      const [attName, attSizeStr] = line.split(RS);
+      if (!attName) continue;
+      const ext = (attName.match(/\.([^.]+)$/) || [])[1] || "";
+      if (!IMG_EXT_SET.has(ext.toLowerCase())) continue;
+      const attSize = parseInt(attSizeStr, 10) || 0;
+      if (attSize > 0 && attSize < IMG_MIN_BYTES) continue;
+      candidates.push({ name: attName, size: attSize, index: candidates.length + 1 });
+      if (candidates.length >= IMG_MAX_COUNT + 4) break;
+    }
+    if (!candidates.length) return { images: [], names: [] };
+
+    for (const c of candidates) {
+      if (saved.length >= IMG_MAX_COUNT) break;
+      const safeName = c.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const outPath = path.join(tmpDir, `${c.index}_${safeName}`);
+      try {
+        await runOsa(
+          RUNNING_GATE(APPS.outlook) +
+          `tell application "Microsoft Outlook"
+	set sel to {}
+	try
+		set sel to selected objects
+	on error
+		set sel to selection
+	end try
+	if sel is missing value or (count of sel) is 0 then return ""
+	set m to item 1 of sel
+	set attList to attachments of m
+	repeat with att in attList
+		if name of att is "${c.name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" then
+			save att in POSIX file "${outPath}"
+			return "ok"
+		end if
+	end repeat
+	return ""
+end tell`, 30000);
+        if (!fs.existsSync(outPath)) continue;
+        const buf = fs.readFileSync(outPath);
+        if (buf.length < IMG_MIN_BYTES) continue;
+
+        const ext = (c.name.match(/\.([^.]+)$/) || [])[1] || "jpg";
+        const extLower = ext.toLowerCase();
+        let mime = "image/jpeg";
+        if (extLower === "png") mime = "image/png";
+        else if (extLower === "gif") mime = "image/gif";
+        else if (extLower === "webp") mime = "image/webp";
+        else if (extLower === "heic") mime = "image/heic";
+
+        try {
+          const o = await optimizeImage(buf, mime);
+          saved.push({ base64: o.buf.toString("base64"), mime: o.ct });
+        } catch {
+          if (buf.length < 5 * 1024 * 1024) {
+            saved.push({ base64: buf.toString("base64"), mime });
+          }
+        }
+        savedNames.push(c.name);
+      } catch { /* single attachment failure — continue */ }
+    }
+  } catch { /* bulk failure — return whatever we got */ }
+  finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+  return { images: saved, names: savedNames };
+}
+
+// Path 2: download remote images referenced in the HTML body.
+// Returns { images: [{base64,mime}], text?: string } with annotated body text.
+async function extractFromHtmlBody() {
+  let html = "";
+  try { html = await readOutlookHtml(); } catch { return { images: [], text: null }; }
+  if (!html) return { images: [], text: null };
+
+  const imgRe = /<img\b[^>]*>/gi;
+  const srcRe = /\bsrc\s*=\s*"([^"]+)"/i;
+  const widthRe = /\bwidth\s*=\s*"?(\d+)"?/i;
+  const heightRe = /\bheight\s*=\s*"?(\d+)"?/i;
+
+  const urls = [];
+  const seen = new Set();
+  let m;
+  while ((m = imgRe.exec(html)) !== null) {
+    const tag = m[0];
+    const sm = srcRe.exec(tag);
+    if (!sm) continue;
+    const url = sm[1];
+    if (!url.startsWith("https://") && !url.startsWith("http://")) continue;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const wm = widthRe.exec(tag), hm = heightRe.exec(tag);
+    const w = wm ? parseInt(wm[1], 10) : 999;
+    const h = hm ? parseInt(hm[1], 10) : 999;
+    if (w < 80 || h < 80) continue;
+    urls.push(url);
+    if (urls.length >= IMG_MAX_COUNT + 4) break;
+  }
+  if (!urls.length) return { images: [], text: null };
+
+  const saved = [];
+  const savedUrls = [];
+  for (const url of urls) {
+    if (saved.length >= IMG_MAX_COUNT) break;
+    try {
+      const res = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; LocalAIChat/1.0)", "Accept": "image/*,*/*;q=0.8" },
+        signal: AbortSignal.timeout(8000), redirect: "follow",
+      });
+      if (!res.ok) continue;
+      let ct = (res.headers.get("content-type") || "").split(";")[0].trim();
+      if (!ct.startsWith("image/") || ct === "image/svg+xml") continue;
+      let buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < IMG_MIN_BYTES || buf.length > 5 * 1024 * 1024) continue;
+      try {
+        const o = await optimizeImage(buf, ct);
+        saved.push({ base64: o.buf.toString("base64"), mime: o.ct });
+      } catch {
+        if (buf.length < 5 * 1024 * 1024) saved.push({ base64: buf.toString("base64"), mime: ct });
+      }
+      savedUrls.push(url);
+    } catch { /* single download failure — continue */ }
+  }
+  // Annotate the HTML body with image position markers.
+  // Generate uniform filenames: Image1.jpg, Image2.png, etc.
+  const imageNames = saved.map((im, i) => `Image${i + 1}.${mimeToExt(im.mime)}`);
+  let text = null;
+  if (saved.length) {
+    try {
+      const keys = new Map();
+      savedUrls.forEach((url, i) => keys.set(url, i + 1));
+      text = htmlToAnnotatedText(html, keys, imageNames);
+    } catch { /* annotation failure — return images without annotated text */ }
+  }
+  return { images: saved, imageNames, text };
 }
 
 // ---- request handler ----

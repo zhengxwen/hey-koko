@@ -153,7 +153,9 @@ async function fetchOffice(alias, sel) {
   // outlook
   let body = `${t("tool_mailFrom")}: ${data.from || "?"}\n${t("tool_mailDate")}: ${data.date || "?"}\n\n${data.text || t("tool_emptyPage")}`;
   if (data.truncated) body += `\n\n${t("tool_truncated")}`;
-  return { header: `📧 **${data.subject || t("tool_mailNoSubject")}**`, body, image: "", imageMime: "" };
+  const images = Array.isArray(data.images) ? data.images : [];
+  const imageNames = Array.isArray(data.imageNames) ? data.imageNames : [];
+  return { header: `📧 **${data.subject || t("tool_mailNoSubject")}**`, body, images, imageNames };
 }
 
 async function fetchWeb(query) {
@@ -240,7 +242,24 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
 
     // Context bubble: the tool's result, visible and part of the conversation the
     // reply model reads (exactly how /url injects a fetched page).
-    placeMsg(tab, { role: "assistant", content: `${result.header}\n\n${result.body}`, timestamp: Date.now() }, cursor);
+    // Email images display HERE (they belong to the email, not the user's question);
+    // chrome/ppt screenshots stay on the prompt bubble (they are viewport captures
+    // tied to the query, not content of the page itself).
+    const contextMsg = { role: "assistant", content: `${result.header}\n\n${result.body}`, timestamp: Date.now() };
+    const imgArr = Array.isArray(result.images) ? result.images : [];
+    if (imgArr.length) {
+      // Reuse the assistant generated-image grid: renders AFTER text, with
+      // delete and download buttons — same UI as AI-generated images.
+      contextMsg.generatedImages = imgArr.map((im) => im.base64);
+      contextMsg.generatedThumbnails = await Promise.all(
+        imgArr.map((im) => makePreview(`data:${im.mime};base64,${im.base64}`, 480))
+      );
+      // Uniform filenames (Image1.jpg, Image2.png…) for download/lightbox caption.
+      contextMsg.generatedImageNames = Array.isArray(result.imageNames) && result.imageNames.length
+        ? result.imageNames
+        : imgArr.map((im, i) => `Image${i + 1}.${im.mime === "image/png" ? "png" : "jpg"}`);
+    }
+    placeMsg(tab, contextMsg, cursor);
 
     // Prompt bubble: the clean question (no "/tool @…" prefix). @chrome with no
     // prompt falls back to a tailored default (summarize the page / the selection).
@@ -254,7 +273,13 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
     };
     const promptText = parsed.prompt || getPrompt(DEFAULT_PROMPT_KEYS[parsed.alias] || "toolChromeDefault");
     const promptMsg = { role: "user", content: promptText, timestamp: Date.now() };
-    if (result.image) {
+
+    // Attach images to the prompt for model consumption (contextImages) and display.
+    // Multi-image (outlook): contextImages only — thumbnails are on the context bubble.
+    // Single screenshot (chrome/ppt): both contextImages + displayImages on prompt.
+    if (imgArr.length) {
+      promptMsg.contextImages = imgArr.map((im) => im.base64);
+    } else if (result.image) {
       promptMsg.contextImages = [result.image];
       promptMsg.displayImages = [await makePreview(`data:${result.imageMime};base64,${result.image}`, 480)];
     }
