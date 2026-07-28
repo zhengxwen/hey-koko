@@ -274,12 +274,14 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
     const promptText = parsed.prompt || getPrompt(DEFAULT_PROMPT_KEYS[parsed.alias] || "toolChromeDefault");
     const promptMsg = { role: "user", content: promptText, timestamp: Date.now() };
 
-    // Attach images to the prompt for model consumption (contextImages) and display.
-    // Multi-image (outlook): contextImages only — thumbnails are on the context bubble.
-    // Single screenshot (chrome/ppt): both contextImages + displayImages on prompt.
-    if (imgArr.length) {
-      promptMsg.contextImages = imgArr.map((im) => im.base64);
-    } else if (result.image) {
+    // Email images (outlook) are DISPLAY-ONLY: they stay on the context bubble above
+    // and are deliberately NOT put on contextImages, the only field forwarded to the
+    // model — mail is full of signatures and decoration, and the body text already
+    // carries [📷 N] markers telling the model where an image sat. A viewport
+    // screenshot (chrome/ppt) is the opposite: it IS the answer material, so it rides
+    // the prompt bubble like a user-attached image (contextImages → model,
+    // displayImages → thumbnail strip).
+    if (!imgArr.length && result.image) {
       promptMsg.contextImages = [result.image];
       promptMsg.displayImages = [await makePreview(`data:${result.imageMime};base64,${result.image}`, 480)];
     }

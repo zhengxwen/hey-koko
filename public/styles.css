@@ -2337,8 +2337,8 @@ button.secondary:disabled {
 /* Inline thumbnail for markdown ![](name) that resolves to a same-bubble image */
 .markdownBody .mdBubbleThumb,
 .plainBody .mdBubbleThumb {
-  max-width: 220px;
-  max-height: 220px;
+  max-width: 200px;
+  max-height: 200px;
   border-radius: 6px;
   margin: 2px 0;
   vertical-align: middle;
