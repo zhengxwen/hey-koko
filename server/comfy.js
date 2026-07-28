@@ -10,6 +10,7 @@ const { AsyncLocalStorage } = require("async_hooks");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const { hostnameFor } = require("./network");
+const { synthToWav } = require("./tts"); // InfiniteTalk "photo speaks": prompt → local TTS → speech track
 
 // Per-request ComfyUI endpoint. Background jobs can target DIFFERENT machines in
 // parallel, so the target URL must not be a shared mutable global (concurrent
@@ -249,7 +250,7 @@ function videoTypeOf(model) {
   // the infiniteTalk model patches ship a copy in diffusion_models/ (the wrapper's
   // MultiTalkModelLoader scans there) and the Kijai Wan2.1-I2V-480p UNET is the
   // wrapper's base model, not a standalone hey-koko entry.
-  if (/infinitetalk|multitalk/i.test(model)) return model === INFINITETALK ? "infinitetalk" : null;
+  if (/infinitetalk|multitalk/i.test(model)) return (model === INFINITETALK || model === INFINITETALK_SPEAK) ? "infinitetalk" : null;
   if (/wan2[._]1-i2v/i.test(model)) return null; // Kijai Wan2_1-I2V-14B-480p_…_KJ — wrapper component
   if (/bernini/i.test(model)) return "bernini";
   if (/scail/i.test(model)) return "scail2";
@@ -492,6 +493,13 @@ const LTX_UNION = "ltx-union";
 // the tail steps" v2v trick. Long audio is windowed IN the sampler (81-frame windows,
 // 9-frame motion overlap) — no client-side chunking.
 const INFINITETALK = "infinitetalk";
+// Sentinel for InfiniteTalk I2V ("photo speaks"): a PERSON PHOTO + speech → a talking
+// video, lips synced. The speech comes from an attached audio file — or, with none
+// attached, the /imagine PROMPT is the text to read: the server synthesizes it with the
+// local TTS daemon (Kokoro, same engine as /voice) and feeds the wav in. Same wrapper
+// stack as the V2V entry; graph differences: no source-video latents (nothing to
+// preserve → full 6-step denoise from step 0), LoadImage instead of LoadVideo, 25 fps.
+const INFINITETALK_SPEAK = "infinitetalk_speak";
 
 // Everything MSR needs, or null when a piece is absent (the entry is then hidden rather than
 // offered broken). Two routes, both end-to-end verified:
@@ -678,6 +686,7 @@ function marketName(name) {
     [LTX_MSR]: "LTX-2.3 MSR",
     [LTX_UNION]: "LTX-2.3 Union",
     [INFINITETALK]: "InfiniteTalk (dub / lip-sync)",
+    [INFINITETALK_SPEAK]: "InfiniteTalk (photo speaks)",
     [VIDEO_ENHANCE]: "Video interpolate + upscale",
   };
   if (name in sentinels) return sentinels[name];
@@ -727,6 +736,7 @@ function capsFor(name, group, type, entry) {
   // video: a source-video model is v2v; bernini also accepts a plain image (i2v).
   if (name === LTX_UNION) return ["v2v", "audio"]; // depth-driven; LTX decodes a soundtrack
   if (name === INFINITETALK) return ["v2v", "audio"]; // audio-DRIVEN dubbing (lip re-sync to a speech file)
+  if (name === INFINITETALK_SPEAK) return ["i2v", "audio"]; // photo + speech/TTS → talking video
   if (entry && entry.needsVideo) return name === BERNINI_AUTO ? ["i2v", "v2v"] : ["v2v"];
   if (name === LTX_MSR) return ["i2v", "audio"];   // reference-image driven, generates a soundtrack
   switch (type) {
@@ -780,6 +790,7 @@ function videoRank(n) {
   // scail BEFORE animate: the "scail2_animate" sentinel contains "animate", so the
   // generic /animate/ test would otherwise claim it (same ordering trap as videoTypeOf).
   if (n === LTX_MSR) return 7.5;
+  if (n === INFINITETALK_SPEAK) return 7.6; // photo→talking video, lives in the gen group
   if (n === SCAIL2_ANIMATE) return 10;
   if (/scail/i.test(n)) return 11;
   if (n === ANIMATE_REPLACE) return 9;
@@ -807,6 +818,7 @@ function isModelReady(name, group, type) {
   if (name === LTX_UNION) return true;      // Union Control — verified end-to-end (depth transfer, sharp)
   if (name === ANIMATE_REPLACE) return true; // Replace verified end-to-end (scene kept, person swapped)
   if (name === INFINITETALK) return true;    // V2V dub recipe verified live (92-frame lip re-sync, trim tail exact)
+  if (name === INFINITETALK_SPEAK) return true; // I2V talking-photo recipe verified live (see buildInfiniteTalk)
   if (name === BERNINI_INSERT) return false;  // ads2v — wired but never live-verified
   // Bernini image side (i2i / r2i / t2i) — all three VERIFIED end-to-end on the live
   // box: t2i 11s, i2i relight 7s (identity held: shape/colour/position untouched),
@@ -958,7 +970,12 @@ async function proxyComfyModels(req, res) {
     // InfiniteTalk V2V (audio-driven dubbing / lip re-sync): needs a SOURCE VIDEO plus a
     // SPEECH AUDIO file (needsAudio — the frontend gates on it). Wrapper-based; only
     // offered when the whole node+weight set is installed, same policy as MSR/Union.
-    if (await infinitetalkParts()) videoModels.push({ name: INFINITETALK, type: "infinitetalk", label: "InfiniteTalk (dub / lip-sync)", needsVideo: true, needsAudio: true });
+    if (await infinitetalkParts()) {
+      videoModels.push({ name: INFINITETALK, type: "infinitetalk", label: "InfiniteTalk (dub / lip-sync)", needsVideo: true, needsAudio: true });
+      // "Photo speaks": person photo + audio (or the prompt read out by the local TTS)
+      // → talking video. No source video, so it joins the text/image→video group.
+      videoModels.push({ name: INFINITETALK_SPEAK, type: "infinitetalk", label: "InfiniteTalk (photo → talking video)", needsImages: 1 });
+    }
     // Bernini also renders STILLS (same weights + graph at length 1) — surface its
     // three image tasks once the weights are present. i2i/r2i take an attached image
     // so they belong in the instruction-edit group; t2i takes none, so it joins the
@@ -3048,10 +3065,39 @@ function buildBernini({ model, prompt, negative, comp, videoName, refImageName, 
 //
 // Sizing: output follows the source video's aspect at the 832×480 budget, dims /16
 // (ImageResizeKJv2 crops/resizes the source; start frame + gen size derive from it).
-function buildInfiniteTalk({ prompt, negative, comp, videoName, audioName, width, height, fps, maxFrames, seed }) {
+// Two modes, keyed by which source is given (exactly one of videoName / imageName):
+//   • videoName — V2V dubbing as described above.
+//   • imageName — I2V "photo speaks" (per wanvideo_2_1_14B_I2V_InfiniteTalk_example_03):
+//     the photo is the start frame + clip-vision reference; with no source latents to
+//     preserve there is no `samples` input and the sampler runs the FULL 6-step
+//     schedule from step 0 (the V2V 4-step/start_step-2 trick only makes sense when
+//     denoising on top of an existing clip). LIVE-VERIFIED on the box.
+function buildInfiniteTalk({ prompt, negative, comp, videoName, imageName, audioName, width, height, fps, maxFrames, seed }) {
+  const speak = !!imageName;
   const pos = prompt || "a person is talking to the camera, natural speech, lips moving in sync with the audio";
   const neg = negative || "bright tones, overexposed, static, blurred details, subtitles, worst quality, low quality, deformed, disfigured, extra fingers, still picture, messy background";
+  const source = speak
+    ? {
+      // Photo → resized to the output size → start frame (single image, no range pick).
+      "7": { class_type: "LoadImage", inputs: { image: imageName } },
+      "9": { class_type: "ImageResizeKJv2", inputs: { image: ["7", 0], width, height, upscale_method: "lanczos", keep_proportion: "crop", pad_color: "0, 0, 0", crop_position: "center", divisible_by: 16, device: "cpu" } },
+      "11": { class_type: "GetImageSizeAndCount", inputs: { image: ["9", 0] } },
+    }
+    : {
+      // Source video → resized whole → first frame picked for conditioning; the full
+      // clip is VAE-encoded below into the sampler's `samples`.
+      "7": { class_type: "LoadVideo", inputs: { file: videoName } },
+      "8": { class_type: "GetVideoComponents", inputs: { video: ["7", 0] } },
+      "9": { class_type: "ImageResizeKJv2", inputs: { image: ["8", 0], width, height, upscale_method: "lanczos", keep_proportion: "crop", pad_color: "0, 0, 0", crop_position: "center", divisible_by: 16, device: "cpu" } },
+      "10": { class_type: "GetImageRangeFromBatch", inputs: { images: ["9", 0], start_index: 0, num_frames: 1 } },
+      "11": { class_type: "GetImageSizeAndCount", inputs: { image: ["10", 0] } },
+      "18": { class_type: "WanVideoEncode", inputs: { vae: ["5", 0], image: ["9", 0], enable_vae_tiling: false, tile_x: 272, tile_y: 272, tile_stride_x: 144, tile_stride_y: 128, noise_aug_strength: 0.0, latent_strength: 1.0 } },
+    };
+  const samplerExtra = speak
+    ? { steps: 6, start_step: 0, add_noise_to_samples: false }
+    : { samples: ["18", 0], steps: 4, start_step: 2, add_noise_to_samples: true };
   return {
+    ...source,
     // Model stack: base UNET + InfiniteTalk patch + lightx2v distill LoRA (the 4-step
     // cfg-1 schedule below is bound to it) + 20-block swap (VRAM headroom; harmless
     // when there is plenty). sdpa attention — safe everywhere, no sage dependency.
@@ -3061,14 +3107,6 @@ function buildInfiniteTalk({ prompt, negative, comp, videoName, audioName, width
     "4": { class_type: "MultiTalkModelLoader", inputs: { model: comp.patch } },
     "5": { class_type: "WanVideoVAELoader", inputs: { model_name: comp.vae, precision: "bf16" } },
     "6": { class_type: "CLIPVisionLoader", inputs: { clip_name: comp.clipVision } },
-    // Source video → resized to the output size (crop keeps the aspect we computed
-    // from the source, so this is effectively a clean resize) → full-clip VAE encode.
-    "7": { class_type: "LoadVideo", inputs: { file: videoName } },
-    "8": { class_type: "GetVideoComponents", inputs: { video: ["7", 0] } },
-    "9": { class_type: "ImageResizeKJv2", inputs: { image: ["8", 0], width, height, upscale_method: "lanczos", keep_proportion: "crop", pad_color: "0, 0, 0", crop_position: "center", divisible_by: 16, device: "cpu" } },
-    // First frame → clip-vision + start image; gen width/height read back off it.
-    "10": { class_type: "GetImageRangeFromBatch", inputs: { images: ["9", 0], start_index: 0, num_frames: 1 } },
-    "11": { class_type: "GetImageSizeAndCount", inputs: { image: ["10", 0] } },
     "12": { class_type: "WanVideoClipVisionEncode", inputs: { clip_vision: ["6", 0], image_1: ["11", 0], strength_1: 1.0, strength_2: 1.0, crop: "center", combine_embeds: "average", force_offload: true, tiles: 0, ratio: 0.5 } },
     // Text: NATIVE loader + bridge. The wrapper's own text encoders reject comfy's
     // scaled-fp8 umt5 ("fp8 scaled is not supported by this node").
@@ -3082,8 +3120,7 @@ function buildInfiniteTalk({ prompt, negative, comp, videoName, audioName, width
     "15": { class_type: "Wav2VecModelLoader", inputs: { model: comp.wav2vec, base_precision: "fp16", load_device: "main_device" } },
     "16": { class_type: "LoadAudio", inputs: { audio: audioName } },
     "17": { class_type: "MultiTalkWav2VecEmbeds", inputs: { wav2vec_model: ["15", 0], audio_1: ["16", 0], normalize_loudness: true, num_frames: maxFrames, fps, audio_scale: 1.0, audio_cfg_scale: 1.0, multi_audio_type: "para" } },
-    "18": { class_type: "WanVideoEncode", inputs: { vae: ["5", 0], image: ["9", 0], enable_vae_tiling: false, tile_x: 272, tile_y: 272, tile_stride_x: 144, tile_stride_y: 128, noise_aug_strength: 0.0, latent_strength: 1.0 } },
-    "19": { class_type: "WanVideoSampler", inputs: { model: ["1", 0], image_embeds: ["14", 0], text_embeds: ["13", 0], samples: ["18", 0], multitalk_embeds: ["17", 0], steps: 4, cfg: 1.0, shift: 11.0, seed, force_offload: true, scheduler: "dpm++_sde", riflex_freq_index: 0, denoise_strength: 1.0, batched_cfg: false, rope_function: "comfy", start_step: 2, end_step: -1, add_noise_to_samples: true } },
+    "19": { class_type: "WanVideoSampler", inputs: { model: ["1", 0], image_embeds: ["14", 0], text_embeds: ["13", 0], multitalk_embeds: ["17", 0], cfg: 1.0, shift: 11.0, seed, force_offload: true, scheduler: "dpm++_sde", riflex_freq_index: 0, denoise_strength: 1.0, batched_cfg: false, rope_function: "comfy", end_step: -1, ...samplerExtra } },
     "20": { class_type: "WanVideoDecode", inputs: { vae: ["5", 0], samples: ["19", 0], enable_vae_tiling: false, tile_x: 272, tile_y: 272, tile_stride_x: 144, tile_stride_y: 128 } },
     // Trim the last window's padding to the REAL audio frame count, mux the audio.
     "26": { class_type: "GetImageRangeFromBatch", inputs: { images: ["20", 0], start_index: 0, num_frames: ["17", 2] } },
@@ -4267,31 +4304,78 @@ async function generateComfyImage(req, res) {
         workflow = buildPhantom({ model, prompt, negative: negative_prompt || "", comp, imageNames, seed, v, imgCfg });
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
       } else if (videoType === "infinitetalk") {
-        // InfiniteTalk V2V dubbing: SOURCE VIDEO (motion/identity/scene) + SPEECH AUDIO
-        // (drives the lips). Both required; the prompt is optional flavour text.
-        if (!(sourceVideo || sourceVideoName)) { sendJson(res, 400, { error: "InfiniteTalk needs a source video (the clip to re-lip-sync). Attach a video plus a speech audio file, then /imagine." }); return; }
-        if (!(sourceAudio || sourceAudioName)) { sendJson(res, 400, { error: "InfiniteTalk needs a speech audio file (the new voice track). Attach one alongside the source video." }); return; }
+        // InfiniteTalk, two entries sharing one branch:
+        //  • dub (V2V): SOURCE VIDEO (motion/identity/scene) + SPEECH AUDIO. Both required;
+        //    the prompt is optional flavour text.
+        //  • speak (I2V "photo speaks"): PERSON PHOTO + speech. The speech is an attached
+        //    audio file — or, with none, `speechText` (the RAW /imagine prompt, sent
+        //    separately so ⚙ prompt-decoration/enhancement can't pollute the read text)
+        //    is synthesized by the local TTS daemon (Kokoro, same engine as /voice).
+        const speak = model === INFINITETALK_SPEAK;
+        const hasAud = !!(sourceAudio || sourceAudioName);
+        const speechText = String(body.speechText || prompt || "").trim();
+        if (speak) {
+          if (!hasImgInput) { sendJson(res, 400, { error: "InfiniteTalk (photo speaks) needs a person photo. Attach one, then /imagine <text to read> (or attach an audio file instead of text)." }); return; }
+          if (!hasAud && !speechText) { sendJson(res, 400, { error: "InfiniteTalk (photo speaks) needs the speech: /imagine <text to read> (synthesized locally), or attach an audio file." }); return; }
+        } else {
+          if (!(sourceVideo || sourceVideoName)) { sendJson(res, 400, { error: "InfiniteTalk needs a source video (the clip to re-lip-sync). Attach a video plus a speech audio file, then /imagine." }); return; }
+          if (!hasAud) { sendJson(res, 400, { error: "InfiniteTalk needs a speech audio file (the new voice track). Attach one alongside the source video." }); return; }
+        }
         const comp = await infinitetalkCompanions();
-        // Output follows the SOURCE's aspect at the model's native 832×480 budget
-        // (or the ⚙/--size budget), both dims /16.
+        // Output follows the SOURCE's aspect (video for dub, photo for speak) at the
+        // model's native 832×480 budget (or the ⚙/--size budget), both dims /16.
+        let aspW = Number(sourceVideoWidth), aspH = Number(sourceVideoHeight);
+        if (speak) {
+          aspW = Number(refImageWidth); aspH = Number(refImageHeight);
+          if (!(aspW > 0 && aspH > 0) && hasImgInput) {
+            const d = imageDims(images[0]);
+            if (d) { aspW = d.width; aspH = d.height; }
+          }
+        }
         let iw = snapDim(opts.width || 832, 16), ih = snapDim(opts.height || 480, 16);
-        const sw = Number(sourceVideoWidth), sh = Number(sourceVideoHeight);
-        if (sw > 0 && sh > 0) {
-          const aspect = sw / sh;
+        if (aspW > 0 && aspH > 0) {
+          const aspect = aspW / aspH;
           const budget = (opts.width && opts.height) ? opts.width * opts.height : 832 * 480;
           iw = snapDim(Math.sqrt(budget * aspect), 16);
           ih = snapDim(Math.sqrt(budget / aspect), 16);
         }
-        // Output length = AUDIO length (frames = duration × fps, at the source's fps).
-        // num_frames on the embeds node is only a CAP; ⚙ length lowers it (e.g. quick
-        // tests). If the audio outruns the clip, the tail extends from the last frame.
-        const iFps = Number(sourceVideoFps) || opts.fps || 25;
-        const maxFrames = opts.length ? Math.max(5, Math.round(opts.length)) : 1000;
-        const audioName = sourceAudioName || await uploadAudio(sourceAudio, controller.signal, sourceAudioMime);
-        const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
-        workflow = buildInfiniteTalk({ prompt, negative: negative_prompt || "", comp, videoName, audioName, width: iw, height: ih, fps: iFps, maxFrames, seed });
-        const audioFrames = Number(sourceAudioDuration) > 0 ? Math.round(Number(sourceAudioDuration) * iFps) : 0;
+        // Output length = AUDIO length (frames = duration × fps; dub follows the source's
+        // fps, speak runs at InfiniteTalk's native 25). num_frames on the embeds node is
+        // only a CAP; ⚙ length lowers it (e.g. quick tests). If the audio outruns a dub's
+        // clip, the tail extends from the last frame.
+        const iFps = speak ? (opts.fps || 25) : (Number(sourceVideoFps) || opts.fps || 25);
+        const maxFrames = opts.length ? Math.max(5, Math.round(opts.length)) : (speak ? 500 : 1000);
+        let audioName;
+        let audioDur = Number(sourceAudioDuration) || 0;
+        if (sourceAudioName) audioName = sourceAudioName;
+        else if (sourceAudio) audioName = await uploadAudio(sourceAudio, controller.signal, sourceAudioMime);
+        else {
+          // speak + text → local TTS. Voice: ⚙/--voice (accepts "kokoro:zf_xiaoxiao" or a
+          // bare id), else auto-picked by script (CJK → Mandarin female, otherwise US female).
+          const vPref = String(opts.ttsVoice || "").trim();
+          const engine = vPref.includes(":") ? vPref.split(":")[0] : "kokoro";
+          const vId = (vPref.includes(":") ? vPref.split(":")[1] : vPref)
+            || (/[぀-ヿ一-鿿]/.test(speechText) ? "zf_xiaoxiao" : "af_heart");
+          let wavPath;
+          try {
+            wavPath = await synthToWav({ engine, voice: vId, text: speechText, speed: 1 });
+          } catch (e) {
+            sendJson(res, 502, { error: `Local TTS failed (${String((e && e.message) || e)}). Attach an audio file instead, or check the TTS setup used by /voice.` });
+            return;
+          }
+          const wavBuf = await fsp.readFile(wavPath);
+          audioDur = (await probeAudioDuration(wavBuf)) || audioDur;
+          audioName = await uploadAudioBuffer(wavBuf, "audio/wav", controller.signal);
+        }
+        let videoName = null, imageName = null;
+        if (speak) { imageName = await uploadImage(images[0], controller.signal, "heykoko_itref.png"); imagesUsed = 1; }
+        else videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+        // Scene prompt: dub (and speak-with-audio) keep the user prompt; speak-with-TTS
+        // reads the prompt ALOUD, so the scene falls back to the builder's generic default.
+        const scenePrompt = (speak && !hasAud) ? "" : prompt;
+        workflow = buildInfiniteTalk({ prompt: scenePrompt, negative: negative_prompt || "", comp, videoName, imageName, audioName, width: iw, height: ih, fps: iFps, maxFrames, seed });
         videoDims = { width: iw, height: ih, fps: iFps };
+        const audioFrames = audioDur > 0 ? Math.round(audioDur * iFps) : 0;
         if (audioFrames) videoDims.length = Math.min(audioFrames, maxFrames);
       } else if (videoType === "ltx-union") {
         // LTX Union Control: depth of the SOURCE VIDEO drives a new clip; the reference

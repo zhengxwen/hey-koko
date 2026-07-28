@@ -688,6 +688,8 @@ function comfyModelHint(name) {
   if (/image-upscale/.test(n)) return t("oll_hint_imageUpscale");
   if (/video-enhance/.test(n)) return t("oll_hint_videoEnhance");
   // Video, needs a source clip. scail BEFORE animate — see above.
+  if (n === "infinitetalk") return t("oll_hint_infinitetalk");
+  if (n === "infinitetalk_speak") return t("oll_hint_infinitetalkSpeak");
   if (/scail/.test(n)) return /animate/.test(n) ? t("oll_hint_scail2Animate") : t("oll_hint_scail2Replace");
   if (/animate/.test(n)) return /replace/.test(n) ? t("oll_hint_animateReplace") : t("oll_hint_animateMove");
   // Bernini image tasks BEFORE the generic bernini branch — their sentinels all
@@ -745,6 +747,7 @@ export function syncComfyModelPickLabel() {
 // set decides which of these families it actually lists.
 function videoFamilyOf(name) {
   const n = (name || "").toLowerCase();
+  if (/infinitetalk/.test(n)) return "infinitetalk";
   if (/scail/.test(n)) return "scail";
   if (/animate/.test(n)) return "animate";
   if (/phantom/.test(n)) return "phantom";

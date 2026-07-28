@@ -261,6 +261,13 @@ function parseImagineCommand(input) {
       }
       result.options.quality = val;
       rest = rest.replace(/^--quality\s+\S+\s*/, "").trim();
+    } else if (/^--voice\s/.test(rest)) {
+      // TTS voice for "photo speaks" (InfiniteTalk): a Kokoro voice id, e.g.
+      // zf_xiaoxiao / zm_yunxi / af_heart. Validated server-side; other models ignore it.
+      const voiceFlag = rest.match(/^--voice\s+(\S+)/);
+      if (!voiceFlag) return { error: t("img_voiceNeedsArg") };
+      result.options.ttsVoice = voiceFlag[1];
+      rest = rest.replace(/^--voice\s+\S+\s*/, "").trim();
     } else {
       const unknownMatch = rest.match(/^--([\w-]+)/);
       return { error: t("img_unknownArg", { arg: unknownMatch[1], presets: Object.keys(SIZE_PRESETS).join("/") }) };
@@ -647,8 +654,21 @@ function subscribeComfyProgress(comfyHost, clientId, { onProgress, onPreview }) 
     try {
       const view = new DataView(ev.data);
       if (view.getUint32(0) === 1) { // PREVIEW_IMAGE event
-        const mime = view.getUint32(4) === 2 ? "image/png" : "image/jpeg";
-        onPreview?.(URL.createObjectURL(new Blob([ev.data.slice(8)], { type: mime })));
+        // Standard ComfyUI payload: [4B event][4B format] + image bytes. But
+        // WanVideoWrapper's animated previewer (InfiniteTalk etc.) sends a VHS-style
+        // payload with 4B frame index + 16B node id prepended before the JPEG —
+        // slicing at 8 there yields a broken blob (no preview shows). Don't trust the
+        // fixed offset: scan the first bytes for the JPEG/PNG magic and cut THERE.
+        const u8 = new Uint8Array(ev.data);
+        let off = 8;
+        if (!((u8[8] === 0xFF && u8[9] === 0xD8) || (u8[8] === 0x89 && u8[9] === 0x50))) {
+          for (let i = 9; i < Math.min(u8.length - 1, 96); i++) {
+            if ((u8[i] === 0xFF && u8[i + 1] === 0xD8) || (u8[i] === 0x89 && u8[i + 1] === 0x50)) { off = i; break; }
+          }
+          if (off === 8) return; // no image magic found — not a renderable preview frame
+        }
+        const mime = u8[off] === 0x89 ? "image/png" : "image/jpeg";
+        onPreview?.(URL.createObjectURL(new Blob([ev.data.slice(off)], { type: mime })));
       }
     } catch { /* malformed binary frame */ }
   };
@@ -1153,6 +1173,9 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       sourceAudio: (speechAudio && !sourceAudioName) ? speechAudio.base64 : undefined,
       sourceAudioMime: speechAudio?.mime || undefined,
       sourceAudioDuration: sourceAudioDuration || undefined,
+      // "Photo speaks": the RAW prompt is the text to READ — sent apart from `prompt`
+      // so ⚙ prompt-decoration / --enhance can't leak into the synthesized speech.
+      speechText: model === "infinitetalk_speak" ? ((parsed.prompt || "").trim() || undefined) : undefined,
       // Bernini i2v: reference image's natural size → source-aspect output.
       refImageWidth: refImageDims?.w || undefined,
       refImageHeight: refImageDims?.h || undefined,
