@@ -311,11 +311,11 @@ function htmlToAnnotatedText(html, imageKeys, imageNames) {
     const alt = (tag.match(/\balt\s*=\s*"([^"]+)"/i) || [])[1] || "";
     for (const [key, idx] of imageKeys) {
       const fname = imageNames ? (imageNames[idx - 1] || "") : "";
-      if (src === key || alt === key) return `\n[📷 ${idx}](${fname})\n`;
+      if (src === key || alt === key) return `\n![📷 ${idx}](${fname})\n`;
       // cid: inline images — match by filename stem in the cid URL
       if (src.startsWith("cid:") && key.includes(".")) {
         const stem = key.replace(/\.[^.]+$/, "");
-        if (src.toLowerCase().includes(stem.toLowerCase())) return `\n[📷 ${idx}](${fname})\n`;
+        if (src.toLowerCase().includes(stem.toLowerCase())) return `\n![📷 ${idx}](${fname})\n`;
       }
     }
     return "";
