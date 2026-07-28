@@ -341,7 +341,7 @@ async function extractOutlookImages() {
   const { images: fromAtt, names: attNames } = await extractFromAttachments();
   if (fromAtt.length) {
     // Generate uniform filenames: Image1.jpg, Image2.png, etc.
-    const imageNames = fromAtt.map((im, i) => `Image${i + 1}.${mimeToExt(im.mime)}`);
+    const imageNames = fromAtt.map((im, i) => `image_${String(i + 1).padStart(2, "0")}.${mimeToExt(im.mime)}`);
     let text = null;
     try {
       const html = await readOutlookHtml();
@@ -518,7 +518,7 @@ async function extractFromHtmlBody() {
   }
   // Annotate the HTML body with image position markers.
   // Generate uniform filenames: Image1.jpg, Image2.png, etc.
-  const imageNames = saved.map((im, i) => `Image${i + 1}.${mimeToExt(im.mime)}`);
+  const imageNames = saved.map((im, i) => `image_${String(i + 1).padStart(2, "0")}.${mimeToExt(im.mime)}`);
   let text = null;
   if (saved.length) {
     try {

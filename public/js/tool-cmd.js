@@ -257,7 +257,7 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
       // Uniform filenames (Image1.jpg, Image2.png…) for download/lightbox caption.
       contextMsg.generatedImageNames = Array.isArray(result.imageNames) && result.imageNames.length
         ? result.imageNames
-        : imgArr.map((im, i) => `Image${i + 1}.${im.mime === "image/png" ? "png" : "jpg"}`);
+        : imgArr.map((im, i) => `image_${String(i + 1).padStart(2, "0")}.${im.mime === "image/png" ? "png" : "jpg"}`);
     }
     placeMsg(tab, contextMsg, cursor);
 
