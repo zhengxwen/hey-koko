@@ -1244,6 +1244,12 @@ input[type="file"] {
   gap: 10px;
 }
 
+/* The "性格" (persona) editor: smaller text so the long system prompt reads compactly. */
+#persona {
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
 /* Custom-preset management row, hugging the persona textarea above it. The
    parent .panelTabContent adds a 16px gap between children — pull the row back
    up so it sits tight (net ~4px) under the textarea. */
