@@ -144,8 +144,6 @@ Type `/` in the chat box to open the command palette. The main commands:
 | `/memory <fact>` | Remember a fact about you long-term. |
 | `/note <text>` | Record a note (no AI reply). |
 | `/remind <when> <text>` | Set a reminder, e.g. `/remind 30m drink water`. |
-| `/title [name] [#tags]` | Rename the current tab and/or add tags. |
-| `/retry [Nx]` | Re-answer your last message; add `Nx` to repeat N times. |
 | `/compact` | Summarize and compress the conversation context. |
 | `/clear` | Clear the current chat. |
 | `/0 <msg>` · `/1 <msg>` | Reply with **no** prior context, or with **only** the previous message as context. |
