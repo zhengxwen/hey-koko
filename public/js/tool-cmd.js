@@ -32,6 +32,9 @@ export function setToolCmdDeps({ setGenerating, renderChat, regenerateReply, sho
 // query, so it can't be empty. descKey feeds the "@" autocomplete popup (mentions.js).
 export const TOOL_CMD_ALIASES = [
   { alias: "chrome", icon: "🧭", needsQuery: false, descKey: "toolAlias_chrome" },
+  { alias: "word", icon: "📝", needsQuery: false, descKey: "toolAlias_word" },
+  { alias: "ppt", icon: "📊", needsQuery: false, descKey: "toolAlias_ppt" },
+  { alias: "outlook", icon: "📧", needsQuery: false, descKey: "toolAlias_outlook" },
   { alias: "web", icon: "🔎", needsQuery: true, descKey: "toolAlias_web" },
   { alias: "library", icon: "📚", needsQuery: true, descKey: "toolAlias_library" },
   { alias: "memory", icon: "💭", needsQuery: true, descKey: "toolAlias_memory" },
@@ -49,12 +52,12 @@ export function parseToolCommand(content) {
   const spec = TOOL_CMD_ALIASES.find((a) => a.alias === alias);
   if (!spec) return { error: t("tool_unknownAlias", { alias, list: TOOL_CMD_ALIASES.map((a) => "@" + a.alias).join(" ") }) };
   let prompt = (m[3] || "").trim();
-  // chrome-only flags: "--vision"/"-v" forces a viewport screenshot alongside the
-  // text (without it the server still auto-captures when the page has no extractable
-  // text); "--sel"/"-s" reads ONLY the selected text — the lightweight mode for
-  // repeated per-passage questions on a page whose full text is already in context.
+  // Flags (chrome + word): "--vision"/"-v" forces a viewport screenshot alongside
+  // the text (chrome; without it the server still auto-captures when the page has no
+  // extractable text); "--sel"/"-s" reads ONLY the selected text — the lightweight
+  // mode for repeated per-passage questions on a document already in context.
   let vision = false, sel = false;
-  if (alias === "chrome") {
+  if (alias === "chrome" || alias === "word") {
     prompt = prompt.replace(/(^|\s)(--vision|-v|--sel|-s)(?=\s|$)/g, (_, sp, flag) => {
       if (flag === "--vision" || flag === "-v") vision = true; else sel = true;
       return sp;
@@ -104,6 +107,53 @@ async function fetchChrome(arg, vision, sel) {
   if (data.truncated) body += `\n\n${t("tool_truncated")}`;
   if (data.image) body += `\n\n${t("tool_screenshotNote")}`;
   return { header: `🧭 **${data.title || data.url}**\n${data.url}`, body, image: data.image || "", imageMime: data.imageMime || "image/jpeg" };
+}
+
+// Word / PowerPoint / Outlook — the server reads the LIVE app state via AppleScript.
+function officeError(data) {
+  if (data.error === "not_installed") return t("tool_officeNotInstalled", { app: data.app || "" });
+  if (data.error === "not_running") return t("tool_officeNotRunning", { app: data.app || "" });
+  if (data.error === "no_doc") return t("tool_officeNoDoc", { app: data.app || "" });
+  if (data.error === "no_selection") return t("tool_outlookNoSelection");
+  if (data.error === "unsupported") return t("tool_outlookUnsupported");
+  if (data.error === "unsupported_platform") return "Office tools are macOS-only.";
+  return data.error;
+}
+
+async function fetchOffice(alias, sel) {
+  const res = await fetch("/api/office/read", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ app: alias, selectionOnly: !!sel }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(officeError(data));
+
+  if (alias === "word") {
+    let body = "";
+    if (data.selection) {
+      const quoted = data.selection.split("\n").map((l) => "> " + l).join("\n");
+      body += `${t("tool_selectionHeader")}\n${quoted}`;
+    }
+    if (!sel) body += `${body ? "\n\n" : ""}${data.text || t("tool_emptyPage")}`;
+    else if (!body) throw new Error(t("tool_noSelection"));
+    if (data.truncated) body += `\n\n${t("tool_truncated")}`;
+    return { header: `📝 **${data.title}**`, body, image: "", imageMime: "" };
+  }
+
+  if (alias === "ppt") {
+    let body = data.text || t("tool_emptyPage");
+    if (data.notes) body += `\n\n${t("tool_pptNotesHeader")}\n${data.notes}`;
+    if (data.image) body += `\n\n${t("tool_screenshotNote")}`;
+    return {
+      header: `📊 **${data.title}** · ${t("tool_pptSlide", { i: data.slideIndex, n: data.slideCount })}`,
+      body, image: data.image || "", imageMime: data.imageMime || "image/jpeg",
+    };
+  }
+
+  // outlook
+  let body = `${t("tool_mailFrom")}: ${data.from || "?"}\n${t("tool_mailDate")}: ${data.date || "?"}\n\n${data.text || t("tool_emptyPage")}`;
+  if (data.truncated) body += `\n\n${t("tool_truncated")}`;
+  return { header: `📧 **${data.subject || t("tool_mailNoSubject")}**`, body, image: "", imageMime: "" };
 }
 
 async function fetchWeb(query) {
@@ -181,6 +231,7 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
   try {
     let result;
     if (parsed.alias === "chrome") result = await fetchChrome(parsed.arg, parsed.vision, parsed.sel);
+    else if (parsed.alias === "word" || parsed.alias === "ppt" || parsed.alias === "outlook") result = await fetchOffice(parsed.alias, parsed.sel);
     else if (parsed.alias === "web") result = await fetchWeb(parsed.prompt);
     else if (parsed.alias === "library") result = await fetchLibrary(parsed.prompt);
     else result = await fetchMemory(parsed.prompt);
@@ -195,7 +246,13 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
     // prompt falls back to a tailored default (summarize the page / the selection).
     // A viewport screenshot rides on this bubble exactly like a user-attached image
     // (contextImages → the model, displayImages → the thumbnail strip).
-    const promptText = parsed.prompt || getPrompt(parsed.sel ? "toolChromeSelDefault" : "toolChromeDefault");
+    const DEFAULT_PROMPT_KEYS = {
+      chrome: parsed.sel ? "toolChromeSelDefault" : "toolChromeDefault",
+      word: parsed.sel ? "toolChromeSelDefault" : "toolWordDefault",
+      ppt: "toolPptDefault",
+      outlook: "toolOutlookDefault",
+    };
+    const promptText = parsed.prompt || getPrompt(DEFAULT_PROMPT_KEYS[parsed.alias] || "toolChromeDefault");
     const promptMsg = { role: "user", content: promptText, timestamp: Date.now() };
     if (result.image) {
       promptMsg.contextImages = [result.image];

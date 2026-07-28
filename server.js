@@ -47,6 +47,7 @@ const { proxyComfyModels, generateComfyImage, uploadComfyVideo, uploadComfyAudio
 const { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, expandYoutubeUrls } = require("./server/url-fetch");
 const { searchWeb } = require("./server/search");
 const { browserTabs, browserRead, browserLaunch } = require("./server/cdp");   // co-browsing CDP bridge
+const { officeRead } = require("./server/office");   // Word/PowerPoint/Outlook readers (/tool)
 const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
 const { listSystemVoices, speakAudio } = require("./server/speech");
 const { listTtsVoices, synthesize } = require("./server/tts");
@@ -182,6 +183,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/browser/launch") {
     browserLaunch(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/office/read") {
+    officeRead(req, res);
     return;
   }
 
