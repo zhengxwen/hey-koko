@@ -3550,10 +3550,19 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       const grid = document.createElement("div");
       grid.className = "imageGrid";
 
+      // Only `contextImages` are forwarded to the model (see buildMessages). This grid
+      // shows generatedImages — AI output that never flows back — EXCEPT for the file
+      // preview fallback, where the grid is derived from contextImages and IS sent.
+      const notSentToAi = !!(_libMsg?.generatedImages?.length);
+
       for (let i = 0; i < validImages.length; i++) {
         const imgData = validImages[i];
         const wrapper = document.createElement("div");
         wrapper.className = "imageWrapper";
+        if (notSentToAi) {
+          wrapper.classList.add("notSentToAi");
+          wrapper.title = t("chat_notSentToAi");
+        }
         const img = document.createElement("img");
         img.className = "generatedImage";
         if (imgData.startsWith("data:")) {
