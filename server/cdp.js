@@ -25,7 +25,7 @@ const { extractArticle, extractCleanContent, trafilaturaAvailable, optimizeImage
 // Fed back to the model as the tool result when the browser is unreachable, so it
 // can tell the user exactly how to start the shared browser.
 const LAUNCH_HINT = 'The co-browsing Chrome is not running (CDP port unreachable). ' +
-  'Ask the user to start it first — on macOS run ./start-chrome.command in the hey-koko ' +
+  'Ask the user to start it first — on macOS run ./start-cobrowsing-chrome.command in the hey-koko ' +
   'folder, or: open -na "Google Chrome" --args --user-data-dir="$HOME/.hey-koko/chrome" ' +
   '--remote-debugging-port=9222 — then retry.';
 
@@ -288,7 +288,7 @@ function frontCobrowseChrome(profileDir) {
 // POST /api/browser/launch — start the dedicated co-browsing Chrome on the SERVER
 // machine (the same machine the CDP bridge connects to, which matters when the
 // frontend is opened from another device). Same profile+port contract as
-// start-chrome.command. Already running → no relaunch (it would only pile on
+// start-cobrowsing-chrome.command. Already running → no relaunch (it would only pile on
 // windows); instead bring the existing instance to the foreground.
 async function browserLaunch(req, res) {
   let host = "127.0.0.1", port = 9222;
