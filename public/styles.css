@@ -5060,8 +5060,8 @@ body.isResizingComposer {
    outline hints at it without competing with the picture; hover deepens it and the
    wrapper's title explains that dragging it into the input box attaches it. */
 .imageWrapper.notSentToAi .generatedImage {
-  outline: 1px dashed color-mix(in srgb, var(--muted) 55%, transparent);
-  outline-offset: 2px;
+  outline: 1px dashed color-mix(in srgb, var(--muted) 30%, transparent);
+  outline-offset: 1px;
 }
 
 .generatedImage:hover {
