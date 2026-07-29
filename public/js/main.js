@@ -1134,9 +1134,39 @@ dom.stopTranslateBtn.addEventListener("click", stopTranslation);
   });
 }
 
-// Chat area drag/drop for files
+// Chat area drag/drop for files.
+//
+// Two sources land here: real OS files (dataTransfer has "Files"), and an image
+// dragged OUT OF a chat bubble — that arrives as a URL (text/uri-list / text/plain,
+// a data: or http image src), NOT a File. Without special handling the textarea's
+// default drop inserts the raw "data:image/…;base64,…" text. Detect that URL and
+// convert it into a File so it attaches as a real image instead.
+function draggedImageUrl(dt) {
+  if (!dt) return null;
+  const raw = (dt.getData("text/uri-list") || dt.getData("text/plain") || "").trim();
+  if (!raw) return null;
+  // uri-list may hold several lines (comments start with #); take the first URL.
+  const url = raw.split(/\r?\n/).find((l) => l && !l.startsWith("#")) || "";
+  if (/^data:image\//i.test(url)) return url;
+  if (/^https?:\/\//i.test(url) && /\.(jpe?g|png|gif|webp|bmp|avif)(\?|#|$)/i.test(url)) return url;
+  return null;
+}
+
+async function imageUrlToFile(url) {
+  const res = await fetch(url);
+  const blob = await res.blob();
+  if (!blob.type.startsWith("image/")) return null;
+  const ext = (blob.type.split("/")[1] || "png").split("+")[0].replace("jpeg", "jpg");
+  return new File([blob], `dropped-image.${ext}`, { type: blob.type });
+}
+
 dom.chatArea.addEventListener("dragover", (event) => {
-  if (!event.dataTransfer.types.includes("Files")) return;
+  const dt = event.dataTransfer;
+  // During dragover getData() is blocked (protected mode), so we can only read
+  // `types`. A bubble-image drag always carries "text/uri-list"; use that as the
+  // overlay trigger and validate the actual URL in the drop handler.
+  const isImageDrag = dt.types.includes("Files") || dt.types.includes("text/uri-list");
+  if (!isImageDrag) return;
   if (getActiveTab().locked) return;
   event.preventDefault();
   dom.chatArea.classList.add("isDraggingImage");
@@ -1149,11 +1179,23 @@ dom.chatArea.addEventListener("dragleave", (event) => {
 });
 
 dom.chatArea.addEventListener("drop", async (event) => {
-  if (!event.dataTransfer.types.includes("Files")) return;
+  const dt = event.dataTransfer;
+  const hasFiles = dt.types.includes("Files");
+  const imgUrl = hasFiles ? null : draggedImageUrl(dt);
+  if (!hasFiles && !imgUrl) return;
   event.preventDefault();
   dom.chatArea.classList.remove("isDraggingImage");
   if (getActiveTab().locked) return;
-  const files = [...event.dataTransfer.files];
+
+  if (imgUrl) {
+    try {
+      const file = await imageUrlToFile(imgUrl);
+      if (file) await selectFile(file);
+    } catch {}
+    return;
+  }
+
+  const files = [...dt.files];
   if (files.length === 0) return;
   if (files.length === 1) {
     await selectFile(files[0]);
