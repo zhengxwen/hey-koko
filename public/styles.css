@@ -4784,7 +4784,7 @@ body.isResizingComposer {
 /* Divider between an assistant bubble's body text and the images shown below it */
 .bubbleImageDivider {
   border: none;
-  height: 1px;
+  height: 2.5px;
   background: var(--line, rgba(128, 128, 128, 0.3));
   margin: 10px 0 0;
   opacity: 0.8;
