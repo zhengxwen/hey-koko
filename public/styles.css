@@ -2342,6 +2342,7 @@ button.secondary:disabled {
   border-radius: 6px;
   margin: 2px 0;
   vertical-align: middle;
+  cursor: zoom-in;
 }
 
 /* Rendered SVG block (```svg code fences) */

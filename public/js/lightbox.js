@@ -273,6 +273,14 @@ export function initLightbox() {
     openLightbox(img.dataset.fullSrc || img.src);
   });
 
+  // Inline markdown ![](name) thumbnails (same-bubble image refs).
+  dom.messagesEl.addEventListener("dblclick", (e) => {
+    const img = e.target.closest(".mdBubbleThumb");
+    if (!img) return;
+    e.stopPropagation();
+    openLightbox(img.dataset.fullSrc || img.src);
+  });
+
   return { openLightbox, getAllImageSrcs };
 }
 

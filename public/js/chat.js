@@ -3075,7 +3075,7 @@ function lazyLoadVideo(video, base64, mime) {
 // Build a resolver that maps a markdown ![](name) filename to THIS bubble's own
 // image thumbnail src (exact filename match against the bubble's name arrays).
 // Only same-bubble images resolve; anything else returns null → stays literal text.
-function buildBubbleImageResolver(genThumbs, genFull, genNames, userThumbs, userNames) {
+function buildBubbleImageResolver(genThumbs, genFull, genNames, userThumbs, userFull, userNames) {
   const norm = (s) => {
     if (!s || typeof s !== "string") return null;
     if (s.startsWith("data:") || s.startsWith("http")) return s;
@@ -3083,20 +3083,23 @@ function buildBubbleImageResolver(genThumbs, genFull, genNames, userThumbs, user
     return `data:${s.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${s}`;
   };
   const map = new Map();
-  const add = (name, src) => {
-    if (!name || !src) return;
+  const add = (name, thumb, full) => {
+    if (!name) return;
+    const src = norm(thumb) || norm(full);
+    if (!src) return;
+    const entry = { src, full: norm(full) || src }; // src=thumbnail, full=lightbox image
     const k = String(name).trim().toLowerCase();
     if (!k) return;
-    if (!map.has(k)) map.set(k, src);
+    if (!map.has(k)) map.set(k, entry);
     const base = k.split(/[\\/]/).pop();
-    if (base && !map.has(base)) map.set(base, src);
+    if (base && !map.has(base)) map.set(base, entry);
   };
   const feed = (names, thumbs, full) => {
     if (!Array.isArray(names)) return;
-    names.forEach((nm, i) => add(nm, norm(thumbs?.[i]) || norm(full?.[i])));
+    names.forEach((nm, i) => add(nm, thumbs?.[i], full?.[i]));
   };
-  feed(genNames, genThumbs, genFull);   // generated / doc images
-  feed(userNames, userThumbs, null);    // user-attached images in the same bubble
+  feed(genNames, genThumbs, genFull);           // generated / doc images
+  feed(userNames, userThumbs, userFull);        // user-attached images in the same bubble
   if (!map.size) return null;
   return (url) => {
     let k;
@@ -3375,7 +3378,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     // inline refs) → inline thumbnail; refs to anything not in this bubble stay text.
     const resolveImage = buildBubbleImageResolver(
       generatedThumbnails, generatedImages, _libMsg?.generatedImageNames,
-      displayImages, _libMsg?.imageNames
+      displayImages, _libMsg?.contextImages, _libMsg?.imageNames
     );
     text.innerHTML = markdownToHtml(content, resolveImage ? { resolveImage } : undefined);
     // Re-apply persisted highlights/notes (content-anchored, so they survive

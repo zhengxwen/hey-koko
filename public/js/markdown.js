@@ -64,11 +64,15 @@ export function renderInlineMarkdown(value, opts) {
   // url to a same-bubble image; otherwise leave the literal text untouched (it
   // falls through to normal escaping → "正常显示文字 ![]()").
   value = value.replace(/!\[([^\]]*)\]\(([^\s)]+)\)/g, (m, alt, url) => {
-    const src = opts && typeof opts.resolveImage === "function" ? opts.resolveImage(url) : null;
+    const r = opts && typeof opts.resolveImage === "function" ? opts.resolveImage(url) : null;
+    if (!r) return m;
+    const src = typeof r === "string" ? r : r.src;
     if (!src) return m;
+    const full = (r && typeof r === "object" && r.full) ? r.full : src;
     const key = `\x00PH${idx++}\x00`;
     placeholders.push(
-      `<img class="mdBubbleThumb" src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" title="${escapeHtml(alt || url)}" loading="lazy">`
+      `<img class="mdBubbleThumb" src="${escapeHtml(src)}" data-full-src="${escapeHtml(full)}" ` +
+      `alt="${escapeHtml(alt)}" title="${escapeHtml(alt || url)}" loading="lazy">`
     );
     return key;
   });
