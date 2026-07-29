@@ -158,8 +158,8 @@ async function fetchOffice(alias, sel) {
 
   if (alias === "clip") {
     // An image on the clipboard is the payload itself → hand it to the model like a
-    // pasted screenshot (prompt bubble), not as display-only content.
-    if (data.image) return { header: `📋 **${t("tool_clipHeader")}**`, body: t("tool_clipImage"), image: data.image, imageMime: data.imageMime || "image/png" };
+    // pasted screenshot. No body text: the image is right there under the header.
+    if (data.image) return { header: `📋 **${t("tool_clipHeader")}**`, body: "", image: data.image, imageMime: data.imageMime || "image/png" };
     return { header: `📋 **${t("tool_clipHeader")}**`, body: data.text.split("\n").map((l) => "> " + l).join("\n"), image: "", imageMime: "" };
   }
 
@@ -273,7 +273,9 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
     //   contextImages   — forwarded to the model. A clipboard image or a chrome/ppt
     //     screenshot IS the payload the model must see, so it goes here, paired with a
     //     displayImages thumbnail exactly like a normal user attachment.
-    const contextMsg = { role: "assistant", content: `${result.header}\n\n${result.body}`, timestamp: Date.now() };
+    // trimEnd: an image-only result (clipboard image) has no body — don't leave the
+    // separator's blank line dangling after the header.
+    const contextMsg = { role: "assistant", content: `${result.header}\n\n${result.body || ""}`.trimEnd(), timestamp: Date.now() };
     const imgArr = Array.isArray(result.images) ? result.images : [];
     if (imgArr.length) {
       // Multi-image (outlook): full grid
@@ -298,7 +300,9 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
       ppt: "toolPptDefault",
       outlook: "toolOutlookDefault",
       excel: "toolExcelDefault",
-      clip: "toolClipDefault",
+      // The clipboard holds either text or an image — "explain this passage" makes no
+      // sense for a screenshot, so the image case gets its own wording.
+      clip: result.image ? "toolClipImageDefault" : "toolClipDefault",
     };
     const promptText = parsed.prompt || getPrompt(DEFAULT_PROMPT_KEYS[parsed.alias] || "toolChromeDefault");
     const promptMsg = { role: "user", content: promptText, timestamp: Date.now() };

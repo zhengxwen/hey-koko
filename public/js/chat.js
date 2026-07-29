@@ -540,6 +540,15 @@ function deleteMessageImage(msgIndex, imgIndex) {
   if (message.displayImages && message.displayImages.length > imgIndex) {
     message.displayImages.splice(imgIndex, 1);
   }
+  // Filenames are parallel arrays — splice them too, or every later image inherits its
+  // neighbour's name. For contextImages that is not merely cosmetic: imageNames becomes
+  // the name→order map prepended to the outgoing prompt (see buildMessages).
+  if (message.imageNames && message.imageNames.length > imgIndex) {
+    message.imageNames.splice(imgIndex, 1);
+  }
+  if (message.generatedImageNames && message.generatedImageNames.length > imgIndex) {
+    message.generatedImageNames.splice(imgIndex, 1);
+  }
   saveChat();
   const scrollY = dom.messagesEl.scrollTop;
   renderChat();
@@ -2888,6 +2897,24 @@ function imageExtFromSrc(src) {
 // bubble's image. Picks a new file and writes it back over that slot, mirroring
 // the upload pipeline (EXIF-normalise / convert exotic formats / 360px preview)
 // so the swapped image behaves exactly like an originally-uploaded one.
+// The × that removes one image from a bubble. Shared by both grids: generatedImages
+// (display-only output) and contextImages (attachments / tool payloads shown above the
+// text) — deleteMessageImage splices whichever arrays the message actually has.
+function makeImageDeleteButton(msgIndex, imgIdx) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "imageDeleteBtn";
+  btn.title = t("chat_delImgTitle");
+  btn.setAttribute("aria-label", t("chat_delImgTitle"));
+  btn.textContent = "×";
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();          // don't open the lightbox
+    if (!confirm(t("chat_confirmDelImg"))) return;
+    deleteMessageImage(msgIndex, imgIdx);
+  });
+  return btn;
+}
+
 function makeReplaceImageButton(msgIndex, imgIdx) {
   const btn = document.createElement("button");
   btn.type = "button";
@@ -3412,6 +3439,11 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         : src;
       const fname = mediaFilename(dlNames?.[imgIdx], timestamp, "image", imageExtFromSrc(dlSrc), imgIdx, previews.length);
       image.dataset.filename = fname; // shown as the lightbox caption
+      // Non-user bubbles only: a user bubble's top-right corner is already taken by the
+      // 🖌 mask button (same coordinates), and its images are managed with ⬆ replace.
+      if (role !== "user" && Number.isInteger(index)) {
+        wrapper.appendChild(makeImageDeleteButton(index, imgIdx));
+      }
       // Swap this image for a different file (user bubbles only — the message has
       // to be addressable by index so the new bytes can be written back).
       if (role === "user" && Number.isInteger(index)) {
@@ -3599,17 +3631,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         img.onerror = () => { img.alt = t("chat_altImgLoadFail"); img.style.display = "none"; };
         wrapper.appendChild(img);
         if (Number.isInteger(index)) {
-          const delBtn = document.createElement("button");
-          delBtn.className = "imageDeleteBtn";
-          delBtn.type = "button";
-          delBtn.title = t("chat_delImgTitle");
-          delBtn.textContent = "×";
-          delBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            if (!confirm(t("chat_confirmDelImg"))) return;
-            deleteMessageImage(index, i);
-          });
-          wrapper.appendChild(delBtn);
+          wrapper.appendChild(makeImageDeleteButton(index, i));
         }
         // Download button (bottom-right) — full-res src when available.
         const dlSrc = img.dataset.fullSrc || img.src;
