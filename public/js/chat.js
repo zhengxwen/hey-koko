@@ -1097,7 +1097,14 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
       if (msg.timestamp) lastTs = msg.timestamp;
       continue;
     }
-    const message = { role: msg.role, content: msg.content };
+    // Images only survive on a USER turn: both cloud backends read `images` solely in
+    // their user branch (toAnthropicMessages / toOpenAIMessages) and would silently drop
+    // them otherwise, and the Anthropic/OpenAI APIs reject image blocks on an assistant
+    // turn anyway. So an assistant bubble that carries contextImages — e.g. a /tool
+    // context bubble holding a clipboard image or a screenshot — is forwarded as a user
+    // turn, exactly like the file-preview branch above. Display role is unaffected.
+    const sendRole = (msg.role === "assistant" && msg.contextImages?.length) ? "user" : msg.role;
+    const message = { role: sendRole, content: msg.content };
     // Ephemeral context prefixes (prepended to the OUTGOING content only, never stored):
     // the time-away note first, then the attached-image name map.
     let prefix = "";
@@ -3550,9 +3557,11 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       const grid = document.createElement("div");
       grid.className = "imageGrid";
 
-      // Only `contextImages` are forwarded to the model (see buildMessages). This grid
-      // shows generatedImages — AI output that never flows back — EXCEPT for the file
-      // preview fallback, where the grid is derived from contextImages and IS sent.
+      // Only `contextImages` reach the model (see buildMessages); `generatedImages` is
+      // display-only. The two can coexist on one bubble — a tool writes each image into
+      // whichever container matches its fate — so the field alone decides the marker.
+      // (The file-preview fallback below derives this grid from contextImages instead,
+      // hence the check against the message field rather than the grid contents.)
       const notSentToAi = !!(_libMsg?.generatedImages?.length);
 
       for (let i = 0; i < validImages.length; i++) {

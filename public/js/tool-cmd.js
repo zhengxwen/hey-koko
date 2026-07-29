@@ -34,7 +34,9 @@ export const TOOL_CMD_ALIASES = [
   { alias: "chrome", icon: "🧭", needsQuery: false, descKey: "toolAlias_chrome" },
   { alias: "word", icon: "📝", needsQuery: false, descKey: "toolAlias_word" },
   { alias: "ppt", icon: "📊", needsQuery: false, descKey: "toolAlias_ppt" },
+  { alias: "excel", icon: "📈", needsQuery: false, descKey: "toolAlias_excel" },
   { alias: "outlook", icon: "📧", needsQuery: false, descKey: "toolAlias_outlook" },
+  { alias: "clip", icon: "📋", needsQuery: false, descKey: "toolAlias_clip" },
   { alias: "web", icon: "🔎", needsQuery: true, descKey: "toolAlias_web" },
   { alias: "library", icon: "📚", needsQuery: true, descKey: "toolAlias_library" },
   { alias: "memory", icon: "💭", needsQuery: true, descKey: "toolAlias_memory" },
@@ -57,7 +59,7 @@ export function parseToolCommand(content) {
   // extractable text); "--sel"/"-s" reads ONLY the selected text — the lightweight
   // mode for repeated per-passage questions on a document already in context.
   let vision = false, sel = false;
-  if (alias === "chrome" || alias === "word") {
+  if (alias === "chrome" || alias === "word" || alias === "excel") {
     prompt = prompt.replace(/(^|\s)(--vision|-v|--sel|-s)(?=\s|$)/g, (_, sp, flag) => {
       if (flag === "--vision" || flag === "-v") vision = true; else sel = true;
       return sp;
@@ -109,12 +111,16 @@ async function fetchChrome(arg, vision, sel) {
   return { header: `🧭 **${data.title || data.url}**\n${data.url}`, body, image: data.image || "", imageMime: data.imageMime || "image/jpeg" };
 }
 
-// Word / PowerPoint / Outlook — the server reads the LIVE app state via AppleScript.
+// Word / PowerPoint / Excel / Outlook — the server reads the LIVE app state via
+// AppleScript; @clip rides the same endpoint (it is not an app, but the same shape).
+const APPS_EXCEL = "Microsoft Excel";
+
 function officeError(data) {
   if (data.error === "not_installed") return t("tool_officeNotInstalled", { app: data.app || "" });
   if (data.error === "not_running") return t("tool_officeNotRunning", { app: data.app || "" });
   if (data.error === "no_doc") return t("tool_officeNoDoc", { app: data.app || "" });
-  if (data.error === "no_selection") return t("tool_outlookNoSelection");
+  if (data.error === "no_selection") return data.app === APPS_EXCEL ? t("tool_excelNoSelection") : t("tool_outlookNoSelection");
+  if (data.error === "clip_empty") return t("tool_clipEmpty");
   if (data.error === "unsupported") return t("tool_outlookUnsupported");
   if (data.error === "unsupported_platform") return "Office tools are macOS-only.";
   return data.error;
@@ -138,6 +144,23 @@ async function fetchOffice(alias, sel) {
     else if (!body) throw new Error(t("tool_noSelection"));
     if (data.truncated) body += `\n\n${t("tool_truncated")}`;
     return { header: `📝 **${data.title}**`, body, image: "", imageMime: "" };
+  }
+
+  if (alias === "excel") {
+    const scope = sel
+      ? t("tool_excelSelection", { address: data.address })
+      : t("tool_excelSheet", { sheet: data.sheet });
+    let body = data.table || t("tool_emptyPage");
+    // Say what was left out rather than passing a silently clipped table off as whole.
+    if (data.clipped) body += `\n\n${t("tool_excelClipped", { r: data.shownRows, c: data.shownCols, R: data.rows, C: data.cols })}`;
+    return { header: `📈 **${data.title}** · ${scope}`, body, image: "", imageMime: "" };
+  }
+
+  if (alias === "clip") {
+    // An image on the clipboard is the payload itself → hand it to the model like a
+    // pasted screenshot (prompt bubble), not as display-only content.
+    if (data.image) return { header: `📋 **${t("tool_clipHeader")}**`, body: t("tool_clipImage"), image: data.image, imageMime: data.imageMime || "image/png" };
+    return { header: `📋 **${t("tool_clipHeader")}**`, body: data.text.split("\n").map((l) => "> " + l).join("\n"), image: "", imageMime: "" };
   }
 
   if (alias === "ppt") {
@@ -233,7 +256,7 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
   try {
     let result;
     if (parsed.alias === "chrome") result = await fetchChrome(parsed.arg, parsed.vision, parsed.sel);
-    else if (parsed.alias === "word" || parsed.alias === "ppt" || parsed.alias === "outlook") result = await fetchOffice(parsed.alias, parsed.sel);
+    else if (["word", "ppt", "outlook", "excel", "clip"].includes(parsed.alias)) result = await fetchOffice(parsed.alias, parsed.sel);
     else if (parsed.alias === "web") result = await fetchWeb(parsed.prompt);
     else if (parsed.alias === "library") result = await fetchLibrary(parsed.prompt);
     else result = await fetchMemory(parsed.prompt);
@@ -241,11 +264,15 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
     if (pending) pending.remove();
 
     // Context bubble: the tool's result, visible and part of the conversation the
-    // reply model reads (exactly how /url injects a fetched page).
-    // Email images display HERE (they belong to the email, not the user's question);
-    // chrome/ppt screenshots and outlook images all DISPLAY in the context bubble
-    // (after text, with delete/download buttons). Model access is via contextImages
-    // on the prompt bubble below.
+    // reply model reads (exactly how /url injects a fetched page). Images belong to the
+    // tool result, so they all display HERE — but in the container that matches their
+    // fate, since the two can coexist on one bubble:
+    //   generatedImages — display-only. Outlook's inline images are deliberately NOT
+    //     forwarded (mostly logos/banners; the body text already carries ![📷 N]
+    //     markers), so they land here and the bubble marks them "not sent to the AI".
+    //   contextImages   — forwarded to the model. A clipboard image or a chrome/ppt
+    //     screenshot IS the payload the model must see, so it goes here, paired with a
+    //     displayImages thumbnail exactly like a normal user attachment.
     const contextMsg = { role: "assistant", content: `${result.header}\n\n${result.body}`, timestamp: Date.now() };
     const imgArr = Array.isArray(result.images) ? result.images : [];
     if (imgArr.length) {
@@ -258,10 +285,9 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
         ? result.imageNames
         : imgArr.map((im, i) => `image_${String(i + 1).padStart(2, "0")}.${im.mime === "image/png" ? "png" : "jpg"}`);
     } else if (result.image) {
-      // Single screenshot (chrome/ppt): same grid, one item
-      contextMsg.generatedImages = [result.image];
-      contextMsg.generatedThumbnails = [await makePreview(`data:${result.imageMime};base64,${result.image}`, 480)];
-      contextMsg.generatedImageNames = ["screenshot.jpg"];
+      // Single image (clipboard paste / chrome-ppt screenshot): sent → contextImages.
+      contextMsg.contextImages = [result.image];
+      contextMsg.displayImages = [await makePreview(`data:${result.imageMime};base64,${result.image}`, 480)];
     }
     placeMsg(tab, contextMsg, cursor);
 
@@ -271,17 +297,14 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
       word: parsed.sel ? "toolChromeSelDefault" : "toolWordDefault",
       ppt: "toolPptDefault",
       outlook: "toolOutlookDefault",
+      excel: "toolExcelDefault",
+      clip: "toolClipDefault",
     };
     const promptText = parsed.prompt || getPrompt(DEFAULT_PROMPT_KEYS[parsed.alias] || "toolChromeDefault");
     const promptMsg = { role: "user", content: promptText, timestamp: Date.now() };
 
-    // contextImages on the prompt bubble → forwarded to the vision model.
-    // chrome/ppt screenshots are the actual visual content the model must see.
-    // Outlook images are mostly decorative (logos, banners) — the body text already
-    // carries ![📷 N] markers; sending all images wastes tokens and confuses the model.
-    if (result.image) {
-      promptMsg.contextImages = [result.image];
-    }
+    // The image itself is carried by the context bubble's contextImages above — it must
+    // NOT be duplicated here, or the model would receive it twice.
     placeMsg(tab, promptMsg, cursor);
     saveChat();
     if (state.activeTabId === tabId && _renderChat) _renderChat();

@@ -22,13 +22,16 @@ const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const { optimizeImage } = require("./url-fetch");
 
-// Field separator inside AppleScript return values (character id 30 = RS).
+// Field separator inside AppleScript return values (character id 30 = RS); Excel's
+// grid additionally separates ROWS with US (31), cells with tab.
 const RS = String.fromCharCode(30);
+const US = String.fromCharCode(31);
 
 const APPS = {
   word: "Microsoft Word",
   ppt: "Microsoft PowerPoint",
   outlook: "Microsoft Outlook",
+  excel: "Microsoft Excel",
 };
 
 // Office hands back CR (and CRLF) line endings — normalize so the markdown bubble
@@ -239,6 +242,105 @@ return prevApp & rs & px & rs & py & rs & pw & rs & ph & rs & sw & rs & sh`, 150
     try { fs.unlinkSync(tmp); } catch { /* ignore */ }
     try { fs.unlinkSync(tmpCrop); } catch { /* ignore */ }
   }
+}
+
+// ---- Excel: the active sheet's used range, or just the selected cells ----
+
+// AppleScript gives us the grid as rows of tab-separated cells (unit separator between
+// rows) — turn that into a markdown table so the model reads it as structured data.
+// The first row becomes the header: spreadsheets almost always lead with one, and a
+// header-less table still renders fine (row 1 just sits in the header slot).
+function gridToMarkdown(raw) {
+  const rows = String(raw || "").split(US).map((r) => r.split("\t"));
+  const clean = rows.filter((r) => r.some((c) => String(c).trim() !== ""));
+  if (!clean.length) return "";
+  const width = Math.max(...clean.map((r) => r.length));
+  const cell = (v) => String(v == null ? "" : v).replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim();
+  const pad = (r) => Array.from({ length: width }, (_, i) => cell(r[i]));
+  const out = [`| ${pad(clean[0]).join(" | ")} |`, `| ${Array(width).fill("---").join(" | ")} |`];
+  for (const r of clean.slice(1)) out.push(`| ${pad(r).join(" | ")} |`);
+  return out.join("\n");
+}
+
+// selectionOnly: read just the selected cells. Otherwise the sheet's used range,
+// capped at MAX_CELLS so a 100k-row sheet can't blow up the context — the cap keeps
+// the TOP-LEFT block (headers + first rows), which is what makes a table legible.
+const EXCEL_MAX_ROWS = 200, EXCEL_MAX_COLS = 40;
+
+async function readExcel(selectionOnly) {
+  const out = await runOsa(
+    RUNNING_GATE(APPS.excel) +
+    `set rs to character id 30
+set us to character id 31
+-- Excel's dictionary defines its own "tab" (a sheet tab), shadowing AppleScript's tab
+-- constant inside the tell block — the literal word would end up in the output.
+set tb to character id 9
+tell application "Microsoft Excel"
+	if (count of workbooks) is 0 then error "no_doc"
+	-- Same background caveat as Word/PowerPoint: the "active" objects go missing
+	-- when the app isn't frontmost, so fall back to the first workbook/sheet.
+	set wb to missing value
+	try
+		set wb to active workbook
+	end try
+	if wb is missing value then set wb to workbook 1
+	set sh to missing value
+	try
+		set sh to active sheet of wb
+	end try
+	if sh is missing value then set sh to sheet 1 of wb
+	set rng to missing value
+	${selectionOnly ? `try
+		set rng to selection
+	end try
+	if rng is missing value then error "no_selection"
+	-- A single clicked cell is not a real selection to reason about.
+	if (count of cells of rng) is 1 then error "no_selection"` : `try
+		set rng to used range of sh
+	end try
+	if rng is missing value then error "no_doc"`}
+	set rowCount to count of rows of rng
+	set colCount to count of columns of rng
+	set rMax to rowCount
+	if rMax > ${EXCEL_MAX_ROWS} then set rMax to ${EXCEL_MAX_ROWS}
+	set cMax to colCount
+	if cMax > ${EXCEL_MAX_COLS} then set cMax to ${EXCEL_MAX_COLS}
+	set grid to ""
+	repeat with i from 1 to rMax
+		set rowTxt to ""
+		repeat with j from 1 to cMax
+			set v to ""
+			try
+				set v to string value of (cell j of row i of rng)
+			end try
+			if v is missing value then set v to ""
+			if j is 1 then
+				set rowTxt to v
+			else
+				set rowTxt to rowTxt & tb & v
+			end if
+		end repeat
+		if i is 1 then
+			set grid to rowTxt
+		else
+			set grid to grid & us & rowTxt
+		end if
+	end repeat
+	set rngAddr to ""
+	try
+		set rngAddr to get address of rng
+	end try
+	return (name of wb) & rs & (name of sh) & rs & rngAddr & rs & (rowCount as string) & rs & (colCount as string) & rs & grid
+end tell`, 60000);
+  const [book, sheet, address, rowCount, colCount, grid] = out.split(RS);
+  const rows = Number(rowCount) || 0, cols = Number(colCount) || 0;
+  return {
+    app: "excel", title: book || "", sheet: sheet || "", address: (address || "").replace(/\$/g, ""),
+    rows, cols, table: gridToMarkdown(grid),
+    // Tell the frontend the grid was clipped so it can say so rather than silently lying.
+    clipped: rows > EXCEL_MAX_ROWS || cols > EXCEL_MAX_COLS,
+    shownRows: Math.min(rows, EXCEL_MAX_ROWS), shownCols: Math.min(cols, EXCEL_MAX_COLS),
+  };
 }
 
 // ---- Outlook (legacy scripting): the message(s) selected in the reading pane ----
@@ -613,14 +715,58 @@ async function extractFromHtmlBody() {
   return { images: saved, imageNames, text };
 }
 
+// ---- Clipboard ----
+
+// Read the clipboard: text via `pbpaste`, and when there is no text, an image (macOS
+// stores copied screenshots as TIFF/PNG on the pasteboard — AppleScript writes it out
+// as PNG). Whatever the user just copied, from any app, with no per-app integration.
+async function readClipboard() {
+  const text = await new Promise((resolve) => {
+    execFile("pbpaste", [], { timeout: 10000, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => resolve(err ? "" : stdout));
+  });
+  if (text.trim()) return { app: "clip", text: normalizeText(text) };
+
+  const tmp = path.join(os.tmpdir(), `hk_clip_${Date.now()}.png`);
+  try {
+    await runOsa(
+      `set f to (POSIX file "${tmp}")
+set d to (the clipboard as «class PNGf»)
+set fh to open for access f with write permission
+set eof fh to 0
+write d to fh
+close access fh`, 15000);
+    const buf = fs.readFileSync(tmp);
+    if (!buf.length) return { app: "clip", text: "" };
+    let image = buf.toString("base64"), imageMime = "image/png";
+    try {
+      const o = await optimizeImage(buf, "image/png");
+      image = o.buf.toString("base64"); imageMime = o.ct;
+    } catch { /* keep the raw PNG */ }
+    return { app: "clip", text: "", image, imageMime };
+  } catch {
+    return { app: "clip", text: "" };   // neither text nor image on the pasteboard
+  } finally {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+  }
+}
+
 // ---- request handler ----
 
-// POST /api/office/read { app: "word"|"ppt"|"outlook", selectionOnly? }
+// POST /api/office/read { app: "word"|"ppt"|"outlook"|"excel", selectionOnly? }
 async function officeRead(req, res) {
   if (process.platform !== "darwin") { sendJson(res, 200, { error: "unsupported_platform" }); return; }
   let body = {};
   try { body = await readBody(req); } catch { /* treat as empty */ }
   const app = String(body.app || "");
+  // The clipboard is not an app: no install/running gate, no AppleScript app terminology.
+  if (app === "clip") {
+    try {
+      const data = await readClipboard();
+      if (!data.text && !data.image) { sendJson(res, 200, { error: "clip_empty" }); return; }
+      sendJson(res, 200, data);
+    } catch (e) { sendJson(res, 200, { error: e.message || "clipboard read failed" }); }
+    return;
+  }
   const appName = APPS[app];
   if (!appName) { sendJson(res, 200, { error: "unknown app" }); return; }
   if (!appInstalled(appName)) { sendJson(res, 200, { error: "not_installed", app: appName }); return; }
@@ -628,6 +774,7 @@ async function officeRead(req, res) {
   try {
     let data;
     if (app === "word") data = await readWord(body.selectionOnly === true);
+    else if (app === "excel") data = await readExcel(body.selectionOnly === true);
     else if (app === "ppt") {
       data = await readPpt();
       const shot = await capturePptWindow();
