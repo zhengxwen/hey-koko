@@ -2979,6 +2979,36 @@ button.secondary:disabled {
   margin-bottom: 4px;
 }
 
+.messageTimestamp.isEditable {
+  cursor: text;
+}
+.messageTimestamp.isEditable:hover {
+  opacity: 1;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+/* Timestamp edit popup (double-click a bubble's time) */
+.timestampEditBody {
+  padding: 16px;
+}
+.timestampEditInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.timestampEditActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 16px 16px;
+}
+
 .messageGenTime {
   margin-left: 8px;
   font-variant-numeric: tabular-nums;

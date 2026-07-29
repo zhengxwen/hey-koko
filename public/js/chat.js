@@ -3109,6 +3109,70 @@ function buildBubbleImageResolver(genThumbs, genFull, genNames, userThumbs, user
   };
 }
 
+// Convert an epoch-ms timestamp to the local "YYYY-MM-DDTHH:MM:SS" string that a
+// <input type="datetime-local" step="1"> expects (its value is always local time).
+function tsToDatetimeLocal(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// Double-click-the-timestamp editor: a small modal with a native date+time picker,
+// prefilled to the bubble's current time. Save writes the new epoch-ms back.
+function openTimestampEditor(index) {
+  const tab = getActiveTab();
+  const msg = tab.messages[index];
+  if (!msg || !msg.timestamp) return;
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "scanModalBackdrop";
+  const modal = document.createElement("div");
+  modal.className = "scanModal timestampEditModal";
+  modal.innerHTML = `
+    <div class="scanModalHeader">
+      <h3 class="scanModalTitle">${escapeHtml(t("editTime_title"))}</h3>
+      <button type="button" class="scanModalClose" aria-label="Close">✕</button>
+    </div>
+    <div class="timestampEditBody">
+      <input type="datetime-local" step="1" class="timestampEditInput" />
+    </div>
+    <div class="timestampEditActions">
+      <button type="button" class="secondary timestampEditCancel">${escapeHtml(t("editTime_cancel"))}</button>
+      <button type="button" class="primary timestampEditSave">${escapeHtml(t("editTime_save"))}</button>
+    </div>`;
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  const input = modal.querySelector(".timestampEditInput");
+  input.value = tsToDatetimeLocal(msg.timestamp);
+
+  const close = () => {
+    document.removeEventListener("keydown", onKey);
+    backdrop.remove();
+  };
+  const save = () => {
+    if (!input.value) return;
+    const ms = new Date(input.value).getTime();
+    if (Number.isNaN(ms)) return;
+    tab.messages[index].timestamp = ms;
+    saveChat();
+    renderChat();
+    close();
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+    if (e.key === "Enter") { e.preventDefault(); save(); }
+  };
+
+  modal.querySelector(".scanModalClose").addEventListener("click", close);
+  modal.querySelector(".timestampEditCancel").addEventListener("click", close);
+  modal.querySelector(".timestampEditSave").addEventListener("click", save);
+  backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(); });
+  document.addEventListener("keydown", onKey);
+
+  input.focus();
+}
+
 function renderMessage(role, content, displayImages, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMimes, generatedAudio, audioMime, generatedVideoThumbnails) {
   const item = document.createElement("div");
   item.className = `message ${role}`;
@@ -3117,6 +3181,16 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     const ts = document.createElement("div");
     ts.className = "messageTimestamp";
     ts.textContent = formatTimestamp(timestamp);
+    // Double-click the timestamp → edit it in a small popup (date + time picker).
+    if (Number.isInteger(index)) {
+      ts.classList.add("isEditable");
+      ts.title = t("editTime_title");
+      ts.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        if (getActiveTab().locked) return;
+        openTimestampEditor(index);
+      });
+    }
     item.appendChild(ts);
   }
 
@@ -3160,7 +3234,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       // its media/controls (to drag the image/video out, scrub, click a button)
       // must NOT start a bubble drag — only a press on the bubble's own chrome does.
       const noDrag = e.target.closest(
-        ".plainBody, .markdownBody, .editMessageInput, textarea, " +
+        ".plainBody, .markdownBody, .editMessageInput, textarea, .messageTimestamp, " +
         "img, video, .imageWrapper, .videoWrapper, button, input, a"
       );
       item.draggable = !noDrag;
