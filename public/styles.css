@@ -1248,6 +1248,9 @@ input[type="file"] {
 #persona {
   font-size: 0.8rem;
   line-height: 1.4;
+  /* Half the shared form-field padding (10px 12px) — this box is small, so the
+     inset was eating a disproportionate share of it. */
+  padding: 5px 6px;
 }
 
 /* Custom-preset management row, hugging the persona textarea above it. The
