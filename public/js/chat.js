@@ -3534,6 +3534,13 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         wrapper.appendChild(makeDownloadButton("imageDownloadBtn", dlSrc, iname, base64ByteLength(dlSrc), t("btn_downloadImage")));
         grid.appendChild(wrapper);
       }
+      // Assistant bubbles: separate the body text from the images shown below it
+      // with a thin divider.
+      if (content && role === "assistant") {
+        const divider = document.createElement("hr");
+        divider.className = "bubbleImageDivider";
+        item.appendChild(divider);
+      }
       item.appendChild(grid);
     }
   }

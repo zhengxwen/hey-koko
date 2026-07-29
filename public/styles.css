@@ -4781,6 +4781,15 @@ body.isResizingComposer {
   width: auto;
 }
 
+/* Divider between an assistant bubble's body text and the images shown below it */
+.bubbleImageDivider {
+  border: none;
+  height: 1px;
+  background: var(--border);
+  margin: 10px 0 0;
+  opacity: 0.7;
+}
+
 .imageGrid {
   display: flex;
   flex-wrap: wrap;
