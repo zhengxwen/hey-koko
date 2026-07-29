@@ -161,12 +161,23 @@ export function initArchive() {
         return;
       }
 
-      if (state.tabs.length > 1) {
+      // Archiving is a COPY, so the conversation is safe either way — confirm before
+      // discarding what is on screen. Remember the file we just wrote: if the user keeps
+      // the tab and archives again, the server updates that same file instead of piling
+      // up duplicates (the sourceArchive path in server/archive.js).
+      if (result.filename) tab.sourceArchive = result.filename;
+      const lastTab = state.tabs.length <= 1;
+      if (!confirm(t(lastTab ? "arch_archivedCleared" : "arch_archivedCloseTab"))) {
+        saveTabs();
+        return;
+      }
+      if (!lastTab) {
         closeTab(tab.id);
       } else {
         tab.messages = [];
         tab.title = `${t("tab_newChat")} 1`;
         tab.tags = [];
+        delete tab.sourceArchive;   // emptied tab is no longer that archive
         saveTabs();
         renderTabs();
         const { renderChat } = await import('./chat.js');
