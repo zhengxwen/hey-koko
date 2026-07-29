@@ -151,15 +151,27 @@ end tell`);
   };
 }
 
-// Screenshot of the PowerPoint window: front the app, read its window rect via
-// System Events, `screencapture -R` that region, then hand focus back. Entirely
-// best-effort — returns null on any failure (missing TCC grants included).
+// Screenshot of the PowerPoint slide area: front the app, capture its window,
+// then crop to the slide content region (removing toolbar, sidebar, status bar).
+// Best-effort — returns null on any failure (missing TCC grants included).
 async function capturePptWindow() {
   const tmp = path.join(os.tmpdir(), `hk_ppt_shot_${Date.now()}.jpg`);
+  const tmpCrop = path.join(os.tmpdir(), `hk_ppt_crop_${Date.now()}.jpg`);
   try {
+    // Get window rect AND slide aspect ratio in one go.
     const out = await runOsa(
       RUNNING_GATE(APPS.ppt) +
       `set rs to character id 30
+tell application "Microsoft PowerPoint"
+	set sw to 960
+	set sh to 540
+	try
+		set sw to slide width of page setup of active presentation
+	end try
+	try
+		set sh to slide height of page setup of active presentation
+	end try
+end tell
 tell application "System Events"
 	set prevApp to name of first process whose frontmost is true
 	set frontmost of process "Microsoft PowerPoint" to true
@@ -168,26 +180,64 @@ tell application "System Events"
 	set {px, py} to position of w
 	set {pw, ph} to size of w
 end tell
-return prevApp & rs & px & rs & py & rs & pw & rs & ph`, 15000);
-    const [prevApp, x, y, w, h] = out.split(RS);
+return prevApp & rs & px & rs & py & rs & pw & rs & ph & rs & sw & rs & sh`, 15000);
+    const [prevApp, x, y, w, h, sw, sh] = out.split(RS);
     await new Promise((resolve, reject) => {
       execFile("screencapture", ["-x", "-t", "jpg", "-R", `${x},${y},${w},${h}`, tmp], { timeout: 10000 },
         (err) => err ? reject(err) : resolve());
     });
-    // Give the user their previous app back (skip when PowerPoint already had focus).
+    // Give the user their previous app back.
     if (prevApp && prevApp !== "Microsoft PowerPoint") {
       runOsa(`tell application "System Events" to set frontmost of process "${prevApp.replace(/"/g, '\\"')}" to true`, 5000).catch(() => { /* best-effort */ });
     }
-    const buf = fs.readFileSync(tmp);
-    if (!buf.length) return null;
+    if (!fs.existsSync(tmp)) return null;
+    const rawBuf = fs.readFileSync(tmp);
+    if (!rawBuf.length) return null;
+
+    // Crop to the slide content area. In Normal view the chrome occupies:
+    // - top: toolbar + info bar + ruler (~15% of window height)
+    // - left: slide navigator panel (~15% of window width)
+    // - bottom: status bar + notes placeholder (~10% of window height)
+    // After removing chrome, fit the largest centered rect matching the slide AR.
+    let finalBuf = rawBuf;
     try {
-      const o = await optimizeImage(buf, "image/jpeg");
+      const imgW = Number(w) * 2;  // Retina 2x
+      const imgH = Number(h) * 2;
+      const slideAR = (Number(sw) || 960) / (Number(sh) || 540);
+      // Estimated content area (pixels in the captured image)
+      const cropTop = Math.round(imgH * 0.18);
+      const cropLeft = Math.round(imgW * 0.18);
+      const cropBottom = Math.round(imgH * 0.07);
+      const contentW = imgW - cropLeft;
+      const contentH = imgH - cropTop - cropBottom;
+      // Fit slide AR into content area (centered)
+      let fitW, fitH;
+      if (contentW / contentH > slideAR) {
+        fitH = contentH;
+        fitW = Math.round(contentH * slideAR);
+      } else {
+        fitW = contentW;
+        fitH = Math.round(contentW / slideAR);
+      }
+      const offX = cropLeft + Math.round((contentW - fitW) / 2);
+      const offY = cropTop + Math.round((contentH - fitH) / 2);
+      // Use sips to crop
+      fs.copyFileSync(tmp, tmpCrop);
+      const { execFileSync } = require("child_process");
+      execFileSync("sips", ["--cropToHeightWidth", String(fitH), String(fitW), "--cropOffset", String(offY), String(offX), tmpCrop], { timeout: 5000, stdio: "ignore" });
+      const cropped = fs.readFileSync(tmpCrop);
+      if (cropped.length > 1000) finalBuf = cropped;
+    } catch { /* crop failed — use full window capture */ }
+
+    try {
+      const o = await optimizeImage(finalBuf, "image/jpeg");
       return { image: o.buf.toString("base64"), imageMime: o.ct };
-    } catch { return { image: buf.toString("base64"), imageMime: "image/jpeg" }; }
+    } catch { return { image: finalBuf.toString("base64"), imageMime: "image/jpeg" }; }
   } catch {
     return null;
   } finally {
     try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmpCrop); } catch { /* ignore */ }
   }
 }
 
@@ -258,10 +308,43 @@ tell application "Microsoft Outlook"
 	try
 		set bodyTxt to plain text content of m
 	end try
-	return subj & rs & sndr & rs & dt & rs & bodyTxt
+	set rcpts to ""
+	try
+		set toList to to recipients of m
+		repeat with r in toList
+			set rAddr to ""
+			try
+				set rAddr to address of email address of r
+			end try
+			set rName to ""
+			try
+				set rName to name of r
+			end try
+			if rName is not "" then
+				set rcpts to rcpts & rName & " <" & rAddr & ">, "
+			else if rAddr is not "" then
+				set rcpts to rcpts & rAddr & ", "
+			end if
+		end repeat
+	end try
+	-- Exchange accounts leave recipient properties empty; fall back to To: header.
+	if rcpts is "" then
+		try
+			set hdr to headers of m
+			set paras to paragraphs of hdr
+			repeat with p in paras
+				if p starts with "To:" then
+					set rcpts to text 5 thru -1 of p
+					exit repeat
+				end if
+			end repeat
+		end try
+	end if
+	return subj & rs & sndr & rs & dt & rs & bodyTxt & rs & rcpts
 end tell`);
-  const [subject, from, date, text] = out.split(RS);
-  const result = { app: "outlook", subject: subject || "", from: from || "", date: date || "", text: normalizeText(text) };
+  const [subject, from, date, text, toRaw] = out.split(RS);
+  const to = (toRaw || "").replace(/,\s*$/, "").trim();
+  const result = { app: "outlook", subject: subject || "", from: from || "", to: to || "", date: date || "", text: normalizeText(text) };
 
   // ---- image extraction (best-effort: never blocks the text result) ----
   try {
