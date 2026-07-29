@@ -158,6 +158,7 @@ export async function loadModels({ force = false } = {}) {
 // back to the bare host for anything unrecognized (a relay, a local server…).
 const PROVIDER_LABELS = {
   "openrouter.ai": "OpenRouter",
+  "api.anthropic.com": "Claude",
   "api.openai.com": "OpenAI",
   "api.deepseek.com": "DeepSeek",
   "api.x.ai": "xAI",
@@ -169,7 +170,8 @@ const PROVIDER_LABELS = {
 };
 function providerLabel(m) {
   const host = String(m.host || "").replace(/^www\./, "");
-  return PROVIDER_LABELS[host] || host || (m.provider === "openrouter" ? "OpenRouter" : "OpenAI");
+  return PROVIDER_LABELS[host] || host
+    || (m.provider === "openrouter" ? "OpenRouter" : m.provider === "claude" ? "Claude" : "OpenAI");
 }
 
 // Full-catalog model picker. Lists every online chat model from the configured

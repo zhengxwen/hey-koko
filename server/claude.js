@@ -28,6 +28,12 @@ const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const DEFAULT_MODELS = ["claude-opus-4-8", "claude-sonnet-4-6"];
 const ANTHROPIC_VERSION = "2023-06-01";
 
+// Which model ids belong to the Claude family. Normally `claude-*` (incl. claude-fable-5),
+// but a relay may surface a Claude model under a bare family name (fable-*/mythos-*) — accept
+// those too so Fable/Mythos models still list AND route. denoiseModelIds already knows these
+// families. Kept in sync across discover / routing / browse.
+const CLAUDE_RE = /^(claude|fable|mythos)/i;
+
 // Architectural context window per model (for /api/model-info — Claude has no
 // Ollama-style /api/show, so the context meter reads these instead).
 const CONTEXT_LENGTHS = {
@@ -116,7 +122,7 @@ async function discoverModels(cfg) {
     const rawIds = [];
     const ctx = {};
     for (const m of data.data || []) {
-      if (!m.id || !/^claude/i.test(m.id)) continue;
+      if (!m.id || !CLAUDE_RE.test(m.id)) continue;
       rawIds.push(m.id);
       if (m.max_input_tokens) ctx[m.id] = m.max_input_tokens;
     }
@@ -137,8 +143,12 @@ function isClaudeModel(model) {
   if (!model) return false;
   const cfg = loadConfig();
   if (!cfg) return false;
-  if (cfg.models.length) return cfg.models.includes(model);
-  return /^claude/i.test(model);
+  // Manual allowlist wins, but a `claude-*` id ALWAYS routes here even when it isn't
+  // listed — so ad-hoc picks from the "browse all models" dialog work. Safe: we only
+  // ever surface claude-* names, OpenRouter's `anthropic/claude-…` starts with
+  // "anthropic/" (not "claude") so it never collides, and this check runs first.
+  if (cfg.models.includes(model)) return true;
+  return CLAUDE_RE.test(model);
 }
 
 function contextLengthFor(model) {
@@ -482,4 +492,39 @@ async function complete(model, messages, { signal } = {}) {
   return text;
 }
 
-module.exports = { isClaudeModel, contextLengthFor, listModels, proxyChat, complete };
+// Full Claude catalog for the "browse all models" dialog — every claude-* id the key
+// can list (NOT denoised, unlike discoverModels which trims to newest-per-family), with
+// the endpoint host + context window. Returns [] when unconfigured / unreachable.
+async function listAllModels() {
+  const cfg = loadConfig();
+  if (!cfg) return [];
+  let host = "";
+  try { host = new URL(cfg.baseUrl).host; } catch { host = cfg.baseUrl; }
+  const controller = new AbortController();
+  const to = setTimeout(() => controller.abort(), 15000);
+  try {
+    const r = await fetch(`${cfg.baseUrl}/v1/models?limit=1000`, {
+      headers: { "x-api-key": cfg.apiKey, "anthropic-version": ANTHROPIC_VERSION },
+      signal: controller.signal,
+    });
+    clearTimeout(to);
+    if (!r.ok) return [];
+    const data = await r.json();
+    const out = [];
+    for (const m of data.data || []) {
+      if (!m.id || !CLAUDE_RE.test(m.id)) continue;
+      out.push({
+        id: m.id,
+        provider: "claude",
+        host,
+        name: m.display_name || m.id,
+        contextLength: m.max_input_tokens || contextLengthFor(m.id),  // Anthropic omits it; map fallback
+        pricing: null,  // the Models API doesn't expose pricing
+        description: "",
+      });
+    }
+    return out;
+  } catch { clearTimeout(to); return []; }
+}
+
+module.exports = { isClaudeModel, contextLengthFor, listModels, proxyChat, complete, listAllModels };

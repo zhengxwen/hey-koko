@@ -89,8 +89,10 @@ const server = http.createServer((req, res) => {
   // Full online catalog from the configured cloud providers (ignores the curated
   // `models[]` allowlist) — backs the "browse all models" picker dialog.
   if (req.method === "GET" && req.url === "/api/cloud-models/all") {
-    openai.listAllModels()
-      .then((models) => sendJson(res, 200, { models }))
+    // Merge every cloud backend's full catalog: Claude (claude.json) + OpenAI-compatible
+    // (openai.json / openrouter.json). Each resolves to [] when unconfigured.
+    Promise.all([claude.listAllModels(), openai.listAllModels()])
+      .then(([c, o]) => sendJson(res, 200, { models: [...c, ...o] }))
       .catch((e) => sendJson(res, 500, { error: e.message, models: [] }));
     return;
   }
