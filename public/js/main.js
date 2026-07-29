@@ -1160,7 +1160,27 @@ async function imageUrlToFile(url) {
   return new File([blob], `dropped-image.${ext}`, { type: blob.type });
 }
 
-dom.chatArea.addEventListener("dragover", (event) => {
+// When dragging a bubble image, the browser puts the <img>'s own src on the
+// dataTransfer — but that src is the light THUMBNAIL; the full-res original lives on
+// dataset.fullSrc. Override the drag payload with the full-res URL so a drop attaches
+// the original, not the thumbnail. Delegated so it covers every image grid at once.
+dom.messagesEl.addEventListener("dragstart", (event) => {
+  const img = event.target;
+  if (!(img instanceof HTMLImageElement)) return;
+  const full = img.dataset.fullSrc;
+  if (!full || full === img.src) return;
+  try {
+    event.dataTransfer.clearData();
+    event.dataTransfer.setData("text/uri-list", full);
+    event.dataTransfer.setData("text/plain", full);
+    event.dataTransfer.effectAllowed = "copy";
+  } catch {}
+});
+
+// The drop zone is the COMPOSER (chat box), not the whole chat area — the user must
+// drag the file/image onto the input box to attach it, and the "release to add file"
+// hint only shows there.
+dom.chatForm.addEventListener("dragover", (event) => {
   const dt = event.dataTransfer;
   // During dragover getData() is blocked (protected mode), so we can only read
   // `types`. A bubble-image drag always carries "text/uri-list"; use that as the
@@ -1169,22 +1189,22 @@ dom.chatArea.addEventListener("dragover", (event) => {
   if (!isImageDrag) return;
   if (getActiveTab().locked) return;
   event.preventDefault();
-  dom.chatArea.classList.add("isDraggingImage");
+  dom.chatForm.classList.add("isDraggingImage");
 });
 
-dom.chatArea.addEventListener("dragleave", (event) => {
-  if (!dom.chatArea.contains(event.relatedTarget)) {
-    dom.chatArea.classList.remove("isDraggingImage");
+dom.chatForm.addEventListener("dragleave", (event) => {
+  if (!dom.chatForm.contains(event.relatedTarget)) {
+    dom.chatForm.classList.remove("isDraggingImage");
   }
 });
 
-dom.chatArea.addEventListener("drop", async (event) => {
+dom.chatForm.addEventListener("drop", async (event) => {
   const dt = event.dataTransfer;
   const hasFiles = dt.types.includes("Files");
   const imgUrl = hasFiles ? null : draggedImageUrl(dt);
   if (!hasFiles && !imgUrl) return;
   event.preventDefault();
-  dom.chatArea.classList.remove("isDraggingImage");
+  dom.chatForm.classList.remove("isDraggingImage");
   if (getActiveTab().locked) return;
 
   if (imgUrl) {

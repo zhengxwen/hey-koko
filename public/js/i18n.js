@@ -3873,8 +3873,8 @@ const BINDINGS = [
   { sel: '.themeColorDot[data-theme="mint"]', key: "theme_mint", attr: "title" },
   { sel: '.themeColorDot[data-theme="slate"]', key: "theme_slate", attr: "title" },
   // Chat area
-  // Drag-drop hint lives in CSS as content: attr(data-drop-hint) on .chatArea::after
-  { sel: ".chatArea", key: "hint_dropFiles", attr: "data-drop-hint" },
+  // Drag-drop hint lives in CSS as content: attr(data-drop-hint) on .composer::after
+  { sel: ".composer", key: "hint_dropFiles", attr: "data-drop-hint" },
   { sel: "#messageInput", key: "input_placeholder", attr: "placeholder" },
   { sel: "#quickPromptBtn", key: "tooltip_quickPrompt", attr: "title" },
   { sel: "#askSuggestBtn", key: "tooltip_askSuggest", attr: "title" },

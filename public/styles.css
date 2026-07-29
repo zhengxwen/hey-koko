@@ -1900,11 +1900,13 @@ button.secondary:disabled {
   background: var(--accent-strong);
 }
 
-.chatArea::after {
-  /* Drop hint text comes from i18n (applyUILanguage sets data-drop-hint). */
+.composer::after {
+  /* Drop hint text comes from i18n (applyUILanguage sets data-drop-hint). Scoped to
+     the composer so the "release to add file" hint only appears when dragging over
+     the chat box, not the whole chat area. */
   content: attr(data-drop-hint);
   position: absolute;
-  inset: 14px;
+  inset: 8px;
   display: grid;
   place-items: center;
   border: 2px dashed var(--accent);
@@ -1918,7 +1920,7 @@ button.secondary:disabled {
   z-index: 5;
 }
 
-.chatArea.isDraggingImage::after {
+.composer.isDraggingImage::after {
   opacity: 1;
 }
 
