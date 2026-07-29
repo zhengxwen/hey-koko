@@ -2271,9 +2271,22 @@ button.secondary:disabled {
 .plainBody h4,
 .plainBody h5 {
   margin: 8px 0 5px;
-  font-size: 16px;
   line-height: 1.28;
   letter-spacing: 0;
+}
+
+/* Size hierarchy: # (h3) 20 > ## (h4) 18 > ### (h5) 16 = body text */
+.markdownBody h3,
+.plainBody h3 {
+  font-size: 20px;
+}
+.markdownBody h4,
+.plainBody h4 {
+  font-size: 18px;
+}
+.markdownBody h5,
+.plainBody h5 {
+  font-size: 16px;
 }
 
 .markdownBody ul,
