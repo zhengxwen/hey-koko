@@ -412,6 +412,11 @@ async function proxyChat(res, body) {
   const temperature = body.options && typeof body.options.temperature === "number" ? body.options.temperature : undefined;
 
   const payload = buildPayload({ model: body.model, messages, tools, stream: wantStream, maxTokens, temperature });
+  // OpenRouter only RETURNS a reasoning model's chain-of-thought when asked — enable it
+  // when the user turned on "show thinking". Gated to the OpenRouter provider: DeepSeek-
+  // direct returns reasoning_content by default (no flag), and api.openai.com would 400
+  // on this unknown param. Harmless/ignored for non-reasoning OpenRouter models.
+  if (body.think && cfg.kind === "openrouter") payload.include_reasoning = true;
 
   const controller = new AbortController();
   let timeoutHandle = null;
