@@ -182,8 +182,13 @@ async function listModels(res) {
   }
   // Sibling cloud provider: append any configured OpenAI models too, so a single
   // /api/models poll carries both clouds (no-op if OpenAI isn't configured).
-  try { await require("./openai").injectModels(models); } catch { /* openai optional */ }
-  sendJson(res, 200, { models });
+  let openaiConfigured = false;
+  try { const oa = require("./openai"); await oa.injectModels(models); openaiConfigured = oa.hasConfiguredProviders(); } catch { /* openai optional */ }
+  // cloudConfigured: any cloud backend has a key (Claude, or an OpenAI-compatible
+  // provider). Drives whether the "browse all models" entry appears — hidden for
+  // pure-local users. Reflects config presence, not whether models surfaced above.
+  const cloudConfigured = !!cfg || openaiConfigured;
+  sendJson(res, 200, { models, cloudConfigured });
 }
 
 // --- Ollama -> Anthropic translation --------------------------------------

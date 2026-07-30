@@ -105,9 +105,22 @@ function appendBrowseOption() {
   dom.modelSelect.appendChild(opt);
 }
 
+// Re-label the dynamically-added browse option after a language switch (the
+// option is created in JS, so applyI18n's static-DOM pass never touches it —
+// same reason relocalizeComfyModels exists). Network-free; leaves the <select>
+// value untouched. Also fixes the embed dropdown's browse-less placeholder.
+export function relocalizeBrowseOption() {
+  const opt = dom.modelSelect?.querySelector(`option[value="${BROWSE_MODELS_VALUE}"]`);
+  if (opt) opt.textContent = "🔍 " + t("model_browseAll");
+}
+
 export async function loadModels({ force = false } = {}) {
   const response = await fetch("/api/models");
   const data = await response.json();
+  // The "browse all models" entry is cloud-only — show it just when a cloud
+  // backend is actually configured (any Claude/OpenAI-compatible key), so pure-
+  // local users never see a dead entry. Server-computed, not inferred from the list.
+  const cloudConfigured = data.cloudConfigured === true;
   // Keep the objects (not just names) so we can badge cloud vs local models.
   const entries = (data.models || [])
     .filter((m) => m.name && !NON_LLM_RE.test(m.name));
@@ -124,7 +137,7 @@ export async function loadModels({ force = false } = {}) {
     opt.disabled = true;
     opt.selected = true;
     dom.modelSelect.appendChild(opt);
-    appendBrowseOption();   // still offer the picker (cloud may be configured but uncurated)
+    if (cloudConfigured) appendBrowseOption();   // offer the picker only when a cloud key exists
     updateCloudBadge();
     return;
   }
@@ -141,7 +154,7 @@ export async function loadModels({ force = false } = {}) {
     if (m.cloud) option.dataset.cloud = "1";  // lets the send-status pill badge cloud requests
     dom.modelSelect.appendChild(option);
   }
-  appendBrowseOption();   // last entry — opens the full-catalog picker
+  if (cloudConfigured) appendBrowseOption();   // last entry — opens the full-catalog picker (cloud-only)
 
   if (current && names.includes(current)) {
     dom.modelSelect.value = current;

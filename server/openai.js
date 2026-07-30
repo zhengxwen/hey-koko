@@ -703,4 +703,12 @@ async function embed(model, texts) {
   return (data.data || []).slice().sort((a, b) => (a.index || 0) - (b.index || 0)).map((d) => d.embedding);
 }
 
-module.exports = { isOpenAIModel, contextLengthFor, listModels, injectModels, proxyChat, complete, isCloudEmbedModel, embed, listAllModels };
+// Any OpenAI-compatible provider (openai.json / openrouter.json) configured with
+// a key? Used to decide whether the "browse all models" entry is meaningful — an
+// openrouter.json without models[] surfaces nothing in the dropdown yet still has
+// a full catalog to browse, so a dropdown-only check would miss it.
+function hasConfiguredProviders() {
+  return loadProviders().length > 0;
+}
+
+module.exports = { isOpenAIModel, contextLengthFor, listModels, injectModels, proxyChat, complete, isCloudEmbedModel, embed, listAllModels, hasConfiguredProviders };
