@@ -34,6 +34,17 @@ export function renderInlineMarkdown(value, opts) {
     return key;
   });
 
+  // Backslash escapes: \X → literal X, hidden from all markdown parsing below.
+  // Runs AFTER code protection (so backslashes inside code stay literal) but
+  // BEFORE math/emphasis/link parsing (so e.g. \$ can't trigger KaTeX). The set
+  // excludes [ ] ( ) ` — those belong to links, code spans, and the \[…\] / \(…\)
+  // math delimiters, so they can't double as literal-bracket escapes.
+  value = value.replace(/\\([\\$*_#+\-.!~|{}])/g, (_, ch) => {
+    const key = `\x00PH${idx++}\x00`;
+    placeholders.push(escapeHtml(ch));
+    return key;
+  });
+
   // Protect display math $$...$$ (inline occurrence)
   value = value.replace(/\$\$([^$]+?)\$\$/g, (_, math) => {
     const key = `\x00PH${idx++}\x00`;
@@ -154,6 +165,7 @@ export function markdownToHtml(markdown, opts) {
   let htmlTableLines = [];
   let inQuote = false;
   let quoteLines = [];
+  let paraOpen = false; // a text paragraph is currently accumulating consecutive lines
 
   function closeList() {
     while (listStack.length) {
@@ -261,6 +273,12 @@ export function markdownToHtml(markdown, opts) {
   }
 
   for (const line of lines) {
+    // Was a text paragraph left open by the previous line? Reset now; only the
+    // paragraph branch below re-opens it, so any block/blank line (all of which
+    // `continue`) leaves it closed → the next text line starts a fresh <p>.
+    const contPara = paraOpen;
+    paraOpen = false;
+
     // A blockquote ends as soon as a non-quote line appears.
     if (inQuote && !/^\s*>/.test(line)) closeQuote();
 
@@ -432,16 +450,18 @@ export function markdownToHtml(markdown, opts) {
     }
 
     closeList();
-    // Handle hard line breaks: trailing \ or two+ spaces
-    const hasHardBreak = /\\$/.test(line) || / {2,}$/.test(line);
-    const trimmedLine = line.replace(/\\$/, '').replace(/ {2,}$/, '');
-    const rendered = renderInlineMarkdown(trimmedLine, opts);
-    // Merge with previous <p> if it ended with <br>
-    if (html.length && html[html.length - 1].endsWith("<br></p>")) {
-      html[html.length - 1] = html[html.length - 1].slice(0, -4) + rendered + (hasHardBreak ? "<br>" : "") + "</p>";
+    // Consecutive non-blank lines join into ONE <p>, separated by <br> (tight
+    // line spacing); a blank line above breaks the paragraph so the next line
+    // opens a NEW <p> that carries the paragraph margin. Trailing \ or 2+ spaces
+    // are stripped — the line break already becomes the <br> that joins lines.
+    const rendered = renderInlineMarkdown(line.replace(/\\$/, "").replace(/ {2,}$/, ""), opts);
+    if (contPara && html.length && html[html.length - 1].endsWith("</p>")) {
+      const cur = html[html.length - 1];
+      html[html.length - 1] = cur.slice(0, -4) + "<br>" + rendered + "</p>";
     } else {
-      html.push(`<p>${rendered}${hasHardBreak ? "<br>" : ""}</p>`);
+      html.push(`<p>${rendered}</p>`);
     }
+    paraOpen = true;
   }
 
   if (inCodeBlock) closeCodeBlock();
