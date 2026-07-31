@@ -3894,10 +3894,17 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         wrapper.className = "meshWrapper";
         // Interactive GLB viewer (lazy): a poster canvas above the card; click to
         // orbit. Splats (.spz) and non-WebGL browsers keep the card-only fallback.
+        // The canvas gets its own positioning box so the floating buttons land on
+        // the VIEWPORT (like a video's) rather than on the file card below it.
+        let btnHost = wrapper;
         if (mmime === "model/gltf-binary") {
+          const view = document.createElement("div");
+          view.className = "meshView";
           const mc = document.createElement("canvas");
           mc.className = "meshCanvas";
-          wrapper.appendChild(mc);
+          view.appendChild(mc);
+          wrapper.appendChild(view);
+          btnHost = view;
           import("./glb-viewer.js").then((v) => {
             if (!v.isSupported()) { mc.hidden = true; return; }
             v.attachMesh(mc, () => data, { name: rawName, cacheKey: `${rawName}:${data.length}:${data.slice(0, 32)}` });
@@ -3912,15 +3919,17 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         card.appendChild(label);
         wrapper.appendChild(card);
         const mname = mediaFilename(rawName ? rawName.replace(/^.*\//, "") : null, timestamp, "model", mext, mi, meshes.length);
-        // Lazy href — the base64→blob decode happens on hover/focus, not at render.
-        wrapper.appendChild(makeDownloadButton("meshDownloadBtn", () => base64ToBlobUrl(data, mmime), mname, base64ByteLength(data), t("btn_downloadMesh")));
+        // Appended AFTER the canvas so they paint over the interactive GL overlay,
+        // which mounts itself directly after it. Lazy href — the base64→blob decode
+        // happens on hover/focus, not at render.
+        btnHost.appendChild(makeDownloadButton("meshDownloadBtn", () => base64ToBlobUrl(data, mmime), mname, base64ByteLength(data), t("btn_downloadMesh")));
         if (role !== "user") {
           const del = document.createElement("button");
           del.className = "meshDeleteBtn";
           del.textContent = "×";
           del.title = t("btn_deleteMesh");
           del.addEventListener("click", () => deleteMessageMesh(index, mi));
-          wrapper.appendChild(del);
+          btnHost.appendChild(del);
         }
         mgrid.appendChild(wrapper);
       }

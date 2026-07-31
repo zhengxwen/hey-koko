@@ -5433,6 +5433,18 @@ body.isResizingComposer {
   gap: 6px;
 }
 
+/* Positioning box for the 3D viewport: the floating buttons and the interactive
+   GL overlay anchor to the CANVAS, not to the wrapper (which also holds the card). */
+.meshView {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  /* The wrapper is a column flexbox, so without this the view is STRETCHED to the
+     widest sibling — a long filename on the card below then pushes the floating
+     buttons right off the canvas's edge. */
+  align-self: flex-start;
+}
+
 .meshCanvas {
   display: block;
   width: 320px;
@@ -5462,10 +5474,12 @@ body.isResizingComposer {
   pointer-events: none;   /* drags pass through to the canvas… */
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  align-items: flex-end;   /* in-bubble: corner-tucked, off the model */
+  /* In the bubble there is only the ⛶ button, and it sits TOP-LEFT like a video's.
+     Fullscreen re-centres the bar at the bottom (see .isFs rules below). */
+  justify-content: flex-start;
+  align-items: flex-start;
   gap: 6px;
-  padding: 8px;
+  padding: 6px;
 }
 
 .meshHudBar {
@@ -5480,8 +5494,21 @@ body.isResizingComposer {
   transition: opacity 0.15s ease;
 }
 
+/* Revealed by hovering anywhere on the bubble's mesh block, so the ⛶ appears
+   together with the ⬇ and × rather than only when the pointer is on the canvas. */
+.meshWrapper:hover .meshHudBar,
 .meshGlHost:hover .meshHudBar,
 .meshGlHost.isFs .meshHudBar { opacity: 1; }
+
+/* In the bubble the bar holds a single button, so it drops its own pill and the
+   button itself carries the video-style chip. */
+.meshGlHost:not(.isFs) .meshHudBar {
+  background: none;
+  backdrop-filter: none;
+  padding: 0;
+}
+.meshGlHost:not(.isFs) .meshHudBtn { background: rgba(0, 0, 0, 0.55); }
+.meshGlHost:not(.isFs) .meshHudBtn:hover { background: var(--accent); }
 
 /* padding + min-height are RESET explicitly: the global `button` rule (padding:
    0 16px, min-height: 42px) squeezes a 28px square down to a 0-wide content box
@@ -5527,6 +5554,18 @@ body.isResizingComposer {
 .meshGlHost.isFs .meshHudBar { order: 2; }
 .meshGlHost.isFs .meshHudHint { order: 1; align-self: center; }
 .meshGlHost.isFs .meshHudBtn { width: 40px; height: 40px; font-size: 18px; }
+/* 11px is legible in a 320px bubble but vanishes on a full monitor, so scale the
+   legend with the viewport (clamped so it stays a caption, never a headline). */
+.meshGlHost.isFs .meshHudHint {
+  font-size: clamp(15px, 1.35vw, 21px);
+  line-height: 1.5;
+  padding: 7px 16px;
+  border-radius: 9px;
+  /* No colour/background here: .isLightBg's deepened pill is declared ABOVE and
+     has the same specificity, so re-stating them would silently undo it. */
+  max-width: 94%;
+  text-align: center;
+}
 
 .meshCard {
   display: flex;
@@ -5550,46 +5589,62 @@ body.isResizingComposer {
   max-width: 260px;
 }
 
+/* The three floating buttons mirror the video window's exactly: fullscreen
+   top-left, delete top-right, download bottom-right, all revealed on hover. */
 .meshDownloadBtn {
   position: absolute;
-  top: 50%;
-  right: 8px;
-  transform: translateY(-50%);
+  right: 6px;
+  bottom: 6px; /* download → bottom-right */
   width: 28px;
   height: 28px;
+  min-height: 0;  /* global button rule stretches it to 42px otherwise */
+  padding: 0;     /* …and pads it 16px, shoving the glyph off-centre */
   display: grid;
   place-items: center;
+  border: none;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   font-size: 15px;
   text-decoration: none;
-  transition: background 0.15s ease;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
 }
 
 .meshDownloadBtn:hover { background: var(--accent); }
 
+/* Perfect circle, matching .videoDeleteBtn — dims locked so the global
+   `button { min-height: 42px; padding: 0 16px }` can't stretch it into a lozenge. */
 .meshDeleteBtn {
   position: absolute;
-  top: -6px;
-  right: -6px;
-  width: 20px;
-  height: 20px;
-  display: grid;
-  place-items: center;
+  top: 6px; /* delete → top-right */
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  max-width: 22px;
+  max-height: 22px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.6);
   color: #fff;
   font-size: 13px;
   line-height: 1;
+  padding: 0;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.15s ease, background 0.15s ease;
 }
 
+.meshWrapper:hover .meshDownloadBtn,
 .meshWrapper:hover .meshDeleteBtn { opacity: 1; }
-.meshDeleteBtn:hover { background: #c0392b; }
+.meshDeleteBtn:hover { background: rgba(220, 50, 50, 0.85); }
 
 .message.isFolded > .meshGrid {
   display: none;
