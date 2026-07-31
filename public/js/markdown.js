@@ -95,15 +95,30 @@ export function renderInlineMarkdown(value, opts) {
     .replace(
       /\[([^\]]+)\]\((#[^\s)]+)\)/g,
       '<a href="$2">$1</a>'
-    )
-    // Auto-link bare URLs (not already inside an href). The text is HTML-escaped
-    // above, so a query-string "&" is now "&amp;" — allow that entity to continue
-    // the URL (else a link like ...?a=1&b=2 truncates at the first "&"). Other
-    // entities (&quot;/&lt;/&gt;) still terminate it, marking attribute/tag edges.
-    .replace(
-      /(?<!href=&quot;|href=")(https?:\/\/(?:[^\s<&]|&amp;)+)/g,
-      '<a href="$1" target="_blank" rel="noreferrer">$1</a>'
     );
+
+  // Protect the anchors just generated so the bare-URL auto-linker below can't
+  // re-wrap a URL nested inside an href value — e.g. tracking links shaped like
+  // https://track/?url=https://real/… would otherwise get a stray inner <a> that
+  // breaks the outer tag.
+  const anchors = [];
+  result = result.replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, (m) => {
+    anchors.push(m);
+    return `\x00A${anchors.length - 1}\x00`;
+  });
+
+  // Auto-link bare URLs (not already inside an href). The text is HTML-escaped
+  // above, so a query-string "&" is now "&amp;" — allow that entity to continue
+  // the URL (else a link like ...?a=1&b=2 truncates at the first "&"). Other
+  // entities (&quot;/&lt;/&gt;) still terminate it, marking attribute/tag edges.
+  // \x00 is excluded so a URL adjacent to an anchor placeholder can't swallow it.
+  result = result.replace(
+    /(?<!href=&quot;|href=")(https?:\/\/(?:[^\s<&\x00]|&amp;)+)/g,
+    '<a href="$1" target="_blank" rel="noreferrer">$1</a>'
+  );
+
+  // Restore protected anchors.
+  result = result.replace(/\x00A(\d+)\x00/g, (_, i) => anchors[Number(i)]);
 
   // Restore placeholders
   for (let i = 0; i < placeholders.length; i++) {
