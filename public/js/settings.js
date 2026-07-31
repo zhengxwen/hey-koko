@@ -61,6 +61,7 @@ export function saveCurrentSettings() {
         meshGaussians: dom.comfyParamMeshGaussians?.value || "",
         mogeDetail: dom.comfyParamMogeDetail?.value || "",
         splatMesh: dom.comfyParamSplatMesh?.checked || false,
+        keepBackground: dom.comfyParamKeepBackground?.checked || false,
         videoCodec: dom.comfyParamVideoCodec?.value || "h264",
         videoCrf: dom.comfyParamVideoCrf?.value || "",
         berniniMode: dom.comfyParamBerniniMode?.value || "",
@@ -260,6 +261,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamMeshGaussians) dom.comfyParamMeshGaussians.value = cp.meshGaussians || "";
     if (dom.comfyParamMogeDetail) dom.comfyParamMogeDetail.value = cp.mogeDetail || "";
     if (dom.comfyParamSplatMesh) dom.comfyParamSplatMesh.checked = !!cp.splatMesh;
+    if (dom.comfyParamKeepBackground) dom.comfyParamKeepBackground.checked = !!cp.keepBackground;
     if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = cp.videoCodec || "h264";
     if (dom.comfyParamVideoCrf) dom.comfyParamVideoCrf.value = cp.videoCrf || "";
     // berniniMode replaced the two separate checkboxes — fall back to the old keys so

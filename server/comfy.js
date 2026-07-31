@@ -3595,15 +3595,44 @@ function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, re
 // Parse intrinsic pixel dimensions from a base64 PNG/JPEG without an image lib.
 // Used to match a video's aspect ratio to the i2v conditioning image.
 // ── 3D mesh builders ─────────────────────────────────────────────────────────
-// Hunyuan3D 2.1 image→mesh (untextured GLB). Straight port of the official
+// Hunyuan3D 2.1 image→mesh (untextured GLB). Port of the official
 // `3d_hunyuan3d-v2.1` template: the checkpoint bundles the CLIP-vision encoder and
 // the shape VAE, conditioning is image-only (no text encoder anywhere), and the
 // sampled latent decodes to a VOXEL grid that surface-net triangulates into a mesh.
-function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = "euler", scheduler = "normal", resolution = 4096, numChunks = 8000, octreeRes = 256, threshold = 0.6 }) {
+//
+// The template feeds it a pre-cut-out image, which is why it has no preprocessing —
+// and why a plain PHOTO must not be fed in raw: the model reconstructs whatever it
+// sees, so a real background comes out as a giant flat SLAB with the subject as a
+// bump on it (measured: same photo, 7.5 MB slab raw vs 0.7 MB clean object after
+// removal). So the subject is cut out and composited on white first.
+//
+// Framing matters nearly as much: a subject filling a quarter of the frame decodes
+// with a shattered, noisy surface. Cropping to the subject before conditioning
+// (autoCrop) fixed exactly that in the same A/B.
+function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = "euler", scheduler = "normal", resolution = 4096, numChunks = 8000, octreeRes = 256, threshold = 0.6, bgRemoval = null, autoCrop = false }) {
+  // What the CLIP-vision encoder actually sees — the raw image only when there is
+  // no background remover installed to prepare it.
+  let condImage = ["2", 0];
+  const prep = {};
+  if (bgRemoval) {
+    prep["11"] = { class_type: "LoadBackgroundRemovalModel", inputs: { bg_removal_name: bgRemoval } };
+    prep["12"] = { class_type: "RemoveBackground", inputs: { bg_removal_model: ["11", 0], image: ["2", 0] } }; // MASK: 1 = subject
+    // Size the white plate from the image itself rather than parsing it server-side,
+    // so it works for any format ComfyUI can load (webp, avif…).
+    prep["17"] = { class_type: "GetImageSize", inputs: { image: ["2", 0] } };
+    prep["13"] = { class_type: "EmptyImage", inputs: { width: ["17", 0], height: ["17", 1], batch_size: 1, color: 0xffffff } };
+    prep["14"] = { class_type: "ImageCompositeMasked", inputs: { destination: ["13", 0], source: ["2", 0], x: 0, y: 0, resize_source: false, mask: ["12", 0] } };
+    condImage = ["14", 0];
+    if (autoCrop) {
+      prep["16"] = { class_type: "ImageCropByMaskAndResize", inputs: { image: ["14", 0], mask: ["12", 0], base_resolution: 1024, padding: 64, min_crop_resolution: 128, max_crop_resolution: 2048 } };
+      condImage = ["16", 0];
+    }
+  }
   return {
+    ...prep,
     "1": { class_type: "ImageOnlyCheckpointLoader", inputs: { ckpt_name: ckpt } },
     "2": { class_type: "LoadImage", inputs: { image: imageName } },
-    "3": { class_type: "CLIPVisionEncode", inputs: { clip_vision: ["1", 1], image: ["2", 0], crop: "center" } },
+    "3": { class_type: "CLIPVisionEncode", inputs: { clip_vision: ["1", 1], image: condImage, crop: "center" } },
     "4": { class_type: "Hunyuan3Dv2Conditioning", inputs: { clip_vision_output: ["3", 0] } },
     "5": { class_type: "EmptyLatentHunyuan3Dv2", inputs: { resolution, batch_size: 1 } },
     "6": { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 1 } },
@@ -3681,8 +3710,18 @@ function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler =
 
 // Companion files for the mesh chains, resolved off ComfyUI's own enums. Throws a
 // user-actionable error naming the missing file + subfolder, same policy as
-// editCompanions. hunyuan3d needs nothing (the checkpoint bundles CLIP-vision+VAE).
+// editCompanions.
 async function meshCompanions(meshType) {
+  if (meshType === "hunyuan3d") {
+    // The checkpoint bundles CLIP-vision + VAE, so the only companions are the
+    // PREPROCESSING pieces — optional, but without them a photo's background is
+    // reconstructed as a slab (see buildHunyuan3D).
+    const bgs = await comfyEnum("LoadBackgroundRemovalModel", "bg_removal_name").catch(() => []);
+    const weight = bgs.find((n) => /birefnet/i.test(n)) || bgs[0] || null;
+    const nodesOk = weight && await comfyHasNodes(["LoadBackgroundRemovalModel", "RemoveBackground", "GetImageSize", "EmptyImage", "ImageCompositeMasked"]);
+    const birefnet = nodesOk ? weight : null;
+    return { birefnet, autoCrop: birefnet ? await comfyHasNodes(["ImageCropByMaskAndResize"]) : false };
+  }
   if (meshType === "moge") {
     const weights = await comfyEnum("LoadMoGeModel", "model_name").catch(() => []);
     // Prefer MoGe-2 with normals (sharper edges, metric scale); fall back to any.
@@ -4611,10 +4650,14 @@ async function generateComfyImage(req, res) {
         // resolution and SplatToMesh's density grid mean the same thing.
         const meshDetail = opts.meshDetail || 256;
         if (meshType === "hunyuan3d") {
+          const comp = await meshCompanions("hunyuan3d");
           workflow = buildHunyuan3D({ ckpt: model, imageName, seed,
             steps: opts.steps || 30, cfg: opts.cfg !== undefined ? opts.cfg : 5,
             sampler: opts.sampler || "euler", scheduler: opts.scheduler || "normal",
-            octreeRes: meshDetail });
+            octreeRes: meshDetail,
+            // ⚙ "keep background" opts out for the rare case the cut-out misfires.
+            bgRemoval: opts.keepBackground ? null : comp.birefnet,
+            autoCrop: !opts.keepBackground && comp.autoCrop });
         } else if (meshType === "moge") {
           const comp = await meshCompanions("moge");
           // Replicate the template's resize-if->2048 guard server-side.

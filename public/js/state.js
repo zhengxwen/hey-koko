@@ -68,6 +68,7 @@ export const dom = {
   comfyParamTimeout: document.querySelector("#comfyParamTimeout"),
   comfyParamMeshDetail: document.querySelector("#comfyParamMeshDetail"),
   comfyParamSplatMesh: document.querySelector("#comfyParamSplatMesh"),
+  comfyParamKeepBackground: document.querySelector("#comfyParamKeepBackground"),
   comfyParamMeshGaussians: document.querySelector("#comfyParamMeshGaussians"),
   comfyParamMogeDetail: document.querySelector("#comfyParamMogeDetail"),
   comfyParamTargetFps: document.querySelector("#comfyParamTargetFps"),

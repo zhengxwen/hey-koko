@@ -1165,6 +1165,7 @@ export function updateComfyParamVisibility() {
   const splatMeshOn = m === "triposplat" && !!dom.comfyParamSplatMesh?.checked;
   setVis(dom.comfyParamMeshDetail, (mesh && /hunyuan[._-]?3d/i.test(m)) || splatMeshOn);
   setVis(dom.comfyParamSplatMesh, m === "triposplat", ".comfyParamCheck");
+  setVis(dom.comfyParamKeepBackground, mesh && /hunyuan[._-]?3d/i.test(m), ".comfyParamCheck");
   setVis(dom.comfyParamMeshGaussians, m === "triposplat");
   setVis(dom.comfyParamMogeDetail, m === "moge-mesh");
   // Video codec + its CRF: every video model (the tail rewrite is builder-agnostic).
@@ -1419,6 +1420,7 @@ function initComfyParamsModal() {
   // Checkboxes carry .checked, not .value, so they're outside `fields`. The splat-mesh
   // one also gates the mesh-detail row, so it re-runs visibility on toggle.
   dom.comfyParamSplatMesh?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
+  dom.comfyParamKeepBackground?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamBerniniMode?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamBerniniTask?.addEventListener("change", () => saveCurrentSettings());
   // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset

@@ -66,6 +66,7 @@ function comfyOverrides() {
   const meshDetail = num(dom.comfyParamMeshDetail?.value);
   if (meshDetail !== undefined) ov.meshDetail = meshDetail;
   if (dom.comfyParamSplatMesh?.checked) ov.splatMesh = true;        // TripoSplat: coloured mesh instead of .spz
+  if (dom.comfyParamKeepBackground?.checked) ov.keepBackground = true; // Hunyuan3D: skip the cut-out
   const meshGaussians = num(dom.comfyParamMeshGaussians?.value);
   if (meshGaussians !== undefined) ov.meshGaussians = meshGaussians; // TripoSplat num_gaussians
   const mogeDetail = num(dom.comfyParamMogeDetail?.value);

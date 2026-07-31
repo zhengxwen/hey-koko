@@ -5505,6 +5505,13 @@ body.isResizingComposer {
 .meshHudBtn:hover { background: rgba(255, 255, 255, 0.22); }
 .meshHudBtn.isOn { background: var(--accent, #4a7dff); }
 
+/* Light backdrops: the translucent chrome washes out over white, so deepen it. */
+.meshGlHost.isLightBg .meshHudBar { background: rgba(0, 0, 0, 0.74); }
+.meshGlHost.isLightBg .meshHudHint {
+  background: rgba(0, 0, 0, 0.74);
+  color: #fff;
+}
+
 .meshHudHint {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.75);

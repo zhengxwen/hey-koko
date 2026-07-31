@@ -170,8 +170,15 @@ export async function parseGLB(arrayBuffer) {
     const prims = [];
     let min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
 
+    // glTF nodes form a forest: every node has at most one parent, so visiting one
+    // twice always means a malformed file (or a bad root list) and would draw the
+    // same geometry twice at two transforms — a "ghost duplicate" of the model. The
+    // guard also makes a cyclic file terminate instead of blowing the stack.
+    const visited = new Set();
     const walk = (nodeIdx, parentM) => {
-      const node = gltf.nodes[nodeIdx];
+      const node = gltf.nodes && gltf.nodes[nodeIdx];
+      if (!node || visited.has(nodeIdx)) return;
+      visited.add(nodeIdx);
       const local = node.matrix
         ? node.matrix.slice()
         : m4fromTRS(node.translation || [0, 0, 0], node.rotation || [0, 0, 0, 1], node.scale || [1, 1, 1]);
@@ -213,8 +220,18 @@ export async function parseGLB(arrayBuffer) {
       }
       for (const c of node.children || []) walk(c, m);
     };
+    // Roots: the declared scene when there is one, else every node that ISN'T some
+    // other node's child. Taking "every node" as a root (the obvious fallback) walks
+    // each child a second time with the identity transform — one model, drawn twice.
+    const childOf = new Set();
+    for (const n of gltf.nodes || []) for (const c of n.children || []) childOf.add(c);
     const scene = gltf.scenes ? gltf.scenes[gltf.scene || 0] : null;
-    const roots = scene ? scene.nodes : gltf.nodes.map((_, i) => i);
+    const all = (gltf.nodes || []).map((_, i) => i);
+    let roots = (scene && scene.nodes) || all.filter((i) => !childOf.has(i));
+    // Every node is someone's child → the graph is cyclic, so there is no root to
+    // start from and the model would render EMPTY. Walk from all of them; the
+    // visited guard still yields exactly one copy.
+    if (!roots.length && all.length) roots = all;
     for (const r of roots) walk(r, m4identity());
     if (!prims.length) return null;
 
@@ -420,6 +437,29 @@ function b64ToArrayBuffer(b64) {
 // the bubble only the ⛶ button shows (the small box has no room for a toolbar);
 // fullscreen adds the full toolbar + a shortcut legend.
 const ZOOM_STEP = 1.25;
+// Fullscreen backdrops, cycled by the ◐ button / B. Dark first (it flatters a lit
+// model), then neutral mid-grey — the standard backdrop for judging colour, since
+// it biases neither the light nor the dark end — then light and white for pale or
+// white models, which vanish against #111. The choice sticks across sessions: a
+// user who cycles to white wants white next time too.
+// `light` drives .isLightBg, which darkens the HUD chrome: a 50%-black pill over
+// white renders as mid-grey and its white glyphs go washy.
+const BACKDROPS = [
+  { css: "#111318", light: false },
+  { css: "#808080", light: false },
+  { css: "#e9e9ee", light: true },
+  { css: "#ffffff", light: true },
+];
+const BG_KEY = "hk_glb_bg";
+let bgIndex = (() => {
+  // Guarded: merely TOUCHING localStorage throws where storage is blocked
+  // (sandboxed iframe, privacy mode). Unguarded at module scope that would fail
+  // the whole import and take the viewer down over a cosmetic preference.
+  try {
+    const n = Number(localStorage.getItem(BG_KEY));
+    return Number.isInteger(n) && n >= 0 && n < BACKDROPS.length ? n : 0;
+  } catch { return 0; }
+})();
 function buildHud(actions) {
   hud.textContent = "";
   const bar = document.createElement("div");
@@ -441,7 +481,11 @@ function buildHud(actions) {
     reset: mk("⟲", `${t("mesh_btnReset")} (R)`, actions.reset, "isFsOnly"),
     zoomOut: mk("−", `${t("mesh_btnZoomOut")} (−)`, actions.zoomOut, "isFsOnly"),
     zoomIn: mk("+", `${t("mesh_btnZoomIn")} (+)`, actions.zoomIn, "isFsOnly"),
-    spin: mk("↻", `${t("mesh_btnAutoRotate")} (Space)`, actions.toggleSpin, "isFsOnly"),
+    // Two directions rather than one toggle: clicking the opposite arrow reverses
+    // instead of stopping, and clicking the lit one stops.
+    spinCcw: mk("↺", `${t("mesh_btnAutoRotateCcw")} (Shift+Space)`, () => actions.toggleSpin(-1), "isFsOnly"),
+    spinCw: mk("↻", `${t("mesh_btnAutoRotate")} (Space)`, () => actions.toggleSpin(1), "isFsOnly"),
+    bg: mk("◐", `${t("mesh_btnBackground")} (B)`, actions.cycleBg, "isFsOnly"),
     fs: mk("⛶", `${t("mesh_btnFullscreen")} (F)`, actions.toggleFs),
   };
   hud.appendChild(bar);
@@ -469,6 +513,14 @@ export function attachMesh(canvas, getBase64, opts = {}) {
     if (canvas.width !== Math.round(w * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
   };
 
+  // True while the interactive GL overlay is mounted on this canvas. The overlay
+  // clears to TRANSPARENT, so anything still painted on the poster underneath
+  // composites through it — a stale default-angle bake plus the live view reads as
+  // TWO copies of the model. The poster bitmap is therefore wiped while live (the
+  // canvas element stays, so its CSS border/background still frame the box) and
+  // repainted on detach.
+  let live = false;
+
   const drawPoster = (entry) => {
     sizeCanvas();
     if (!entry.poster || entry.poster.width !== canvas.width) {
@@ -479,6 +531,7 @@ export function attachMesh(canvas, getBase64, opts = {}) {
       p.getContext("2d").drawImage(glCanvas, 0, 0);
       entry.poster = p;
     }
+    if (live) return; // the overlay owns the pixels right now
     ctx2d.clearRect(0, 0, canvas.width, canvas.height);
     ctx2d.drawImage(entry.poster, 0, 0, canvas.width, canvas.height);
   };
@@ -516,6 +569,10 @@ export function attachMesh(canvas, getBase64, opts = {}) {
     canvas.insertAdjacentElement("afterend", glHost);
     glHost.style.cssText = overlayCss();
     glHost.classList.remove("isFs");
+    // Wipe the baked poster: it would otherwise show through the transparent
+    // overlay as a second, stale copy of the model (see `live`).
+    live = true;
+    ctx2d.clearRect(0, 0, canvas.width, canvas.height);
 
     const isFs = () => (document.fullscreenElement || document.webkitFullscreenElement) === glHost;
     const render = () => {
@@ -528,26 +585,44 @@ export function attachMesh(canvas, getBase64, opts = {}) {
     // Auto-rotate (Space / ↻). Cancelled by a drag — grabbing the model to look at
     // something and having it keep spinning away is the classic annoyance.
     let spinRaf = 0;
+    let spinDir = 0; // -1 ccw · 0 stopped · +1 cw
     let btns = null; // set once buildHud runs below; setSpin may fire before that
-    const spin = () => { view.yaw += 0.006; render(); spinRaf = requestAnimationFrame(spin); };
-    const setSpin = (on) => {
-      if (on && !spinRaf) spinRaf = requestAnimationFrame(spin);
-      else if (!on && spinRaf) { cancelAnimationFrame(spinRaf); spinRaf = 0; }
-      if (btns) btns.spin.classList.toggle("isOn", !!spinRaf);
+    const spin = () => { view.yaw += 0.006 * spinDir; render(); spinRaf = requestAnimationFrame(spin); };
+    // dir: -1 / +1 to spin that way, 0 to stop. Asking for the direction already
+    // running stops it, so each arrow button is its own on/off.
+    const setSpin = (dir) => {
+      spinDir = dir === spinDir ? 0 : dir;
+      if (spinDir && !spinRaf) spinRaf = requestAnimationFrame(spin);
+      else if (!spinDir && spinRaf) { cancelAnimationFrame(spinRaf); spinRaf = 0; }
+      if (btns) {
+        btns.spinCw.classList.toggle("isOn", spinDir > 0);
+        btns.spinCcw.classList.toggle("isOn", spinDir < 0);
+      }
     };
     const zoom = (f) => { view.dist = Math.min(8, Math.max(0.2, view.dist * f)); requestAnimationFrame(render); };
-    const resetView = () => { Object.assign(view, DEFAULT_VIEW); setSpin(false); requestAnimationFrame(render); };
+    const resetView = () => { Object.assign(view, DEFAULT_VIEW); setSpin(0); requestAnimationFrame(render); };
     const toggleFs = () => {
       if (isFs()) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
       else (glHost.requestFullscreen || glHost.webkitRequestFullscreen)?.call(glHost);
     };
-    btns = buildHud({ reset: resetView, zoomIn: () => zoom(1 / ZOOM_STEP), zoomOut: () => zoom(ZOOM_STEP), toggleSpin: () => setSpin(!spinRaf), toggleFs });
+    // Backdrop only applies in fullscreen: in the bubble the box keeps the chat's
+    // own styling, and the GL canvas clears transparent so the host shows through.
+    const applyBg = () => {
+      glHost.classList.toggle("isLightBg", isFs() && BACKDROPS[bgIndex].light);
+      if (isFs()) glHost.style.background = BACKDROPS[bgIndex].css;
+    };
+    const cycleBg = () => {
+      bgIndex = (bgIndex + 1) % BACKDROPS.length;
+      try { localStorage.setItem(BG_KEY, String(bgIndex)); } catch { /* private mode / disabled */ }
+      applyBg();
+    };
+    btns = buildHud({ reset: resetView, zoomIn: () => zoom(1 / ZOOM_STEP), zoomOut: () => zoom(ZOOM_STEP), toggleSpin: setSpin, cycleBg, toggleFs });
     render();
 
     const pointers = new Map(); // pinch-zoom support
     let lastPinch = 0;
     const onDown = (e) => {
-      setSpin(false); // a grab takes over from the turntable
+      setSpin(0); // a grab takes over from the turntable
       pointers.set(e.pointerId, [e.clientX, e.clientY]);
       glCanvas.setPointerCapture(e.pointerId);
       glCanvas.style.cursor = "grabbing";
@@ -578,9 +653,12 @@ export function attachMesh(canvas, getBase64, opts = {}) {
       // Entering: fill the screen (the fixed box is a belt for browsers that keep
       // inline styles). Leaving: restore the in-bubble box. .isFs reveals the toolbar.
       glHost.classList.toggle("isFs", isFs());
+      // cssText REPLACES the inline style, so the chosen backdrop has to be baked in
+      // here — setting it separately would be wiped on the next fullscreen change.
       glHost.style.cssText = isFs()
-        ? "position:fixed;inset:0;width:100vw;height:100vh;background:#111;"
+        ? `position:fixed;inset:0;width:100vw;height:100vh;background:${BACKDROPS[bgIndex].css};`
         : overlayCss();
+      applyBg();
       requestAnimationFrame(render);
     };
     const onResize = () => requestAnimationFrame(render); // fullscreen on a resized window
@@ -594,7 +672,8 @@ export function attachMesh(canvas, getBase64, opts = {}) {
         case "Escape": if (!isFs()) detach(); return;
         case "r": case "R": case "0": resetView(); break;
         case "f": case "F": toggleFs(); break;
-        case " ": setSpin(!spinRaf); break;
+        case "b": case "B": cycleBg(); break;
+        case " ": setSpin(e.shiftKey ? -1 : 1); break;
         case "+": case "=": zoom(1 / ZOOM_STEP); break;
         case "-": case "_": zoom(ZOOM_STEP); break;
         case "ArrowLeft": view.yaw += 0.12; requestAnimationFrame(render); break;
@@ -617,7 +696,7 @@ export function attachMesh(canvas, getBase64, opts = {}) {
     window.addEventListener("resize", onResize);
 
     const detach = () => {
-      setSpin(false);
+      setSpin(0);
       if (isFs()) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
       glCanvas.removeEventListener("pointerdown", onDown);
       glCanvas.removeEventListener("pointermove", onMove);
@@ -629,6 +708,7 @@ export function attachMesh(canvas, getBase64, opts = {}) {
       document.removeEventListener("webkitfullscreenchange", onFsChange);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", onResize);
+      live = false;
       // Bake the final view back into the poster so the card keeps the user's angle.
       if (renderView(entry.scene, canvas.width, canvas.height, view.yaw, view.pitch, view.dist)) {
         const p = document.createElement("canvas");
