@@ -33,15 +33,17 @@ Each model family ships with sane sampling defaults (Flux guidance distillation,
 
 ## 3D generation
 
-Three image-to-3D chains appear in the **3D models** dropdown group once their weights are installed. All are image-driven (the prompt is ignored); results show as an interactive in-chat 3D viewer (drag to orbit, wheel to zoom, double-click to reframe) plus a download button.
+Three image-to-3D chains appear in the **3D models** dropdown group once their weights are installed. All are image-driven (the prompt is ignored); results show as an interactive in-chat 3D viewer (drag to orbit, wheel to zoom, double-click for fullscreen — with a toolbar and shortcuts: R reset, Space auto-rotate, +/− zoom, arrows turn) plus a download button.
 
 | Model | Output | Weights (→ ComfyUI `models/` subfolder) |
 |-------|--------|------------------------------------------|
 | **Hunyuan3D 2.1** | Untextured mesh (`.glb`) | `checkpoints/hunyuan_3d_v2.1.safetensors` (~4.9 GB) — [Comfy-Org/hunyuan3D_2.1_repackaged](https://huggingface.co/Comfy-Org/hunyuan3D_2.1_repackaged) |
-| **TripoSplat** | Gaussian splat (`.spz`) + turntable preview video | `diffusion_models/triposplat_fp16.safetensors`, `clip_vision/dino_v3_vit_h.safetensors`, `vae/triposplat_vae_decoder_fp16.safetensors`, `vae/flux2-vae.safetensors` — [VAST-AI/TripoSplat](https://huggingface.co/VAST-AI/TripoSplat); optional `background_removal/birefnet.safetensors` — [Comfy-Org/BiRefNet](https://huggingface.co/Comfy-Org/BiRefNet) (without it the input image's own alpha is used as the subject mask) |
+| **TripoSplat** | Gaussian splat (`.spz`) — or a **coloured mesh** (`.glb`, see below) — plus a turntable preview video | `diffusion_models/triposplat_fp16.safetensors`, `clip_vision/dino_v3_vit_h.safetensors`, `vae/triposplat_vae_decoder_fp16.safetensors`, `vae/flux2-vae.safetensors` — [VAST-AI/TripoSplat](https://huggingface.co/VAST-AI/TripoSplat); optional `background_removal/birefnet.safetensors` — [Comfy-Org/BiRefNet](https://huggingface.co/Comfy-Org/BiRefNet) (without it the input image's own alpha is used as the subject mask) |
 | **MoGe-2** | Textured scene mesh (`.glb`, geometry estimation — fast) | `geometry_estimation/moge_2_vitl_normal_fp16.safetensors` (~1.3 GB) — [Comfy-Org/MoGe](https://huggingface.co/Comfy-Org/MoGe) |
 
-The ⚙ popup exposes one knob per chain (Hunyuan3D octree resolution, TripoSplat splat count, MoGe detail level); Hunyuan3D and TripoSplat also honour the sampler/steps/CFG/seed fields. `.spz` splats are download-only (drop them into a splat viewer or game engine); `.glb` files open right in the chat.
+**Colour:** ComfyUI's native nodes ship Hunyuan3D's *shape* model only — its texture-painting model isn't included, so Hunyuan3D meshes are always white. For a **coloured** 3D file, tick ⚙ *Coloured mesh instead of splat file* on TripoSplat: its splat is meshed with vertex colours and exported as a `.glb` you can spin in the chat (bigger file, slightly softer surface than the splat it came from). MoGe bakes the source photo as a real texture, but only reconstructs the side the camera can see — it is a single-view relief, not a closed object.
+
+The ⚙ popup exposes: *3D mesh detail* (grid resolution — Hunyuan3D's octree and TripoSplat's meshing grid), *3D splat count* (TripoSplat), *3D detail level* (MoGe), and the coloured-mesh toggle; Hunyuan3D and TripoSplat also honour the sampler/steps/CFG/seed fields. `.spz` splats are download-only (drop them into a splat viewer or game engine); `.glb` files open right in the chat.
 
 ## `/imagine` flags
 

@@ -3644,7 +3644,13 @@ function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation =
 // → SaveGLB for the downloadable splat. Background removal is OPTIONAL: without
 // birefnet the mask falls back to the input image's own alpha (the template's
 // switch=false leg: InvertMask on LoadImage's mask output).
-function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler = "dpmpp_2m", scheduler = "simple", numGaussians = 262144 }) {
+//
+// splatMesh swaps the .spz export for SplatToMesh — a real triangle mesh carrying
+// VERTEX COLOURS (the template ships this branch bypassed). That is the only local
+// way to get a COLOURED 3D file: Hunyuan3D's paint model isn't part of ComfyUI's
+// native nodes, so its meshes are always untextured. Costs size and a softer
+// surface; the two exports are the same object, so it's either/or rather than both.
+function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler = "dpmpp_2m", scheduler = "simple", numGaussians = 262144, splatMesh = false, meshDetail = 256 }) {
   const g = {
     "1": { class_type: "LoadImage", inputs: { image: imageName } },
     "4": { class_type: "TripoSplatPreprocessImage", inputs: { image: ["1", 0], mask: ["3", 0], erode_radius: 1, size: 1024 } },
@@ -3658,7 +3664,10 @@ function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler =
     "12": { class_type: "RenderSplat", inputs: { splat: ["11", 0], width: 1024, height: 1024, frames: 75, splat_scale: 1, sharpen: 2, headlight_shading: 0, opacity_threshold: 0, render_style: "color", background: "#848484" } },
     "13": { class_type: "CreateVideo", inputs: { images: ["12", 0], fps: 25 } },
     "14": { class_type: "SaveVideo", inputs: { video: ["13", 0], filename_prefix: "heykoko/video", format: "auto", codec: "auto" } },
-    "15": { class_type: "SplatToFile3D", inputs: { splat: ["11", 0], format: "spz" } },
+    // 15/16 = the 3D export tail, swapped by splatMesh (see above).
+    "15": splatMesh
+      ? { class_type: "SplatToMesh", inputs: { splat: ["11", 0], resolution: meshDetail, kernel: 5, smooth: 0, level: 0.6, min_component: 500, min_opacity: 0.02, color_sharpen: 2 } }
+      : { class_type: "SplatToFile3D", inputs: { splat: ["11", 0], format: "spz" } },
     "16": { class_type: "SaveGLB", inputs: { mesh: ["15", 0], filename_prefix: "heykoko/mesh" } },
   };
   if (comp.birefnet) {
@@ -4598,11 +4607,14 @@ async function generateComfyImage(req, res) {
         }
         const imageName = await uploadImage(images[0], controller.signal, "heykoko_mesh_in.png");
         imagesUsed = 1;
+        // ⚙ "3D mesh detail" is one knob over both meshers — Hunyuan3D's octree
+        // resolution and SplatToMesh's density grid mean the same thing.
+        const meshDetail = opts.meshDetail || 256;
         if (meshType === "hunyuan3d") {
           workflow = buildHunyuan3D({ ckpt: model, imageName, seed,
             steps: opts.steps || 30, cfg: opts.cfg !== undefined ? opts.cfg : 5,
             sampler: opts.sampler || "euler", scheduler: opts.scheduler || "normal",
-            octreeRes: opts.meshOctree || 256 });
+            octreeRes: meshDetail });
         } else if (meshType === "moge") {
           const comp = await meshCompanions("moge");
           // Replicate the template's resize-if->2048 guard server-side.
@@ -4615,7 +4627,8 @@ async function generateComfyImage(req, res) {
           workflow = buildTripoSplat({ imageName, comp, seed,
             steps: opts.steps || 20, cfg: opts.cfg !== undefined ? opts.cfg : 3,
             sampler: opts.sampler || "dpmpp_2m", scheduler: opts.scheduler || "simple",
-            numGaussians: opts.meshGaussians || 262144 });
+            numGaussians: opts.meshGaussians || 262144,
+            splatMesh: !!opts.splatMesh, meshDetail });
         } else {
           sendJson(res, 400, { error: `3D chain "${meshType}" is not wired yet.` });
           return;

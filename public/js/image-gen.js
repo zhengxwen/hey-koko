@@ -61,8 +61,11 @@ function comfyOverrides() {
   const timeoutMin = num(dom.comfyParamTimeout?.value);
   if (timeoutMin !== undefined) ov.timeoutMin = timeoutMin; // ⚙ video render deadline (min); empty/0 → unlimited
   // 3D mesh knobs (each read by exactly one chain; harmless elsewhere).
-  const meshOctree = num(dom.comfyParamMeshOctree?.value);
-  if (meshOctree !== undefined) ov.meshOctree = meshOctree;         // Hunyuan3D octree_resolution
+  // meshDetail is shared: Hunyuan3D's octree_resolution and SplatToMesh's density
+  // grid are the same idea, so one knob drives whichever mesher is running.
+  const meshDetail = num(dom.comfyParamMeshDetail?.value);
+  if (meshDetail !== undefined) ov.meshDetail = meshDetail;
+  if (dom.comfyParamSplatMesh?.checked) ov.splatMesh = true;        // TripoSplat: coloured mesh instead of .spz
   const meshGaussians = num(dom.comfyParamMeshGaussians?.value);
   if (meshGaussians !== undefined) ov.meshGaussians = meshGaussians; // TripoSplat num_gaussians
   const mogeDetail = num(dom.comfyParamMogeDetail?.value);

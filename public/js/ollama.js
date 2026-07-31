@@ -1158,8 +1158,13 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamFps, video);
   // Timeout: mesh renders ride the video timeout policy (Hunyuan3D can take minutes).
   setVis(dom.comfyParamTimeout, video || mesh);
-  // 3D knobs — one per chain, shown only for its own model.
-  setVis(dom.comfyParamMeshOctree, mesh && /hunyuan[._-]?3d/i.test(m));
+  // 3D knobs. meshDetail drives BOTH meshers, so it shows for Hunyuan3D and for
+  // TripoSplat — but only once TripoSplat is actually meshing (splat export has no
+  // grid). The checkbox itself has no <label> wrapper of its own to hide, so pass
+  // its row class.
+  const splatMeshOn = m === "triposplat" && !!dom.comfyParamSplatMesh?.checked;
+  setVis(dom.comfyParamMeshDetail, (mesh && /hunyuan[._-]?3d/i.test(m)) || splatMeshOn);
+  setVis(dom.comfyParamSplatMesh, m === "triposplat", ".comfyParamCheck");
   setVis(dom.comfyParamMeshGaussians, m === "triposplat");
   setVis(dom.comfyParamMogeDetail, m === "moge-mesh");
   // Video codec + its CRF: every video model (the tail rewrite is builder-agnostic).
@@ -1357,7 +1362,7 @@ function initComfyParamsModal() {
     dom.comfyParamLength,
     dom.comfyParamFps,
     dom.comfyParamTimeout,
-    dom.comfyParamMeshOctree,
+    dom.comfyParamMeshDetail,
     dom.comfyParamMeshGaussians,
     dom.comfyParamMogeDetail,
     dom.comfyParamTargetFps,
@@ -1411,6 +1416,9 @@ function initComfyParamsModal() {
     el?.addEventListener("change", () => saveCurrentSettings());
   }
   dom.comfyParamTorchCompile?.addEventListener("change", () => saveCurrentSettings());
+  // Checkboxes carry .checked, not .value, so they're outside `fields`. The splat-mesh
+  // one also gates the mesh-detail row, so it re-runs visibility on toggle.
+  dom.comfyParamSplatMesh?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
   dom.comfyParamBerniniMode?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamBerniniTask?.addEventListener("change", () => saveCurrentSettings());
   // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset
