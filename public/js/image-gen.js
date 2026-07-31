@@ -60,6 +60,13 @@ function comfyOverrides() {
   if (fps !== undefined) ov.fps = fps;
   const timeoutMin = num(dom.comfyParamTimeout?.value);
   if (timeoutMin !== undefined) ov.timeoutMin = timeoutMin; // ⚙ video render deadline (min); empty/0 → unlimited
+  // 3D mesh knobs (each read by exactly one chain; harmless elsewhere).
+  const meshOctree = num(dom.comfyParamMeshOctree?.value);
+  if (meshOctree !== undefined) ov.meshOctree = meshOctree;         // Hunyuan3D octree_resolution
+  const meshGaussians = num(dom.comfyParamMeshGaussians?.value);
+  if (meshGaussians !== undefined) ov.meshGaussians = meshGaussians; // TripoSplat num_gaussians
+  const mogeDetail = num(dom.comfyParamMogeDetail?.value);
+  if (mogeDetail !== undefined) ov.mogeDetail = mogeDetail;         // MoGe resolution_level 0-9
   const targetFps = num(dom.comfyParamTargetFps?.value);
   if (targetFps !== undefined) ov.targetFps = targetFps; // frame interpolation: interpolate up to this fps
   if (dom.comfyParamInterpMethod?.value) ov.interpMethod = dom.comfyParamInterpMethod.value; // rife | film
@@ -1268,6 +1275,185 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   }
 }
 
+// 3D mesh generation (Hunyuan3D / TripoSplat / MoGe) — a slimmed generateVideo:
+// no source-video/audio legs, no prompt enhancement (these graphs have no text
+// conditioning), result is a .glb/.spz file (+ TripoSplat's turntable preview mp4).
+export async function generateMesh(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sink = null, comfyUrl = null) {
+  const tab = getTab(tabId);
+  if (!tab) return;
+  const comfyHost = ((comfyUrl || dom.comfyUrlDisplay?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim()).replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  const genStart = Date.now();
+  const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
+  if (!sink) sink = foregroundSink({ tabId, insertIndex, setGenerating: _setGenerating, renderChat: _renderChat, saveChat, getTab });
+
+  const abortController = { signal: sink.signal };
+  sink.lock(true);
+  setAvatarState("thinking");
+  const meshModelLabel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
+  sink.start("mesh", `${t("msg_generatingMesh")}${meshModelLabel ? ` · ${meshModelLabel}` : ""}`);
+  await new Promise((r) => setTimeout(r, 0)); // let the bubble paint first
+
+  // Every mesh chain is image-conditioned — fail fast rather than round-trip a 400.
+  if (!refImages) {
+    sink.clearBubble();
+    sink.fail(t("msg_meshNeedsImage"));
+    sink.place({ role: "assistant", content: t("msg_meshNeedsImage"), timestamp: Date.now() });
+    setAvatarState("idle");
+    sink.done(); sink.cleanup();
+    return;
+  }
+
+  // ⚙ overrides fill whatever /imagine flags didn't set. Width/height are dropped —
+  // the mesh graphs have no pixel-size input (Hunyuan's resolution is a latent knob).
+  const reqOptions = { ...parsed.options };
+  delete reqOptions.width;
+  delete reqOptions.height;
+  const ov = comfyOverrides();
+  for (const k of Object.keys(ov)) {
+    if (reqOptions[k] === undefined) reqOptions[k] = ov[k];
+  }
+  // Mesh rides the video timeout policy server-side; empty ⚙ field → 1 h default
+  // (Hunyuan3D's octree decode can run minutes; MoGe finishes in seconds anyway).
+  const tMin = reqOptions.timeoutMin;
+  const meshTimeout = (tMin === undefined) ? 3600 : (tMin > 0 ? Math.round(tMin * 60) : 0);
+
+  // Live progress via ComfyUI's WebSocket (Hunyuan's KSampler reports steps; the
+  // decode phases report nothing → keep the pulse fallback).
+  const clientId = (sink.server && sink.server.comfyClientId)
+    || (crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`);
+  let _progStall = null;
+  sink.indeterminate(true);
+  const unsubscribe = subscribeComfyProgress(comfyHost, clientId, {
+    onProgress: (value, max) => {
+      if (!max) return;
+      sink.indeterminate(false);
+      sink.progress(value, max);
+      clearTimeout(_progStall);
+      _progStall = setTimeout(() => sink.indeterminate(true), 2500);
+    },
+    onPreview: (url) => sink.preview(url),
+  });
+  abortController.signal.addEventListener("abort", () => interruptComfy(comfyHost), { once: true });
+
+  const count = Math.min(Math.max(parsed.count || 1, 1), 8);
+  const allMeshes = [], allMeshMimes = [], allMeshNames = [];
+  const allVideos = [], allThumbs = []; // TripoSplat turntable previews
+  const meshSeeds = [];
+  let lastData = null;
+  let replyMsg = null;
+
+  const renderReply = () => {
+    if (!allMeshes.length) return;
+    const plang = getPromptLanguage();
+    const totalBytes = allMeshes.reduce((s, b) => s + Math.floor(b.length * 0.75), 0);
+    const sizeStr = totalBytes > 1024 * 1024 ? `${(totalBytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(totalBytes / 1024)} KB`;
+    let doneLine = t("msg_meshDone", { size: sizeStr }, plang)
+      + (count > 1 ? ` ×${allMeshes.length}${allMeshes.length < count ? `/${count}` : ""}` : "")
+      + (meshModelLabel ? ` · ${meshModelLabel}` : "")
+      + (lastData.precisionUsed ? ` · ${lastData.precisionUsed}` : "");
+    if (count === 1 && typeof lastData.seed === "number") {
+      doneLine += `\n${t("msg_seedUsed", { seed: lastData.seed }, plang)}`;
+    } else if (count > 1 && meshSeeds.some((s) => s !== null)) {
+      const list = meshSeeds.map((s, i) => `#${i + 1} ${s !== null ? s : "?"}`).join(" · ");
+      doneLine += `\n${t("msg_seedsBatch", { list }, plang)}`;
+    }
+    const stillGen = allMeshes.length < count
+      ? `\n\n${t("msg_batchStillGenerating", { done: allMeshes.length, total: count }, plang)}`
+      : "";
+    const content = doneLine + stillGen;
+    if (!replyMsg) {
+      replyMsg = {
+        role: "assistant",
+        content,
+        generatedMeshes: allMeshes,
+        meshMimes: allMeshMimes,
+        meshNames: allMeshNames,
+        imagePrompt: parsed.prompt || "",
+        timestamp: Date.now(),
+        genMs: Date.now() - genStart,
+      };
+      if (allVideos.length) {
+        replyMsg.generatedVideos = allVideos;
+        replyMsg.videoMimes = allVideos.map(() => (lastData.videoMime || "video/mp4"));
+        replyMsg.generatedVideoThumbnails = allThumbs;
+      }
+      sink.place(replyMsg);
+    } else {
+      replyMsg.content = content;
+      if (allVideos.length) replyMsg.videoMimes = allVideos.map(() => (lastData.videoMime || "video/mp4"));
+      replyMsg.genMs = Date.now() - genStart;
+      sink.commit();
+    }
+  };
+
+  const failFatal = (errText) => {
+    sink.clearBubble();
+    const failMsg = t("img_meshGenFailed", { err: errText || t("img_noMeshReturned") });
+    sink.fail(failMsg);
+    sink.place({ role: "assistant", content: failMsg, timestamp: Date.now() });
+    setAvatarState("idle");
+  };
+
+  const requestMesh = (perOptions, isFirstSubRun) => {
+    const mbody = {
+      model,
+      prompt: (parsed.prompt || "").trim(), // decorative — the mesh graphs read no text
+      options: perOptions,
+      images: refImages,
+      timeout: meshTimeout,
+      clientId,
+      comfyUrl: comfyHost || undefined,
+    };
+    return sink.server
+      ? comfyFetch(mbody, { bgJob: isFirstSubRun ? sink.server.bgJob : null, kind: "mesh", comfyUrl: comfyHost, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, clientId, signal: abortController.signal })
+      : fetch("/api/generate-comfy", { method: "POST", headers: { "Content-Type": "application/json" }, signal: abortController.signal, body: JSON.stringify(mbody) });
+  };
+
+  try {
+    for (let i = 0; i < count; i++) {
+      if (abortController.signal.aborted) break;
+      if (i > 0) sink.progress(0, 1);
+      const perOptions = { ...reqOptions };
+      if (perOptions.seed !== undefined) perOptions.seed = reqOptions.seed + i;
+      if (count > 1) sink.label(`${t("msg_generatingMesh")}${meshModelLabel ? ` · ${meshModelLabel}` : ""} (${i + 1}/${count})`);
+      const resp = await requestMesh(perOptions, i === 0);
+      const data = await resp.json();
+      if (!resp.ok || !data.meshes || !data.meshes.length) {
+        if (!allMeshes.length) { failFatal(data.error || data.detail); return; }
+        break;
+      }
+      lastData = data;
+      allMeshes.push(...data.meshes);
+      allMeshMimes.push(...(data.meshMimes || data.meshes.map(() => "model/gltf-binary")));
+      allMeshNames.push(...(data.meshNames || data.meshes.map(() => "")));
+      for (let k = 0; k < data.meshes.length; k++) meshSeeds.push(typeof data.seed === "number" ? data.seed : null);
+      if (Array.isArray(data.videos) && data.videos.length) {
+        const vmime = data.videoMime || "video/mp4";
+        const newThumbs = await Promise.all(data.videos.map((v) => videoThumbnail(`data:${vmime};base64,${v}`)));
+        allVideos.push(...data.videos);
+        allThumbs.push(...newThumbs);
+      }
+      renderReply();
+    }
+    sink.clearBubble();
+    showExpression("happy");
+  } catch (error) {
+    sink.clearBubble();
+    if (error.name !== "AbortError" && !allMeshes.length) {
+      const errMsg = t("img_meshGenError", { err: error.message });
+      sink.fail(errMsg);
+      sink.place({ role: "assistant", content: errMsg, timestamp: Date.now() });
+    }
+    setAvatarState("idle");
+  } finally {
+    clearTimeout(_progStall);
+    sink.clearBubble();
+    sink.done();
+    unsubscribe();
+    sink.cleanup();
+  }
+}
+
 export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null, initVideo = null, maskB64 = null, sink = null, modelOverride = null) {
   const parsedList = Array.isArray(parsedInput) ? parsedInput : [parsedInput];
   const tab = getTab(tabId);
@@ -1293,6 +1479,12 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // video path. SCAIL-2 is excluded: it has no still path (the driving video IS the
   // input), so it must stay on the video path and report the missing-video error.
   const isAnimateStill = isWanAnimateModel(comfyModel) && !initVideo && Array.isArray(refImages) && refImages.length >= 2;
+
+  // A selected ComfyUI 3D model routes to the mesh path (checked before the video
+  // path — mesh models are in neither set, but the order documents the intent).
+  if (!imageModel && comfyModel && state.comfyMeshModels && state.comfyMeshModels.has(comfyModel)) {
+    return generateMesh(parsedList[0], comfyModel, tabId, insertIndex, refImages, sink, ovComfyUrl);
+  }
 
   // A selected ComfyUI VIDEO model routes to the dedicated video path. Pass the
   // sink + the worker url through so a background video job stays headless + on-target.

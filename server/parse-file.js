@@ -8,6 +8,7 @@ const { execFile, execFileSync, spawn } = require("child_process");
 const { sendJson } = require("./utils");
 const config = require("./config");
 const { parsePptx } = require("./pptx");
+const mailImages = require("./mail-images");   // shared email-image policy (with @outlook)
 
 // Detect tool availability (async, non-blocking)
 let hasPandoc = false;
@@ -623,58 +624,26 @@ function preCleanEmailHtml(html) {
   return h;
 }
 
-// Fetch one remote image, applying the same trash filters as the URL fetcher
-// (skip non-images, SVG, tiny trackers, and oversized files). Returns null on
-// any failure so a single bad link never blocks the rest.
-async function fetchOneImage(url) {
-  try {
-    const res = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; LocalAIChat/1.0)",
-        "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
-      },
-      signal: AbortSignal.timeout(8000),
-      redirect: "follow",
-    });
-    if (!res.ok) return null;
-    const mime = (res.headers.get("content-type") || "").split(";")[0].trim();
-    if (!mime.startsWith("image/") || mime === "image/svg+xml") return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 3000 || buf.length > 5 * 1024 * 1024) return null; // tracker / oversized
-    return { base64: buf.toString("base64"), mime };
-  } catch {
-    return null;
-  }
-}
-
-// Download every http(s) image referenced in the email's Markdown and return
-// them as inline attachments ({name, base64, mime}). Remote ![](url) references
-// are replaced with lightweight [image: alt] placeholders so the rendered email
-// never re-fetches remote (tracking) URLs and reads the same offline.
+// Download every http(s) image referenced in the email's Markdown and return them as
+// inline attachments ({name, base64, mime}). Download policy, size filters and naming
+// all come from server/mail-images.js — the same ones /tool @outlook applies, so a
+// given email keeps the same images whichever way it reaches the chat. References that
+// couldn't be fetched collapse to a lightweight placeholder, so the rendered mail
+// never re-requests a remote (tracking) URL.
 async function downloadEmailImages(markdown) {
   const IMG_RE = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+?)(?:\s+"[^"]*")?\)/g;
   const urls = [...new Set([...markdown.matchAll(IMG_RE)].map((m) => m[2]))];
   if (urls.length === 0) return { markdown, images: [] };
 
-  const MAX = 15;
-  const targets = urls.slice(0, MAX);
-  const fetched = await Promise.all(targets.map(fetchOneImage));
-
+  const fetched = await mailImages.fetchRemoteImages(urls);
   const images = [];
   const nameByUrl = new Map();
-  for (let i = 0; i < targets.length; i++) {
-    const f = fetched[i];
-    if (!f) continue;
-    const ext = f.mime === "image/png" ? ".png" : f.mime === "image/gif" ? ".gif"
-      : f.mime === "image/webp" ? ".webp" : ".jpg";
-    const name = `image_${String(images.length + 1).padStart(2, "0")}${ext}`;
+  for (const f of fetched) {
+    const name = mailImages.imageName(images.length + 1, f.mime);
     images.push({ name, base64: f.base64, mime: f.mime });
-    nameByUrl.set(targets[i], name);
+    nameByUrl.set(f.url, name);
   }
 
-  // Rewrite each remote ![](url) to reference its downloaded filename. Images
-  // that couldn't be fetched collapse to a lightweight placeholder so the
-  // rendered email never re-requests a remote (tracking) URL.
   const md = markdown.replace(IMG_RE, (_whole, alt, url) => {
     const name = nameByUrl.get(url);
     return name ? `![${alt || ""}](${name})` : "[image]";

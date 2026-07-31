@@ -33,6 +33,7 @@ import { openMaskModal } from './mask-paint.js';
 import { setBgDeps, restoreBgJobsOnLoad, restoreBgWorkersOnLoad, toggleBgDrawer, closeBgDrawer, enqueueBgJob } from './bg-jobs.js';
 import { connectServerQueue } from './server-queue.js';   // Option B: SSE stream of server-side gen jobs
 import { initTabGuard } from './tab-guard.js';   // warn when hey-koko is open in 2+ tabs (shared IndexedDB, last save wins)
+import { imageName, imageMarker, isImageMarkerAlt } from './mail-images.js';   // twin of server/mail-images.js
 
 // Safety net: #chatLoading starts VISIBLE to cover the startup freeze and is hidden
 // after the first render below. If ANY startup step throws before that (top-level
@@ -1576,7 +1577,11 @@ function getStagedImages() {
 export function applyInputPlaceholder() {
   const v = dom.comfyModelSelect?.value;
   const isMulti = !!(v && state.comfyMultiImageModels && state.comfyMultiImageModels.has(v));
-  if (isMulti) {
+  const isMesh = !!(v && state.comfyMeshModels && state.comfyMeshModels.has(v));
+  if (isMesh && getStagedImages().length === 0) {
+    // 3D models need a source image — say so before the user types a prompt.
+    dom.messageInput.placeholder = t("input_meshImageHint");
+  } else if (isMulti) {
     dom.messageInput.placeholder = t("input_multiImageHint");
   } else if (getStagedImages().length > 0) {
     dom.messageInput.placeholder = t("input_imageEditHint");
@@ -2197,14 +2202,17 @@ async function parseAndSendFile(content, fileInfo) {
     let text = "";
     let images = [];
     let tool = "";
-    let displayThumbnails = null;
+    let displayThumbnails = null, displayImages = null, displayImageNames = null;
 
     if (ext === ".eml") {
       // EML: parse locally, optionally convert HTML body via Pandoc
       const raw = await readFileAsText(rawFile);
       const result = parseEml(raw);
-      images = result.images;
       tool = "eml";
+      // Email images are DISPLAY-ONLY (never `images`, which feeds contextImages):
+      // mail is full of signature logos and banners, and the body now carries
+      // [📷 N] markers saying where each one sat. Same policy as /tool @outlook.
+      let mailImages = result.images;
 
       if (result.rawHtml && serverCapabilities.pandoc) {
         // Convert HTML body to Markdown via Pandoc
@@ -2216,15 +2224,11 @@ async function parseAndSendFile(content, fileInfo) {
           });
           if (response.ok) {
             const data = await response.json();
-            text = result.headers + "\n---\n\n" + data.markdown;
-            // Images linked in the email HTML are downloaded server-side and
-            // shown as display-only thumbnails (NOT sent to the model). Inline
-            // (cid:) attachments stay in `images` so vision still sees them.
-            if (data.images && data.images.length) {
-              const cidUrls = images.map((img) => `data:${img.mime || "image/png"};base64,${img.base64}`);
-              const htmlUrls = data.images.map((img) => `data:${img.mime || "image/jpeg"};base64,${img.base64}`);
-              displayThumbnails = await Promise.all([...cidUrls, ...htmlUrls].map((u) => makePreview(u, 480)));
-            }
+            // Remote <img src="https://…"> the server downloaded — renumber after the
+            // inline ones so one [📷 N] sequence covers both kinds.
+            const merged = mergeRemoteMailImages(data.markdown, mailImages.length, data.images);
+            text = result.headers + "\n---\n\n" + merged.markdown;
+            if (merged.images.length) mailImages = mailImages.concat(merged.images);
             tool = "eml+pandoc";
           } else {
             text = result.text;
@@ -2235,6 +2239,7 @@ async function parseAndSendFile(content, fileInfo) {
       } else {
         text = result.text;
       }
+      ({ displayImages, displayImageNames, displayThumbnails } = await buildMailImageDisplay(mailImages));
     } else {
       let serverResult = null;
 
@@ -2283,7 +2288,9 @@ async function parseAndSendFile(content, fileInfo) {
       }
     }
 
-    if (!text.trim() && images.length === 0) {
+    // An image-only email has no `images` (they're display-only now) — count those
+    // too, or it would be reported as "nothing extracted".
+    if (!text.trim() && images.length === 0 && !(displayImages && displayImages.length)) {
       pending.remove();
       const msgEl = document.createElement("div");
       msgEl.className = "message system";
@@ -2293,7 +2300,7 @@ async function parseAndSendFile(content, fileInfo) {
     }
 
     pending.remove();
-    const parsedFile = { name, text, images, tool, displayThumbnails };
+    const parsedFile = { name, text, images, tool, displayThumbnails, displayImages, displayImageNames };
     sendMessage(content, null, undefined, parsedFile);
   } catch (e) {
     pending.remove();
@@ -2302,6 +2309,44 @@ async function parseAndSendFile(content, fileInfo) {
     msgEl.textContent = t("msg_fileParseFailed", { error: e.message });
     dom.messagesEl.appendChild(msgEl);
   }
+}
+
+// Remote images the server downloaded (parse-file.js downloadEmailImages) come back
+// named image_01… and referenced inline as ![](image_01.jpg) — the same numbering the
+// inline (cid:) images already use. Renumber them to follow those so one sequence
+// covers both, and label each ref "📷 N" like the inline ones.
+function mergeRemoteMailImages(markdown, cidCount, serverImages) {
+  const list = (serverImages || []).map((img, i) => {
+    const n = cidCount + i + 1;
+    const mime = img.mime || "image/jpeg";
+    return { ...img, oldName: img.name, n, name: imageName(n, mime), mime };
+  });
+  const byOldName = new Map(list.filter((im) => im.oldName).map((im) => [im.oldName, im]));
+  // ONE pass over the markdown: replacing name by name would cascade (renaming
+  // image_01→image_02 makes the next rule rewrite it again). The server numbers its
+  // downloads from image_01 too, so a name alone can't tell a downloaded image from an
+  // inline one — but the inline refs are ours and always carry the "📷 N" alt text.
+  const md = String(markdown || "").replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (whole, alt, name) => {
+    if (isImageMarkerAlt(alt)) return whole;   // already an inline ref
+    const hit = byOldName.get(name);
+    return hit ? imageMarker(hit.n, hit.mime) : whole;
+  });
+  return { markdown: md, images: list.map(({ oldName, n, ...img }) => img) };
+}
+
+// Email images are shown in the file-preview bubble but never handed to the model:
+// full-res for download/lightbox, thumbnails for the grid, uniform names matching the
+// [📷 N] markers in the body. Shared by the live and headless (.eml) parse paths.
+async function buildMailImageDisplay(mailImages) {
+  const list = (mailImages || []).filter((im) => im && im.base64);
+  if (!list.length) return { displayImages: null, displayImageNames: null, displayThumbnails: null };
+  return {
+    displayImages: list.map((im) => im.base64),
+    displayImageNames: list.map((im, i) => im.name || imageName(i + 1, im.mime)),
+    displayThumbnails: await Promise.all(
+      list.map((im) => makePreview(`data:${im.mime || "image/png"};base64,${im.base64}`, 480))
+    ),
+  };
 }
 
 // ---- headless document parsing (for the background queue) ------------------
@@ -2325,13 +2370,14 @@ function b64ToBytes(b64) {
 // `docfull` job can parse a document headlessly with phase progress.
 async function parseDocumentHeadless(fileB64, name, ext, content, onProgress) {
   const rawFile = new File([b64ToBytes(fileB64)], name);
-  let text = "", images = [], tool = "", displayThumbnails = null;
+  let text = "", images = [], tool = "", displayThumbnails = null, displayImages = null, displayImageNames = null;
 
   if (ext === ".eml") {
     const raw = await rawFile.text();
     const result = parseEml(raw);
-    images = result.images;
     tool = "eml";
+    // Display-only, exactly like the live path above (see buildMailImageDisplay).
+    let mailImages = result.images;
     if (result.rawHtml && serverCapabilities.pandoc) {
       try {
         const response = await fetch("/api/parse-html", {
@@ -2340,16 +2386,14 @@ async function parseDocumentHeadless(fileB64, name, ext, content, onProgress) {
         });
         if (response.ok) {
           const data = await response.json();
-          text = result.headers + "\n---\n\n" + data.markdown;
-          if (data.images && data.images.length) {
-            const cidUrls = images.map((img) => `data:${img.mime || "image/png"};base64,${img.base64}`);
-            const htmlUrls = data.images.map((img) => `data:${img.mime || "image/jpeg"};base64,${img.base64}`);
-            displayThumbnails = await Promise.all([...cidUrls, ...htmlUrls].map(makePreview));
-          }
+          const merged = mergeRemoteMailImages(data.markdown, mailImages.length, data.images);
+          text = result.headers + "\n---\n\n" + merged.markdown;
+          if (merged.images.length) mailImages = mailImages.concat(merged.images);
           tool = "eml+pandoc";
         } else text = result.text;
       } catch { text = result.text; }
     } else text = result.text;
+    ({ displayImages, displayImageNames, displayThumbnails } = await buildMailImageDisplay(mailImages));
   } else {
     let serverResult = null;
     let chosenOcr = "";
@@ -2378,7 +2422,7 @@ async function parseDocumentHeadless(fileB64, name, ext, content, onProgress) {
       const r = await extractDocxContent(rawFile); text = r.text; images = r.images; tool = "mammoth";
     }
   }
-  return { text, images, tool, displayThumbnails };
+  return { text, images, tool, displayThumbnails, displayImages, displayImageNames };
 }
 
 // Read a raw document into a docfull background job (parse + preview + summary run
@@ -2461,6 +2505,7 @@ function parseEml(raw) {
   // Extract boundary for multipart
   const boundaryMatch = contentType.match(/boundary="?([^";\r\n]+)"?/i);
   const images = [];
+  const placedImages = new Set();   // indices annotateHtmlImages anchored in the body
   const seenHashes = new Map();
   let imageCounter = 0;
   let bodyText = "";
@@ -2497,38 +2542,90 @@ function parseEml(raw) {
         // Extract inline image
         const mimeMatch = partHeaders.match(/content-type:\s*(image\/[a-z]+)/i);
         const mime = mimeMatch ? mimeMatch[1] : "image/png";
-        const ext = mime.split("/")[1] === "png" ? ".png" : mime.split("/")[1] === "gif" ? ".gif" : ".jpg";
         const base64Data = partBody.replace(/\s+/g, "");
 
         const hashKey = base64Data.length + ":" + base64Data.slice(0, 64);
         if (!seenHashes.has(hashKey)) {
           imageCounter++;
-          const name = `image_${String(imageCounter).padStart(2, "0")}${ext}`;
+          const name = imageName(imageCounter, mime);
           seenHashes.set(hashKey, name);
-          images.push({ name, base64: base64Data, mime });
+          // Keep the part's Content-ID and original filename (original case — partHeaders
+          // is lowercased): the HTML body references inline images as <img src="cid:…">,
+          // and these are what let annotateHtmlImages put a marker at the right spot.
+          const cid = (partHeaderStr.match(/content-id:\s*<?([^>\r\n]+)>?/i) || [])[1] || "";
+          const fname = (partHeaderStr.match(/filename="?([^";\r\n]+)"?/i)
+            || partHeaderStr.match(/\bname="?([^";\r\n]+)"?/i) || [])[1] || "";
+          images.push({ name, base64: base64Data, mime, cid: cid.trim(), filename: fname.trim() });
         }
       }
     }
     return { plain: plainBody, html: htmlBody };
   }
 
+  // Replace every <img> that points at an extracted inline image with a "[📷 N]"
+  // marker, and drop the rest (spacer gifs, tracking pixels, remote banners). The
+  // marker survives the Pandoc conversion as plain text, so the model learns WHERE
+  // each image sat even though the images themselves are display-only. Mirrors what
+  // /tool @outlook does server-side (office.js htmlToAnnotatedText).
+  function annotateHtmlImages(html) {
+    if (!html) return html;
+    return html.replace(/<img\b[^>]*>/gi, (tag) => {
+      const src = ((tag.match(/\bsrc\s*=\s*"([^"]*)"/i) || tag.match(/\bsrc\s*=\s*'([^']*)'/i)
+        || tag.match(/\bsrc\s*=\s*([^\s>]+)/i) || [])[1] || "").trim();
+      // Remote images stay untouched: the /api/parse-html pass downloads them
+      // (parse-file.js downloadEmailImages) so they display offline and the browser
+      // never re-requests a tracking URL — stripping them here would silently kill that.
+      if (/^https?:/i.test(src)) return tag;
+      if (!src.toLowerCase().startsWith("cid:")) return "";
+      const ref = src.slice(4).replace(/^</, "").replace(/>$/, "").toLowerCase();
+      const idx = images.findIndex((im) => {
+        if (im.cid && im.cid.toLowerCase() === ref) return true;
+        // Outlook writes cid:image001.png@01DA... — match on the filename stem.
+        const stem = (im.filename || "").replace(/\.[^.]+$/, "").toLowerCase();
+        return !!stem && ref.includes(stem);
+      });
+      if (idx < 0) return "";
+      // Point the tag at the extracted image's own filename so Pandoc emits a plain
+      // ![📷 N](image_0N.png) reference. The bubble resolver maps that name back to
+      // this message's image (buildBubbleImageResolver) and renders it INLINE, right
+      // where it sat in the mail — the same shape /tool @outlook produces.
+      placedImages.add(idx);
+      // alt carries the "📷 N" label so Pandoc's ![alt](src) comes out as imageMarker().
+      return `<img src="${images[idx].name}" alt="\u{1F4F7} ${idx + 1}">`;
+    });
+  }
+
+  // <img> survives into the no-Pandoc fallback only if we turn it into markdown first
+  // (stripHtml drops every tag).
+  function imgTagsToMarkdown(html) {
+    return String(html || "").replace(/<img\b[^>]*>/gi, (tag) => {
+      const src = ((tag.match(/\bsrc\s*=\s*"([^"]*)"/i) || [])[1] || "").trim();
+      const alt = ((tag.match(/\balt\s*=\s*"([^"]*)"/i) || [])[1] || "").trim();
+      return src && !/^https?:/i.test(src) ? `\n![${alt}](${src})\n` : "";
+    });
+  }
+
   let rawHtml = "";
 
   if (boundaryMatch) {
     const result = processParts(bodySection, boundaryMatch[1]);
-    rawHtml = result.html || "";
+    rawHtml = annotateHtmlImages(result.html || "");
 
-    if (result.plain) {
+    // Prefer the HTML body when the mail carries inline images: only that branch can
+    // place the [📷 N] markers (the text/plain alternative has no image references).
+    if (result.plain && !(images.length && result.html)) {
       bodyText = result.plain;
     } else if (result.html) {
-      bodyText = stripHtml(result.html);
+      bodyText = stripHtml(imgTagsToMarkdown(rawHtml));
+    } else if (result.plain) {
+      bodyText = result.plain;
     }
   } else {
     // Simple message
     bodyText = decodePartBody(bodySection, contentType);
     if (contentType.includes("text/html")) {
-      rawHtml = bodyText;
-      bodyText = stripHtml(bodyText);
+      rawHtml = annotateHtmlImages(bodyText);
+      bodyText = stripHtml(imgTagsToMarkdown(rawHtml));
     }
   }
 
@@ -2608,11 +2705,13 @@ function parseEml(raw) {
   if (text) text += "\n---\n\n";
   text += bodyText.trim();
 
-  if (images.length > 0) {
+  // Images anchored in the body are already shown there; only the leftovers (plain-text
+  // mail, or attachments the HTML never referenced) need the trailing list, so a normal
+  // mail no longer ends in a wall of duplicate refs.
+  const unplaced = images.filter((_, i) => !placedImages.has(i));
+  if (unplaced.length > 0) {
     text += "\n\n---\n\n";
-    for (const img of images) {
-      text += `![](${img.name})\n`;
-    }
+    for (const img of unplaced) text += `![](${img.name})\n`;
   }
 
   return { text, images, rawHtml, headers: headerText.trim() };

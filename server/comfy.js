@@ -231,6 +231,30 @@ function loraBakedIn(model, lora) {
   return LORA_BAKED_IN.some((re) => re.test(model || "") && re.test(lora || ""));
 }
 
+// ── 3D mesh generation ───────────────────────────────────────────────────────
+// Sentinel for the "TripoSplat" dropdown entry — image → Gaussian splat. Spans five
+// weight files (UNET + dino_v3 CLIP-vision + two VAEs + optional birefnet), so the
+// entry is synthetic and the pieces are resolved at generation time (meshCompanions).
+const TRIPOSPLAT = "triposplat";
+// Sentinel for the "MoGe" dropdown entry — photo → textured scene mesh (geometry
+// ESTIMATION, not diffusion; no sampler). The checkpoint lives in ComfyUI's
+// geometry_estimation/ folder, outside both loader enums we scan, so a sentinel is
+// the only way to surface it; the real filename comes off LoadMoGeModel's enum.
+const MOGE_MESH = "moge-mesh";
+
+// Third classifier next to videoTypeOf/editTypeOf: models whose output is a 3D FILE
+// (.glb/.spz), not pixels. Hunyuan3D is a real checkpoint file; the other two are
+// sentinels. Anything matched here must be excluded from the plain-image ckpt list
+// (see proxyComfyModels) or it would be offered as a broken txt2img entry.
+function meshTypeOf(model) {
+  if (!model) return null;
+  if (model === TRIPOSPLAT) return "triposplat";
+  if (model === MOGE_MESH) return "moge";
+  // hunyuan_3d_v2.1.safetensors — disjoint from videoTypeOf's /hunyuan.?video/.
+  if (/hunyuan[._-]?3d/i.test(model)) return "hunyuan3d";
+  return null;
+}
+
 function videoTypeOf(model) {
   if (!model) return null;
   // Video enhance (interpolate + upscale): a model-free post-process (frame interpolation +
@@ -688,6 +712,8 @@ function marketName(name) {
     [INFINITETALK]: "InfiniteTalk (dub / lip-sync)",
     [INFINITETALK_SPEAK]: "InfiniteTalk (photo speaks)",
     [VIDEO_ENHANCE]: "Video interpolate + upscale",
+    [TRIPOSPLAT]: "TripoSplat (image → 3D splat)",
+    [MOGE_MESH]: "MoGe-2 (photo → 3D scene)",
   };
   if (name in sentinels) return sentinels[name];
   const b = precisionBase(name);
@@ -712,6 +738,7 @@ function marketName(name) {
     [/ltx/, "LTX-2.3 22B"],
     [/phantom.*14b/, "Phantom-Wan 14B"],
     [/phantom/, "Phantom-Wan 1.3B"],
+    [/hunyuan[._-]?3d/, "Hunyuan3D 2.1"], // before the generic /hunyuan/ video rule
     [/hunyuan/, "HunyuanVideo"],
     [/fun.?vace/, "Wan 2.2 Fun-VACE"],
     [/ti2v.*5b/, "Wan 2.2 TI2V 5B"],
@@ -729,6 +756,7 @@ function marketName(name) {
 // `group` is "image" | "edit" | "video"; `entry` is the video-list object.
 function capsFor(name, group, type, entry) {
   if (name === IMAGE_UPSCALE || name === VIDEO_ENHANCE) return ["tool"];
+  if (group === "mesh") return ["mesh"];
   if (name === BERNINI_T2I) return ["image"];
   if (name === BERNINI_IMG_EDIT || name === BERNINI_IMG_SUBJECT) return ["edit"];
   if (group === "image") return /hidream.?o1/i.test(name) ? ["image", "edit"] : ["image"];
@@ -801,6 +829,12 @@ function videoRank(n) {
   if (n === VIDEO_ENHANCE) return 14;
   return 50;
 }
+function meshRank(n) {
+  if (meshTypeOf(n) === "hunyuan3d") return 1; // the "real" 3D generator first
+  if (n === TRIPOSPLAT) return 2;
+  if (n === MOGE_MESH) return 3;
+  return 50;
+}
 
 // Whether a model's integration is READY — end-to-end verified on real hardware
 // AND fully wired into a build graph. An allowlist: anything not matched here is
@@ -824,7 +858,13 @@ function isModelReady(name, group, type) {
   // box: t2i 11s, i2i relight 7s (identity held: shape/colour/position untouched),
   // r2i 2-ref compose 7s turbo / 40s quality. fp8, 848×480.
   if (BERNINI_IMAGE_SENTINELS.has(name)) return true;
+  // 3D chains — all three recipes live-verified end-to-end (Jul 2026): MoGe textured
+  // GLB, Hunyuan3D 165K-vert mesh in 27s, TripoSplat spz + orbiting turntable in 34s.
+  if (name === TRIPOSPLAT || name === MOGE_MESH) return true;
   const b = precisionBase(name);
+  // Before the READY list: /hunyuan/ there would wrongly claim the 3D checkpoint
+  // for HunyuanVideo's entry — match it explicitly instead.
+  if (/hunyuan[._-]?3d/i.test(b)) return true;
   // fun_vace is surfaced via the generic /wan/ branch but has NO VACE-specific
   // builder (buildWan14B would run it as a plain t2v, ignoring the control/ref
   // inputs) — treat as not-yet-wired until a real VACE graph exists.
@@ -976,6 +1016,23 @@ async function proxyComfyModels(req, res) {
       // → talking video. No source video, so it joins the text/image→video group.
       videoModels.push({ name: INFINITETALK_SPEAK, type: "infinitetalk", label: "InfiniteTalk (photo → talking video)", needsImages: 1 });
     }
+    // 3D mesh models — a fourth group next to image/edit/video. Output is a FILE
+    // (.glb/.spz), so these must never fall into the pixel pipelines. Each chain is
+    // gated on its node set (comfyHasNodes, same policy as MSR/Union: an entry that
+    // always errors is worse than no entry) plus at least one weight on disk.
+    const meshModels = [];
+    const hunyuan3dCkpt = ckpts.find((n) => meshTypeOf(n) === "hunyuan3d");
+    if (hunyuan3dCkpt && await comfyHasNodes(["EmptyLatentHunyuan3Dv2", "Hunyuan3Dv2Conditioning", "VAEDecodeHunyuan3D", "VoxelToMesh", "SaveGLB"])) {
+      meshModels.push({ name: hunyuan3dCkpt, type: "hunyuan3d", needsImages: 1 });
+    }
+    if (unets.some((n) => /triposplat/i.test(n)) && await comfyHasNodes(["TripoSplatPreprocessImage", "TripoSplatConditioning", "VAEDecodeTripoSplat", "RenderSplat", "SplatToFile3D", "SaveGLB"])) {
+      meshModels.push({ name: TRIPOSPLAT, type: "triposplat", needsImages: 1, precFrom: unets.find((n) => /triposplat/i.test(n)) });
+    }
+    // MoGe's weight sits in geometry_estimation/, visible only through its own loader enum.
+    const mogeWeights = await comfyEnum("LoadMoGeModel", "model_name").catch(() => []);
+    if (mogeWeights.length && await comfyHasNodes(["MoGeInference", "MoGePointMapToMesh", "SaveGLB"])) {
+      meshModels.push({ name: MOGE_MESH, type: "moge", needsImages: 1 });
+    }
     // Bernini also renders STILLS (same weights + graph at length 1) — surface its
     // three image tasks once the weights are present. i2i/r2i take an attached image
     // so they belong in the instruction-edit group; t2i takes none, so it joins the
@@ -997,7 +1054,7 @@ async function proxyComfyModels(req, res) {
     const isCompanionModel = (n) => /sam[-_]?[23]|segment.?anything/i.test(n);
     // txt2img list: plain checkpoints (excluding edit/video/HiDream/companions) +
     // HiDream-I1 (a diffusion model loaded specially with QuadrupleCLIPLoader).
-    const plainCkpts = ckpts.filter((n) => !editTypeOf(n) && !videoTypeOf(n) && !/hidream/i.test(n) && !isCompanionModel(n));
+    const plainCkpts = ckpts.filter((n) => !editTypeOf(n) && !videoTypeOf(n) && !meshTypeOf(n) && !/hidream/i.test(n) && !isCompanionModel(n));
     const hidreamImage = all.filter((n) => /hidream.?i1/i.test(n));
     // HiDream-O1 (pixel-space UiT): a CheckpointLoaderSimple model that does BOTH
     // txt2img and reference editing — surfaced in the main image list (attach an
@@ -1047,6 +1104,7 @@ async function proxyComfyModels(req, res) {
     const relabel = (rep) => ({ ...rep, label: baseLabel(rep.label || rep.name) });
     const videoOut = dedupePrecision(videoModels, (m) => m.name, relabel);
     const editOut = dedupePrecision(editModels, (m) => m.name, relabel);
+    const meshOut = dedupePrecision(meshModels, (m) => m.name, relabel);
     // Image upscale (image HD): always offered — needs only an upscale model (checked
     // at gen time) + an attached image. Sits in the image model list as a sentinel.
     //
@@ -1068,6 +1126,7 @@ async function proxyComfyModels(req, res) {
     imageOut.sort((a, b) => imageRank(a) - imageRank(b));
     editOut.sort((a, b) => editRank(a.name) - editRank(b.name));
     videoOut.sort((a, b) => videoRank(a.name) - videoRank(b.name));
+    meshOut.sort((a, b) => meshRank(a.name) - meshRank(b.name));
     // Per-model display metadata: a clean market name (precision stripped) and the
     // capability tags the frontend turns into coloured dots. Keyed by the value the
     // option carries, so lookup is O(1) regardless of which group it came from.
@@ -1111,6 +1170,7 @@ async function proxyComfyModels(req, res) {
     modelMeta[IMAGE_UPSCALE] = { label: null, caps: ["tool"], ready: true };
     for (const m of editOut) setMeta(m.name, "edit", m.type, m);
     for (const m of videoOut) setMeta(m.name, "video", m.type, m);
+    for (const m of meshOut) setMeta(m.name, "mesh", m.type, m);
     // MSR's precision tiers come from whichever pool its ACTIVE path uses, read by TIER
     // directly — the mxfp8 file's "_block32" suffix breaks the precisionBase grouping
     // tiersFor relies on, so that path would wrongly report fp8-only after mxfp8 is added.
@@ -1130,9 +1190,9 @@ async function proxyComfyModels(req, res) {
       const tiers = [...new Set(cks.map(precisionOf).filter(Boolean))];
       if (tiers.length) modelMeta[LTX_UNION].prec = tiers;
     }
-    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, modelMeta, upscaleModels, ltxLoras, hostname });
+    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels, ltxLoras, hostname });
   } catch {
-    sendJson(res, 200, { models: [], editModels: [], videoModels: [], upscaleModels: [], ltxLoras: [] });
+    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], ltxLoras: [] });
   }
 }
 
@@ -3534,6 +3594,116 @@ function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, re
 
 // Parse intrinsic pixel dimensions from a base64 PNG/JPEG without an image lib.
 // Used to match a video's aspect ratio to the i2v conditioning image.
+// ── 3D mesh builders ─────────────────────────────────────────────────────────
+// Hunyuan3D 2.1 image→mesh (untextured GLB). Straight port of the official
+// `3d_hunyuan3d-v2.1` template: the checkpoint bundles the CLIP-vision encoder and
+// the shape VAE, conditioning is image-only (no text encoder anywhere), and the
+// sampled latent decodes to a VOXEL grid that surface-net triangulates into a mesh.
+function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = "euler", scheduler = "normal", resolution = 4096, numChunks = 8000, octreeRes = 256, threshold = 0.6 }) {
+  return {
+    "1": { class_type: "ImageOnlyCheckpointLoader", inputs: { ckpt_name: ckpt } },
+    "2": { class_type: "LoadImage", inputs: { image: imageName } },
+    "3": { class_type: "CLIPVisionEncode", inputs: { clip_vision: ["1", 1], image: ["2", 0], crop: "center" } },
+    "4": { class_type: "Hunyuan3Dv2Conditioning", inputs: { clip_vision_output: ["3", 0] } },
+    "5": { class_type: "EmptyLatentHunyuan3Dv2", inputs: { resolution, batch_size: 1 } },
+    "6": { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 1 } },
+    "7": { class_type: "KSampler", inputs: { model: ["6", 0], positive: ["4", 0], negative: ["4", 1], latent_image: ["5", 0], seed, steps, cfg, sampler_name: sampler, scheduler, denoise: 1 } },
+    "8": { class_type: "VAEDecodeHunyuan3D", inputs: { samples: ["7", 0], vae: ["1", 2], num_chunks: numChunks, octree_resolution: octreeRes } },
+    "9": { class_type: "VoxelToMesh", inputs: { voxel: ["8", 0], algorithm: "surface net", threshold } },
+    "10": { class_type: "SaveGLB", inputs: { mesh: ["9", 0], filename_prefix: "heykoko/mesh" } },
+  };
+}
+
+// MoGe-2 photo→textured scene mesh (geometry ESTIMATION — no sampler, no prompt).
+// Flattened from the `3d_moge_perspective_to_mesh` template's subgraph; its
+// resize-if-wider-than-2048 switch is replicated server-side (needsResize decided
+// from imageDims), so no Switch/Math nodes enter the API graph.
+//
+// decimation deliberately deviates from the template's 1: at resolution_level 9 an
+// undecimated point-map mesh is millions of triangles → a 50–150 MB GLB riding a
+// base64 JSON response and chat persistence. 2 quarters the triangle count.
+function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation = 2, texture = true, needsResize = false }) {
+  const g = {
+    "1": { class_type: "LoadImage", inputs: { image: imageName } },
+    "3": { class_type: "LoadMoGeModel", inputs: { model_name: modelName } },
+    "4": { class_type: "MoGeInference", inputs: { moge_model: ["3", 0], image: [needsResize ? "2" : "1", 0], resolution_level: resolutionLevel, fov_x_degrees: 0, batch_size: 1, force_projection: true, apply_mask: true } },
+    "5": { class_type: "MoGePointMapToMesh", inputs: { moge_geometry: ["4", 0], batch_index: 0, decimation, discontinuity_threshold: 0.04, texture } },
+    "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: "heykoko/mesh" } },
+  };
+  if (needsResize) g["2"] = { class_type: "ResizeImagesByLongerEdge", inputs: { images: ["1", 0], longer_edge: 2048 } };
+  return g;
+}
+
+// TripoSplat image→Gaussian splat. Flattened from the official template's two
+// nested subgraphs (link-for-link; UI-only nodes dropped: PreviewImage, the two
+// ComfySwitchNodes, TripoSplatSamplingPreview live-preview wrapper, and the
+// BiRefNet subgraph's JoinImageWithAlpha leg — the parent only consumes the raw
+// RemoveBackground mask). Two tails off one decode: RenderSplat's turntable
+// (frames>1 = a full 360° orbit; empty camera_info = auto-framed 3/4 view, both
+// verified from the node's own tooltips) → mp4 preview, and SplatToFile3D('spz')
+// → SaveGLB for the downloadable splat. Background removal is OPTIONAL: without
+// birefnet the mask falls back to the input image's own alpha (the template's
+// switch=false leg: InvertMask on LoadImage's mask output).
+function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler = "dpmpp_2m", scheduler = "simple", numGaussians = 262144 }) {
+  const g = {
+    "1": { class_type: "LoadImage", inputs: { image: imageName } },
+    "4": { class_type: "TripoSplatPreprocessImage", inputs: { image: ["1", 0], mask: ["3", 0], erode_radius: 1, size: 1024 } },
+    "5": { class_type: "CLIPVisionLoader", inputs: { clip_name: comp.dino } },
+    "6": { class_type: "VAELoader", inputs: { vae_name: comp.flux2Vae } },
+    "7": { class_type: "UNETLoader", inputs: { unet_name: comp.unet, weight_dtype: "default" } },
+    "8": { class_type: "VAELoader", inputs: { vae_name: comp.splatVae } },
+    "9": { class_type: "TripoSplatConditioning", inputs: { clip_vision: ["5", 0], vae: ["6", 0], image: ["4", 0] } },
+    "10": { class_type: "KSampler", inputs: { model: ["7", 0], positive: ["9", 0], negative: ["9", 1], latent_image: ["9", 2], seed, steps, cfg, sampler_name: sampler, scheduler, denoise: 1 } },
+    "11": { class_type: "VAEDecodeTripoSplat", inputs: { samples: ["10", 0], vae: ["8", 0], num_gaussians: numGaussians, seed } },
+    "12": { class_type: "RenderSplat", inputs: { splat: ["11", 0], width: 1024, height: 1024, frames: 75, splat_scale: 1, sharpen: 2, headlight_shading: 0, opacity_threshold: 0, render_style: "color", background: "#848484" } },
+    "13": { class_type: "CreateVideo", inputs: { images: ["12", 0], fps: 25 } },
+    "14": { class_type: "SaveVideo", inputs: { video: ["13", 0], filename_prefix: "heykoko/video", format: "auto", codec: "auto" } },
+    "15": { class_type: "SplatToFile3D", inputs: { splat: ["11", 0], format: "spz" } },
+    "16": { class_type: "SaveGLB", inputs: { mesh: ["15", 0], filename_prefix: "heykoko/mesh" } },
+  };
+  if (comp.birefnet) {
+    g["2"] = { class_type: "LoadBackgroundRemovalModel", inputs: { bg_removal_name: comp.birefnet } };
+    g["3"] = { class_type: "RemoveBackground", inputs: { bg_removal_model: ["2", 0], image: ["1", 0] } };
+  } else {
+    g["3"] = { class_type: "InvertMask", inputs: { mask: ["1", 1] } };
+  }
+  return g;
+}
+
+// Companion files for the mesh chains, resolved off ComfyUI's own enums. Throws a
+// user-actionable error naming the missing file + subfolder, same policy as
+// editCompanions. hunyuan3d needs nothing (the checkpoint bundles CLIP-vision+VAE).
+async function meshCompanions(meshType) {
+  if (meshType === "moge") {
+    const weights = await comfyEnum("LoadMoGeModel", "model_name").catch(() => []);
+    // Prefer MoGe-2 with normals (sharper edges, metric scale); fall back to any.
+    const mogeModel = weights.find((n) => /moge_2.*normal/i.test(n)) || weights[0];
+    if (!mogeModel) throw new Error("MoGe weight missing: download moge_2_vitl_normal_fp16.safetensors from huggingface.co/Comfy-Org/MoGe into ComfyUI models/geometry_estimation/");
+    return { mogeModel };
+  }
+  if (meshType === "triposplat") {
+    const [unets, clips, vaes, bgs] = await Promise.all([
+      comfyEnum("UNETLoader", "unet_name"),
+      comfyEnum("CLIPVisionLoader", "clip_name").catch(() => []),
+      comfyEnum("VAELoader", "vae_name").catch(() => []),
+      comfyEnum("LoadBackgroundRemovalModel", "bg_removal_name").catch(() => []),
+    ]);
+    const unet = unets.find((n) => /triposplat/i.test(n));
+    const dino = clips.find((n) => /dino_v3/i.test(n));
+    const splatVae = vaes.find((n) => /triposplat.*vae|triposplat_vae_decoder/i.test(n));
+    const flux2Vae = vaes.find((n) => /flux2.?vae/i.test(n));
+    const missing = [];
+    if (!unet) missing.push("diffusion_models/triposplat_fp16.safetensors");
+    if (!dino) missing.push("clip_vision/dino_v3_vit_h.safetensors");
+    if (!splatVae) missing.push("vae/triposplat_vae_decoder_fp16.safetensors");
+    if (!flux2Vae) missing.push("vae/flux2-vae.safetensors");
+    if (missing.length) throw new Error(`Missing TripoSplat files (huggingface.co/VAST-AI/TripoSplat):\n- ${missing.join("\n- ")}`);
+    // birefnet is optional — absent, the input image's own alpha is the mask.
+    return { unet, dino, splatVae, flux2Vae, birefnet: bgs.find((n) => /birefnet/i.test(n)) || null };
+  }
+  return {};
+}
+
 function imageDims(b64) {
   try {
     const clean = typeof b64 === "string" && b64.startsWith("data:") ? b64.split(",")[1] : b64;
@@ -3904,6 +4074,8 @@ async function generateComfyImage(req, res) {
     // "bernini" and send down the VIDEO path — force it to null so the image
     // branch below claims them instead.
     const videoType = berniniImageTask ? null : videoTypeOf(model);
+    // 3D mesh chains (Hunyuan3D / TripoSplat / MoGe) — output is a .glb/.spz FILE.
+    const meshType = meshTypeOf(model);
 
     // Instruction-edit models require a reference image to edit.
     if (editType && !isImg2Img) {
@@ -3918,7 +4090,9 @@ async function generateComfyImage(req, res) {
     // long Wan Animate render out on a stable box; only a Stop / client disconnect ends it), N =
     // N seconds (the manual cap, NO upper clamp). Images keep the 10-min safety cap.
     isVideoReq = !!videoType;
-    const timeoutMs = videoType
+    // Mesh rides the video timeout policy — Hunyuan3D's octree decode alone can take
+    // minutes, so the 10-min image safety cap is the wrong ceiling for it.
+    const timeoutMs = (videoType || meshType)
       ? (reqTimeout === 0 ? 0 : Math.max(60, reqTimeout || 1800) * 1000)
       : Math.min(600, Math.max(60, reqTimeout || 120)) * 1000;
     const deadline = timeoutMs ? Date.now() + timeoutMs : Infinity;
@@ -4415,6 +4589,37 @@ async function generateComfyImage(req, res) {
         const outFrames = srcFrames ? Math.min(wantFrames, srcFrames) : wantFrames;
         videoDims = { width: v.width, height: v.height, length: outFrames, fps: v.fps };
         if (srcFrames > wantFrames) videoDims.truncatedFrom = srcFrames; // pinned/preset length cut the clip
+      } else if (meshType) {
+        // 3D mesh generation — every chain is image-driven (no text conditioning
+        // anywhere in these graphs), so an attached image is mandatory.
+        if (!hasImgInput) {
+          sendJson(res, 400, { error: "This model turns an image into a 3D model. Attach an image first, then use /imagine." });
+          return;
+        }
+        const imageName = await uploadImage(images[0], controller.signal, "heykoko_mesh_in.png");
+        imagesUsed = 1;
+        if (meshType === "hunyuan3d") {
+          workflow = buildHunyuan3D({ ckpt: model, imageName, seed,
+            steps: opts.steps || 30, cfg: opts.cfg !== undefined ? opts.cfg : 5,
+            sampler: opts.sampler || "euler", scheduler: opts.scheduler || "normal",
+            octreeRes: opts.meshOctree || 256 });
+        } else if (meshType === "moge") {
+          const comp = await meshCompanions("moge");
+          // Replicate the template's resize-if->2048 guard server-side.
+          const d = imageDims(images[0]);
+          const needsResize = !!(d && Math.max(d.width, d.height) > 2048);
+          workflow = buildMoGeMesh({ modelName: comp.mogeModel, imageName,
+            resolutionLevel: opts.mogeDetail !== undefined ? opts.mogeDetail : 9, needsResize });
+        } else if (meshType === "triposplat") {
+          const comp = await meshCompanions("triposplat");
+          workflow = buildTripoSplat({ imageName, comp, seed,
+            steps: opts.steps || 20, cfg: opts.cfg !== undefined ? opts.cfg : 3,
+            sampler: opts.sampler || "dpmpp_2m", scheduler: opts.scheduler || "simple",
+            numGaussians: opts.meshGaussians || 262144 });
+        } else {
+          sendJson(res, 400, { error: `3D chain "${meshType}" is not wired yet.` });
+          return;
+        }
       } else if (videoType) {
         // Video. WAN 5B ti2v + 14B i2v do image→video; WAN 14B t2v / Hunyuan are
         // text→video only. The dedicated WAN 2.2 14B i2v model needs a ref image.
@@ -4727,7 +4932,10 @@ async function generateComfyImage(req, res) {
       //   • VHS present → rewrite for the requested codec (default h264)
       //   • VHS absent  → leave native SaveVideo (h264); a h265 request degrades to
       //                   h264 and says so, rather than failing the whole render.
-      const isVideoTail = Object.values(workflow).some((n) => n.class_type === "CreateVideo");
+      // Mesh workflows are excluded even though TripoSplat's turntable tail has a
+      // CreateVideo node — a 3-second orbit preview gains nothing from h265/CRF and
+      // the ⚙ video codec setting shouldn't silently reshape a 3D result.
+      const isVideoTail = !meshType && Object.values(workflow).some((n) => n.class_type === "CreateVideo");
       if (isVideoTail) {
         const wantCodec = opts.videoCodec === "h265" ? "h265" : "h264";
         const crf = Number(opts.videoCrf) || 0;
@@ -4771,12 +4979,14 @@ async function generateComfyImage(req, res) {
       const outputs = await waitForOutputs(promptId, controller.signal, deadline);
       const outImages = [];
       const outVideos = [];
+      const outMeshes = [], meshMimes = [], meshNames = [];
       let videoMime = "video/mp4";
       let firstVideoBuf = null; // kept to ffprobe the real output frame count (animate chunking)
       for (const nodeId of Object.keys(outputs)) {
         // SaveVideo/SaveImage report under `images`; VHS_VideoCombine (⚙ H.265) reports
-        // the saved file under `gifs` — same {filename,subfolder,type} shape for /view.
-        for (const img of [...(outputs[nodeId].images || []), ...(outputs[nodeId].gifs || [])]) {
+        // the saved file under `gifs`; SaveGLB reports under `3d` (ui={"3d": results}) —
+        // all the same {filename,subfolder,type} shape for /view.
+        for (const img of [...(outputs[nodeId].images || []), ...(outputs[nodeId].gifs || []), ...(outputs[nodeId]["3d"] || [])]) {
           if (img.type === "temp") continue; // skip previews, keep final outputs
           const params = new URLSearchParams({
             filename: img.filename,
@@ -4786,7 +4996,13 @@ async function generateComfyImage(req, res) {
           const viewResp = await fetch(`${currentComfyUrl()}/view?${params}`, { signal: controller.signal });
           if (!viewResp.ok) continue;
           const buf = Buffer.from(await viewResp.arrayBuffer());
-          if (/\.(mp4|webm|mov)$/i.test(img.filename)) {
+          // 3D files first: TripoSplat saves BOTH a turntable mp4 and a .spz in one
+          // run, so the mesh test must not be an else-arm of the video test.
+          if (/\.(glb|gltf|spz|ply|ksplat)$/i.test(img.filename)) {
+            outMeshes.push(buf.toString("base64"));
+            meshMimes.push(/\.glb$/i.test(img.filename) ? "model/gltf-binary" : "application/octet-stream");
+            meshNames.push(img.filename);
+          } else if (/\.(mp4|webm|mov)$/i.test(img.filename)) {
             videoMime = /\.webm$/i.test(img.filename) ? "video/webm" : "video/mp4";
             if (!firstVideoBuf) firstVideoBuf = buf;
             outVideos.push(buf.toString("base64"));
@@ -4833,6 +5049,18 @@ async function generateComfyImage(req, res) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=animate:still, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, images=${outImages.length}`);
         if (!outImages.length) { sendJson(res, 502, { error: "ComfyUI finished but produced no image. Please retry." }); return; }
         sendJson(res, 200, { images: outImages, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, imagesUsed });
+      } else if (meshType) {
+        console.log(`${ts} [comfy-gen] model=${model}, mode=mesh:${meshType}, meshes=${outMeshes.length}, videos=${outVideos.length}`);
+        if (!outMeshes.length) {
+          const nodeIds = Object.keys(outputs || {}).join(", ") || "none";
+          sendJson(res, 502, { error: `ComfyUI finished but produced no 3D file (output nodes: ${nodeIds}). Please retry.` });
+          return;
+        }
+        // TripoSplat ships a turntable preview mp4 alongside the .spz — carry both.
+        sendJson(res, 200, { meshes: outMeshes, meshMimes, meshNames,
+          videos: outVideos.length ? outVideos : undefined,
+          videoMime: outVideos.length ? videoMime : undefined,
+          model, seed, precisionNote, precisionUsed, imagesUsed });
       } else if (videoType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
         // Ran to completion but no video file came back — tell the client why rather

@@ -345,23 +345,10 @@ end tell`, 60000);
 
 // ---- Outlook (legacy scripting): the message(s) selected in the reading pane ----
 
-// Image MIME types we extract from Outlook attachments.
-const IMG_MIME_RE = /^image\/(png|jpe?g|gif|heic|webp)$/i;
-const IMG_EXT_SET = new Set(["png", "jpg", "jpeg", "gif", "heic", "webp"]);
-
-// Minimum size thresholds to filter out tiny signature logos.
-const IMG_MIN_BYTES = 8 * 1024;   // 8 KB
+// Email-image policy (size floors, MIME allow-list, naming, remote download) is shared
+// with the dropped-.eml path via server/mail-images.js — see the note there.
+const { IMG_MIME_RE, IMG_EXT_SET, IMG_MIN_BYTES, mimeToExt, imageName, fetchRemoteImages } = require("./mail-images");
 const IMG_MAX_COUNT = Infinity;
-
-// Map MIME type to file extension for uniform image naming.
-function mimeToExt(mime) {
-  if (/jpeg|jpg/i.test(mime)) return "jpg";
-  if (/png/i.test(mime)) return "png";
-  if (/gif/i.test(mime)) return "gif";
-  if (/webp/i.test(mime)) return "webp";
-  if (/heic/i.test(mime)) return "heic";
-  return "jpg";
-}
 
 async function readOutlook() {
   const out = await runOsa(
@@ -526,7 +513,7 @@ async function extractOutlookImages() {
   const { images: fromAtt, names: attNames } = await extractFromAttachments();
   if (fromAtt.length) {
     // Generate uniform filenames: Image1.jpg, Image2.png, etc.
-    const imageNames = fromAtt.map((im, i) => `image_${String(i + 1).padStart(2, "0")}.${mimeToExt(im.mime)}`);
+    const imageNames = fromAtt.map((im, i) => imageName(i + 1, im.mime));
     let text = null;
     try {
       const html = await readOutlookHtml();
@@ -678,32 +665,12 @@ async function extractFromHtmlBody() {
   }
   if (!urls.length) return { images: [], text: null };
 
-  const saved = [];
-  const savedUrls = [];
-  for (const url of urls) {
-    if (saved.length >= IMG_MAX_COUNT) break;
-    try {
-      const res = await fetch(url, {
-        headers: { "User-Agent": "Mozilla/5.0 (compatible; LocalAIChat/1.0)", "Accept": "image/*,*/*;q=0.8" },
-        signal: AbortSignal.timeout(8000), redirect: "follow",
-      });
-      if (!res.ok) continue;
-      let ct = (res.headers.get("content-type") || "").split(";")[0].trim();
-      if (!ct.startsWith("image/") || ct === "image/svg+xml") continue;
-      let buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length < IMG_MIN_BYTES || buf.length > 5 * 1024 * 1024) continue;
-      try {
-        const o = await optimizeImage(buf, ct);
-        saved.push({ base64: o.buf.toString("base64"), mime: o.ct });
-      } catch {
-        if (buf.length < 5 * 1024 * 1024) saved.push({ base64: buf.toString("base64"), mime: ct });
-      }
-      savedUrls.push(url);
-    } catch { /* single download failure — continue */ }
-  }
-  // Annotate the HTML body with image position markers.
-  // Generate uniform filenames: Image1.jpg, Image2.png, etc.
-  const imageNames = saved.map((im, i) => `image_${String(i + 1).padStart(2, "0")}.${mimeToExt(im.mime)}`);
+  // Shared downloader: same filters, shrinking and ordering the .eml path uses.
+  const fetched = (await fetchRemoteImages(urls)).slice(0, IMG_MAX_COUNT);
+  const saved = fetched.map(({ base64, mime }) => ({ base64, mime }));
+  const savedUrls = fetched.map((f) => f.url);
+  // Annotate the HTML body with image position markers (uniform image_01.png names).
+  const imageNames = saved.map((im, i) => imageName(i + 1, im.mime));
   let text = null;
   if (saved.length) {
     try {

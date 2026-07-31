@@ -772,6 +772,18 @@
             <span id="comfyParamTimeoutLabel" title="Video only — how long the server waits for a render before giving up. EMPTY = default 4 hours. 0 = no limit (wait forever; only Stop cancels). A number = that many minutes. Long Wan Animate videos can take hours.">Video timeout (min)</span>
             <input id="comfyParamTimeout" type="number" min="0" step="5" placeholder="4h default · 0 = no limit" title="Video only — EMPTY = default 4 h. 0 = no limit (wait forever). A number = minutes." />
           </label>
+          <label>
+            <span id="comfyParamMeshOctreeLabel">3D detail (Hunyuan3D octree)</span>
+            <input id="comfyParamMeshOctree" type="number" min="64" max="512" step="64" placeholder="Auto (256)" />
+          </label>
+          <label>
+            <span id="comfyParamMeshGaussiansLabel">3D splat count (TripoSplat)</span>
+            <input id="comfyParamMeshGaussians" type="number" min="32768" max="1048576" step="32768" placeholder="Auto (262144)" />
+          </label>
+          <label>
+            <span id="comfyParamMogeDetailLabel">3D detail level (MoGe 0–9)</span>
+            <input id="comfyParamMogeDetail" type="number" min="0" max="9" step="1" placeholder="Auto (9)" />
+          </label>
           <div class="comfyParamRow">
             <label title="升格 / frame interpolation: smoothly resample the generated video up to this frame rate (same duration, more frames). Pick a common value (30/60/…) or type your own. The multiplier is chosen automatically from the model's / source's fps. If the source is already at/above this, it's skipped. Applies to all video models.">
               <span id="comfyParamTargetFpsLabel">Smooth to FPS (升格)</span>

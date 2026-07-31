@@ -130,6 +130,10 @@ export function initArchive() {
       if (msg.videoWidths) m.videoWidths = msg.videoWidths;
       if (msg.videoHeights) m.videoHeights = msg.videoHeights;
       if (msg.generatedVideoThumbnails) m.generatedVideoThumbnails = msg.generatedVideoThumbnails.filter(Boolean);
+      // Generated 3D models (.glb/.spz) — parallel arrays, round-tripped like videos.
+      if (msg.generatedMeshes) m.generatedMeshes = msg.generatedMeshes;
+      if (msg.meshMimes) m.meshMimes = msg.meshMimes;
+      if (msg.meshNames) m.meshNames = msg.meshNames;
       if (msg.isCompactSummary) m.isCompactSummary = true;
       if (msg.isFilePreview) m.isFilePreview = true;
       if (msg.translation) m.translation = msg.translation;

@@ -155,6 +155,12 @@ function saveChatMessage(message) {
     stored.generatedAudio = message.generatedAudio;
     stored.audioMime = message.audioMime || "audio/aac";
   }
+  // Generated 3D models (.glb/.spz) — three parallel arrays, persisted together.
+  if (message.generatedMeshes && message.generatedMeshes.length > 0) {
+    stored.generatedMeshes = message.generatedMeshes;
+    if (message.meshMimes) stored.meshMimes = message.meshMimes;
+    if (message.meshNames) stored.meshNames = message.meshNames;
+  }
   if (message.isCompactSummary) stored.isCompactSummary = true;
   if (message.isFilePreview) stored.isFilePreview = true;
   if (message.translation) stored.translation = message.translation;

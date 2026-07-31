@@ -241,10 +241,10 @@ function cancelReaderOnAbort(reader, signal) {
 }
 
 // Short label for a queued /imagine job (first prompt, or a generic fallback).
-function bgImagineLabel(cmds, isVideo) {
+function bgImagineLabel(cmds, isVideo, isMesh) {
   const txt = cmds.map((c) => c.prompt).filter(Boolean).join("; ").trim();
   if (txt) return txt.length > 48 ? txt.slice(0, 48) + "…" : txt;
-  return isVideo ? t("bg_kindVideo") : t("bg_kindImage");
+  return isMesh ? t("bg_kindMesh") : isVideo ? t("bg_kindVideo") : t("bg_kindImage");
 }
 
 // Generation (image/video/audio) always runs through the background queue. This
@@ -254,6 +254,8 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
   // A ComfyUI video model (no Ollama image model) routes through generateVideo —
   // capture model + kind at submit time so a later dropdown change can't redirect it.
   const isVideo = !dom.imageModelSelect.value && dom.comfyModelSelect && state.comfyVideoModels.has(dom.comfyModelSelect.value);
+  // A ComfyUI 3D model → a "mesh" job (routes through generateMesh; .glb/.spz result).
+  const isMesh = !dom.imageModelSelect.value && dom.comfyModelSelect && state.comfyMeshModels && state.comfyMeshModels.has(dom.comfyModelSelect.value);
   const modelOverride = { imageModel: dom.imageModelSelect.value, comfyModel: dom.comfyModelSelect ? dom.comfyModelSelect.value : "" };
   // BATCH video-edit: one bg job per source clip (each runs the same workflow → its
   // own output). All jobs share the reference images + mask point; the Replace point
@@ -269,9 +271,9 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
   const needsEnhance = validCmds.some((c) => c.enhance && c.prompt && c.prompt.trim());
   const created = jobs.map((clip, i) => enqueueBgJob({
     tabId,
-    kind: isVideo ? "video" : "image",
+    kind: isMesh ? "mesh" : isVideo ? "video" : "image",
     // Tag the label with "(N/M)" so the jobs drawer distinguishes a batch's clips.
-    label: bgImagineLabel(validCmds, isVideo) + (multi ? ` (${i + 1}/${clips.length})` : ""),
+    label: bgImagineLabel(validCmds, isVideo, isMesh) + (multi ? ` (${i + 1}/${clips.length})` : ""),
     // Keep batch order: each placeholder lands AFTER the previous one.
     insertIndex: insertIndex >= 0 ? insertIndex + i : -1,
     status: needsEnhance ? "enhancing" : "queued",
@@ -388,7 +390,7 @@ function bgBlockResend(index) {
 // Build a placeholder bubble for a background job sitting in the chat at its
 // original position. Mirrors the jobs-drawer status text; offers jump + cancel.
 function renderBgPlaceholder(message) {
-  const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄', libimport: '📚' };
+  const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', mesh: '🧊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄', libimport: '📚' };
   const el = document.createElement('div');
   el.className = `message assistant bgPlaceholder bgPlaceholder-${message.status || 'queued'}`;
   el.dataset.msgId = message.id;
@@ -673,6 +675,21 @@ function deleteMessageVideo(msgIndex, vidIndex) {
   }
   if (message.generatedVideoThumbnails && message.generatedVideoThumbnails.length > vidIndex) {
     message.generatedVideoThumbnails.splice(vidIndex, 1);
+  }
+  saveChat();
+  const scrollY = dom.messagesEl.scrollTop;
+  renderChat();
+  dom.messagesEl.scrollTop = scrollY;
+}
+
+function deleteMessageMesh(msgIndex, meshIndex) {
+  const tab = getActiveTab();
+  if (tab.locked) return;
+  const message = tab.messages[msgIndex];
+  if (!message) return;
+  // Splice all three parallel arrays together, or the name/mime columns drift.
+  for (const key of ["generatedMeshes", "meshMimes", "meshNames"]) {
+    if (message[key] && message[key].length > meshIndex) message[key].splice(meshIndex, 1);
   }
   saveChat();
   const scrollY = dom.messagesEl.scrollTop;
@@ -2785,10 +2802,13 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
         assistantPreview.imageNames = file.images.map((img) => img.name || null);
       }
     }
-    // Display-only thumbnails (e.g. images downloaded from email HTML): shown in
-    // the bubble but kept out of `images` so they never enter the model context.
+    // Display-only images (email inline + downloaded HTML images): shown in the
+    // bubble with download/lightbox, but kept out of `images` so they never enter
+    // the model context — the body's [📷 N] markers say where each one sat.
     if (file.displayThumbnails && file.displayThumbnails.length > 0) {
       assistantPreview.generatedThumbnails = file.displayThumbnails;
+      if (file.displayImages && file.displayImages.length) assistantPreview.generatedImages = file.displayImages;
+      if (file.displayImageNames && file.displayImageNames.length) assistantPreview.generatedImageNames = file.displayImageNames;
     }
     tab.messages.push(assistantPreview);
 
@@ -3269,7 +3289,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       // must NOT start a bubble drag — only a press on the bubble's own chrome does.
       const noDrag = e.target.closest(
         ".plainBody, .markdownBody, .editMessageInput, textarea, .messageTimestamp, " +
-        "img, video, .imageWrapper, .videoWrapper, button, input, a"
+        "img, video, canvas, .imageWrapper, .videoWrapper, .meshWrapper, button, input, a"
       );
       item.draggable = !noDrag;
     });
@@ -3851,6 +3871,60 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       if (mediaRow && !mediaRow.isConnected) item.insertBefore(mediaRow, textEl);
     } else if (vgrid.children.length) {
       item.appendChild(vgrid);
+    }
+  }
+
+  // Generated 3D models (.glb/.spz) — a compact card per file: 🧊 + filename + a
+  // download button (lazy blob href, so nothing decodes until the user reaches for
+  // it). The interactive GLB viewer (P1) layers a canvas onto this card; the card
+  // itself is the no-WebGL fallback and the .spz (splat) presentation.
+  {
+    const meshMsg = Number.isInteger(index) ? getActiveTab().messages[index] : null;
+    const meshes = meshMsg && Array.isArray(meshMsg.generatedMeshes) ? meshMsg.generatedMeshes : [];
+    if (meshes.length) {
+      const mgrid = document.createElement("div");
+      mgrid.className = "meshGrid";
+      for (let mi = 0; mi < meshes.length; mi++) {
+        const data = meshes[mi];
+        if (!data || data.length < 100) continue;
+        const mmime = (meshMsg.meshMimes && meshMsg.meshMimes[mi]) || "model/gltf-binary";
+        const rawName = (meshMsg.meshNames && meshMsg.meshNames[mi]) || "";
+        const mext = (rawName.match(/\.(glb|gltf|spz|ply|ksplat)$/i) || [, "glb"])[1].toLowerCase();
+        const wrapper = document.createElement("div");
+        wrapper.className = "meshWrapper";
+        // Interactive GLB viewer (lazy): a poster canvas above the card; click to
+        // orbit. Splats (.spz) and non-WebGL browsers keep the card-only fallback.
+        if (mmime === "model/gltf-binary") {
+          const mc = document.createElement("canvas");
+          mc.className = "meshCanvas";
+          wrapper.appendChild(mc);
+          import("./glb-viewer.js").then((v) => {
+            if (!v.isSupported()) { mc.hidden = true; return; }
+            v.attachMesh(mc, () => data, { name: rawName, cacheKey: `${rawName}:${data.length}:${data.slice(0, 32)}` });
+          }).catch(() => { mc.hidden = true; });
+        }
+        const card = document.createElement("div");
+        card.className = "meshCard";
+        card.innerHTML = `<span class="meshIcon">🧊</span>`;
+        const label = document.createElement("span");
+        label.className = "meshLabel";
+        label.textContent = rawName ? rawName.replace(/^.*\//, "") : `model.${mext}`;
+        card.appendChild(label);
+        wrapper.appendChild(card);
+        const mname = mediaFilename(rawName ? rawName.replace(/^.*\//, "") : null, timestamp, "model", mext, mi, meshes.length);
+        // Lazy href — the base64→blob decode happens on hover/focus, not at render.
+        wrapper.appendChild(makeDownloadButton("meshDownloadBtn", () => base64ToBlobUrl(data, mmime), mname, base64ByteLength(data), t("btn_downloadMesh")));
+        if (role !== "user") {
+          const del = document.createElement("button");
+          del.className = "meshDeleteBtn";
+          del.textContent = "×";
+          del.title = t("btn_deleteMesh");
+          del.addEventListener("click", () => deleteMessageMesh(index, mi));
+          wrapper.appendChild(del);
+        }
+        mgrid.appendChild(wrapper);
+      }
+      if (mgrid.children.length) item.appendChild(mgrid);
     }
   }
 

@@ -214,7 +214,7 @@ function laneLoad(workerId) {
 // worker that has the model; others go to 'local'. Snapshot onto the job (like
 // modelOverride) so a later config change can't redirect a queued job.
 function assignWorker(job) {
-  if (job.kind !== 'image' && job.kind !== 'video') { job.workerId = 'local'; job.workerUrl = null; return; }
+  if (job.kind !== 'image' && job.kind !== 'video' && job.kind !== 'mesh') { job.workerId = 'local'; job.workerUrl = null; return; }
   const model = (job.payload && job.payload.modelOverride && job.payload.modelOverride.comfyModel) || job.payload?.model || '';
   const all = comfyWorkers();
   if (!all.length) { job.workerId = 'local'; job.workerUrl = null; return; } // no comfy → Ollama image path
@@ -457,7 +457,8 @@ async function runJob(job) {
   } else if (job.kind === 'libimport') {
     await runLibImport(job, sink);
   } else {
-    // image OR video — generateImage routes to generateVideo for a video model.
+    // image OR video OR mesh — generateImage routes to generateVideo / generateMesh
+    // by the selected model's capability set.
     // modelOverride pins the model captured at submit time, so switching the model
     // dropdown afterwards doesn't change a queued job's destination. job.workerUrl
     // (set by the scheduler) pins WHICH ComfyUI machine runs it — its parallel lane.
@@ -500,6 +501,8 @@ async function runDocFull(job, sink) {
   if (!text.trim() && !images.length) throw new Error(t('bg_parseEmpty'));
   const tool = (parsed && parsed.tool) || '';
   const displayThumbnails = parsed && parsed.displayThumbnails;
+  const displayImages = parsed && parsed.displayImages;
+  const displayImageNames = parsed && parsed.displayImageNames;
 
   // Build the same two bubbles sendMessage's file branch builds (verbatim prompts).
   const ext = (p.ext || '').replace(/^\./, '').toLowerCase();
@@ -523,7 +526,12 @@ async function runDocFull(job, sink) {
     // Keep each embedded image's own filename (e.g. from a PDF/DOCX) for its download name.
     if (images.some((img) => img.name)) previewMsg.imageNames = images.map((img) => img.name || null);
   }
-  if (displayThumbnails && displayThumbnails.length) previewMsg.generatedThumbnails = displayThumbnails;
+  // Display-only email images: grid with download/lightbox, never in the model context.
+  if (displayThumbnails && displayThumbnails.length) {
+    previewMsg.generatedThumbnails = displayThumbnails;
+    if (displayImages && displayImages.length) previewMsg.generatedImages = displayImages;
+    if (displayImageNames && displayImageNames.length) previewMsg.generatedImageNames = displayImageNames;
+  }
   const promptMsg = { id: genId(), role: 'user', content: autoPrompt, timestamp: Date.now() };
 
   // Splice both right before the placeholder (its index may have shifted during parse).
@@ -680,7 +688,7 @@ function makeBgSink(job, controller) {
       // time + duration, so the bubble shows when it was actually produced (and the ⏱ how
       // long it took) — correct even if the page was closed for the whole render. Scoped to
       // pure generation kinds so it never touches the youtube-reply / analyze place() paths.
-      if (job.kind === 'image' || job.kind === 'video' || job.kind === 'audio') {
+      if (job.kind === 'image' || job.kind === 'video' || job.kind === 'audio' || job.kind === 'mesh') {
         const timing = serverJobTiming(job.serverJobId);
         if (timing && timing.finishedAt) msg.timestamp = timing.finishedAt;
         if (timing && timing.startedAt && timing.finishedAt && msg.genMs == null) msg.genMs = timing.finishedAt - timing.startedAt;
@@ -943,7 +951,7 @@ export function jumpToJob(jobId) {
 
 // ---- drawer UI -------------------------------------------------------------
 
-const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄' };
+const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', mesh: '🧊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄' };
 
 export function openBgDrawer(flashJobId) {
   state.bgDrawerOpen = true;
@@ -1230,7 +1238,7 @@ function jobMachine(job) {
   }
   // 'local' lane (Ollama image / local ComfyUI / TTS): the comfy display already
   // carries the " (hostname)" suffix the server resolved.
-  if (job.kind === 'image' || job.kind === 'video') {
+  if (job.kind === 'image' || job.kind === 'video' || job.kind === 'mesh') {
     const d = (dom.comfyUrlDisplay?.textContent || '').trim();
     if (d) return d;
   }
@@ -1307,7 +1315,7 @@ function jobDetail(job) {
     if (q && q.trim()) return clipCtx(q, 44);
   } else if (job.kind === 'docfull') {
     return clipCtx(p.name || '', 44);
-  } else if (job.kind === 'image' || job.kind === 'video') {
+  } else if (job.kind === 'image' || job.kind === 'video' || job.kind === 'mesh') {
     const m = p.modelOverride || {};
     return clipCtx(m.comfyModel || m.imageModel || '', 44);
   } else if (job.kind === 'libimport') {
@@ -1502,7 +1510,7 @@ export async function restoreBgJobsOnLoad() {
   // now an indistinguishable empty bubble — the user removes those with the × manually.)
   const jobMsgIds = new Set(jobs.map((j) => j.msgId));
   const isEmptyJunk = (m) => !m.bgPlaceholder && m.role === 'assistant' && (!m.content || !m.content.trim())
-    && !m.generatedImages && !m.generatedVideos && !m.generatedAudio && !m.generatedThumbnails
+    && !m.generatedImages && !m.generatedVideos && !m.generatedAudio && !m.generatedMeshes && !m.generatedThumbnails
     && !m.generatedVideoThumbnails && !m.contextImages && !m.thinking && !m.toolSteps
     && !m.isFilePreview && !m.isCompactSummary && !m.translation;
   let removed = false;

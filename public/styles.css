@@ -5417,6 +5417,177 @@ body.isResizingComposer {
   display: none;
 }
 
+/* Generated 3D models (.glb/.spz) — a compact file card per mesh. The P1 GLB
+   viewer canvas mounts INSIDE .meshWrapper, above the card. */
+.meshGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.meshWrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.meshCanvas {
+  display: block;
+  width: 320px;
+  max-width: 100%;
+  height: 260px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: radial-gradient(ellipse at 50% 40%, rgba(128, 128, 148, 0.18), rgba(0, 0, 0, 0.06));
+  cursor: grab;
+}
+
+/* Interactive 3D overlay: the HOST goes fullscreen (a <canvas> can't own the HUD
+   buttons), the canvas fills it and the HUD floats above. */
+.meshGlHost { overflow: hidden; }
+.meshGlOverlay {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  cursor: grab;
+  touch-action: none;
+}
+
+.meshHud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;   /* drags pass through to the canvas… */
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-end;   /* in-bubble: corner-tucked, off the model */
+  gap: 6px;
+  padding: 8px;
+}
+
+.meshHudBar {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;   /* …except the controls themselves */
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.meshGlHost:hover .meshHudBar,
+.meshGlHost.isFs .meshHudBar { opacity: 1; }
+
+/* padding + min-height are RESET explicitly: the global `button` rule (padding:
+   0 16px, min-height: 42px) squeezes a 28px square down to a 0-wide content box
+   and stretches it to 42px tall, which pushes the glyph off-centre. */
+.meshHudBtn {
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.meshHudBtn:hover { background: rgba(255, 255, 255, 0.22); }
+.meshHudBtn.isOn { background: var(--accent, #4a7dff); }
+
+.meshHudHint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(0, 0, 0, 0.45);
+  padding: 3px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+/* Toolbar + legend are fullscreen-only — the 320px bubble box has no room. */
+.meshGlHost:not(.isFs) .isFsOnly { display: none; }
+.meshGlHost.isFs .meshHud { justify-content: space-between; align-items: center; }
+.meshGlHost.isFs .meshHudBar { order: 2; }
+.meshGlHost.isFs .meshHudHint { order: 1; align-self: center; }
+.meshGlHost.isFs .meshHudBtn { width: 40px; height: 40px; font-size: 18px; }
+
+.meshCard {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  padding-right: 44px; /* room for the ⬇ / × overlay buttons */
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface, rgba(0, 0, 0, 0.04));
+  font-size: 0.85rem;
+  min-width: 180px;
+}
+
+.meshIcon { font-size: 1.2rem; }
+
+.meshLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.meshDownloadBtn {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 15px;
+  text-decoration: none;
+  transition: background 0.15s ease;
+}
+
+.meshDownloadBtn:hover { background: var(--accent); }
+
+.meshDeleteBtn {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.meshWrapper:hover .meshDeleteBtn { opacity: 1; }
+.meshDeleteBtn:hover { background: #c0392b; }
+
+.message.isFolded > .meshGrid {
+  display: none;
+}
+
 .message.imageGen .markdownBody {
   color: var(--muted);
 }
@@ -6934,7 +7105,7 @@ body.isResizingComposer {
 }
 .comfyPickRow {
   display: flex; align-items: center; justify-content: space-between; gap: 6px;
-  width: 100%; min-height: 0; padding: 6px 8px; margin: 0 0 2px;
+  width: 100%; min-height: 0; padding: 3px 8px; margin: 0;
   border: 1px solid transparent; border-radius: 6px;
   background: none; color: var(--ink); font-size: 12.5px; font-weight: 400;
   text-align: left; cursor: pointer;

@@ -411,7 +411,10 @@ function applyComfyModels(data) {
     const models = data.models || [];                 // checkpoints (txt2img / img2img)
     const editModels = data.editModels || [];         // instruction-edit models (need a ref image)
     const videoModels = data.videoModels || [];       // text→video / image→video
+    const meshModels = data.meshModels || [];         // image→3D model (.glb/.spz output)
     state.comfyVideoModels = new Set(videoModels.map((m) => m.name));
+    // 3D mesh models route to generateMesh and get a mesh bubble instead of pixels.
+    state.comfyMeshModels = new Set(meshModels.map((m) => m.name));
     // Video models whose ⚙ sampler / scheduler / steps / cfg actually reach the graph.
     // The server decides this (it knows which builders read a preset); the rest hardcode
     // a schedule, so showing the fields for them would promise something that never happens.
@@ -467,7 +470,7 @@ function applyComfyModels(data) {
       }
       dom.comfyParamLtxLora.value = state.comfyLtxLoras.includes(savedLora) ? savedLora : "";
     }
-    const allNames = [...models, ...editModels.map((m) => m.name), ...videoModels.map((m) => m.name)];
+    const allNames = [...models, ...editModels.map((m) => m.name), ...videoModels.map((m) => m.name), ...meshModels.map((m) => m.name)];
     dom.comfyModelSelect.innerHTML = "";
     // Capability-dot legend under the dropdown — only meaningful once there are models.
 
@@ -500,7 +503,7 @@ function applyComfyModels(data) {
       // The coloured circles are input→output MODES and read as a set. "audio" is a
       // different axis — an extra property of the output, not another mode — so it gets
       // a pictograph rather than one more colour in the row.
-      const CAP_DOT = { image: "🔵", edit: "🟠", t2v: "🟢", i2v: "🟡", v2v: "🟣", tool: "⚪", audio: "🔊" };
+      const CAP_DOT = { image: "🔵", edit: "🟠", t2v: "🟢", i2v: "🟡", v2v: "🟣", tool: "⚪", audio: "🔊", mesh: "🟤" };
       const capDots = (name) => {
         const caps = (meta[name] && meta[name].caps) || [];
         const dots = caps.map((c) => CAP_DOT[c] || "").join("");
@@ -584,6 +587,15 @@ function applyComfyModels(data) {
         for (const m of videoIn) addOption(group, m.name, m.label, bucket);
         dom.comfyModelSelect.appendChild(group);
         groups.push({ key: "comfy_video_input_group", items: bucket });
+      }
+      if (meshModels.length) {
+        const group = document.createElement("optgroup");
+        group.dataset.i18n = "comfy_3d_group";
+        group.label = t("comfy_3d_group");
+        const bucket = [];
+        for (const m of meshModels) addOption(group, m.name, m.label, bucket);
+        dom.comfyModelSelect.appendChild(group);
+        groups.push({ key: "comfy_3d_group", items: bucket });
       }
       dom.comfyModelSelect.value = allNames.includes(current) ? current : allNames[0];
       // Readiness by model name — updateComfyMultiHint reads this to warn when the
@@ -702,6 +714,10 @@ function comfyModelHint(name) {
   // Pipelines that aren't really "models" (sentinels for a whole workflow).
   if (/image-upscale/.test(n)) return t("oll_hint_imageUpscale");
   if (/video-enhance/.test(n)) return t("oll_hint_videoEnhance");
+  // 3D chains — hunyuan_3d BEFORE the generic /hunyuan/ (HunyuanVideo) test.
+  if (/hunyuan[._-]?3d/.test(n)) return t("oll_hint_hunyuan3d");
+  if (n === "triposplat") return t("oll_hint_triposplat");
+  if (n === "moge-mesh") return t("oll_hint_mogeMesh");
   // Video, needs a source clip. scail BEFORE animate — see above.
   if (n === "infinitetalk") return t("oll_hint_infinitetalk");
   if (n === "infinitetalk_speak") return t("oll_hint_infinitetalkSpeak");
@@ -1128,12 +1144,24 @@ export function updateComfyParamVisibility() {
   const animateReplace = animate && /replace/i.test(m);
   const scail2 = /scail/i.test(m);                     // both SCAIL-2 entries — the real filename and the "animate" sentinel
   const diffusion = !upscale;                          // samples + takes a prompt (everything except the upscale pipelines)
+  // 3D mesh models: image-conditioned only (no text encoder in any of these graphs),
+  // so the prompt add-ons / guidance / denoise knobs would all silently do nothing.
+  // Hunyuan3D is the one with a real KSampler, so it alone keeps the sampler row.
+  const mesh = !!(state.comfyMeshModels && state.comfyMeshModels.has(m));
+  // Hunyuan3D and TripoSplat run real KSamplers; MoGe has none (pure estimation).
+  const meshSampler = mesh && (/hunyuan[._-]?3d/i.test(m) || m === "triposplat");
   // Hide a field by its <label> (or, for the frame-interpolation pair, the shared .comfyParamRow; the
   // pick-person button has no label, so fall back to the element itself).
   const setVis = (el, on, sel) => { if (!el) return; const box = sel ? el.closest(sel) : (el.closest("label") || el); if (box) box.hidden = !on; };
   // Video timing — gen length is diffusion-only (an upscale / VFI keeps the source's own length).
   setVis(dom.comfyParamLength, video && diffusion);
-  for (const el of [dom.comfyParamFps, dom.comfyParamTimeout]) setVis(el, video);
+  setVis(dom.comfyParamFps, video);
+  // Timeout: mesh renders ride the video timeout policy (Hunyuan3D can take minutes).
+  setVis(dom.comfyParamTimeout, video || mesh);
+  // 3D knobs — one per chain, shown only for its own model.
+  setVis(dom.comfyParamMeshOctree, mesh && /hunyuan[._-]?3d/i.test(m));
+  setVis(dom.comfyParamMeshGaussians, m === "triposplat");
+  setVis(dom.comfyParamMogeDetail, m === "moge-mesh");
   // Video codec + its CRF: every video model (the tail rewrite is builder-agnostic).
   for (const el of [dom.comfyParamVideoCodec, dom.comfyParamVideoCrf]) setVis(el, video);
   if (video) syncVideoCrfPlaceholder();
@@ -1168,21 +1196,23 @@ export function updateComfyParamVisibility() {
   // Upscale-model pipelines only (image-upscale / video-enhance) — the upscale-denoise % + the upscale-model picker.
   for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel]) setVis(el, upscale);
   // Image-edit / txt2img only.
-  setVis(dom.comfyParamImageCfg, diffusion && !video);
+  setVis(dom.comfyParamImageCfg, diffusion && !video && !mesh);
   // Quantisation preference — diffusion models only (the upscale pipelines load an
-  // upscale model, which has no precision variants).
-  setVis(dom.comfyParamPrecision, diffusion);
-  if (diffusion) syncPrecisionOptions(m);
-  // Prompt add-ons — every diffusion model reads them (an upscale pipeline takes no prompt).
-  for (const el of [dom.comfyParamPositive, dom.comfyParamNegative]) setVis(el, diffusion);
+  // upscale model, which has no precision variants; the mesh chains ship one file each).
+  setVis(dom.comfyParamPrecision, diffusion && !mesh);
+  if (diffusion && !mesh) syncPrecisionOptions(m);
+  // Prompt add-ons — every diffusion model reads them (an upscale pipeline takes no
+  // prompt, and the mesh chains have no text conditioning at all).
+  for (const el of [dom.comfyParamPositive, dom.comfyParamNegative]) setVis(el, diffusion && !mesh);
   // Guidance + img2img denoise are IMAGE-only: no video builder accepts either
   // (resolveVideoConfig doesn't even carry them).
-  for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video);
+  for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video && !mesh);
   // Sampler / scheduler / steps / cfg: honoured by every image model, but only by the
   // preset-driven video models. SCAIL-2 / Wan Animate / bernini hardcode a schedule
-  // bound to their distill LoRA and ignore these — so hide rather than lie.
+  // bound to their distill LoRA and ignore these — so hide rather than lie. Of the
+  // mesh chains only Hunyuan3D runs a real KSampler.
   const samplerTunable = !video || !!(state.comfySamplerTunable && state.comfySamplerTunable.has(m));
-  for (const el of [dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps, dom.comfyParamCfg]) setVis(el, diffusion && samplerTunable);
+  for (const el of [dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps, dom.comfyParamCfg]) setVis(el, (diffusion && samplerTunable && !mesh) || meshSampler);
 }
 
 export async function loadEmbedModels() {
@@ -1327,6 +1357,9 @@ function initComfyParamsModal() {
     dom.comfyParamLength,
     dom.comfyParamFps,
     dom.comfyParamTimeout,
+    dom.comfyParamMeshOctree,
+    dom.comfyParamMeshGaussians,
+    dom.comfyParamMogeDetail,
     dom.comfyParamTargetFps,
     dom.comfyParamUpscaleDenoise,
     dom.comfyParamUpscaleModel,

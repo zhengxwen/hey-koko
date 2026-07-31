@@ -24,11 +24,24 @@ Hey-Koko reads the model list live from ComfyUI's `/object_info` and auto-select
 | **Text-to-video** | `/imagine <prompt>` | WAN 2.2 (5B / 14B), Hunyuan Video, LTX-2.3 |
 | **Image-to-video** | Attach an image + `/imagine <prompt>` | WAN 2.2 (5B ti2v / 14B i2v), LTX-2.3 |
 | **Video editing** | Attach a source video + `/imagine <prompt>` | WAN 2.2 (Bernini v2v/rv2v), WAN 2.2 Animate (pose transfer) |
+| **Image → 3D model** | Attach an image + `/imagine` (prompt optional) | Hunyuan3D 2.1, TripoSplat, MoGe-2 |
 
 Each model family ships with sane sampling defaults (Flux guidance distillation, InstructPix2Pix dual-CFG, WAN's standard negative prompt, the LTX audio+video pipeline, etc.).
 
 - **WAN 2.2 14B** is a two-expert (high-noise + low-noise) model — Hey-Koko chains both experts automatically and collapses the pair into a single dropdown entry. With the **LightX2V 4-step LoRAs** installed it auto-switches to the fast 4-step / cfg-1 path (~6–10× faster).
 - **LTX-2.3** generates synchronized **audio**, muxed into the output MP4.
+
+## 3D generation
+
+Three image-to-3D chains appear in the **3D models** dropdown group once their weights are installed. All are image-driven (the prompt is ignored); results show as an interactive in-chat 3D viewer (drag to orbit, wheel to zoom, double-click to reframe) plus a download button.
+
+| Model | Output | Weights (→ ComfyUI `models/` subfolder) |
+|-------|--------|------------------------------------------|
+| **Hunyuan3D 2.1** | Untextured mesh (`.glb`) | `checkpoints/hunyuan_3d_v2.1.safetensors` (~4.9 GB) — [Comfy-Org/hunyuan3D_2.1_repackaged](https://huggingface.co/Comfy-Org/hunyuan3D_2.1_repackaged) |
+| **TripoSplat** | Gaussian splat (`.spz`) + turntable preview video | `diffusion_models/triposplat_fp16.safetensors`, `clip_vision/dino_v3_vit_h.safetensors`, `vae/triposplat_vae_decoder_fp16.safetensors`, `vae/flux2-vae.safetensors` — [VAST-AI/TripoSplat](https://huggingface.co/VAST-AI/TripoSplat); optional `background_removal/birefnet.safetensors` — [Comfy-Org/BiRefNet](https://huggingface.co/Comfy-Org/BiRefNet) (without it the input image's own alpha is used as the subject mask) |
+| **MoGe-2** | Textured scene mesh (`.glb`, geometry estimation — fast) | `geometry_estimation/moge_2_vitl_normal_fp16.safetensors` (~1.3 GB) — [Comfy-Org/MoGe](https://huggingface.co/Comfy-Org/MoGe) |
+
+The ⚙ popup exposes one knob per chain (Hunyuan3D octree resolution, TripoSplat splat count, MoGe detail level); Hunyuan3D and TripoSplat also honour the sampler/steps/CFG/seed fields. `.spz` splats are download-only (drop them into a splat viewer or game engine); `.glb` files open right in the chat.
 
 ## `/imagine` flags
 
