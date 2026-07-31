@@ -435,7 +435,7 @@ end tell`);
   const to = (toRaw || "").replace(/,\s*$/, "").trim();
   const result = { app: "outlook", subject: subject || "", from: from || "", to: to || "", date: date || "", text: normalizeText(text) };
 
-  // ---- image extraction (best-effort: never blocks the text result) ----
+  // ---- image extraction + HTML-based text (best-effort) ----
   try {
     const extracted = await extractOutlookImages();
     if (extracted.images.length) {
@@ -443,6 +443,14 @@ end tell`);
       result.imageNames = extracted.imageNames;
     }
     if (extracted.text) result.text = normalizeText(extracted.text);
+    else {
+      // No images found but still convert HTML to preserve hyperlinks.
+      const html = await readOutlookHtml();
+      if (html) {
+        const converted = htmlToAnnotatedText(html, new Map(), []);
+        if (converted) result.text = normalizeText(converted);
+      }
+    }
   } catch { /* silent degrade to text-only */ }
   return result;
 }
@@ -495,6 +503,14 @@ function htmlToAnnotatedText(html, imageKeys, imageNames) {
   h = h.replace(/<\/(p|div|tr|li|h[1-6]|blockquote|section|article|header|footer)>/gi, "\n");
   h = h.replace(/<(br|hr)\b[^>]*\/?>/gi, "\n");
   h = h.replace(/<\/td>/gi, "  ");
+  // Convert <a href="URL">text</a> to markdown links before stripping tags.
+  h = h.replace(/<a\b[^>]*\bhref\s*=\s*"([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href, inner) => {
+    const text = inner.replace(/<[^>]+>/g, "").trim();
+    if (!href || !text) return text || "";
+    if (/^(mailto:|javascript:|#)/i.test(href)) return text;
+    if (text === href || text === href.replace(/^https?:\/\//, "")) return href;
+    return `[${text}](${href})`;
+  });
   h = h.replace(/<[^>]+>/g, "");
   h = h.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#0*39;/g, "'")
