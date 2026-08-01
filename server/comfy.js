@@ -1023,9 +1023,11 @@ async function proxyComfyModels(req, res) {
     const meshModels = [];
     const hunyuan3dCkpt = ckpts.find((n) => meshTypeOf(n) === "hunyuan3d");
     if (hunyuan3dCkpt && await comfyHasNodes(["EmptyLatentHunyuan3Dv2", "Hunyuan3Dv2Conditioning", "VAEDecodeHunyuan3D", "VoxelToMesh", "SaveGLB"])) {
-      meshModels.push({ name: hunyuan3dCkpt, type: "hunyuan3d", needsImages: 1 });
+      // paint = the texturing wrapper is installed, so the ⚙ "texture the model"
+      // box is worth showing. Without it the chain still runs, just white.
+      meshModels.push({ name: hunyuan3dCkpt, type: "hunyuan3d", needsImages: 1, paint: await comfyHasNodes(PAINT_NODES) });
     }
-    if (unets.some((n) => /triposplat/i.test(n)) && await comfyHasNodes(["TripoSplatPreprocessImage", "TripoSplatConditioning", "VAEDecodeTripoSplat", "RenderSplat", "SplatToFile3D", "SaveGLB"])) {
+    if (unets.some((n) => /triposplat/i.test(n)) && await comfyHasNodes(["TripoSplatPreprocessImage", "TripoSplatConditioning", "VAEDecodeTripoSplat", "SplatToMesh", "SaveGLB"])) {
       meshModels.push({ name: TRIPOSPLAT, type: "triposplat", needsImages: 1, precFrom: unets.find((n) => /triposplat/i.test(n)) });
     }
     // MoGe's weight sits in geometry_estimation/, visible only through its own loader enum.
@@ -3609,14 +3611,27 @@ function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, re
 // Framing matters nearly as much: a subject filling a quarter of the frame decodes
 // with a shattered, noisy surface. Cropping to the subject before conditioning
 // (autoCrop) fixed exactly that in the same A/B.
-function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = "euler", scheduler = "normal", resolution = 4096, numChunks = 8000, octreeRes = 256, threshold = 0.6, bgRemoval = null, autoCrop = false }) {
+//
+// paint appends the PBR texturing chain (see PAINT_NODES): the shape half is
+// unchanged, its MESH is bridged to the wrapper's TRIMESH world, UV-unwrapped,
+// rendered from six fixed views, repainted by the paint model, baked back into an
+// albedo + metallic-roughness atlas, and exported as a textured GLB.
+function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = "euler", scheduler = "normal", resolution = 4096, numChunks = 8000, octreeRes = 256, threshold = 0.6, bgRemoval = null, autoCrop = false, maskName = null, paint = false, paintPrefix = "", paintViews = 768, paintSteps = 10, textureSize = 1024, maxFacenum = 40000 }) {
   // What the CLIP-vision encoder actually sees — the raw image only when there is
   // no background remover installed to prepare it.
   let condImage = ["2", 0];
   const prep = {};
-  if (bgRemoval) {
-    prep["11"] = { class_type: "LoadBackgroundRemovalModel", inputs: { bg_removal_name: bgRemoval } };
-    prep["12"] = { class_type: "RemoveBackground", inputs: { bg_removal_model: ["11", 0], image: ["2", 0] } }; // MASK: 1 = subject
+  // A hand-painted mask REPLACES background removal: the user has already said
+  // exactly what the subject is, so running BiRefNet on top could only disagree
+  // with them. Everything downstream (white plate, composite, crop) is identical —
+  // only where the mask comes from changes.
+  if (maskName || bgRemoval) {
+    if (maskName) {
+      prep["12"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } }; // painted = subject
+    } else {
+      prep["11"] = { class_type: "LoadBackgroundRemovalModel", inputs: { bg_removal_name: bgRemoval } };
+      prep["12"] = { class_type: "RemoveBackground", inputs: { bg_removal_model: ["11", 0], image: ["2", 0] } }; // MASK: 1 = subject
+    }
     // Size the white plate from the image itself rather than parsing it server-side,
     // so it works for any format ComfyUI can load (webp, avif…).
     prep["17"] = { class_type: "GetImageSize", inputs: { image: ["2", 0] } };
@@ -3628,8 +3643,29 @@ function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = 
       condImage = ["16", 0];
     }
   }
+  // Texturing tail. Numbered from 20 because 1–10 is the shape chain and 11–17 the
+  // optional preprocessing. SaveGLB (node 10) is dropped when painting — core
+  // SaveGLB only serialises vertices/faces/vertex-colours, so routing the painted
+  // TRIMESH back through TrimeshToMESH would silently strip the atlas; the wrapper's
+  // own exporter is the only thing that writes the textures out.
+  const paintTail = {};
+  if (paint) {
+    paintTail["20"] = { class_type: "MESHToTrimesh", inputs: { mesh: ["9", 0] } };
+    paintTail["21"] = { class_type: "Hy3D21PostprocessMesh", inputs: { trimesh: ["20", 0], remove_floaters: true, remove_degenerate_faces: true, reduce_faces: true, max_facenum: maxFacenum, smooth_normals: false } };
+    paintTail["22"] = { class_type: "Hy3D21MeshUVWrap", inputs: { trimesh: ["21", 0] } };
+    // Six views: four around the equator plus top and bottom. The weights favour
+    // front/back over the profiles, which is the wrapper's own recommended set.
+    paintTail["23"] = { class_type: "Hy3D21CameraConfig", inputs: { camera_azimuths: "0, 90, 180, 270, 0, 180", camera_elevations: "0, 0, 0, 0, 90, -90", view_weights: "1, 0.5, 1, 0.5, 1, 1", ortho_scale: 1.1 } };
+    // The reference image is the SAME one the shape model saw (cut out and framed),
+    // so the paint model isn't asked to match colours from a different crop.
+    paintTail["24"] = { class_type: "Hy3DMultiViewsGenerator", inputs: { trimesh: ["22", 0], camera_config: ["23", 0], view_size: paintViews, image: condImage, steps: paintSteps, guidance_scale: 3, texture_size: textureSize, unwrap_mesh: false, seed } };
+    paintTail["25"] = { class_type: "Hy3DBakeMultiViews", inputs: { pipeline: ["24", 0], camera_config: ["23", 0], albedo: ["24", 1], mr: ["24", 2] } };
+    paintTail["26"] = { class_type: "Hy3DInPaint", inputs: { pipeline: ["25", 0], albedo: ["25", 1], albedo_mask: ["25", 2], mr: ["25", 3], mr_mask: ["25", 4], output_mesh_name: "heykoko_paint" } };
+    paintTail["27"] = { class_type: "Hy3D21ExportMesh", inputs: { trimesh: ["26", 2], filename_prefix: paintPrefix, file_format: "glb", save_file: true } };
+  }
   return {
     ...prep,
+    ...paintTail,
     "1": { class_type: "ImageOnlyCheckpointLoader", inputs: { ckpt_name: ckpt } },
     "2": { class_type: "LoadImage", inputs: { image: imageName } },
     "3": { class_type: "CLIPVisionEncode", inputs: { clip_vision: ["1", 1], image: condImage, crop: "center" } },
@@ -3639,7 +3675,7 @@ function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = 
     "7": { class_type: "KSampler", inputs: { model: ["6", 0], positive: ["4", 0], negative: ["4", 1], latent_image: ["5", 0], seed, steps, cfg, sampler_name: sampler, scheduler, denoise: 1 } },
     "8": { class_type: "VAEDecodeHunyuan3D", inputs: { samples: ["7", 0], vae: ["1", 2], num_chunks: numChunks, octree_resolution: octreeRes } },
     "9": { class_type: "VoxelToMesh", inputs: { voxel: ["8", 0], algorithm: "surface net", threshold } },
-    "10": { class_type: "SaveGLB", inputs: { mesh: ["9", 0], filename_prefix: "heykoko/mesh" } },
+    ...(paint ? {} : { "10": { class_type: "SaveGLB", inputs: { mesh: ["9", 0], filename_prefix: "heykoko/mesh" } } }),
   };
 }
 
@@ -3651,15 +3687,43 @@ function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = 
 // decimation deliberately deviates from the template's 1: at resolution_level 9 an
 // undecimated point-map mesh is millions of triangles → a 50–150 MB GLB riding a
 // base64 JSON response and chat persistence. 2 quarters the triangle count.
-function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation = 2, texture = true, needsResize = false }) {
+//
+// Subject-only mode (a painted mask, or the ⚙ box) reuses Hunyuan3D's cut-out
+// preprocessing, and it works for a reason worth writing down: MoGe has no mask
+// input, but apply_mask sets its OWN predicted invalid regions to inf so meshing
+// culls them — and a flat white plate reads as exactly that. Measured on one photo:
+// raw → 475k faces spanning 26×19×113 (a scene slab with the subject buried in it);
+// the same photo cut out on white → 11k faces at 1.4×1.1×0.4, subject only, no
+// backdrop plane anywhere. Cropping to the subject afterwards spends the pixels on
+// the subject instead of the plate (68k faces at the same extents).
+function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation = 2, texture = true, needsResize = false, bgRemoval = null, maskName = null, autoCrop = false }) {
   const g = {
     "1": { class_type: "LoadImage", inputs: { image: imageName } },
     "3": { class_type: "LoadMoGeModel", inputs: { model_name: modelName } },
-    "4": { class_type: "MoGeInference", inputs: { moge_model: ["3", 0], image: [needsResize ? "2" : "1", 0], resolution_level: resolutionLevel, fov_x_degrees: 0, batch_size: 1, force_projection: true, apply_mask: true } },
     "5": { class_type: "MoGePointMapToMesh", inputs: { moge_geometry: ["4", 0], batch_index: 0, decimation, discontinuity_threshold: 0.04, texture } },
     "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: "heykoko/mesh" } },
   };
   if (needsResize) g["2"] = { class_type: "ResizeImagesByLongerEdge", inputs: { images: ["1", 0], longer_edge: 2048 } };
+  // Everything downstream reads whatever the resize guard left as "the image".
+  const base = [needsResize ? "2" : "1", 0];
+  let inferImage = base;
+  if (maskName || bgRemoval) {
+    if (maskName) {
+      g["12"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+    } else {
+      g["11"] = { class_type: "LoadBackgroundRemovalModel", inputs: { bg_removal_name: bgRemoval } };
+      g["12"] = { class_type: "RemoveBackground", inputs: { bg_removal_model: ["11", 0], image: base } };
+    }
+    g["17"] = { class_type: "GetImageSize", inputs: { image: base } };
+    g["13"] = { class_type: "EmptyImage", inputs: { width: ["17", 0], height: ["17", 1], batch_size: 1, color: 0xffffff } };
+    g["14"] = { class_type: "ImageCompositeMasked", inputs: { destination: ["13", 0], source: base, x: 0, y: 0, resize_source: false, mask: ["12", 0] } };
+    inferImage = ["14", 0];
+    if (autoCrop) {
+      g["16"] = { class_type: "ImageCropByMaskAndResize", inputs: { image: ["14", 0], mask: ["12", 0], base_resolution: 1024, padding: 64, min_crop_resolution: 128, max_crop_resolution: 2048 } };
+      inferImage = ["16", 0];
+    }
+  }
+  g["4"] = { class_type: "MoGeInference", inputs: { moge_model: ["3", 0], image: inferImage, resolution_level: resolutionLevel, fov_x_degrees: 0, batch_size: 1, force_projection: true, apply_mask: true } };
   return g;
 }
 
@@ -3667,19 +3731,19 @@ function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation =
 // nested subgraphs (link-for-link; UI-only nodes dropped: PreviewImage, the two
 // ComfySwitchNodes, TripoSplatSamplingPreview live-preview wrapper, and the
 // BiRefNet subgraph's JoinImageWithAlpha leg — the parent only consumes the raw
-// RemoveBackground mask). Two tails off one decode: RenderSplat's turntable
-// (frames>1 = a full 360° orbit; empty camera_info = auto-framed 3/4 view, both
-// verified from the node's own tooltips) → mp4 preview, and SplatToFile3D('spz')
-// → SaveGLB for the downloadable splat. Background removal is OPTIONAL: without
-// birefnet the mask falls back to the input image's own alpha (the template's
-// switch=false leg: InvertMask on LoadImage's mask output).
+// RemoveBackground mask). Background removal is OPTIONAL: without birefnet the mask
+// falls back to the input image's own alpha (the template's switch=false leg:
+// InvertMask on LoadImage's mask output).
 //
-// splatMesh swaps the .spz export for SplatToMesh — a real triangle mesh carrying
-// VERTEX COLOURS (the template ships this branch bypassed). That is the only local
-// way to get a COLOURED 3D file: Hunyuan3D's paint model isn't part of ComfyUI's
-// native nodes, so its meshes are always untextured. Costs size and a softer
-// surface; the two exports are the same object, so it's either/or rather than both.
-function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler = "dpmpp_2m", scheduler = "simple", numGaussians = 262144, splatMesh = false, meshDetail = 256 }) {
+// The decode has ONE tail: SplatToMesh → a real triangle mesh with VERTEX COLOURS,
+// saved as .glb (the template ships this branch bypassed in favour of .spz).
+// The template's other two tails are deliberately gone:
+//   • SplatToFile3D('spz') — nothing in this app can open a splat file, and the
+//     mesh is the same object in a format the bubble's viewer renders directly.
+//   • RenderSplat → CreateVideo → SaveVideo — a 75-frame turntable existed only to
+//     preview the unviewable .spz. With a .glb in the bubble you can already orbit
+//     the real thing, so it was rendering a video of something you can spin yourself.
+function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler = "dpmpp_2m", scheduler = "simple", numGaussians = 262144, meshDetail = 256, maskName = null }) {
   const g = {
     "1": { class_type: "LoadImage", inputs: { image: imageName } },
     "4": { class_type: "TripoSplatPreprocessImage", inputs: { image: ["1", 0], mask: ["3", 0], erode_radius: 1, size: 1024 } },
@@ -3690,16 +3754,16 @@ function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler =
     "9": { class_type: "TripoSplatConditioning", inputs: { clip_vision: ["5", 0], vae: ["6", 0], image: ["4", 0] } },
     "10": { class_type: "KSampler", inputs: { model: ["7", 0], positive: ["9", 0], negative: ["9", 1], latent_image: ["9", 2], seed, steps, cfg, sampler_name: sampler, scheduler, denoise: 1 } },
     "11": { class_type: "VAEDecodeTripoSplat", inputs: { samples: ["10", 0], vae: ["8", 0], num_gaussians: numGaussians, seed } },
-    "12": { class_type: "RenderSplat", inputs: { splat: ["11", 0], width: 1024, height: 1024, frames: 75, splat_scale: 1, sharpen: 2, headlight_shading: 0, opacity_threshold: 0, render_style: "color", background: "#848484" } },
-    "13": { class_type: "CreateVideo", inputs: { images: ["12", 0], fps: 25 } },
-    "14": { class_type: "SaveVideo", inputs: { video: ["13", 0], filename_prefix: "heykoko/video", format: "auto", codec: "auto" } },
-    // 15/16 = the 3D export tail, swapped by splatMesh (see above).
-    "15": splatMesh
-      ? { class_type: "SplatToMesh", inputs: { splat: ["11", 0], resolution: meshDetail, kernel: 5, smooth: 0, level: 0.6, min_component: 500, min_opacity: 0.02, color_sharpen: 2 } }
-      : { class_type: "SplatToFile3D", inputs: { splat: ["11", 0], format: "spz" } },
+    // 12–14 were the turntable render; the ids stay free rather than renumbering a
+    // graph whose wiring is otherwise a link-for-link port of the template.
+    "15": { class_type: "SplatToMesh", inputs: { splat: ["11", 0], resolution: meshDetail, kernel: 5, smooth: 0, level: 0.6, min_component: 500, min_opacity: 0.02, color_sharpen: 2 } },
     "16": { class_type: "SaveGLB", inputs: { mesh: ["15", 0], filename_prefix: "heykoko/mesh" } },
   };
-  if (comp.birefnet) {
+  // Same rule as Hunyuan3D: a painted mask outranks both the background remover and
+  // the alpha fallback — it is the user pointing at the subject directly.
+  if (maskName) {
+    g["3"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+  } else if (comp.birefnet) {
     g["2"] = { class_type: "LoadBackgroundRemovalModel", inputs: { bg_removal_name: comp.birefnet } };
     g["3"] = { class_type: "RemoveBackground", inputs: { bg_removal_model: ["2", 0], image: ["1", 0] } };
   } else {
@@ -3707,6 +3771,24 @@ function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler =
   }
   return g;
 }
+
+// Hunyuan3D's PBR texturing chain. ComfyUI ships only the shape model, so these all
+// come from the ComfyUI-Hunyuan3DWrapper custom node plus the paint weights
+// (hunyuan3d-paintpbr-v2-1) — absent on a stock install, which is why every use is
+// gated on this list and falls back to an untextured mesh.
+const PAINT_NODES = ["MESHToTrimesh", "Hy3D21PostprocessMesh", "Hy3D21MeshUVWrap", "Hy3D21CameraConfig",
+  "Hy3DMultiViewsGenerator", "Hy3DBakeMultiViews", "Hy3DInPaint", "Hy3D21ExportMesh"];
+
+// ⚙ "Texture quality". These four have to move TOGETHER — a 4096 atlas baked from
+// 768 px views is mostly interpolation, and a dense atlas on a 40 k-face mesh has
+// nowhere to put the extra detail. view_size is capped at 1024 by the node itself
+// (min 512, step 256), so "ultra" buys atlas size + sampling steps, not sharper
+// source views. texture_size steps by 512 up to 4096.
+const PAINT_TIERS = {
+  standard: { textureSize: 1024, paintViews: 768, paintSteps: 10, maxFacenum: 40000 },
+  fine: { textureSize: 2048, paintViews: 1024, paintSteps: 20, maxFacenum: 120000 },
+  ultra: { textureSize: 4096, paintViews: 1024, paintSteps: 30, maxFacenum: 300000 },
+};
 
 // Companion files for the mesh chains, resolved off ComfyUI's own enums. Throws a
 // user-actionable error naming the missing file + subfolder, same policy as
@@ -3720,7 +3802,8 @@ async function meshCompanions(meshType) {
     const weight = bgs.find((n) => /birefnet/i.test(n)) || bgs[0] || null;
     const nodesOk = weight && await comfyHasNodes(["LoadBackgroundRemovalModel", "RemoveBackground", "GetImageSize", "EmptyImage", "ImageCompositeMasked"]);
     const birefnet = nodesOk ? weight : null;
-    return { birefnet, autoCrop: birefnet ? await comfyHasNodes(["ImageCropByMaskAndResize"]) : false };
+    return { birefnet, autoCrop: birefnet ? await comfyHasNodes(["ImageCropByMaskAndResize"]) : false,
+      paint: await comfyHasNodes(PAINT_NODES) };
   }
   if (meshType === "moge") {
     const weights = await comfyEnum("LoadMoGeModel", "model_name").catch(() => []);
@@ -4158,6 +4241,7 @@ async function generateComfyImage(req, res) {
       let videoDims = null; // actual resolved output size (for the client's caption)
       let imagesUsed = 0;   // how many input images the video path actually consumed
       let stillMode = false; // single-frame Wan Animate → return an IMAGE, not a video
+      let paintGlb = null;   // Hunyuan3D texturing: filename_prefix of a GLB /history won't report
       let interpWarning = null; // interpolation skipped (source fps already ≥ target) → tell the client
       let upscaleInfo = null;   // { model, denoise } actually used → shown in the result bubble
       let exactTargetFps = 0;   // interpolation: interpolated to ≥ this (ceil mult) → drop frames to EXACTLY this fps
@@ -4646,32 +4730,64 @@ async function generateComfyImage(req, res) {
         }
         const imageName = await uploadImage(images[0], controller.signal, "heykoko_mesh_in.png");
         imagesUsed = 1;
+        // 🖌 mask: the painted region IS the subject here (in the edit chains it is
+        // the region to change). Nothing else in a 3D graph consumes a mask, so
+        // there is no other reading, and it saves the user fighting the auto cut-out.
+        const meshMaskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mesh_mask.png") : null;
         // ⚙ "3D mesh detail" is one knob over both meshers — Hunyuan3D's octree
         // resolution and SplatToMesh's density grid mean the same thing.
         const meshDetail = opts.meshDetail || 256;
         if (meshType === "hunyuan3d") {
           const comp = await meshCompanions("hunyuan3d");
+          // Texturing is ON unless the ⚙ box is cleared — and only where the wrapper
+          // is installed, so a stock ComfyUI silently makes a white mesh instead of
+          // failing on a checkbox the user never touched.
+          const paint = opts.paintMesh !== false && comp.paint;
+          // Its exporter writes straight to disk and reports NOTHING to /history
+          // (verified: the run's outputs list only ever contained the SaveGLB nodes),
+          // so the file has to be fetched by name. A per-run token keeps the prefix
+          // unused, which pins ComfyUI's counter at _00001_.
+          if (paint) paintGlb = `heykoko/paint_${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
           workflow = buildHunyuan3D({ ckpt: model, imageName, seed,
             steps: opts.steps || 30, cfg: opts.cfg !== undefined ? opts.cfg : 5,
             sampler: opts.sampler || "euler", scheduler: opts.scheduler || "normal",
             octreeRes: meshDetail,
+            // ⚙ shape detail budget = how many latent tokens describe the surface.
+            // Upstream of octreeRes: this decides how much structure the model
+            // invents, octree only decides how finely that is triangulated. Floored
+            // at 2048 — measured, 1024 doesn't come out coarse, it comes out as
+            // scattered fragments (3958 faces vs 181k at the 4096 default).
+            ...(opts.shapeTokens ? { resolution: Math.max(2048, Math.min(8192, opts.shapeTokens)) } : {}),
             // ⚙ "keep background" opts out for the rare case the cut-out misfires.
-            bgRemoval: opts.keepBackground ? null : comp.birefnet,
-            autoCrop: !opts.keepBackground && comp.autoCrop });
+            // A painted mask overrides it: it is a deliberate, per-image gesture,
+            // while the checkbox is a sticky setting the user may have left ticked
+            // months ago — honouring the stale one would discard the fresh one.
+            maskName: meshMaskName,
+            bgRemoval: (opts.keepBackground && !meshMaskName) ? null : comp.birefnet,
+            autoCrop: (!opts.keepBackground || !!meshMaskName) && comp.autoCrop,
+            paint, paintPrefix: paintGlb, ...(PAINT_TIERS[opts.paintQuality] || PAINT_TIERS.standard) });
         } else if (meshType === "moge") {
           const comp = await meshCompanions("moge");
           // Replicate the template's resize-if->2048 guard server-side.
           const d = imageDims(images[0]);
           const needsResize = !!(d && Math.max(d.width, d.height) > 2048);
+          // MoGe reconstructs the whole SCENE by default — that is its job, so
+          // subject-only is opt-in: a painted mask, or the ⚙ box for when the user
+          // wants the automatic cut-out without painting anything.
+          const hy = await meshCompanions("hunyuan3d");
+          const subject = !!meshMaskName || !!opts.mogeSubjectOnly;
           workflow = buildMoGeMesh({ modelName: comp.mogeModel, imageName,
-            resolutionLevel: opts.mogeDetail !== undefined ? opts.mogeDetail : 9, needsResize });
+            resolutionLevel: opts.mogeDetail !== undefined ? opts.mogeDetail : 9, needsResize,
+            maskName: subject ? meshMaskName : null,
+            bgRemoval: (subject && !meshMaskName) ? hy.birefnet : null,
+            autoCrop: subject && hy.autoCrop });
         } else if (meshType === "triposplat") {
           const comp = await meshCompanions("triposplat");
           workflow = buildTripoSplat({ imageName, comp, seed,
             steps: opts.steps || 20, cfg: opts.cfg !== undefined ? opts.cfg : 3,
             sampler: opts.sampler || "dpmpp_2m", scheduler: opts.scheduler || "simple",
             numGaussians: opts.meshGaussians || 262144,
-            splatMesh: !!opts.splatMesh, meshDetail });
+            meshDetail, maskName: meshMaskName });
         } else {
           sendJson(res, 400, { error: `3D chain "${meshType}" is not wired yet.` });
           return;
@@ -5068,6 +5184,29 @@ async function generateComfyImage(req, res) {
         }
       }
 
+      // Hunyuan3D texturing: Hy3D21ExportMesh saves the textured GLB itself and returns
+      // only a path STRING, so nothing about it reaches /history and the loop above
+      // cannot see it. Fetch it by the name ComfyUI's save-path helper builds from our
+      // prefix. The counter should always land on 1 (the prefix carries a per-run
+      // token), but try a couple more in case the token ever repeats.
+      if (paintGlb) {
+        const slash = paintGlb.lastIndexOf("/");
+        const subfolder = slash >= 0 ? paintGlb.slice(0, slash) : "";
+        const stem = slash >= 0 ? paintGlb.slice(slash + 1) : paintGlb;
+        for (let n = 1; n <= 3; n++) {
+          const filename = `${stem}_${String(n).padStart(5, "0")}_.glb`;
+          const params = new URLSearchParams({ filename, subfolder, type: "output" });
+          const r = await fetch(`${currentComfyUrl()}/view?${params}`, { signal: controller.signal }).catch(() => null);
+          if (!r || !r.ok) continue;
+          const buf = Buffer.from(await r.arrayBuffer());
+          if (!buf.length) continue;
+          outMeshes.push(buf.toString("base64"));
+          meshMimes.push("model/gltf-binary");
+          meshNames.push(filename);
+          break;
+        }
+      }
+
       // Interpolation exact-fps pass: RIFE/FILM only multiply by an integer, so the interpolated
       // fps (videoDims.fps) overshoots the user's target. ffmpeg-resample the output DOWN
       // to EXACTLY exactTargetFps (drops frames evenly, keeps duration + audio) — smoother
@@ -5109,10 +5248,14 @@ async function generateComfyImage(req, res) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=mesh:${meshType}, meshes=${outMeshes.length}, videos=${outVideos.length}`);
         if (!outMeshes.length) {
           const nodeIds = Object.keys(outputs || {}).join(", ") || "none";
-          sendJson(res, 502, { error: `ComfyUI finished but produced no 3D file (output nodes: ${nodeIds}). Please retry.` });
+          const why = paintGlb
+            ? `the textured mesh "${paintGlb}_00001_.glb" was not in ComfyUI's output folder — untick "Texture the 3D model" in ⚙ to get the untextured mesh instead`
+            : `output nodes: ${nodeIds}`;
+          sendJson(res, 502, { error: `ComfyUI finished but produced no 3D file (${why}). Please retry.` });
           return;
         }
-        // TripoSplat ships a turntable preview mp4 alongside the .spz — carry both.
+        // videos stays in the contract: no 3D chain emits one today (TripoSplat's
+        // turntable was dropped), but the client already handles both together.
         sendJson(res, 200, { meshes: outMeshes, meshMimes, meshNames,
           videos: outVideos.length ? outVideos : undefined,
           videoMime: outVideos.length ? videoMime : undefined,

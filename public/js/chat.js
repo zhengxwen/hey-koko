@@ -3896,6 +3896,23 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         // orbit. Splats (.spz) and non-WebGL browsers keep the card-only fallback.
         // The canvas gets its own positioning box so the floating buttons land on
         // the VIEWPORT (like a video's) rather than on the file card below it.
+        // The file card is a FALLBACK, not a caption: when the viewer is up you can
+        // already see the model and the ⬇ button carries the name, so a row spelling
+        // out ComfyUI's internal filename ("paint_ms9k…_00001_.glb") is pure noise.
+        // It comes back whenever there IS nothing else to show.
+        let carded = false;
+        const showCard = () => {
+          if (carded) return;
+          carded = true;
+          const card = document.createElement("div");
+          card.className = "meshCard";
+          card.innerHTML = `<span class="meshIcon">🧊</span>`;
+          const label = document.createElement("span");
+          label.className = "meshLabel";
+          label.textContent = rawName ? rawName.replace(/^.*\//, "") : `model.${mext}`;
+          card.appendChild(label);
+          wrapper.appendChild(card);
+        };
         let btnHost = wrapper;
         if (mmime === "model/gltf-binary") {
           const view = document.createElement("div");
@@ -3906,18 +3923,12 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
           wrapper.appendChild(view);
           btnHost = view;
           import("./glb-viewer.js").then((v) => {
-            if (!v.isSupported()) { mc.hidden = true; return; }
-            v.attachMesh(mc, () => data, { name: rawName, cacheKey: `${rawName}:${data.length}:${data.slice(0, 32)}` });
-          }).catch(() => { mc.hidden = true; });
+            if (!v.isSupported()) { mc.hidden = true; showCard(); return; }
+            v.attachMesh(mc, () => data, { name: rawName, cacheKey: `${rawName}:${data.length}:${data.slice(0, 32)}`, onFallback: showCard });
+          }).catch(() => { mc.hidden = true; showCard(); });
+        } else {
+          showCard();   // a splat file has no viewer at all
         }
-        const card = document.createElement("div");
-        card.className = "meshCard";
-        card.innerHTML = `<span class="meshIcon">🧊</span>`;
-        const label = document.createElement("span");
-        label.className = "meshLabel";
-        label.textContent = rawName ? rawName.replace(/^.*\//, "") : `model.${mext}`;
-        card.appendChild(label);
-        wrapper.appendChild(card);
         const mname = mediaFilename(rawName ? rawName.replace(/^.*\//, "") : null, timestamp, "model", mext, mi, meshes.length);
         // Appended AFTER the canvas so they paint over the interactive GL overlay,
         // which mounts itself directly after it. Lazy href — the base64→blob decode

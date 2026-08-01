@@ -1299,6 +1299,23 @@ input[type="file"] {
   gap: 10px;
 }
 
+/* Archive Library / Knowledge Library / Archive / Export / Import / Clear chat:
+   long labels in a narrow panel, so shrink the type to keep them on one line.
+   .importButton is a <label>, not a <button>, hence the second selector. */
+.actions button,
+.actions .importButton {
+  font-size: 0.8rem;
+  /* The global button rule sets min-height:42px, which is tall for 0.8rem text —
+     shrink it so these rows read as one compact block. */
+  min-height: 34px;
+}
+
+/* These three rows belong together, so close up the parent .panelTabContent's 16px
+   child gap between them (net ~6px) — same technique as .presetActions above. */
+.actions + .actions {
+  margin-top: -10px;
+}
+
 /* The "性格" (persona) editor: smaller text so the long system prompt reads compactly. */
 #persona {
   font-size: 0.8rem;
@@ -5455,6 +5472,10 @@ body.isResizingComposer {
   background: radial-gradient(ellipse at 50% 40%, rgba(128, 128, 148, 0.18), rgba(0, 0, 0, 0.06));
   cursor: grab;
 }
+/* `display:block` above outranks the [hidden] ATTRIBUTE, so the viewer hiding a
+   canvas it couldn't parse would otherwise leave a 260px empty gradient box sitting
+   above the fallback file card. Same trap as the checkbox rows. */
+.meshCanvas[hidden] { display: none; }
 
 /* Interactive 3D overlay: the HOST goes fullscreen (a <canvas> can't own the HUD
    buttons), the canvas fills it and the HUD floats above. */

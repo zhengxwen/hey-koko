@@ -58,10 +58,15 @@ export function saveCurrentSettings() {
         upscaleModel: dom.comfyParamUpscaleModel?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
         meshDetail: dom.comfyParamMeshDetail?.value || "",
+        shapeTokens: dom.comfyParamShapeTokens?.value || "",
         meshGaussians: dom.comfyParamMeshGaussians?.value || "",
         mogeDetail: dom.comfyParamMogeDetail?.value || "",
-        splatMesh: dom.comfyParamSplatMesh?.checked || false,
+        mogeSubjectOnly: dom.comfyParamMogeSubject?.checked || false,
         keepBackground: dom.comfyParamKeepBackground?.checked || false,
+        // Defaults ON, so store the raw state — `|| false` would be fine here but
+        // the restore side below has to read it as "absent means ticked".
+        paintMesh: dom.comfyParamPaintMesh ? dom.comfyParamPaintMesh.checked : true,
+        paintQuality: dom.comfyParamPaintQuality?.value || "standard",
         videoCodec: dom.comfyParamVideoCodec?.value || "h264",
         videoCrf: dom.comfyParamVideoCrf?.value || "",
         berniniMode: dom.comfyParamBerniniMode?.value || "",
@@ -258,10 +263,15 @@ export function loadSavedSettings() {
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
     if (dom.comfyParamMeshDetail) dom.comfyParamMeshDetail.value = cp.meshDetail || "";
+    if (dom.comfyParamShapeTokens) dom.comfyParamShapeTokens.value = cp.shapeTokens || "";
     if (dom.comfyParamMeshGaussians) dom.comfyParamMeshGaussians.value = cp.meshGaussians || "";
     if (dom.comfyParamMogeDetail) dom.comfyParamMogeDetail.value = cp.mogeDetail || "";
-    if (dom.comfyParamSplatMesh) dom.comfyParamSplatMesh.checked = !!cp.splatMesh;
+    if (dom.comfyParamMogeSubject) dom.comfyParamMogeSubject.checked = !!cp.mogeSubjectOnly;
     if (dom.comfyParamKeepBackground) dom.comfyParamKeepBackground.checked = !!cp.keepBackground;
+    // Ticked by default: settings saved before this box existed have no key at all,
+    // and !! would silently turn texturing off for everyone who had ever saved once.
+    if (dom.comfyParamPaintMesh) dom.comfyParamPaintMesh.checked = cp.paintMesh !== false;
+    if (dom.comfyParamPaintQuality) dom.comfyParamPaintQuality.value = cp.paintQuality || "standard";
     if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = cp.videoCodec || "h264";
     if (dom.comfyParamVideoCrf) dom.comfyParamVideoCrf.value = cp.videoCrf || "";
     // berniniMode replaced the two separate checkboxes — fall back to the old keys so

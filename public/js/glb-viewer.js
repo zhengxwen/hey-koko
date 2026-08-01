@@ -250,6 +250,13 @@ let glCanvas = null, gl = null, prog = null, loc = null;
 let glBuffers = [];   // live VBOs/textures for the CURRENTLY drawn scene
 let glScene = null;   // which scene the buffers belong to
 
+// "Plain model" view: drop every colour source and shade the raw geometry, which is
+// what you want for judging the SHAPE — a texture hides surface faults, and on a
+// generated mesh the shape is the part worth inspecting. A neutral off-white rather
+// than pure white so the headlight shading stays readable at the highlights.
+let plainMode = false;
+const PLAIN_COLOR = new Float32Array([0.82, 0.82, 0.84]);
+
 const VS = `
 attribute vec3 aPos; attribute vec3 aNrm; attribute vec2 aUv; attribute vec3 aCol;
 uniform mat4 uMVP;
@@ -394,14 +401,16 @@ function renderView(scene, w, h, yaw, pitch, distMul) {
       gl.enableVertexAttribArray(loc.aUv);
       gl.vertexAttribPointer(loc.aUv, 2, gl.FLOAT, false, 0, 0);
     } else { gl.disableVertexAttribArray(loc.aUv); gl.vertexAttrib2f(loc.aUv, 0, 0); }
-    if (b.cbo) {
+    if (b.cbo && !plainMode) {
       gl.bindBuffer(gl.ARRAY_BUFFER, b.cbo);
       gl.enableVertexAttribArray(loc.aCol);
       gl.vertexAttribPointer(loc.aCol, 3, gl.FLOAT, false, 0, 0);
     } else { gl.disableVertexAttribArray(loc.aCol); gl.vertexAttrib3f(loc.aCol, 1, 1, 1); }
-    gl.uniform3fv(loc.uBaseColor, p.baseColor);
-    gl.uniform1f(loc.uHasTex, b.tex ? 1 : 0);
-    if (b.tex) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, b.tex); gl.uniform1i(loc.uTex, 0); }
+    // Plain mode neutralises ALL three colour sources — texture, vertex colours and
+    // the material's base factor — so what's left is the bare shaded geometry.
+    gl.uniform3fv(loc.uBaseColor, plainMode ? PLAIN_COLOR : p.baseColor);
+    gl.uniform1f(loc.uHasTex, b.tex && !plainMode ? 1 : 0);
+    if (b.tex && !plainMode) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, b.tex); gl.uniform1i(loc.uTex, 0); }
     if (b.indexed) {
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.ibo);
       gl.drawElements(gl.TRIANGLES, b.count, b.indexType, 0);
@@ -486,8 +495,14 @@ function buildHud(actions) {
     spinCcw: mk("↺", `${t("mesh_btnAutoRotateCcw")} (Shift+Space)`, () => actions.toggleSpin(-1), "isFsOnly"),
     spinCw: mk("↻", `${t("mesh_btnAutoRotate")} (Space)`, () => actions.toggleSpin(1), "isFsOnly"),
     bg: mk("◐", `${t("mesh_btnBackground")} (B)`, actions.cycleBg, "isFsOnly"),
+    plain: mk("▩", `${t("mesh_btnPlain")} (T)`, actions.togglePlain, "isFsOnly"),
     fs: mk("⛶", `${t("mesh_btnFullscreen")} (F)`, actions.toggleFs),
   };
+  // Nothing to strip on an untextured, uncoloured mesh (Hunyuan3D without the paint
+  // pass, MoGe without texture) — a button that visibly does nothing is worse than
+  // no button, so it only appears when the model actually carries colour.
+  btns.plain.hidden = !actions.hasColor;
+  btns.plain.classList.toggle("isOn", plainMode);
   hud.appendChild(bar);
   const hint = document.createElement("div");
   hint.className = "meshHudHint isFsOnly";
@@ -540,7 +555,10 @@ export function attachMesh(canvas, getBase64, opts = {}) {
     let entry = cacheGet(key);
     if (!entry) {
       const scene = await parseGLB(b64ToArrayBuffer(getBase64()));
-      if (!scene) { canvas.hidden = true; return null; } // unparseable → card-only fallback
+      // Unparseable → hide the canvas and tell the caller, so it can put the file
+      // card back. This is async and lazy (it happens on scroll-in), which is why
+      // the caller can't just check a return value.
+      if (!scene) { canvas.hidden = true; if (opts.onFallback) opts.onFallback(); return null; }
       entry = { scene, poster: null };
       cachePut(key, entry);
     }
@@ -616,7 +634,15 @@ export function attachMesh(canvas, getBase64, opts = {}) {
       try { localStorage.setItem(BG_KEY, String(bgIndex)); } catch { /* private mode / disabled */ }
       applyBg();
     };
-    btns = buildHud({ reset: resetView, zoomIn: () => zoom(1 / ZOOM_STEP), zoomOut: () => zoom(ZOOM_STEP), toggleSpin: setSpin, cycleBg, toggleFs });
+    // Does this model carry any colour at all? Decided from the parsed scene, so a
+    // white mesh never grows a toggle that would do nothing.
+    const hasColor = (entry.scene.prims || []).some((p) => p.texImage || p.col);
+    const togglePlain = () => {
+      plainMode = !plainMode;
+      if (btns) btns.plain.classList.toggle("isOn", plainMode);
+      requestAnimationFrame(render);
+    };
+    btns = buildHud({ reset: resetView, zoomIn: () => zoom(1 / ZOOM_STEP), zoomOut: () => zoom(ZOOM_STEP), toggleSpin: setSpin, cycleBg, toggleFs, togglePlain, hasColor });
     render();
 
     const pointers = new Map(); // pinch-zoom support
@@ -673,6 +699,7 @@ export function attachMesh(canvas, getBase64, opts = {}) {
         case "r": case "R": case "0": resetView(); break;
         case "f": case "F": toggleFs(); break;
         case "b": case "B": cycleBg(); break;
+        case "t": case "T": if (hasColor) togglePlain(); break;
         case " ": setSpin(e.shiftKey ? -1 : 1); break;
         case "+": case "=": zoom(1 / ZOOM_STEP); break;
         case "-": case "_": zoom(ZOOM_STEP); break;

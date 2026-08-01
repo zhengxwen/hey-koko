@@ -65,10 +65,18 @@ function comfyOverrides() {
   // grid are the same idea, so one knob drives whichever mesher is running.
   const meshDetail = num(dom.comfyParamMeshDetail?.value);
   if (meshDetail !== undefined) ov.meshDetail = meshDetail;
-  if (dom.comfyParamSplatMesh?.checked) ov.splatMesh = true;        // TripoSplat: coloured mesh instead of .spz
+  const shapeTokens = num(dom.comfyParamShapeTokens?.value);
+  if (shapeTokens !== undefined) ov.shapeTokens = shapeTokens;   // Hunyuan3D latent token budget
   if (dom.comfyParamKeepBackground?.checked) ov.keepBackground = true; // Hunyuan3D: skip the cut-out
+  // Texturing is the server's default, so only the OPT-OUT travels — that way a
+  // ComfyUI without the add-on never sees a flag it can't honour.
+  if (dom.comfyParamPaintMesh && !dom.comfyParamPaintMesh.checked) ov.paintMesh = false;
+  // Texture quality tier; "standard" is the server's own default so it needn't travel.
+  const paintQuality = dom.comfyParamPaintQuality?.value;
+  if (paintQuality && paintQuality !== "standard") ov.paintQuality = paintQuality;
   const meshGaussians = num(dom.comfyParamMeshGaussians?.value);
   if (meshGaussians !== undefined) ov.meshGaussians = meshGaussians; // TripoSplat num_gaussians
+  if (dom.comfyParamMogeSubject?.checked) ov.mogeSubjectOnly = true; // MoGe: cut the subject out instead of the whole scene
   const mogeDetail = num(dom.comfyParamMogeDetail?.value);
   if (mogeDetail !== undefined) ov.mogeDetail = mogeDetail;         // MoGe resolution_level 0-9
   const targetFps = num(dom.comfyParamTargetFps?.value);
@@ -1282,7 +1290,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
 // 3D mesh generation (Hunyuan3D / TripoSplat / MoGe) — a slimmed generateVideo:
 // no source-video/audio legs, no prompt enhancement (these graphs have no text
 // conditioning), result is a .glb/.spz file (+ TripoSplat's turntable preview mp4).
-export async function generateMesh(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sink = null, comfyUrl = null) {
+export async function generateMesh(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sink = null, comfyUrl = null, maskB64 = null) {
   const tab = getTab(tabId);
   if (!tab) return;
   const comfyHost = ((comfyUrl || dom.comfyUrlDisplay?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim()).replace(/^https?:\/\//i, "").replace(/\/+$/, "");
@@ -1404,6 +1412,9 @@ export async function generateMesh(parsed, model, tabId = state.activeTabId, ins
       prompt: (parsed.prompt || "").trim(), // decorative — the mesh graphs read no text
       options: perOptions,
       images: refImages,
+      // 🖌 mask — for a 3D chain the painted region is the SUBJECT, and it replaces
+      // the automatic background cut-out server-side.
+      mask: maskB64 || undefined,
       timeout: meshTimeout,
       clientId,
       comfyUrl: comfyHost || undefined,
@@ -1487,7 +1498,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // A selected ComfyUI 3D model routes to the mesh path (checked before the video
   // path — mesh models are in neither set, but the order documents the intent).
   if (!imageModel && comfyModel && state.comfyMeshModels && state.comfyMeshModels.has(comfyModel)) {
-    return generateMesh(parsedList[0], comfyModel, tabId, insertIndex, refImages, sink, ovComfyUrl);
+    return generateMesh(parsedList[0], comfyModel, tabId, insertIndex, refImages, sink, ovComfyUrl, maskB64);   // this branch already implies the ComfyUI path
   }
 
   // A selected ComfyUI VIDEO model routes to the dedicated video path. Pass the

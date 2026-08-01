@@ -772,13 +772,25 @@
             <span id="comfyParamTimeoutLabel" title="Video only — how long the server waits for a render before giving up. EMPTY = default 4 hours. 0 = no limit (wait forever; only Stop cancels). A number = that many minutes. Long Wan Animate videos can take hours.">Video timeout (min)</span>
             <input id="comfyParamTimeout" type="number" min="0" step="5" placeholder="4h default · 0 = no limit" title="Video only — EMPTY = default 4 h. 0 = no limit (wait forever). A number = minutes." />
           </label>
+          <label class="checkboxLabel comfyParamCheck" title="Hunyuan3D only. Paints a real colour texture onto the generated mesh (albedo + metallic/roughness), instead of leaving it plain white. Adds several minutes and needs the texturing add-on on the ComfyUI machine — where that isn't installed this option is hidden and meshes come out white.">
+            <input id="comfyParamPaintMesh" type="checkbox" checked />
+            <span id="comfyParamPaintMeshLabel">Texture the 3D model (Hunyuan3D)</span>
+          </label>
+          <label>
+            <span id="comfyParamPaintQualityLabel" title="How much detail the texturing pass puts in, and how big the file gets. Measured on one model: Standard 1024 map / 40k faces / ~3 MB · Fine 2048 map / 120k faces / ~8 MB / ~3× the time · Ultra 4096 map / ~195k faces / ~17 MB / ~5× the time. The rendered views cap out at 1024 px, so Ultra's bigger map is mostly headroom for retouching the texture yourself. Large models also make the conversation slower to save and reload.">Texture quality (Hunyuan3D)</span>
+            <select id="comfyParamPaintQuality">
+              <option id="optPaintQStandard" value="standard">Standard · 1024 map · ~3 MB</option>
+              <option id="optPaintQFine" value="fine">Fine · 2048 map · ~8 MB · ~3× slower</option>
+              <option id="optPaintQUltra" value="ultra">Ultra · 4096 map · ~17 MB · ~5× slower</option>
+            </select>
+          </label>
           <label class="checkboxLabel comfyParamCheck" title="Hunyuan3D only. Normally the subject is cut out of the photo and placed on white before the model sees it — otherwise the background is reconstructed too and comes out as a big flat slab behind the object. Tick this to skip that and feed the photo as-is: useful only when the automatic cut-out grabs the wrong thing, or when your image is already cut out.">
             <input id="comfyParamKeepBackground" type="checkbox" />
             <span id="comfyParamKeepBackgroundLabel">Keep photo background (Hunyuan3D)</span>
           </label>
-          <label class="checkboxLabel comfyParamCheck" title="TripoSplat only: export a COLOURED triangle mesh (.glb) instead of the .spz splat file. This is the only local way to get a colour 3D model — Hunyuan3D's texture-painting model isn't part of ComfyUI's native nodes, so its meshes are always white. The mesh is bigger and its surface a little softer than the splat it came from. The turntable preview video is produced either way.">
-            <input id="comfyParamSplatMesh" type="checkbox" />
-            <span id="comfyParamSplatMeshLabel">Coloured mesh instead of splat file (TripoSplat)</span>
+          <label>
+            <span id="comfyParamShapeTokensLabel">3D shape detail budget (Hunyuan3D)</span>
+            <input id="comfyParamShapeTokens" type="number" min="2048" max="8192" step="1024" placeholder="Auto (4096)" />
           </label>
           <label>
             <span id="comfyParamMeshDetailLabel">3D mesh detail (grid resolution)</span>
@@ -787,6 +799,10 @@
           <label>
             <span id="comfyParamMeshGaussiansLabel">3D splat count (TripoSplat)</span>
             <input id="comfyParamMeshGaussians" type="number" min="32768" max="1048576" step="32768" placeholder="Auto (262144)" />
+          </label>
+          <label class="checkboxLabel comfyParamCheck" title="MoGe only. Normally MoGe rebuilds the ENTIRE photo — subject, ground, sky — as one 2.5D relief. Tick this to cut the subject out first and rebuild only that: the background becomes a flat plate, which MoGe's own invalid-region mask culls, so no backdrop wall survives. Painting a mask with the brush does the same thing and takes priority over the automatic cut-out.">
+            <input id="comfyParamMogeSubject" type="checkbox" />
+            <span id="comfyParamMogeSubjectLabel">Subject only, no background (MoGe)</span>
           </label>
           <label>
             <span id="comfyParamMogeDetailLabel">3D detail level (MoGe 0–9)</span>

@@ -415,6 +415,9 @@ function applyComfyModels(data) {
     state.comfyVideoModels = new Set(videoModels.map((m) => m.name));
     // 3D mesh models route to generateMesh and get a mesh bubble instead of pixels.
     state.comfyMeshModels = new Set(meshModels.map((m) => m.name));
+    // Texturing needs an add-on on the ComfyUI machine; where it is missing the
+    // server just makes a white mesh, so the ⚙ box stays hidden rather than lying.
+    state.comfyMeshPaintModels = new Set(meshModels.filter((m) => m.paint).map((m) => m.name));
     // Video models whose ⚙ sampler / scheduler / steps / cfg actually reach the graph.
     // The server decides this (it knows which builders read a preset); the rest hardcode
     // a schedule, so showing the fields for them would promise something that never happens.
@@ -1158,16 +1161,20 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamFps, video);
   // Timeout: mesh renders ride the video timeout policy (Hunyuan3D can take minutes).
   setVis(dom.comfyParamTimeout, video || mesh);
-  // 3D knobs. meshDetail drives BOTH meshers, so it shows for Hunyuan3D and for
-  // TripoSplat — but only once TripoSplat is actually meshing (splat export has no
-  // grid). The checkbox itself has no <label> wrapper of its own to hide, so pass
-  // its row class.
-  const splatMeshOn = m === "triposplat" && !!dom.comfyParamSplatMesh?.checked;
-  setVis(dom.comfyParamMeshDetail, (mesh && /hunyuan[._-]?3d/i.test(m)) || splatMeshOn);
-  setVis(dom.comfyParamSplatMesh, m === "triposplat", ".comfyParamCheck");
+  // 3D knobs. meshDetail drives BOTH meshers — Hunyuan3D's voxel octree and
+  // SplatToMesh's density grid — and TripoSplat always meshes now, so this is
+  // simply "the two mesh models".
+  setVis(dom.comfyParamMeshDetail, mesh && (/hunyuan[._-]?3d/i.test(m) || m === "triposplat"));
+  // Latent token budget is Hunyuan3D's alone (TripoSplat's decoder has no equivalent).
+  setVis(dom.comfyParamShapeTokens, mesh && /hunyuan[._-]?3d/i.test(m));
+  const paintable = !!(state.comfyMeshPaintModels && state.comfyMeshPaintModels.has(m));
+  setVis(dom.comfyParamPaintMesh, paintable, ".comfyParamCheck");
+  // Quality only means something while texturing is actually on.
+  setVis(dom.comfyParamPaintQuality, paintable && !!dom.comfyParamPaintMesh?.checked);
   setVis(dom.comfyParamKeepBackground, mesh && /hunyuan[._-]?3d/i.test(m), ".comfyParamCheck");
   setVis(dom.comfyParamMeshGaussians, m === "triposplat");
   setVis(dom.comfyParamMogeDetail, m === "moge-mesh");
+  setVis(dom.comfyParamMogeSubject, m === "moge-mesh", ".comfyParamCheck");
   // Video codec + its CRF: every video model (the tail rewrite is builder-agnostic).
   for (const el of [dom.comfyParamVideoCodec, dom.comfyParamVideoCrf]) setVis(el, video);
   if (video) syncVideoCrfPlaceholder();
@@ -1364,6 +1371,7 @@ function initComfyParamsModal() {
     dom.comfyParamFps,
     dom.comfyParamTimeout,
     dom.comfyParamMeshDetail,
+    dom.comfyParamShapeTokens,
     dom.comfyParamMeshGaussians,
     dom.comfyParamMogeDetail,
     dom.comfyParamTargetFps,
@@ -1419,8 +1427,19 @@ function initComfyParamsModal() {
   dom.comfyParamTorchCompile?.addEventListener("change", () => saveCurrentSettings());
   // Checkboxes carry .checked, not .value, so they're outside `fields`. The splat-mesh
   // one also gates the mesh-detail row, so it re-runs visibility on toggle.
-  dom.comfyParamSplatMesh?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
   dom.comfyParamKeepBackground?.addEventListener("change", () => saveCurrentSettings());
+  dom.comfyParamMogeSubject?.addEventListener("change", () => saveCurrentSettings());
+  // Texturing toggle gates the quality row, so it re-runs visibility too.
+  dom.comfyParamPaintMesh?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
+  // Ultra makes a ~17 MB GLB (measured) that then rides base64 through the response
+  // and the conversation store — worth a heads-up before the first slow run, not a
+  // surprise afterwards.
+  dom.comfyParamPaintQuality?.addEventListener("change", () => {
+    if (dom.comfyParamPaintQuality.value === "ultra" && !confirm(t("comfy_paintQuality_confirmUltra"))) {
+      dom.comfyParamPaintQuality.value = "fine";
+    }
+    saveCurrentSettings();
+  });
   dom.comfyParamBerniniMode?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamBerniniTask?.addEventListener("change", () => saveCurrentSettings());
   // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset
@@ -1443,6 +1462,9 @@ function initComfyParamsModal() {
     if (dom.comfyParamBerniniTask) dom.comfyParamBerniniTask.value = "";
     if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = "rife";
     if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = "h264"; // default codec, not empty
+    if (dom.comfyParamPaintQuality) dom.comfyParamPaintQuality.value = "standard";
+    if (dom.comfyParamPaintMesh) dom.comfyParamPaintMesh.checked = true;   // texturing defaults ON
+    updateComfyParamVisibility();
     syncVideoCrfPlaceholder();
     state.animateMaskPoint = null; // back to auto-centre target
     syncMaskPointLabel();
