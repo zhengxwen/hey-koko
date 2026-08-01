@@ -167,6 +167,8 @@ export function comfyModelSupportsMask() {
   if (/hidream.?i1|z.?image/i.test(comfyModel)) return false; // txt2img-only
   if (/hidream.?o1/i.test(comfyModel)) return false; // O1 edits via reference conditioning on an empty latent — no source latent to mask
   if (comfyModel === "image-upscale") return false; // pure upscale — nothing to mask
+  // A 360° panorama IS the whole scene — there is no subject to isolate in it.
+  if (comfyModel === "moge-panorama") return false;
   return true;
 }
 
@@ -319,6 +321,14 @@ function imageNaturalSize(src) {
     im.onerror = () => resolve(null);
     im.src = src;
   });
+}
+
+// Bare base64 → a data: URL an <img> will accept, sniffing the container from the
+// first bytes (the same trick the video path already uses inline).
+function b64ToImgSrc(b) {
+  return b.startsWith("data:")
+    ? b
+    : `data:image/${b.startsWith("/9j/") ? "jpeg" : b.startsWith("UklGR") ? "webp" : "png"};base64,${b}`;
 }
 
 // Decode a video's natural pixel size (data URL) in the browser. Resolves null on
@@ -1372,7 +1382,9 @@ export async function generateMesh(parsed, model, tabId = state.activeTabId, ins
     const stillGen = allMeshes.length < count
       ? `\n\n${t("msg_batchStillGenerating", { done: allMeshes.length, total: count }, plang)}`
       : "";
-    const content = doneLine + stillGen;
+    // Keep the mismatch note on the RESULT too: the pending bubble is gone by the
+    // time you are looking at the odd-looking ball wondering what happened.
+    const content = doneLine + (panoWarning ? `\n${panoWarning}` : "") + stillGen;
     if (!replyMsg) {
       replyMsg = {
         role: "assistant",
@@ -1423,6 +1435,23 @@ export async function generateMesh(parsed, model, tabId = state.activeTabId, ins
       ? comfyFetch(mbody, { bgJob: isFirstSubRun ? sink.server.bgJob : null, kind: "mesh", comfyUrl: comfyHost, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, clientId, signal: abortController.signal })
       : fetch("/api/generate-comfy", { method: "POST", headers: { "Content-Type": "application/json" }, signal: abortController.signal, body: JSON.stringify(mbody) });
   };
+
+  // The panorama chain treats its input as a full sphere unwrapped into a rectangle,
+  // so an ordinary photo comes back as a ball with the picture on the inside — no
+  // error, just a wrong answer that costs twice the time of the right entry. An
+  // equirect is 2:1 almost by definition, so the band is tight: 16:9 (1.78) is the
+  // most likely wrong input there is, and a band loose enough to admit it would let
+  // every ordinary landscape photo through in silence. ±10% still tolerates a
+  // slightly cropped panorama; it warns rather than blocks either way.
+  let panoWarning = null;
+  if (model === "moge-panorama" && refImages && refImages.length) {
+    const sz = await imageNaturalSize(b64ToImgSrc(refImages[0]));
+    const ratio = sz && sz.h ? sz.w / sz.h : 2;
+    if (ratio < 1.85 || ratio > 2.2) {
+      panoWarning = t("msg_panoNotEquirect", { w: sz ? sz.w : "?", h: sz ? sz.h : "?" });
+      sink.label(`${t("msg_generatingMesh")}${meshModelLabel ? ` · ${meshModelLabel}` : ""}\n${panoWarning}`);
+    }
+  }
 
   try {
     for (let i = 0; i < count; i++) {

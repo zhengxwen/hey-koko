@@ -241,6 +241,11 @@ const TRIPOSPLAT = "triposplat";
 // geometry_estimation/ folder, outside both loader enums we scan, so a sentinel is
 // the only way to surface it; the real filename comes off LoadMoGeModel's enum.
 const MOGE_MESH = "moge-mesh";
+// Same weights, different inference node: 12 perspective crops of an equirectangular
+// 360° photo, merged into one spherical mesh. Separate entry rather than an
+// auto-detect on aspect ratio — a 2:1 crop of an ordinary photo is not a panorama,
+// and guessing wrong wastes a minute of merging.
+const MOGE_PANORAMA = "moge-panorama";
 
 // Third classifier next to videoTypeOf/editTypeOf: models whose output is a 3D FILE
 // (.glb/.spz), not pixels. Hunyuan3D is a real checkpoint file; the other two are
@@ -250,6 +255,7 @@ function meshTypeOf(model) {
   if (!model) return null;
   if (model === TRIPOSPLAT) return "triposplat";
   if (model === MOGE_MESH) return "moge";
+  if (model === MOGE_PANORAMA) return "moge-pano";
   // hunyuan_3d_v2.1.safetensors — disjoint from videoTypeOf's /hunyuan.?video/.
   if (/hunyuan[._-]?3d/i.test(model)) return "hunyuan3d";
   return null;
@@ -714,6 +720,7 @@ function marketName(name) {
     [VIDEO_ENHANCE]: "Video interpolate + upscale",
     [TRIPOSPLAT]: "TripoSplat (image → 3D splat)",
     [MOGE_MESH]: "MoGe-2 (photo → 3D scene)",
+    [MOGE_PANORAMA]: "MoGe-2 (360° panorama → 3D scene)",
   };
   if (name in sentinels) return sentinels[name];
   const b = precisionBase(name);
@@ -833,6 +840,7 @@ function meshRank(n) {
   if (meshTypeOf(n) === "hunyuan3d") return 1; // the "real" 3D generator first
   if (n === TRIPOSPLAT) return 2;
   if (n === MOGE_MESH) return 3;
+  if (n === MOGE_PANORAMA) return 4;
   return 50;
 }
 
@@ -858,9 +866,10 @@ function isModelReady(name, group, type) {
   // box: t2i 11s, i2i relight 7s (identity held: shape/colour/position untouched),
   // r2i 2-ref compose 7s turbo / 40s quality. fp8, 848×480.
   if (BERNINI_IMAGE_SENTINELS.has(name)) return true;
-  // 3D chains — all three recipes live-verified end-to-end (Jul 2026): MoGe textured
-  // GLB, Hunyuan3D 165K-vert mesh in 27s, TripoSplat spz + orbiting turntable in 34s.
-  if (name === TRIPOSPLAT || name === MOGE_MESH) return true;
+  // 3D chains — every recipe live-verified end-to-end (Jul 2026): MoGe textured GLB,
+  // Hunyuan3D 165K-vert mesh (+ PBR texturing), TripoSplat coloured .glb in 12s, and
+  // the panorama split→merge→sphere in 7s.
+  if (name === TRIPOSPLAT || name === MOGE_MESH || name === MOGE_PANORAMA) return true;
   const b = precisionBase(name);
   // Before the READY list: /hunyuan/ there would wrongly claim the 3D checkpoint
   // for HunyuanVideo's entry — match it explicitly instead.
@@ -1034,6 +1043,10 @@ async function proxyComfyModels(req, res) {
     const mogeWeights = await comfyEnum("LoadMoGeModel", "model_name").catch(() => []);
     if (mogeWeights.length && await comfyHasNodes(["MoGeInference", "MoGePointMapToMesh", "SaveGLB"])) {
       meshModels.push({ name: MOGE_MESH, type: "moge", needsImages: 1 });
+    }
+    // Panorama shares MoGe's weights — only the inference node differs.
+    if (mogeWeights.length && await comfyHasNodes(["MoGePanoramaInference", "MoGePointMapToMesh", "SaveGLB"])) {
+      meshModels.push({ name: MOGE_PANORAMA, type: "moge-pano", needsImages: 1 });
     }
     // Bernini also renders STILLS (same weights + graph at length 1) — surface its
     // three image tasks once the weights are present. i2i/r2i take an attached image
@@ -3727,6 +3740,34 @@ function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation =
   return g;
 }
 
+// MoGe equirectangular 360° panorama → one spherical mesh. Flattened from the
+// `3d_moge_panorama_to_mesh` template's subgraph; its resize-if-wider-than-2048
+// switch pair is replicated server-side (needsResize from imageDims) so no
+// Switch/Math nodes enter the API graph, same as the perspective chain.
+//
+// MoGePanoramaInference splits the equirect into 12 perspective views, runs MoGe on
+// each, then merges the distance maps on the CPU — that merge is the slow phase and
+// its cost is set by mergeRes, not by the GPU. The template's own note warns the
+// merge grid must never exceed the input's long edge, so the caller clamps it.
+//
+// The result is a mesh you are meant to view from INSIDE (you are standing in the
+// photographed place), which is why decimation matters here more than elsewhere: at
+// stride 1 a 1920-wide merge is ~1.8M vertices before it ever reaches a GLB.
+function buildMoGePanorama({ modelName, imageName, resolutionLevel = 9, splitRes = 512, mergeRes = 1920, batchSize = 4, decimation = 4, texture = true, needsResize = false, gapThreshold = 0 }) {
+  const g = {
+    "1": { class_type: "LoadImage", inputs: { image: imageName } },
+    "3": { class_type: "LoadMoGeModel", inputs: { model_name: modelName } },
+    "4": { class_type: "MoGePanoramaInference", inputs: { moge_model: ["3", 0], image: [needsResize ? "2" : "1", 0], resolution_level: resolutionLevel, split_resolution: splitRes, merge_resolution: mergeRes, batch_size: batchSize } },
+    // discontinuity_threshold is 0 (OFF) here, unlike the perspective chain. There it
+    // usefully separates the subject from the background; inside a panorama the same
+    // culling punches holes in the walls and you see white voids through the world.
+    "5": { class_type: "MoGePointMapToMesh", inputs: { moge_geometry: ["4", 0], batch_index: 0, decimation, discontinuity_threshold: gapThreshold, texture } },
+    "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: "heykoko/mesh" } },
+  };
+  if (needsResize) g["2"] = { class_type: "ResizeImagesByLongerEdge", inputs: { images: ["1", 0], longer_edge: 2048 } };
+  return g;
+}
+
 // TripoSplat image→Gaussian splat. Flattened from the official template's two
 // nested subgraphs (link-for-link; UI-only nodes dropped: PreviewImage, the two
 // ComfySwitchNodes, TripoSplatSamplingPreview live-preview wrapper, and the
@@ -4781,6 +4822,19 @@ async function generateComfyImage(req, res) {
             maskName: subject ? meshMaskName : null,
             bgRemoval: (subject && !meshMaskName) ? hy.birefnet : null,
             autoCrop: subject && hy.autoCrop });
+        } else if (meshType === "moge-pano") {
+          const comp = await meshCompanions("moge");
+          const d = imageDims(images[0]);
+          const needsResize = !!(d && Math.max(d.width, d.height) > 2048);
+          // The merge grid must not exceed the (possibly resized) input's long edge —
+          // the node's own note is explicit about it, and overshooting only burns CPU
+          // upsampling a solve that has no more information in it.
+          const longEdge = d ? Math.min(Math.max(d.width, d.height), needsResize ? 2048 : Infinity) : 1920;
+          const mergeRes = Math.max(256, Math.min(opts.panoMerge || 1920, longEdge));
+          workflow = buildMoGePanorama({ modelName: comp.mogeModel, imageName,
+            resolutionLevel: opts.mogeDetail !== undefined ? opts.mogeDetail : 9,
+            splitRes: opts.panoSplit || 512, mergeRes, needsResize,
+            decimation: opts.panoDecimation || 4 });
         } else if (meshType === "triposplat") {
           const comp = await meshCompanions("triposplat");
           workflow = buildTripoSplat({ imageName, comp, seed,

@@ -721,6 +721,7 @@ function comfyModelHint(name) {
   if (/hunyuan[._-]?3d/.test(n)) return t("oll_hint_hunyuan3d");
   if (n === "triposplat") return t("oll_hint_triposplat");
   if (n === "moge-mesh") return t("oll_hint_mogeMesh");
+  if (n === "moge-panorama") return t("oll_hint_mogePano");
   // Video, needs a source clip. scail BEFORE animate — see above.
   if (n === "infinitetalk") return t("oll_hint_infinitetalk");
   if (n === "infinitetalk_speak") return t("oll_hint_infinitetalkSpeak");
@@ -1173,7 +1174,7 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamPaintQuality, paintable && !!dom.comfyParamPaintMesh?.checked);
   setVis(dom.comfyParamKeepBackground, mesh && /hunyuan[._-]?3d/i.test(m), ".comfyParamCheck");
   setVis(dom.comfyParamMeshGaussians, m === "triposplat");
-  setVis(dom.comfyParamMogeDetail, m === "moge-mesh");
+  setVis(dom.comfyParamMogeDetail, m === "moge-mesh" || m === "moge-panorama");
   setVis(dom.comfyParamMogeSubject, m === "moge-mesh", ".comfyParamCheck");
   // Video codec + its CRF: every video model (the tail rewrite is builder-agnostic).
   for (const el of [dom.comfyParamVideoCodec, dom.comfyParamVideoCrf]) setVis(el, video);

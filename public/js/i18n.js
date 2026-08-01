@@ -807,6 +807,7 @@ const UI = {
     oll_hint_hunyuan3d: "Hunyuan3D 2.1 — attach an image → 3D mesh (.glb, untextured white model).",
     oll_hint_triposplat: "TripoSplat — attach an image → a coloured 3D mesh (.glb) you can spin right in the bubble. Colour rides on the vertices, so it needs no texturing add-on. Best on stylized objects.",
     oll_hint_mogeMesh: "MoGe-2 — attach a photo → textured 3D scene mesh (.glb, geometry estimation, fast).",
+    oll_hint_mogePano: "MoGe-2 panorama — attach an EQUIRECTANGULAR 360°×180° photo: a full sphere unwrapped into a rectangle, usually 2:1, horizon across the middle, left and right edges continuing into each other. That is what a 360 camera (Insta360 / Theta / GoPro Max) or Street View produces. A phone's sweep panorama is NOT this — it is a wide strip that covers no sky or floor, and it will come out badly stretched. Ordinary photos belong on the plain MoGe-2 entry.",
     oll_hint_ltxMsr: "LTX-2.3 MSR — keeps the identity of people, clothing and objects from your reference photos across the whole clip. Attach subject photo(s) FIRST (up to 4), then the scene/background photo LAST — the last image is always the background. The prompt has TWO parts split by a blank line. FIRST paragraph → the identity anchor (global): one line per subject image (\"Image 1: a man in a grey suit\", \"Image 2: …\"; the background image is NOT numbered). SECOND paragraph → the scene + action + camera (local); split it into timed segments with | if you want. Miss the blank line and the identity description is lost, so the video comes out mushy. With a SINGLE image, it doubles as both the subject and the background.",
     oll_hint_ltxUnion: "LTX-2.3 Motion/Structure Transfer — copies a driving video's motion, camera move and 3D layout onto a NEW look. NOT a face/identity tool: it does NOT keep a person's identity across the clip (for that use Wan Animate or SCAIL-2). Best for restyling a whole scene while keeping its camera/geometry, reusing a camera move, or driving any non-human subject. Attach a SOURCE VIDEO (its structure is followed via a MoGe depth map) AND one reference image (a first-frame appearance/style seed, not an identity lock); the prompt sets the look. Length follows the full source video (⚙ length caps it, single-pass ≤241); output keeps the source aspect and gets an LTX-generated soundtrack.",
     oll_hint_ltx: "LTX-2 — fast text/image→video, and the only one here that generates audio along with the clip. Attach 2+ images and each becomes a keyframe, pinned evenly across the clip, so the video moves through them in order.",
@@ -961,6 +962,7 @@ const UI = {
     msg_audioDone: "🔊 Audio generated (${size})",
     msg_generatingMesh: "generating 3D model",
     msg_meshDone: "🧊 3D model generated (${size})",
+    msg_panoNotEquirect: "⚠️ This image is ${w}×${h} — an equirectangular 360° panorama is normally about 2:1. The panorama model treats its input as a whole sphere unwrapped flat, so an ordinary photo comes back as a ball with the picture on the inside. For a normal photo pick MoGe-2 instead. (Running anyway.)",
     msg_meshNeedsImage: "This model turns an image into a 3D model. Attach an image first, then use /imagine.",
     // Background jobs
     bg_statusQueued: "Queued (#${n})",
@@ -2006,6 +2008,7 @@ const UI = {
     oll_hint_hunyuan3d: "Hunyuan3D 2.1——附一张图 → 3D 网格（.glb，无贴图白模）。",
     oll_hint_triposplat: "TripoSplat——附一张图 → 彩色 3D 网格（.glb），可直接在气泡里转着看。颜色挂在顶点上，不需要上色插件。风格化物体效果最佳。",
     oll_hint_mogeMesh: "MoGe-2——附一张照片 → 带贴图 3D 场景网格（.glb，几何估计，秒级出结果）。",
+    oll_hint_mogePano: "MoGe-2 全景——需要等距圆柱（equirectangular）360°×180° 全景图：整个球面摊平成一张矩形，通常 2:1，地平线在正中间，左右两边首尾相接。360 相机（Insta360 / Theta / GoPro Max）或街景拍的就是这种。手机的「全景模式」不是——那是一条横向长条，没有天顶和地面，喂进来会被严重拉伸。普通照片请用上面的 MoGe-2。",
     oll_hint_ltxMsr: "LTX-2.3 MSR——让参考照片里的人物、服装、物体在整段视频里保持一致。先附主体照片(最多 4 张)、场景/背景照片放最后——最后一张永远当背景。提示词用空行分两段：第一段是身份锚点(global)——每个主体图一句描述(「图1：灰西装男子」「图2：…」;背景图不编号)；第二段是场景+动作+运镜(local)，想分时间片用 | 隔开。漏了空行=身份描述丢失，画面会糊。只附一张图时，它同时充当主体和背景。",
     oll_hint_ltxUnion: "LTX-2.3 运动 / 结构迁移——把驱动视频的运动、运镜、3D 布局搬到一个全新的外观上。这不是换脸 / 身份工具：它不会在整段视频里保留某个人的身份(要保脸做动作请用 Wan Animate 或 SCAIL-2)。最适合：保住原片运镜 / 几何、把整个场景重新风格化，复用一段运镜，或驱动任意非人主体。要同时附一段源视频(经 MoGe 深度图跟随其结构)和一张参考图(仅作首帧的外观 / 风格种子，不是身份锁)，外观由提示词决定。片长默认跟随源视频全长(⚙ 帧数可截断，单段上限 241)；输出保持源视频比例，并带 LTX 生成的音轨。",
     oll_hint_ltx: "LTX-2——快速的文生 / 图生视频，也是这里唯一能同时生成音频的。附 2 张以上的图，每张会成为一个关键帧、沿片长均匀钉住，视频便依次过渡穿过它们。",
@@ -2156,6 +2159,7 @@ const UI = {
     msg_audioDone: "🔊 语音已生成（${size}）",
     msg_generatingMesh: "正在生成 3D 模型",
     msg_meshDone: "🧊 3D 模型已生成（${size}）",
+    msg_panoNotEquirect: "⚠️ 这张图是 ${w}×${h}——等距圆柱 360° 全景图通常接近 2:1。全景模型会把输入当成整个球面摊平的图,普通照片会变成一个把画面裹在内壁上的球。普通照片请改用 MoGe-2。(仍会继续生成。)",
     msg_meshNeedsImage: "这个模型把图片变成 3D 模型。请先附一张图，再用 /imagine。",
     // background tasks
     bg_statusQueued: "排队中（第 ${n} 位）",
@@ -3200,6 +3204,7 @@ const UI = {
     oll_hint_hunyuan3d: "Hunyuan3D 2.1——附一張圖 → 3D 網格（.glb，無貼圖白模）。",
     oll_hint_triposplat: "TripoSplat——附一張圖 → 彩色 3D 網格（.glb），可直接在氣泡裡轉著看。顏色掛在頂點上，不需要上色外掛。風格化物體效果最佳。",
     oll_hint_mogeMesh: "MoGe-2——附一張照片 → 帶貼圖 3D 場景網格（.glb，幾何估計，秒級出結果）。",
+    oll_hint_mogePano: "MoGe-2 全景——需要等距圓柱（equirectangular）360°×180° 全景圖：整個球面攤平成一張矩形，通常 2:1，地平線在正中間，左右兩邊首尾相接。360 相機（Insta360 / Theta / GoPro Max）或街景拍的就是這種。手機的「全景模式」不是——那是一條橫向長條，沒有天頂和地面，餵進來會被嚴重拉伸。普通照片請用上面的 MoGe-2。",
     oll_hint_ltxMsr: "LTX-2.3 MSR——讓參考照片裡的人物、服裝、物體在整段影片裡保持一致。先附主體照片(最多 4 張)、場景/背景照片放最後——最後一張永遠當背景。提示詞用空行分兩段：第一段是身分錨點(global)——每個主體圖一句描述(「圖1：灰西裝男子」「圖2：…」;背景圖不編號)；第二段是場景+動作+運鏡(local)，想分時間片用 | 隔開。漏了空行=身分描述遺失，畫面會糊。只附一張圖時，它同時充當主體和背景。",
     oll_hint_ltxUnion: "LTX-2.3 運動 / 結構遷移——把驅動影片的運動、運鏡、3D 佈局搬到一個全新的外觀上。這不是換臉 / 身分工具：它不會在整段影片裡保留某個人的身分(要保臉做動作請用 Wan Animate 或 SCAIL-2)。最適合：保住原片運鏡 / 幾何、把整個場景重新風格化，複用一段運鏡，或驅動任意非人主體。要同時附一段源影片(經 MoGe 深度圖跟隨其結構)和一張參考圖(僅作首格的外觀 / 風格種子，不是身分鎖)，外觀由提示詞決定。片長預設跟隨源影片全長(⚙ 影格可截斷，單段上限 241)；輸出保持源影片比例，並帶 LTX 生成的音軌。",
     oll_hint_ltx: "LTX-2——快速的文生 / 圖生影片，也是這裡唯一能同時生成音訊的。附 2 張以上的圖，每張會成為一個關鍵影格、沿片長均勻釘住，影片便依次過渡穿過它們。",
@@ -3350,6 +3355,7 @@ const UI = {
     msg_audioDone: "🔊 語音已生成（${size}）",
     msg_generatingMesh: "正在生成 3D 模型",
     msg_meshDone: "🧊 3D 模型已生成（${size}）",
+    msg_panoNotEquirect: "⚠️ 這張圖是 ${w}×${h}——等距圓柱 360° 全景圖通常接近 2:1。全景模型會把輸入當成整個球面攤平的圖,普通照片會變成一個把畫面裹在內壁上的球。普通照片請改用 MoGe-2。(仍會繼續生成。)",
     msg_meshNeedsImage: "這個模型把圖片變成 3D 模型。請先附一張圖，再用 /imagine。",
     // background tasks
     bg_statusQueued: "排隊中（第 ${n} 位）",
