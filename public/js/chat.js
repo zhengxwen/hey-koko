@@ -282,7 +282,10 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
       initImages: images || null,
       // Speech audio rides ON the source clip (InfiniteTalk needs both; a batch dubs
       // every clip with the same track) — no separate payload field to thread through.
-      initVideo: clip ? (audio ? { ...clip, speechAudio: audio } : clip) : null,
+      // With NO clip it rides a video-less wrapper: the audio-only models (Wan Dancer,
+      // InfiniteTalk photo-speaks) take a photo + audio and generateVideo only reads
+      // sourceVideo.base64 / .speechAudio, so the wrapper is safe downstream.
+      initVideo: clip ? (audio ? { ...clip, speechAudio: audio } : clip) : (audio ? { speechAudio: audio } : null),
       maskB64: mask || null,
       modelOverride,
     },

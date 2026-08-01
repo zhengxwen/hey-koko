@@ -289,6 +289,10 @@ function videoTypeOf(model) {
   // fall into buildWan14B — Phantom is a SINGLE Wan-2.1 UNET, not a high/low MoE, so
   // the /14b/ MoE path would load one file as both experts and skip its subject nodes.
   if (/phantom/i.test(model)) return "phantom";
+  // Wan-Dancer (music → dance) BEFORE the generic /wan/ branch: its filenames
+  // ("wan2.2_dancer_14b_global/local_…") contain "wan", but it is a two-expert
+  // audio-driven pair, not a plain t2v/i2v UNET — buildWan14B would mis-run it.
+  if (/dancer/i.test(model)) return "dancer";
   if (/wan/i.test(model)) return "wan";
   // MSR is an IC-LoRA over the LTX stack, so it rides the "ltx" type; the sentinel name
   // is what tells the builder + preset to take the MSR branch. Checked before the
@@ -666,6 +670,40 @@ async function infinitetalkCompanions() {
   throw new Error("Missing pieces required by InfiniteTalk V2V:\n- ComfyUI-WanVideoWrapper custom node (git clone into custom_nodes/)\n- diffusion_models/Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors\n- diffusion_models/wan2.1_infiniteTalk_single_fp16.safetensors (copy of the model_patches file)\n- models/wav2vec2/wav2vec2-chinese-base_fp16.safetensors\n- vae/Wan2_1_VAE_bf16.safetensors · text_encoders/umt5_xxl…scaled · clip_vision_h · loras/lightx2v_I2V_14B_480p…");
 }
 
+// Everything Wan-Dancer needs beyond the selected GLOBAL expert (the dropdown entry),
+// or a THROW with the shopping list. All-native stack (the WanDancer* nodes ship with
+// ComfyUI ≥ 0.29): the LOCAL expert twin, the lightx2v I2V distill LoRA (global turbo
+// strength 3 / local 1.03 — from the official video_wan_dancer template), umt5, the
+// Wan 2.1 VAE and clip_vision_h.
+const WAN_DANCER_NODES = [
+  "WanDancerVideo", "WanDancerEncodeAudio", "WanDancerPadKeyframesList",
+  "TrimAudioDuration", "LatentCutToBatch", "SkipLayerGuidanceDiTSimple", "RebatchImages",
+];
+async function wanDancerCompanions(globalModel) {
+  const [unets, loras, clips, cvs, vaes, nodes] = await Promise.all([
+    comfyEnum("UNETLoader", "unet_name").catch(() => []),
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyEnum("CLIPLoader", "clip_name").catch(() => []),
+    comfyEnum("CLIPVisionLoader", "clip_name").catch(() => []),
+    comfyEnum("VAELoader", "vae_name").catch(() => []),
+    comfyHasNodes(WAN_DANCER_NODES),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  // The local twin is the global file with global→local swapped — exact-name first,
+  // then any dancer+local file (renames / mixed precision still pair up).
+  const twin = globalModel.replace(/global/i, "local");
+  const parts = {
+    global: globalModel,
+    local: (unets || []).includes(twin) ? twin : find(unets, /dancer.*local|local.*dancer/i),
+    lora: find(loras, /lightx2v.*i2v.*14b.*distill|lightx2v_I2V_14B/i),
+    clip: find(clips, /umt5/i),
+    clipVision: find(cvs, /clip_vision_h|clip.?vision.*h\b/i) || find(cvs, /clip.?vision/i),
+    vae: find(vaes, /wan.?2[._]1.*vae/i) || find(vaes, /wan.*vae/i),
+  };
+  if (nodes && parts.local && parts.lora && parts.clip && parts.clipVision && parts.vae) return parts;
+  throw new Error("Missing pieces required by Wan-Dancer:\n- ComfyUI ≥ 0.29 (native WanDancer* nodes)\n- diffusion_models/wan2.2_dancer_14b_global_fp8_scaled.safetensors + …_local_fp8_scaled.safetensors\n- loras/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors\n- text_encoders/umt5_xxl… · clip_vision/clip_vision_h · vae/Wan2_1_VAE…");
+}
+
 // Whether every named node class is registered on the target ComfyUI. Probed one by
 // one (/object_info/<name> returns {} for an unknown class) rather than pulling the
 // full node table, which is megabytes on a well-stocked install.
@@ -747,6 +785,7 @@ function marketName(name) {
     [/phantom/, "Phantom-Wan 1.3B"],
     [/hunyuan[._-]?3d/, "Hunyuan3D 2.1"], // before the generic /hunyuan/ video rule
     [/hunyuan/, "HunyuanVideo"],
+    [/dancer/, "Wan Dancer (music → dance)"],
     [/fun.?vace/, "Wan 2.2 Fun-VACE"],
     [/ti2v.*5b/, "Wan 2.2 TI2V 5B"],
     [/animate/, "Wan Animate (move)"],
@@ -772,6 +811,7 @@ function capsFor(name, group, type, entry) {
   if (name === LTX_UNION) return ["v2v", "audio"]; // depth-driven; LTX decodes a soundtrack
   if (name === INFINITETALK) return ["v2v", "audio"]; // audio-DRIVEN dubbing (lip re-sync to a speech file)
   if (name === INFINITETALK_SPEAK) return ["i2v", "audio"]; // photo + speech/TTS → talking video
+  if (type === "dancer") return ["i2v", "audio"]; // reference photo + MUSIC → dance video synced to it
   if (entry && entry.needsVideo) return name === BERNINI_AUTO ? ["i2v", "v2v"] : ["v2v"];
   if (name === LTX_MSR) return ["i2v", "audio"];   // reference-image driven, generates a soundtrack
   switch (type) {
@@ -826,6 +866,7 @@ function videoRank(n) {
   // generic /animate/ test would otherwise claim it (same ordering trap as videoTypeOf).
   if (n === LTX_MSR) return 7.5;
   if (n === INFINITETALK_SPEAK) return 7.6; // photo→talking video, lives in the gen group
+  if (/dancer/i.test(n)) return 7.7;        // photo+music→dance video, same neighbourhood
   if (n === SCAIL2_ANIMATE) return 10;
   if (/scail/i.test(n)) return 11;
   if (n === ANIMATE_REPLACE) return 9;
@@ -888,6 +929,9 @@ function isModelReady(name, group, type) {
   // head counts, so no graph-side parameter can work around it. Re-promote once
   // ComfyUI ships a fix — the builder itself needs no change.
   if (/hidream.?o1/i.test(b)) return false;
+  // Wan-Dancer — wired (buildWanDancer, from the official video_wan_dancer template)
+  // but not yet live-verified end-to-end. Flip to true after a real run.
+  if (/dancer/i.test(b)) return false;
   const READY = [
     /flux1?.?dev/, /flux.*kontext/, /pony/,          // classic txt2img + kontext edit
     /z.?image/, /boogu/, /hidream/, /qwen.?image/,   // image gen + edit families
@@ -991,6 +1035,16 @@ async function proxyComfyModels(req, res) {
       if (vt === "scail2") {
         videoModels.push({ name: SCAIL2_ANIMATE, type: "scail2", label: "scail-2 (animate)", needsVideo: true, precFrom: n });
         videoModels.push({ name: n, type: "scail2", label: "scail-2 (replace)", needsVideo: true });
+        continue;
+      }
+      // Wan-Dancer (music → dance): a global/local two-expert pair, collapsed into ONE
+      // entry on the global file (the local twin is derived server-side at gen time,
+      // same policy as the Wan 2.2 high/low MoE). Needs a reference photo + a MUSIC
+      // file (needsAudio — the frontend gates on it); no source video, so it joins
+      // the text/image→video gen group.
+      if (vt === "dancer") {
+        if (/local/i.test(n)) continue; // hidden — derived from the global twin
+        videoModels.push({ name: n, type: "dancer", label: "wan dancer (music → dance)", needsImages: 1, needsAudio: true });
         continue;
       }
       const is14b = /14b/i.test(n);
@@ -3204,6 +3258,83 @@ function buildInfiniteTalk({ prompt, negative, comp, videoName, imageName, audio
   };
 }
 
+// Wan-Dancer (music → dance): reference photo + MUSIC file → the character dances to
+// the track. Flattened from the official video_wan_dancer template (2026-07-14), whose
+// two-stage hierarchy runs in ONE graph:
+//   • GLOBAL expert — plans keyframes for the WHOLE trimmed track in one 149-frame
+//     window (time-mapped RoPE stretches them over the full duration), sampled with
+//     SkipLayerGuidance (layer 9) + shift 5. Turbo (default): distill LoRA at
+//     strength 3, 6 steps, cfg 1; quality: no LoRA, 25 steps, cfg 5.
+//   • WanDancerPadKeyframesList — slices keyframes + audio into `segments` 5-second
+//     pieces (149 frames @ 30 fps each) as ComfyUI LISTS.
+//   • LOCAL expert — refines each segment (list semantics iterate the sub-graph),
+//     always distilled: LoRA 1.03, 6 steps, cfg 1, negative = ConditioningZeroOut.
+//   • RebatchImages merges the refined segments; CreateVideo muxes the trimmed
+//     music back in at 30 fps.
+// The template's global positive prompt is style + a STRING the audio encoder emits
+// (slot 1, an audio-derived rhythm/genre hint) — kept via StringConcatenate. The
+// template's ResizeImageMaskNode (a V3 dynamic node, awkward over the bare API) is
+// replaced by ImageScale — equivalent here since width/height already follow the
+// photo's aspect. duration = segments × 5 s, both trimmed into TrimAudioDuration
+// and fed as num_segments — the template leaves them free to disagree (silent
+// mismatch); we derive both from one value.
+function buildWanDancer({ prompt, negative, comp, imageName, audioName, width, height, seed, turbo, duration, segments, styleWord, ampWord }) {
+  const style = `一个人正在跳舞，舞蹈种类是${styleWord}` + (prompt && prompt.trim() ? `，${prompt.trim()}` : "");
+  const amp = `,图像清晰程度高,人物动作幅度${ampWord}`;
+  const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
+  const globalModel = turbo ? ["2", 0] : ["1", 0];
+  const wf = {
+    // Models. Global expert: the distill LoRA ONLY in turbo (quality runs it bare);
+    // local expert: ALWAYS distilled (strength 1.03), there is no quality variant.
+    "1": { class_type: "UNETLoader", inputs: { unet_name: comp.global, weight_dtype: "default" } },
+    "3": { class_type: "ModelSamplingSD3", inputs: { model: globalModel, shift: 5 } },
+    "4": { class_type: "SkipLayerGuidanceDiTSimple", inputs: { model: ["3", 0], double_layers: "9", single_layers: "", start_percent: 0, end_percent: 1 } },
+    "5": { class_type: "UNETLoader", inputs: { unet_name: comp.local, weight_dtype: "default" } },
+    "6": { class_type: "LoraLoaderModelOnly", inputs: { model: ["5", 0], lora_name: comp.lora, strength_model: 1.03 } },
+    "7": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
+    "8": { class_type: "CLIPVisionLoader", inputs: { clip_name: comp.clipVision } },
+    "9": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    // Inputs. The photo is scaled to the output size (which follows its aspect, so
+    // this is a resize, not a distortion); the music is trimmed to the exact duration.
+    "10": { class_type: "LoadImage", inputs: { image: imageName } },
+    "11": { class_type: "ImageScale", inputs: { image: ["10", 0], upscale_method: "lanczos", width, height, crop: "disabled" } },
+    "12": { class_type: "LoadAudio", inputs: { audio: audioName } },
+    "13": { class_type: "TrimAudioDuration", inputs: { audio: ["12", 0], start_index: 0, duration } },
+    // GLOBAL stage — whole track in one window.
+    "14": { class_type: "WanDancerEncodeAudio", inputs: { audio: ["13", 0], video_frames: 149, audio_inject_scale: 1 } },
+    "15": { class_type: "CLIPVisionEncode", inputs: { clip_vision: ["8", 0], image: ["11", 0], crop: "none" } },
+    "16": { class_type: "StringConcatenate", inputs: { string_a: style, string_b: ["14", 1], delimiter: " " } },
+    "17": { class_type: "CLIPTextEncode", inputs: { clip: ["7", 0], text: ["16", 0] } },
+    "18": { class_type: "CLIPTextEncode", inputs: { clip: ["7", 0], text: neg } },
+    "19": { class_type: "WanDancerVideo", inputs: { positive: ["17", 0], negative: ["18", 0], vae: ["9", 0], clip_vision_output: ["15", 0], clip_vision_output_ref: ["15", 0], start_image: ["11", 0], audio_encoder_output: ["14", 0], width, height, length: 149 } },
+    "20": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
+    "21": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
+    "22": { class_type: "BasicScheduler", inputs: { model: ["4", 0], scheduler: "simple", steps: turbo ? 6 : 25, denoise: 1 } },
+    "23": { class_type: "CFGGuider", inputs: { model: ["4", 0], positive: ["19", 0], negative: ["19", 1], cfg: turbo ? 1 : 5 } },
+    "24": { class_type: "SamplerCustomAdvanced", inputs: { noise: ["20", 0], guider: ["23", 0], sampler: ["21", 0], sigmas: ["22", 0], latent_image: ["19", 2] } },
+    "25": { class_type: "LatentCutToBatch", inputs: { samples: ["24", 0], dim: "t", slice_size: 1 } },
+    "26": { class_type: "VAEDecode", inputs: { samples: ["25", 0], vae: ["9", 0] } },
+    // Keyframes + audio → per-segment LISTS; everything below runs once per segment.
+    "27": { class_type: "WanDancerPadKeyframesList", inputs: { images: ["26", 0], segment_length: 149, num_segments: segments, audio: ["13", 0] } },
+    "28": { class_type: "ImageFromBatch", inputs: { image: ["27", 0], batch_index: 0, length: 1 } },
+    "29": { class_type: "CLIPVisionEncode", inputs: { clip_vision: ["8", 0], image: ["28", 0], crop: "none" } },
+    "30": { class_type: "WanDancerEncodeAudio", inputs: { audio: ["27", 2], video_frames: 149, audio_inject_scale: 1 } },
+    "31": { class_type: "CLIPTextEncode", inputs: { clip: ["7", 0], text: style + amp } },
+    "32": { class_type: "ConditioningZeroOut", inputs: { conditioning: ["31", 0] } },
+    "33": { class_type: "WanDancerVideo", inputs: { positive: ["31", 0], negative: ["32", 0], vae: ["9", 0], clip_vision_output: ["29", 0], clip_vision_output_ref: ["15", 0], start_image: ["27", 0], mask: ["27", 1], audio_encoder_output: ["30", 0], width, height, length: 149 } },
+    "34": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
+    "35": { class_type: "BasicScheduler", inputs: { model: ["6", 0], scheduler: "simple", steps: 6, denoise: 1 } },
+    "36": { class_type: "SamplerCustom", inputs: { model: ["6", 0], add_noise: true, noise_seed: seed, cfg: 1, positive: ["33", 0], negative: ["33", 1], sampler: ["34", 0], sigmas: ["35", 0], latent_image: ["33", 2] } },
+    "37": { class_type: "VAEDecode", inputs: { samples: ["36", 0], vae: ["9", 0] } },
+    // Merge the segment list back into one batch, mux the trimmed music, 30 fps.
+    "38": { class_type: "RebatchImages", inputs: { images: ["37", 0], batch_size: 4096 } },
+    "39": { class_type: "CreateVideo", inputs: { images: ["38", 0], fps: 30, audio: ["13", 0] } },
+    "40": { class_type: "SaveVideo", inputs: { video: ["39", 0], filename_prefix: "heykoko_dancer", format: "auto", codec: "auto" } },
+  };
+  if (turbo) wf["2"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.lora, strength_model: 3 } };
+  return wf;
+}
+
 async function animateCompanions() {
   const [clips, vaes, loras, cvs] = await Promise.all([
     comfyEnum("CLIPLoader", "clip_name"),
@@ -4724,6 +4855,63 @@ async function generateComfyImage(req, res) {
         videoDims = { width: iw, height: ih, fps: iFps };
         const audioFrames = audioDur > 0 ? Math.round(audioDur * iFps) : 0;
         if (audioFrames) videoDims.length = Math.min(audioFrames, maxFrames);
+      } else if (videoType === "dancer") {
+        // Wan-Dancer: reference PHOTO + MUSIC file → the character dances to the track.
+        // Both are hard requirements — the audio is the driving signal (the global
+        // expert plans keyframes from the full trimmed track), not a soundtrack.
+        if (!hasImgInput) { sendJson(res, 400, { error: "Wan-Dancer needs a reference photo of the dancer. Attach one, plus a music file, then /imagine." }); return; }
+        if (!(sourceAudio || sourceAudioName)) { sendJson(res, 400, { error: "Wan-Dancer needs a music file (the track to dance to). Attach an audio file alongside the photo." }); return; }
+        const comp = await wanDancerCompanions(model);
+        // Output follows the PHOTO's aspect at the template's 720×1280 budget (or the
+        // ⚙/--size budget). Both dims MUST be /64, not the /16 the template floors to:
+        // the dancer transformer rearranges the sequence as (t·8) chunks, so the
+        // per-frame token count (W/16)·(H/16) must divide by 8 — /64 on both sides
+        // guarantees it (÷16), while /16 crashes SamplerCustomAdvanced on most photo
+        // aspects ("can't divide axis of length N in chunks of t·8"). The template's
+        // own 720×1280 only works because 45×80 happens to divide.
+        let aspW = Number(refImageWidth), aspH = Number(refImageHeight);
+        if (!(aspW > 0 && aspH > 0)) {
+          const d = imageDims(images[0]);
+          if (d) { aspW = d.width; aspH = d.height; }
+        }
+        let dw = snapDim(opts.width || 704, 64), dh = snapDim(opts.height || 1280, 64);
+        if (aspW > 0 && aspH > 0) {
+          const aspect = aspW / aspH;
+          const budget = (opts.width && opts.height) ? opts.width * opts.height : 720 * 1280;
+          dw = snapDim(Math.sqrt(budget * aspect), 64);
+          dh = snapDim(Math.sqrt(budget / aspect), 64);
+        }
+        // Duration: ⚙ pick, else the attached track's length — snapped DOWN to a
+        // multiple of 5 s (each segment is 149 frames ≈ 5 s @ 30 fps), capped at the
+        // template's 30 s ceiling (global plans the WHOLE track in one 149-frame
+        // window, so keyframe density thins as duration grows).
+        const audioDur = Number(sourceAudioDuration) || 0;
+        const snap5 = (s) => Math.min(30, Math.max(5, Math.floor(s / 5) * 5));
+        const duration = opts.danceDuration > 0 ? snap5(opts.danceDuration) : (audioDur > 0 ? snap5(audioDur) : 5);
+        const segments = Math.round(duration / 5);
+        // Dance style: ⚙ pick, else sniffed from the prompt, else the template's
+        // default (Latin). The five styles are the ones the model was trained on;
+        // the words are injected into the fixed Chinese recipe prompt.
+        const STYLES = { classic: "古典舞", kpop: "韩舞", street: "街舞", latin: "拉丁舞", tap: "踢踏舞" };
+        const sniff = (p) => {
+          if (/古典|classic/i.test(p)) return "classic";
+          if (/韩舞|k.?pop/i.test(p)) return "kpop";
+          if (/街舞|street|hip.?hop|breaking/i.test(p)) return "street";
+          if (/踢踏|tap/i.test(p)) return "tap";
+          if (/拉丁|latin|salsa/i.test(p)) return "latin";
+          return null;
+        };
+        const styleKey = STYLES[opts.danceStyle] ? opts.danceStyle : (sniff(String(prompt || "")) || "latin");
+        const AMPS = { low: "低", medium: "中等", high: "高", max: "最大" };
+        const ampWord = AMPS[opts.danceAmplitude] || AMPS.low;
+        const imageName = await uploadImage(images[0], controller.signal, "heykoko_dancer_ref.png");
+        imagesUsed = 1;
+        const audioName = sourceAudioName || await uploadAudio(sourceAudio, controller.signal, sourceAudioMime);
+        // Turbo (template default): global expert distill-LoRA×3 / 6 steps / cfg 1.
+        // ⚙ quality: 25 steps / cfg 5 / no LoRA on the global stage (local stays distilled).
+        const dTurbo = !opts.danceQuality;
+        workflow = buildWanDancer({ prompt, negative: negative_prompt || "", comp, imageName, audioName, width: dw, height: dh, seed, turbo: dTurbo, duration, segments, styleWord: STYLES[styleKey], ampWord });
+        videoDims = { width: dw, height: dh, length: segments * 149, fps: 30 };
       } else if (videoType === "ltx-union") {
         // LTX Union Control: depth of the SOURCE VIDEO drives a new clip; the reference
         // image sets appearance. Needs BOTH a source video and one reference image.

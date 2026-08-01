@@ -880,6 +880,43 @@
               <option value="generic">Generic assistant</option>
             </select>
           </label>
+          <label>
+            <span id="comfyParamDanceStyleLabel" title="Wan Dancer only: which of the five trained dance genres to perform. Auto picks it from the prompt (e.g. 'street dance' / '街舞'), falling back to Latin.">Dance style (Wan Dancer)</span>
+            <select id="comfyParamDanceStyle" title="Wan Dancer only: which of the five trained dance genres to perform. Auto picks it from the prompt (e.g. 'street dance' / '街舞'), falling back to Latin.">
+              <option value="">Auto (from prompt · Latin)</option>
+              <option value="classic">Chinese classical</option>
+              <option value="kpop">K-Pop</option>
+              <option value="street">Street dance</option>
+              <option value="latin">Latin dance</option>
+              <option value="tap">Tap dance</option>
+            </select>
+          </label>
+          <label>
+            <span id="comfyParamDanceAmplitudeLabel" title="Wan Dancer only: how big the dance moves are.">Motion amplitude (Wan Dancer)</span>
+            <select id="comfyParamDanceAmplitude" title="Wan Dancer only: how big the dance moves are.">
+              <option value="">Default (low)</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="max">Max</option>
+            </select>
+          </label>
+          <label>
+            <span id="comfyParamDanceDurationLabel" title="Wan Dancer only: output length in seconds (each 5 s is one refined segment). Auto follows the attached music, capped at the model's 30 s ceiling. Longer = proportionally longer render.">Dance duration (Wan Dancer)</span>
+            <select id="comfyParamDanceDuration" title="Wan Dancer only: output length in seconds (each 5 s is one refined segment). Auto follows the attached music, capped at the model's 30 s ceiling. Longer = proportionally longer render.">
+              <option value="">Auto (music length · ≤30 s)</option>
+              <option value="5">5 s</option>
+              <option value="10">10 s</option>
+              <option value="15">15 s</option>
+              <option value="20">20 s</option>
+              <option value="25">25 s</option>
+              <option value="30">30 s</option>
+            </select>
+          </label>
+          <label class="checkboxLabel comfyParamCheck" title="Wan Dancer only: run the keyframe-planning (global) stage at full quality — 25 steps / cfg 5, no distill LoRA — instead of the 6-step turbo default. Much slower; the per-segment refinement stage is always distilled.">
+            <input id="comfyParamDanceQuality" type="checkbox" />
+            <span id="comfyParamDanceQualityLabel">Keyframe quality mode (Wan Dancer, slow)</span>
+          </label>
           <label title="Bernini only: which sampling recipe / step count to use. Turbo (default) = 6-step distill LoRA. LightX2V = the newer 4-step recipe (KSamplerAdvanced ×2, ModelSamplingSD3 shift 8, dedicated high+low LoRA pair at strength 1.0 — author reports sharper hands / cleaner fast motion; needs the Bernini-R_LightX2V LoRA pair, else falls back to turbo). Quality = full 40-step / cfg 5, no speed LoRA, much slower and highest fidelity.">
             <span id="comfyParamBerniniModeLabel">Sampling recipe (bernini)</span>
             <select id="comfyParamBerniniMode">

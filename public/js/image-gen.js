@@ -97,6 +97,12 @@ function comfyOverrides() {
   // explicit pick is the ONLY way to reach them; empty = infer from the attachments.
   const berniniTask = dom.comfyParamBerniniTask?.value || "";
   if (berniniTask) ov.berniniTask = berniniTask;
+  // Wan Dancer: dance genre / motion amplitude / duration (seconds) / keyframe-quality.
+  if (dom.comfyParamDanceStyle?.value) ov.danceStyle = dom.comfyParamDanceStyle.value;
+  if (dom.comfyParamDanceAmplitude?.value) ov.danceAmplitude = dom.comfyParamDanceAmplitude.value;
+  const danceDuration = num(dom.comfyParamDanceDuration?.value);
+  if (danceDuration !== undefined) ov.danceDuration = danceDuration;
+  if (dom.comfyParamDanceQuality?.checked) ov.danceQuality = true;
   const refMaxSize = num(dom.comfyParamRefMaxSize?.value);
   if (refMaxSize !== undefined) ov.refMaxSize = refMaxSize; // Bernini: reference long-edge cap
   // LTX LoRA. Sent even when the picker is showing a baked-in choice — the server
@@ -899,7 +905,9 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // clip only for the server to reject the job.
   const speechAudio = sourceVideo?.speechAudio || null;
   if (state.comfyAudioInModels && state.comfyAudioInModels.has(model) && !(speechAudio && speechAudio.base64)) {
-    sink.fail(t("msg_needSpeechAudio"));
+    // Wan Dancer wants MUSIC, not a speech track — its own message avoids sending
+    // the user hunting for a "voice" file.
+    sink.fail(t(/dancer/i.test(model) ? "msg_needMusicAudio" : "msg_needSpeechAudio"));
     setAvatarState("idle");
     return;
   }
@@ -944,7 +952,20 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // count is 1 + ceil((frames − cap) / (cap − overlap)) — true of both pipelines. The
   // old `ceil(frames / (cap − overlap))` over-counted by one whenever the source fit
   // in a single pass (81 frames at an 81 cap read as 2 → the badge showed "1/2").
+  // Wan Dancer renders 1 global (keyframe-planning) pass + one refinement pass per
+  // 5-second segment, all in ONE graph — mirror the server's duration rule (⚙ pick,
+  // else the music's length, snapped down to 5 s multiples, capped at 30) so the
+  // overall bar / ETA / badge know the pass count up front.
+  const dancerModel = /dancer/i.test(model);
+  const dancerSegs = (() => {
+    if (!dancerModel) return 0;
+    const snap5 = (s) => Math.min(30, Math.max(5, Math.floor(s / 5) * 5));
+    const dur = reqOptions.danceDuration > 0 ? snap5(reqOptions.danceDuration)
+      : (sourceAudioDuration > 0 ? snap5(sourceAudioDuration) : 5);
+    return Math.round(dur / 5);
+  })();
   const estPasses = (() => {
+    if (dancerModel) return 1 + dancerSegs; // global planning + per-segment refinement
     if (chainFrames <= 0) return 1;
     const cap = Math.max(1, segmentCapFor(model, animBudgetEta, !!reqOptions.torchCompile));
     if (chainFrames <= cap) return 1;
@@ -990,7 +1011,14 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     // the rv2v "still" pose-adoption pass, or a model's two-expert high+low MoE —
     // and those would otherwise inflate the total to a bogus "segment 3/3" / "3/2".
     if (estPasses > 1) {
-      sink.seg(t("msg_chunkBadge", { seg: Math.min(_passesDone + 1, estPasses), total: estPasses }));
+      // Wan Dancer: ramp 0 is the global keyframe-planning pass, not a content
+      // segment — label it as such and number only the refinement ramps.
+      if (dancerModel) {
+        sink.seg(_passesDone === 0 ? t("msg_dancerPlanning")
+          : t("msg_chunkBadge", { seg: Math.min(_passesDone, dancerSegs), total: dancerSegs }));
+      } else {
+        sink.seg(t("msg_chunkBadge", { seg: Math.min(_passesDone + 1, estPasses), total: estPasses }));
+      }
     }
 
     // ETA. Only show a number when it's RELIABLE: a measured per-chunk time (≥1 chunk

@@ -71,6 +71,10 @@ export function saveCurrentSettings() {
         videoCrf: dom.comfyParamVideoCrf?.value || "",
         berniniMode: dom.comfyParamBerniniMode?.value || "",
         berniniTask: dom.comfyParamBerniniTask?.value || "",
+        danceStyle: dom.comfyParamDanceStyle?.value || "",
+        danceAmplitude: dom.comfyParamDanceAmplitude?.value || "",
+        danceDuration: dom.comfyParamDanceDuration?.value || "",
+        danceQuality: dom.comfyParamDanceQuality?.checked || false,
         refMaxSize: dom.comfyParamRefMaxSize?.value || "",
         ltxLora: dom.comfyParamLtxLora?.value || "",
         ltxLoraStrength: dom.comfyParamLtxLoraStrength?.value || "",
@@ -278,6 +282,10 @@ export function loadSavedSettings() {
     // a saved quality/lightx2v choice survives the upgrade.
     if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = cp.berniniMode || (cp.berniniLightx2v ? "lightx2v" : cp.berniniQuality ? "quality" : "");
     if (dom.comfyParamBerniniTask) dom.comfyParamBerniniTask.value = cp.berniniTask || "";
+    if (dom.comfyParamDanceStyle) dom.comfyParamDanceStyle.value = cp.danceStyle || "";
+    if (dom.comfyParamDanceAmplitude) dom.comfyParamDanceAmplitude.value = cp.danceAmplitude || "";
+    if (dom.comfyParamDanceDuration) dom.comfyParamDanceDuration.value = cp.danceDuration || "";
+    if (dom.comfyParamDanceQuality) dom.comfyParamDanceQuality.checked = !!cp.danceQuality;
     if (dom.comfyParamRefMaxSize) dom.comfyParamRefMaxSize.value = cp.refMaxSize || "";
     // ltxLora is best-effort too — applyComfyModels re-applies it once loras have loaded.
     if (dom.comfyParamLtxLora && cp.ltxLora) dom.comfyParamLtxLora.value = cp.ltxLora;

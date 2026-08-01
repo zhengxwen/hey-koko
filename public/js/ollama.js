@@ -1157,9 +1157,15 @@ export function updateComfyParamVisibility() {
   // Hide a field by its <label> (or, for the frame-interpolation pair, the shared .comfyParamRow; the
   // pick-person button has no label, so fall back to the element itself).
   const setVis = (el, on, sel) => { if (!el) return; const box = sel ? el.closest(sel) : (el.closest("label") || el); if (box) box.hidden = !on; };
+  // Wan Dancer (music → dance) — its own genre/amplitude/duration/quality knobs; the
+  // generic frame-length and fps fields are hidden for it (duration is picked in
+  // SECONDS below, and the recipe's output rate is fixed at 30 fps).
+  const dancer = /dancer/i.test(m);
+  for (const el of [dom.comfyParamDanceStyle, dom.comfyParamDanceAmplitude, dom.comfyParamDanceDuration]) setVis(el, dancer);
+  setVis(dom.comfyParamDanceQuality, dancer, ".comfyParamCheck");
   // Video timing — gen length is diffusion-only (an upscale / VFI keeps the source's own length).
-  setVis(dom.comfyParamLength, video && diffusion);
-  setVis(dom.comfyParamFps, video);
+  setVis(dom.comfyParamLength, video && diffusion && !dancer);
+  setVis(dom.comfyParamFps, video && !dancer);
   // Timeout: mesh renders ride the video timeout policy (Hunyuan3D can take minutes).
   setVis(dom.comfyParamTimeout, video || mesh);
   // 3D knobs. meshDetail drives BOTH meshers — Hunyuan3D's voxel octree and
@@ -1443,6 +1449,7 @@ function initComfyParamsModal() {
   });
   dom.comfyParamBerniniMode?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamBerniniTask?.addEventListener("change", () => saveCurrentSettings());
+  for (const el of [dom.comfyParamDanceStyle, dom.comfyParamDanceAmplitude, dom.comfyParamDanceDuration, dom.comfyParamDanceQuality]) el?.addEventListener("change", () => saveCurrentSettings());
   // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset
   // restores that rather than an empty value.
   dom.comfyParamInterpMethod?.addEventListener("change", () => saveCurrentSettings());
@@ -1461,6 +1468,10 @@ function initComfyParamsModal() {
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = false;
     if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = "";
     if (dom.comfyParamBerniniTask) dom.comfyParamBerniniTask.value = "";
+    if (dom.comfyParamDanceStyle) dom.comfyParamDanceStyle.value = "";
+    if (dom.comfyParamDanceAmplitude) dom.comfyParamDanceAmplitude.value = "";
+    if (dom.comfyParamDanceDuration) dom.comfyParamDanceDuration.value = "";
+    if (dom.comfyParamDanceQuality) dom.comfyParamDanceQuality.checked = false;
     if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = "rife";
     if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = "h264"; // default codec, not empty
     if (dom.comfyParamPaintQuality) dom.comfyParamPaintQuality.value = "standard";
