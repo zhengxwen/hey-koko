@@ -929,9 +929,9 @@ function isModelReady(name, group, type) {
   // head counts, so no graph-side parameter can work around it. Re-promote once
   // ComfyUI ships a fix — the builder itself needs no change.
   if (/hidream.?o1/i.test(b)) return false;
-  // Wan-Dancer — wired (buildWanDancer, from the official video_wan_dancer template)
-  // but not yet live-verified end-to-end. Flip to true after a real run.
-  if (/dancer/i.test(b)) return false;
+  // Wan-Dancer — verified end-to-end on the live box (Aug 2026): photo + music →
+  // dance video, 480×832 budget, turbo, keyframe planning + per-segment refinement.
+  if (/dancer/i.test(b)) return true;
   const READY = [
     /flux1?.?dev/, /flux.*kontext/, /pony/,          // classic txt2img + kontext edit
     /z.?image/, /boogu/, /hidream/, /qwen.?image/,   // image gen + edit families
@@ -4874,10 +4874,17 @@ async function generateComfyImage(req, res) {
           const d = imageDims(images[0]);
           if (d) { aspW = d.width; aspH = d.height; }
         }
-        let dw = snapDim(opts.width || 704, 64), dh = snapDim(opts.height || 1280, 64);
+        // Default budget = the template's SMALL preset (480×832 — the WanDancerVideo
+        // widget defaults), NOT its 720×1280 exposed default: both stages sample a
+        // fixed 149-frame window whatever the duration, so attention cost grows
+        // ~quadratically with resolution. At 768×1152 that is ~131k tokens/pass — a
+        // single 5-second turbo run blew past 15 minutes on the RTX 5090 (measured,
+        // interrupted); 480×832 is ~59k tokens, roughly 4-5× faster. ⚙/--size
+        // 720x1280 buys the full-quality render back for final takes.
+        let dw = snapDim(opts.width || 448, 64), dh = snapDim(opts.height || 832, 64);
         if (aspW > 0 && aspH > 0) {
           const aspect = aspW / aspH;
-          const budget = (opts.width && opts.height) ? opts.width * opts.height : 720 * 1280;
+          const budget = (opts.width && opts.height) ? opts.width * opts.height : 480 * 832;
           dw = snapDim(Math.sqrt(budget * aspect), 64);
           dh = snapDim(Math.sqrt(budget / aspect), 64);
         }
