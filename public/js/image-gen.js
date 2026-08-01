@@ -79,6 +79,8 @@ function comfyOverrides() {
   if (dom.comfyParamMogeSubject?.checked) ov.mogeSubjectOnly = true; // MoGe: cut the subject out instead of the whole scene
   const mogeDetail = num(dom.comfyParamMogeDetail?.value);
   if (mogeDetail !== undefined) ov.mogeDetail = mogeDetail;         // MoGe resolution_level 0-9
+  const panoRefine = num(dom.comfyParamPanoRefine?.value);
+  if (panoRefine) ov.panoRefine = panoRefine;                       // equirect long edge after the 4x upscale pass
   const targetFps = num(dom.comfyParamTargetFps?.value);
   if (targetFps !== undefined) ov.targetFps = targetFps; // frame interpolation: interpolate up to this fps
   if (dom.comfyParamInterpMethod?.value) ov.interpMethod = dom.comfyParamInterpMethod.value; // rife | film
@@ -993,8 +995,23 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   const onVideoProgress = (value, max) => {
     if (!max) return;
     const now = Date.now();
-    // Clock starts at the FIRST sampling step (the one-time DWPose before it reports no
-    // progress and shouldn't count toward the per-chunk pace).
+    // Preprocessing (DWPose / SAM3) runs ONCE over the whole source and reports a
+    // FRAME-COUNT-sized progress ramp — VERIFIED live: DWPose emits max = source frame
+    // count, not a step count. A content sampler reports its STEP count (≤6 for the
+    // chained turbo models). Counting these preprocessing ramps as content-segment
+    // boundaries raced the badge ahead — Wan Animate runs DWPose TWICE (face + pose), so
+    // "segment 5/5" showed while real content was only segment 3. Exclude any ramp whose
+    // max is frame-count-sized (≥ half the source length; ">40" when the count is
+    // unknown) from the counter / bar entirely, and surface it as a "preparing…" phase.
+    const framey = sourceVideoFrames > 0 ? (max >= sourceVideoFrames * 0.5) : (max > 40);
+    if (framey) {
+      sink.indeterminate(true, t("bg_preparing"));
+      sink.eta("");
+      clearTimeout(_progStall);
+      return; // do NOT advance _prevVal / _passesDone / the content bar
+    }
+    // Clock starts at the FIRST content sampling step (preprocessing above is excluded so
+    // its time doesn't skew the per-chunk pace).
     if (!_firstStepT) { _firstStepT = now; _boundaryT = now; }
     if (value < _prevVal) { _passesDone++; _boundaryT = now; } // a chunk finished, next started
     _prevVal = value;
@@ -1035,7 +1052,16 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     sink.eta(`⏳ ${etaText}`);
 
     clearTimeout(_progStall);
-    _progStall = setTimeout(() => sink.indeterminate(true), 2500);
+    // A pass that hit its last step (value ≥ max) is followed by non-sampling work that
+    // reports no progress: for the FINAL pass that's the big VAE-decode + encode + save +
+    // merge (often ~half the wall time), for an intermediate pass a shorter inter-chunk
+    // decode. Either way, flip fast to an animated "finalizing…" bar so it never sits
+    // frozen at 100%. If another pass starts, its first frame clears it (progress()).
+    if (value >= max) {
+      _progStall = setTimeout(() => sink.indeterminate(true, t("bg_finalizing")), 900);
+    } else {
+      _progStall = setTimeout(() => sink.indeterminate(true), 2500); // mid-render stall (DWPose / decode)
+    }
   };
   const unsubscribe = subscribeComfyProgress(comfyHost, clientId, {
     onProgress: onVideoProgress,
@@ -1420,6 +1446,8 @@ export async function generateMesh(parsed, model, tabId = state.activeTabId, ins
         generatedMeshes: allMeshes,
         meshMimes: allMeshMimes,
         meshNames: allMeshNames,
+        // "panorama" when the chain built a 360° shell — the viewer stands inside it.
+        ...(lastData && lastData.meshView ? { meshView: lastData.meshView } : {}),
         imagePrompt: parsed.prompt || "",
         timestamp: Date.now(),
         genMs: Date.now() - genStart,

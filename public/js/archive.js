@@ -132,6 +132,7 @@ export function initArchive() {
       if (msg.generatedVideoThumbnails) m.generatedVideoThumbnails = msg.generatedVideoThumbnails.filter(Boolean);
       // Generated 3D models (.glb/.spz) — parallel arrays, round-tripped like videos.
       if (msg.generatedMeshes) m.generatedMeshes = msg.generatedMeshes;
+      if (msg.meshView) m.meshView = msg.meshView;
       if (msg.meshMimes) m.meshMimes = msg.meshMimes;
       if (msg.meshNames) m.meshNames = msg.meshNames;
       if (msg.isCompactSummary) m.isCompactSummary = true;

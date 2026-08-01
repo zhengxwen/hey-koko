@@ -808,6 +808,15 @@
             <span id="comfyParamMogeDetailLabel">3D detail level (MoGe 0–9)</span>
             <input id="comfyParamMogeDetail" type="number" min="0" max="9" step="1" placeholder="Auto (9)" />
           </label>
+          <label>
+            <span id="comfyParamPanoRefineLabel" title="Panorama only. Standing inside a 360° mesh you are magnifying the photo hard — one turn is spread over the whole view, so a 1774 px equirect shows a 40° slice at roughly 4.5× enlargement, which is what makes it look soft. This runs the photo through a 4× upscale model first. Measured on one panorama: the enlargement drops 4.5× → 3.1× / 2.2× / 1.9× and screen sharpness nearly doubles at 3584. Costs file size and a little time; the mesh keeps the same number of triangles either way.">Sharpen the 360 view</span>
+            <select id="comfyParamPanoRefine">
+              <option id="optPanoRefineOff" value="">Off · photo as captured</option>
+              <option id="optPanoRefine2560" value="2560">2560 px · ~1.3× file</option>
+              <option id="optPanoRefine3584" value="3584">3584 px · ~2× file</option>
+              <option id="optPanoRefine4096" value="4096">4096 px · ~2.7× file</option>
+            </select>
+          </label>
           <div class="comfyParamRow">
             <label title="升格 / frame interpolation: smoothly resample the generated video up to this frame rate (same duration, more frames). Pick a common value (30/60/…) or type your own. The multiplier is chosen automatically from the model's / source's fps. If the source is already at/above this, it's skipped. Applies to all video models.">
               <span id="comfyParamTargetFpsLabel">Smooth to FPS (升格)</span>

@@ -1181,6 +1181,7 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamKeepBackground, mesh && /hunyuan[._-]?3d/i.test(m), ".comfyParamCheck");
   setVis(dom.comfyParamMeshGaussians, m === "triposplat");
   setVis(dom.comfyParamMogeDetail, m === "moge-mesh" || m === "moge-panorama");
+  setVis(dom.comfyParamPanoRefine, m === "moge-panorama");
   setVis(dom.comfyParamMogeSubject, m === "moge-mesh", ".comfyParamCheck");
   // Video codec + its CRF: every video model (the tail rewrite is builder-agnostic).
   for (const el of [dom.comfyParamVideoCodec, dom.comfyParamVideoCrf]) setVis(el, video);
@@ -1381,6 +1382,7 @@ function initComfyParamsModal() {
     dom.comfyParamShapeTokens,
     dom.comfyParamMeshGaussians,
     dom.comfyParamMogeDetail,
+    dom.comfyParamPanoRefine,
     dom.comfyParamTargetFps,
     dom.comfyParamUpscaleDenoise,
     dom.comfyParamUpscaleModel,
@@ -1436,6 +1438,7 @@ function initComfyParamsModal() {
   // one also gates the mesh-detail row, so it re-runs visibility on toggle.
   dom.comfyParamKeepBackground?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamMogeSubject?.addEventListener("change", () => saveCurrentSettings());
+  dom.comfyParamPanoRefine?.addEventListener("change", () => saveCurrentSettings());
   // Texturing toggle gates the quality row, so it re-runs visibility too.
   dom.comfyParamPaintMesh?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
   // Ultra makes a ~17 MB GLB (measured) that then rides base64 through the response

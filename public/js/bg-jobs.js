@@ -663,6 +663,9 @@ function makeBgSink(job, controller) {
       // GPU (ComfyUI broadcasts progress to every open socket). Ignore it so a waiting job
       // never shows a bar / "running" %.
       if (job.status !== 'running') return;
+      // A real numeric frame arrived → we're determinate again (clears a "finalizing"
+      // state left over from the previous pass hitting 100%).
+      if (job.indeterminate) { job.indeterminate = false; job.stage = null; }
       job.progress = { value: v, max: m }; renderDrawer(); updatePlaceholderBar(job);
     },
     // Live preview frame → shown in the drawer row. Revoke the prior blob URL.
@@ -677,7 +680,21 @@ function makeBgSink(job, controller) {
     // Multi-segment video: "segment N/M" — surface which chunk is rendering. Changes only
     // at chunk boundaries; refresh the drawer/placeholder then (progress() also redraws).
     seg(x) { markRunning(); if (job.status !== 'running') return; if (job.seg !== x) { job.seg = x; renderDrawer(); updatePlaceholderBar(job); } },
-    indeterminate() {},
+    // Non-sampling work (ComfyUI queue/startup, DWPose, and — the big one — the VAE
+    // decode + video encode + save/merge AFTER the last sampling step) reports no
+    // progress. Without this the bar froze at the last %, so a video whose post-sampling
+    // is ~half the wall time looked stuck at 100%. Flip the placeholder to an animated
+    // bar + an optional stage label ("finalizing…") so it reads as alive; the elapsed
+    // clock keeps ticking. `stage` is a localized label (empty = just pulse).
+    indeterminate(on, stage) {
+      markRunning();
+      if (job.status !== 'running') return;
+      const s = on ? (stage || '') : null;
+      if (job.indeterminate === !!on && job.stage === s) return;
+      job.indeterminate = !!on;
+      job.stage = s;
+      renderDrawer(); updatePlaceholderBar(job);
+    },
     clearBubble() {},          // placeholder persists until place() swaps it
     // Swap the placeholder message for the real result (keeping its id/position).
     place(msg) {
@@ -702,7 +719,7 @@ function makeBgSink(job, controller) {
       if (state.activeTabId === job.tabId) rerender();
     },
     done() {
-      job.progress = null;
+      job.progress = null; job.indeterminate = false; job.stage = null;
       if (job.preview && job.preview.startsWith('blob:')) { try { URL.revokeObjectURL(job.preview); } catch {} }
       job.preview = null;
       renderDrawer();
@@ -738,7 +755,7 @@ function syncPlaceholder(job) {
 // its tab is visible—pokes the bar's width directly, flipping it determinate.
 function updatePlaceholderBar(job) {
   const found = findMsg(job.msgId);
-  if (found && found.msg.bgPlaceholder) { found.msg.label = job.label; found.msg.progress = job.progress; found.msg.seg = job.seg; found.msg.elapsed = runningElapsed(job); }
+  if (found && found.msg.bgPlaceholder) { found.msg.label = job.label; found.msg.progress = job.progress; found.msg.seg = job.seg; found.msg.stage = job.stage; found.msg.indeterminate = job.indeterminate; found.msg.elapsed = runningElapsed(job); }
   if (state.activeTabId !== job.tabId) return;
   const el = document.querySelector(`[data-msg-id="${job.msgId}"]`);
   if (!el) return;
@@ -754,7 +771,14 @@ function updatePlaceholderBar(job) {
   if (segEl) segEl.textContent = phStatusText(job);
   const bar = el.querySelector('.bgPhBar');
   const fill = el.querySelector('.bgPhBarFill');
-  if (!bar || !fill || !job.progress || !job.progress.max) return;
+  if (!bar || !fill) return;
+  // Indeterminate (finalizing / no-progress phase) wins over a stale numeric % — else the
+  // bar would freeze at the last value (e.g. 100% through the whole post-sampling encode).
+  if (job.indeterminate || !job.progress || !job.progress.max) {
+    bar.classList.add('indeterminate');
+    fill.style.width = '';
+    return;
+  }
   const pct = Math.min(100, Math.round(job.progress.value / job.progress.max * 100));
   bar.classList.remove('indeterminate');
   fill.style.width = pct + '%';
@@ -1002,7 +1026,7 @@ function fmtElapsed(ms) {
 }
 function runningElapsed(job) { return job.startedAt ? fmtElapsed(Date.now() - job.startedAt) : ''; }
 // Combined running status for a placeholder bubble: "segment N/M · 1:23".
-function phStatusText(job) { return [job.seg, runningElapsed(job)].filter(Boolean).join(' · '); }
+function phStatusText(job) { return [job.stage, job.seg, runningElapsed(job)].filter(Boolean).join(' · '); }
 
 // 1-second ticker that refreshes the elapsed time on every running job (drawer rows +
 // the visible placeholder) without a full chat re-render. Self-stops when none run.
@@ -1027,9 +1051,12 @@ function statusText(job) {
   switch (job.status) {
     case 'queued': { const p = queuePosition(job); return p ? t('bg_statusQueued', { n: p }) : t('bg_statusQueuedPlain'); }
     case 'running': {
-      const pct = job.progress && job.progress.max
+      // Indeterminate (finalizing / no-progress) → show the stage label, not a frozen % —
+      // otherwise a job encoding after 100% reads as "running 100%" forever.
+      const pct = job.progress && job.progress.max && !job.indeterminate
         ? Math.min(100, Math.round(job.progress.value / job.progress.max * 100)) : null;
-      const base = pct != null ? t('bg_statusRunningPct', { pct }) : t('bg_statusRunning');
+      const base = job.indeterminate ? (job.stage || t('bg_statusRunning'))
+        : (pct != null ? t('bg_statusRunningPct', { pct }) : t('bg_statusRunning'));
       const head = job.seg ? `${job.seg} · ${base}` : base;   // "segment N/M · running 94%"
       const el = runningElapsed(job);
       return el ? `${head} · ${el}` : head;                    // … · 1:23
@@ -1408,7 +1435,7 @@ function buildJobRow(job) {
     const status = `<span class="bgJobStatus"${errReason ? ` title="${escapeText(errReason)}"` : ''}>${escapeText(statusStr)}</span>`;
     let bar = '';
     if (job.status === 'running') {
-      if (job.progress && job.progress.max) {
+      if (job.progress && job.progress.max && !job.indeterminate) {
         const pct = Math.min(100, Math.round(job.progress.value / job.progress.max * 100));
         bar = `<div class="bgJobBar"><div class="bgJobBarFill" style="width:${pct}%"></div></div>`;
       } else {

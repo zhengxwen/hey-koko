@@ -61,6 +61,7 @@ export function saveCurrentSettings() {
         shapeTokens: dom.comfyParamShapeTokens?.value || "",
         meshGaussians: dom.comfyParamMeshGaussians?.value || "",
         mogeDetail: dom.comfyParamMogeDetail?.value || "",
+        panoRefine: dom.comfyParamPanoRefine?.value || "",
         mogeSubjectOnly: dom.comfyParamMogeSubject?.checked || false,
         keepBackground: dom.comfyParamKeepBackground?.checked || false,
         // Defaults ON, so store the raw state — `|| false` would be fine here but
@@ -174,6 +175,7 @@ function saveChatMessage(message) {
     stored.generatedMeshes = message.generatedMeshes;
     if (message.meshMimes) stored.meshMimes = message.meshMimes;
     if (message.meshNames) stored.meshNames = message.meshNames;
+    if (message.meshView) stored.meshView = message.meshView;
   }
   if (message.isCompactSummary) stored.isCompactSummary = true;
   if (message.isFilePreview) stored.isFilePreview = true;
@@ -270,6 +272,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamShapeTokens) dom.comfyParamShapeTokens.value = cp.shapeTokens || "";
     if (dom.comfyParamMeshGaussians) dom.comfyParamMeshGaussians.value = cp.meshGaussians || "";
     if (dom.comfyParamMogeDetail) dom.comfyParamMogeDetail.value = cp.mogeDetail || "";
+    if (dom.comfyParamPanoRefine) dom.comfyParamPanoRefine.value = cp.panoRefine || "";
     if (dom.comfyParamMogeSubject) dom.comfyParamMogeSubject.checked = !!cp.mogeSubjectOnly;
     if (dom.comfyParamKeepBackground) dom.comfyParamKeepBackground.checked = !!cp.keepBackground;
     // Ticked by default: settings saved before this box existed have no key at all,

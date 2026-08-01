@@ -3884,7 +3884,21 @@ function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation =
 // The result is a mesh you are meant to view from INSIDE (you are standing in the
 // photographed place), which is why decimation matters here more than elsewhere: at
 // stride 1 a 1920-wide merge is ~1.8M vertices before it ever reaches a GLB.
-function buildMoGePanorama({ modelName, imageName, resolutionLevel = 9, splitRes = 512, mergeRes = 1920, batchSize = 4, decimation = 4, texture = true, needsResize = false, gapThreshold = 0 }) {
+// `refineTarget` sharpens the 360 VIEW, which is a texture problem, not a geometry
+// one. A panorama's texture has to cover a whole turn: at 1774 px wide a 40° slice
+// is 197 texels stretched over ~880 screen px — 4.5× magnification, and that is the
+// softness you see standing inside it. Nothing in the chain loses those pixels (the
+// baked texture is the source at full size); there simply are not enough of them.
+//
+// So: run the equirect through a 4× upscale model, then land it back on a chosen
+// long edge. Going through the model and back down beats resampling straight to the
+// same size — measured on one panorama, screen-space gradient energy 6.05 → 11.25.
+//
+// The catch is that MoGe's grid is inputWidth/decimation, so more pixels silently
+// buy more TRIANGLES too: at 4096 the mesh went 98k → 524k verts and the GLB 6.6 →
+// 34.9 MB, which is not something a chat message can carry. The caller compensates
+// by raising decimation in step, holding the vertex count flat.
+function buildMoGePanorama({ modelName, imageName, resolutionLevel = 9, splitRes = 512, mergeRes = 1920, batchSize = 4, decimation = 4, texture = true, needsResize = false, gapThreshold = 0, refineTarget = 0, refineModel = "", refineNeedsUpscale = true }) {
   const g = {
     "1": { class_type: "LoadImage", inputs: { image: imageName } },
     "3": { class_type: "LoadMoGeModel", inputs: { model_name: modelName } },
@@ -3896,6 +3910,22 @@ function buildMoGePanorama({ modelName, imageName, resolutionLevel = 9, splitRes
     "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: "heykoko/mesh" } },
   };
   if (needsResize) g["2"] = { class_type: "ResizeImagesByLongerEdge", inputs: { images: ["1", 0], longer_edge: 2048 } };
+  if (refineTarget && refineModel) {
+    // Replaces the ≤2048 guard rather than stacking with it — refinement is a
+    // deliberate decision to go ABOVE that cap, so shrinking first then enlarging
+    // again would just throw the original detail away and enlarge the loss.
+    let src = ["1", 0];
+    // Skip the model when the source already has the pixels: a 4× pass on a large
+    // equirect is 16× the area for nothing, and can run the GPU out of memory.
+    if (refineNeedsUpscale) {
+      g["20"] = { class_type: "UpscaleModelLoader", inputs: { model_name: refineModel } };
+      g["21"] = { class_type: "ImageUpscaleWithModel", inputs: { upscale_model: ["20", 0], image: ["1", 0] } };
+      src = ["21", 0];
+    }
+    g["22"] = { class_type: "ImageScale", inputs: { image: src, upscale_method: "lanczos", width: refineTarget, height: Math.round(refineTarget / 2), crop: "disabled" } };
+    g["4"].inputs.image = ["22", 0];
+    delete g["2"];
+  }
   return g;
 }
 
@@ -3982,7 +4012,14 @@ async function meshCompanions(meshType) {
     // Prefer MoGe-2 with normals (sharper edges, metric scale); fall back to any.
     const mogeModel = weights.find((n) => /moge_2.*normal/i.test(n)) || weights[0];
     if (!mogeModel) throw new Error("MoGe weight missing: download moge_2_vitl_normal_fp16.safetensors from huggingface.co/Comfy-Org/MoGe into ComfyUI models/geometry_estimation/");
-    return { mogeModel };
+    // Optional: an ESRGAN-family upscaler for panorama refinement. Prefer a "sharp"
+    // variant for architecture and text; absent one, the panorama entry simply
+    // never offers refinement rather than failing on a setting the user picked.
+    const ups = await comfyEnum("UpscaleModelLoader", "model_name").catch(() => []);
+    const refiner = await comfyHasNodes(["UpscaleModelLoader", "ImageUpscaleWithModel", "ImageScale"])
+      ? (ups.find((n) => /ultrasharp/i.test(n)) || ups.find((n) => /realesrgan/i.test(n)) || ups[0] || null)
+      : null;
+    return { mogeModel, refiner };
   }
   if (meshType === "triposplat") {
     const [unets, clips, vaes, bgs] = await Promise.all([
@@ -5024,12 +5061,28 @@ async function generateComfyImage(req, res) {
           // The merge grid must not exceed the (possibly resized) input's long edge —
           // the node's own note is explicit about it, and overshooting only burns CPU
           // upsampling a solve that has no more information in it.
-          const longEdge = d ? Math.min(Math.max(d.width, d.height), needsResize ? 2048 : Infinity) : 1920;
+          // ⚙ "Sharpen the 360 view": a target long edge for the equirect, reached
+          // through a 4× upscale model. Only offered where an upscaler exists.
+          const refineTarget = comp.refiner ? Math.max(0, Math.min(8192, opts.panoRefine || 0)) : 0;
+          const srcLong = d ? Math.max(d.width, d.height) : 1920;
+          const longEdge = refineTarget
+            ? refineTarget
+            : (d ? Math.min(srcLong, needsResize ? 2048 : Infinity) : 1920);
           const mergeRes = Math.max(256, Math.min(opts.panoMerge || 1920, longEdge));
+          // MoGe's grid is inputWidth/decimation, so refining without touching
+          // decimation multiplies the TRIANGLES by the same factor as the pixels —
+          // measured, 4096 wide took the mesh to 524k verts and the GLB to 34.9 MB.
+          // Scale the stride with the enlargement to hold the vertex count flat
+          // (1774→3584 needs 4→8); an explicit ⚙ value still wins.
+          const autoDec = refineTarget
+            ? Math.max(1, Math.min(8, Math.round(refineTarget * 4 / srcLong)))
+            : 4;
           workflow = buildMoGePanorama({ modelName: comp.mogeModel, imageName,
             resolutionLevel: opts.mogeDetail !== undefined ? opts.mogeDetail : 9,
             splitRes: opts.panoSplit || 512, mergeRes, needsResize,
-            decimation: opts.panoDecimation || 4 });
+            decimation: opts.panoDecimation || autoDec,
+            refineTarget, refineModel: comp.refiner || "",
+            refineNeedsUpscale: srcLong < refineTarget });
         } else if (meshType === "triposplat") {
           const comp = await meshCompanions("triposplat");
           workflow = buildTripoSplat({ imageName, comp, seed,
@@ -5506,6 +5559,11 @@ async function generateComfyImage(req, res) {
         // videos stays in the contract: no 3D chain emits one today (TripoSplat's
         // turntable was dropped), but the client already handles both together.
         sendJson(res, 200, { meshes: outMeshes, meshMimes, meshNames,
+          // How the viewer should place its camera. A 360° mesh is a shell you stand
+          // INSIDE; orbiting it from outside shows only the half facing you. The
+          // client can't infer this from the geometry — a closed object encloses its
+          // interior too — so the chain that made it has to say so.
+          meshView: meshType === "moge-pano" ? "panorama" : undefined,
           videos: outVideos.length ? outVideos : undefined,
           videoMime: outVideos.length ? videoMime : undefined,
           model, seed, precisionNote, precisionUsed, imagesUsed });

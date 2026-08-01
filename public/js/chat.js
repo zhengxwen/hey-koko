@@ -401,7 +401,7 @@ function renderBgPlaceholder(message) {
   body.className = 'markdownBody';
   let statusTxt;
   switch (message.status) {
-    case 'running': statusTxt = [message.seg, message.elapsed].filter(Boolean).join(' · '); break;   // "segment N/M · 1:23"
+    case 'running': statusTxt = [message.stage, message.seg, message.elapsed].filter(Boolean).join(' · '); break;   // "finalizing… · segment N/M · 1:23"
     case 'paused': statusTxt = t('bg_statusPaused'); break;
     case 'enhancing': statusTxt = t('bg_statusEnhancing'); break;
     case 'done': statusTxt = t('bg_statusDone'); break;
@@ -431,7 +431,9 @@ function renderBgPlaceholder(message) {
   // Running jobs get a progress bar: determinate (width %) once numeric progress
   // arrives (generation), indeterminate animated otherwise (parse/url/analyze phases).
   if (message.status === 'running') {
-    const hasNum = message.progress && message.progress.max;
+    // Indeterminate (a no-progress phase like the post-sampling encode) overrides a stale
+    // numeric % so the bar animates instead of freezing at the last value.
+    const hasNum = message.progress && message.progress.max && !message.indeterminate;
     const bar = document.createElement('div');
     bar.className = hasNum ? 'bgPhBar' : 'bgPhBar indeterminate';
     const fill = document.createElement('div');
@@ -3927,7 +3929,9 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
           btnHost = view;
           import("./glb-viewer.js").then((v) => {
             if (!v.isSupported()) { mc.hidden = true; showCard(); return; }
-            v.attachMesh(mc, () => data, { name: rawName, cacheKey: `${rawName}:${data.length}:${data.slice(0, 32)}`, onFallback: showCard });
+            v.attachMesh(mc, () => data, { name: rawName, cacheKey: `${rawName}:${data.length}:${data.slice(0, 32)}`, onFallback: showCard,
+              // A 360° mesh is viewed from the inside out, not orbited from outside.
+              pano: meshMsg.meshView === "panorama" });
           }).catch(() => { mc.hidden = true; showCard(); });
         } else {
           showCard();   // a splat file has no viewer at all
