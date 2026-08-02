@@ -2539,6 +2539,53 @@ button.secondary:disabled {
   display: inline-block;
 }
 
+/* Copy button for code / svg / mermaid blocks. The wrapper is a plain block with no
+   padding or border, so the inner block's own bottom margin still collapses through
+   it — spacing is unchanged. Anchoring the button here rather than inside the block
+   also keeps it still while a wide `pre` (overflow:auto) scrolls sideways. */
+.mdBlockWrap {
+  position: relative;
+}
+
+.mdCopyBtn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  /* Override the global button rule (min-height:42px; padding:0 16px) so this stays
+     a small square chip. */
+  min-width: 0;
+  min-height: 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+  z-index: 2;
+}
+
+.mdBlockWrap:hover .mdCopyBtn {
+  opacity: 0.75;
+}
+
+.mdCopyBtn:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+/* Keep the ✓ confirmation fully visible even after the pointer leaves. */
+.mdCopyBtn.isCopied {
+  opacity: 1;
+}
+
 .messageImage {
   display: block;
   width: min(240px, 100%);

@@ -3,6 +3,7 @@
 
 // Markdown parsing and rendering
 import { escapeHtml } from './utils.js';
+import { t } from './i18n.js';
 
 function renderMath(math, displayMode) {
   if (typeof katex === "undefined") return `<code>${escapeHtml(math)}</code>`;
@@ -477,7 +478,76 @@ export function renderMermaidDiagrams(container) {
   if (typeof mermaid === "undefined") return;
   const nodes = (container || document.querySelector("#messages")).querySelectorAll("pre.mermaid:not([data-processed])");
   if (nodes.length === 0) return;
+  // mermaid.run() replaces the <pre>'s content with the rendered SVG, destroying the
+  // diagram source — stash it first so the copy button can still offer it.
+  nodes.forEach((n) => { if (!n.dataset.src) n.dataset.src = n.textContent; });
   mermaid.run({ nodes });
+}
+
+// --- Copy button for code / svg / mermaid blocks ------------------------------
+// Each block gets a floating button that copies the SOURCE that produced it: the
+// code text, the SVG markup, or the mermaid definition.
+//
+// The button lives in a WRAPPER beside the block rather than inside it, because both
+// mermaid (innerHTML → SVG) and hljs rewrite a block's contents and would otherwise
+// wipe it out. Text is read at CLICK time for the same reason.
+function attachCopyButton(el, getText) {
+  if (el.parentElement?.classList.contains("mdBlockWrap")) return;   // already wrapped
+  const wrap = document.createElement("div");
+  wrap.className = "mdBlockWrap";
+  el.parentNode.insertBefore(wrap, el);
+  wrap.appendChild(el);
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "mdCopyBtn";
+  btn.title = t("md_copyBlock");
+  btn.setAttribute("aria-label", t("md_copyBlock"));
+  btn.textContent = "📋";
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const text = (getText() || "").replace(/\s+$/, "");
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard API can be unavailable/denied — fall back to a scratch textarea.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed;top:-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch {}
+      ta.remove();
+    }
+    btn.textContent = "✓";
+    btn.classList.add("isCopied");
+    btn.title = t("md_copied");
+    setTimeout(() => {
+      btn.textContent = "📋";
+      btn.classList.remove("isCopied");
+      btn.title = t("md_copyBlock");
+    }, 1200);
+  });
+  wrap.appendChild(btn);
+}
+
+export function addBlockCopyButtons(container) {
+  const root = container || document.querySelector("#messages");
+  if (!root) return;
+  // Mermaid: prefer the stashed source; before mermaid runs (or when it is absent)
+  // the <pre> still holds the definition as text.
+  root.querySelectorAll("pre.mermaid").forEach((el) => {
+    attachCopyButton(el, () => el.dataset.src || el.textContent);
+  });
+  // Inline SVG figures — copy the markup that is actually on screen.
+  root.querySelectorAll("div.svg-block").forEach((el) => {
+    attachCopyButton(el, () => el.querySelector("svg")?.outerHTML || el.innerHTML);
+  });
+  // Plain fenced code. `pre.mermaid` is excluded above by :not().
+  root.querySelectorAll("pre:not(.mermaid)").forEach((el) => {
+    attachCopyButton(el, () => el.querySelector("code")?.textContent ?? el.textContent);
+  });
 }
 
 export function highlightCodeBlocks(container) {

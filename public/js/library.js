@@ -10,7 +10,7 @@
 
 import { dom, state } from './state.js';
 import { escapeHtml, postJson, stripHeadingEmphasis } from './utils.js';
-import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks } from './markdown.js';
+import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks, addBlockCopyButtons } from './markdown.js';
 import { renderRelationGraph, openEntityGraphModal } from './relation-graph.js';
 import { applyHighlights, registerHighlightHost } from './highlight.js';
 import { saveTabs } from './settings.js';
@@ -2266,6 +2266,7 @@ export function initLibrary() {
     // Post-process: syntax-highlight code + render mermaid (reuse markdown.js helpers).
     highlightCodeBlocks(previewContent);
     renderMermaidDiagrams(previewContent);
+    addBlockCopyButtons(previewContent);
   }
 
   // Double-click a section heading to fix OCR typos (e.g. "ABSTR ACT" → "ABSTRACT").

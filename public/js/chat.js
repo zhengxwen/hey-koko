@@ -5,7 +5,7 @@
 import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState, setScrollTop } from './state.js';
 import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis,
          readFileAsDataUrl, makePreview, convertToJpeg, normalizeOrientation } from './utils.js';
-import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams } from './markdown.js';
+import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams, addBlockCopyButtons } from './markdown.js';
 import { renderRelationGraph } from './relation-graph.js';
 import { setAvatarState, showExpression, detectExpression, isCloudModel, resetAvatarIdle } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
@@ -4061,6 +4061,7 @@ export function renderChat() {
     renderMessage("assistant", greeting);
     highlightCodeBlocks();
     renderMermaidDiagrams();
+    addBlockCopyButtons();
     return;
   }
 
@@ -4286,6 +4287,7 @@ export function renderChat() {
 
   highlightCodeBlocks();
   renderMermaidDiagrams();
+  addBlockCopyButtons();
   renderContextMeter();
 
   // Rebuilding innerHTML above resets scrollTop to 0; while a resend/edit is
