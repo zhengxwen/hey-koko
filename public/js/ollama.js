@@ -1274,8 +1274,11 @@ export function updateComfyParamVisibility() {
   for (const el of [dom.comfyParamVideoCodec, dom.comfyParamVideoCrf]) setVis(el, video);
   if (video) syncVideoCrfPlaceholder();
   setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // frame-interpolation + interpolation-engine row
-  // Wan Animate (both modes): torch.compile speed + relight strength.
-  for (const el of [dom.comfyParamTorchCompile, dom.comfyParamRelight]) setVis(el, animate);
+  // torch.compile: Wan Animate (both modes) AND SCAIL-2 — both chain segments, which is
+  // what makes the one-time compile pay off. Relight strength stays Wan-Animate-only
+  // (SCAIL-2 has no relight LoRA).
+  setVis(dom.comfyParamTorchCompile, animate || scail2);
+  setVis(dom.comfyParamRelight, animate);
   // Replace only: which person in the source to swap out.
   setVis(dom.comfyMaskPointBtn, animateReplace);
   // Bernini only — turbo is otherwise forced on by the mere presence of the distill

@@ -3589,7 +3589,7 @@ function scail2Segments(total, cap = SCAIL2_FRAMES) {
   return segs.length ? segs : [{ offset: 0, length: per }];
 }
 
-function buildScail2({ model, prompt, negative, comp, videoName, refImageName, refImageNames, width, height, seed, segments, replace = false, turbo = true, poseStrength = 1, poseStart = 0, poseEnd = 1, sam3VideoObject = "human", sam3ImageObject = "", objectIndices = "", sortBy = "left_to_right", detectionThreshold = 0.5, maxObjects = 4 }) {
+function buildScail2({ model, prompt, negative, comp, videoName, refImageName, refImageNames, width, height, seed, segments, replace = false, turbo = true, poseStrength = 1, poseStart = 0, poseEnd = 1, sam3VideoObject = "human", sam3ImageObject = "", objectIndices = "", sortBy = "left_to_right", detectionThreshold = 0.5, maxObjects = 4, torchCompile = false }) {
   const segs = (Array.isArray(segments) && segments.length) ? segments : [{ offset: 0, length: SCAIL2_FRAMES }];
   // Clamp to the node's own declared ranges — a ⚙ field is free text until it isn't.
   const clamp = (v, lo, hi, dflt) => (typeof v === "number" && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt);
@@ -3659,7 +3659,33 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
   wf["23"].inputs.images = refBatch;
   if (turbo) wf["3"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraDistill, strength_model: 0.8 } };
   const modelSrc = turbo ? "3" : "2";
-  wf["4"] = { class_type: "ModelSamplingSD3", inputs: { model: [modelSrc, 0], shift: 5 } };
+  // Optional torch.compile. LIVE-MEASURED on the DGX Spark: compiled segments run ~2x
+  // faster (163s -> 80s per 81-frame segment at 432x768) for a one-time ~80s compile, so
+  // a 3-segment run went 490s -> 319s (1.53x) and longer runs approach 2x.
+  //
+  // The node and its flags are NOT interchangeable — three variants were tried and only
+  // this one survives on SCAIL-2's fp8 weights:
+  //   • core TorchCompileModel (no options)      -> dynamo symbolic shapes hit comfy/ops.py
+  //     cast_bias_weight: "Expect size to be a plain tuple of ints but got torch.Size([s81, s16])"
+  //   • TorchCompileModelWanVideoV2 (defaults)   -> fails tracing the quantised weight's
+  //     requantize_from_float (the fp8 base + bf16 LoRA merge path)
+  //   • backend "cudagraphs"                     -> "cudaMallocAsync does not yet support
+  //     checkPoolLiveAllocations" (ComfyUI runs the async allocator)
+  // disable_dynamic_vram is what actually unblocks it: ComfyUI's on-demand weight paging
+  // is what dynamo cannot trace. That also means the model stays resident, so this is for
+  // machines with VRAM to spare — on a tight card it trades OOM-safety for speed.
+  const compileSrc = torchCompile ? "26" : modelSrc;
+  if (torchCompile) {
+    wf["26"] = {
+      class_type: "TorchCompileModelAdvanced",
+      inputs: {
+        model: [modelSrc, 0], backend: "inductor", fullgraph: false, mode: "default",
+        dynamic: "false", compile_transformer_blocks_only: true,
+        dynamo_cache_size_limit: 64, debug_compile_keys: false, disable_dynamic_vram: true,
+      },
+    };
+  }
+  wf["4"] = { class_type: "ModelSamplingSD3", inputs: { model: [compileSrc, 0], shift: 5 } };
   // Mirrors the template: BasicScheduler taps the LoRA'd model BEFORE ModelSamplingSD3.
   wf["18"] = { class_type: "BasicScheduler", inputs: { model: [modelSrc, 0], scheduler: "simple", steps, denoise: 1 } };
 
@@ -4988,6 +5014,10 @@ async function generateComfyImage(req, res) {
           poseEnd: opts.poseEnd,
           detectionThreshold: opts.scailThreshold,
           maxObjects: opts.scailMaxObjects,
+          // TorchCompileModelAdvanced ships with KJNodes, not comfy-core, and it is the
+          // ONLY variant that survives SCAIL-2's fp8 weights (see buildScail2). Silently
+          // skip the speed-up rather than submit a graph that would fail validation.
+          torchCompile: !!opts.torchCompile && await comfyHasNodes(["TorchCompileModelAdvanced"]),
         });
         videoDims = { width: aw, height: ah, length: totalFrames, fps: sfps, segments: segments.length };
         if (truncatedFrom) videoDims.truncatedFrom = truncatedFrom;
@@ -6173,3 +6203,6 @@ async function comfyAutoMask(req, res) {
 }
 
 module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, uploadComfyAudio, comfyAutoMask };
+// TEMP (SCAIL-2 single-window ceiling test harness — REVERT after): expose the real
+// builder + companion resolver so a Node harness reuses the verified graph topology.
+module.exports._scailTest = { buildScail2, scail2Companions, config };
