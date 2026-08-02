@@ -214,6 +214,8 @@ export const state = {
   _pinClearTimer: null,              // delayed release of scrollPin once generation fully ends
   stickToBottom: true,               // streaming auto-scroll only while the user sits near the bottom (so they can scroll up mid-generation)
   animateMaskPoint: null,            // Wan Animate REPLACE: user's ⚙-picked {x,y} (0–1) of which person to replace; null = auto center
+  comfyVramGib: null,                // usable VRAM (GiB) of the target ComfyUI box, from /system_stats; scales Wan Animate's per-pass frame cap (multi-worker → MIN across lanes, for OOM safety). null = unknown → 32GB reference table
+  comfyDevices: [],                  // detected ComfyUI GPU(s) for display in the model picker: [{ gpuName, vramGib, hostname }] — one per online endpoint/lane
 };
 
 // ── Programmatic-scroll guard ──────────────────────────────────────────────

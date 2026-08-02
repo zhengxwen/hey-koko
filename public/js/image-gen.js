@@ -835,12 +835,29 @@ async function readOllamaImageStream(r, onProgress) {
 
 // ComfyUI video generation (WAN ti2v): text→video, or image→video when a
 // reference image is attached. Single output, rendered as a <video>.
+// Mirrors vramCapScale / animateSegmentCap in server/comfy.js. The server value is
+// AUTHORITATIVE (it sizes the real graph chunks); this copy only has to agree so the
+// progress badge estimates the right segment count. state.comfyVramGib rescales the
+// 32GB reference tiers for the actual box (DGX Spark 128GB lifts them, a 24GB card
+// shrinks them). null (unknown / mixed lanes without a min) → reference table.
+const ANIMATE_MAX_SINGLE_PASS = 241, ANIMATE_MIN_SINGLE_PASS = 17;
+function vramCapScale(vramGib) {
+  // VRAM ≈ (weight floor W) + k·frames, so frame budget tracks (vram−W)/(REF−W), not
+  // vram/REF — a 24GB card has 75% the VRAM but ~50% the frames. See server/comfy.js.
+  if (!vramGib) return 1;
+  if (vramGib >= 30 && vramGib < 40) return 1; // 32GB reference band (RTX 5090)
+  const W = 16, REF = 32;
+  const s = (vramGib - W) / (REF - W);
+  if (vramGib < 30) return Math.max(0.2, s);   // below reference — floor-aware, aggressive
+  return Math.min(3, Math.max(1, s));          // above reference — clamp (window cap absorbs the top)
+}
+
 // Frames Wan Animate can generate in one pass, by OUTPUT pixel budget. 3D-attention
 // VRAM/compute grows with (spatial tokens × frames), so a higher resolution needs a
-// shorter segment to stay within a 32GB (RTX 5090) budget. Tuned so each tier fits
-// comfortably; the chunks are merged so total length is unchanged. Mirrors
-// animateSegmentCap in server/comfy.js.
-function animateSegmentCap(pixelBudget, torchCompile = false) {
+// shorter segment. The reference tiers assume a 32GB (RTX 5090) budget; vramGib rescales
+// them for the actual machine. Chunks are chained (continue_motion) so total length is
+// unchanged. Mirrors animateSegmentCap in server/comfy.js.
+function animateSegmentCap(pixelBudget, torchCompile = false, vramGib = state.comfyVramGib) {
   // torch.compile (inductor) adds VRAM overhead (autotuning scratch + compiled
   // buffers) → at 720p+ on 32GB it can OOM. When it's on, use one tier shorter
   // segments to free headroom (more segments also amortizes the compile better).
@@ -850,8 +867,10 @@ function animateSegmentCap(pixelBudget, torchCompile = false) {
   const tiers = torchCompile
     ? [[520000, 121], [1000000, 65], [2100000, 33]]    // compile on — conservative (extra VRAM)
     : [[520000, 241], [1000000, 161], [2100000, 81]];  // compile off
-  for (const [lim, cap] of tiers) if (pixelBudget <= lim) return cap;
-  return torchCompile ? 17 : 33;           // beyond 1080p
+  let base = torchCompile ? 17 : 33;                   // beyond 1080p
+  for (const [lim, cap] of tiers) if (pixelBudget <= lim) { base = cap; break; }
+  const scaled = Math.round(base * vramCapScale(vramGib));
+  return Math.max(ANIMATE_MIN_SINGLE_PASS, Math.min(ANIMATE_MAX_SINGLE_PASS, scaled));
 }
 
 // SCAIL-2's "animate" MODE sentinel (scail2_animate) also matches /animate/, while its

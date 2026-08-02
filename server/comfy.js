@@ -124,20 +124,78 @@ async function makeSourceDecodable(buf) {
   finally { for (const f of [inP, outP]) if (f) fsp.unlink(f).catch(() => {}); }
 }
 
+// One-pass window cap. 241 is the established quality/window ceiling for Wan Animate;
+// video longer than this chains via continue_motion (seamless), so there is no reason
+// to push a single window past it even when VRAM would allow it.
+const ANIMATE_MAX_SINGLE_PASS = 241;
+const ANIMATE_MIN_SINGLE_PASS = 17; // below ~overlap the chain loop can't trim; keep a floor
+
+// Scale the reference (32GB / RTX 5090) frame caps by the TARGET box's VRAM. The key
+// physics: 3D-attention peak VRAM ≈ (constant weight floor W) + k·frames — only the
+// frame-variable part scales with the budget, so the usable frame count tracks
+// (vram − W)/(REF − W), NOT vram/REF. W ≈ 16GiB (14B fp8 diffusion model + text encoder +
+// VAE + LoRAs resident at the sampling peak). That distinction matters when going DOWN:
+// a 24GB card has 75% the VRAM but only ~50% the frame budget, so a flat 0.75 would OOM.
+// Going UP (Spark) a plain multiplier is safe (the window clamp catches the top anyway).
+// null/unknown VRAM → 1 (leave the reference table untouched). Mirrors vramCapScale in
+// public/js/image-gen.js.
+function vramCapScale(vramGib) {
+  if (!vramGib) return 1;
+  if (vramGib >= 30 && vramGib < 40) return 1; // 32GB reference band (RTX 5090) — table as tuned, guaranteed zero regression
+  const W = 16, REF = 32;
+  const s = (vramGib - W) / (REF - W);
+  if (vramGib < 30) return Math.max(0.2, s);   // below reference — floor-aware & aggressive (erring small only adds segments, never OOMs)
+  return Math.min(3, Math.max(1, s));          // above reference — clamp the multiplier (the 241 window cap absorbs the rest)
+}
+
 // Frames Wan Animate can generate in one pass, by OUTPUT pixel budget (width×height).
-// 3D-attention VRAM/compute grows with (spatial tokens × frames), so higher
-// resolution needs a shorter segment to stay within a 32GB budget. Mirrors
-// animateSegmentCap in public/js/image-gen.js (the client drives the chunk loop;
-// this is the fallback / single-pass default).
-function animateSegmentCap(pixelBudget, torchCompile = false) {
+// 3D-attention VRAM/compute grows with (spatial tokens × frames), so higher resolution
+// needs a shorter segment. The reference tiers assume a 32GB budget; vramGib rescales
+// them for the actual machine (a DGX Spark's 128GB lifts 1080p from 81→~241/pass, a 24GB
+// card shrinks them to avoid OOM). Mirrors animateSegmentCap in public/js/image-gen.js
+// (there for the progress estimate; this is authoritative — it sizes the real graph chunks).
+function animateSegmentCap(pixelBudget, torchCompile = false, vramGib = null) {
   // torch.compile adds VRAM overhead → use one tier shorter segments when it's on
   // (mirrors public/js/image-gen.js).
   const tiers = torchCompile
     ? [[520000, 121], [1000000, 65], [2100000, 33]]
     : [[520000, 241], [1000000, 161], [2100000, 81]]; // 720p 161f (well-tested); 1080p 81f ≈ half of 720p's cap (1080p has ~2.25× the pixels) — conservative vs the 65f→22.9GB measurement
-  for (const [lim, cap] of tiers) if (pixelBudget <= lim) return cap;
-  return torchCompile ? 17 : 33;
+  let base = torchCompile ? 17 : 33;
+  for (const [lim, cap] of tiers) if (pixelBudget <= lim) { base = cap; break; }
+  const scaled = Math.round(base * vramCapScale(vramGib));
+  return Math.max(ANIMATE_MIN_SINGLE_PASS, Math.min(ANIMATE_MAX_SINGLE_PASS, scaled));
 }
+
+// The target box's GPU, read from ComfyUI's /system_stats: usable VRAM in GiB
+// (devices[].vram_total, in bytes) + a cleaned device name. Cached per endpoint URL —
+// static for a machine, but an IP can be reassigned, so a 10-min TTL re-probes. Returns
+// { gib:null, gpuName:null } when unreachable / no CUDA device → cap callers fall back to
+// the 32GB reference table (no scaling) and the UI shows nothing.
+const _vramCache = new Map(); // url → { gib, gpuName, ts }
+async function comfyGpuInfo() {
+  const url = currentComfyUrl();
+  const hit = _vramCache.get(url);
+  if (hit && Date.now() - hit.ts < 600000) return { gib: hit.gib, gpuName: hit.gpuName };
+  let gib = null, gpuName = null;
+  try {
+    const r = await fetch(`${url}/system_stats`, { signal: AbortSignal.timeout(5000) });
+    if (r.ok) {
+      const data = await r.json();
+      const cuda = (data.devices || []).filter((d) => d.type === "cuda" && d.vram_total > 0);
+      if (cuda.length) {
+        // Pick the biggest device (the one a job would run on). Clean the ComfyUI label
+        // "cuda:0 NVIDIA GeForce RTX 5090 : cudaMallocAsync" → "NVIDIA GeForce RTX 5090".
+        const dev = cuda.reduce((a, b) => (b.vram_total > a.vram_total ? b : a));
+        gib = dev.vram_total / (1024 ** 3);
+        gpuName = String(dev.name || "").replace(/^cuda:\d+\s*/i, "").replace(/\s*:\s*\w+Async\s*$/i, "").trim() || null;
+      }
+    }
+  } catch { /* unreachable → nulls → no scaling, no UI badge */ }
+  _vramCache.set(url, { gib, gpuName, ts: Date.now() });
+  return { gib, gpuName };
+}
+// Back-compat shim for the animateSegmentCap call site (only needs the number).
+async function comfyVramGib() { return (await comfyGpuInfo()).gib; }
 
 // Read a model-name enum out of a ComfyUI node's input schema (e.g. the list of
 // checkpoints, diffusion models, text encoders or VAEs the server has on disk).
@@ -1298,7 +1356,11 @@ async function proxyComfyModels(req, res) {
       const tiers = [...new Set(cks.map(precisionOf).filter(Boolean))];
       if (tiers.length) modelMeta[LTX_UNION].prec = tiers;
     }
-    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels, panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, hostname });
+    // GPU of THIS endpoint: VRAM (GiB) → the client mirrors animateSegmentCap with it so
+    // the progress estimate matches the graph the server builds; gpuName → shown in the
+    // model picker. Both null when unknown.
+    const { gib: vramGib, gpuName } = await comfyGpuInfo();
+    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels, panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, hostname, vramGib, gpuName });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [] });
   }
@@ -4951,7 +5013,7 @@ async function generateComfyImage(req, res) {
         // for k>0 else 0. A pinned ⚙ length forces one bounded pass.
         const snap4 = (n) => Math.max(5, Math.floor((n - 1) / 4) * 4 + 1); // 4n+1, ≤ n
         const srcFrames = Number(sourceVideoFrames) || 0;
-        const segCap = animateSegmentCap(aw * ah, !!opts.torchCompile);
+        const segCap = animateSegmentCap(aw * ah, !!opts.torchCompile, await comfyVramGib());
         const OVERLAP = 5; // == continue_motion_max_frames in buildWanAnimate
         let chunks, truncatedFrom;
         if (opts.length) {

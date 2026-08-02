@@ -7170,6 +7170,13 @@ body.isResizingComposer {
 .comfyModelPickCaret { flex: 0 0 auto; color: var(--muted); font-size: 12px; line-height: 1; }
 
 .comfyPickDialog { width: min(1100px, 96vw); height: min(660px, 88vh); }
+/* Detected GPU(s) + VRAM — sits under the head, above the search bar. */
+.comfyPickGpu {
+  flex: 0 0 auto; padding: 6px 16px 0;
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  font-size: 12px; color: var(--muted);
+}
+.comfyPickGpuChip { white-space: nowrap; }
 /* The body is the scroll container; the columns sit inside it so a long column
    scrolls the whole grid rather than each column independently (four separate
    scrollbars read as four separate lists). */

@@ -365,6 +365,11 @@ export async function refreshBgWorkers() {
   // reason as uCollapsed: without it the multi-endpoint path loses the clean
   // labels and dots the single-endpoint path shows.
   const uMeta = {};
+  // A job may be scheduled onto ANY enabled lane, so the per-pass frame cap must be safe
+  // on the SMALLEST box (sizing for a 128GB Spark then landing on a 32GB card → OOM).
+  // Take the MIN VRAM across the online lanes; a lane that doesn't report it is ignored.
+  const vrams = [];
+  const devices = []; // per-lane GPU info for the picker header
   await Promise.all(targets.map(async (url) => {
     try {
       const d = await (await fetch(`/api/comfy-models?comfyUrl=${encodeURIComponent(url)}`)).json();
@@ -383,13 +388,15 @@ export async function refreshBgWorkers() {
       const online = (models.length + editModels.length + videoModels.length) > 0;
       setBgWorkerStatus(url, { online, models: sets, hostname: d.hostname || "" });
       for (const n of (d.imageCollapsed || [])) uCollapsed.add(n);
+      if (online && typeof d.vramGib === "number" && d.vramGib > 0) vrams.push(d.vramGib);
+      if (online && (d.gpuName || d.vramGib)) devices.push({ gpuName: d.gpuName || null, vramGib: (typeof d.vramGib === "number" && d.vramGib > 0) ? d.vramGib : null, hostname: d.hostname || "" });
       for (const [k, v] of Object.entries(d.modelMeta || {})) if (!uMeta[k]) uMeta[k] = v;
       for (const n of models) if (!uModels.has(n)) uModels.set(n, n);
       for (const m of editModels) if (!uEdit.has(m.name)) uEdit.set(m.name, m);
       for (const m of videoModels) if (!uVideo.has(m.name)) uVideo.set(m.name, m);
     } catch { setBgWorkerStatus(url, { online: false }); }
   }));
-  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()] });
+  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()], vramGib: vrams.length ? Math.min(...vrams) : null, devices });
 }
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
@@ -414,6 +421,14 @@ function applyComfyModels(data) {
     const editModels = data.editModels || [];         // instruction-edit models (need a ref image)
     const videoModels = data.videoModels || [];       // text→video / image→video
     const meshModels = data.meshModels || [];         // image→3D model (.glb/.spz output)
+    // Target box VRAM → Wan Animate per-pass frame cap (see animateSegmentCap). Undefined
+    // on the multi-worker path unless the union computed a MIN; treat that as unknown.
+    state.comfyVramGib = (typeof data.vramGib === "number" && data.vramGib > 0) ? data.vramGib : null;
+    // Detected GPU(s) for the picker's header badge. Multi-worker path passes an explicit
+    // `devices` array; the single-endpoint path synthesizes one from gpuName/vramGib.
+    state.comfyDevices = Array.isArray(data.devices)
+      ? data.devices.filter((d) => d && (d.gpuName || d.vramGib))
+      : ((data.gpuName || data.vramGib) ? [{ gpuName: data.gpuName || null, vramGib: (typeof data.vramGib === "number" && data.vramGib > 0) ? data.vramGib : null, hostname: data.hostname || "" }] : []);
     state.comfyVideoModels = new Set(videoModels.map((m) => m.name));
     // 3D mesh models route to generateMesh and get a mesh bubble instead of pixels.
     state.comfyMeshModels = new Set(meshModels.map((m) => m.name));
@@ -950,6 +965,7 @@ export function openComfyModelPicker() {
         <span class="zoteroImportTitle">🎛 ${t("cmp_title")}</span>
         <button type="button" class="zoteroImportClose" title="${t("mb_close")}">✕</button>
       </div>
+      <div class="comfyPickGpu"></div>
       <div class="modelBrowserBar">
         <input type="text" class="modelBrowserSearch comfyPickSearch" placeholder="${t("cmp_search")}" />
         <span class="modelBrowserCount comfyPickCount"></span>
@@ -965,6 +981,25 @@ export function openComfyModelPicker() {
     overlay.remove();
   };
   const onEsc = (e) => { if (e.key === "Escape") close(); };
+  // Detected GPU badge — "🖥 NVIDIA GeForce RTX 5090 · 31.8 GB" per online endpoint. The
+  // VRAM shown is what drives the Wan Animate segment cap (see animateSegmentCap).
+  const gpuEl = overlay.querySelector(".comfyPickGpu");
+  const devs = (state.comfyDevices || []).filter((d) => d && (d.gpuName || d.vramGib));
+  if (devs.length) {
+    gpuEl.textContent = "";
+    devs.forEach((d, i) => {
+      const chip = document.createElement("span");
+      chip.className = "comfyPickGpuChip";
+      const vram = (typeof d.vramGib === "number" && d.vramGib > 0)
+        ? ` · ${d.vramGib.toFixed(d.vramGib < 100 ? 1 : 0)} GB` : "";
+      chip.textContent = `🖥 ${d.gpuName || t("comfy_gpu_unknown")}${vram}`;
+      if (d.hostname) chip.title = d.hostname;
+      gpuEl.appendChild(chip);
+      if (i < devs.length - 1) gpuEl.appendChild(document.createTextNode("  "));
+    });
+  } else {
+    gpuEl.style.display = "none"; // nothing detected (offline / no CUDA) → don't show an empty row
+  }
   overlay.querySelector(".zoteroImportClose").addEventListener("click", close);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   document.addEventListener("keydown", onEsc);
