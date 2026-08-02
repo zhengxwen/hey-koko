@@ -530,6 +530,51 @@ const BERNINI_T2I = "bernini_text_image";
 // with an ordinary checkpoint and then REPAIRS the wrap seam, which is the one
 // thing a normal model gets wrong (measured: its left and right edges mismatch
 // twice as much as two genuinely adjacent columns do).
+// Where this app's files land inside ComfyUI/output/. Everything carries the
+// `heykoko_` prefix so it clusters together in a directory listing shared with
+// whatever else that machine renders, and each folder says what is in it — one
+// `heykoko/` holding meshes and panoramas side by side told you nothing when you
+// opened it. Flat outputs (images, video) already use the same prefix as a filename.
+const OUT_3D = "heykoko_3d";      // .glb — Hunyuan3D, TripoSplat, MoGe
+const OUT_PANO = "heykoko_pano";  // equirectangular 360° stills
+const OUT_IMG = "heykoko_img";    // stills — generation, instruction edits, upscale
+const OUT_VID = "heykoko_vid";    // video, every family
+const OUT_TMP = "heykoko_tmp";    // working files that are not results (auto-mask previews)
+
+// Rewrite every save node's filename_prefix to `<folder>/<model>`, just before the
+// graph is queued.
+//
+// Left to the builders this drifted badly: thirteen image builders all wrote a flat
+// `heykoko_*.png`, so a Flux render and a Qwen edit were indistinguishable in a folder
+// of thousands; seven video builders shared `heykoko_vid` while eight others happened
+// to carry their own name, with no rule behind which was which. Stamping here instead
+// means a builder cannot get it wrong, and the name follows the MODEL, which is the
+// thing you are actually looking for when you go digging.
+//
+// Runs last, after the VFI and codec tails have rewritten the graph — those copy the
+// prefix they find onto the nodes they add, so stamping earlier would be undone.
+// Hy3D21ExportMesh is skipped: it reports nothing to /history, so the server fetches
+// it back by the exact per-run prefix it passed in, and renaming it would lose it.
+const SAVE_NODES = new Set(["SaveImage", "SaveVideo", "SaveGLB", "SaveAudio", "VHS_VideoCombine"]);
+function stampOutputPrefix(wf, folder, model) {
+  // ComfyUI builds a real path out of this, so anything that could climb out of
+  // output/ or confuse the counter suffix has to go.
+  const stem = String(model || "out")
+    .replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "")
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/^[._]+/, "")
+    .slice(0, 60) || "out";
+  let n = 0;
+  for (const node of Object.values(wf)) {
+    if (!SAVE_NODES.has(node.class_type) || !node.inputs) continue;
+    if (node.class_type === "Hy3D21ExportMesh") continue;
+    if (!("filename_prefix" in node.inputs)) continue;
+    node.inputs.filename_prefix = `${folder}/${stem}`;
+    n++;
+  }
+  return n;
+}
+
 const PANO_T2I = "panorama_360_text";
 // The image sentinels resolve to the same weights as the video ones.
 const BERNINI_IMAGE_SENTINELS = new Set([BERNINI_IMG_EDIT, BERNINI_IMG_SUBJECT, BERNINI_T2I]);
@@ -3925,7 +3970,7 @@ function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = 
     "7": { class_type: "KSampler", inputs: { model: ["6", 0], positive: ["4", 0], negative: ["4", 1], latent_image: ["5", 0], seed, steps, cfg, sampler_name: sampler, scheduler, denoise: 1 } },
     "8": { class_type: "VAEDecodeHunyuan3D", inputs: { samples: ["7", 0], vae: ["1", 2], num_chunks: numChunks, octree_resolution: octreeRes } },
     "9": { class_type: "VoxelToMesh", inputs: { voxel: ["8", 0], algorithm: "surface net", threshold } },
-    ...(paint ? {} : { "10": { class_type: "SaveGLB", inputs: { mesh: ["9", 0], filename_prefix: "heykoko/mesh" } } }),
+    ...(paint ? {} : { "10": { class_type: "SaveGLB", inputs: { mesh: ["9", 0], filename_prefix: `${OUT_3D}/mesh` } } }),
   };
 }
 
@@ -3951,7 +3996,7 @@ function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation =
     "1": { class_type: "LoadImage", inputs: { image: imageName } },
     "3": { class_type: "LoadMoGeModel", inputs: { model_name: modelName } },
     "5": { class_type: "MoGePointMapToMesh", inputs: { moge_geometry: ["4", 0], batch_index: 0, decimation, discontinuity_threshold: 0.04, texture } },
-    "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: "heykoko/mesh" } },
+    "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: `${OUT_3D}/mesh` } },
   };
   if (needsResize) g["2"] = { class_type: "ResizeImagesByLongerEdge", inputs: { images: ["1", 0], longer_edge: 2048 } };
   // Everything downstream reads whatever the resize guard left as "the image".
@@ -4101,7 +4146,7 @@ function buildPanorama360({ ckpt, unet, unetClip, unetClipType, unetVae, shift =
   // bandFrac 0 means the picture already goes most of the way round, so there is no
   // room to repair without repainting the photo — see seamBandFraction.
   if (!seamRepair || bandFrac <= 0) {
-    g["99"] = { class_type: "SaveImage", inputs: { images: generated, filename_prefix: "heykoko/pano" } };
+    g["99"] = { class_type: "SaveImage", inputs: { images: generated, filename_prefix: `${OUT_PANO}/pano` } };
     return g;
   }
   const band = Math.max(64, Math.round(width * bandFrac) & ~7);
@@ -4119,7 +4164,7 @@ function buildPanorama360({ ckpt, unet, unetClip, unetClipType, unetVae, shift =
   g["26"] = { class_type: "VAEDecode", inputs: { samples: ["25", 0], vae: VAE } };
   g["27"] = { class_type: "ImageCompositeMasked", inputs: { destination: rolled, source: ["26", 0],
     x: 0, y: 0, resize_source: false, mask: ["23", 0] } };
-  g["99"] = { class_type: "SaveImage", inputs: { images: roll(30, ["27", 0]), filename_prefix: "heykoko/pano" } };
+  g["99"] = { class_type: "SaveImage", inputs: { images: roll(30, ["27", 0]), filename_prefix: `${OUT_PANO}/pano` } };
   return g;
 }
 
@@ -4159,7 +4204,7 @@ function buildMoGePanorama({ modelName, imageName, resolutionLevel = 9, splitRes
     // usefully separates the subject from the background; inside a panorama the same
     // culling punches holes in the walls and you see white voids through the world.
     "5": { class_type: "MoGePointMapToMesh", inputs: { moge_geometry: ["4", 0], batch_index: 0, decimation, discontinuity_threshold: gapThreshold, texture } },
-    "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: "heykoko/mesh" } },
+    "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: `${OUT_3D}/mesh` } },
   };
   if (needsResize) g["2"] = { class_type: "ResizeImagesByLongerEdge", inputs: { images: ["1", 0], longer_edge: 2048 } };
   if (refineTarget && refineModel) {
@@ -4211,7 +4256,7 @@ function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler =
     // 12–14 were the turntable render; the ids stay free rather than renumbering a
     // graph whose wiring is otherwise a link-for-link port of the template.
     "15": { class_type: "SplatToMesh", inputs: { splat: ["11", 0], resolution: meshDetail, kernel: 5, smooth: 0, level: 0.6, min_component: 500, min_opacity: 0.02, color_sharpen: 2 } },
-    "16": { class_type: "SaveGLB", inputs: { mesh: ["15", 0], filename_prefix: "heykoko/mesh" } },
+    "16": { class_type: "SaveGLB", inputs: { mesh: ["15", 0], filename_prefix: `${OUT_3D}/mesh` } },
   };
   // Same rule as Hunyuan3D: a painted mask outranks both the background remover and
   // the alpha fallback — it is the user pointing at the subject directly.
@@ -5399,7 +5444,7 @@ async function generateComfyImage(req, res) {
           // (verified: the run's outputs list only ever contained the SaveGLB nodes),
           // so the file has to be fetched by name. A per-run token keeps the prefix
           // unused, which pins ComfyUI's counter at _00001_.
-          if (paint) paintGlb = `heykoko/paint_${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+          if (paint) paintGlb = `${OUT_3D}/paint_${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
           workflow = buildHunyuan3D({ ckpt: model, imageName, seed,
             steps: opts.steps || 30, cfg: opts.cfg !== undefined ? opts.cfg : 5,
             sampler: opts.sampler || "euler", scheduler: opts.scheduler || "normal",
@@ -5808,6 +5853,14 @@ async function generateComfyImage(req, res) {
         }
       }
 
+      // Give the result a home that says what it is and what made it. Deliberately
+      // the last thing done to the graph — see stampOutputPrefix.
+      stampOutputPrefix(workflow,
+        meshType ? OUT_3D : panoDims ? OUT_PANO : isVideoTail ? OUT_VID : OUT_IMG,
+        // The panorama recipe is a sentinel, not a checkpoint; name the file after
+        // the checkpoint it actually generated with.
+        panoDims ? (panoBase || model) : model);
+
       // Queue the prompt.
       const queueResp = await fetch(`${currentComfyUrl()}/prompt`, {
         method: "POST",
@@ -6055,7 +6108,7 @@ async function comfyAutoMask(req, res) {
         "4": { class_type: "SAM3_Detect", inputs: { model: ["1", 0], image: ["3", 0], conditioning: ["2", 0], threshold: thr, refine_iterations: 2, individual_masks: false } },
         "5": { class_type: "GrowMask", inputs: { mask: ["4", 0], expand, tapered_corners: true } },
         "6": { class_type: "MaskToImage", inputs: { mask: ["5", 0] } },
-        "7": { class_type: "SaveImage", inputs: { images: ["6", 0], filename_prefix: "heykoko_automask" } },
+        "7": { class_type: "SaveImage", inputs: { images: ["6", 0], filename_prefix: `${OUT_TMP}/automask` } },
       };
     } else if (wantBox) {
       // Normalized box (0–1) → pixel XYXY in the LOADED image's space (SAM2's
@@ -6072,7 +6125,7 @@ async function comfyAutoMask(req, res) {
         "4": { class_type: "Sam2Segmentation", inputs: { sam2_model: ["1", 0], image: ["2", 0], keep_model_loaded: true, individual_objects: false, bboxes: ["3", 0] } },
         "5": { class_type: "GrowMask", inputs: { mask: ["4", 0], expand, tapered_corners: true } },
         "6": { class_type: "MaskToImage", inputs: { mask: ["5", 0] } },
-        "7": { class_type: "SaveImage", inputs: { images: ["6", 0], filename_prefix: "heykoko_automask" } },
+        "7": { class_type: "SaveImage", inputs: { images: ["6", 0], filename_prefix: `${OUT_TMP}/automask` } },
       };
     } else {
       const dims = imageDims(image) || { width: 1024, height: 1024 };
@@ -6083,7 +6136,7 @@ async function comfyAutoMask(req, res) {
         "3": { class_type: "Sam2Segmentation", inputs: { sam2_model: ["1", 0], image: ["2", 0], keep_model_loaded: true, coordinates_positive: coords } },
         "4": { class_type: "GrowMask", inputs: { mask: ["3", 0], expand, tapered_corners: true } },
         "5": { class_type: "MaskToImage", inputs: { mask: ["4", 0] } },
-        "6": { class_type: "SaveImage", inputs: { images: ["5", 0], filename_prefix: "heykoko_automask" } },
+        "6": { class_type: "SaveImage", inputs: { images: ["5", 0], filename_prefix: `${OUT_TMP}/automask` } },
       };
     }
     const clientId = crypto.randomUUID();
