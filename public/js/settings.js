@@ -63,6 +63,11 @@ export function saveCurrentSettings() {
         mogeDetail: dom.comfyParamMogeDetail?.value || "",
         mogeFov: dom.comfyParamMogeFov?.value || "",
         panoModel: dom.comfyParamPanoModel?.value || "",
+        panoLora: dom.comfyParamPanoLora?.value || "",
+        panoLoraStrength: dom.comfyParamPanoLoraStrength?.value || "",
+        panoProj: dom.comfyParamPanoProj?.value || "",
+        panoFov: dom.comfyParamPanoFov?.value || "",
+        panoOutpaint: dom.comfyParamPanoOutpaint?.value || "",
         panoRefine: dom.comfyParamPanoRefine?.value || "",
         mogeSubjectOnly: dom.comfyParamMogeSubject?.checked || false,
         keepBackground: dom.comfyParamKeepBackground?.checked || false,
@@ -276,6 +281,11 @@ export function loadSavedSettings() {
     if (dom.comfyParamMogeDetail) dom.comfyParamMogeDetail.value = cp.mogeDetail || "";
     if (dom.comfyParamMogeFov) dom.comfyParamMogeFov.value = cp.mogeFov || "";
     if (dom.comfyParamPanoRefine) dom.comfyParamPanoRefine.value = cp.panoRefine || "";
+    if (dom.comfyParamPanoProj) dom.comfyParamPanoProj.value = cp.panoProj || "";
+    if (dom.comfyParamPanoLoraStrength) dom.comfyParamPanoLoraStrength.value = cp.panoLoraStrength || "";
+    // the LoRA select is repopulated from the server list; ollama.js restores its value
+    if (dom.comfyParamPanoFov) dom.comfyParamPanoFov.value = cp.panoFov || "";
+    if (dom.comfyParamPanoOutpaint) dom.comfyParamPanoOutpaint.value = cp.panoOutpaint || "";
     // the select is repopulated from the server list; ollama.js restores its value
     if (dom.comfyParamMogeSubject) dom.comfyParamMogeSubject.checked = !!cp.mogeSubjectOnly;
     if (dom.comfyParamKeepBackground) dom.comfyParamKeepBackground.checked = !!cp.keepBackground;

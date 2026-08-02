@@ -760,7 +760,7 @@ function marketName(name) {
     [BERNINI_IMG_EDIT]: "Bernini (image edit / relight)",
     [BERNINI_IMG_SUBJECT]: "Bernini (subject → image)",
     [BERNINI_T2I]: "Bernini (text → image)",
-    [PANO_T2I]: "360° panorama (text → equirect)",
+    [PANO_T2I]: "360° panorama (text or photo → equirect)",
     [ANIMATE_REPLACE]: "Wan Animate (replace)",
     [SCAIL2_ANIMATE]: "SCAIL-2 (animate)",
     [LTX_MSR]: "LTX-2.3 MSR",
@@ -990,6 +990,14 @@ async function proxyComfyModels(req, res) {
     // Only genuine style/content LoRAs (Sulphur) belong in this slot.
     const LTX_AUTO_LORA_RE = /licon|msr|distill|ic.?lora|union.?control/i;
     const ltxLoras = allLoras.filter((n) => LTX_MODEL_RE.test(n) && !LTX_AUTO_LORA_RE.test(n));
+    // The panorama recipe's LoRA slot sits on an image checkpoint, so every video
+    // family's LoRA has to be kept out of it: mounted on Flux they do not error,
+    // they just apply almost no matching keys and quietly change nothing (or make a
+    // mess). Everything installed here is a video LoRA except the panorama one, so
+    // this is an exclusion rather than a match — a new image LoRA should show up
+    // without anyone having to add a pattern for it.
+    const VIDEO_LORA_RE = /ltx|sulphur|wan|bernini|animate|lightx2v|scail|phantom|hunyuan.?video|infinitetalk|dancer|vace/i;
+    const panoLoras = allLoras.filter((n) => !VIDEO_LORA_RE.test(n));
     // Edit/video models can be either diffusion models (UNETLoader) or full
     // checkpoints (instruct-pix2pix, ltx). Plain checkpoints stay in `models`.
     const all = [...ckpts, ...unets];
@@ -1290,9 +1298,9 @@ async function proxyComfyModels(req, res) {
       const tiers = [...new Set(cks.map(precisionOf).filter(Boolean))];
       if (tiers.length) modelMeta[LTX_UNION].prec = tiers;
     }
-    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels, panoBases: panoT2i.length ? panoBases : [], ltxLoras, hostname });
+    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels, panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, hostname });
   } catch {
-    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], panoBases: [], ltxLoras: [] });
+    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [] });
   }
 }
 
@@ -3913,7 +3921,8 @@ function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation =
   return g;
 }
 
-// Text → a 360° equirectangular panorama whose left and right edges actually MEET.
+// Text (or a photo) → a 360° equirectangular panorama whose left and right edges
+// actually MEET.
 //
 // An ordinary checkpoint asked for an "equirectangular panorama" at 2:1 produces a
 // convincing image, but not a wrapping one: rolled by half its width a join appears
@@ -3933,10 +3942,30 @@ function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation =
 //   • noise_mask alone still lets the decode shift the tone of the whole frame, which
 //     showed up as two vertical brightness steps in the sky. The repair is composited
 //     back over the original through the same feathered mask to blend that away.
+//
+// With `imageName` the panorama is grown from a PHOTO instead of from nothing. The
+// client has already reprojected it onto the sphere (public/js/equirect.js): what
+// arrives is a full-size equirect whose alpha marks the ~90% that has to be invented,
+// with that region pre-filled by smearing the photo's own border outwards.
+//
+// Three things about that stage were established by measurement, not by reasoning:
+//   • InpaintModelConditioning cannot be used here. It greys out the masked pixels
+//     before encoding, so the pre-fill is discarded and — with a plain checkpoint,
+//     which has no inpainting channels — the sampler works from noise alone. It
+//     produced a perfectly good panorama with the photo stuck on top like a sticker:
+//     the step across the photo's border measured 16.9/255. VAEEncode +
+//     SetLatentNoiseMask keeps the pre-fill and takes that step down to 3.5.
+//   • Which means `outpaintDenoise` must stay BELOW 1: at exactly 1 the noise mask
+//     replaces the region outright and the sticker is back (measured identical to
+//     the discarded-pre-fill case). Too low and the smear survives unresolved —
+//     0.70 left it almost untouched. 0.85 resolves it while still continuing.
+//   • The photo itself is composited back over the decode, so it comes through the
+//     VAE round trip bit-for-bit (measured drift 0.00/255).
 function buildPanorama360({ ckpt, unet, unetClip, unetClipType, unetVae, shift = 0, zeroNegative = false,
   prompt, negative = "", seed, steps = 20, cfg = 1, guidance = 3.5,
   sampler = "euler", scheduler = "simple", sd3Latent = true, width = 1536, height = 768, seamRepair = true,
-  bandFrac = 1 / 3, featherFrac = 0.45, seamDenoise = 1 }) {
+  bandFrac = 1 / 3, featherFrac = 0.45, seamDenoise = 1, imageName = "", outpaintDenoise = 0.85,
+  lora = "", loraStrength = 1 }) {
   // The recipe is family-agnostic: whichever checkpoint the user picked decides the
   // latent type and whether there is a guidance node at all. Hardcoding Flux's pair
   // would produce a graph that simply fails to validate on an SDXL checkpoint.
@@ -3951,10 +3980,23 @@ function buildPanorama360({ ckpt, unet, unetClip, unetClipType, unetVae, shift =
     g["1b"] = { class_type: "CLIPLoader", inputs: { clip_name: unetClip, type: unetClipType, device: "default" } };
     g["1c"] = { class_type: "VAELoader", inputs: { vae_name: unetVae } };
     MODEL = ["1", 0]; CLIP = ["1b", 0]; VAE = ["1c", 0];
-    if (shift) { g["1d"] = { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift } }; MODEL = ["1d", 0]; }
   } else {
     g["1"] = { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: ckpt } };
     MODEL = ["1", 0]; CLIP = ["1", 1]; VAE = ["1", 2];
+  }
+  // An equirectangular LoRA, if the user has one. It goes on before the sampling
+  // shift — the shift is a property of how this family is sampled, not of the
+  // weights, so patching a shifted model would put the two in the wrong order.
+  // LoraLoader patches CLIP as well as the model: a LoRA with no text-encoder keys
+  // simply leaves it alone, so this covers both kinds without a second node type.
+  if (lora) {
+    g["1e"] = { class_type: "LoraLoader", inputs: { model: MODEL, clip: CLIP,
+      lora_name: lora, strength_model: loraStrength, strength_clip: loraStrength } };
+    MODEL = ["1e", 0]; CLIP = ["1e", 1];
+  }
+  if (unet && shift) {
+    g["1d"] = { class_type: "ModelSamplingAuraFlow", inputs: { model: MODEL, shift } };
+    MODEL = ["1d", 0];
   }
   g["2"] = { class_type: "CLIPTextEncode", inputs: { clip: CLIP, text: prompt } };
   // A distilled model runs at cfg 1 with the negative ZEROED, not merely empty —
@@ -3962,7 +4004,6 @@ function buildPanorama360({ ckpt, unet, unetClip, unetClipType, unetVae, shift =
   g["3"] = zeroNegative
     ? { class_type: "ConditioningZeroOut", inputs: { conditioning: ["2", 0] } }
     : { class_type: "CLIPTextEncode", inputs: { clip: CLIP, text: negative } };
-  g["5"] = { class_type: sd3Latent ? "EmptySD3LatentImage" : "EmptyLatentImage", inputs: { width, height, batch_size: 1 } };
   g["7"] = { class_type: "VAEDecode", inputs: { samples: ["6", 0], vae: VAE } };
   // Flux-family distilled guidance rides its own node; everything else steers with
   // plain CFG and would reject the extra conditioning stage.
@@ -3971,8 +4012,21 @@ function buildPanorama360({ ckpt, unet, unetClip, unetClipType, unetVae, shift =
     g["4"] = { class_type: "FluxGuidance", inputs: { conditioning: ["2", 0], guidance } };
     positive = ["4", 0];
   }
-  g["6"] = { class_type: "KSampler", inputs: { model: MODEL, positive, negative: ["3", 0],
-    latent_image: ["5", 0], seed, steps, cfg, sampler_name: sampler, scheduler, denoise: 1 } };
+  if (imageName) {
+    g["40"] = { class_type: "LoadImage", inputs: { image: imageName } };
+    g["41"] = { class_type: "VAEEncode", inputs: { pixels: ["40", 0], vae: VAE } };
+    // LoadImage's second output is 1 − alpha: exactly "the part you must invent".
+    g["42"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["41", 0], mask: ["40", 1] } };
+    g["6"] = { class_type: "KSampler", inputs: { model: MODEL, positive, negative: ["3", 0],
+      latent_image: ["42", 0], seed, steps, cfg, sampler_name: sampler, scheduler, denoise: outpaintDenoise } };
+    g["43"] = { class_type: "ImageCompositeMasked", inputs: { destination: ["40", 0], source: ["7", 0],
+      x: 0, y: 0, resize_source: false, mask: ["40", 1] } };
+  } else {
+    g["5"] = { class_type: sd3Latent ? "EmptySD3LatentImage" : "EmptyLatentImage", inputs: { width, height, batch_size: 1 } };
+    g["6"] = { class_type: "KSampler", inputs: { model: MODEL, positive, negative: ["3", 0],
+      latent_image: ["5", 0], seed, steps, cfg, sampler_name: sampler, scheduler, denoise: 1 } };
+  }
+  const generated = imageName ? ["43", 0] : ["7", 0];
   // Swap the two halves: crop each, stitch them back the other way round.
   const roll = (id, src) => {
     const a = String(id), b = String(id + 1), c = String(id + 2);
@@ -3982,13 +4036,15 @@ function buildPanorama360({ ckpt, unet, unetClip, unetClipType, unetVae, shift =
       direction: "right", match_image_size: false, spacing_width: 0, spacing_color: "white" } };
     return [c, 0];
   };
-  if (!seamRepair) {
-    g["99"] = { class_type: "SaveImage", inputs: { images: ["7", 0], filename_prefix: "heykoko/pano" } };
+  // bandFrac 0 means the picture already goes most of the way round, so there is no
+  // room to repair without repainting the photo — see seamBandFraction.
+  if (!seamRepair || bandFrac <= 0) {
+    g["99"] = { class_type: "SaveImage", inputs: { images: generated, filename_prefix: "heykoko/pano" } };
     return g;
   }
   const band = Math.max(64, Math.round(width * bandFrac) & ~7);
   const feather = Math.max(1, Math.round(band * featherFrac));
-  const rolled = roll(10, ["7", 0]);
+  const rolled = roll(10, generated);
   g["20"] = { class_type: "SolidMask", inputs: { value: 0.0, width, height } };
   g["21"] = { class_type: "SolidMask", inputs: { value: 1.0, width: band, height } };
   g["22"] = { class_type: "FeatherMask", inputs: { mask: ["21", 0], left: feather, top: 0, right: feather, bottom: 0 } };
@@ -4587,6 +4643,9 @@ async function generateComfyImage(req, res) {
       let paintGlb = null;   // Hunyuan3D texturing: filename_prefix of a GLB /history won't report
       let meshViewKind = null; // how the viewer should place its camera, set by the mesh branch
       let panoDims = null;     // the 360 recipe forces its own 2:1 size; the log should say so
+      let panoOutpaintUsed = 0; // set only when a photo was grown into the panorama
+      let panoLoraUsed = null;  // { name, strength } when an equirect LoRA was mounted
+      let panoLoraSkipped = null; // asked for, but the chosen base is the wrong family
       let panoCfg = null;      // …and its own sampler settings, taken from the chosen checkpoint
       let panoBase = "";       // which checkpoint that was, for the log
       let interpWarning = null; // interpolation skipped (source fps already ≥ target) → tell the client
@@ -5170,20 +5229,87 @@ async function generateComfyImage(req, res) {
             unetClipType: /boogu/i.test(ck) ? "boogu" : "lumina2",
             shift: 3.0, zeroNegative: panoCfg.cfg <= 1.01 };
         }
-        const pw = Math.max(768, Math.min(2048, (opts.width || 1536) & ~15));
-        panoDims = { w: pw, h: pw >> 1 };
+        // With a photo attached the client has already reprojected it onto the
+        // sphere, so the SIZE is whatever it produced — reading it back off the
+        // upload avoids two places computing the same number and disagreeing, which
+        // would misalign every crop in the seam repair.
+        let pw, ph, panoImageName = "";
+        if (hasImgInput) {
+          const d = imageDims(images[0]);
+          if (!d) {
+            sendJson(res, 400, { error: "Could not read the attached image." });
+            return;
+          }
+          if (Math.abs(d.width / d.height - 2) > 0.02) {
+            // Only reachable by calling the API directly: the app always sends the
+            // reprojected canvas, never the raw photo.
+            sendJson(res, 400, { error: `A 360° panorama is 2:1. This chain expects an already-reprojected equirectangular image, got ${d.width}x${d.height}.` });
+            return;
+          }
+          pw = d.width; ph = d.height;
+          panoImageName = await uploadImage(images[0], controller.signal, "heykoko_pano_src.png");
+          imagesUsed = 1;
+        } else {
+          pw = Math.max(768, Math.min(2048, (opts.width || 1536) & ~15));
+          ph = pw >> 1;
+        }
+        panoDims = { w: pw, h: ph };
+        // How far round the photo reaches decides how wide the seam band may be: the
+        // band sits half a turn from the photo, so it may grow until it meets the
+        // photo's far edge and no further, or the repair repaints the user's picture.
+        const coverDeg = Math.max(0, Math.min(360, Number(opts.panoCoverDeg) || 0));
+        const freeDeg = 180 - coverDeg / 2 - 10;    // 10° of margin so they never touch
+        const panoBand = !coverDeg ? 1 / 3 : (freeDeg <= 5 ? 0 : Math.min(1 / 3, (2 * freeDeg) / 360));
         // Without this the model just paints an ordinary photo at 2:1 — verified: a
         // plain scene description came back as a normal wide shot, no panoramic
         // projection at all. The cue goes in front so the user's own wording still
         // leads the composition.
+        // Stays strictly below 1: at 1 the noise mask discards the pre-fill and the
+        // photo stops influencing anything around it.
+        if (panoImageName) panoOutpaintUsed = Math.max(0.4, Math.min(0.98, Number(opts.panoOutpaint) || 0.85));
         const panoPrompt = /equirect|360|panoram/i.test(prompt)
           ? prompt
           : `equirectangular 360 degree panorama, full spherical VR photo, seamless wraparound. ${prompt}`;
+        // A panorama LoRA is trained on ONE base family. Every one available today is
+        // for Flux, so mounting it on an SDXL or z-image pick would load almost no
+        // matching keys and silently do nothing — better to drop it and say so than
+        // to let the user believe it is on.
+        //
+        // Empty means AUTO, matching how the base checkpoint is chosen just above:
+        // installing an equirectangular LoRA is enough, no second step.
+        //
+        // But only when generating from TEXT. The zenith row of an equirect is one
+        // single point in space and so must be nearly constant; measured at a fixed
+        // seed, text-only without the LoRA it varies as much as the horizon does
+        // (1.07, and 1.50 at the nadir) — that is the vortex underfoot — and with it,
+        // 0.05 / 0.31, against 0.09 / 0.16 for a real photographed panorama.
+        //
+        // With a PHOTO the poles are already right without it: the pre-fill smears
+        // the photo's edges outwards, and that construction converges at the poles by
+        // itself (measured 0.01 / 0.07, tighter than the real photo). So the LoRA has
+        // no pole left to fix there and its flatten-towards-the-poles prior costs
+        // ground detail instead — the bottom quarter's texture fell 0.70 → 0.24 at
+        // full strength. Auto therefore leaves it off for a photo; ⚙ still forces it
+        // either way, and "off" is how the user declines it for text.
+        const askLora = String(opts.panoLora || "").trim();
+        let wantLora = "";
+        if (askLora === "off") wantLora = "";
+        else if (askLora) wantLora = askLora;
+        else if (!panoImageName) {
+          const installed = await comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []);
+          wantLora = installed.find((n) => /equirect|panoram|360/i.test(n)) || "";
+        }
+        if (wantLora && !/flux/i.test(ck)) panoLoraSkipped = { name: wantLora, base: ck, auto: !askLora };
+        else if (wantLora) panoLoraUsed = { name: wantLora, strength: Math.max(0, Math.min(2, Number(opts.panoLoraStrength) || 1)), auto: !askLora };
         workflow = buildPanorama360({ ...(isUnetBase ? unetParts : { ckpt: ck }),
+          lora: panoLoraUsed ? panoLoraUsed.name : "",
+          loraStrength: panoLoraUsed ? panoLoraUsed.strength : 1,
           prompt: panoPrompt, negative: negative_prompt || "",
           seed, steps: panoCfg.steps, cfg: panoCfg.cfg, guidance: panoCfg.guidance,
           sampler: panoCfg.sampler, scheduler: panoCfg.scheduler, sd3Latent: panoCfg.sd3Latent !== false,
-          width: pw, height: pw >> 1,
+          width: pw, height: ph, bandFrac: panoBand,
+          imageName: panoImageName,
+          outpaintDenoise: panoOutpaintUsed || 0.85,
           seamRepair: opts.panoSeamRepair !== false });
       } else if (meshType) {
         // 3D mesh generation — every chain is image-driven (no text conditioning
@@ -5776,10 +5902,16 @@ async function generateComfyImage(req, res) {
         }
         sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, imagesUsed });
       } else {
-        const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${panoDims ? panoDims.w : width}x${panoDims ? panoDims.h : height}`;
+        // The panorama recipe is neither txt2img nor the generic img2img: with a photo
+        // it outpaints around it at its own denoise, and either way it forces its own
+        // 2:1 canvas. Reporting the generic branch here named a denoise the chain
+        // never used.
+        const mode = panoDims
+          ? `pano360:${panoOutpaintUsed ? `photo(denoise=${panoOutpaintUsed})` : "text"} ${panoDims.w}x${panoDims.h}${panoLoraUsed ? `, lora=${panoLoraUsed.name}@${panoLoraUsed.strength}` : ""}${panoLoraSkipped ? `, lora SKIPPED (${panoLoraSkipped.base} is not Flux)` : ""}`
+          : editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         const c = panoCfg || cfg;
         console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${mode}, sampler=${c.sampler}/${c.scheduler}, cfg=${c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${c.steps}, images=${outImages.length}`);
-        sendJson(res, 200, { images: outImages, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined });
+        sendJson(res, 200, { images: outImages, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined });
       }
     } finally {
       clearTimeout(timeout);

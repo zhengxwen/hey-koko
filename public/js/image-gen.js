@@ -82,6 +82,17 @@ function comfyOverrides() {
   const mogeFov = num(dom.comfyParamMogeFov?.value);
   if (mogeFov !== undefined) ov.mogeFov = mogeFov;                  // MoGe fov_x_degrees, 0 = auto
   if (dom.comfyParamPanoModel?.value) ov.panoModel = dom.comfyParamPanoModel.value; // 360 recipe base checkpoint
+  // The projection and the field of view are consumed HERE, not by the server — the
+  // photo is reprojected in the browser. They still travel with the request so the
+  // record shows what produced the result and a resend reproduces it.
+  if (dom.comfyParamPanoLora?.value) ov.panoLora = dom.comfyParamPanoLora.value;   // equirect LoRA on the 360 recipe
+  const panoLoraStrength = num(dom.comfyParamPanoLoraStrength?.value);
+  if (panoLoraStrength !== undefined) ov.panoLoraStrength = panoLoraStrength;
+  if (dom.comfyParamPanoProj?.value) ov.panoProj = dom.comfyParamPanoProj.value; // rectilinear | cylindrical | equirect
+  const panoFov = num(dom.comfyParamPanoFov?.value);
+  if (panoFov) ov.panoFov = panoFov;                                // degrees of turn the attached photo covers
+  const panoOutpaint = num(dom.comfyParamPanoOutpaint?.value);
+  if (panoOutpaint) ov.panoOutpaint = panoOutpaint;                 // denoise over the invented region
   const panoRefine = num(dom.comfyParamPanoRefine?.value);
   if (panoRefine) ov.panoRefine = panoRefine;                       // equirect long edge after the 4x upscale pass
   const targetFps = num(dom.comfyParamTargetFps?.value);
@@ -180,6 +191,9 @@ export function comfyModelSupportsMask() {
   if (comfyModel === "image-upscale") return false; // pure upscale — nothing to mask
   // A 360° panorama IS the whole scene — there is no subject to isolate in it.
   if (comfyModel === "moge-panorama") return false;
+  // The 360° recipe already derives its own mask from the attached photo's coverage;
+  // a painted one would fight it for the same input.
+  if (comfyModel === PANORAMA_RECIPE) return false;
   return true;
 }
 
@@ -340,6 +354,48 @@ function b64ToImgSrc(b) {
   return b.startsWith("data:")
     ? b
     : `data:image/${b.startsWith("/9j/") ? "jpeg" : b.startsWith("UklGR") ? "webp" : "png"};base64,${b}`;
+}
+
+// The 360° panorama recipe's own name. It is a recipe rather than a checkpoint, so
+// it is matched by identity in a few places that all have to agree.
+const PANORAMA_RECIPE = "panorama_360_text";
+
+// Turn an attached photo into the equirectangular canvas the panorama recipe paints
+// around: the photo mapped onto the sphere, the rest of the sphere pre-filled by
+// smearing its edges outwards, and alpha marking which is which.
+//
+// The result is written as a PNG by hand rather than with canvas.toDataURL, because
+// a canvas backing store is premultiplied — measured in Chrome, colour under alpha 0
+// comes back as black, which would erase the pre-fill the sampler needs to continue
+// the photo instead of ignoring it.
+async function reprojectForPanorama(b64, sizeOptions = {}) {
+  const { projectToEquirect, guessSource, encodePngRGBA } = await import("./equirect.js");
+  const bmp = await createImageBitmap(await (await fetch(b64ToImgSrc(b64))).blob());
+  const canvas = document.createElement("canvas");
+  canvas.width = bmp.width; canvas.height = bmp.height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0);
+  bmp.close?.();
+  const src = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+  const forced = dom.comfyParamPanoProj?.value || "";
+  const guess = guessSource(src.width, src.height, forced);
+  const fovDeg = Number(dom.comfyParamPanoFov?.value) || guess.fovDeg;
+  // Same clamp the text-only path applies to its own canvas, so a panorama is the
+  // same size whichever way it was made. Wider means the photo keeps more of its
+  // detail — it only ever occupies fov/360 of the width.
+  const dstW = Math.max(768, Math.min(2048, (sizeOptions.width || 1536) & ~15));
+  const eq = projectToEquirect(src, { dstW, fovDeg, projection: guess.projection });
+  const png = await encodePngRGBA(eq.width, eq.height, eq.data);
+  let bin = "";
+  for (let i = 0; i < png.length; i += 0x8000) bin += String.fromCharCode.apply(null, png.subarray(i, i + 0x8000));
+  // An input that is ALREADY a panorama has nothing to invent, so the outpaint stage
+  // is a no-op — but its seam is worth repairing, and reporting 360° of coverage
+  // would shrink the repair band to nothing. Reporting none leaves the band at its
+  // default, which turns this case into "fix the join in my panorama".
+  const isWhole = guess.projection === "equirect";
+  return { b64: btoa(bin), coverDeg: isWhole ? 0 : fovDeg, spanDeg: isWhole ? 360 : fovDeg,
+    projection: guess.projection, width: eq.width, height: eq.height };
 }
 
 // Decode a video's natural pixel size (data URL) in the browser. Resolves null on
@@ -1668,6 +1724,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   let upscaleModelUsed = null, upscaleDenoiseUsed = 0; // HD upscale algorithm used → shown in the done line
   let precisionUsedTier = null; // precision tier actually loaded → always named in the done line
   let precisionNoteUsed = null; // ⚙ precision fallback/mix, when the request could not be honoured
+  // The panorama LoRA was asked for but dropped, because the chosen base is not the
+  // family it was trained on. Silence here would look like it had been applied.
+  let panoLoraSkippedBase = null;
   // Seed actually used (random unless --seed was pinned) → surfaced on the done line
   // so a single result can be reproduced. Only meaningful for a single output.
   let usedSeed = null;
@@ -1677,6 +1736,26 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // Enhanced prompt(s) to show in the done message (set at enqueue time, client-side).
   const enhancedPromptsShown = [...new Set(parsedList.map((p) => p.enhancedPrompt).filter(Boolean))];
 
+  // Image → 360° panorama: an ordinary photo is a flat projection and a panorama is a
+  // spherical one, so the photo has to be reprojected before anything can be painted
+  // around it. It happens here rather than on the server because only the browser has
+  // the decoded pixels — the server would need its own JPEG decoder to do the same.
+  let panoImages = null, panoCoverDeg = 0, panoPrep = null;
+  if (useComfy && comfyModel === PANORAMA_RECIPE && refImages && refImages.length) {
+    try {
+      panoPrep = await reprojectForPanorama(refImages[0], parsedList[0].options);
+      panoImages = [panoPrep.b64];
+      panoCoverDeg = panoPrep.coverDeg;
+      sink.label(`${genText("0")}\n${t("msg_panoFromPhoto", { kind: t(`msg_panoKind_${panoPrep.projection}`), deg: Math.round(panoPrep.spanDeg) })}`);
+    } catch (err) {
+      sink.fail(t("msg_panoReprojectFailed", { error: err.message || String(err) }));
+      sink.place({ role: "assistant", content: t("msg_panoReprojectFailed", { error: err.message || String(err) }), timestamp: Date.now() });
+      sink.cleanup();
+      imgUnsub();
+      return;
+    }
+  }
+
   try {
     const promises = [];
     for (let ci = 0; ci < parsedList.length; ci++) {
@@ -1684,6 +1763,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       const prompt = prompts[ci];
       for (let i = 0; i < parsed.count; i++) {
         const reqOptions = { ...parsed.options };
+        // How far round the photo reaches — the server sizes the seam-repair band from
+        // it so the repair never repaints the photo itself.
+        if (panoCoverDeg) reqOptions.panoCoverDeg = panoCoverDeg;
         // Image upscale always outputs the model's native ~4×. Drop the default image
         // size (parseImagineCommand fills width/height from the "default size" setting) so it
         // doesn't downscale the result — only an explicit --size still resizes.
@@ -1721,7 +1803,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
           prompt: comfyPositive(prompt),
           negative_prompt: comfyNegative(parsed.negativePrompt),
           options: reqOptions,
-          images: refImages || undefined,
+          images: panoImages || refImages || undefined,
           // Inpaint mask (white = repaint region) — only used by the ComfyUI
           // path; routes the gen to a masked edit / SetLatentNoiseMask inpaint.
           mask: (useComfy && maskB64) ? maskB64 : undefined,
@@ -1756,6 +1838,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 if (data.upscaleModel) { upscaleModelUsed = data.upscaleModel; upscaleDenoiseUsed = data.upscaleDenoise || 0; }
                 if (data.precisionUsed) precisionUsedTier = data.precisionUsed;
                 if (data.precisionNote) precisionNoteUsed = data.precisionNote;
+                if (data.panoLoraSkipped) panoLoraSkippedBase = data.panoLoraSkipped.base;
                 if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
                 generatedImages.push(...imgs);
                 for (let k = 0; k < imgs.length; k++) seeds.push(typeof data.seed === "number" ? data.seed : null);
@@ -1835,6 +1918,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       }
       // HD upscale (image-upscale) — name the model + denoise algorithm actually used.
       if (upscaleModelUsed) doneLine += `\n${t("msg_upscaleUsed", { model: stripModelExt(upscaleModelUsed) }, plang)}`;
+      if (panoLoraSkippedBase) doneLine += `\n${t("msg_panoLoraSkipped", { base: stripModelExt(panoLoraSkippedBase) }, plang)}`;
       if (upscaleDenoiseUsed > 0) doneLine += `\n${t("msg_denoiseUsed", { pct: Math.round(upscaleDenoiseUsed * 100) }, plang)}`;
     }
 

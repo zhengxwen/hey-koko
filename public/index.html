@@ -817,6 +817,31 @@
             <select id="comfyParamPanoModel"></select>
           </label>
           <label>
+            <span id="comfyParamPanoLoraLabel" title="360° panorama. An equirectangular LoRA teaches the base model what the POLES of a panorama look like — the one thing the seam repair cannot touch, and the reason looking straight down in a generated panorama shows a vortex. Auto uses one when you have it, but only for text: measured at a fixed seed, text-only goes from a zenith as varied as the horizon (1.07, and 1.50 below) to 0.05 / 0.31, against 0.09 / 0.16 for a real photographed panorama. With a photo attached it is left off, because the pre-fill already converges at the poles on its own (0.01 / 0.07) and the LoRA only flattens the ground instead — bottom-quarter texture fell 0.70 to 0.24. Pick it by hand to override either way. LoRAs are trained for one base family and every panorama one available today is for Flux, so with another base it is dropped rather than silently loaded with nothing matching.">Panorama LoRA</span>
+            <select id="comfyParamPanoLora"></select>
+          </label>
+          <label>
+            <span id="comfyParamPanoLoraStrengthLabel" title="How strongly the panorama LoRA is applied. 1.0 is the trained strength; its author suggests anywhere from 0.5 to 1.5. Higher pushes the panoramic projection harder at the cost of following your prompt.">Panorama LoRA strength</span>
+            <input id="comfyParamPanoLoraStrength" type="number" min="0" max="2" step="0.05" placeholder="1.0" />
+          </label>
+          <label>
+            <span id="comfyParamPanoProjLabel" title="360° panorama, when you attach a photo. What kind of picture it is decides how it wraps onto the sphere. Auto reads the shape of the frame: anything much wider than it is tall is treated as a phone sweep, an exact 2:1 as a panorama already, everything else as a normal photo. Say so explicitly when the guess is wrong — a short sweep that stopped early still looks like an ordinary wide photo.">Attached photo is a…</span>
+            <select id="comfyParamPanoProj">
+              <option id="optPanoProjAuto" value="">Auto (from the frame's shape)</option>
+              <option id="optPanoProjRect" value="rectilinear">Normal photo</option>
+              <option id="optPanoProjCyl" value="cylindrical">Phone sweep panorama</option>
+              <option id="optPanoProjEqui" value="equirect">Already a 360° panorama</option>
+            </select>
+          </label>
+          <label>
+            <span id="comfyParamPanoFovLabel" title="360° panorama, when you attach a photo. How much of the turn the photo covers, left edge to right edge. Empty = estimated from the frame: 75° for a normal photo, and for a sweep, from its width against a phone's own ~63° upright view. This is what decides how large the photo lands on the sphere, so it is the setting to correct if the result looks too wide or too pinched.">Photo covers (°)</span>
+            <input id="comfyParamPanoFov" type="number" min="10" max="355" step="1" placeholder="Auto" />
+          </label>
+          <label>
+            <span id="comfyParamPanoOutpaintLabel" title="360° panorama, when you attach a photo. How freely the rest of the sphere is invented around it. The unknown part is seeded by smearing the photo's own edges outwards; this says how much of that seed to overwrite. Low keeps the smear and the result looks streaked; 1.00 discards it entirely and the model paints an unrelated scene with your photo sitting on top — measured, the step across the photo's border goes from 3.5 to 16.9. 0.85 is the balance.">Reinvent around the photo</span>
+            <input id="comfyParamPanoOutpaint" type="number" min="0.4" max="0.98" step="0.05" placeholder="0.85" />
+          </label>
+          <label>
             <span id="comfyParamPanoRefineLabel" title="Panorama only. Standing inside a 360° mesh you are magnifying the photo hard — one turn is spread over the whole view, so a 1774 px equirect shows a 40° slice at roughly 4.5× enlargement, which is what makes it look soft. This runs the photo through a 4× upscale model first. Measured on one panorama: the enlargement drops 4.5× → 3.1× / 2.2× / 1.9× and screen sharpness nearly doubles at 3584. Costs file size and a little time; the mesh keeps the same number of triangles either way.">Sharpen the 360 view</span>
             <select id="comfyParamPanoRefine">
               <option id="optPanoRefineOff" value="">Off · photo as captured</option>
