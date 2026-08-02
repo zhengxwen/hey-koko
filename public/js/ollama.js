@@ -6,7 +6,7 @@ import { dom, state } from './state.js';
 import { SETTINGS_KEY } from './constants.js';
 import { t } from './i18n.js';
 import { saveCurrentSettings } from './settings.js';
-import { getBgWorkers, setBgWorkerStatus } from './bg-jobs.js';
+import { getBgWorkers, setBgWorkerStatus, MULTI_WORKERS_ENABLED } from './bg-jobs.js';
 import { updateCloudBadge } from './avatar.js';
 import { refreshModelMaxContext } from './context-meter.js';
 
@@ -351,7 +351,9 @@ export async function loadComfyModels() {
 // workers are configured.
 export async function refreshBgWorkers() {
   if (!dom.comfyModelSelect) return;
-  const workers = getBgWorkers().filter((w) => w.enabled);
+  // With the multi-worker feature off, ignore any saved workers and always target the
+  // single ComfyUI address from settings (plain single-endpoint use).
+  const workers = MULTI_WORKERS_ENABLED ? getBgWorkers().filter((w) => w.enabled) : [];
   const targets = workers.length
     ? workers.map((w) => w.url)
     : [urlFromDisplay(dom.comfyUrlDisplay)].filter(Boolean);
@@ -965,10 +967,10 @@ export function openComfyModelPicker() {
         <span class="zoteroImportTitle">🎛 ${t("cmp_title")}</span>
         <button type="button" class="zoteroImportClose" title="${t("mb_close")}">✕</button>
       </div>
-      <div class="comfyPickGpu"></div>
       <div class="modelBrowserBar">
         <input type="text" class="modelBrowserSearch comfyPickSearch" placeholder="${t("cmp_search")}" />
         <span class="modelBrowserCount comfyPickCount"></span>
+        <div class="comfyPickGpu"></div>
       </div>
       <div class="zoteroImportBody comfyPickBody"><div class="comfyPickCols"></div></div>
       <div class="comfyPickLegend"></div>

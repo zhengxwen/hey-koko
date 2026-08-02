@@ -20,6 +20,13 @@ import { generateImage } from './image-gen.js';
 import { generateSpeech } from './voice-gen.js';
 import { setServerQueueDeps, cancelServerJob, ackServerJob, pauseServerJob, resumeServerJob, reorderServerJobs, cancelConversationServerJobs, serverJobTiming } from './server-queue.js';   // Option B
 
+// Feature flag: the multi-endpoint "ComfyUI workers (parallel)" manager. When false the
+// workers bar is hidden in the drawer AND refreshBgWorkers ignores any saved workers,
+// falling back to the single ComfyUI address from settings — i.e. plain single-endpoint
+// use. Nothing is deleted; flip to true to bring the feature back. (User opted out for
+// now — one ComfyUI box at a time; see the GPU badge in the model picker.)
+export const MULTI_WORKERS_ENABLED = false;
+
 // renderChat + the analysis generators are injected (chat.js imports this module, so
 // importing it back would be circular). Set from main.js via setBgDeps.
 let _renderChat = null;
@@ -1124,7 +1131,7 @@ export function renderDrawer() {
   // (Progress ticks still call this; they just skip until the drag ends or is canceled.)
   if (bgDrag) return;
   list.innerHTML = '';
-  list.appendChild(buildWorkersBar());   // ComfyUI worker endpoints (parallel lanes) manager
+  if (MULTI_WORKERS_ENABLED) list.appendChild(buildWorkersBar());   // ComfyUI worker endpoints (parallel lanes) manager — hidden while the feature is off
   if (!state.bgJobs.length) {
     const empty = document.createElement('div');
     empty.className = 'bgJobsEmpty';
