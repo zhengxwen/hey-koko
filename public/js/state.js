@@ -73,6 +73,8 @@ export const dom = {
   comfyParamKeepBackground: document.querySelector("#comfyParamKeepBackground"),
   comfyParamMeshGaussians: document.querySelector("#comfyParamMeshGaussians"),
   comfyParamMogeDetail: document.querySelector("#comfyParamMogeDetail"),
+  comfyParamMogeFov: document.querySelector("#comfyParamMogeFov"),
+  comfyParamPanoModel: document.querySelector("#comfyParamPanoModel"),
   comfyParamPanoRefine: document.querySelector("#comfyParamPanoRefine"),
   comfyParamMogeSubject: document.querySelector("#comfyParamMogeSubject"),
   comfyParamTargetFps: document.querySelector("#comfyParamTargetFps"),

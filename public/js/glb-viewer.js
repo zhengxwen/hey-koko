@@ -206,10 +206,48 @@ function stitchEquirectSeam(prim) {
   return { ...prim, pos: nPos, nrm: nNrm, uv: nUv, col: nCol, indices: nIdx };
 }
 
+// The cone of directions a forward reconstruction actually covers, measured from
+// the capture point. Used to open the camera pointed at the content and to stop it
+// turning off the edge of the world — a perspective mesh is a window, not a sphere,
+// and there is nothing behind you.
+//
+// The centre is the MEAN direction rather than the midpoint of min/max, because
+// yaw is circular: taking extremes of atan2 straight would tear apart anything
+// straddling ±π. Offsets are then measured relative to that centre and wrapped.
+function forwardArc(prims) {
+  let mx = 0, my = 0, mz = 0, n = 0;
+  for (const p of prims) for (let i = 0; i < p.pos.length; i += 3) {
+    const x = p.pos[i], y = p.pos[i + 1], z = p.pos[i + 2];
+    const r = Math.hypot(x, y, z);
+    if (r < 1e-6) continue;
+    mx += x / r; my += y / r; mz += z / r; n++;
+  }
+  if (!n) return null;
+  const ml = Math.hypot(mx, my, mz) || 1;
+  mx /= ml; my /= ml; mz /= ml;
+  const yaw0 = Math.atan2(mx, mz), pitch0 = Math.asin(Math.max(-1, Math.min(1, my)));
+  let halfYaw = 0, halfPitch = 0;
+  for (const p of prims) for (let i = 0; i < p.pos.length; i += 3) {
+    const x = p.pos[i], y = p.pos[i + 1], z = p.pos[i + 2];
+    const r = Math.hypot(x, y, z);
+    if (r < 1e-6) continue;
+    let a = Math.atan2(x, z) - yaw0;
+    while (a > Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    if (Math.abs(a) > halfYaw) halfYaw = Math.abs(a);
+    const b = Math.abs(Math.asin(Math.max(-1, Math.min(1, y / r))) - pitch0);
+    if (b > halfPitch) halfPitch = b;
+  }
+  // Never past the pole: the look-at frame degenerates when the view direction is
+  // exactly vertical, and no single-camera capture reaches that far anyway.
+  return { yaw: yaw0, pitch: pitch0, halfYaw: Math.min(halfYaw, 1.5), halfPitch: Math.min(halfPitch, 1.4) };
+}
+
 // Parse a GLB into flat, pre-transformed primitives + a bounding sphere.
 // Returns null on anything unparseable (caller keeps the download-only card).
-// `opts.pano` additionally seals the equirect wrap seam — only meaningful, and only
-// safe, for a mesh the chain has declared to be a 360° panorama.
+// `opts.view` is the chain's declaration of what this mesh IS: "panorama" (a full
+// sphere around the capture point — additionally seals the equirect wrap seam, which
+// is only meaningful and only safe there) or "forward" (a window in front of one).
 export async function parseGLB(arrayBuffer, opts = {}) {
   try {
     const dv = new DataView(arrayBuffer);
@@ -296,7 +334,7 @@ export async function parseGLB(arrayBuffer, opts = {}) {
     // Seal the wrap seam before anything downstream measures or uploads the mesh.
     // The added vertices are copies of ones already inside the bounds, so neither
     // the bounding box nor the near-plane search below can shift.
-    if (opts.pano) for (let i = 0; i < prims.length; i++) prims[i] = stitchEquirectSeam(prims[i]);
+    if (opts.view === "panorama") for (let i = 0; i < prims.length; i++) prims[i] = stitchEquirectSeam(prims[i]);
 
     for (const p of prims) if (p.texIndex !== null) p.texImage = await decodeImage(gltf, bin, p.texIndex);
     const center = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
@@ -308,8 +346,13 @@ export async function parseGLB(arrayBuffer, opts = {}) {
     // off) — and orbiting the wrong centre tilts the whole world. Fall back to the
     // centre only if the origin somehow isn't enclosed, so a stray mesh can't put
     // the camera outside the geometry.
+    // A panorama surrounds its capture point; a perspective reconstruction sits in
+    // FRONT of one. Both are camera-space meshes with the camera at the origin, and
+    // both want to be looked at from there rather than orbited — the difference is
+    // only how far you may turn. Measured on a MoGe perspective mesh: z spans
+    // −117…−4, so the origin is outside the box but at the apex of the frustum.
     const enclosesOrigin = min.every((v) => v < 0) && max.every((v) => v > 0);
-    const panoOrigin = enclosesOrigin ? [0, 0, 0] : center;
+    const panoOrigin = (enclosesOrigin || opts.view === "forward") ? [0, 0, 0] : center;
     // How near the near plane has to be to stand here. Deriving it from the bounding
     // radius (what the orbit camera does) is wrong for a panorama: the radius is set
     // by the FAR geometry — sky 34 units out — while the nearest thing is the floor
@@ -323,7 +366,11 @@ export async function parseGLB(arrayBuffer, opts = {}) {
       }
     }
     const panoNear = Math.max(Number.isFinite(closest) ? closest * 0.5 : radius * 0.01, radius * 1e-5);
-    return { prims, center, radius, panoOrigin, panoNear };
+    // Where a forward reconstruction actually HAS surface, so the camera can open
+    // pointed at it and refuse to turn past its ragged edge into empty space. A
+    // panorama needs none of this: every direction has geometry.
+    const arc = opts.view === "forward" ? forwardArc(prims) : null;
+    return { prims, center, radius, panoOrigin, panoNear, arc };
   } catch { return null; }
 }
 
@@ -452,7 +499,7 @@ function uploadScene(scene) {
 // happens to face you, with the rest hidden behind its own back. In that mode
 // distMul stops meaning distance (there is nowhere to move to) and becomes the
 // field of view, which is what "zoom" means to a panorama.
-function renderView(scene, w, h, yaw, pitch, distMul, pano = false) {
+function renderView(scene, w, h, yaw, pitch, distMul, firstPerson = false) {
   if (!initGL()) return false;
   glCanvas.width = w; glCanvas.height = h;
   uploadScene(scene);
@@ -468,7 +515,7 @@ function renderView(scene, w, h, yaw, pitch, distMul, pano = false) {
   // whether the eye sits AT the pivot or that far away FROM it.
   const dir = [cp * sy, sp, cp * cy];
   let eye, c;
-  if (pano) {
+  if (firstPerson) {
     eye = scene.panoOrigin || scene.center;
     c = [eye[0] + dir[0], eye[1] + dir[1], eye[2] + dir[2]];
   } else {
@@ -490,14 +537,14 @@ function renderView(scene, w, h, yaw, pitch, distMul, pano = false) {
   ];
   // 0.7 rad ≈ 40°, a normal lens. Panorama zoom rides the same distMul the wheel
   // already drives, clamped to a believable lens range instead of a distance range.
-  const fov = pano ? Math.min(1.9, Math.max(0.22, 0.7 * distMul)) : 0.7;
-  const near = pano ? (scene.panoNear || R * 0.01) : R * 0.01;
+  const fov = firstPerson ? Math.min(1.9, Math.max(0.22, 0.7 * distMul)) : 0.7;
+  const near = firstPerson ? (scene.panoNear || R * 0.01) : R * 0.01;
   const mvp = m4mul(m4perspective(fov, w / h, near, R * 40), view);
   gl.uniformMatrix4fv(loc.uMVP, false, new Float32Array(mvp));
   gl.uniform3fv(loc.uLightDir, [zx, zy, zz]); // headlight from the eye
   // Plain mode strips the photo away to leave bare geometry, and bare geometry needs
   // the headlight back or it is a flat silhouette.
-  gl.uniform1f(loc.uUnlit, pano && !plainMode ? 1 : 0);
+  gl.uniform1f(loc.uUnlit, firstPerson && !plainMode ? 1 : 0);
 
   for (const b of glBuffers) {
     const p = b.prim;
@@ -619,7 +666,7 @@ function buildHud(actions) {
   hud.appendChild(bar);
   const hint = document.createElement("div");
   hint.className = "meshHudHint isFsOnly";
-  hint.textContent = t(actions.pano ? "mesh_shortcutsHintPano" : "mesh_shortcutsHint");
+  hint.textContent = t(actions.firstPerson ? "mesh_shortcutsHintPano" : "mesh_shortcutsHint");
   hud.appendChild(hint);
   return btns;
 }
@@ -637,13 +684,24 @@ const DEFAULT_VIEW = { yaw: Math.PI / 5, pitch: Math.PI / 10, dist: 1 };
 const PANO_VIEW = { yaw: Math.PI, pitch: 0, dist: 1 };
 // Distance has an 8× range because a model can be inspected from far away; a field
 // of view does not, so panorama zoom gets its own, narrower clamp.
-const clampDist = (v, pano) => pano ? Math.min(1.6, Math.max(0.25, v)) : Math.min(8, Math.max(0.2, v));
+const clampDist = (v, firstPerson) => firstPerson ? Math.min(1.6, Math.max(0.25, v)) : Math.min(8, Math.max(0.2, v));
 
 export function attachMesh(canvas, getBase64, opts = {}) {
   if (!isSupported()) return null;
-  const pano = !!opts.pano;
-  const baseView = pano ? PANO_VIEW : DEFAULT_VIEW;
-  const key = (opts.cacheKey || `${opts.name || ""}:${(getBase64() || "").length}`) + (opts.pano ? ":pano" : "");
+  const mode = opts.view || "";
+  // Both first-person modes stand at the capture point and look out; only how far
+  // you may turn differs, so the renderer needs one flag and the input handlers
+  // need the arc.
+  const firstPerson = mode === "panorama" || mode === "forward";
+  // A forward mesh opens pointed at its own content and zoomed to roughly frame it,
+  // which the geometry knows and a constant cannot.
+  const baseViewFor = (scene) => {
+    if (mode !== "forward") return firstPerson ? PANO_VIEW : DEFAULT_VIEW;
+    const a = scene && scene.arc;
+    if (!a) return PANO_VIEW;
+    return { yaw: a.yaw, pitch: a.pitch, dist: clampDist(2.3 * a.halfPitch / 0.7, true) };
+  };
+  const key = (opts.cacheKey || `${opts.name || ""}:${(getBase64() || "").length}`) + (mode ? ":" + mode : "");
   const ctx2d = canvas.getContext("2d");
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   let destroyed = false;
@@ -664,7 +722,8 @@ export function attachMesh(canvas, getBase64, opts = {}) {
   const drawPoster = (entry) => {
     sizeCanvas();
     if (!entry.poster || entry.poster.width !== canvas.width) {
-      if (!renderView(entry.scene, canvas.width, canvas.height, baseView.yaw, baseView.pitch, baseView.dist, pano)) return;
+      const bv = baseViewFor(entry.scene);
+      if (!renderView(entry.scene, canvas.width, canvas.height, bv.yaw, bv.pitch, bv.dist, firstPerson)) return;
       // Bake into a poster bitmap so later chat re-renders are a cheap drawImage.
       const p = document.createElement("canvas");
       p.width = canvas.width; p.height = canvas.height;
@@ -679,7 +738,7 @@ export function attachMesh(canvas, getBase64, opts = {}) {
   const load = async () => {
     let entry = cacheGet(key);
     if (!entry) {
-      const scene = await parseGLB(b64ToArrayBuffer(getBase64()), { pano });
+      const scene = await parseGLB(b64ToArrayBuffer(getBase64()), { view: mode });
       // Unparseable → hide the canvas and tell the caller, so it can put the file
       // card back. This is async and lazy (it happens on scroll-in), which is why
       // the caller can't just check a return value.
@@ -704,7 +763,7 @@ export function attachMesh(canvas, getBase64, opts = {}) {
     const entry = await load();
     if (!entry || destroyed) return;
     if (activeDetach) activeDetach(); // one live mesh at a time
-    const view = { ...baseView };
+    const view = { ...baseViewFor(entry.scene) };
     sizeCanvas();
     // Host box matching the poster canvas (it sits on top of it).
     const overlayCss = () => `position:absolute;left:${canvas.offsetLeft}px;top:${canvas.offsetTop}px;width:${canvas.clientWidth}px;height:${canvas.clientHeight}px;border-radius:inherit;`;
@@ -718,11 +777,28 @@ export function attachMesh(canvas, getBase64, opts = {}) {
     ctx2d.clearRect(0, 0, canvas.width, canvas.height);
 
     const isFs = () => (document.fullscreenElement || document.webkitFullscreenElement) === glHost;
+    // Keep the view inside the cone the reconstruction actually covers. A forward
+    // mesh is a window: turn past its edge and you are looking at nothing at all.
+    // The limit shrinks as you zoom OUT, because a wider lens reaches the edge from
+    // further in — hence the subtraction of half the field of view, converted to
+    // horizontal through the aspect ratio (the projection takes a VERTICAL fov).
+    const aim = () => {
+      const a = mode === "forward" && entry.scene && entry.scene.arc;
+      if (!a) return;
+      const w = isFs() ? glHost.clientWidth : canvas.width;
+      const h = isFs() ? glHost.clientHeight : canvas.height;
+      const fovY = Math.min(1.9, Math.max(0.22, 0.7 * view.dist));
+      const fovX = 2 * Math.atan(Math.tan(fovY / 2) * ((w || 1) / (h || 1)));
+      const limY = Math.max(0, a.halfYaw - fovX / 2);
+      const limP = Math.max(0, a.halfPitch - fovY / 2);
+      view.yaw = Math.min(a.yaw + limY, Math.max(a.yaw - limY, view.yaw));
+      view.pitch = Math.min(a.pitch + limP, Math.max(a.pitch - limP, view.pitch));
+    };
     const render = () => {
       // Fullscreen renders at screen resolution; in-bubble at the poster's size.
       const w = isFs() ? Math.max(1, Math.round(glHost.clientWidth * dpr)) : canvas.width;
       const h = isFs() ? Math.max(1, Math.round(glHost.clientHeight * dpr)) : canvas.height;
-      return renderView(entry.scene, w, h, view.yaw, view.pitch, view.dist, pano);
+      return renderView(entry.scene, w, h, view.yaw, view.pitch, view.dist, firstPerson);
     };
 
     // Auto-rotate (Space / ↻). Cancelled by a drag — grabbing the model to look at
@@ -730,7 +806,7 @@ export function attachMesh(canvas, getBase64, opts = {}) {
     let spinRaf = 0;
     let spinDir = 0; // -1 ccw · 0 stopped · +1 cw
     let btns = null; // set once buildHud runs below; setSpin may fire before that
-    const spin = () => { view.yaw += 0.006 * spinDir; render(); spinRaf = requestAnimationFrame(spin); };
+    const spin = () => { view.yaw += 0.006 * spinDir; aim(); render(); spinRaf = requestAnimationFrame(spin); };
     // dir: -1 / +1 to spin that way, 0 to stop. Asking for the direction already
     // running stops it, so each arrow button is its own on/off.
     const setSpin = (dir) => {
@@ -742,8 +818,8 @@ export function attachMesh(canvas, getBase64, opts = {}) {
         btns.spinCcw.classList.toggle("isOn", spinDir < 0);
       }
     };
-    const zoom = (f) => { view.dist = clampDist(view.dist * f, pano); requestAnimationFrame(render); };
-    const resetView = () => { Object.assign(view, baseView); setSpin(0); requestAnimationFrame(render); };
+    const zoom = (f) => { view.dist = clampDist(view.dist * f, firstPerson); aim(); requestAnimationFrame(render); };
+    const resetView = () => { Object.assign(view, baseViewFor(entry.scene)); setSpin(0); requestAnimationFrame(render); };
     const toggleFs = () => {
       if (isFs()) (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
       else (glHost.requestFullscreen || glHost.webkitRequestFullscreen)?.call(glHost);
@@ -767,7 +843,7 @@ export function attachMesh(canvas, getBase64, opts = {}) {
       if (btns) btns.plain.classList.toggle("isOn", plainMode);
       requestAnimationFrame(render);
     };
-    btns = buildHud({ reset: resetView, zoomIn: () => zoom(1 / ZOOM_STEP), zoomOut: () => zoom(ZOOM_STEP), toggleSpin: setSpin, cycleBg, toggleFs, togglePlain, hasColor, pano });
+    btns = buildHud({ reset: resetView, zoomIn: () => zoom(1 / ZOOM_STEP), zoomOut: () => zoom(ZOOM_STEP), toggleSpin: setSpin, cycleBg, toggleFs, togglePlain, hasColor, firstPerson });
     render();
 
     const pointers = new Map(); // pinch-zoom support
@@ -785,21 +861,23 @@ export function attachMesh(canvas, getBase64, opts = {}) {
       if (pointers.size === 2) {
         const pts = [...pointers.values()];
         const pinch = Math.hypot(pts[0][0] - pts[1][0], pts[0][1] - pts[1][1]);
-        if (lastPinch) view.dist = clampDist(view.dist * lastPinch / pinch, pano);
+        if (lastPinch) { view.dist = clampDist(view.dist * lastPinch / pinch, firstPerson); aim(); }
         lastPinch = pinch;
       } else {
         // Inside a panorama the world is around you, so dragging right has to turn
         // you LEFT for the scene to follow your hand; orbiting an object outside you
         // is the mirror of that. Same gesture, opposite sign.
-        view.yaw += (e.clientX - prev[0]) * (pano ? 0.01 : -0.01);
+        view.yaw += (e.clientX - prev[0]) * (firstPerson ? 0.01 : -0.01);
         view.pitch = Math.min(1.5, Math.max(-1.5, view.pitch + (e.clientY - prev[1]) * 0.01));
+        aim();
       }
       requestAnimationFrame(render);
     };
     const onUp = (e) => { pointers.delete(e.pointerId); lastPinch = 0; glCanvas.style.cursor = "grab"; };
     const onWheel = (e) => {
       e.preventDefault();
-      view.dist = clampDist(view.dist * Math.exp(e.deltaY * 0.001), pano);
+      view.dist = clampDist(view.dist * Math.exp(e.deltaY * 0.001), firstPerson);
+      aim();
       requestAnimationFrame(render);
     };
     const onDbl = toggleFs; // double-click toggles fullscreen (orbit keeps working there)
@@ -865,7 +943,7 @@ export function attachMesh(canvas, getBase64, opts = {}) {
       window.removeEventListener("resize", onResize);
       live = false;
       // Bake the final view back into the poster so the card keeps the user's angle.
-      if (renderView(entry.scene, canvas.width, canvas.height, view.yaw, view.pitch, view.dist, pano)) {
+      if (renderView(entry.scene, canvas.width, canvas.height, view.yaw, view.pitch, view.dist, firstPerson)) {
         const p = document.createElement("canvas");
         p.width = canvas.width; p.height = canvas.height;
         p.getContext("2d").drawImage(glCanvas, 0, 0);

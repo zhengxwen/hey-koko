@@ -251,6 +251,12 @@ const MOGE_PANORAMA = "moge-panorama";
 // (.glb/.spz), not pixels. Hunyuan3D is a real checkpoint file; the other two are
 // sentinels. Anything matched here must be excluded from the plain-image ckpt list
 // (see proxyComfyModels) or it would be offered as a broken txt2img entry.
+// A model that sits in checkpoints/ but is never something to GENERATE with. SAM3 is
+// a segmentation model SCAIL-2 loads for subject tracking — it matches none of the
+// edit/video/mesh tests, so without this it falls through into the txt2img list as a
+// pickable (and instantly broken) option.
+const isCompanionModel = (n) => /sam[-_]?[23]|segment.?anything/i.test(n);
+
 function meshTypeOf(model) {
   if (!model) return null;
   if (model === TRIPOSPLAT) return "triposplat";
@@ -462,6 +468,11 @@ const BERNINI_INSERT = "bernini_insert";
 const BERNINI_IMG_EDIT = "bernini_image_edit";
 const BERNINI_IMG_SUBJECT = "bernini_subject_image";
 const BERNINI_T2I = "bernini_text_image";
+// Text → a wrapping equirectangular panorama. Not a model: a graph that generates
+// with an ordinary checkpoint and then REPAIRS the wrap seam, which is the one
+// thing a normal model gets wrong (measured: its left and right edges mismatch
+// twice as much as two genuinely adjacent columns do).
+const PANO_T2I = "panorama_360_text";
 // The image sentinels resolve to the same weights as the video ones.
 const BERNINI_IMAGE_SENTINELS = new Set([BERNINI_IMG_EDIT, BERNINI_IMG_SUBJECT, BERNINI_T2I]);
 
@@ -749,6 +760,7 @@ function marketName(name) {
     [BERNINI_IMG_EDIT]: "Bernini (image edit / relight)",
     [BERNINI_IMG_SUBJECT]: "Bernini (subject → image)",
     [BERNINI_T2I]: "Bernini (text → image)",
+    [PANO_T2I]: "360° panorama (text → equirect)",
     [ANIMATE_REPLACE]: "Wan Animate (replace)",
     [SCAIL2_ANIMATE]: "SCAIL-2 (animate)",
     [LTX_MSR]: "LTX-2.3 MSR",
@@ -804,6 +816,7 @@ function capsFor(name, group, type, entry) {
   if (name === IMAGE_UPSCALE || name === VIDEO_ENHANCE) return ["tool"];
   if (group === "mesh") return ["mesh"];
   if (name === BERNINI_T2I) return ["image"];
+  if (name === PANO_T2I) return ["image"];
   if (name === BERNINI_IMG_EDIT || name === BERNINI_IMG_SUBJECT) return ["edit"];
   if (group === "image") return /hidream.?o1/i.test(name) ? ["image", "edit"] : ["image"];
   if (group === "edit") return ["edit"];
@@ -832,6 +845,7 @@ function capsFor(name, group, type, entry) {
 // move before replace, scail animate before replace).
 function imageRank(n) {
   if (n === BERNINI_T2I) return 9; // after the dedicated txt2img models
+  if (n === PANO_T2I) return 10; // last: a recipe, not a checkpoint
   if (/flux/i.test(n)) return 1;
   if (/pony/i.test(n)) return 2;
   if (/hidream.?i1/i.test(n)) return 3;
@@ -1117,10 +1131,6 @@ async function proxyComfyModels(req, res) {
     // on the frontend so adding a model can't leave the two out of step.
     for (const m of videoModels) m.samplerTunable = !!videoPreset(m.type, m.name, true);
     // Checkpoints that are COMPANIONS to another model rather than something to
-    // generate with. SAM3 is a segmentation model SCAIL-2 loads for subject tracking —
-    // it sits in checkpoints/ and matches none of the edit/video tests, so it would
-    // otherwise fall through into txt2img as a pickable (and instantly broken) option.
-    const isCompanionModel = (n) => /sam[-_]?[23]|segment.?anything/i.test(n);
     // txt2img list: plain checkpoints (excluding edit/video/HiDream/companions) +
     // HiDream-I1 (a diffusion model loaded specially with QuadrupleCLIPLoader).
     const plainCkpts = ckpts.filter((n) => !editTypeOf(n) && !videoTypeOf(n) && !meshTypeOf(n) && !/hidream/i.test(n) && !isCompanionModel(n));
@@ -1143,6 +1153,26 @@ async function proxyComfyModels(req, res) {
     // it must stay OUT of dedupePrecision (no precision siblings to collapse) and is
     // appended after it, next to the other image sentinel (IMAGE_UPSCALE).
     const berniniT2i = addedBernini ? [BERNINI_T2I] : [];
+    // The panorama recipe needs a checkpoint that bundles CLIP+VAE (so one loader
+    // serves both the generation and the seam repair) plus the roll/mask/inpaint
+    // nodes. Flux is what this box has; the family preset already knows its
+    // settings, so no new sampler knowledge is introduced here.
+    // Any plain txt2img CHECKPOINT can drive it — the builder reads the family preset
+    // for latent type and guidance, so this is not a Flux-only recipe. UNET-only
+    // models (z-image, boogu, qwen) are excluded: the graph loads one checkpoint that
+    // has to bring its own CLIP and VAE, for the generation AND the seam repair.
+    // Checkpoints, plus the UNET families whose stack this recipe knows how to build
+    // (z-image and boogu: UNETLoader + CLIPLoader + VAELoader + an AuraFlow shift).
+    // Qwen-Image is deliberately left out — its graph has pieces this one does not
+    // replicate, and offering it would produce a workflow that fails at run time.
+    const panoBases = [
+      ...ckpts.filter((n) => !editTypeOf(n) && !videoTypeOf(n) && !meshTypeOf(n)
+        && !/hidream/i.test(n) && !isCompanionModel(n)),
+      ...unets.filter((n) => (/z.?image/i.test(n) || /boogu/i.test(n)) && !editTypeOf(n)),
+    ];
+    const panoT2i = (panoBases.length && await comfyHasNodes(["ImageCrop", "ImageStitch", "SolidMask", "FeatherMask",
+      "MaskComposite", "InpaintModelConditioning", "ImageCompositeMasked", "EmptySD3LatentImage"]))
+      ? [PANO_T2I] : [];
     // Collapse quantisation variants: a model published as fp8 + mxfp8 + nvfp4 … is
     // ONE dropdown entry, and the ⚙ precision preference decides which sibling loads
     // (see resolvePrecision). Without this, five SCAIL-2 precisions would become ten
@@ -1234,6 +1264,7 @@ async function proxyComfyModels(req, res) {
     };
     for (const n of imageOut) setMeta(n, "image", null, null);
     for (const n of berniniT2i) setMeta(n, "image", null, null);
+    for (const n of panoT2i) setMeta(n, "image", null, null);
     // The upscale sentinel keeps its localized frontend label ("Image HD"), so send
     // no name here — only the ⚪ tool dot.
     modelMeta[IMAGE_UPSCALE] = { label: null, caps: ["tool"], ready: true };
@@ -1259,9 +1290,9 @@ async function proxyComfyModels(req, res) {
       const tiers = [...new Set(cks.map(precisionOf).filter(Boolean))];
       if (tiers.length) modelMeta[LTX_UNION].prec = tiers;
     }
-    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels, ltxLoras, hostname });
+    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels, panoBases: panoT2i.length ? panoBases : [], ltxLoras, hostname });
   } catch {
-    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], ltxLoras: [] });
+    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], panoBases: [], ltxLoras: [] });
   }
 }
 
@@ -1330,6 +1361,11 @@ async function editCompanions(editType) {
 //   - SDXL / Pony / Illustrious / NoobAI: dpmpp_2m + karras, cfg ~7, more steps.
 //   - SD1.5 / unknown: dpmpp_2m + karras, cfg 7.
 function familyPreset(model) {
+  // The panorama recipe generates with Flux, so it wants Flux's settings — the
+  // sentinel's own name matches none of the patterns below.
+  if (model === PANO_T2I) {
+    return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: 3.5, steps: 20, sd3Latent: true };
+  }
   // Instruction-edit models (checked before the generic /flux/ branch, since
   // "flux1-dev-kontext" contains "flux" but needs Kontext settings).
   if (/kontext/i.test(model)) {
@@ -3840,7 +3876,7 @@ function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = 
 // the same photo cut out on white → 11k faces at 1.4×1.1×0.4, subject only, no
 // backdrop plane anywhere. Cropping to the subject afterwards spends the pixels on
 // the subject instead of the plate (68k faces at the same extents).
-function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation = 2, texture = true, needsResize = false, bgRemoval = null, maskName = null, autoCrop = false }) {
+function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation = 2, texture = true, needsResize = false, bgRemoval = null, maskName = null, autoCrop = false, fovX = 0 }) {
   const g = {
     "1": { class_type: "LoadImage", inputs: { image: imageName } },
     "3": { class_type: "LoadMoGeModel", inputs: { model_name: modelName } },
@@ -3867,7 +3903,105 @@ function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation =
       inferImage = ["16", 0];
     }
   }
-  g["4"] = { class_type: "MoGeInference", inputs: { moge_model: ["3", 0], image: inferImage, resolution_level: resolutionLevel, fov_x_degrees: 0, batch_size: 1, force_projection: true, apply_mask: true } };
+  // fov_x_degrees 0 = recover the focal length from the predicted points, which is
+  // right for an ordinary photo. It matters for a phone SWEEP panorama: that is a
+  // cylindrical strip, and a pinhole model cannot hold one, so the solve squashes
+  // it. Measured on a 216°-wide sweep — auto fitted a 105° cone, 120 opened it to
+  // 121° and still held together, 150 tore the mesh apart and 170 blew the depth
+  // range from 18× to 159×. A nudge near the automatic value, not a dial to crank.
+  g["4"] = { class_type: "MoGeInference", inputs: { moge_model: ["3", 0], image: inferImage, resolution_level: resolutionLevel, fov_x_degrees: fovX, batch_size: 1, force_projection: true, apply_mask: true } };
+  return g;
+}
+
+// Text → a 360° equirectangular panorama whose left and right edges actually MEET.
+//
+// An ordinary checkpoint asked for an "equirectangular panorama" at 2:1 produces a
+// convincing image, but not a wrapping one: rolled by half its width a join appears
+// down the middle. Measured as the edge mismatch over what two genuinely adjacent
+// columns differ by (1.00 = a perfect wrap): z-image 3.82, flux 1.99 — plausible,
+// still visibly broken where the ends meet.
+//
+// So generate, then repair: roll by half so the join sits in the middle, regenerate
+// a band across it, and roll back. Rolling twice by half restores the framing, which
+// leaves the repaired strip split across the two edges — where they have to agree.
+// Measured after: 0.99.
+//
+// Two traps, both found the hard way:
+//   • FeatherMask fades in from the mask's OWN OUTER EDGES. Feathering the full-size
+//     mask does nothing (its border is already black) — the band must be feathered
+//     while it is still a small standalone mask, then composited in.
+//   • noise_mask alone still lets the decode shift the tone of the whole frame, which
+//     showed up as two vertical brightness steps in the sky. The repair is composited
+//     back over the original through the same feathered mask to blend that away.
+function buildPanorama360({ ckpt, unet, unetClip, unetClipType, unetVae, shift = 0, zeroNegative = false,
+  prompt, negative = "", seed, steps = 20, cfg = 1, guidance = 3.5,
+  sampler = "euler", scheduler = "simple", sd3Latent = true, width = 1536, height = 768, seamRepair = true,
+  bandFrac = 1 / 3, featherFrac = 0.45, seamDenoise = 1 }) {
+  // The recipe is family-agnostic: whichever checkpoint the user picked decides the
+  // latent type and whether there is a guidance node at all. Hardcoding Flux's pair
+  // would produce a graph that simply fails to validate on an SDXL checkpoint.
+  // Two shapes of base. A CHECKPOINT bundles model + CLIP + VAE in one loader; a
+  // UNET model (z-image, boogu) needs its text encoder and VAE loaded separately,
+  // and rides a shift node. Everything after this point works off the same three
+  // references, so the rest of the recipe never learns which it got.
+  const g = {};
+  let MODEL, CLIP, VAE;
+  if (unet) {
+    g["1"] = { class_type: "UNETLoader", inputs: { unet_name: unet, weight_dtype: "default" } };
+    g["1b"] = { class_type: "CLIPLoader", inputs: { clip_name: unetClip, type: unetClipType, device: "default" } };
+    g["1c"] = { class_type: "VAELoader", inputs: { vae_name: unetVae } };
+    MODEL = ["1", 0]; CLIP = ["1b", 0]; VAE = ["1c", 0];
+    if (shift) { g["1d"] = { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift } }; MODEL = ["1d", 0]; }
+  } else {
+    g["1"] = { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: ckpt } };
+    MODEL = ["1", 0]; CLIP = ["1", 1]; VAE = ["1", 2];
+  }
+  g["2"] = { class_type: "CLIPTextEncode", inputs: { clip: CLIP, text: prompt } };
+  // A distilled model runs at cfg 1 with the negative ZEROED, not merely empty —
+  // encoding an empty string instead measurably changes what it draws.
+  g["3"] = zeroNegative
+    ? { class_type: "ConditioningZeroOut", inputs: { conditioning: ["2", 0] } }
+    : { class_type: "CLIPTextEncode", inputs: { clip: CLIP, text: negative } };
+  g["5"] = { class_type: sd3Latent ? "EmptySD3LatentImage" : "EmptyLatentImage", inputs: { width, height, batch_size: 1 } };
+  g["7"] = { class_type: "VAEDecode", inputs: { samples: ["6", 0], vae: VAE } };
+  // Flux-family distilled guidance rides its own node; everything else steers with
+  // plain CFG and would reject the extra conditioning stage.
+  let positive = ["2", 0];
+  if (guidance !== null && guidance !== undefined) {
+    g["4"] = { class_type: "FluxGuidance", inputs: { conditioning: ["2", 0], guidance } };
+    positive = ["4", 0];
+  }
+  g["6"] = { class_type: "KSampler", inputs: { model: MODEL, positive, negative: ["3", 0],
+    latent_image: ["5", 0], seed, steps, cfg, sampler_name: sampler, scheduler, denoise: 1 } };
+  // Swap the two halves: crop each, stitch them back the other way round.
+  const roll = (id, src) => {
+    const a = String(id), b = String(id + 1), c = String(id + 2);
+    g[a] = { class_type: "ImageCrop", inputs: { image: src, width: width >> 1, height, x: 0, y: 0 } };
+    g[b] = { class_type: "ImageCrop", inputs: { image: src, width: width >> 1, height, x: width >> 1, y: 0 } };
+    g[c] = { class_type: "ImageStitch", inputs: { image1: [b, 0], image2: [a, 0],
+      direction: "right", match_image_size: false, spacing_width: 0, spacing_color: "white" } };
+    return [c, 0];
+  };
+  if (!seamRepair) {
+    g["99"] = { class_type: "SaveImage", inputs: { images: ["7", 0], filename_prefix: "heykoko/pano" } };
+    return g;
+  }
+  const band = Math.max(64, Math.round(width * bandFrac) & ~7);
+  const feather = Math.max(1, Math.round(band * featherFrac));
+  const rolled = roll(10, ["7", 0]);
+  g["20"] = { class_type: "SolidMask", inputs: { value: 0.0, width, height } };
+  g["21"] = { class_type: "SolidMask", inputs: { value: 1.0, width: band, height } };
+  g["22"] = { class_type: "FeatherMask", inputs: { mask: ["21", 0], left: feather, top: 0, right: feather, bottom: 0 } };
+  g["23"] = { class_type: "MaskComposite", inputs: { destination: ["20", 0], source: ["22", 0],
+    x: (width - band) >> 1, y: 0, operation: "add" } };
+  g["24"] = { class_type: "InpaintModelConditioning", inputs: { positive, negative: ["3", 0],
+    vae: VAE, pixels: rolled, mask: ["23", 0], noise_mask: true } };
+  g["25"] = { class_type: "KSampler", inputs: { model: MODEL, positive: ["24", 0], negative: ["24", 1],
+    latent_image: ["24", 2], seed: seed + 1, steps, cfg, sampler_name: sampler, scheduler, denoise: seamDenoise } };
+  g["26"] = { class_type: "VAEDecode", inputs: { samples: ["25", 0], vae: VAE } };
+  g["27"] = { class_type: "ImageCompositeMasked", inputs: { destination: rolled, source: ["26", 0],
+    x: 0, y: 0, resize_source: false, mask: ["23", 0] } };
+  g["99"] = { class_type: "SaveImage", inputs: { images: roll(30, ["27", 0]), filename_prefix: "heykoko/pano" } };
   return g;
 }
 
@@ -4451,6 +4585,10 @@ async function generateComfyImage(req, res) {
       let imagesUsed = 0;   // how many input images the video path actually consumed
       let stillMode = false; // single-frame Wan Animate → return an IMAGE, not a video
       let paintGlb = null;   // Hunyuan3D texturing: filename_prefix of a GLB /history won't report
+      let meshViewKind = null; // how the viewer should place its camera, set by the mesh branch
+      let panoDims = null;     // the 360 recipe forces its own 2:1 size; the log should say so
+      let panoCfg = null;      // …and its own sampler settings, taken from the chosen checkpoint
+      let panoBase = "";       // which checkpoint that was, for the log
       let interpWarning = null; // interpolation skipped (source fps already ≥ target) → tell the client
       let upscaleInfo = null;   // { model, denoise } actually used → shown in the result bubble
       let exactTargetFps = 0;   // interpolation: interpolated to ≥ this (ceil mult) → drop frames to EXACTLY this fps
@@ -4994,6 +5132,59 @@ async function generateComfyImage(req, res) {
         const outFrames = srcFrames ? Math.min(wantFrames, srcFrames) : wantFrames;
         videoDims = { width: v.width, height: v.height, length: outFrames, fps: v.fps };
         if (srcFrames > wantFrames) videoDims.truncatedFrom = srcFrames; // pinned/preset length cut the clip
+      } else if (model === PANO_T2I) {
+        // A recipe, not a checkpoint: it picks its own weights and forces 2:1, since
+        // an equirectangular panorama is 360° across and 180° tall by definition.
+        const [panoCkpts, panoUnets] = await Promise.all([
+          comfyEnum("CheckpointLoaderSimple", "ckpt_name").catch(() => []),
+          comfyEnum("UNETLoader", "unet_name").catch(() => []),
+        ]);
+        const eligible = [
+          ...panoCkpts.filter((n) => !editTypeOf(n) && !videoTypeOf(n) && !meshTypeOf(n)
+            && !/hidream/i.test(n) && !isCompanionModel(n)),
+          ...panoUnets.filter((n) => (/z.?image/i.test(n) || /boogu/i.test(n)) && !editTypeOf(n)),
+        ];
+        // ⚙ choice wins if it is still installed; otherwise prefer a panorama-tuned
+        // checkpoint, then Flux (measured: its raw wrap is twice as good as
+        // z-image's), then whatever else can generate.
+        const ck = (opts.panoModel && eligible.includes(opts.panoModel)) ? opts.panoModel
+          : (eligible.find((n) => /pano|equirect|360/i.test(n))
+            || eligible.find((n) => /flux/i.test(n))
+            || eligible[0]);
+        if (!ck) {
+          sendJson(res, 400, { error: "360° panorama needs a text-to-image checkpoint in ComfyUI models/checkpoints/." });
+          return;
+        }
+        // Sampler settings follow the CHOSEN base, not the sentinel — an SDXL pick
+        // needs dpmpp_2m/karras/cfg 7 and no guidance node; a distilled one needs
+        // cfg 1 and a zeroed negative.
+        panoCfg = resolveConfig(ck, opts);
+        panoBase = ck;
+        // A UNET model brings no CLIP or VAE of its own; both families this recipe
+        // accepts sit on an AuraFlow shift and run distilled.
+        const isUnetBase = panoUnets.includes(ck);
+        let unetParts = {};
+        if (isUnetBase) {
+          const comp = /boogu/i.test(ck) ? await boogiCompanions() : await zimageCompanions();
+          unetParts = { unet: ck, unetClip: comp.clip, unetVae: comp.vae,
+            unetClipType: /boogu/i.test(ck) ? "boogu" : "lumina2",
+            shift: 3.0, zeroNegative: panoCfg.cfg <= 1.01 };
+        }
+        const pw = Math.max(768, Math.min(2048, (opts.width || 1536) & ~15));
+        panoDims = { w: pw, h: pw >> 1 };
+        // Without this the model just paints an ordinary photo at 2:1 — verified: a
+        // plain scene description came back as a normal wide shot, no panoramic
+        // projection at all. The cue goes in front so the user's own wording still
+        // leads the composition.
+        const panoPrompt = /equirect|360|panoram/i.test(prompt)
+          ? prompt
+          : `equirectangular 360 degree panorama, full spherical VR photo, seamless wraparound. ${prompt}`;
+        workflow = buildPanorama360({ ...(isUnetBase ? unetParts : { ckpt: ck }),
+          prompt: panoPrompt, negative: negative_prompt || "",
+          seed, steps: panoCfg.steps, cfg: panoCfg.cfg, guidance: panoCfg.guidance,
+          sampler: panoCfg.sampler, scheduler: panoCfg.scheduler, sd3Latent: panoCfg.sd3Latent !== false,
+          width: pw, height: pw >> 1,
+          seamRepair: opts.panoSeamRepair !== false });
       } else if (meshType) {
         // 3D mesh generation — every chain is image-driven (no text conditioning
         // anywhere in these graphs), so an attached image is mandatory.
@@ -5049,11 +5240,18 @@ async function generateComfyImage(req, res) {
           // wants the automatic cut-out without painting anything.
           const hy = await meshCompanions("hunyuan3d");
           const subject = !!meshMaskName || !!opts.mogeSubjectOnly;
+          // A whole-SCENE reconstruction is a window onto the place the camera saw,
+          // with the camera at the origin — the same "stand here and look out" data
+          // a panorama is, minus the ability to turn all the way round. A cut-out
+          // SUBJECT is not: that is an object, and orbiting it is the right camera.
+          meshViewKind = subject ? null : "forward";
           workflow = buildMoGeMesh({ modelName: comp.mogeModel, imageName,
             resolutionLevel: opts.mogeDetail !== undefined ? opts.mogeDetail : 9, needsResize,
             maskName: subject ? meshMaskName : null,
             bgRemoval: (subject && !meshMaskName) ? hy.birefnet : null,
-            autoCrop: subject && hy.autoCrop });
+            autoCrop: subject && hy.autoCrop,
+            // The node's own ceiling is 170: a pinhole has no focal length at 180.
+            fovX: Math.max(0, Math.min(170, opts.mogeFov || 0)) });
         } else if (meshType === "moge-pano") {
           const comp = await meshCompanions("moge");
           const d = imageDims(images[0]);
@@ -5563,7 +5761,7 @@ async function generateComfyImage(req, res) {
           // INSIDE; orbiting it from outside shows only the half facing you. The
           // client can't infer this from the geometry — a closed object encloses its
           // interior too — so the chain that made it has to say so.
-          meshView: meshType === "moge-pano" ? "panorama" : undefined,
+          meshView: meshType === "moge-pano" ? "panorama" : (meshViewKind || undefined),
           videos: outVideos.length ? outVideos : undefined,
           videoMime: outVideos.length ? videoMime : undefined,
           model, seed, precisionNote, precisionUsed, imagesUsed });
@@ -5578,8 +5776,9 @@ async function generateComfyImage(req, res) {
         }
         sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, imagesUsed });
       } else {
-        const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
-        console.log(`${ts} [comfy-gen] model=${model}, mode=${mode}, sampler=${cfg.sampler}/${cfg.scheduler}, cfg=${cfg.cfg}${cfg.guidance != null ? `, guidance=${cfg.guidance}` : ""}, steps=${cfg.steps}, images=${outImages.length}`);
+        const mode = editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${panoDims ? panoDims.w : width}x${panoDims ? panoDims.h : height}`;
+        const c = panoCfg || cfg;
+        console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${mode}, sampler=${c.sampler}/${c.scheduler}, cfg=${c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${c.steps}, images=${outImages.length}`);
         sendJson(res, 200, { images: outImages, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined });
       }
     } finally {

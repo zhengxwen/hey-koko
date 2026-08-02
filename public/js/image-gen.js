@@ -79,6 +79,9 @@ function comfyOverrides() {
   if (dom.comfyParamMogeSubject?.checked) ov.mogeSubjectOnly = true; // MoGe: cut the subject out instead of the whole scene
   const mogeDetail = num(dom.comfyParamMogeDetail?.value);
   if (mogeDetail !== undefined) ov.mogeDetail = mogeDetail;         // MoGe resolution_level 0-9
+  const mogeFov = num(dom.comfyParamMogeFov?.value);
+  if (mogeFov !== undefined) ov.mogeFov = mogeFov;                  // MoGe fov_x_degrees, 0 = auto
+  if (dom.comfyParamPanoModel?.value) ov.panoModel = dom.comfyParamPanoModel.value; // 360 recipe base checkpoint
   const panoRefine = num(dom.comfyParamPanoRefine?.value);
   if (panoRefine) ov.panoRefine = panoRefine;                       // equirect long edge after the 4x upscale pass
   const targetFps = num(dom.comfyParamTargetFps?.value);

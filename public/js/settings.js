@@ -61,6 +61,8 @@ export function saveCurrentSettings() {
         shapeTokens: dom.comfyParamShapeTokens?.value || "",
         meshGaussians: dom.comfyParamMeshGaussians?.value || "",
         mogeDetail: dom.comfyParamMogeDetail?.value || "",
+        mogeFov: dom.comfyParamMogeFov?.value || "",
+        panoModel: dom.comfyParamPanoModel?.value || "",
         panoRefine: dom.comfyParamPanoRefine?.value || "",
         mogeSubjectOnly: dom.comfyParamMogeSubject?.checked || false,
         keepBackground: dom.comfyParamKeepBackground?.checked || false,
@@ -272,7 +274,9 @@ export function loadSavedSettings() {
     if (dom.comfyParamShapeTokens) dom.comfyParamShapeTokens.value = cp.shapeTokens || "";
     if (dom.comfyParamMeshGaussians) dom.comfyParamMeshGaussians.value = cp.meshGaussians || "";
     if (dom.comfyParamMogeDetail) dom.comfyParamMogeDetail.value = cp.mogeDetail || "";
+    if (dom.comfyParamMogeFov) dom.comfyParamMogeFov.value = cp.mogeFov || "";
     if (dom.comfyParamPanoRefine) dom.comfyParamPanoRefine.value = cp.panoRefine || "";
+    // the select is repopulated from the server list; ollama.js restores its value
     if (dom.comfyParamMogeSubject) dom.comfyParamMogeSubject.checked = !!cp.mogeSubjectOnly;
     if (dom.comfyParamKeepBackground) dom.comfyParamKeepBackground.checked = !!cp.keepBackground;
     // Ticked by default: settings saved before this box existed have no key at all,

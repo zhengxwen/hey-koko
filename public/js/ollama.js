@@ -356,7 +356,7 @@ export async function refreshBgWorkers() {
     ? workers.map((w) => w.url)
     : [urlFromDisplay(dom.comfyUrlDisplay)].filter(Boolean);
   if (!targets.length) { loadComfyModels(); return; }
-  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uUpscale = new Map(), uLtxLora = new Map();
+  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uUpscale = new Map(), uPano = new Map(), uLtxLora = new Map();
   // Union of the collapsed-group representatives across lanes — without carrying this
   // through, a multi-precision image model would keep its token in the label on the
   // multi-endpoint path while the single-endpoint path hides it.
@@ -370,6 +370,7 @@ export async function refreshBgWorkers() {
       const d = await (await fetch(`/api/comfy-models?comfyUrl=${encodeURIComponent(url)}`)).json();
       const models = d.models || [], editModels = d.editModels || [], videoModels = d.videoModels || [];
       for (const n of (d.upscaleModels || [])) if (!uUpscale.has(n)) uUpscale.set(n, n);
+      for (const n of (d.panoBases || [])) if (!uPano.has(n)) uPano.set(n, n);
       for (const n of (d.ltxLoras || [])) if (!uLtxLora.has(n)) uLtxLora.set(n, n);
       const sets = {
         image: new Set(models),
@@ -387,7 +388,7 @@ export async function refreshBgWorkers() {
       for (const m of videoModels) if (!uVideo.has(m.name)) uVideo.set(m.name, m);
     } catch { setBgWorkerStatus(url, { online: false }); }
   }));
-  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], ltxLoras: [...uLtxLora.values()] });
+  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], ltxLoras: [...uLtxLora.values()] });
 }
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
@@ -453,6 +454,23 @@ function applyComfyModels(data) {
         dom.comfyParamUpscaleModel.appendChild(o);
       }
       dom.comfyParamUpscaleModel.value = (savedUp === "off" || ups.includes(savedUp)) ? savedUp : "";
+    }
+    // ⚙ "panorama base model": Auto + every checkpoint that can drive the recipe.
+    // A saved pick that is no longer installed falls back to Auto rather than
+    // silently generating with something the user did not choose.
+    if (dom.comfyParamPanoModel) {
+      const bases = data.panoBases || [];
+      const savedPano = (saved.comfyParams && saved.comfyParams.panoModel) || "";
+      dom.comfyParamPanoModel.innerHTML = "";
+      const autoP = document.createElement("option");
+      autoP.value = ""; autoP.textContent = t("comfy_panoModel_auto");
+      dom.comfyParamPanoModel.appendChild(autoP);
+      for (const n of bases) {
+        const o = document.createElement("option");
+        o.value = n; o.textContent = n.replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
+        dom.comfyParamPanoModel.appendChild(o);
+      }
+      dom.comfyParamPanoModel.value = bases.includes(savedPano) ? savedPano : "";
     }
     // ⚙ "LTX LoRA": None + every LTX-family LoRA installed. The per-option baked-in
     // check (Sulphur's LoRA vs the Sulphur checkpoint) is re-run on every model change
@@ -1181,7 +1199,9 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamKeepBackground, mesh && /hunyuan[._-]?3d/i.test(m), ".comfyParamCheck");
   setVis(dom.comfyParamMeshGaussians, m === "triposplat");
   setVis(dom.comfyParamMogeDetail, m === "moge-mesh" || m === "moge-panorama");
+  setVis(dom.comfyParamMogeFov, m === "moge-mesh");
   setVis(dom.comfyParamPanoRefine, m === "moge-panorama");
+  setVis(dom.comfyParamPanoModel, m === "panorama_360_text");
   setVis(dom.comfyParamMogeSubject, m === "moge-mesh", ".comfyParamCheck");
   // Video codec + its CRF: every video model (the tail rewrite is builder-agnostic).
   for (const el of [dom.comfyParamVideoCodec, dom.comfyParamVideoCrf]) setVis(el, video);
@@ -1382,6 +1402,8 @@ function initComfyParamsModal() {
     dom.comfyParamShapeTokens,
     dom.comfyParamMeshGaussians,
     dom.comfyParamMogeDetail,
+    dom.comfyParamMogeFov,
+    dom.comfyParamPanoModel,
     dom.comfyParamPanoRefine,
     dom.comfyParamTargetFps,
     dom.comfyParamUpscaleDenoise,
@@ -1439,6 +1461,7 @@ function initComfyParamsModal() {
   dom.comfyParamKeepBackground?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamMogeSubject?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamPanoRefine?.addEventListener("change", () => saveCurrentSettings());
+  dom.comfyParamPanoModel?.addEventListener("change", () => saveCurrentSettings());
   // Texturing toggle gates the quality row, so it re-runs visibility too.
   dom.comfyParamPaintMesh?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
   // Ultra makes a ~17 MB GLB (measured) that then rides base64 through the response

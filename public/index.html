@@ -809,6 +809,14 @@
             <input id="comfyParamMogeDetail" type="number" min="0" max="9" step="1" placeholder="Auto (9)" />
           </label>
           <label>
+            <span id="comfyParamMogeFovLabel" title="MoGe-2 (perspective) only. Empty = work the lens out from the image, which is right for an ordinary photo. Set it when the camera was wider than that guess — a phone sweep panorama is the usual case: it is a cylindrical strip, and the pinhole model MoGe fits cannot hold a sweep, so it squashes it. Measured on a 216°-wide sweep: auto settled on a 105° cone; 120 opened it to 121° and still held together; 150 tore the reconstruction apart; 170 stretched the depth range from 18× to 159×. Nudge it a little above the automatic value — do not crank it.">Source field of view (MoGe °)</span>
+            <input id="comfyParamMogeFov" type="number" min="0" max="170" step="1" placeholder="Auto" />
+          </label>
+          <label>
+            <span id="comfyParamPanoModelLabel" title="Which checkpoint the 360° panorama recipe generates with. Auto prefers a panorama-tuned checkpoint if you have one, then Flux — measured, Flux's raw output already meets at the edges twice as well as z-image's. Only checkpoints are listed: the graph loads one model that must bring its own CLIP and VAE, for the generation and for the seam repair, so UNET-only models are not eligible. The sampler settings follow whichever you pick.">Panorama base model</span>
+            <select id="comfyParamPanoModel"></select>
+          </label>
+          <label>
             <span id="comfyParamPanoRefineLabel" title="Panorama only. Standing inside a 360° mesh you are magnifying the photo hard — one turn is spread over the whole view, so a 1774 px equirect shows a 40° slice at roughly 4.5× enlargement, which is what makes it look soft. This runs the photo through a 4× upscale model first. Measured on one panorama: the enlargement drops 4.5× → 3.1× / 2.2× / 1.9× and screen sharpness nearly doubles at 3584. Costs file size and a little time; the mesh keeps the same number of triangles either way.">Sharpen the 360 view</span>
             <select id="comfyParamPanoRefine">
               <option id="optPanoRefineOff" value="">Off · photo as captured</option>

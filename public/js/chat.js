@@ -3930,8 +3930,9 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
           import("./glb-viewer.js").then((v) => {
             if (!v.isSupported()) { mc.hidden = true; showCard(); return; }
             v.attachMesh(mc, () => data, { name: rawName, cacheKey: `${rawName}:${data.length}:${data.slice(0, 32)}`, onFallback: showCard,
-              // A 360° mesh is viewed from the inside out, not orbited from outside.
-              pano: meshMsg.meshView === "panorama" });
+              // "panorama" = a sphere you stand inside; "forward" = a window in
+              // front of the camera. Both are looked out of rather than orbited.
+              view: meshMsg.meshView });
           }).catch(() => { mc.hidden = true; showCard(); });
         } else {
           showCard();   // a splat file has no viewer at all
