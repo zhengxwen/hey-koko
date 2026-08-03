@@ -97,6 +97,7 @@ export function saveCurrentSettings() {
         scailSortBy: dom.comfyParamScailSortBy?.value || "",
         scailRecipe: dom.comfyParamScailRecipe?.value || "",
         scailWindow: dom.comfyParamScailWindow?.value || "",
+        scailIncremental: dom.comfyParamScailIncremental ? dom.comfyParamScailIncremental.checked : true,
         poseStrength: dom.comfyParamPoseStrength?.value || "",
         poseStart: dom.comfyParamPoseStart?.value || "",
         poseEnd: dom.comfyParamPoseEnd?.value || "",
@@ -320,6 +321,9 @@ export function loadSavedSettings() {
     if (dom.comfyParamScailSortBy) dom.comfyParamScailSortBy.value = cp.scailSortBy || "";
     if (dom.comfyParamScailRecipe) dom.comfyParamScailRecipe.value = cp.scailRecipe || "";
     if (dom.comfyParamScailWindow) dom.comfyParamScailWindow.value = cp.scailWindow || "";
+    // Defaults ON — settings saved before this control existed have no key, and the
+    // absent key must not read as "off" (that is the path that OOMs on long clips).
+    if (dom.comfyParamScailIncremental) dom.comfyParamScailIncremental.checked = cp.scailIncremental !== false;
     if (dom.comfyParamPoseStrength) dom.comfyParamPoseStrength.value = cp.poseStrength || "";
     if (dom.comfyParamPoseStart) dom.comfyParamPoseStart.value = cp.poseStart || "";
     if (dom.comfyParamPoseEnd) dom.comfyParamPoseEnd.value = cp.poseEnd || "";

@@ -124,6 +124,109 @@ async function makeSourceDecodable(buf) {
   finally { for (const f of [inP, outP]) if (f) fsp.unlink(f).catch(() => {}); }
 }
 
+// Is a command-line tool actually runnable here? Probed by RUNNING it rather than by
+// looking for a path — a binary that exists but can't execute is the same as absent.
+// The promise (not the boolean) is cached, so concurrent callers share one spawn and a
+// tool is probed once per process.
+const _toolCache = new Map(); // name → Promise<boolean>
+function hasLocalTool(name) {
+  if (!_toolCache.has(name)) {
+    _toolCache.set(name, new Promise((resolve) => {
+      const p = spawn(name, ["-version"]);
+      p.on("close", (code) => resolve(code === 0));
+      p.on("error", () => resolve(false)); // ENOENT — not installed / not on PATH
+    }));
+  }
+  return _toolCache.get(name);
+}
+
+// Stitch SCAIL-2's per-segment clips back into one video and lay the source soundtrack
+// over the result. See the buildScail2 header for WHY the graph now emits N silent clips
+// instead of one finished video.
+//
+// The audio is NEVER cut to match a segment: it is one stream muxed once onto the
+// concatenated picture, which is exactly what the old in-graph
+// CreateVideo(audio:["15",1]) did. -shortest then trims it to the picture, which matters
+// whenever the render covered less than the whole source (a ⚙ length, or a tail window
+// too short to keep).
+//
+// The concat FILTER re-encodes rather than the concat demuxer's stream copy. The copy
+// path needs byte-identical codec parameters across inputs, and the last window is
+// routinely a different length (and after ⚙ frame interpolation a different frame count
+// per clip), so a silent failure there would be worse than the one re-encode — which is
+// also the natural place to honour ⚙ H.265, since the per-segment files are throwaway
+// intermediates.
+//
+// `bufs` must be IN SEGMENT ORDER. `srcBuf` is the audio donor (may be silent or null).
+// Returns { buf, codec } — codec being what actually encoded, since an H.265 request
+// falls back to H.264 rather than failing the render — or null if ffmpeg failed.
+async function mergeScail2Segments(bufs, srcBuf, wantCodec, crf, signal) {
+  const id = crypto.randomUUID();
+  const segPaths = bufs.map((_, i) => path.join(os.tmpdir(), `hk_scail_${id}_${String(i).padStart(3, "0")}.mp4`));
+  const srcPath = path.join(os.tmpdir(), `hk_scail_${id}_src.mp4`);
+  const outPath = path.join(os.tmpdir(), `hk_scail_${id}_out.mp4`);
+  try {
+    await Promise.all(bufs.map((b, i) => fsp.writeFile(segPaths[i], b)));
+    let hasAudio = false;
+    if (srcBuf && srcBuf.length) {
+      hasAudio = !!(await audioCodecOf(srcBuf));
+      if (hasAudio) await fsp.writeFile(srcPath, srcBuf);
+    }
+    const n = bufs.length;
+    const filter = bufs.map((_, i) => `[${i}:v]`).join("") + `concat=n=${n}:v=1:a=0[v]`;
+    const inputs = [];
+    for (const p of segPaths) inputs.push("-i", p);
+    if (hasAudio) inputs.push("-i", srcPath);
+    const run = (vcodec) => new Promise((resolve) => {
+      const args = ["-y", ...inputs, "-filter_complex", filter, "-map", "[v]"];
+      if (hasAudio) args.push("-map", `${n}:a`, "-c:a", "aac", "-shortest");
+      args.push(...vcodec, "-pix_fmt", "yuv420p", outPath);
+      const p = spawn("ffmpeg", args, signal ? { signal } : undefined);
+      let err = "";
+      p.stderr.on("data", (d) => { err += d; });
+      p.on("close", (code) => {
+        if (code !== 0) console.log(`[comfy] scail2 merge failed (${vcodec.join(" ")}): ${err.trim().split("\n").slice(-3).join(" | ")}`);
+        resolve(code === 0);
+      });
+      p.on("error", () => resolve(false));
+    });
+    let ok = false, codec = "h264";
+    // hevc_videotoolbox (not libx265) to match resampleVideo — hardware HEVC on the Mac
+    // this server runs on, and it tags hvc1 so the result actually plays in Safari. It
+    // takes no CRF, so ⚙ "video quality" shapes the H.264 path only; libx265 would honour
+    // it but software-encode every frame of a clip that is long by definition.
+    if (wantCodec === "h265") { ok = await run(["-c:v", "hevc_videotoolbox", "-tag:v", "hvc1"]); if (ok) codec = "h265"; }
+    if (!ok) ok = await run(["-c:v", "libx264", "-crf", String(crf > 0 ? Math.min(51, crf) : VIDEO_CRF_DEFAULT.h264)]);
+    if (!ok) return null;
+    const buf = await fsp.readFile(outPath);
+    console.log(`[comfy] scail2: merged ${n} segment${n > 1 ? "s" : ""} → ${(buf.length / 1048576).toFixed(1)} MB ${codec}${hasAudio ? " + source audio" : " (source had no audio)"}`);
+    return { buf, codec };
+  } catch (e) {
+    console.log(`[comfy] scail2 merge error: ${(e && e.message) || e}`);
+    return null;
+  } finally {
+    for (const f of [...segPaths, srcPath, outPath]) fsp.unlink(f).catch(() => {});
+  }
+}
+
+// Fetch a file back out of ComfyUI's INPUT folder (`/view?type=input`). The SCAIL-2
+// merge needs the source video's soundtrack, and the source reaches us as a bare
+// filename far more often than as bytes — the browser uploads it straight to ComfyUI via
+// /api/comfy-upload-video and passes only the name. Returns null when it can't be read.
+async function fetchComfyInputFile(name, signal) {
+  try {
+    const slash = String(name || "").lastIndexOf("/");
+    const params = new URLSearchParams({
+      filename: slash >= 0 ? name.slice(slash + 1) : name,
+      subfolder: slash >= 0 ? name.slice(0, slash) : "",
+      type: "input",
+    });
+    const r = await fetch(`${currentComfyUrl()}/view?${params}`, { signal });
+    if (!r.ok) return null;
+    return Buffer.from(await r.arrayBuffer());
+  } catch { return null; }
+}
+
 // One-pass window cap. 241 is the established quality/window ceiling for Wan Animate;
 // video longer than this chains via continue_motion (seamless), so there is no reason
 // to push a single window past it even when VRAM would allow it.
@@ -2441,18 +2544,24 @@ function applyVideoCodec(wf, codec, crf) {
 function applyVfi(wf, mult, baseFps, method) {
   const m = Math.round(Number(mult) || 0);
   if (!wf || m < 2) return baseFps;
-  let cvId = null;
-  for (const id in wf) if (wf[id].class_type === "CreateVideo") { cvId = id; break; }
-  if (!cvId) return baseFps;
-  const cv = wf[cvId];
-  // clear_cache_after_n_frames keeps VRAM bounded on long clips; multiplier inserts
-  // (m−1) interpolated frames between each pair → (N−1)·m + 1 frames out.
-  wf["vfi"] = /film/i.test(method || "")
-    ? { class_type: "FILM VFI", inputs: { ckpt_name: "film_net_fp32.pt", frames: cv.inputs.images, clear_cache_after_n_frames: 10, multiplier: m } }
-    : { class_type: "RIFE VFI", inputs: { ckpt_name: "rife47.pth", frames: cv.inputs.images, clear_cache_after_n_frames: 10, multiplier: m, fast_mode: true, ensemble: true, scale_factor: 1, dtype: "float32", torch_compile: false, batch_size: 1 } };
-  cv.inputs.images = ["vfi", 0];
+  // EVERY CreateVideo, not just the first. Almost every builder ends in exactly one,
+  // but SCAIL-2's incremental-save graph writes ONE PER SEGMENT (see buildScail2), and
+  // interpolating only segment 0 would hand the merge step clips at two different frame
+  // rates — the concat would then either fail or silently retime the rest of the clip.
+  const cvIds = Object.keys(wf).filter((id) => wf[id].class_type === "CreateVideo");
+  if (!cvIds.length) return baseFps;
   const newFps = Math.round((Number(baseFps) || 0) * m);
-  if (newFps > 0) cv.inputs.fps = newFps;
+  cvIds.forEach((cvId, i) => {
+    const cv = wf[cvId];
+    const vid = i === 0 ? "vfi" : `vfi${i}`;
+    // clear_cache_after_n_frames keeps VRAM bounded on long clips; multiplier inserts
+    // (m−1) interpolated frames between each pair → (N−1)·m + 1 frames out.
+    wf[vid] = /film/i.test(method || "")
+      ? { class_type: "FILM VFI", inputs: { ckpt_name: "film_net_fp32.pt", frames: cv.inputs.images, clear_cache_after_n_frames: 10, multiplier: m } }
+      : { class_type: "RIFE VFI", inputs: { ckpt_name: "rife47.pth", frames: cv.inputs.images, clear_cache_after_n_frames: 10, multiplier: m, fast_mode: true, ensemble: true, scale_factor: 1, dtype: "float32", torch_compile: false, batch_size: 1 } };
+    cv.inputs.images = [vid, 0];
+    if (newFps > 0) cv.inputs.fps = newFps;
+  });
   return newFps > 0 ? newFps : baseFps;
 }
 
@@ -3560,11 +3669,45 @@ async function scail2Companions() {
 // WanSCAILToVideo "cannot queue all segments automatically"). We emit the whole chain
 // in ONE graph instead: segment k slices the source at STRIDE·k, takes segment k−1's
 // frames as `previous_frames` (the node reuses the last `previous_frame_count`), drops
-// its regenerated overlap, and colour-matches to the previous segment's last frame —
-// then ImageBatch concatenates. `segments` = [{offset,length}, …] (length 1 = one pass).
+// its regenerated overlap, and colour-matches to the previous segment's last frame.
+// `segments` = [{offset,length}, …] (length 1 = one pass).
+//
+// INCREMENTAL SAVE (default; `incrementalSave`). The chain used to end in ONE
+// CreateVideo fed by an ImageBatch accumulation of every segment. That accumulator is
+// what made long sources unrunnable: the decoded float32 frames of every window stay
+// referenced until the very last node runs, MEASURED at ~3.7 GiB of growth per window,
+// so peak memory climbs LINEARLY with the clip length (a 110s source — 2643 frames, 22
+// windows — reached ~103 GiB and was OOM-killed on a 121.7 GiB DGX Spark, where VRAM is
+// system RAM and the kill is driven by anon-rss, not by anything nvidia-smi reports).
+// Instead each segment now ends in its OWN silent CreateVideo → SaveVideo, so its frames
+// are consumed as soon as that window is written and the peak stops tracking the clip
+// length. The budget it should settle at is the sum of the parts that DON'T grow with
+// length — measured staged weights 61.6 + node 15's ~27 + one window's working set ≈ 88
+// GiB, i.e. under the 121.7 GiB budget with room to spare. The app then joins the N
+// clips and lays the source soundtrack over the result (mergeScail2Segments) — the audio
+// was never sliced in the old graph either, CreateVideo(audio:["15",1]) muxed it once
+// onto the finished picture, so this is the same operation moved out of the graph.
+//
+// WHAT THIS DOES NOT FIX — a SOURCE-LENGTH ceiling. Node 15 (GetVideoComponents) still
+// decodes the WHOLE source into one resident frame batch, because every segment slices
+// out of it: ~27 GiB of float32 for 110s at 720p, growing with the source. Around a
+// ~4 minute source that alone crowds out the rest of the budget and this stops being
+// enough; going further means splitting into several PROMPTS (one per segment, handing
+// the tail frames across) rather than one. Everything the seam depends on —
+// previous_frames, the overlap drop, ColorTransfer — is untouched here precisely
+// because it all still lives inside a single graph.
 const SCAIL2_FRAMES = 81;                          // template default frame_count, 4n+1
 const SCAIL2_OVERLAP = 5;                          // previous_frame_count
 const SCAIL2_STRIDE = SCAIL2_FRAMES - SCAIL2_OVERLAP; // 76 — pose offset per segment
+// Node ids for segment k. 20 apart: a segment spans base+0 … base+13, so a 10-stride
+// would silently overwrite the previous segment's nodes — still-valid JSON, corrupted
+// graph (that bug shipped once and made only the LAST segment render).
+const scail2SegBase = (k) => 100 + k * 20;
+// Which node wrote segment k's file. The app fetches each clip from /history by NODE ID,
+// never by filename: stampOutputPrefix rewrites every SaveVideo to the same
+// `<folder>/<model>` prefix just before queueing, so all N clips differ only by
+// ComfyUI's auto-increment counter and their names carry no reliable ordering.
+const scail2SaveNodeId = (k) => String(scail2SegBase(k) + 13);
 
 // Segment schedule for a source of `total` frames, capped at `cap` frames per pass.
 // windowMult (⚙, 1-4) multiplies the 81-frame window: 81 / 161 / 241 / 321 after snapping
@@ -3600,7 +3743,7 @@ function scail2Segments(total, cap = SCAIL2_FRAMES, windowMult = 1) {
   return segs.length ? segs : [{ offset: 0, length: per }];
 }
 
-function buildScail2({ model, prompt, negative, comp, videoName, refImageName, refImageNames, width, height, seed, segments, replace = false, turbo = true, scailRecipe = "balanced", poseStrength = 1, poseStart = 0, poseEnd = 1, sam3VideoObject = "human", sam3ImageObject = "", objectIndices = "", sortBy = "left_to_right", detectionThreshold = 0.5, maxObjects = 4, torchCompile = false }) {
+function buildScail2({ model, prompt, negative, comp, videoName, refImageName, refImageNames, width, height, seed, segments, replace = false, turbo = true, scailRecipe = "balanced", poseStrength = 1, poseStart = 0, poseEnd = 1, sam3VideoObject = "human", sam3ImageObject = "", objectIndices = "", sortBy = "left_to_right", detectionThreshold = 0.5, maxObjects = 4, torchCompile = false, incrementalSave = true }) {
   const segs = (Array.isArray(segments) && segments.length) ? segments : [{ offset: 0, length: SCAIL2_FRAMES }];
   // Clamp to the node's own declared ranges — a ⚙ field is free text until it isn't.
   const clamp = (v, lo, hi, dflt) => (typeof v === "number" && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt);
@@ -3717,9 +3860,7 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
 
   let acc = null, prevOut = null;
   segs.forEach((sg, k) => {
-    // 20 apart: a segment spans b+0 … b+11, so a 10-stride would silently overwrite
-    // the previous segment's nodes — still-valid JSON, corrupted graph.
-    const b = 100 + k * 20;
+    const b = scail2SegBase(k);
     const F = String(b), R = String(b + 1), G = String(b + 2), T = String(b + 3),
           MK = String(b + 4), S = String(b + 5), K = String(b + 6), D = String(b + 7);
     // The pose offset is applied by SLICING the source; the node's own
@@ -3753,13 +3894,25 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
       wf[CT] = { class_type: "ColorTransfer", inputs: { image_target: [C1, 0], image_ref: [P1, 0], method: "reinhard_lab", source_stats: "per_frame", strength: 1 } };
       out = [CT, 0];
     }
-    if (k === 0) acc = out;
+    if (incrementalSave) {
+      // Write this window NOW, silent, at the source fps. `out` is the only reference
+      // to its decoded frames, so once this CreateVideo has run they can be collected
+      // instead of being pinned until the end of the graph. No audio here: one
+      // soundtrack is laid over the concatenated result by the app (see the header).
+      const CV = String(b + 12), SV = String(b + 13);
+      wf[CV] = { class_type: "CreateVideo", inputs: { images: out, fps: ["15", 2] } };
+      wf[SV] = { class_type: "SaveVideo", inputs: { video: [CV, 0], filename_prefix: "heykoko_scail2", format: "auto", codec: "auto" } };
+    } else if (k === 0) acc = out;
     else { const B = String(b + 11); wf[B] = { class_type: "ImageBatch", inputs: { image1: acc, image2: out } }; acc = [B, 0]; }
     prevOut = out;
   });
-  // One CreateVideo over every segment — the output keeps the SOURCE fps + audio.
-  wf["90"] = { class_type: "CreateVideo", inputs: { images: acc, audio: ["15", 1], fps: ["15", 2] } };
-  wf["91"] = { class_type: "SaveVideo", inputs: { video: ["90", 0], filename_prefix: "heykoko_scail2", format: "auto", codec: "auto" } };
+  // Legacy single-output path (⚙ "incremental save" off): one CreateVideo over an
+  // ImageBatch of every segment — the output keeps the SOURCE fps + audio. Correct, and
+  // fine for a clip of a few windows; it is the accumulation that cannot scale.
+  if (!incrementalSave) {
+    wf["90"] = { class_type: "CreateVideo", inputs: { images: acc, audio: ["15", 1], fps: ["15", 2] } };
+    wf["91"] = { class_type: "SaveVideo", inputs: { video: ["90", 0], filename_prefix: "heykoko_scail2", format: "auto", codec: "auto" } };
+  }
   return wf;
 }
 
@@ -4825,6 +4978,10 @@ async function generateComfyImage(req, res) {
       let imagesUsed = 0;   // how many input images the video path actually consumed
       let stillMode = false; // single-frame Wan Animate → return an IMAGE, not a video
       let paintGlb = null;   // Hunyuan3D texturing: filename_prefix of a GLB /history won't report
+      // SCAIL-2 incremental save: { saveNodeIds, sourceName } — the graph wrote one silent
+      // clip per window and the finished video is assembled here instead. Also the flag
+      // that keeps the single-output tail rewrites off this workflow (see below).
+      let scail2Merge = null;
       let meshViewKind = null; // how the viewer should place its camera, set by the mesh branch
       let panoDims = null;     // the 360 recipe forces its own 2:1 size; the log should say so
       let panoOutpaintUsed = 0; // set only when a photo was grown into the panorama
@@ -5005,6 +5162,24 @@ async function generateComfyImage(req, res) {
         // model has no still/single-frame path (the driving motion IS the input).
         if (!sourceVideo && !sourceVideoName) { sendJson(res, 400, { error: "SCAIL-2 needs a source video (the driving motion) plus a character reference image." }); return; }
         if (!(Array.isArray(images) && images.length)) { sendJson(res, 400, { error: "SCAIL-2 needs a character reference image (plus the attached driving video)." }); return; }
+        // Incremental save (default). Off restores the old single-CreateVideo tail, which
+        // is correct but accumulates every decoded frame in memory — see the buildScail2
+        // header. Kept switchable because it is the newer of the two paths, not because
+        // there is a case where accumulating is better.
+        const incrementalSave = opts.scailIncrementalSave !== false;
+        // FAIL FAST, before a single byte is uploaded. That path joins the segment clips
+        // here once the render is done, so a missing binary would otherwise surface after
+        // an hour of GPU time instead of now. ffprobe is checked too, and matters in a
+        // less obvious way: it is what decides whether the source HAS an audio track, so
+        // without it every merge would quietly produce a SILENT video rather than fail.
+        if (incrementalSave) {
+          const missing = [];
+          for (const tool of ["ffmpeg", "ffprobe"]) if (!(await hasLocalTool(tool))) missing.push(tool);
+          if (missing.length) {
+            sendJson(res, 400, { error: `SCAIL-2 needs ${missing.join(" and ")} on this machine (the one running hey-koko, not the ComfyUI box) to join the rendered windows and lay the soundtrack over them. Install it (macOS: brew install ffmpeg) — or untick ⚙ "Save each window as it renders", which has ComfyUI write one finished file and needs no ffmpeg at all, at the cost of holding every window in memory (long clips will run out of it).` });
+            return;
+          }
+        }
         const comp = await scail2Companions();
         // Output follows the SOURCE video's aspect at the preset (or --size) budget.
         // /32 — the template floors both dims to 32 before the resize.
@@ -5051,7 +5226,7 @@ async function generateComfyImage(req, res) {
         imagesUsed = refImageNames.length;
         workflow = buildScail2({
           model, prompt, negative: negative_prompt || "", comp, videoName, refImageNames,
-          width: aw, height: ah, seed, segments, replace: scail2Replace,
+          width: aw, height: ah, seed, segments, replace: scail2Replace, incrementalSave,
           // SAM3 is open-vocabulary: the subject is text, not a fixed "human". The
           // reference falls back to the driving subject inside the builder — they only
           // differ when the driving text targets one person in a crowd ("person in a red
@@ -5071,6 +5246,9 @@ async function generateComfyImage(req, res) {
           // skip the speed-up rather than submit a graph that would fail validation.
           torchCompile: !!opts.torchCompile && await comfyHasNodes(["TorchCompileModelAdvanced"]),
         });
+        // Node id → segment order. NOT filenames: stampOutputPrefix gives every SaveVideo
+        // the same prefix, so ComfyUI's counter is all that separates them.
+        if (incrementalSave) scail2Merge = { saveNodeIds: segments.map((_, k) => scail2SaveNodeId(k)), sourceName: videoName };
         videoDims = { width: aw, height: ah, length: totalFrames, fps: sfps, segments: segments.length };
         if (truncatedFrom) videoDims.truncatedFrom = truncatedFrom;
       } else if (videoType === "animate" && !sourceVideo && !sourceVideoName) {
@@ -5922,8 +6100,14 @@ async function generateComfyImage(req, res) {
       // Mesh workflows are excluded even though TripoSplat's turntable tail has a
       // CreateVideo node — a 3-second orbit preview gains nothing from h265/CRF and
       // the ⚙ video codec setting shouldn't silently reshape a 3D result.
+      // SCAIL-2's incremental save is excluded: applyVideoCodec assumes ONE CreateVideo +
+      // ONE SaveVideo and collapses them into a single VHS node, which on an N-segment
+      // graph would delete one pair, leave N−1 intact, and destroy the node-id → segment
+      // mapping the merge depends on. Nothing is lost by skipping it — that graph's clips
+      // are intermediates, and mergeScail2Segments re-encodes the joined result anyway, so
+      // it is the one that honours ⚙ codec/CRF (and reports what it actually used).
       const isVideoTail = !meshType && Object.values(workflow).some((n) => n.class_type === "CreateVideo");
-      if (isVideoTail) {
+      if (isVideoTail && !scail2Merge) {
         const wantCodec = opts.videoCodec === "h265" ? "h265" : "h264";
         const crf = Number(opts.videoCrf) || 0;
         const vhsOk = await comfyHasNodes(["VHS_VideoCombine"]);
@@ -5977,7 +6161,45 @@ async function generateComfyImage(req, res) {
       const outMeshes = [], meshMimes = [], meshNames = [];
       let videoMime = "video/mp4";
       let firstVideoBuf = null; // kept to ffprobe the real output frame count (animate chunking)
+      // SCAIL-2 incremental save: N silent clips → one video with the source soundtrack.
+      // Done BEFORE the generic collector, which would otherwise hand the client the raw
+      // segments as separate videos; their node ids are then skipped there.
+      let skipNodes = null;
+      if (scail2Merge) {
+        const segBufs = [];
+        const missing = [];
+        for (const nodeId of scail2Merge.saveNodeIds) {
+          const entry = outputs[nodeId] || {};
+          const file = [...(entry.images || []), ...(entry.gifs || [])].find((f) => f.type !== "temp");
+          if (!file) { missing.push(nodeId); continue; }
+          const params = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder || "", type: file.type || "output" });
+          const r = await fetch(`${currentComfyUrl()}/view?${params}`, { signal: controller.signal });
+          if (!r.ok) { missing.push(nodeId); continue; }
+          segBufs.push(Buffer.from(await r.arrayBuffer()));
+        }
+        // A hole in the middle would splice the clip together across a gap and put the
+        // rest of it out of sync with the audio — refuse rather than ship that silently.
+        if (missing.length || segBufs.length !== scail2Merge.saveNodeIds.length) {
+          sendJson(res, 502, { error: `SCAIL-2 rendered ${segBufs.length} of ${scail2Merge.saveNodeIds.length} segments — nothing came back from save node(s) ${missing.join(", ") || "?"}. The finished segments are in ComfyUI's output folder (heykoko_vid/) and can be joined by hand; untick ⚙ "Save each window as it renders" to go back to the single-file path.` });
+          return;
+        }
+        const wantCodec = opts.videoCodec === "h265" ? "h265" : "h264";
+        const srcBuf = await fetchComfyInputFile(scail2Merge.sourceName, controller.signal);
+        const merged = await mergeScail2Segments(segBufs, srcBuf, wantCodec, Number(opts.videoCrf) || 0, controller.signal);
+        if (!merged) {
+          sendJson(res, 502, { error: `SCAIL-2 rendered all ${segBufs.length} segments but ffmpeg could not join them (is ffmpeg installed and on PATH?). The segments are in ComfyUI's output folder (heykoko_vid/) — nothing was lost. Untick ⚙ "Save each window as it renders" to have ComfyUI write one file instead.` });
+          return;
+        }
+        firstVideoBuf = merged.buf;
+        outVideos.push(merged.buf.toString("base64"));
+        videoCodecUsed = merged.codec;
+        // Asked for H.265, got H.264 — same wording the VHS-absent path uses, since it is
+        // the same outcome: the request degraded instead of failing the render.
+        if (wantCodec === "h265" && merged.codec !== "h265") videoCodecNote = "vhs-missing";
+        skipNodes = new Set(scail2Merge.saveNodeIds);
+      }
       for (const nodeId of Object.keys(outputs)) {
+        if (skipNodes && skipNodes.has(nodeId)) continue; // already merged above
         // SaveVideo/SaveImage report under `images`; VHS_VideoCombine (⚙ H.265) reports
         // the saved file under `gifs`; SaveGLB reports under `3d` (ui={"3d": results}) —
         // all the same {filename,subfolder,type} shape for /view.
@@ -6257,4 +6479,4 @@ async function comfyAutoMask(req, res) {
 module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, uploadComfyAudio, comfyAutoMask };
 // TEMP (SCAIL-2 single-window ceiling test harness — REVERT after): expose the real
 // builder + companion resolver so a Node harness reuses the verified graph topology.
-module.exports._scailTest = { buildScail2, scail2Companions, config };
+module.exports._scailTest = { buildScail2, hasLocalTool, scail2Companions, scail2SaveNodeId, scail2Segments, mergeScail2Segments, applyVfi, config };
