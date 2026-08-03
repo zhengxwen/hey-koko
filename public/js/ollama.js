@@ -743,9 +743,12 @@ function videoAutoDefaults(modelName) {
   // (30 steps / cfg 3), and the frontend can't see whether the distilled LoRA and
   // upscaler are installed. fps DOES differ per finetune: ltx-2.3's templates run
   // 25, Sulphur's run 24.
-  // MSR runs its own distilled recipe: 50 fps, 121 frames, and a fixed 8-step schedule
-  // (so steps/cfg stay bare "Auto" like the other distilled paths).
-  if (m === "ltx-msr") return { fps: 30, length: 121 };
+  // MSR runs its own FIXED distilled recipe (30 fps, 121 frames, an 8-step ManualSigmas
+  // table at cfg 1). Unlike the cascade / WAN turbo paths, steps/cfg here never flip with an
+  // unseen turbo flag — so surface the real numbers ("Auto (8)" / "Auto (1)") instead of a
+  // bare "Auto". (The ⚙ steps/cfg fields are display-only for MSR — the sigma table is fixed —
+  // but the value is worth showing.)
+  if (m === "ltx-msr") return { fps: 30, length: 121, steps: 8, cfg: 1 };
   if (LTX_RE.test(m)) return { fps: /sulphur/.test(m) ? 24 : 25, length: 97 };
   if (/hunyuan/.test(m)) return { fps: 24, length: 49, steps: 20, cfg: 6 };
   // Phantom: fixed 50-step / cfg 7.5 (uni_pc) — no distill LoRA, so it never varies.
