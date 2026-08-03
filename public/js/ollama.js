@@ -1209,6 +1209,23 @@ function syncVideoCrfPlaceholder() {
   dom.comfyParamVideoCrf.placeholder = `default ${VIDEO_CRF_DEFAULT[codec]} (${codec === "h265" ? "H.265" : "H.264"})`;
 }
 
+// A wide SCAIL-2 window is a per-GPU gamble, not a flat setting: chained segments live in
+// ONE graph and each segment's output stays resident to condition the next, so the budget
+// shrinks as the chain advances. On a 32GB card 2x at 736x1280 renders segment 1 and then
+// dies in segment 2 with comfy_aimdo's `Fault failed: 2`. Warn instead of clamping — the
+// user picked this deliberately, and whether it fits depends on clip length and resolution
+// too, neither of which this knob knows. 40GB is the tier above the 5090's 32GB, so it is
+// the point where the measured failure stops being the expected outcome.
+export function updateScailWindowWarning() {
+  const el = dom.comfyParamScailWindowWarn;
+  if (!el) return;
+  const mult = Number(dom.comfyParamScailWindow?.value || 1);
+  const gib = state.comfyVramGib;
+  const risky = mult > 1 && typeof gib === "number" && gib > 0 && gib < 40;
+  el.textContent = risky ? t("warn_scailWindowVram", { gb: gib.toFixed(0) }) : "";
+  el.hidden = !risky;
+}
+
 export function updateComfyParamVisibility() {
   const m = dom.comfyModelSelect?.value || "";
   if (!m) return;
@@ -1304,6 +1321,7 @@ export function updateComfyParamVisibility() {
                     dom.comfyParamScailMaxObjects, dom.comfyParamScailIndices,
                     dom.comfyParamScailSortBy, dom.comfyParamScailRecipe, dom.comfyParamScailWindow, dom.comfyParamPoseStrength, dom.comfyParamPoseStart,
                     dom.comfyParamPoseEnd]) setVis(el, scail2);
+  updateScailWindowWarning();
   // Upscale-model pipelines only (image-upscale / video-enhance) — the upscale-denoise % + the upscale-model picker.
   for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel]) setVis(el, upscale);
   // Image-edit / txt2img only.
@@ -1531,6 +1549,9 @@ function initComfyParamsModal() {
     el?.addEventListener("change", () => saveCurrentSettings());
   }
   dom.comfyParamTorchCompile?.addEventListener("change", () => saveCurrentSettings());
+  // The window-size caution depends on the chosen multiplier, so it has to re-evaluate on
+  // change — open() alone would only catch it when the panel is reopened.
+  dom.comfyParamScailWindow?.addEventListener("change", updateScailWindowWarning);
   // Checkboxes carry .checked, not .value, so they're outside `fields`. The splat-mesh
   // one also gates the mesh-detail row, so it re-runs visibility on toggle.
   dom.comfyParamKeepBackground?.addEventListener("change", () => saveCurrentSettings());

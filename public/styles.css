@@ -951,6 +951,12 @@ p {
 .comfyParamRow[hidden],
 .comfyParamsBody button[hidden] { display: none; }
 
+/* Inline caution under a ⚙ field (e.g. a window size the current GPU probably cannot fit).
+   [hidden] needs restating here for the same reason as the rule above — the parent label is
+   display:grid, so its children inherit a layout that outranks the UA hidden rule. */
+.comfyParamWarn { color: var(--warn, #d98324); font-size: 0.82em; line-height: 1.35; margin-top: 2px; }
+.comfyParamWarn[hidden] { display: none; }
+
 /* The ⚙ ComfyUI params form carries 30+ fields — give it ~3× the shared 360px modal
    width and flow the fields into columns so most of it fits without scrolling.
    Scoped BY ID on purpose: .comfyParamsModal is also worn by the /ask-params modal,

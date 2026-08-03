@@ -4593,6 +4593,31 @@ async function uploadComfyAudio(req, res) {
   }
 }
 
+// Translate the handful of ComfyUI/torch failures that are really "out of VRAM" but say so
+// in a way nobody can act on. The one that prompted this: chaining SCAIL-2 segments on a
+// 32GB card died with `RuntimeError: Fault failed: 2` raised inside comfy_aimdo's
+// model_vbar.fault() — DynamicVRAM's weight pager giving up. Nothing in that string says
+// memory, and the failing node is reported as SamplerCustom, so it reads like a sampler bug.
+//
+// Chained segments make it worse than a plain OOM: every segment lives in ONE graph and the
+// earlier segment's output has to stay resident to condition the next, so the budget shrinks
+// as the chain advances — which is why segment 1 renders fine and segment 2 dies.
+function comfyErrorHint(exc, d) {
+  const text = `${exc} ${(d && d.traceback ? [].concat(d.traceback).join(" ") : "")}`;
+  const seg = (() => {
+    // Segment k's nodes are 100 + 20k..; recovering k makes the hint concrete.
+    const id = Number(d && d.node_id);
+    return Number.isFinite(id) && id >= 100 ? Math.floor((id - 100) / 20) + 1 : 0;
+  })();
+  const where = seg > 1 ? `第 ${seg} 段` : seg === 1 ? "第 1 段" : "";
+  const fix = "可试:⚙「窗口大小」调回 1x、降低分辨率、缩短片段,或换显存更大的机器。";
+  if (/Fault failed|vbar_fault|model_vbar/i.test(text))
+    return `\n\n⚠️ 显存不足${where ? `(${where}换权重失败)` : ""},不是采样器故障。${fix}`;
+  if (/CUDA out of memory|OutOfMemoryError|CUDA error: out of memory/i.test(text))
+    return `\n\n⚠️ 显存不足${where ? `(${where})` : ""}。${fix}`;
+  return "";
+}
+
 // Pull a human-readable message out of a ComfyUI history `status` whose
 // status_str is "error" — the failing node + the exception text (incl. CUDA OOM).
 function comfyExecError(status) {
@@ -4603,7 +4628,7 @@ function comfyExecError(status) {
       const d = err[1];
       const exc = d.exception_message || d.exception_type || "unknown error";
       const node = d.node_type ? `node ${d.node_type}${d.node_id != null ? " #" + d.node_id : ""} ` : "";
-      return `ComfyUI execution error: ${node}${exc}`;
+      return `ComfyUI execution error: ${node}${exc}${comfyErrorHint(exc, d)}`;
     }
   } catch { /* fall through */ }
   return "ComfyUI execution error (no details provided)";
