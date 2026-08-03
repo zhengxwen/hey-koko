@@ -1302,7 +1302,7 @@ export function updateComfyParamVisibility() {
   // These are Animate's counterparts to relight/🎯: same intent, different mechanism.
   for (const el of [dom.comfyParamScailSubject, dom.comfyParamScailRefSubject, dom.comfyParamScailThreshold,
                     dom.comfyParamScailMaxObjects, dom.comfyParamScailIndices,
-                    dom.comfyParamScailSortBy, dom.comfyParamScailRecipe, dom.comfyParamPoseStrength, dom.comfyParamPoseStart,
+                    dom.comfyParamScailSortBy, dom.comfyParamScailRecipe, dom.comfyParamScailWindow, dom.comfyParamPoseStrength, dom.comfyParamPoseStart,
                     dom.comfyParamPoseEnd]) setVis(el, scail2);
   // Upscale-model pipelines only (image-upscale / video-enhance) — the upscale-denoise % + the upscale-model picker.
   for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel]) setVis(el, upscale);
@@ -1492,6 +1492,7 @@ function initComfyParamsModal() {
     dom.comfyParamScailIndices,
     dom.comfyParamScailSortBy,
     dom.comfyParamScailRecipe,
+    dom.comfyParamScailWindow,
     dom.comfyParamPoseStrength,
     dom.comfyParamPoseStart,
     dom.comfyParamPoseEnd,

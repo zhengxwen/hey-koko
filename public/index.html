@@ -1009,6 +1009,15 @@
               <option value="none">none (SAM3 order)</option>
             </select>
           </label>
+          <label title="SCAIL-2 only: how many frames each pass generates. 1x is the 81-frame window the official template uses; 2x/3x/4x widen it to 161/241/321. 81 is NOT a model limit — the node accepts up to 16384 and the reference implementation exposes the same setting — and MEASURED at 432x768 there was no quality falloff even at 6x, with no OOM on a 122GB machine. But WIDER IS SLOWER, not faster: for the same 241 frames of output, one wide pass took 827s against 490s for three chained 81-frame passes (1.69x), because per-frame cost climbs superlinearly. So raise this for CONTINUITY, not speed — it removes the seams chaining can leave on long slow moves, camera drifts, or a gesture that spans more than one segment. COST: time and peak VRAM both scale roughly as pixels x frames^1.45, so 3x-4x at 720p or 1080p can run out of memory where 1x fits comfortably. Try one segment at your target resolution before committing to a long clip.">
+            <span id="comfyParamScailWindowLabel">Window size (SCAIL-2)</span>
+            <select id="comfyParamScailWindow">
+              <option value="">1x &middot; 81 frames (default)</option>
+              <option value="2">2x &middot; 161 frames</option>
+              <option value="3">3x &middot; 241 frames</option>
+              <option value="4">4x &middot; 321 frames</option>
+            </select>
+          </label>
           <label title="SCAIL-2 only: how many denoising steps to run, and how hard the step-distill LoRA is mounted. Balanced (6 steps, LoRA at 0.8) is what this app has always used. Fast (4 steps, LoRA at full strength) is the recipe lightx2v publishes for this very LoRA: MEASURED at 736x1280 on an RTX 5090, it ran 114s against Balanced's 164s (1.44x) and scored marginally SHARPER, with hand detail — the thing SCAIL-2's DPO LoRA exists to fix — indistinguishable at 2x zoom. It is not the default only because that test covered one clip of one dancer on a plain backdrop; cutting steps fails on busy scenes and fast motion first, and that has not been ruled out, so try it on your own footage. No turbo drops the distill LoRA entirely and runs the undistilled recipe: 40 steps with CFG 5. That is roughly 13x the DiT forward passes of Balanced (40 steps x 2 passes for guidance, versus 6 x 1 — at CFG 1 ComfyUI skips the unconditional pass), so expect on the order of 30-90 minutes PER SEGMENT instead of 2-9. Whether it actually looks better has never been measured here — it is offered so you can find out on your own material.">
             <span id="comfyParamScailRecipeLabel">Sampling recipe (SCAIL-2)</span>
             <select id="comfyParamScailRecipe">

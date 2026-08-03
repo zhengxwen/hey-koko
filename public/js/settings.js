@@ -95,6 +95,8 @@ export function saveCurrentSettings() {
         scailMaxObjects: dom.comfyParamScailMaxObjects?.value || "",
         scailIndices: dom.comfyParamScailIndices?.value || "",
         scailSortBy: dom.comfyParamScailSortBy?.value || "",
+        scailRecipe: dom.comfyParamScailRecipe?.value || "",
+        scailWindow: dom.comfyParamScailWindow?.value || "",
         poseStrength: dom.comfyParamPoseStrength?.value || "",
         poseStart: dom.comfyParamPoseStart?.value || "",
         poseEnd: dom.comfyParamPoseEnd?.value || "",
@@ -316,6 +318,8 @@ export function loadSavedSettings() {
     if (dom.comfyParamScailMaxObjects) dom.comfyParamScailMaxObjects.value = cp.scailMaxObjects || "";
     if (dom.comfyParamScailIndices) dom.comfyParamScailIndices.value = cp.scailIndices || "";
     if (dom.comfyParamScailSortBy) dom.comfyParamScailSortBy.value = cp.scailSortBy || "";
+    if (dom.comfyParamScailRecipe) dom.comfyParamScailRecipe.value = cp.scailRecipe || "";
+    if (dom.comfyParamScailWindow) dom.comfyParamScailWindow.value = cp.scailWindow || "";
     if (dom.comfyParamPoseStrength) dom.comfyParamPoseStrength.value = cp.poseStrength || "";
     if (dom.comfyParamPoseStart) dom.comfyParamPoseStart.value = cp.poseStart || "";
     if (dom.comfyParamPoseEnd) dom.comfyParamPoseEnd.value = cp.poseEnd || "";

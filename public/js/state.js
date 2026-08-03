@@ -110,6 +110,7 @@ export const dom = {
   comfyParamScailIndices: document.querySelector("#comfyParamScailIndices"),
   comfyParamScailSortBy: document.querySelector("#comfyParamScailSortBy"),
   comfyParamScailRecipe: document.querySelector("#comfyParamScailRecipe"),
+  comfyParamScailWindow: document.querySelector("#comfyParamScailWindow"),
   comfyParamPoseStrength: document.querySelector("#comfyParamPoseStrength"),
   comfyParamPoseStart: document.querySelector("#comfyParamPoseStart"),
   comfyParamPoseEnd: document.querySelector("#comfyParamPoseEnd"),

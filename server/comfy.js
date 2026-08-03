@@ -3567,9 +3567,20 @@ const SCAIL2_OVERLAP = 5;                          // previous_frame_count
 const SCAIL2_STRIDE = SCAIL2_FRAMES - SCAIL2_OVERLAP; // 76 — pose offset per segment
 
 // Segment schedule for a source of `total` frames, capped at `cap` frames per pass.
-function scail2Segments(total, cap = SCAIL2_FRAMES) {
+// windowMult (⚙, 1-4) multiplies the 81-frame window: 81 / 161 / 241 / 321 after snapping
+// to 4n+1. 81 is the official template's frame_count, NOT a model limit — the ComfyUI node
+// accepts up to 16384 and the reference generate.py exposes --segment_len — so the ladder
+// measured 81/161/241/361/481 at 432x768 and saw no quality falloff even at 6x, never OOMing
+// on 122GB. Chaining is nonetheless FASTER for the same output length (241 frames: one big
+// window 827s vs three 81-frame segments 490s = 1.69x), because per-frame cost climbs
+// superlinearly. A wider window is therefore for CONTINUITY, not speed: it removes the
+// seams that chaining can leave on long slow moves. Cost scales roughly as pixels^1.45 and
+// peak VRAM with it, so 3-4x at 720p/1080p can OOM where 1x fits — hence opt-in, default 1x.
+function scail2Segments(total, cap = SCAIL2_FRAMES, windowMult = 1) {
   const snap4 = (n) => Math.max(1, Math.floor((n - 1) / 4) * 4 + 1); // 4n+1, ≤ n
-  const per = snap4(Math.max(5, Math.min(cap, SCAIL2_FRAMES)));
+  const mult = [1, 2, 3, 4].includes(Number(windowMult)) ? Number(windowMult) : 1;
+  const want = SCAIL2_FRAMES * mult;
+  const per = snap4(Math.max(5, Math.min(cap, want)));
   const stride = per - SCAIL2_OVERLAP;
   const segs = [];
   if (!(total > 0)) return [{ offset: 0, length: per }];
@@ -4993,10 +5004,10 @@ async function generateComfyImage(req, res) {
         let segments, truncatedFrom;
         if (opts.length) {
           const want = srcFrames > 0 ? Math.min(opts.length, srcFrames) : opts.length;
-          segments = scail2Segments(want);
+          segments = scail2Segments(want, SCAIL2_FRAMES * 4, opts.scailWindow);
           if (srcFrames > want) truncatedFrom = srcFrames; // pinned length cut the clip
         } else {
-          segments = scail2Segments(srcFrames);
+          segments = scail2Segments(srcFrames, SCAIL2_FRAMES * 4, opts.scailWindow);
         }
         // Total output = segment 0 in full + each later segment minus its overlap.
         const totalFrames = segments.reduce((a, s, i) => a + s.length - (i > 0 ? SCAIL2_OVERLAP : 0), 0);

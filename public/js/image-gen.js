@@ -146,6 +146,7 @@ function comfyOverrides() {
   if (scailIndices) ov.scailIndices = scailIndices;               // which tracked subjects, e.g. "0,2" (empty = all)
   if (dom.comfyParamScailSortBy?.value) ov.scailSortBy = dom.comfyParamScailSortBy.value; // identity ordering
   if (dom.comfyParamScailRecipe?.value) ov.scailRecipe = dom.comfyParamScailRecipe.value; // steps + distill strength
+  if (dom.comfyParamScailWindow?.value) ov.scailWindow = +dom.comfyParamScailWindow.value; // frames per pass
   const poseStrength = num(dom.comfyParamPoseStrength?.value);
   if (poseStrength !== undefined) ov.poseStrength = poseStrength;
   const poseStart = num(dom.comfyParamPoseStart?.value);
@@ -889,12 +890,20 @@ const usesOneRefImage = (m) => isWanAnimateModel(m);
 // many reference images it reads, and the two answers stopped agreeing once SCAIL-2
 // learned to take extra views.
 const isPoseTransfer = (m) => isWanAnimateModel(m) || isScail2Model(m);
-// Frames per chained pass. SCAIL-2's is a FIXED 81 (mirrors SCAIL2_FRAMES in
-// server/comfy.js) — its cost doesn't scale with resolution the way Animate's does.
+// Frames per chained pass. SCAIL-2's base window is 81 (mirrors SCAIL2_FRAMES in
+// server/comfy.js) and, unlike Animate's, does not scale with resolution — but the ⚙
+// "window size" knob multiplies it by 1-4, so this has to mirror scail2Segments' snapping
+// too. Used ONLY for the pass-count estimate and the "seamless long video" label; the
+// server does the real chunking in-graph. Getting it wrong is invisible in the output and
+// shows up purely as a wrong segment count in the UI — which is exactly what happened when
+// the knob shipped with this left at a hardcoded 81.
 const SCAIL2_SEG_FRAMES = 81;
 const SEG_OVERLAP = 5; // same in both pipelines
-const segmentCapFor = (m, pixelBudget, torchCompile) =>
-  isScail2Model(m) ? SCAIL2_SEG_FRAMES : animateSegmentCap(pixelBudget, torchCompile);
+const snap4 = (n) => Math.max(1, Math.floor((n - 1) / 4) * 4 + 1); // 4n+1, matches the server
+const scail2Window = (mult) =>
+  snap4(SCAIL2_SEG_FRAMES * ([1, 2, 3, 4].includes(Number(mult)) ? Number(mult) : 1));
+const segmentCapFor = (m, pixelBudget, torchCompile, scailWindow) =>
+  isScail2Model(m) ? scail2Window(scailWindow) : animateSegmentCap(pixelBudget, torchCompile);
 
 export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null, sink = null, comfyUrl = null) {
   const tab = getTab(tabId);
@@ -1048,7 +1057,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   const estPasses = (() => {
     if (dancerModel) return 1 + dancerSegs; // global planning + per-segment refinement
     if (chainFrames <= 0) return 1;
-    const cap = Math.max(1, segmentCapFor(model, animBudgetEta, !!reqOptions.torchCompile));
+    const cap = Math.max(1, segmentCapFor(model, animBudgetEta, !!reqOptions.torchCompile, reqOptions.scailWindow));
     if (chainFrames <= cap) return 1;
     return 1 + Math.ceil((chainFrames - cap) / Math.max(1, cap - SEG_OVERLAP));
   })();
@@ -1363,7 +1372,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // 640×640 default (mirrors the server's sizing). Only used to pick the "seamless
   // long video" label — the SERVER does the actual chunking in-graph.
   const animBudget = (reqOptions.width && reqOptions.height) ? reqOptions.width * reqOptions.height : 640 * 640;
-  const willChunk = !!sourceVideoName && chainFrames > segmentCapFor(model, animBudget, !!reqOptions.torchCompile);
+  const willChunk = !!sourceVideoName && chainFrames > segmentCapFor(model, animBudget, !!reqOptions.torchCompile, reqOptions.scailWindow);
   // Total output duration of the long video (chained frames ÷ fps), e.g. 5.4.
   const fullSec = (willChunk && sourceVideoFps > 0) ? Math.round(chainFrames / sourceVideoFps * 10) / 10 : 0;
 
