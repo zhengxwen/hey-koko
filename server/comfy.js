@@ -316,6 +316,12 @@ async function fetchComfyInputFile(name, signal) {
 // video longer than this chains via continue_motion (seamless), so there is no reason
 // to push a single window past it even when VRAM would allow it.
 const ANIMATE_MAX_SINGLE_PASS = 241;
+// Node ids for Animate chunk k. Stride 10 (a chunk spans base+0 … base+7). Which node
+// wrote chunk k's file — the app fetches each clip from /history by NODE ID, never by
+// filename, for the same reason SCAIL-2 does: stampOutputPrefix gives every SaveVideo the
+// same prefix, and ComfyUI's counter order is MEASURED not to track chunk order.
+const animateSegBase = (k) => 100 + k * 10;
+const animateSaveNodeId = (k) => String(animateSegBase(k) + 7);
 const ANIMATE_MIN_SINGLE_PASS = 17; // below ~overlap the chain loop can't trim; keep a floor
 
 // Scale the reference (32GB / RTX 5090) frame caps by the TARGET box's VRAM. The key
@@ -4046,8 +4052,19 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
 // video_frame_offset 0; each later chunk feeds the PREVIOUS chunk's frames into
 // continue_motion (the node uses the last continue_motion_max_frames=5 and trims the
 // regenerated overlap via trim_latent/trim_image) and takes the previous chunk's
-// video_frame_offset OUTPUT as its seek; ImageBatch concatenates all chunks; ONE
-// CreateVideo muxes the source audio+fps. `chunks` = [{offset,length}, …] (length 1 =
+// video_frame_offset OUTPUT as its seek.
+//
+// INCREMENTAL SAVE (default) writes each chunk to disk as it finishes instead of
+// ImageBatch-accumulating every decoded frame for one final CreateVideo — the same
+// output-side fix as buildScail2, and the app joins the clips and muxes the source audio.
+// It fixes ONLY the output side. Animate's INPUT side keeps the entire source resident in
+// four nodes (15 decode at source res, 13 scaled, 16+17 DWPose over the whole clip; Replace
+// adds 33 mask + 34 blacked background) — for a 110s/720p source that is ~64 GiB for Move
+// and ~80 GiB for Replace before a single frame is generated, and no per-chunk save can
+// touch it. SCAIL-2's per-window source reader does NOT port here: chunk k's seek is
+// `video_frame_offset: [prevChunk, 5]`, a RUNTIME output of the previous chunk (continue_motion
+// trimming changes how many frames it actually consumed), so there is no static offset to
+// hand a windowed loader. Lifting that needs the chunks split across PROMPTS. `chunks` = [{offset,length}, …] (length 1 =
 // single pass). Two LoRAs (lightx2v distill 6-step turbo + relight); ModelSamplingSD3
 // shift 8; optional torch.compile.
 // SAM2 positive-seed point for Replace mode. maskPoint = {x,y} normalized 0–1 (the
@@ -4060,7 +4077,7 @@ function animateSeedPoint(maskPoint, width, height) {
   return JSON.stringify([{ x, y }]);
 }
 
-function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, fps, torchCompile = false, chunks, replace = false, relightStrength = 1, maskPoint = null }) {
+function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageName, width, height, seed, fps, torchCompile = false, chunks, replace = false, relightStrength = 1, maskPoint = null, incrementalSave = true }) {
   const neg = negative && negative.trim() ? negative : WAN_DEFAULT_NEGATIVE;
   // Relight LoRA strength: how hard the character is re-lit to match the scene
   // (0 = keep the reference image's own lighting, 1 = full default). Clamped 0–2.
@@ -4124,7 +4141,7 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
   let accFrames = null;   // [nodeId, 0] of frames accumulated so far (ImageBatch)
   let prevAnim = null, prevFrames = null;
   segs.forEach((ck, k) => {
-    const b = 100 + k * 10;
+    const b = animateSegBase(k);
     const A = String(b), S = String(b + 1), T = String(b + 2), D = String(b + 3), F = String(b + 4);
     const animInputs = { positive: ["8", 0], negative: ["9", 0], vae: ["6", 0], clip_vision_output: ["11", 0], reference_image: ["10", 0], face_video: ["16", 0], pose_video: ["17", 0], width, height, length: ck.length, batch_size: 1, continue_motion_max_frames: 5, video_frame_offset: k === 0 ? 0 : [prevAnim, 5] };
     if (replace) { animInputs.background_video = ["34", 0]; animInputs.character_mask = ["33", 0]; }
@@ -4134,13 +4151,27 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
     wf[T] = { class_type: "TrimVideoLatent", inputs: { samples: [S, 0], trim_amount: [A, 3] } };
     wf[D] = { class_type: "VAEDecode", inputs: { samples: [T, 0], vae: ["6", 0] } };
     wf[F] = { class_type: "ImageFromBatch", inputs: { image: [D, 0], batch_index: [A, 4], length: 4096 } };
-    if (k === 0) accFrames = [F, 0];
+    if (incrementalSave) {
+      // Write this chunk NOW, silent, at the source fps — its decoded frames stop being
+      // pinned until the end of the graph. Identical in shape to buildScail2's incremental
+      // tail (only the node stride differs), and the app joins the clips and lays the
+      // soundtrack over them the same way. NOTE this fixes the OUTPUT side only: Animate's
+      // input side keeps the whole source resident in FOUR nodes (15 decode, 13 scale, 16/17
+      // DWPose; Replace adds 33/34), which no per-chunk save can touch — see the header.
+      const CV = String(b + 6), SV = String(b + 7);
+      wf[CV] = { class_type: "CreateVideo", inputs: { images: [F, 0], fps: ["15", 2] } };
+      wf[SV] = { class_type: "SaveVideo", inputs: { video: [CV, 0], filename_prefix: "heykoko_animate", format: "auto", codec: "auto" } };
+    } else if (k === 0) accFrames = [F, 0];
     else { const B = String(b + 5); wf[B] = { class_type: "ImageBatch", inputs: { image1: accFrames, image2: [F, 0] } }; accFrames = [B, 0]; }
     prevAnim = A; prevFrames = F;
   });
-  // Single CreateVideo over all accumulated frames — output keeps the SOURCE fps+audio.
-  wf["90"] = { class_type: "CreateVideo", inputs: { images: accFrames, audio: ["15", 1], fps: ["15", 2] } };
-  wf["91"] = { class_type: "SaveVideo", inputs: { video: ["90", 0], filename_prefix: "heykoko_animate", format: "auto", codec: "auto" } };
+  // Legacy single-output tail (⚙ "Long-clip memory" = Off): one CreateVideo over an
+  // ImageBatch of every chunk, keeping the SOURCE fps+audio. Correct, but the accumulation
+  // is what cannot scale.
+  if (!incrementalSave) {
+    wf["90"] = { class_type: "CreateVideo", inputs: { images: accFrames, audio: ["15", 1], fps: ["15", 2] } };
+    wf["91"] = { class_type: "SaveVideo", inputs: { video: ["90", 0], filename_prefix: "heykoko_animate", format: "auto", codec: "auto" } };
+  }
   return wf;
 }
 
@@ -4909,6 +4940,97 @@ function comfyExecError(status) {
   return "ComfyUI execution error (no details provided)";
 }
 
+// Subscribe to ComfyUI's WebSocket and record which of `wanted` save-nodes have
+// finished, and what file each one wrote.
+//
+// WHY THIS EXISTS — /history is not enough. MEASURED: once a prompt ends in `error`,
+// its /history entry carries an EMPTY `outputs`, even for nodes that completed and
+// already wrote their file to disk. Interrupting (the Stop button, the timeout path)
+// ends the same way. So after any failure the finished segments are sitting in
+// ComfyUI's output folder with no way to learn their filenames — and without a
+// filename there is nothing to fetch. The `executed` event carries the filename at
+// the moment each node finishes, which makes it the only source that survives.
+//
+// Entirely best-effort: a socket that will not open costs nothing but the ability to
+// recover. Preview frames arrive as binary and are skipped.
+function watchComfyExecuted(clientId, wanted) {
+  const seen = new Map(); // nodeId → { filename, subfolder, type }
+  let ws = null;
+  try {
+    const url = currentComfyUrl().replace(/^http/i, "ws") + `/ws?clientId=${encodeURIComponent(clientId)}`;
+    ws = new WebSocket(url);
+    ws.onmessage = (e) => {
+      if (typeof e.data !== "string") return; // binary = live preview frame
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      if (m.type !== "executed" || !m.data) return;
+      const nid = String(m.data.node ?? "");
+      if (!wanted.has(nid)) return;
+      const out = m.data.output || {};
+      const f = [...(out.images || []), ...(out.gifs || [])].find((x) => x && x.type !== "temp");
+      if (f) seen.set(nid, f);
+    };
+    ws.onerror = () => {};
+  } catch { /* no socket → no recovery, everything else proceeds */ }
+  return { seen, close() { try { ws && ws.close(); } catch { /* already gone */ } } };
+}
+
+// Salvage a render that died partway: join the segments that DID finish.
+//
+// TWO SOURCES, unioned, because neither alone is reliable:
+//   • the ws `executed` events — recorded live, so they survive even ComfyUI being
+//     OOM-killed (the process dies before it ever writes a history entry);
+//   • /history — MEASURED to sometimes still list the finished nodes after an `error`
+//     and sometimes to be completely empty, depending on where the failing node fell in
+//     the execution order. Two runs of the same shape gave both results, so it is a
+//     supplement, never the primary.
+//
+// Only a CONTIGUOUS PREFIX is usable. The soundtrack is laid over the joined picture
+// from its start, so dropping segment k and keeping k+1 would put everything after the
+// hole out of sync with the audio — worse than returning less. Stopping at the first
+// gap yields a shorter but honest clip.
+//
+// Returns { buf, codec, done, total } or null when nothing is salvageable.
+async function mergeFinishedPrefix(watcher, merge, promptId, wantCodec, crf, signal) {
+  if (!merge) return null;
+  const found = new Map(watcher ? watcher.seen : []);
+  if (promptId) {
+    try {
+      const r = await fetch(`${currentComfyUrl()}/history/${promptId}`, { signal });
+      if (r.ok) {
+        const outs = (await r.json())[promptId]?.outputs || {};
+        for (const nid of merge.saveNodeIds) {
+          if (found.has(nid)) continue;
+          const o = outs[nid] || {};
+          const f = [...(o.images || []), ...(o.gifs || [])].find((x) => x && x.type !== "temp");
+          if (f) found.set(nid, f);
+        }
+      }
+    } catch { /* ws-only then */ }
+  }
+  const files = [];
+  for (const nid of merge.saveNodeIds) {
+    const f = found.get(nid);
+    if (!f) break; // first gap ends the prefix
+    files.push(f);
+  }
+  if (!files.length) return null;
+  const bufs = [];
+  for (const f of files) {
+    try {
+      const params = new URLSearchParams({ filename: f.filename, subfolder: f.subfolder || "", type: f.type || "output" });
+      const r = await fetch(`${currentComfyUrl()}/view?${params}`, { signal });
+      if (!r.ok) break;
+      bufs.push(Buffer.from(await r.arrayBuffer()));
+    } catch { break; }
+  }
+  if (!bufs.length) return null;
+  const srcBuf = await fetchComfyInputFile(merge.sourceName, signal);
+  const merged = await mergeScail2Segments(bufs, srcBuf, wantCodec, crf, signal);
+  if (!merged) return null;
+  console.log(`[comfy] ${merge.label}: salvaged ${bufs.length}/${merge.saveNodeIds.length} finished segments after an interrupted render`);
+  return { ...merged, done: bufs.length, total: merge.saveNodeIds.length };
+}
+
 // Poll /history until the queued prompt reports outputs (or it errors / times out /
 // aborts). On a ComfyUI execution error we throw the real message (not poll to a
 // misleading timeout); we only return empty outputs once the run is truly completed.
@@ -4947,6 +5069,12 @@ async function generateComfyImage(req, res) {
   let videoCodecUsed = null;   // "h264" | "h265" — codec the video was actually saved as
   let videoCodecNote = null;   // "vhs-missing" when a h265 request fell back to native h264
   let scailStreamNote = null;  // "vhs-missing" when per-window source streaming wasn't available
+  // Salvage state, hoisted out of the inner try so the catch below can reach it: the
+  // whole point is to still deliver something when the render did NOT finish.
+  let segmentMerge = null;   // { label, saveNodeIds, sourceName } once a chunked graph is built
+  let execWatcher = null;    // ws subscription recording which segments finished
+  let salvageCodec = "h264", salvageCrf = 0;
+  let salvagePromptId = null; // the queued prompt, so the catch can re-query /history
   let precisionNote = null; // set only when those differ from the ⚙ request
   try {
     const body = await readBody(req);
@@ -5101,10 +5229,10 @@ async function generateComfyImage(req, res) {
       let imagesUsed = 0;   // how many input images the video path actually consumed
       let stillMode = false; // single-frame Wan Animate → return an IMAGE, not a video
       let paintGlb = null;   // Hunyuan3D texturing: filename_prefix of a GLB /history won't report
-      // SCAIL-2 incremental save: { saveNodeIds, sourceName } — the graph wrote one silent
-      // clip per window and the finished video is assembled here instead. Also the flag
-      // that keeps the single-output tail rewrites off this workflow (see below).
-      let scail2Merge = null;
+      // (segmentMerge is declared at function scope — the catch needs it to salvage a
+      // render that dies partway.) It holds { label, saveNodeIds, sourceName } once a
+      // chunked graph is built, and also keeps the single-output tail rewrites off that
+      // workflow (see below).
       let meshViewKind = null; // how the viewer should place its camera, set by the mesh branch
       let panoDims = null;     // the 360 recipe forces its own 2:1 size; the log should say so
       let panoOutpaintUsed = 0; // set only when a photo was grown into the panorama
@@ -5385,7 +5513,7 @@ async function generateComfyImage(req, res) {
         });
         // Node id → segment order. NOT filenames: stampOutputPrefix gives every SaveVideo
         // the same prefix, so ComfyUI's counter is all that separates them.
-        if (incrementalSave) scail2Merge = { saveNodeIds: segments.map((_, k) => scail2SaveNodeId(k)), sourceName: videoName };
+        if (incrementalSave) segmentMerge = { label: "SCAIL-2", saveNodeIds: segments.map((_, k) => scail2SaveNodeId(k)), sourceName: videoName };
         videoDims = { width: aw, height: ah, length: totalFrames, fps: sfps, segments: segments.length };
         if (truncatedFrom) videoDims.truncatedFrom = truncatedFrom;
       } else if (videoType === "animate" && !sourceVideo && !sourceVideoName) {
@@ -5436,6 +5564,20 @@ async function generateComfyImage(req, res) {
         // Wan Animate MOVE (pose transfer): reference person image + source video
         // (the motion) → the character does the video's motion. Needs BOTH.
         if (!(Array.isArray(images) && images.length)) { sendJson(res, 400, { error: "Wan Animate needs a person reference image (plus an attached motion source video)." }); return; }
+        // ⚙ long-clip memory. Animate shares the knob with SCAIL-2 but only has the OUTPUT
+        // half of the problem to fix, so "stream" and "incremental" mean the same thing
+        // here — the source-streaming half does not port (see buildWanAnimate's header).
+        const animIncremental = opts.scailMemoryMode !== "off";
+        // FAIL FAST, before anything is uploaded — same reason as SCAIL-2: the clips are
+        // joined here after the render, so a missing binary must not surface an hour later.
+        if (animIncremental) {
+          const missing = [];
+          for (const tool of ["ffmpeg", "ffprobe"]) if (!(await hasLocalTool(tool))) missing.push(tool);
+          if (missing.length) {
+            sendJson(res, 400, { error: `Wan Animate needs ${missing.join(" and ")} on this machine (the one running hey-koko, not the ComfyUI box) to join the rendered chunks and lay the soundtrack over them. Install it (macOS: brew install ffmpeg) — or set ⚙ "Long-clip memory" to Off, which has ComfyUI write one finished file and needs no ffmpeg at all, at the cost of holding every chunk in memory (long clips will run out of it).` });
+            return;
+          }
+        }
         const comp = await animateCompanions();
         // Output follows the SOURCE video's aspect (the pose is scaled to it), at
         // the preset budget (or --size budget). Both dims must be /16.
@@ -5481,7 +5623,9 @@ async function generateComfyImage(req, res) {
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         const refImageName = await uploadImage(images[0], controller.signal);
         imagesUsed = 1;
-        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, fps: afps, torchCompile: !!opts.torchCompile, chunks, replace: animateReplace, relightStrength: opts.relightStrength, maskPoint: opts.maskPoint });
+        workflow = buildWanAnimate({ model, prompt, negative: negative_prompt || "", comp, videoName, refImageName, width: aw, height: ah, seed, fps: afps, torchCompile: !!opts.torchCompile, chunks, replace: animateReplace, relightStrength: opts.relightStrength, maskPoint: opts.maskPoint, incrementalSave: animIncremental });
+        // Node id → chunk order. NOT filenames — see animateSaveNodeId.
+        if (animIncremental) segmentMerge = { label: "Wan Animate", saveNodeIds: chunks.map((_, k) => animateSaveNodeId(k)), sourceName: videoName };
         videoDims = { width: aw, height: ah, length: totalFrames, fps: afps, segments: chunks.length };
         if (truncatedFrom) videoDims.truncatedFrom = truncatedFrom;
       } else if (videoType === "phantom") {
@@ -6244,7 +6388,7 @@ async function generateComfyImage(req, res) {
       // are intermediates, and mergeScail2Segments re-encodes the joined result anyway, so
       // it is the one that honours ⚙ codec/CRF (and reports what it actually used).
       const isVideoTail = !meshType && Object.values(workflow).some((n) => n.class_type === "CreateVideo");
-      if (isVideoTail && !scail2Merge) {
+      if (isVideoTail && !segmentMerge) {
         const wantCodec = opts.videoCodec === "h265" ? "h265" : "h264";
         const crf = Number(opts.videoCrf) || 0;
         const vhsOk = await comfyHasNodes(["VHS_VideoCombine"]);
@@ -6263,6 +6407,15 @@ async function generateComfyImage(req, res) {
         // The panorama recipe is a sentinel, not a checkpoint; name the file after
         // the checkpoint it actually generated with.
         panoDims ? (panoBase || model) : model);
+
+      // Subscribe BEFORE queueing — a segment that finishes between the POST and the
+      // subscription would otherwise never be recorded, and it is exactly the early
+      // segments that survive an interrupted render.
+      if (segmentMerge) {
+        salvageCodec = opts.videoCodec === "h265" ? "h265" : "h264";
+        salvageCrf = Number(opts.videoCrf) || 0;
+        execWatcher = watchComfyExecuted(clientId, new Set(segmentMerge.saveNodeIds));
+      }
 
       // Queue the prompt.
       const queueResp = await fetch(`${currentComfyUrl()}/prompt`, {
@@ -6284,6 +6437,7 @@ async function generateComfyImage(req, res) {
         return;
       }
       const promptId = queued.prompt_id;
+      salvagePromptId = promptId;
       if (!promptId) {
         sendJson(res, 502, { error: "ComfyUI did not return a prompt_id" });
         return;
@@ -6298,14 +6452,14 @@ async function generateComfyImage(req, res) {
       const outMeshes = [], meshMimes = [], meshNames = [];
       let videoMime = "video/mp4";
       let firstVideoBuf = null; // kept to ffprobe the real output frame count (animate chunking)
-      // SCAIL-2 incremental save: N silent clips → one video with the source soundtrack.
+      // Incremental save (SCAIL-2 / Wan Animate): N silent clips → one video + source audio.
       // Done BEFORE the generic collector, which would otherwise hand the client the raw
       // segments as separate videos; their node ids are then skipped there.
       let skipNodes = null;
-      if (scail2Merge) {
+      if (segmentMerge) {
         const segBufs = [];
         const missing = [];
-        for (const nodeId of scail2Merge.saveNodeIds) {
+        for (const nodeId of segmentMerge.saveNodeIds) {
           const entry = outputs[nodeId] || {};
           const file = [...(entry.images || []), ...(entry.gifs || [])].find((f) => f.type !== "temp");
           if (!file) { missing.push(nodeId); continue; }
@@ -6316,15 +6470,15 @@ async function generateComfyImage(req, res) {
         }
         // A hole in the middle would splice the clip together across a gap and put the
         // rest of it out of sync with the audio — refuse rather than ship that silently.
-        if (missing.length || segBufs.length !== scail2Merge.saveNodeIds.length) {
-          sendJson(res, 502, { error: `SCAIL-2 rendered ${segBufs.length} of ${scail2Merge.saveNodeIds.length} segments — nothing came back from save node(s) ${missing.join(", ") || "?"}. The finished segments are in ComfyUI's output folder (heykoko_vid/) and can be joined by hand; set ⚙ "Long-clip memory" to Off to go back to the single-file path.` });
+        if (missing.length || segBufs.length !== segmentMerge.saveNodeIds.length) {
+          sendJson(res, 502, { error: `${segmentMerge.label} rendered ${segBufs.length} of ${segmentMerge.saveNodeIds.length} segments — nothing came back from save node(s) ${missing.join(", ") || "?"}. The finished segments are in ComfyUI's output folder (heykoko_vid/) and can be joined by hand; set ⚙ "Long-clip memory" to Off to go back to the single-file path.` });
           return;
         }
         const wantCodec = opts.videoCodec === "h265" ? "h265" : "h264";
-        const srcBuf = await fetchComfyInputFile(scail2Merge.sourceName, controller.signal);
+        const srcBuf = await fetchComfyInputFile(segmentMerge.sourceName, controller.signal);
         const merged = await mergeScail2Segments(segBufs, srcBuf, wantCodec, Number(opts.videoCrf) || 0, controller.signal);
         if (!merged) {
-          sendJson(res, 502, { error: `SCAIL-2 rendered all ${segBufs.length} segments but ffmpeg could not join them (is ffmpeg installed and on PATH?). The segments are in ComfyUI's output folder (heykoko_vid/) — nothing was lost. Set ⚙ "Long-clip memory" to Off to have ComfyUI write one file instead.` });
+          sendJson(res, 502, { error: `${segmentMerge.label} rendered all ${segBufs.length} segments but ffmpeg could not join them (is ffmpeg installed and on PATH?). The segments are in ComfyUI's output folder (heykoko_vid/) — nothing was lost. Set ⚙ "Long-clip memory" to Off to have ComfyUI write one file instead.` });
           return;
         }
         firstVideoBuf = merged.buf;
@@ -6333,7 +6487,7 @@ async function generateComfyImage(req, res) {
         // Asked for H.265, got H.264 — same wording the VHS-absent path uses, since it is
         // the same outcome: the request degraded instead of failing the render.
         if (wantCodec === "h265" && merged.codec !== "h265") videoCodecNote = "vhs-missing";
-        skipNodes = new Set(scail2Merge.saveNodeIds);
+        skipNodes = new Set(segmentMerge.saveNodeIds);
       }
       for (const nodeId of Object.keys(outputs)) {
         if (skipNodes && skipNodes.has(nodeId)) continue; // already merged above
@@ -6471,8 +6625,31 @@ async function generateComfyImage(req, res) {
       }
     } finally {
       clearTimeout(timeout);
+      if (execWatcher) execWatcher.close();
     }
   } catch (error) {
+    // SALVAGE. A chunked render writes each segment to disk as it finishes, so a failure
+    // partway through — an OOM in a later segment, the ⚙ timeout, ComfyUI interrupted —
+    // does not destroy what already rendered. Join the finished PREFIX and return that
+    // instead of only an error message; an hour of GPU time is worth more than a clean
+    // failure. Deliberately BEFORE the clientGone check: it costs nothing to attempt, and
+    // the log line records what was salvaged even when the socket is gone.
+    if (segmentMerge) {
+      try {
+        const partial = await mergeFinishedPrefix(execWatcher, segmentMerge, salvagePromptId, salvageCodec, salvageCrf, undefined);
+        if (partial && !clientGone && !res.writableEnded) {
+          const why = error.name === "AbortError" ? "was stopped or timed out" : "failed partway";
+          sendJson(res, 200, {
+            videos: [partial.buf.toString("base64")], videoMime: "video/mp4",
+            model: undefined, videoCodec: partial.codec,
+            // The client shows this as a warning next to the clip: the render is INCOMPLETE.
+            partial: { done: partial.done, total: partial.total, reason: String(error.message || why).slice(0, 400) },
+          });
+          return;
+        }
+      } catch { /* salvage is best-effort — fall through to the real error */ }
+      finally { if (execWatcher) execWatcher.close(); }
+    }
     if (clientGone || res.writableEnded) return; // client already disconnected — nothing to send
     if (error.name === "AbortError") {
       sendJson(res, 504, { error: isVideoReq
@@ -6616,4 +6793,4 @@ async function comfyAutoMask(req, res) {
 module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, uploadComfyAudio, comfyAutoMask };
 // TEMP (SCAIL-2 single-window ceiling test harness — REVERT after): expose the real
 // builder + companion resolver so a Node harness reuses the verified graph topology.
-module.exports._scailTest = { buildScail2, hasLocalTool, scail2Companions, scail2SaveNodeId, scail2Segments, mergeScail2Segments, applyVfi, config };
+module.exports._scailTest = { buildWanAnimate, animateSaveNodeId, buildScail2, hasLocalTool, scail2Companions, scail2SaveNodeId, scail2Segments, mergeScail2Segments, applyVfi, config };

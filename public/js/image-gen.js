@@ -687,6 +687,11 @@ export function extractKeyFrames(src, count = 8, quality = 0.72, maxSide = 1280)
 // queued workflow keeps running on the GPU. /interrupt kills the running prompt
 // and clearing the queue drops anything still pending (e.g. a batch). comfyHost
 // is "host:port" (no protocol). Best-effort.
+// How long Stop waits for the server to hand back the salvaged part of a chunked render
+// before the connection is cut for real. Long enough to fetch the finished segments and
+// stream-copy them together; short enough that a truly stuck server still releases the UI.
+const SALVAGE_GRACE_MS = 45000;
+
 function interruptComfy(comfyHost) {
   if (!comfyHost) return;
   const proto = location.protocol === "https:" ? "https:" : "http:";
@@ -1072,8 +1077,21 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // re-subscribes to the SAME running prompt's progress (else it resets to 0%).
   const clientId = (sink.server && sink.server.comfyClientId)
     || (crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`);
-  // Stop button → abort: also tell ComfyUI to interrupt the running render.
-  abortController.signal.addEventListener("abort", () => interruptComfy(comfyHost), { once: true });
+  // Stop button → tell ComfyUI to interrupt the running render.
+  //
+  // But do NOT tear our own request down with it. A chunked long-video render writes each
+  // segment to disk as it finishes, and the server joins whatever finished into a shorter
+  // clip — killing the socket here is precisely what would throw that work away, because
+  // the response has nowhere to go once the connection is closed. So Stop gets a grace
+  // window: ComfyUI is interrupted immediately, the server salvages and replies, and only
+  // if it stays silent past the window do we actually cut the connection.
+  const graceCtl = new AbortController();
+  let graceTimer = null;
+  abortController.signal.addEventListener("abort", () => {
+    interruptComfy(comfyHost);
+    try { sink.label(t("msg_stoppingSalvage")); sink.indeterminate(true); } catch { /* bubble may be gone */ }
+    graceTimer = setTimeout(() => graceCtl.abort(), SALVAGE_GRACE_MS);
+  }, { once: true });
   // OVERALL progress + ETA. A chained render emits a fresh 0→max KSampler progress per
   // chunk; we detect each chunk boundary (value resets). The bar shows overall progress
   // across all `estPasses`. The ETA is paced by the MEASURED per-chunk WALL time (which
@@ -1241,6 +1259,19 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     } else if (lastData.videoCodec === "h264" && lastData.videoCodecNote === "vhs-missing") {
       doneLine += `\n${t("msg_videoH265Fallback", {}, plang)}`;
     }
+    // INCOMPLETE render. The chunked long-video path writes each segment as it finishes,
+    // so a render that dies partway (OOM in a later segment, timeout, Stop) still returns
+    // the finished prefix. Say so loudly — the clip is shorter than asked for, and that
+    // must not be mistaken for a successful render.
+    if (lastData.partial && lastData.partial.total) {
+      doneLine += `\n${t("msg_partialRender", { done: lastData.partial.done, total: lastData.partial.total }, plang)}`;
+    }
+    // Per-window source streaming was requested but VideoHelperSuite is absent on that
+    // box, so the whole source was decoded instead — the memory ceiling it exists to
+    // avoid is back, and on a long source that is the difference between finishing or not.
+    if (lastData.scailStreamNote === "vhs-missing") {
+      doneLine += `\n${t("msg_scailStreamFallback", {}, plang)}`;
+    }
     if (lastData.ltxLora && lastData.ltxLora.name) {
       doneLine += `\n${t("msg_ltxLoraUsed", { lora: stripModelExt(lastData.ltxLora.name), strength: lastData.ltxLora.strength }, plang)}`;
     }
@@ -1365,8 +1396,8 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     // POSTs a FRESH server job and gets a DISTINCT clip — otherwise they'd reuse sub-run 0's
     // serverJobId, skip the POST, and re-resolve the SAME video N times.
     return sink.server
-      ? comfyFetch(vbody, { bgJob: isFirstSubRun ? sink.server.bgJob : null, kind: "video", comfyUrl: comfyHost, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, clientId, signal: abortController.signal })
-      : fetch("/api/generate-comfy", { method: "POST", headers: { "Content-Type": "application/json" }, signal: abortController.signal, body: JSON.stringify(vbody) });
+      ? comfyFetch(vbody, { bgJob: isFirstSubRun ? sink.server.bgJob : null, kind: "video", comfyUrl: comfyHost, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, clientId, signal: graceCtl.signal })
+      : fetch("/api/generate-comfy", { method: "POST", headers: { "Content-Type": "application/json" }, signal: graceCtl.signal, body: JSON.stringify(vbody) });
   };
 
   // Wan Animate / SCAIL-2: more chained frames than fit in one pass → generated as
@@ -1434,6 +1465,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     }
     setAvatarState("idle");
   } finally {
+    if (graceTimer) clearTimeout(graceTimer);
     clearTimeout(_progStall);
     sink.clearBubble();
     sink.done();

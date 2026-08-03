@@ -1325,7 +1325,8 @@ export function updateComfyParamVisibility() {
                     dom.comfyParamScailSortBy, dom.comfyParamScailRecipe, dom.comfyParamScailWindow, dom.comfyParamPoseStrength, dom.comfyParamPoseStart,
                     dom.comfyParamPoseEnd]) setVis(el, scail2);
   // Same family, but a checkbox — it needs the .comfyParamCheck box, not its <label>.
-  setVis(dom.comfyParamScailMemory, scail2);
+  // 长片内存策略:SCAIL-2 与 Wan Animate 共用(两者都有输出侧累积的问题)。
+  setVis(dom.comfyParamScailMemory, scail2 || animate);
   updateScailWindowWarning();
   // Upscale-model pipelines only (image-upscale / video-enhance) — the upscale-denoise % + the upscale-model picker.
   for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel]) setVis(el, upscale);
