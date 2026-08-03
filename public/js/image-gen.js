@@ -145,6 +145,7 @@ function comfyOverrides() {
   const scailIndices = (dom.comfyParamScailIndices?.value || "").trim();
   if (scailIndices) ov.scailIndices = scailIndices;               // which tracked subjects, e.g. "0,2" (empty = all)
   if (dom.comfyParamScailSortBy?.value) ov.scailSortBy = dom.comfyParamScailSortBy.value; // identity ordering
+  if (dom.comfyParamScailRecipe?.value) ov.scailRecipe = dom.comfyParamScailRecipe.value; // steps + distill strength
   const poseStrength = num(dom.comfyParamPoseStrength?.value);
   if (poseStrength !== undefined) ov.poseStrength = poseStrength;
   const poseStart = num(dom.comfyParamPoseStart?.value);

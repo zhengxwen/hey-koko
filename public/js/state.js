@@ -109,6 +109,7 @@ export const dom = {
   comfyParamScailMaxObjects: document.querySelector("#comfyParamScailMaxObjects"),
   comfyParamScailIndices: document.querySelector("#comfyParamScailIndices"),
   comfyParamScailSortBy: document.querySelector("#comfyParamScailSortBy"),
+  comfyParamScailRecipe: document.querySelector("#comfyParamScailRecipe"),
   comfyParamPoseStrength: document.querySelector("#comfyParamPoseStrength"),
   comfyParamPoseStart: document.querySelector("#comfyParamPoseStart"),
   comfyParamPoseEnd: document.querySelector("#comfyParamPoseEnd"),

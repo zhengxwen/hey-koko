@@ -3589,7 +3589,7 @@ function scail2Segments(total, cap = SCAIL2_FRAMES) {
   return segs.length ? segs : [{ offset: 0, length: per }];
 }
 
-function buildScail2({ model, prompt, negative, comp, videoName, refImageName, refImageNames, width, height, seed, segments, replace = false, turbo = true, poseStrength = 1, poseStart = 0, poseEnd = 1, sam3VideoObject = "human", sam3ImageObject = "", objectIndices = "", sortBy = "left_to_right", detectionThreshold = 0.5, maxObjects = 4, torchCompile = false }) {
+function buildScail2({ model, prompt, negative, comp, videoName, refImageName, refImageNames, width, height, seed, segments, replace = false, turbo = true, scailRecipe = "balanced", poseStrength = 1, poseStart = 0, poseEnd = 1, sam3VideoObject = "human", sam3ImageObject = "", objectIndices = "", sortBy = "left_to_right", detectionThreshold = 0.5, maxObjects = 4, torchCompile = false }) {
   const segs = (Array.isArray(segments) && segments.length) ? segments : [{ offset: 0, length: SCAIL2_FRAMES }];
   // Clamp to the node's own declared ranges — a ⚙ field is free text until it isn't.
   const clamp = (v, lo, hi, dflt) => (typeof v === "number" && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt);
@@ -3620,8 +3620,23 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
   // The template leaves the negative EMPTY (cfg 1 in turbo, so it does nothing);
   // honour an explicit one for the 40-step/cfg-5 non-turbo path.
   const neg = negative && negative.trim() ? negative : "";
-  const steps = turbo ? 6 : 40;
-  const cfg = turbo ? 1 : 5;
+  // Three sampling recipes. `turbo` (both here and the ⚙ default) means "balanced", which is
+  // what this builder has always shipped; "fast" is the recipe lightx2v publishes for its own
+  // step-distill LoRA; "off" drops the LoRA and runs the undistilled 40-step/cfg-5 path.
+  //
+  // Measured on the RTX 5090 at 736x1280 (same seed, sage on, arms back to back):
+  //   balanced  6 steps / 0.8   164s   sharpness 0.888
+  //   fast      4 steps / 1.0   114s   sharpness 0.920   -> 1.44x faster AND marginally sharper
+  //   off       40 steps / cfg 5      never measured; ~13x more DiT forward passes than
+  //                                   balanced (40x2 with CFG vs 6x1 — cfg 1 makes ComfyUI
+  //                                   skip the uncond pass, comfy/samplers.py:609)
+  // "fast" is not the default because that comparison covers one source clip on plain
+  // background; step count fails on hard content first, and that has not been ruled out.
+  const recipe = ["fast", "off"].includes(scailRecipe) ? scailRecipe : "balanced";
+  const useDistill = turbo && recipe !== "off";
+  const steps = !useDistill ? 40 : (recipe === "fast" ? 4 : 6);
+  const cfg = useDistill ? 1 : 5;
+  const distillStrength = recipe === "fast" ? 1 : 0.8;
   const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
     // The DPO (quality) LoRA is ALWAYS applied; the distill LoRA is the turbo branch.
@@ -3657,8 +3672,8 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
     refBatch = [B, 0];
   });
   wf["23"].inputs.images = refBatch;
-  if (turbo) wf["3"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraDistill, strength_model: 0.8 } };
-  const modelSrc = turbo ? "3" : "2";
+  if (useDistill) wf["3"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["2", 0], lora_name: comp.loraDistill, strength_model: distillStrength } };
+  const modelSrc = useDistill ? "3" : "2";
   // Optional torch.compile. LIVE-MEASURED on the DGX Spark: compiled segments run ~2x
   // faster (163s -> 80s per 81-frame segment at 432x768) for a one-time ~80s compile, so
   // a 3-segment run went 490s -> 319s (1.53x) and longer runs approach 2x.
@@ -5009,6 +5024,7 @@ async function generateComfyImage(req, res) {
           sam3ImageObject: opts.scailRefSubject,
           objectIndices: opts.scailIndices,
           sortBy: opts.scailSortBy,
+          scailRecipe: opts.scailRecipe,
           poseStrength: opts.poseStrength,
           poseStart: opts.poseStart,
           poseEnd: opts.poseEnd,
