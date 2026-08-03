@@ -150,20 +150,30 @@ function hasLocalTool(name) {
 // whenever the render covered less than the whole source (a ⚙ length, or a tail window
 // too short to keep).
 //
-// The concat FILTER re-encodes rather than the concat demuxer's stream copy. The copy
-// path needs byte-identical codec parameters across inputs, and the last window is
-// routinely a different length (and after ⚙ frame interpolation a different frame count
-// per clip), so a silent failure there would be worse than the one re-encode — which is
-// also the natural place to honour ⚙ H.265, since the per-segment files are throwaway
-// intermediates.
+// STREAM COPY FIRST. Every segment comes out of the SAME CreateVideo + SaveVideo
+// configuration, so their codec parameters should match and the concat DEMUXER can splice
+// them without touching a pixel — the picture then carries exactly ONE generation of
+// encoding, ComfyUI's, same as the legacy single-file path. Re-encoding would add a
+// second. (An earlier version of this went straight to the concat FILTER, reasoning that
+// the differing segment lengths made copy unsafe; that reasoning was wrong — the demuxer
+// cares about codec parameters, not duration.)
+//
+// The parameters are CHECKED rather than assumed, and the check cannot be delegated to
+// ffmpeg: MEASURED, the concat demuxer happily stream-copies two clips of DIFFERENT
+// RESOLUTIONS without any error, producing a file whose picture size changes partway
+// through — worse than a failure, because it looks like success. So every segment is
+// probed and copy runs only if the whole set agrees; anything else re-encodes, which is
+// also the path an ⚙ H.265 request must take anyway (the segments are H.264 — the
+// per-segment files are throwaway intermediates the codec rewrite deliberately skips).
 //
 // `bufs` must be IN SEGMENT ORDER. `srcBuf` is the audio donor (may be silent or null).
-// Returns { buf, codec } — codec being what actually encoded, since an H.265 request
-// falls back to H.264 rather than failing the render — or null if ffmpeg failed.
+// Returns { buf, codec } — codec being what the picture ACTUALLY is, since an H.265
+// request falls back to H.264 rather than failing the render — or null if ffmpeg failed.
 async function mergeScail2Segments(bufs, srcBuf, wantCodec, crf, signal) {
   const id = crypto.randomUUID();
   const segPaths = bufs.map((_, i) => path.join(os.tmpdir(), `hk_scail_${id}_${String(i).padStart(3, "0")}.mp4`));
   const srcPath = path.join(os.tmpdir(), `hk_scail_${id}_src.mp4`);
+  const listPath = path.join(os.tmpdir(), `hk_scail_${id}_list.txt`);
   const outPath = path.join(os.tmpdir(), `hk_scail_${id}_out.mp4`);
   try {
     await Promise.all(bufs.map((b, i) => fsp.writeFile(segPaths[i], b)));
@@ -173,40 +183,115 @@ async function mergeScail2Segments(bufs, srcBuf, wantCodec, crf, signal) {
       if (hasAudio) await fsp.writeFile(srcPath, srcBuf);
     }
     const n = bufs.length;
-    const filter = bufs.map((_, i) => `[${i}:v]`).join("") + `concat=n=${n}:v=1:a=0[v]`;
-    const inputs = [];
-    for (const p of segPaths) inputs.push("-i", p);
-    if (hasAudio) inputs.push("-i", srcPath);
-    const run = (vcodec) => new Promise((resolve) => {
-      const args = ["-y", ...inputs, "-filter_complex", filter, "-map", "[v]"];
-      if (hasAudio) args.push("-map", `${n}:a`, "-c:a", "aac", "-shortest");
-      args.push(...vcodec, "-pix_fmt", "yuv420p", outPath);
-      const p = spawn("ffmpeg", args, signal ? { signal } : undefined);
+    const ffmpeg = (args, tag) => new Promise((resolve) => {
+      const p = spawn("ffmpeg", ["-y", ...args, outPath], signal ? { signal } : undefined);
       let err = "";
       p.stderr.on("data", (d) => { err += d; });
       p.on("close", (code) => {
-        if (code !== 0) console.log(`[comfy] scail2 merge failed (${vcodec.join(" ")}): ${err.trim().split("\n").slice(-3).join(" | ")}`);
+        if (code !== 0) console.log(`[comfy] scail2 merge ${tag} failed: ${err.trim().split("\n").slice(-3).join(" | ")}`);
         resolve(code === 0);
       });
       p.on("error", () => resolve(false));
     });
-    let ok = false, codec = "h264";
+
+    // 1) Stream copy, but only over a set that genuinely agrees — see the header: the
+    //    demuxer will NOT refuse a mismatch. The list file's paths are ours (a UUID +
+    //    index), so they cannot contain the quote that would need escaping here.
+    const tryCopy = async () => {
+      const sigs = await Promise.all(segPaths.map(videoParamsOf));
+      if (!sigs[0] || !sigs.every((s) => s === sigs[0])) {
+        console.log(`[comfy] scail2: segments differ (${[...new Set(sigs)].join(" vs ")}) — re-encoding instead of stream copy`);
+        return false;
+      }
+      await fsp.writeFile(listPath, segPaths.map((p) => `file '${p}'`).join("\n") + "\n");
+      const args = ["-f", "concat", "-safe", "0", "-i", listPath];
+      if (hasAudio) args.push("-i", srcPath, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest");
+      else args.push("-c", "copy");
+      return ffmpeg(args, "stream-copy");
+    };
+    // 2) Re-encode via the concat filter. Every input is scaled to segment 0's size first:
+    //    where the demuxer silently accepts a size change, the FILTER refuses outright
+    //    ("Input link parameters do not match"), so without this the mismatch that made us
+    //    skip the copy would take the fallback down with it and the render would be lost.
+    //    A scale to the size the clip already is costs nothing.
+    const size0 = await videoSizeOf(segPaths[0]);
+    const tryReencode = (vcodec) => {
+      const inputs = [];
+      for (const p of segPaths) inputs.push("-i", p);
+      if (hasAudio) inputs.push("-i", srcPath);
+      const filter = size0
+        ? bufs.map((_, i) => `[${i}:v]scale=${size0.w}:${size0.h},setsar=1[v${i}]`).join(";") + ";"
+          + bufs.map((_, i) => `[v${i}]`).join("") + `concat=n=${n}:v=1:a=0[v]`
+        : bufs.map((_, i) => `[${i}:v]`).join("") + `concat=n=${n}:v=1:a=0[v]`;
+      const args = [...inputs, "-filter_complex", filter, "-map", "[v]"];
+      if (hasAudio) args.push("-map", `${n}:a`, "-c:a", "aac", "-shortest");
+      args.push(...vcodec, "-pix_fmt", "yuv420p");
+      return ffmpeg(args, `re-encode ${vcodec[1]}`);
+    };
+
+    let ok = false, codec = "h264", how = "";
+    // H.265 was asked for → the segments are H.264, so there is nothing copy can do.
     // hevc_videotoolbox (not libx265) to match resampleVideo — hardware HEVC on the Mac
     // this server runs on, and it tags hvc1 so the result actually plays in Safari. It
     // takes no CRF, so ⚙ "video quality" shapes the H.264 path only; libx265 would honour
     // it but software-encode every frame of a clip that is long by definition.
-    if (wantCodec === "h265") { ok = await run(["-c:v", "hevc_videotoolbox", "-tag:v", "hvc1"]); if (ok) codec = "h265"; }
-    if (!ok) ok = await run(["-c:v", "libx264", "-crf", String(crf > 0 ? Math.min(51, crf) : VIDEO_CRF_DEFAULT.h264)]);
+    if (wantCodec === "h265") {
+      ok = await tryReencode(["-c:v", "hevc_videotoolbox", "-tag:v", "hvc1"]);
+      if (ok) { codec = "h265"; how = "re-encoded"; }
+    } else if (await tryCopy()) {
+      ok = true; how = "stream-copied (no re-encode)";
+      // Report what the picture IS rather than what we assume ComfyUI wrote.
+      codec = /hevc|h265/i.test(await videoCodecOf(outPath)) ? "h265" : "h264";
+    }
+    if (!ok) {
+      ok = await tryReencode(["-c:v", "libx264", "-crf", String(crf > 0 ? Math.min(51, crf) : VIDEO_CRF_DEFAULT.h264)]);
+      how = "re-encoded";
+    }
     if (!ok) return null;
     const buf = await fsp.readFile(outPath);
-    console.log(`[comfy] scail2: merged ${n} segment${n > 1 ? "s" : ""} → ${(buf.length / 1048576).toFixed(1)} MB ${codec}${hasAudio ? " + source audio" : " (source had no audio)"}`);
+    console.log(`[comfy] scail2: merged ${n} segment${n > 1 ? "s" : ""} ${how} → ${(buf.length / 1048576).toFixed(1)} MB ${codec}${hasAudio ? " + source audio" : " (source had no audio)"}`);
     return { buf, codec };
   } catch (e) {
     console.log(`[comfy] scail2 merge error: ${(e && e.message) || e}`);
     return null;
   } finally {
-    for (const f of [...segPaths, srcPath, outPath]) fsp.unlink(f).catch(() => {});
+    for (const f of [...segPaths, srcPath, listPath, outPath]) fsp.unlink(f).catch(() => {});
   }
+}
+
+// ffprobe the FIRST video stream's codec name ("" if absent / ffprobe missing).
+async function videoCodecOf(file) {
+  return new Promise((resolve) => {
+    let out = "";
+    const p = spawn("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", file]);
+    p.stdout.on("data", (d) => { out += d; });
+    p.on("close", () => resolve(out.trim()));
+    p.on("error", () => resolve(""));
+  });
+}
+
+// First video stream's pixel size, or null when unreadable.
+async function videoSizeOf(file) {
+  return new Promise((resolve) => {
+    let out = "";
+    const p = spawn("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", file]);
+    p.stdout.on("data", (d) => { out += d; });
+    p.on("close", () => { const [w, h] = out.trim().split(",").map(Number); resolve(w > 0 && h > 0 ? { w, h } : null); });
+    p.on("error", () => resolve(null));
+  });
+}
+
+// Everything about a video stream that has to agree before clips can be spliced without
+// re-encoding, as one comparable string ("" when unreadable, which reads as "don't copy").
+// Deliberately includes width/height: the concat demuxer does NOT reject a size change.
+async function videoParamsOf(file) {
+  return new Promise((resolve) => {
+    let out = "";
+    const p = spawn("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,profile,level,width,height,pix_fmt,time_base", "-of", "csv=p=0", file]);
+    p.stdout.on("data", (d) => { out += d; });
+    p.on("close", () => resolve(out.trim()));
+    p.on("error", () => resolve(""));
+  });
 }
 
 // Fetch a file back out of ComfyUI's INPUT folder (`/view?type=input`). The SCAIL-2
@@ -3688,14 +3773,13 @@ async function scail2Companions() {
 // was never sliced in the old graph either, CreateVideo(audio:["15",1]) muxed it once
 // onto the finished picture, so this is the same operation moved out of the graph.
 //
-// WHAT THIS DOES NOT FIX — a SOURCE-LENGTH ceiling. Node 15 (GetVideoComponents) still
-// decodes the WHOLE source into one resident frame batch, because every segment slices
-// out of it: ~27 GiB of float32 for 110s at 720p, growing with the source. Around a
-// ~4 minute source that alone crowds out the rest of the budget and this stops being
-// enough; going further means splitting into several PROMPTS (one per segment, handing
-// the tail frames across) rather than one. Everything the seam depends on —
-// previous_frames, the overlap drop, ColorTransfer — is untouched here precisely
-// because it all still lives inside a single graph.
+// ON ITS OWN this leaves a SOURCE-LENGTH ceiling: node 15 (GetVideoComponents) decodes
+// the WHOLE source into one resident batch because every segment slices out of it —
+// ~27 GiB of float32 for 110s at 720p, growing with the source however short the windows
+// are. `streamSource` below removes node 15 altogether and lifts that ceiling too; the
+// two options are the output side and the input side of the same problem. Everything the
+// seam depends on — previous_frames, the overlap drop, ColorTransfer — is untouched by
+// either, because it all still lives inside a single graph.
 const SCAIL2_FRAMES = 81;                          // template default frame_count, 4n+1
 const SCAIL2_OVERLAP = 5;                          // previous_frame_count
 const SCAIL2_STRIDE = SCAIL2_FRAMES - SCAIL2_OVERLAP; // 76 — pose offset per segment
@@ -3743,7 +3827,7 @@ function scail2Segments(total, cap = SCAIL2_FRAMES, windowMult = 1) {
   return segs.length ? segs : [{ offset: 0, length: per }];
 }
 
-function buildScail2({ model, prompt, negative, comp, videoName, refImageName, refImageNames, width, height, seed, segments, replace = false, turbo = true, scailRecipe = "balanced", poseStrength = 1, poseStart = 0, poseEnd = 1, sam3VideoObject = "human", sam3ImageObject = "", objectIndices = "", sortBy = "left_to_right", detectionThreshold = 0.5, maxObjects = 4, torchCompile = false, incrementalSave = true }) {
+function buildScail2({ model, prompt, negative, comp, videoName, refImageName, refImageNames, width, height, seed, segments, replace = false, turbo = true, scailRecipe = "balanced", poseStrength = 1, poseStart = 0, poseEnd = 1, sam3VideoObject = "human", sam3ImageObject = "", objectIndices = "", sortBy = "left_to_right", detectionThreshold = 0.5, maxObjects = 4, torchCompile = false, incrementalSave = true, streamSource = false, sourceFps = 0 }) {
   const segs = (Array.isArray(segments) && segments.length) ? segments : [{ offset: 0, length: SCAIL2_FRAMES }];
   // Clamp to the node's own declared ranges — a ⚙ field is free text until it isn't.
   const clamp = (v, lo, hi, dflt) => (typeof v === "number" && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt);
@@ -3805,8 +3889,8 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
     // "who this is", not a per-view input; the extra views exist to fill in surfaces the
     // primary cannot show, which is the mask/reference batch's job, not this one's.
     "11": { class_type: "CLIPVisionEncode", inputs: { clip_vision: ["7", 0], image: ["10", 0], crop: "none" } },
-    "12": { class_type: "LoadVideo", inputs: { file: videoName } },
-    "15": { class_type: "GetVideoComponents", inputs: { video: ["12", 0] } },
+    // 12 + 15 (LoadVideo → GetVideoComponents) are added below, and ONLY on the
+    // whole-source path — streaming deletes the need for them entirely.
     // SAM3 open-vocabulary tracking. Node 23 tracks the REFERENCE image once and is
     // shared by every segment; each segment tracks its own slice of the driving video.
     "20": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: comp.sam3 } },
@@ -3815,6 +3899,41 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
     "23": { class_type: "SAM3_VideoTrack", inputs: { images: ["10", 0], model: ["20", 0], detection_threshold: detThresh, max_objects: maxObj, detect_interval: 1, conditioning: ["22", 0] } },
     "27": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
   };
+  // STREAMING THE SOURCE. The whole-source path decodes the ENTIRE driving video into one
+  // resident frame batch (node 15) and has every segment cut its window out of it with
+  // ImageFromBatch — ~27 GiB of float32 for 110s at 720p, and it grows with the source no
+  // matter how the output is windowed. That is the input-side twin of the accumulator
+  // problem, and the ceiling that incremental save alone does not lift.
+  //
+  // VHS_LoadVideo takes the window directly (`skip_first_frames` / `frame_load_cap`) and
+  // reads only those frames, so nodes 12 and 15 disappear and each segment holds its own
+  // 81 frames and nothing else.
+  //
+  // LIVE-VERIFIED against the whole-source path on the real box (same clip, offset 100,
+  // 3 frames, saved as PNG and compared):
+  //   • FRAME ALIGNMENT IS EXACT — cross-comparing A's frame 2 against B's 1/2/3 gives
+  //     30.4 / 39.0 / 25.2 dB, i.e. the diagonal is the peak. `skip_first_frames` and
+  //     `batch_index` are the same 0-based frame index, which is what the segment overlap
+  //     (stride 76 = 81 − 5) and previous_frames handshake depend on.
+  //   • PIXELS ARE NOT BIT-IDENTICAL: ~39 dB PSNR, per channel B 35.4 / R 41.0 / G 46.8.
+  //     That signature is a YUV→RGB matrix/range difference between the two decoders
+  //     (GetVideoComponents runs PyAV, VHS runs cv2), not a content difference. It does
+  //     mean the SAME SEED renders slightly differently with this on and off.
+  //   • `format` is a FRONTEND widget (its "AnimateDiff" default carries target_rate 8,
+  //     which would be fatal) — the backend does not apply it: sending it and omitting it
+  //     produced files differing only by the 18 bytes of prompt JSON embedded in the PNG.
+  //     Passed explicitly as "None" anyway, since it costs nothing to nail down.
+  //
+  // Requires incrementalSave: the legacy tail muxes its audio from node 15, so keeping
+  // that tail means keeping the whole-source decode and there would be nothing to win.
+  const stream = streamSource && incrementalSave;
+  if (!stream) {
+    wf["12"] = { class_type: "LoadVideo", inputs: { file: videoName } };
+    wf["15"] = { class_type: "GetVideoComponents", inputs: { video: ["12", 0] } };
+  }
+  // Output fps. Node 15's FLOAT output is the source's own rate and is preferred when it
+  // is there; streaming has no such node, so the probed source fps is passed in instead.
+  const fpsRef = stream ? (Number(sourceFps) > 0 ? Number(sourceFps) : 16) : ["15", 2];
   // Chain the extra views onto the primary. SAM3 reads the batch as consecutive "video
   // frames" and tracks the subject across them, so each view comes back masked in the
   // SAME identity colour — which is exactly the pairing WanSCAILToVideo expects.
@@ -3863,9 +3982,12 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
     const b = scail2SegBase(k);
     const F = String(b), R = String(b + 1), G = String(b + 2), T = String(b + 3),
           MK = String(b + 4), S = String(b + 5), K = String(b + 6), D = String(b + 7);
-    // The pose offset is applied by SLICING the source; the node's own
-    // video_frame_offset stays 0 (exactly what the template does).
-    wf[F] = { class_type: "ImageFromBatch", inputs: { image: ["15", 0], batch_index: sg.offset, length: sg.length } };
+    // The pose offset is applied by taking only this window OF the source; the node's own
+    // video_frame_offset stays 0 (exactly what the template does). Both forms below hand
+    // the same frames to [F, 0] as an IMAGE batch, so nothing downstream changes.
+    wf[F] = stream
+      ? { class_type: "VHS_LoadVideo", inputs: { video: videoName, force_rate: 0, custom_width: 0, custom_height: 0, frame_load_cap: sg.length, skip_first_frames: sg.offset, select_every_nth: 1, format: "None" } }
+      : { class_type: "ImageFromBatch", inputs: { image: ["15", 0], batch_index: sg.offset, length: sg.length } };
     wf[R] = { class_type: "ImageScale", inputs: { image: [F, 0], upscale_method: "area", width, height, crop: "center" } };
     // Size + length come from the RESIZED slice, so a short tail segment self-corrects.
     wf[G] = { class_type: "GetImageSize", inputs: { image: [R, 0] } };
@@ -3900,7 +4022,7 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
       // instead of being pinned until the end of the graph. No audio here: one
       // soundtrack is laid over the concatenated result by the app (see the header).
       const CV = String(b + 12), SV = String(b + 13);
-      wf[CV] = { class_type: "CreateVideo", inputs: { images: out, fps: ["15", 2] } };
+      wf[CV] = { class_type: "CreateVideo", inputs: { images: out, fps: fpsRef } };
       wf[SV] = { class_type: "SaveVideo", inputs: { video: [CV, 0], filename_prefix: "heykoko_scail2", format: "auto", codec: "auto" } };
     } else if (k === 0) acc = out;
     else { const B = String(b + 11); wf[B] = { class_type: "ImageBatch", inputs: { image1: acc, image2: out } }; acc = [B, 0]; }
@@ -4824,6 +4946,7 @@ async function generateComfyImage(req, res) {
   let phantomTurboUsed = null; // { lora } when Phantom's step-distill LoRA was mounted
   let videoCodecUsed = null;   // "h264" | "h265" — codec the video was actually saved as
   let videoCodecNote = null;   // "vhs-missing" when a h265 request fell back to native h264
+  let scailStreamNote = null;  // "vhs-missing" when per-window source streaming wasn't available
   let precisionNote = null; // set only when those differ from the ⚙ request
   try {
     const body = await readBody(req);
@@ -5162,11 +5285,16 @@ async function generateComfyImage(req, res) {
         // model has no still/single-frame path (the driving motion IS the input).
         if (!sourceVideo && !sourceVideoName) { sendJson(res, 400, { error: "SCAIL-2 needs a source video (the driving motion) plus a character reference image." }); return; }
         if (!(Array.isArray(images) && images.length)) { sendJson(res, 400, { error: "SCAIL-2 needs a character reference image (plus the attached driving video)." }); return; }
-        // Incremental save (default). Off restores the old single-CreateVideo tail, which
-        // is correct but accumulates every decoded frame in memory — see the buildScail2
-        // header. Kept switchable because it is the newer of the two paths, not because
-        // there is a case where accumulating is better.
-        const incrementalSave = opts.scailIncrementalSave !== false;
+        // ⚙ long-clip memory strategy. ONE knob for both halves of the problem, because
+        // the useful settings are a ladder rather than two independent switches —
+        // streaming the source without incremental save is not expressible, and that is
+        // deliberate: the legacy tail muxes its audio from node 15, so keeping that tail
+        // means keeping the whole-source decode and streaming would win nothing.
+        //   ""            → both (default): stream the source AND save each window
+        //   "incremental" → save each window, still decode the whole source
+        //   "off"         → the original single-file path, ComfyUI writes one video
+        const memMode = ["incremental", "off"].includes(opts.scailMemoryMode) ? opts.scailMemoryMode : "stream";
+        const incrementalSave = memMode !== "off";
         // FAIL FAST, before a single byte is uploaded. That path joins the segment clips
         // here once the render is done, so a missing binary would otherwise surface after
         // an hour of GPU time instead of now. ffprobe is checked too, and matters in a
@@ -5176,7 +5304,7 @@ async function generateComfyImage(req, res) {
           const missing = [];
           for (const tool of ["ffmpeg", "ffprobe"]) if (!(await hasLocalTool(tool))) missing.push(tool);
           if (missing.length) {
-            sendJson(res, 400, { error: `SCAIL-2 needs ${missing.join(" and ")} on this machine (the one running hey-koko, not the ComfyUI box) to join the rendered windows and lay the soundtrack over them. Install it (macOS: brew install ffmpeg) — or untick ⚙ "Save each window as it renders", which has ComfyUI write one finished file and needs no ffmpeg at all, at the cost of holding every window in memory (long clips will run out of it).` });
+            sendJson(res, 400, { error: `SCAIL-2 needs ${missing.join(" and ")} on this machine (the one running hey-koko, not the ComfyUI box) to join the rendered windows and lay the soundtrack over them. Install it (macOS: brew install ffmpeg) — or set ⚙ "Long-clip memory" to Off, which has ComfyUI write one finished file and needs no ffmpeg at all, at the cost of holding every window in memory (long clips will run out of it).` });
             return;
           }
         }
@@ -5224,7 +5352,16 @@ async function generateComfyImage(req, res) {
           refImageNames.push(await uploadImage(images[i], controller.signal, `heykoko_scailref${i}.png`));
         }
         imagesUsed = refImageNames.length;
+        // Stream the source per window instead of decoding it whole (see buildScail2).
+        // Needs VHS_LoadVideo — VideoHelperSuite is per-MACHINE, exactly like the ⚙ H.265
+        // tail, so this is checked against the box this job was routed to. Absent → fall
+        // back to the whole-source decode, which still WORKS, and say so rather than let
+        // a long clip quietly hit the memory ceiling the option exists to avoid.
+        const wantStream = memMode === "stream";
+        const streamSource = wantStream && await comfyHasNodes(["VHS_LoadVideo"]);
+        if (wantStream && !streamSource) scailStreamNote = "vhs-missing";
         workflow = buildScail2({
+          streamSource, sourceFps: sfps,
           model, prompt, negative: negative_prompt || "", comp, videoName, refImageNames,
           width: aw, height: ah, seed, segments, replace: scail2Replace, incrementalSave,
           // SAM3 is open-vocabulary: the subject is text, not a fixed "human". The
@@ -6180,14 +6317,14 @@ async function generateComfyImage(req, res) {
         // A hole in the middle would splice the clip together across a gap and put the
         // rest of it out of sync with the audio — refuse rather than ship that silently.
         if (missing.length || segBufs.length !== scail2Merge.saveNodeIds.length) {
-          sendJson(res, 502, { error: `SCAIL-2 rendered ${segBufs.length} of ${scail2Merge.saveNodeIds.length} segments — nothing came back from save node(s) ${missing.join(", ") || "?"}. The finished segments are in ComfyUI's output folder (heykoko_vid/) and can be joined by hand; untick ⚙ "Save each window as it renders" to go back to the single-file path.` });
+          sendJson(res, 502, { error: `SCAIL-2 rendered ${segBufs.length} of ${scail2Merge.saveNodeIds.length} segments — nothing came back from save node(s) ${missing.join(", ") || "?"}. The finished segments are in ComfyUI's output folder (heykoko_vid/) and can be joined by hand; set ⚙ "Long-clip memory" to Off to go back to the single-file path.` });
           return;
         }
         const wantCodec = opts.videoCodec === "h265" ? "h265" : "h264";
         const srcBuf = await fetchComfyInputFile(scail2Merge.sourceName, controller.signal);
         const merged = await mergeScail2Segments(segBufs, srcBuf, wantCodec, Number(opts.videoCrf) || 0, controller.signal);
         if (!merged) {
-          sendJson(res, 502, { error: `SCAIL-2 rendered all ${segBufs.length} segments but ffmpeg could not join them (is ffmpeg installed and on PATH?). The segments are in ComfyUI's output folder (heykoko_vid/) — nothing was lost. Untick ⚙ "Save each window as it renders" to have ComfyUI write one file instead.` });
+          sendJson(res, 502, { error: `SCAIL-2 rendered all ${segBufs.length} segments but ffmpeg could not join them (is ffmpeg installed and on PATH?). The segments are in ComfyUI's output folder (heykoko_vid/) — nothing was lost. Set ⚙ "Long-clip memory" to Off to have ComfyUI write one file instead.` });
           return;
         }
         firstVideoBuf = merged.buf;
@@ -6319,7 +6456,7 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI finished but produced no video file (output nodes: ${nodeIds}). Make sure the workflow includes a SaveVideo node, or retry.` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, imagesUsed });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own

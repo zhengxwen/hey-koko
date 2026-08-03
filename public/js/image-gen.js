@@ -147,9 +147,9 @@ function comfyOverrides() {
   if (dom.comfyParamScailSortBy?.value) ov.scailSortBy = dom.comfyParamScailSortBy.value; // identity ordering
   if (dom.comfyParamScailRecipe?.value) ov.scailRecipe = dom.comfyParamScailRecipe.value; // steps + distill strength
   if (dom.comfyParamScailWindow?.value) ov.scailWindow = +dom.comfyParamScailWindow.value; // frames per pass
-  // Only sent when turned OFF — the server defaults it on, so an older client (or a
-  // preset saved before this existed) still gets the memory-bounded path.
-  if (dom.comfyParamScailIncremental && !dom.comfyParamScailIncremental.checked) ov.scailIncrementalSave = false;
+  // Only sent when it is NOT the default — an older client, or a preset saved before
+  // this existed, still gets the memory-bounded path the server defaults to.
+  if (dom.comfyParamScailMemory?.value) ov.scailMemoryMode = dom.comfyParamScailMemory.value;
   const poseStrength = num(dom.comfyParamPoseStrength?.value);
   if (poseStrength !== undefined) ov.poseStrength = poseStrength;
   const poseStart = num(dom.comfyParamPoseStart?.value);

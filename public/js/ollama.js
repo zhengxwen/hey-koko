@@ -1325,7 +1325,7 @@ export function updateComfyParamVisibility() {
                     dom.comfyParamScailSortBy, dom.comfyParamScailRecipe, dom.comfyParamScailWindow, dom.comfyParamPoseStrength, dom.comfyParamPoseStart,
                     dom.comfyParamPoseEnd]) setVis(el, scail2);
   // Same family, but a checkbox — it needs the .comfyParamCheck box, not its <label>.
-  setVis(dom.comfyParamScailIncremental, scail2, ".comfyParamCheck");
+  setVis(dom.comfyParamScailMemory, scail2);
   updateScailWindowWarning();
   // Upscale-model pipelines only (image-upscale / video-enhance) — the upscale-denoise % + the upscale-model picker.
   for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel]) setVis(el, upscale);
@@ -1516,6 +1516,7 @@ function initComfyParamsModal() {
     dom.comfyParamScailSortBy,
     dom.comfyParamScailRecipe,
     dom.comfyParamScailWindow,
+    dom.comfyParamScailMemory,
     dom.comfyParamPoseStrength,
     dom.comfyParamPoseStart,
     dom.comfyParamPoseEnd,
@@ -1554,7 +1555,6 @@ function initComfyParamsModal() {
     el?.addEventListener("change", () => saveCurrentSettings());
   }
   dom.comfyParamTorchCompile?.addEventListener("change", () => saveCurrentSettings());
-  dom.comfyParamScailIncremental?.addEventListener("change", () => saveCurrentSettings());
   // The window-size caution depends on the chosen multiplier, so it has to re-evaluate on
   // change — open() alone would only catch it when the panel is reopened.
   dom.comfyParamScailWindow?.addEventListener("change", updateScailWindowWarning);
@@ -1606,7 +1606,6 @@ function initComfyParamsModal() {
     if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = "h264"; // default codec, not empty
     if (dom.comfyParamPaintQuality) dom.comfyParamPaintQuality.value = "standard";
     if (dom.comfyParamPaintMesh) dom.comfyParamPaintMesh.checked = true;   // texturing defaults ON
-    if (dom.comfyParamScailIncremental) dom.comfyParamScailIncremental.checked = true; // incremental save defaults ON
     updateComfyParamVisibility();
     syncVideoCrfPlaceholder();
     state.animateMaskPoint = null; // back to auto-centre target
