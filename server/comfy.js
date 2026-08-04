@@ -3721,14 +3721,22 @@ async function scail2Companions() {
     comfyEnum("CLIPVisionLoader", "clip_name"),
     comfyEnum("CheckpointLoaderSimple", "ckpt_name"),
   ]);
-  const find = (list, re) => list.find((x) => re.test(x));
+  // `skip` drops variants that match the family but are known-broken (see sam3 below).
+  const find = (list, re, skip) => list.find((x) => re.test(x) && !(skip && skip.test(x)));
   const clip = find(clips, /umt5/i);
   // The template pins the bf16 Wan 2.1 VAE; any Wan 2.1 VAE works.
   const vae = find(vaes, /wan.?2[._]1.*vae/i) || find(vaes, /wan.*vae/i);
   const clipVision = find(cvs, /clip_vision_h|clip.?vision.*h\b/i) || find(cvs, /clip.?vision/i);
   const loraDistill = find(loras, /lightx2v.*i2v.*14b.*distill|lightx2v_I2V_14B/i);
   const loraDpo = find(loras, /scail.*dpo|dpo.*scail/i);
-  const sam3 = find(ckpts, /sam3/i);
+  // Any fp8 SAM3 is unusable, not merely slower: SAM3_VideoTrack dies on first execution with
+  // `NotImplementedError: "addmm_cuda" not implemented for 'Float8_e4m3fn'` — PyTorch ships no
+  // fp8 addmm CUDA kernel, so nothing on the graph side can work around it (verified on RTX
+  // 5090 / torch 2.10+cu130 / ComfyUI 0.29.0). Excluding it here rather than letting `find`
+  // take whichever variant sorts first: with both installed the fp16 file happened to win on
+  // alphabetical order alone, so the crash was one filename away the whole time — and the
+  // error names a matmul kernel, giving no hint that the wrong checkpoint was picked.
+  const sam3 = find(ckpts, /sam3/i, /fp8|float8|e4m3|e5m2/i);
   const missing = [];
   if (!clip) missing.push("umt5_xxl_fp8_e4m3fn_scaled.safetensors → text_encoders/");
   if (!vae) missing.push("Wan2_1_VAE_bf16.safetensors → vae/");

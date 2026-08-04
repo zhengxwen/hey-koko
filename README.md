@@ -237,6 +237,7 @@ Heavier setups (dedicated GPU / large installs) for specific needs:
 | Capability | Helper | Setup guide |
 |------------|--------|-------------|
 | Advanced image & video generation | ComfyUI | [docs/comfyui.md](docs/comfyui.md) |
+| ComfyUI deployment list (node packs + model files) | ComfyUI | [docs/comfyui-setup.md](docs/comfyui-setup.md) |
 | Local GPU PDF OCR (scans) | Unlimited-OCR | [optional-tools.md → Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) |
 | Whole-slide page images for decks | LibreOffice | [optional-tools.md → LibreOffice](docs/optional-tools.md#libreoffice) |
 

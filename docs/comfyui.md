@@ -13,6 +13,8 @@ Image generation works out of the box with local **Ollama image models** (e.g. `
 
 Hey-Koko reads the model list live from ComfyUI's `/object_info` and auto-selects the required companion files (text encoders, VAEs), so it tells you exactly which file is missing if one isn't installed.
 
+> Setting up a **blank** ComfyUI? [docs/comfyui-setup.md](comfyui-setup.md) lists every custom-node pack and model file the verified workflows need, grouped per workflow, with a minimal-subset path if you don't want to install all of it at once.
+
 ## Capabilities
 
 | Mode | How to use | Models (auto-detected by filename) |
