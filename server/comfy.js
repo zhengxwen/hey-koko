@@ -1483,9 +1483,30 @@ async function proxyComfyModels(req, res) {
     // fields are live but cfg is not: its graph guides with a BasicGuider (single
     // conditioning, no negative branch), so there is nowhere for a guidance scale to go.
     // Showing it would be a control that silently does nothing.
+    // fps gets the same treatment for the same reason: on a model whose rate is its own
+    // (preset.fpsFixed) the field would only re-time the finished frames — and on H3,
+    // desync the generated soundtrack. Models with no preset at all keep their fps field:
+    // those builders take the rate from the SOURCE clip, which the field can still override.
     for (const m of videoModels) {
-      m.samplerTunable = !!videoPreset(m.type, m.name, true);
+      const preset = videoPreset(m.type, m.name, true);
+      m.samplerTunable = !!preset;
       m.cfgTunable = m.samplerTunable && m.type !== "minimax-h3";
+      m.fpsTunable = !(preset && preset.fpsFixed);
+      // The frame grid the ⚙ length field should offer, derived from the SAME preset the
+      // server snaps against (snapLength) so the field can't advertise a range the
+      // generator would then move. `max: null` = no trained ceiling declared; the field
+      // keeps its generic cap. Models with no preset (bernini / animate / scail2 /
+      // enhance) size from the source clip and get nothing here.
+      if (preset) {
+        const off = preset.lenOffset != null ? preset.lenOffset : 1;
+        m.lenInfo = {
+          min: preset.lenMin != null ? preset.lenMin : preset.lenMult + off,
+          max: preset.lenMax != null ? preset.lenMax : null,
+          step: preset.lenMult,
+          fps: preset.fps,
+          auto: preset.length,
+        };
+      }
     }
     // Checkpoints that are COMPANIONS to another model rather than something to
     // txt2img list: plain checkpoints (excluding edit/video/HiDream/companions) +
@@ -2586,8 +2607,15 @@ function videoPreset(videoType, model, turbo) {
     // which is BELOW that range — hence lenMin/lenMax. Note this also closes the usual
     // "shorten the clip to fit VRAM" escape hatch: 124 is the floor, so on a memory-bound
     // box resolution is the only dial left.
+    // fpsFixed: 24 is the model's own rate, not a mux setting. `length` is defined AT
+    // 24 fps (the node's tooltip says so) and fps reaches nothing but CreateVideo, so
+    // changing it cannot make the model generate more frames — it only re-times the same
+    // ones. Worse, it desyncs the sound: the audio VAE decodes a track whose length the
+    // latent fixes (124 frames = 5.17 s), while the picture would become 124/fps seconds.
+    // Frame interpolation is unaffected and stays available — applyVfi multiplies frames
+    // and rate together, so the duration, and with it the audio, is preserved.
     return { sampler: "res_multistep", scheduler: "simple", cfg: 1, steps: 20, shift: 0,
-      width: 864, height: 480, length: 124, fps: 24,
+      width: 864, height: 480, length: 124, fps: 24, fpsFixed: true,
       dimMult: 32, lenMult: 17, lenOffset: 5, lenMin: 124, lenMax: 362 };
   }
   if (model === LTX_MSR) {
@@ -2673,7 +2701,10 @@ function resolveVideoConfig(videoType, opts, model, turbo) {
     height: snap(baseH, p.dimMult),
     // Frame count must sit on the model's grid — snap to the nearest valid value.
     length: snapLength(L, p),
-    fps: opts.fps || p.fps,
+    // fpsFixed models ignore a ⚙ value outright rather than trusting the field to be
+    // hidden: a rate saved before the model was added, or carried on an older queued job,
+    // would otherwise still reach the graph.
+    fps: p.fpsFixed ? p.fps : (opts.fps || p.fps),
   };
 }
 
@@ -2997,14 +3028,21 @@ const H3_MAX_REF_IMAGES = 9;
 // by the video VAE and by the audio VAE, and CreateVideo muxes them into one file. That
 // pairing is what applyVideoCodec's tail rewrite has to preserve.
 //
-// ⚠️ The reference slots are COMFY_AUTOGROW_V3 inputs. They expand to FLAT, zero-indexed
-// keys (ref_image_0, ref_video_0, ref_video_audio_0, ref_audio_0); the group names
-// (ref_images, …) never appear in an API-format prompt. ComfyUI does not validate these
-// slots — verified by submitting graphs with dangling and mistyped links, which passed
-// validation silently — so a wrong key here does not fail: it runs to completion having
-// quietly ignored the references. Any change to these names must be checked with a
-// NEGATIVE CONTROL (same seed, with and without references; the outputs must differ),
-// never by observing that the job succeeded.
+// ⚠️ The reference slots are COMFY_AUTOGROW_V3 inputs, and their API key is the
+// DOTTED path "<groupId>.<prefix><n>" — ref_images.ref_image_0, ref_videos.ref_video_0,
+// ref_video_audios.ref_video_audio_0, ref_audios.ref_audio_0. Not the bare slot name:
+// comfy_api/latest/_io.py builds each expanded id with finalize_prefix(["ref_images"],
+// "ref_image_0"), registers it in dynamic_paths, and execution.py's build_nested_inputs
+// splits that path back into the nested dict execute() actually receives
+// (ref_images={"ref_image_0": IMAGE, …}). A bare "ref_image_0" reaches execute() as a
+// stray kwarg and raises TypeError at run time.
+//
+// Nothing catches a wrong key earlier than that run: /prompt validation ignores these
+// slots entirely (verified — graphs with dangling and type-mismatched links here pass
+// validation silently), and an unrecognised key that happens not to collide would simply
+// be dropped, producing a clip that ignored its references. So any change to these names
+// must be proven by a real render plus a NEGATIVE CONTROL (same seed, with and without
+// references; the outputs must differ) — never by "it validated" or "it succeeded".
 function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
   refImageNames, refVideoName, refAudioName, refImageSize }) {
   const isRef = /ref2va/i.test(model || "");
@@ -3037,20 +3075,20 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     h3.ref_image_size = refImageSize === "max" ? "max" : "match";
     refs.forEach((name, i) => {
       wf[`ri${i}`] = { class_type: "LoadImage", inputs: { image: name } };
-      h3[`ref_image_${i}`] = [`ri${i}`, 0];
+      h3[`ref_images.ref_image_${i}`] = [`ri${i}`, 0];
     });
     if (refVideoName) {
       // Frames and the clip's own soundtrack come off the SAME GetVideoComponents node
-      // (slot 0 = IMAGE, slot 1 = AUDIO) and must carry the matching index — the audio
-      // slot is documented as "soundtrack of the same-numbered reference video".
+      // (slot 0 = IMAGE, slot 1 = AUDIO) and must carry the matching index: the node pairs
+      // them by the numeric suffix (ref_video_audios["ref_video_audio_" + n]), not by order.
       wf["rlv"] = { class_type: "LoadVideo", inputs: { file: refVideoName } };
       wf["rgvc"] = { class_type: "GetVideoComponents", inputs: { video: ["rlv", 0] } };
-      h3.ref_video_0 = ["rgvc", 0];
-      h3.ref_video_audio_0 = ["rgvc", 1];
+      h3["ref_videos.ref_video_0"] = ["rgvc", 0];
+      h3["ref_video_audios.ref_video_audio_0"] = ["rgvc", 1];
     }
     if (refAudioName) {
       wf["rla"] = { class_type: "LoadAudio", inputs: { audio: refAudioName } };
-      h3.ref_audio_0 = ["rla", 0];
+      h3["ref_audios.ref_audio_0"] = ["rla", 0];
     }
     wf["h3"] = { class_type: "MiniMaxH3ReferenceToVideo", inputs: h3 };
   } else {

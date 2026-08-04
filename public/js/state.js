@@ -64,6 +64,7 @@ export const dom = {
   comfyParamDenoise: document.querySelector("#comfyParamDenoise"),
   comfyParamPrecision: document.querySelector("#comfyParamPrecision"),
   comfyParamLength: document.querySelector("#comfyParamLength"),
+  comfyParamLengthLabel: document.querySelector("#comfyParamLengthLabel"),
   comfyParamFps: document.querySelector("#comfyParamFps"),
   comfyParamTimeout: document.querySelector("#comfyParamTimeout"),
   comfyParamMeshDetail: document.querySelector("#comfyParamMeshDetail"),

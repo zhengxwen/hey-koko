@@ -940,12 +940,19 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   }
 
   // /imagine flags (steps/seed) win; the ⚙ modal fills the rest
-  // (length/fps/cfg/sampler/scheduler). For text→video, drop any default image
-  // size so the model uses its own resolution preset (unless --size was explicit).
-  // For image→video the size IS sent: the server keeps the input's aspect ratio
-  // and sizes to it (auto) or to the chosen size's pixel budget.
+  // (length/fps/cfg/sampler/scheduler).
+  //
+  // The "Default Image Size" setting now reaches text→video as well as image→video; the
+  // two used to disagree, with t2v alone silently falling back to the model's own preset.
+  // The server snaps whatever arrives to the model's dimMult, and for image→video also
+  // holds the input's aspect ratio at that pixel budget. "Auto" is how you ask for the
+  // model's preset — it sends no size at all (see parseImagineCommand).
+  //
+  // Still dropped for SOURCE-VIDEO jobs (video edit / pose transfer / interpolate), which
+  // derive their output size from the clip they are editing: feeding those a default meant
+  // for stills would silently re-frame the source. Only an explicit --size overrides there.
   const reqOptions = { ...parsed.options };
-  if (!refImages && !parsed.sizeExplicit) {
+  if (sourceVideo && !parsed.sizeExplicit) {
     delete reqOptions.width;
     delete reqOptions.height;
   }

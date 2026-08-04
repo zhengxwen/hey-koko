@@ -451,6 +451,12 @@ function applyComfyModels(data) {
     // cfg is tracked separately: MiniMax H3 reads sampler/scheduler/steps but guides with
     // a BasicGuider, so it has no guidance scale to receive.
     state.comfyCfgTunable = new Set(videoModels.filter((m) => m.cfgTunable).map((m) => m.name));
+    // Models whose output rate is their own (MiniMax H3 is 24 fps by construction) — the
+    // field would only re-time finished frames, and on H3 desync its generated audio.
+    state.comfyFpsTunable = new Set(videoModels.filter((m) => m.fpsTunable).map((m) => m.name));
+    // Per-model frame grid {min,max,step,fps,auto} for the ⚙ length field — see lenInfo
+    // in server/comfy.js. Absent for source-sized models (they follow the input clip).
+    state.comfyLenInfo = new Map(videoModels.filter((m) => m.lenInfo).map((m) => [m.name, m.lenInfo]));
     // Source-video models (bernini / animate): output fps follows the source video.
     state.comfyVideoInModels = new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name));
     // Of the video-in models, the ones that ALSO need a speech audio file (InfiniteTalk dubbing).
@@ -1183,7 +1189,28 @@ export function updateComfyMultiHint() {
   // merged past the single-pass cap) and LTX Union Control (single-pass, capped ≤241). Other
   // models use a fixed preset length.
   const lengthFollowsSource = !!(v && (/animate/i.test(v) || v === "ltx-union"));
-  if (dom.comfyParamLength) dom.comfyParamLength.placeholder = lengthFollowsSource ? t("comfy_length_source") : `Auto (${auto ? auto.length : 49})`;
+  // The model's real frame grid, straight from the server's preset (no second table to
+  // drift). Drives the field's min/max/step AND its tooltip, so the range the user is
+  // offered is the range the generator will actually honour — MiniMax H3's 124-362 was
+  // being clamped server-side while the field still advertised the generic 5-241/4n+1.
+  const lenInfo = (v && state.comfyLenInfo && state.comfyLenInfo.get(v)) || null;
+  if (dom.comfyParamLength) {
+    const el = dom.comfyParamLength;
+    el.placeholder = lengthFollowsSource ? t("comfy_length_source") : `Auto (${lenInfo ? lenInfo.auto : auto ? auto.length : 49})`;
+    el.min = lenInfo ? lenInfo.min : 5;
+    el.step = lenInfo ? lenInfo.step : 4;
+    // No declared ceiling → keep the generic cap rather than removing the guard.
+    el.max = lenInfo && lenInfo.max ? lenInfo.max : 241;
+    // Frames are only meaningful next to the rate they play at, which is why the seconds
+    // are spelled out: "124-362" means nothing until you know it is 5.2-15.1 s at 24 fps.
+    const secs = (n) => (n / (lenInfo ? lenInfo.fps : 24)).toFixed(1);
+    const tip = !lenInfo ? t("tip_videoLength")
+      : lenInfo.max
+        ? t("tip_videoLengthRange", { min: lenInfo.min, max: lenInfo.max, smin: secs(lenInfo.min), smax: secs(lenInfo.max), fps: lenInfo.fps, step: lenInfo.step })
+        : t("tip_videoLengthGrid", { min: lenInfo.min, fps: lenInfo.fps, step: lenInfo.step });
+    el.title = tip;
+    if (dom.comfyParamLengthLabel) dom.comfyParamLengthLabel.title = tip;
+  }
   // Steps / CFG show the model's real auto value when it's fixed (Phantom 50, LTX 30,
   // …). WAN 14B's flips with turbo, which the frontend can't detect — it keeps a bare
   // "Auto" rather than commit to a number that may be wrong.
@@ -1294,7 +1321,10 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamDanceQuality, dancer, ".comfyParamCheck");
   // Video timing — gen length is diffusion-only (an upscale / VFI keeps the source's own length).
   setVis(dom.comfyParamLength, video && diffusion && !dancer);
-  setVis(dom.comfyParamFps, video && !dancer);
+  // A model absent from comfyFpsTunable has a fixed rate (older server sends no such
+  // flag, so an EMPTY set must not hide the field for everyone — hence the size check).
+  const fpsTunable = !state.comfyFpsTunable?.size || state.comfyFpsTunable.has(m);
+  setVis(dom.comfyParamFps, video && !dancer && fpsTunable);
   // Timeout: mesh renders ride the video timeout policy (Hunyuan3D can take minutes).
   setVis(dom.comfyParamTimeout, video || mesh);
   // 3D knobs. meshDetail drives BOTH meshers — Hunyuan3D's voxel octree and
@@ -1386,7 +1416,9 @@ export function updateComfyParamVisibility() {
   const shows = (diffusion && samplerTunable && !mesh) || meshSampler;
   for (const el of [dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps]) setVis(el, shows);
   // cfg additionally requires the model to actually have a guidance scale (see above).
-  const cfgTunable = !video || !!(state.comfyCfgTunable && state.comfyCfgTunable.has(m));
+  // Empty set = a server too old to send the flag; don't hide cfg for every video model
+  // then (that happens whenever the page is hard-refreshed before the server restarts).
+  const cfgTunable = !video || !state.comfyCfgTunable?.size || state.comfyCfgTunable.has(m);
   setVis(dom.comfyParamCfg, shows && cfgTunable);
 }
 
