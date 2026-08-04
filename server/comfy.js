@@ -1515,6 +1515,12 @@ async function proxyComfyModels(req, res) {
       m.samplerTunable = !!preset;
       m.cfgTunable = m.samplerTunable && m.type !== "minimax-h3";
       m.fpsTunable = !(preset && preset.fpsFixed);
+      // Whether a negative prompt reaches the graph at all. MiniMax H3 guides with a
+      // BasicGuider — ONE conditioning branch — so there is nowhere to put it: both the
+      // ⚙ field and /imagine's `--no …` are discarded. Everything the user wants
+      // suppressed has to be said positively in the prompt instead, which is also where
+      // the soundtrack is directed.
+      m.negativeTunable = m.type !== "minimax-h3";
       // The frame grid the ⚙ length field should offer, derived from the SAME preset the
       // server snaps against (snapLength) so the field can't advertise a range the
       // generator would then move. `max: null` = no trained ceiling declared; the field
@@ -2767,6 +2773,42 @@ const VIDEO_CRF_DEFAULT = { h264: 23, h265: 28 };
 // its fps): reading CreateVideo's inputs here then picks up the interpolated frames and
 // rate. No-op returning false when there is no CreateVideo, so it is safe on any
 // workflow (image graphs, upscale-only) without a guard at the call site.
+// Deliver a silent clip: unhook the audio from the muxer, then drop whatever only
+// existed to produce it. Builder-agnostic, and deliberately done in the GRAPH rather
+// than by asking the model — MiniMax H3 samples picture and sound into ONE latent, so it
+// always generates a soundtrack and (having no negative branch) cannot be told not to.
+// For source-video builders this drops the SOURCE clip's audio instead. It saves no real
+// time: only the audio decode and the mux go away, never the sampling.
+//
+// The prune is deliberately narrow — it removes a node only when nothing references it
+// any more AND its class is one of the audio-side producers. A general reachability GC
+// would be wrong here: the segmented builders have several output nodes, and anything
+// walking back from "the" output would delete the other segments.
+const MUTE_PRUNABLE = new Set(["VAEDecodeAudio", "LTXVAudioVAEDecode", "LTXVAudioVAELoader", "VAELoader", "LoadAudio"]);
+function applyMuteAudio(wf) {
+  let muted = false;
+  for (const id in wf) {
+    if (wf[id].class_type === "CreateVideo" && wf[id].inputs && "audio" in wf[id].inputs) {
+      delete wf[id].inputs.audio;
+      muted = true;
+    }
+  }
+  if (!muted) return false;
+  // Two passes: the decode goes first, which is what leaves its VAE loader unreferenced.
+  for (let pass = 0; pass < 2; pass++) {
+    const referenced = new Set();
+    for (const id in wf) {
+      for (const val of Object.values(wf[id].inputs || {})) {
+        if (Array.isArray(val) && typeof val[0] === "string") referenced.add(val[0]);
+      }
+    }
+    for (const id in wf) {
+      if (!referenced.has(id) && MUTE_PRUNABLE.has(wf[id].class_type)) delete wf[id];
+    }
+  }
+  return true;
+}
+
 function applyVideoCodec(wf, codec, crf) {
   const c = codec === "h265" ? "h265" : "h264";
   let createId = null, saveId = null;
@@ -6664,6 +6706,11 @@ async function generateComfyImage(req, res) {
         });
       }
 
+      // ⚙ "silent video": unhook the audio before the two rewrites below, since both
+      // read CreateVideo's inputs — applyVideoCodec in particular copies the audio link
+      // onto the VHS node, which would put the track straight back.
+      if (opts.noAudio && workflow) applyMuteAudio(workflow);
+
       // Frame interpolation: resample the decoded frames up to a TARGET fps via
       // RIFE (default) or FILM VFI, keeping the same duration. Applies to every real
       // video model (not stills/images). ⚙ `targetFps` is the desired output fps; the
@@ -7117,4 +7164,4 @@ module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, uploa
 module.exports._scailTest = { buildWanAnimate, animateSaveNodeId, buildScail2, hasLocalTool, scail2Companions, scail2SaveNodeId, scail2Segments, mergeScail2Segments, applyVfi, config };
 // MiniMax H3: expose the builder + the length/size resolution so a harness can check the
 // real graph against ComfyUI's /object_info without spending a GPU minute on a render.
-module.exports._h3Test = { buildMiniMaxH3, videoPreset, resolveVideoConfig, snapLength, videoTypeOf, precisionBase, precisionOf, applyVideoCodec };
+module.exports._h3Test = { buildMiniMaxH3, videoPreset, resolveVideoConfig, snapLength, videoTypeOf, precisionBase, precisionOf, applyVideoCodec, applyMuteAudio };

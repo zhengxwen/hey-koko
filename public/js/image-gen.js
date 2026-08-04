@@ -114,6 +114,9 @@ function comfyOverrides() {
   // explicit pick is the ONLY way to reach them; empty = infer from the attachments.
   const berniniTask = dom.comfyParamBerniniTask?.value || "";
   if (berniniTask) ov.berniniTask = berniniTask;
+  // Silent output — a graph-level unhook, not a request to the model (see the server's
+  // applyMuteAudio). Only travels when checked.
+  if (dom.comfyParamNoAudio?.checked) ov.noAudio = true;
   // MiniMax H3 reference sizing — empty means the node's own "match" default, so only a
   // deliberate "max" pick travels (the slow, high-fidelity reference pipeline).
   if (dom.comfyParamH3RefSize?.value) ov.h3RefSize = dom.comfyParamH3RefSize.value;

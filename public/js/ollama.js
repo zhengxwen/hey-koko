@@ -457,6 +457,16 @@ function applyComfyModels(data) {
     // Per-model frame grid {min,max,step,fps,auto} for the ⚙ length field — see lenInfo
     // in server/comfy.js. Absent for source-sized models (they follow the input clip).
     state.comfyLenInfo = new Map(videoModels.filter((m) => m.lenInfo).map((m) => [m.name, m.lenInfo]));
+    // Models with no negative branch in their graph (MiniMax H3): the ⚙ negative box and
+    // /imagine's `--no …` are discarded, so showing the box would invite the user to type
+    // a constraint that never arrives.
+    state.comfyNegativeTunable = new Set(videoModels.filter((m) => m.negativeTunable).map((m) => m.name));
+    // Models whose output can carry a soundtrack, so the ⚙ "silent video" box has
+    // something to drop: the ones that GENERATE audio (the 🔊 cap) plus the source-video
+    // ones, which carry the input clip's audio through. Anything else would be a no-op.
+    state.comfyAudioModels = new Set(videoModels
+      .filter((m) => m.needsVideo || ((data.modelMeta?.[m.name]?.caps) || []).includes("audio"))
+      .map((m) => m.name));
     // Source-video models (bernini / animate): output fps follows the source video.
     state.comfyVideoInModels = new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name));
     // Of the video-in models, the ones that ALSO need a speech audio file (InfiniteTalk dubbing).
@@ -1375,6 +1385,8 @@ export function updateComfyParamVisibility() {
   for (const el of [dom.comfyParamBerniniMode, dom.comfyParamRefMaxSize]) setVis(el, /bernini/i.test(m));
   // Edit-task lines are VIDEO tasks — hide them for the bernini image entries.
   setVis(dom.comfyParamBerniniTask, /bernini/i.test(m) && !/bernini_(image_edit|subject_image|text_image)/i.test(m));
+  // "Silent video" — only where there is a track to drop (generated or carried through).
+  setVis(dom.comfyParamNoAudio, !!(state.comfyAudioModels && state.comfyAudioModels.has(m)), ".comfyParamCheck");
   // MiniMax H3: reference sizing exists only on the reference→video weights (ref2va).
   // The t2v/i2v file (fl2va) has no reference pipeline, so the knob would be inert there.
   setVis(dom.comfyParamH3RefSize, /minimax.?h3.*ref2va/i.test(m));
@@ -1410,7 +1422,11 @@ export function updateComfyParamVisibility() {
   if (diffusion && !mesh) syncPrecisionOptions(m);
   // Prompt add-ons — every diffusion model reads them (an upscale pipeline takes no
   // prompt, and the mesh chains have no text conditioning at all).
-  for (const el of [dom.comfyParamPositive, dom.comfyParamNegative]) setVis(el, diffusion && !mesh);
+  setVis(dom.comfyParamPositive, diffusion && !mesh);
+  // Empty set = a server too old to send the flag; don't hide the box for every video
+  // model then (same guard as cfg / fps above).
+  const negTunable = !video || !state.comfyNegativeTunable?.size || state.comfyNegativeTunable.has(m);
+  setVis(dom.comfyParamNegative, diffusion && !mesh && negTunable);
   // Guidance + img2img denoise are IMAGE-only: no video builder accepts either
   // (resolveVideoConfig doesn't even carry them).
   for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video && !mesh);

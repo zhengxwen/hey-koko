@@ -922,6 +922,10 @@
               <option value="generic">Generic assistant</option>
             </select>
           </label>
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="Deliver the video with NO audio track. Done in the graph, not by asking the model: the audio input is unhooked from the muxer, so the result is silent regardless of what the model produced. For MiniMax H3 this is the only reliable way to get a silent clip — picture and sound come out of ONE latent, so the model always generates a soundtrack and there is no negative prompt to suppress it; this simply throws it away. Note it does NOT make generation faster: the audio is still sampled, only the (cheap) audio decode and the mux are skipped. For source-video models it drops the SOURCE clip's audio instead.">
+            <input id="comfyParamNoAudio" type="checkbox" />
+            <span id="comfyParamNoAudioLabel">Silent video (drop the audio track)</span>
+          </label>
           <label title="MiniMax H3 (r2v) only: how the reference images are sized before the model reads them. Match scales each reference down to the generation's pixel area — fastest, and the default. Max runs the reference pipeline at a 2048px short edge for the best identity fidelity, but reference tokens are re-read at EVERY sampling step, so it can be several times slower.">
             <span id="comfyParamH3RefSizeLabel">Reference detail (MiniMax H3)</span>
             <select id="comfyParamH3RefSize">
