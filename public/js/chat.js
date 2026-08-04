@@ -11,7 +11,7 @@ import { setAvatarState, showExpression, detectExpression, isCloudModel, resetAv
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.js';
-import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractKeyFrames, comfyModelSupportsMask } from './image-gen.js';
+import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractKeyFrames, comfyModelSupportsMask, comfyModelSupportsRefMask } from './image-gen.js';
 import { openMaskModal } from './mask-paint.js';
 import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
@@ -250,7 +250,7 @@ function bgImagineLabel(cmds, isVideo, isMesh) {
 // Generation (image/video/audio) always runs through the background queue. This
 // builds the image/video job from the parsed /imagine commands — shared by a fresh
 // send and a resend so the model is snapshotted the same way in both.
-async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertIndex = -1, audio = null) {
+async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertIndex = -1, audio = null, refMasks = null) {
   // A ComfyUI video model (no Ollama image model) routes through generateVideo —
   // capture model + kind at submit time so a later dropdown change can't redirect it.
   const isVideo = !dom.imageModelSelect.value && dom.comfyModelSelect && state.comfyVideoModels.has(dom.comfyModelSelect.value);
@@ -287,6 +287,9 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
       // sourceVideo.base64 / .speechAudio, so the wrapper is safe downstream.
       initVideo: clip ? (audio ? { ...clip, speechAudio: audio } : clip) : (audio ? { speechAudio: audio } : null),
       maskB64: mask || null,
+      // Per-image subject cutouts for the reference-driven models; baked into the
+      // pictures at run time so the stored originals stay intact for a resend.
+      refMasks: (refMasks && refMasks.some(Boolean)) ? refMasks : null,
       modelOverride,
     },
   }));
@@ -646,11 +649,18 @@ function attachUploadedImages(userMessage, image) {
   userMessage.displayImages = list.map((img) => img.preview);
   const displayNames = list.map((img) => img.displayName || null);
   if (displayNames.some(Boolean)) userMessage.imageNames = displayNames;
-  // Inpaint mask rides along: for a single image it's image.mask; for a
-  // multi-image person-swap it's painted on the FIRST image (the scene) and
-  // locks that image's background outside the mask.
-  const maskCarrier = image.multi ? image.multi[0] : image;
-  if (maskCarrier && maskCarrier.mask) userMessage.mask = maskCarrier.mask;
+  // Painted masks ride along, as ONE of two things — never both, or the subject
+  // cutout would be handed to an inpainter as a region to repaint as well:
+  //  • reference-driven model → a per-image cutout array (keep what is inside),
+  //  • anything else → the single inpaint mask, painted on the FIRST image (the
+  //    scene) and locking its background outside the painted region.
+  if (comfyModelSupportsRefMask()) {
+    const masks = list.map((img) => img.mask || undefined);
+    if (masks.some(Boolean)) userMessage.imageMasks = masks;
+  } else {
+    const maskCarrier = image.multi ? image.multi[0] : image;
+    if (maskCarrier && maskCarrier.mask) userMessage.mask = maskCarrier.mask;
+  }
 }
 
 // Disambiguate repeated filenames by suffixing -1, -2 (before the extension) so each
@@ -856,7 +866,7 @@ function resendChatMessage(index) {
       // Resend of image/video gen also goes to the background queue (reached only
       // when the queue is empty — a non-empty queue is blocked above with a dialog).
       // The placeholder lands right after the resent user bubble (index + 1).
-      enqueueImagineGen(validCmds, state.activeTabId, message.contextImages || null, srcVids, message.mask || null, index + 1, messageSourceAudio(message));
+      enqueueImagineGen(validCmds, state.activeTabId, message.contextImages || null, srcVids, message.mask || null, index + 1, messageSourceAudio(message), message.imageMasks || null);
     }
   } else {
     // Truncate context to the resent bubble: only messages up to and including
@@ -2730,7 +2740,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       // multiple clips fan out (cartesian with each command's count).
       saveChat();
       if (state.activeTabId === tabId) renderChat();
-      enqueueImagineGen(validCmds, tabId, userMessage.contextImages || null, imagineVideos, userMessage.mask || null, -1, audio);
+      enqueueImagineGen(validCmds, tabId, userMessage.contextImages || null, imagineVideos, userMessage.mask || null, -1, audio, userMessage.imageMasks || null);
     }
     return;
   }
@@ -2972,8 +2982,13 @@ function makeReplaceImageButton(msgIndex, imgIdx) {
       // new file's name is used for the download/caption and the model prompt.
       if (!Array.isArray(msg.imageNames)) msg.imageNames = new Array(msg.contextImages.length).fill(null);
       msg.imageNames[imgIdx] = file.name;
-      // A mask is painted on image #0; it no longer lines up with a new picture.
+      // Masks are painted ON pixels, so neither kind survives a swapped picture: the
+      // inpaint mask belongs to image #0, a subject cutout to this exact index.
       if (imgIdx === 0 && msg.mask) delete msg.mask;
+      if (Array.isArray(msg.imageMasks) && msg.imageMasks[imgIdx]) {
+        msg.imageMasks[imgIdx] = undefined;
+        if (!msg.imageMasks.some(Boolean)) delete msg.imageMasks;
+      }
       saveChat();
       renderChat();
     });
@@ -3480,11 +3495,19 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       // region. Single image → local repaint; multi-image (person-swap) → the mask
       // on image #1 (the scene) locks its background outside the painted region.
       // The mask is stored once on the message; a resend regenerates with it.
-      if (role === "user" && imgIdx === 0 && Number.isInteger(index) && comfyModelSupportsMask()) {
+      // …and on EVERY image when a reference-driven model (r2v / subject→image) is
+      // selected, where the mask is a SUBJECT CUTOUT instead: only what is inside it
+      // reaches the model. Those live in msg.imageMasks[imgIdx]; the inpaint mask
+      // stays on msg.mask. Either way a resend regenerates with what is stored.
+      const bubbleRefMask = comfyModelSupportsRefMask();
+      if (role === "user" && Number.isInteger(index) && (bubbleRefMask || (imgIdx === 0 && comfyModelSupportsMask()))) {
+        const has = bubbleRefMask ? !!msg?.imageMasks?.[imgIdx] : !!msg?.mask;
         const maskBtn = document.createElement("button");
         maskBtn.type = "button";
-        maskBtn.className = "messageMaskBtn" + (msg?.mask ? " hasMask" : "");
-        maskBtn.title = msg?.mask ? t("chat_maskEditTitle") : t("chat_maskPaintTitle");
+        maskBtn.className = "messageMaskBtn" + (has ? " hasMask" : "");
+        maskBtn.title = has
+          ? t(bubbleRefMask ? "chat_cutoutEditTitle" : "chat_maskEditTitle")
+          : t(bubbleRefMask ? "chat_cutoutPaintTitle" : "chat_maskPaintTitle");
         maskBtn.setAttribute("aria-label", t("msg_maskPaintAria"));
         maskBtn.textContent = "🖌";
         maskBtn.addEventListener("click", async (e) => {
@@ -3492,13 +3515,21 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
           const tab = getActiveTab();
           const mm = tab?.messages?.[index];
           if (!mm) return;
-          const b64 = mm.contextImages?.[0] || "";
+          const b64 = mm.contextImages?.[bubbleRefMask ? imgIdx : 0] || "";
           const fullSrc = b64
             ? (b64.startsWith("data:") || b64.startsWith("http") ? b64 : `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`)
             : src;
-          const result = await openMaskModal(fullSrc, mm.mask || null);
+          const prior = bubbleRefMask ? (mm.imageMasks?.[imgIdx] || null) : (mm.mask || null);
+          const result = await openMaskModal(fullSrc, prior);
           if (result === null) return; // cancelled (X / Cancel / Esc) → leave the mask untouched
-          mm.mask = result || undefined; // "" = cleared via apply → drop the mask
+          if (bubbleRefMask) {
+            // Sparse by design: index i holds image i's cutout, holes are "no mask".
+            const masks = mm.imageMasks || (mm.imageMasks = []);
+            masks[imgIdx] = result || undefined;   // "" = cleared via apply → drop it
+            if (!masks.some(Boolean)) delete mm.imageMasks;
+          } else {
+            mm.mask = result || undefined;
+          }
           saveChat();
           renderChat();
         });

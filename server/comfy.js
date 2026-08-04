@@ -1139,13 +1139,13 @@ function capsFor(name, group, type, entry) {
   if (name === INFINITETALK) return ["v2v", "audio"]; // audio-DRIVEN dubbing (lip re-sync to a speech file)
   if (name === INFINITETALK_SPEAK) return ["i2v", "audio"]; // photo + speech/TTS → talking video
   if (type === "dancer") return ["i2v", "audio"]; // reference photo + MUSIC → dance video synced to it
-  if (entry && entry.needsVideo) return name === BERNINI_AUTO ? ["i2v", "v2v"] : ["v2v"];
   // MiniMax H3 generates its soundtrack in the same forward pass as the picture (one
-  // latent, two VAEs at decode) — the same "audio" claim LTX gets. ref2va is reference-
-  // DRIVEN: it always needs at least one reference image, so it is i2v, never t2v. Its
-  // optional reference VIDEO is a style/motion exemplar, not a clip to edit, so it does
-  // NOT get the v2v tag (which the UI reads as "requires a source video").
-  if (type === "minimax-h3") return /ref2va/i.test(name) ? ["i2v", "audio"] : ["t2v", "i2v", "audio"];
+  // latent, two VAEs at decode) — the same "audio" claim LTX gets. ref2va takes images
+  // AND a clip as references, so it carries both i2v and v2v (like BERNINI_AUTO, whose
+  // source video is optional too). Checked BEFORE the generic needsVideo rule below,
+  // which would otherwise flatten it to a bare ["v2v"] and drop the audio claim.
+  if (type === "minimax-h3") return /ref2va/i.test(name) ? ["i2v", "v2v", "audio"] : ["t2v", "i2v", "audio"];
+  if (entry && entry.needsVideo) return name === BERNINI_AUTO ? ["i2v", "v2v"] : ["v2v"];
   if (name === LTX_MSR) return ["i2v", "audio"];   // reference-image driven, generates a soundtrack
   switch (type) {
     case "phantom": return ["i2v"];
@@ -1269,13 +1269,6 @@ function isModelReady(name, group, type) {
   // Wan-Dancer — verified end-to-end on the live box (Aug 2026): photo + music →
   // dance video, 480×832 budget, turbo, keyframe planning + per-segment refinement.
   if (/dancer/i.test(b)) return true;
-  // MiniMax H3 is deliberately absent (→ not ready, greyed + warned but selectable).
-  // The MODEL is verified on the box — 864×480 / 124 frames in 57 s with a real stereo
-  // track — but that was a run of the stock template in ComfyUI, not of this builder.
-  // Promote fl2va once a graph from buildMiniMaxH3 renders end-to-end, and ref2va only
-  // after the reference NEGATIVE CONTROL passes (same seed with and without references
-  // must differ) — ComfyUI silently ignores unrecognised autogrow slots, so a succeeding
-  // run proves nothing about whether the references were actually used.
   const READY = [
     /flux1?.?dev/, /flux.*kontext/, /pony/,          // classic txt2img + kontext edit
     /z.?image/, /boogu/, /hidream/, /qwen.?image/,   // image gen + edit families
@@ -1283,8 +1276,34 @@ function isModelReady(name, group, type) {
     /animate/,                                        // animate MOVE (base unet)
     /scail/,                                          // scail replace (base unet)
     /ti2v.*5b/, /hunyuan/, /ltx/, /sulphur/, /phantom/, // video generators (sulphur = LTX family, verified)
+    // MiniMax H3 — BOTH weight files verified end-to-end through buildMiniMaxH3 (Aug 2026):
+    // fl2va (t2v / i2v / first-last-frame) and ref2va (reference-driven). The ref2va pass
+    // also settles the autogrow question: a wrong slot key reaches execute() as a stray
+    // kwarg and raises TypeError, so a run that COMPLETES is proof the references were
+    // handed to the node — they cannot be silently dropped.
+    /minimax.?h3/,
   ];
   return READY.some((re) => re.test(b));
+}
+
+// Does this model read its attached images as REFERENCES (identity / subject) rather
+// than as frames of the clip itself? Only those get the per-image 🖌 cutout: a mask
+// there means "the subject is inside this outline", and the browser bakes it in
+// (everything outside → flat white, cropped to the outline) before upload, so the
+// surrounding scene can neither leak into the identity nor waste reference pixels.
+//
+// Deliberately EXCLUDED, because their image becomes a real frame — cutting it out
+// would put a white background in the video itself:
+//   • plain i2v / FLF (wan, ltx keyframes, hunyuan, ltx-2.3 t2v)
+//   • LTX Union Control  — the still IS frame 0 (LTXVImgToVideoInplace)
+//   • InfiniteTalk "photo speaks" — the photo IS the shot, animated in place
+// Bernini's merged entry is the one ambiguous case (an image alone = i2v start frame,
+// an image WITH a source clip = a reference); the frontend resolves it by whether a
+// clip is staged, so it is listed here and gated there.
+function refMaskModel(name, type) {
+  if (name === LTX_MSR) return true;              // subjects + background are all references
+  if (type === "minimax-h3") return /ref2va/i.test(name); // only the r2v weight takes references
+  return ["phantom", "animate", "scail2", "dancer", "bernini"].includes(type);
 }
 
 async function resolveAnimateUnet() {
@@ -1360,9 +1379,13 @@ async function proxyComfyModels(req, res) {
       // each one's precision variants (pruned int8 / bf16) into a single entry.
       if (vt === "minimax-h3") {
         const isRef = /ref2va/i.test(n);
+        // ref2va joins the SOURCE-VIDEO group: an attached clip is one of the references
+        // it reads (motion / camera / editing rhythm). videoOptional because it is only
+        // one of four kinds — images or audio alone are equally valid — so unlike the
+        // real video-edit models it must not reject a request that brings no clip.
         videoModels.push({ name: n, type: vt,
           label: isRef ? "MiniMax H3 (r2v)" : "MiniMax H3 (t2v / i2v)",
-          ...(isRef ? { needsImages: 1 } : {}) });
+          ...(isRef ? { needsImages: 1, needsVideo: true, videoOptional: true } : {}) });
         continue;
       }
       // Bernini = WAN 2.2 MoE video-edit. Collapse its high/low pair into ONE
@@ -1507,7 +1530,11 @@ async function proxyComfyModels(req, res) {
           auto: preset.length,
         };
       }
+      m.refMask = refMaskModel(m.name, m.type);
     }
+    // The Bernini subject→image task reads its attachments as references too (the
+    // same reference_images socket the r2v path uses, at length 1).
+    for (const m of editModels) if (m.name === BERNINI_IMG_SUBJECT) m.refMask = true;
     // Checkpoints that are COMPANIONS to another model rather than something to
     // txt2img list: plain checkpoints (excluding edit/video/HiDream/companions) +
     // HiDream-I1 (a diffusion model loaded specially with QuadrupleCLIPLoader).
@@ -3037,12 +3064,12 @@ const H3_MAX_REF_IMAGES = 9;
 // (ref_images={"ref_image_0": IMAGE, …}). A bare "ref_image_0" reaches execute() as a
 // stray kwarg and raises TypeError at run time.
 //
-// Nothing catches a wrong key earlier than that run: /prompt validation ignores these
-// slots entirely (verified — graphs with dangling and type-mismatched links here pass
-// validation silently), and an unrecognised key that happens not to collide would simply
-// be dropped, producing a clip that ignored its references. So any change to these names
-// must be proven by a real render plus a NEGATIVE CONTROL (same seed, with and without
-// references; the outputs must differ) — never by "it validated" or "it succeeded".
+// Nothing catches a wrong key before that run: /prompt validation ignores these slots
+// entirely (verified — graphs with dangling and type-mismatched links here pass
+// validation silently). It fails loudly rather than quietly, though: an unrecognised key
+// is not dropped, it survives into the kwargs and raises. So a run that COMPLETES is
+// itself proof the keys landed — which is how the current names were confirmed (both
+// weight files verified end-to-end, Aug 2026). "It validated" still proves nothing.
 function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
   refImageNames, refVideoName, refAudioName, refImageSize }) {
   const isRef = /ref2va/i.test(model || "");
@@ -6078,13 +6105,19 @@ async function generateComfyImage(req, res) {
         // MiniMax H3. Two weight files with different input contracts, one branch:
         //   fl2va  — 0-2 attached images become first_frame / last_frame (none = t2v)
         //   ref2va — every attached image is a REFERENCE (≤9); an attached video and/or
-        //            audio become reference exemplars too (not a clip to edit)
+        //            audio are references too — exemplars for motion / camera / voice,
+        //            NOT a clip to edit, so the source video is never carried through
         // Neither graph has a negative branch, so a typed negative prompt is inert here —
         // the "don't do X" instructions belong in the prompt itself, which is also where
         // the soundtrack is described (dialogue, SFX, music are part of the same prompt).
         const isRef = /ref2va/i.test(model);
-        if (isRef && !(Array.isArray(images) && images.length)) {
-          sendJson(res, 400, { error: "MiniMax H3 (r2v) needs at least one reference image — attach one (up to 9), then /imagine <description>. For plain text→video or first/last-frame, pick MiniMax H3 (t2v / i2v) instead." });
+        // ref2va needs SOMETHING to reference, but the node's own minimum for each of the
+        // four groups is 0 — images, a clip and an audio file are interchangeable ways of
+        // giving it one. So the gate is "at least one reference of any kind", not "at
+        // least one image"; with nothing attached it would be a worse t2v than fl2va.
+        const hasRef = (Array.isArray(images) && images.length) || sourceVideoName || sourceVideo || sourceAudioName || sourceAudio;
+        if (isRef && !hasRef) {
+          sendJson(res, 400, { error: "MiniMax H3 (r2v) needs at least one reference to work from — attach images (up to 9), a video, an audio file, or any combination, then /imagine <description>. For plain text→video or first/last-frame, pick MiniMax H3 (t2v / i2v) instead." });
           return;
         }
         const comp = await videoCompanions("minimax-h3", model, opts);
@@ -6102,7 +6135,9 @@ async function generateComfyImage(req, res) {
           // DISTINCT filenames per reference — uploadImage overwrites by name, so a shared
           // default would collapse all nine references onto the last image.
           refImageNames = [];
-          const refs = images.slice(0, H3_MAX_REF_IMAGES);
+          // May legitimately be empty now: a clip or an audio file on its own is a valid
+          // reference set, so `images` can be absent entirely.
+          const refs = (Array.isArray(images) ? images : []).slice(0, H3_MAX_REF_IMAGES);
           for (let i = 0; i < refs.length; i++) refImageNames.push(await uploadImage(refs[i], controller.signal, `heykoko_h3ref${i}.png`));
           imagesUsed = refImageNames.length;
         } else if (Array.isArray(images) && images.length) {

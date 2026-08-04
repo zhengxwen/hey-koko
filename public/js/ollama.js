@@ -468,6 +468,10 @@ function applyComfyModels(data) {
     // Multi-reference compose: Qwen-Image-Edit-2509, and Bernini subject→image
     // (r2i is inherently multi-ref — "image0 wearing image1 in image2's scene").
     state.comfyMultiImageModels = new Set(editModels.filter((m) => m.type === "qwen" || m.type === "bernini-r2i").map((m) => m.name));
+    // Reference-driven models (r2v + subject→image): every staged image gets its own 🖌
+    // button, and a mask there is a SUBJECT CUTOUT (keep what is inside), not an inpaint
+    // region. Server-decided (refMaskModel) so a new model can't fall out of step.
+    state.comfyRefMaskModels = new Set([...videoModels, ...editModels].filter((m) => m.refMask).map((m) => m.name));
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
     const current = saved.comfyModel || dom.comfyModelSelect.value;
     // ⚙ "upscale model" manual picker: Auto + each model installed in upscale_models/.
@@ -836,6 +840,8 @@ function comfyModelHint(name) {
   if (/vace/.test(n)) return t("oll_hint_vace");
   if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b" ? t("oll_hint_wan14b") : t("oll_hint_wan5b");
   if (/hunyuan/.test(n)) return t("oll_hint_hunyuan");
+  // MiniMax H3 — ref2va first, both filenames contain "minimax_h3".
+  if (/minimax.?h3/.test(n)) return /ref2va/.test(n) ? t("oll_hint_minimaxH3Ref") : t("oll_hint_minimaxH3");
   // MSR + Union Control before the generic LTX test — both are distinct LTX modes.
   if (n === "ltx-msr") return t("oll_hint_ltxMsr");
   if (n === "ltx-union") return t("oll_hint_ltxUnion");

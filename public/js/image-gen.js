@@ -11,6 +11,7 @@ import { saveChat } from './settings.js';
 import { getTab } from './tabs.js';
 import { foregroundSink } from './gen-sink.js';
 import { comfyFetch } from './server-queue.js';   // Option B: run ComfyUI gen on the server queue
+import { applyMaskCutouts } from './mask-paint.js';
 
 // Drop a model file's extension for display (e.g. "RealESRGAN_x4plus.pth" → "RealESRGAN_x4plus").
 const stripModelExt = (n) => (n || "").replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
@@ -194,6 +195,9 @@ export function comfyModelSupportsMask() {
   if (!comfyModel) return false;
   if (dom.imageModelSelect?.value) return false; // Ollama image model wins → no mask
   if (state.comfyVideoModels && state.comfyVideoModels.has(comfyModel)) return false;
+  // Reference-driven models read a mask as a subject CUTOUT instead — that surface
+  // owns the 🖌 button on those, and the two must never both claim it.
+  if (comfyModelSupportsRefMask()) return false;
   if (/hidream.?i1|z.?image/i.test(comfyModel)) return false; // txt2img-only
   if (/hidream.?o1/i.test(comfyModel)) return false; // O1 edits via reference conditioning on an empty latent — no source latent to mask
   if (comfyModel === "image-upscale") return false; // pure upscale — nothing to mask
@@ -202,6 +206,21 @@ export function comfyModelSupportsMask() {
   // The 360° recipe already derives its own mask from the attached photo's coverage;
   // a painted one would fight it for the same input.
   if (comfyModel === PANORAMA_RECIPE) return false;
+  return true;
+}
+
+// Whether the selected ComfyUI model reads its attachments as REFERENCES, so EVERY
+// staged image gets a 🖌 button and the mask painted there is a subject cutout
+// ("keep what is inside") rather than an inpaint region. The model list is decided
+// server-side (refMaskModel); the one judgement call left here is Bernini's merged
+// entry, where the same attachment is a reference alongside a source clip but the
+// first FRAME without one — cutting out a first frame would whiten the video.
+export function comfyModelSupportsRefMask() {
+  const comfyModel = dom.comfyModelSelect?.value;
+  if (!comfyModel) return false;
+  if (dom.imageModelSelect?.value) return false;         // Ollama image model wins
+  if (!state.comfyRefMaskModels?.has(comfyModel)) return false;
+  if (comfyModel === BERNINI_AUTO && !state.selectedVideo) return false; // i2v → the image is frame 0
   return true;
 }
 
@@ -367,6 +386,10 @@ function b64ToImgSrc(b) {
 // The 360° panorama recipe's own name. It is a recipe rather than a checkpoint, so
 // it is matched by identity in a few places that all have to agree.
 const PANORAMA_RECIPE = "panorama_360_text";
+
+// Bernini's merged dropdown entry (server: BERNINI_AUTO). Named here because it is the
+// one model whose attachment changes role with the staged clip — see comfyModelSupportsRefMask.
+const BERNINI_AUTO = "bernini";
 
 // Turn an attached photo into the equirectangular canvas the panorama recipe paints
 // around: the photo mapped onto the sphere, the rest of the sphere pre-filled by
@@ -916,14 +939,20 @@ const scail2Window = (mult) =>
 const segmentCapFor = (m, pixelBudget, torchCompile, scailWindow) =>
   isScail2Model(m) ? scail2Window(scailWindow) : animateSegmentCap(pixelBudget, torchCompile);
 
-export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null, sink = null, comfyUrl = null) {
+export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null, sink = null, comfyUrl = null, refMasks = null) {
   const tab = getTab(tabId);
   if (!tab) return;
   // This job's ComfyUI worker (multi-machine parallel lanes) — falls back to the
   // single configured endpoint. Normalized to host:port for WS / interrupt / upload.
   const comfyHost = ((comfyUrl || dom.comfyUrlDisplay?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim()).replace(/^https?:\/\//i, "").replace(/\/+$/, "");
   const genStart = Date.now();
-  const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
+  let refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
+  // Subject cutouts (see generateImage). Baked BEFORE refImageDims below, which reads
+  // the first reference's natural size to set the output aspect — a cutout is cropped
+  // to the subject, so measuring the uncropped original would frame the clip wrong.
+  if (refImages && Array.isArray(refMasks) && refMasks.some(Boolean)) {
+    refImages = await applyMaskCutouts(refImages, refMasks);
+  }
   // Foreground unless the jobs runner handed in a background sink. The sink owns
   // the AbortController, the send-button lock, the progress bubble and where the
   // result message lands (live bubble vs. background placeholder).
@@ -1687,14 +1716,14 @@ export async function generateMesh(parsed, model, tabId = state.activeTabId, ins
   }
 }
 
-export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null, initVideo = null, maskB64 = null, sink = null, modelOverride = null) {
+export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null, initVideo = null, maskB64 = null, sink = null, modelOverride = null, refMasks = null) {
   const parsedList = Array.isArray(parsedInput) ? parsedInput : [parsedInput];
   const tab = getTab(tabId);
   if (!tab) return;
   const genStart = Date.now();
 
   // Image-to-image: raw base64 reference image(s) condition the generation.
-  const refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
+  let refImages = Array.isArray(initImages) && initImages.length ? initImages : null;
 
   // An empty Ollama image model means "generate via ComfyUI". Fall back to the
   // selected ComfyUI checkpoint in that case. modelOverride pins the model chosen
@@ -1722,7 +1751,18 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // A selected ComfyUI VIDEO model routes to the dedicated video path. Pass the
   // sink + the worker url through so a background video job stays headless + on-target.
   if (!imageModel && comfyModel && state.comfyVideoModels && state.comfyVideoModels.has(comfyModel) && !isAnimateStill) {
-    return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages, initVideo, sink, ovComfyUrl);
+    return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages, initVideo, sink, ovComfyUrl, refMasks);
+  }
+
+  // Subject cutouts, baked from the per-image masks the 🖌 button collects. Only
+  // reference-driven models ever carry these (the UI gates who gets the button), so
+  // their presence alone is the instruction — no model re-check here, which would
+  // otherwise read a dropdown the user may have changed since the job was queued.
+  // Deliberately BELOW the routing above: the video path bakes its own (it needs the
+  // cutouts before it measures the reference's aspect), and baking twice would apply
+  // the second mask to an already-cropped picture.
+  if (refImages && Array.isArray(refMasks) && refMasks.some(Boolean)) {
+    refImages = await applyMaskCutouts(refImages, refMasks);
   }
 
   const useComfy = !imageModel && !!comfyModel;

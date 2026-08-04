@@ -11,7 +11,7 @@ import { pauseOrStopSpeech, populateVoiceList } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveTabsNow, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, clearSelectedAudio, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint, openModelBrowser, openComfyModelPicker, syncComfyModelPickLabel, relocalizeComfyModels, relocalizeBrowseOption, BROWSE_MODELS_VALUE } from './ollama.js';
-import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsMask } from './image-gen.js';
+import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsMask, comfyModelSupportsRefMask } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
 import { renderChat, sendMessage, setGenerating, regenerateReply, analyzeMedia, generateProactiveReply, markStopping, showSendError, initHighlightUI } from './chat.js';
@@ -762,7 +762,7 @@ dom.removeImage.addEventListener("click", clearSelectedImage);
 dom.removeFile.addEventListener("click", clearSelectedFile);
 
 // Remove video button
-dom.removeVideo.addEventListener("click", clearSelectedVideo);
+dom.removeVideo.addEventListener("click", () => { clearSelectedVideo(); renderStagedImagePreview(); });
 if (dom.removeAudio) dom.removeAudio.addEventListener("click", clearSelectedAudio);
 
 // --- Wan Animate REPLACE: pick which person to swap (SAM2 seed point) ---
@@ -1629,15 +1629,21 @@ function renderStagedImagePreview() {
     btn.addEventListener("click", () => removeStagedImage(idx));
     thumb.appendChild(btn);
 
-    // Inpaint mask: on the FIRST staged image (the scene) with a mask-capable
-    // ComfyUI model. Single image → local repaint; multi-image (person-swap) →
-    // the mask on image #1 locks its background pixel-for-pixel while the person
-    // from the other image(s) is composed into the masked region.
-    if (idx === 0 && comfyModelSupportsMask()) {
+    // 🖌 mask. Two different meanings, never both at once:
+    //  • inpaint — on the FIRST staged image (the scene) with a mask-capable ComfyUI
+    //    model. Single image → local repaint; multi-image (person-swap) → the mask on
+    //    image #1 locks its background pixel-for-pixel while the person from the other
+    //    image(s) is composed into the masked region.
+    //  • subject cutout — on EVERY image of a reference-driven model (r2v / subject→
+    //    image), where the mask says which part of the photo IS the subject.
+    const refMask = comfyModelSupportsRefMask();
+    if (refMask || (idx === 0 && comfyModelSupportsMask())) {
       const maskBtn = document.createElement("button");
       maskBtn.type = "button";
       maskBtn.className = "previewThumbMask" + (img.mask ? " hasMask" : "");
-      maskBtn.title = img.mask ? t("msg_maskEditTitle") : t("msg_maskPaintTitle");
+      maskBtn.title = img.mask
+        ? t(refMask ? "msg_cutoutEditTitle" : "msg_maskEditTitle")
+        : t(refMask ? "msg_cutoutPaintTitle" : "msg_maskPaintTitle");
       maskBtn.setAttribute("aria-label", t("msg_maskPaintAria"));
       maskBtn.textContent = "🖌";
       maskBtn.addEventListener("click", async () => {
@@ -1749,6 +1755,9 @@ function renderStagedAudioPreview() {
 // shows the original filename with its own × remove button.
 function renderStagedVideoPreview() {
   const videos = getStagedVideos();
+  // Bernini's staged images are references WITH a source clip and frame 0 without one,
+  // so staging or dropping a clip flips whether they get the 🖌 cutout button.
+  renderStagedImagePreview();
   dom.videoPreviewName.innerHTML = "";
   if (videos.length === 0) {
     dom.videoPreview.hidden = true;
@@ -1799,6 +1808,7 @@ function removeStagedVideo(index) {
   videos.splice(index, 1);
   if (videos.length === 0) {
     clearSelectedVideo();
+    renderStagedImagePreview();   // the last clip left → Bernini's images are frame 0 again
     return;
   }
   state.selectedVideo = videos.length === 1 ? videos[0] : { multi: videos };

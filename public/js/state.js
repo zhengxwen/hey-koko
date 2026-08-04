@@ -216,6 +216,7 @@ export const state = {
   comfyVideoOptionalModels: new Set(), // …of those, the ones a source video is OPTIONAL for (bernini: image alone → i2v)
   comfyAudioInModels: new Set(),     // …video-in models that ALSO need a SPEECH AUDIO file (InfiniteTalk dubbing)
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
+  comfyRefMaskModels: new Set(),     // models whose attachments are REFERENCES → each staged image gets a 🖌 subject cutout
   scrollPin: null,                   // when set (resend/edit in place), auto-scroll holds this scrollTop instead of jumping to the bottom
   _pinClearTimer: null,              // delayed release of scrollPin once generation fully ends
   stickToBottom: true,               // streaming auto-scroll only while the user sits near the bottom (so they can scroll up mid-generation)

@@ -471,7 +471,7 @@ async function runJob(job) {
     // (set by the scheduler) pins WHICH ComfyUI machine runs it — its parallel lane.
     const mo = (p.modelOverride && job.workerUrl) ? { ...p.modelOverride, comfyUrl: job.workerUrl } : (p.modelOverride || null);
     await generateImage(p.parsedInput, job.tabId, -1, p.initImages || null,
-      p.initVideo || null, p.maskB64 || null, sink, mo);
+      p.initVideo || null, p.maskB64 || null, sink, mo, p.refMasks || null);
   }
 }
 

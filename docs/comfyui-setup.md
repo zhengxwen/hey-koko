@@ -25,7 +25,7 @@ Four integrations are therefore **excluded**; you do not need their model files:
 
 | | Requirement |
 |---|---|
-| ComfyUI | **≥ 0.29.0**. Of the 168 node types Hey-Koko emits, **128 are core** — including `SAM3_*`, `SCAIL2ColoredMask`, `WanSCAILToVideo`, `WanDancer*`, `TripoSplat*`, `MoGe*`, `BerniniConditioning` and `LTXV*`, all of which only entered core in 0.29. |
+| ComfyUI | **≥ 0.30.0** for the full list. The floor is 0.29.0 for everything except MiniMax H3, whose `MiniMaxH3*` nodes, `CLIPLoader` type `minimax` and `COMFY_AUTOGROW_V3` dynamic inputs all arrived in 0.30. Of the 168 node types Hey-Koko emits, **128 are core** — including `SAM3_*`, `SCAIL2ColoredMask`, `WanSCAILToVideo`, `WanDancer*`, `TripoSplat*`, `MoGe*`, `BerniniConditioning` and `LTXV*`, all of which only entered core in 0.29. |
 | ffmpeg / ffprobe | On the machine running **Hey-Koko** (not the ComfyUI host) — used for video transcoding. |
 
 ### SageAttention
@@ -74,7 +74,8 @@ node -e '
 const NEED=["ImageResizeKJv2","VHS_LoadVideo","VHS_VideoCombine","WanVideoSampler",
 "Wav2VecModelLoader","Sam2Segmentation","DWPreprocessor","LTXICLoRALoaderModelOnly",
 "LiconMSR","PromptRelayEncode","Hy3DMultiViewsGenerator","MESHToTrimesh","HKBoxToBBox",
-"SAM3_VideoTrack","WanSCAILToVideo","WanDancerVideo","TripoSplatConditioning","MoGeInference"];
+"SAM3_VideoTrack","WanSCAILToVideo","WanDancerVideo","TripoSplatConditioning","MoGeInference",
+"MiniMaxH3ReferenceToVideo"];   // core, but 0.30+ only — doubles as the version check
 fetch("http://<your-comfyui>:8188/object_info").then(r=>r.json()).then(oi=>{
   const miss=NEED.filter(n=>!oi[n]);
   console.log(miss.length?"❌ missing: "+miss.join(", "):"✅ all nodes present");
@@ -158,6 +159,8 @@ Used by several workflows — **install these first**.
 | **LTX-2.3** (dev / distilled) | `ltx-2.3-22b-dev-fp8.safetensors`<br>`ltx-2.3-22b-distilled-fp8.safetensors` → `checkpoints/` | LTX23_video_vae · LTX23_audio_vae · ltx-2.3_text_projection · taeltx2_3<br>`loras/`: `ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe` · `ltx-2.3-22b-distilled-lora-384` |
 | **LTX Sulphur** | `sulphur_dev_fp8mixed.safetensors` → `checkpoints/`<br>`loras/sulphur_lora_rank_768.safetensors` | Same as LTX-2.3. ⚠️ **Do not stack the ltx-2.3 distill LoRA on it** — measured to produce garbage. Same-family checkpoint + LoRA are mutually exclusive (greyed out) in the UI. |
 | **Bernini video** (v2v / rv2v) | `wan2.2_bernini_r_high_noise_fp8_scaled` + `_low_noise_` | umt5 · wan_2.1_vae · Bernini-R_LightX2V LoRAs |
+| **MiniMax H3** (t2v / i2v / first-last-frame) | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` (21 GB) | `text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` (15.7 GB)<br>`vae/minimax_h3_video_vae_fp16.safetensors`<br>`vae/minimax_h3_audio_vae_fp32.safetensors`<br>**no custom node packs** |
+| **MiniMax H3 r2v** (reference-driven) | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` (21 GB) | Same three companions. A **separate weight file**, not a mode of the one above — install both to get both entries. |
 
 **Two LTX add-ons** (on top of LTX-2.3 above):
 
@@ -165,6 +168,18 @@ Used by several workflows — **install these first**.
 |---|---|---|
 | **MSR V2** (2–5 reference images, identity preserved) | `loras/LTX-2.3-Licon-MSR-V2.safetensors` | ComfyUI-LTXVideo · ComfyUI-Licon-MSR · ComfyUI-PromptRelay · ComfyUI-KJNodes |
 | **Union Control** (depth / structure transfer) | `loras/ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors` | MoGe model (auto-downloaded by `LoadMoGeModel`) |
+
+**MiniMax H3** is an omni-modal model: text, images, video and audio in; video **with natively generated stereo audio** out (one latent, decoded twice — hence the second VAE). Weights live in [`Comfy-Org/MiniMax-H3`](https://huggingface.co/Comfy-Org/MiniMax-H3).
+
+> ⚠️ **The repo is 343 GB — do not clone it.** Fetch the five files above by path (~60 GB total).
+>
+> ⚠️ **Skip the 34 GB `_int8_convrot` files.** `pruned_int8_convrot` is the *same* int8 tier: "pruned" only means the modulation weights (~40% of parameters) were replaced by an equivalent lookup table, with no quality change. The non-pruned build is 13 GB larger for nothing. `_bf16` (66.3 GB DiT + 51.5 GB text encoder) is the real quality tier, and needs a machine that can hold it.
+>
+> **Fixed properties, not settings**: 24 fps, and a frame count on a `17k+5` grid within the model's trained range of **124–362 frames (5.2–15.1 s)**. Hey-Koko pins both — the ⚙ fps field is hidden for H3 (fps reaches only the muxer, so changing it would re-time the picture while the generated soundtrack kept its own length) and the frame field advertises the real grid. There is also no CFG anywhere in the graph (`BasicGuider`, single conditioning), so that field is hidden too.
+>
+> **Sizing.** Measured on an RTX 5090 (32 GB) + 64 GB RAM: 864×480 × 124 frames took **57 s**, peaking at **34.1 / 34.2 GB VRAM (99.7%)** and **64.5 / 68.2 GB system RAM (94.5%)** — the smallest build has *no* headroom on a 32 GB card, and runs at all only because ComfyUI offloads to system RAM. Treat 864×480 as the working default there and raise resolution deliberately.
+>
+> **r2v specifics.** Up to 9 reference images, 3 reference videos (+ their soundtracks) and 3 reference audio files. The ⚙ *Reference detail* knob maps to `ref_image_size`: `match` fits each reference to the generation's pixel area, `max` allows a 2048px short edge for better identity fidelity — but reference tokens are re-read at **every** sampling step, so `max` can be several times slower. Both modes only ever scale **down**, so neither adds detail a small reference photo never had. A reference *video* is an exemplar (performance, camera, cutting rhythm), not poses copied frame by frame, and it is **trimmed to the length being generated** — attach a 20 s clip at the default 124 frames and only the first 5.2 s is seen.
 
 ### 4.4 Pose transfer
 
@@ -215,6 +230,8 @@ If you would rather not install everything at once, in order of increasing depen
 3. **Add video** → Wan 2.2 14B (four expert files + four LoRAs + `umt5` + `wan2.2_vae`). Still zero custom nodes.
 4. **Add pose transfer** → SCAIL-2. This is the first step that needs custom nodes (KJNodes + VideoHelperSuite).
 5. **Everything else as needed.**
+
+MiniMax H3 sits outside that ladder: it needs **no custom nodes at all**, but it is a ~60 GB download and wants ComfyUI ≥ 0.30.0 and a large amount of system RAM to offload into. It generates a soundtrack (as LTX-2.3 does) but is the only one that takes reference images, video **and** audio together, so add it for that combination rather than as a general-purpose video model.
 
 ---
 

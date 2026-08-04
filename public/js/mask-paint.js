@@ -725,6 +725,117 @@ async function runTextSegment() {
   }
 }
 
+// ── Reference-image cutout ────────────────────────────────────────────────────
+// On a REFERENCE-driven model (r2v, subject→image) a painted mask means the
+// opposite of inpainting: it outlines what to KEEP. Nothing about the graph
+// changes — we bake the mask into the picture here and upload the result, so
+// every reference model gets this for free.
+//
+// Two things happen, both in service of "only the masked content reaches the
+// model": everything outside the outline becomes flat white, and the frame is
+// then cropped to the outline (plus a small margin). The crop matters as much as
+// the cutout — reference encoders see a fixed-size frame, so a subject that
+// occupied a tenth of the photo would otherwise arrive as a tenth of the
+// reference pixels, identity and all.
+const CUTOUT_PAD = 0.04;      // margin around the mask bbox, as a fraction of its longer side
+const CUTOUT_MIN_PAD = 8;     // …but never less than this many pixels
+const CUTOUT_ALPHA = 128;     // mask brightness above which a pixel counts as selected
+const CUTOUT_MIN_SIDE = 8;    // a selection thinner than this (image px) is a slip, not a subject
+
+// Decode a data URL / raw base64 into an <img>. Resolves null on failure.
+function loadImg(src) {
+  return new Promise((resolve) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => resolve(null);
+    im.src = src;
+  });
+}
+
+// Raw base64 (no data: prefix) → a displayable src, sniffing the format from the
+// first bytes the way the rest of the app does.
+function b64Src(b64) {
+  if (b64.startsWith("data:")) return b64;
+  const mime = b64.startsWith("/9j/") ? "jpeg" : b64.startsWith("UklGR") ? "webp" : "png";
+  return `data:image/${mime};base64,${b64}`;
+}
+
+// Bake `maskUrl` into `b64` as a subject cutout. Returns raw base64 (JPEG) — or the
+// INPUT unchanged if the mask is empty or anything fails, since a cutout is a
+// refinement and must never cost the user their generation.
+export async function applyMaskCutout(b64, maskUrl) {
+  if (!b64 || !maskUrl) return b64;
+  try {
+    const [img, mimg] = await Promise.all([loadImg(b64Src(b64)), loadImg(maskUrl)]);
+    if (!img || !mimg) return b64;
+    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    if (!w || !h) return b64;
+
+    // The painter caps its mask at 1280px, so it is usually SMALLER than the photo —
+    // draw it up to full size first and do all the geometry in image pixels.
+    const mc = document.createElement("canvas");
+    mc.width = w; mc.height = h;
+    const mctx = mc.getContext("2d");
+    mctx.drawImage(mimg, 0, 0, w, h);
+    const md = mctx.getImageData(0, 0, w, h);
+    const mdata = md.data;
+
+    // Bounding box of the selection, and the same pass rewrites the buffer to
+    // white-on-transparent so it can be used directly as an alpha stencil.
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y = 0, p = 0; y < h; y++) {
+      for (let x = 0; x < w; x++, p += 4) {
+        const on = mdata[p] > CUTOUT_ALPHA;
+        mdata[p] = 255; mdata[p + 1] = 255; mdata[p + 2] = 255;
+        mdata[p + 3] = on ? 255 : 0;
+        if (!on) continue;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+    if (x1 < 0) return b64;               // nothing selected → leave the picture alone
+    // A selection thinner than this in either direction is a slip of the brush, not a
+    // subject: cropping to it would hand the model a few pixels of nothing. Measured on
+    // the SELECTION, not the padded crop, which the margin alone would push past any
+    // sanity threshold. Passing the photo through whole is the safe reading.
+    if (x1 - x0 + 1 < CUTOUT_MIN_SIDE || y1 - y0 + 1 < CUTOUT_MIN_SIDE) return b64;
+    mctx.putImageData(md, 0, 0);
+
+    const pad = Math.max(CUTOUT_MIN_PAD, Math.round(Math.max(x1 - x0, y1 - y0) * CUTOUT_PAD));
+    const cx = Math.max(0, x0 - pad), cy = Math.max(0, y0 - pad);
+    const cw = Math.min(w, x1 + 1 + pad) - cx, ch = Math.min(h, y1 + 1 + pad) - cy;
+
+    // Photo ∩ stencil, then that over white. Kept in this order because
+    // "destination-in" needs the photo already on the canvas.
+    const cut = document.createElement("canvas");
+    cut.width = w; cut.height = h;
+    const cctx = cut.getContext("2d");
+    cctx.drawImage(img, 0, 0);
+    cctx.globalCompositeOperation = "destination-in";
+    cctx.drawImage(mc, 0, 0);
+
+    const out = document.createElement("canvas");
+    out.width = cw; out.height = ch;
+    const octx = out.getContext("2d");
+    octx.fillStyle = "#ffffff";
+    octx.fillRect(0, 0, cw, ch);
+    octx.drawImage(cut, -cx, -cy);
+    return out.toDataURL("image/jpeg", 0.95).split(",")[1];
+  } catch {
+    return b64;
+  }
+}
+
+// Bake a parallel array of masks into a parallel array of images. `masks[i]` may be
+// null/undefined (that image is passed through untouched). Returns a NEW array —
+// the caller's stored originals are never mutated, so a resend re-bakes from source.
+export async function applyMaskCutouts(images, masks) {
+  if (!Array.isArray(images) || !Array.isArray(masks) || !masks.some(Boolean)) return images;
+  return Promise.all(images.map((b64, i) => applyMaskCutout(b64, masks[i] || null)));
+}
+
 // Briefly show a status message on a button, then restore its label.
 function flashBtn(btn, msg, label) {
   btn.textContent = msg;
