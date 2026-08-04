@@ -113,6 +113,9 @@ function comfyOverrides() {
   // explicit pick is the ONLY way to reach them; empty = infer from the attachments.
   const berniniTask = dom.comfyParamBerniniTask?.value || "";
   if (berniniTask) ov.berniniTask = berniniTask;
+  // MiniMax H3 reference sizing — empty means the node's own "match" default, so only a
+  // deliberate "max" pick travels (the slow, high-fidelity reference pipeline).
+  if (dom.comfyParamH3RefSize?.value) ov.h3RefSize = dom.comfyParamH3RefSize.value;
   // Wan Dancer: dance genre / motion amplitude / duration (seconds) / keyframe-quality.
   if (dom.comfyParamDanceStyle?.value) ov.danceStyle = dom.comfyParamDanceStyle.value;
   if (dom.comfyParamDanceAmplitude?.value) ov.danceAmplitude = dom.comfyParamDanceAmplitude.value;

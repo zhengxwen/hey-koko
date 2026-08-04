@@ -922,6 +922,13 @@
               <option value="generic">Generic assistant</option>
             </select>
           </label>
+          <label title="MiniMax H3 (r2v) only: how the reference images are sized before the model reads them. Match scales each reference down to the generation's pixel area — fastest, and the default. Max runs the reference pipeline at a 2048px short edge for the best identity fidelity, but reference tokens are re-read at EVERY sampling step, so it can be several times slower.">
+            <span id="comfyParamH3RefSizeLabel">Reference detail (MiniMax H3)</span>
+            <select id="comfyParamH3RefSize">
+              <option value="">Match generation size (fast)</option>
+              <option value="max">Max detail · 2048px (slower)</option>
+            </select>
+          </label>
           <label>
             <span id="comfyParamDanceStyleLabel" title="Wan Dancer only: which of the five trained dance genres to perform. Auto picks it from the prompt (e.g. 'street dance' / '街舞'), falling back to Latin.">Dance style (Wan Dancer)</span>
             <select id="comfyParamDanceStyle" title="Wan Dancer only: which of the five trained dance genres to perform. Auto picks it from the prompt (e.g. 'street dance' / '街舞'), falling back to Latin.">

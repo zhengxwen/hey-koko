@@ -358,7 +358,10 @@ export async function refreshBgWorkers() {
     ? workers.map((w) => w.url)
     : [urlFromDisplay(dom.comfyUrlDisplay)].filter(Boolean);
   if (!targets.length) { loadComfyModels(); return; }
-  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uUpscale = new Map(), uPano = new Map(), uPanoLora = new Map(), uLtxLora = new Map();
+  // uMesh belongs here for the same reason as the rest: leave a list out of the union and
+  // its whole group silently vanishes from the dropdown on the multi-worker path while the
+  // single-endpoint path still shows it.
+  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uMesh = new Map(), uUpscale = new Map(), uPano = new Map(), uPanoLora = new Map(), uLtxLora = new Map();
   // Union of the collapsed-group representatives across lanes — without carrying this
   // through, a multi-precision image model would keep its token in the label on the
   // multi-endpoint path while the single-endpoint path hides it.
@@ -375,7 +378,7 @@ export async function refreshBgWorkers() {
   await Promise.all(targets.map(async (url) => {
     try {
       const d = await (await fetch(`/api/comfy-models?comfyUrl=${encodeURIComponent(url)}`)).json();
-      const models = d.models || [], editModels = d.editModels || [], videoModels = d.videoModels || [];
+      const models = d.models || [], editModels = d.editModels || [], videoModels = d.videoModels || [], meshModels = d.meshModels || [];
       for (const n of (d.upscaleModels || [])) if (!uUpscale.has(n)) uUpscale.set(n, n);
       for (const n of (d.panoBases || [])) if (!uPano.has(n)) uPano.set(n, n);
       for (const n of (d.panoLoras || [])) if (!uPanoLora.has(n)) uPanoLora.set(n, n);
@@ -386,8 +389,11 @@ export async function refreshBgWorkers() {
         video: new Set(videoModels.map((m) => m.name)),
         videoIn: new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name)),
         multiImage: new Set(editModels.filter((m) => m.type === "qwen").map((m) => m.name)),
+        // Needed by workerHasModel: without it a mesh job matches NO lane and falls back
+        // to "any online one", which may well be a box without the 3D weights.
+        mesh: new Set(meshModels.map((m) => m.name)),
       };
-      const online = (models.length + editModels.length + videoModels.length) > 0;
+      const online = (models.length + editModels.length + videoModels.length + meshModels.length) > 0;
       setBgWorkerStatus(url, { online, models: sets, hostname: d.hostname || "" });
       for (const n of (d.imageCollapsed || [])) uCollapsed.add(n);
       if (online && typeof d.vramGib === "number" && d.vramGib > 0) vrams.push(d.vramGib);
@@ -396,9 +402,10 @@ export async function refreshBgWorkers() {
       for (const n of models) if (!uModels.has(n)) uModels.set(n, n);
       for (const m of editModels) if (!uEdit.has(m.name)) uEdit.set(m.name, m);
       for (const m of videoModels) if (!uVideo.has(m.name)) uVideo.set(m.name, m);
+      for (const m of meshModels) if (!uMesh.has(m.name)) uMesh.set(m.name, m);
     } catch { setBgWorkerStatus(url, { online: false }); }
   }));
-  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()], vramGib: vrams.length ? Math.min(...vrams) : null, devices });
+  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], meshModels: [...uMesh.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()], vramGib: vrams.length ? Math.min(...vrams) : null, devices });
 }
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
@@ -441,6 +448,9 @@ function applyComfyModels(data) {
     // The server decides this (it knows which builders read a preset); the rest hardcode
     // a schedule, so showing the fields for them would promise something that never happens.
     state.comfySamplerTunable = new Set(videoModels.filter((m) => m.samplerTunable).map((m) => m.name));
+    // cfg is tracked separately: MiniMax H3 reads sampler/scheduler/steps but guides with
+    // a BasicGuider, so it has no guidance scale to receive.
+    state.comfyCfgTunable = new Set(videoModels.filter((m) => m.cfgTunable).map((m) => m.name));
     // Source-video models (bernini / animate): output fps follows the source video.
     state.comfyVideoInModels = new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name));
     // Of the video-in models, the ones that ALSO need a speech audio file (InfiniteTalk dubbing).
@@ -589,6 +599,10 @@ function applyComfyModels(data) {
         // (a warning fires on pick) so it can be tested and then promoted. The colour
         // is a best-effort bonus for platforms that DO honour it.
         option.textContent = (ready ? "" : "⚠️ ") + base + capDots(name);
+        // Sort key for the alphabetical pass below: the DISPLAY name only. textContent
+        // can't serve — its "⚠️ " prefix would bunch every unverified model together and
+        // its capability dots would break ties by colour rather than by name.
+        option.dataset.sortKey = base;
         if (!ready) { option.style.color = "#9a9aa2"; option.dataset.unverified = "1"; }
         // Native <select> popups on macOS are drawn by the OS and generally ignore an
         // option's title, so this is a bonus for the platforms that do honour it — the
@@ -656,7 +670,26 @@ function applyComfyModels(data) {
         dom.comfyModelSelect.appendChild(group);
         groups.push({ key: "comfy_3d_group", items: bucket });
       }
-      dom.comfyModelSelect.value = allNames.includes(current) ? current : allNames[0];
+      // Alphabetical WITHIN each group (the groups themselves keep their fixed order:
+      // image → edit → video → video-in → 3D). Sorting here rather than on the server is
+      // deliberate — the string being sorted has to be the string on screen, and only the
+      // frontend knows it: the localized label for the model-free tools, and whichever of
+      // market-name / sentinel-label / stripped-filename won in addOption. Doing it in one
+      // place also keeps the native <select> and the 🎛 picker in the same order; they read
+      // from the same rows, so they must not be sorted independently.
+      // numeric so "Wan 2.2" precedes "Wan 10"; sensitivity "base" so case and accents
+      // don't split otherwise-adjacent names.
+      const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+      const byName = (a, b) => collator.compare(a, b);
+      for (const g of dom.comfyModelSelect.querySelectorAll("optgroup")) {
+        [...g.children]
+          .sort((a, b) => byName(a.dataset.sortKey || a.textContent, b.dataset.sortKey || b.textContent))
+          .forEach((o) => g.appendChild(o)); // appendChild MOVES an existing child
+      }
+      for (const g of groups) g.items.sort((a, b) => byName(a.label, b.label));
+      // Fall back to whatever now sorts first, not to the first name the server sent.
+      const firstOption = dom.comfyModelSelect.querySelector("optgroup > option");
+      dom.comfyModelSelect.value = allNames.includes(current) ? current : (firstOption ? firstOption.value : allNames[0]);
       // Readiness by model name — updateComfyMultiHint reads this to warn when the
       // selected model is unverified / not fully wired.
       state.comfyModelReady = readyMap;
@@ -1306,6 +1339,9 @@ export function updateComfyParamVisibility() {
   for (const el of [dom.comfyParamBerniniMode, dom.comfyParamRefMaxSize]) setVis(el, /bernini/i.test(m));
   // Edit-task lines are VIDEO tasks — hide them for the bernini image entries.
   setVis(dom.comfyParamBerniniTask, /bernini/i.test(m) && !/bernini_(image_edit|subject_image|text_image)/i.test(m));
+  // MiniMax H3: reference sizing exists only on the reference→video weights (ref2va).
+  // The t2v/i2v file (fl2va) has no reference pipeline, so the knob would be inert there.
+  setVis(dom.comfyParamH3RefSize, /minimax.?h3.*ref2va/i.test(m));
   // LTX family only (incl. Sulphur) — the optional LoRA slot. It is the one builder
   // with a user-pickable LoRA; every other model mounts its LoRAs automatically.
   // Union Control is excluded: it mounts its union IC-LoRA automatically, no user slot.
@@ -1347,7 +1383,11 @@ export function updateComfyParamVisibility() {
   // bound to their distill LoRA and ignore these — so hide rather than lie. Of the
   // mesh chains only Hunyuan3D runs a real KSampler.
   const samplerTunable = !video || !!(state.comfySamplerTunable && state.comfySamplerTunable.has(m));
-  for (const el of [dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps, dom.comfyParamCfg]) setVis(el, (diffusion && samplerTunable && !mesh) || meshSampler);
+  const shows = (diffusion && samplerTunable && !mesh) || meshSampler;
+  for (const el of [dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps]) setVis(el, shows);
+  // cfg additionally requires the model to actually have a guidance scale (see above).
+  const cfgTunable = !video || !!(state.comfyCfgTunable && state.comfyCfgTunable.has(m));
+  setVis(dom.comfyParamCfg, shows && cfgTunable);
 }
 
 export async function loadEmbedModels() {

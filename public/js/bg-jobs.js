@@ -209,7 +209,7 @@ function workerHasModel(w, model) {
   if (!model) return true;
   if (!w.models) return true;
   const m = w.models;
-  return (m.image && m.image.has(model)) || (m.edit && m.edit.has(model)) || (m.video && m.video.has(model));
+  return (m.image && m.image.has(model)) || (m.edit && m.edit.has(model)) || (m.video && m.video.has(model)) || (m.mesh && m.mesh.has(model));
 }
 
 // Lane load = queued + running jobs already on that worker.
@@ -1238,7 +1238,9 @@ function buildWorkersBar() {
     const chip = document.createElement('span');
     chip.className = 'bgWorkerChip' + (w.enabled ? '' : ' disabled') + (w.online === false ? ' offline' : '');
     chip.title = w.url;
-    const mc = w.models ? (w.models.image.size + w.models.edit.size + w.models.video.size) : 0;
+    // mesh included so the chip's count matches what the picker offers (an older saved
+    // worker scanned before mesh was tracked has no such Set — hence the guard).
+    const mc = w.models ? (w.models.image.size + w.models.edit.size + w.models.video.size + (w.models.mesh?.size || 0)) : 0;
     const meta = w.online === false ? t('bg_workerOffline') : t('bg_workerModels', { n: mc });
     chip.innerHTML = `<span class="bgWorkerDot">${w.online === false ? '○' : '●'}</span>`
       + `<span class="bgWorkerLabel">${escapeText(w.label)}</span>`

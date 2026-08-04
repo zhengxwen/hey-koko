@@ -524,6 +524,14 @@ function videoTypeOf(model) {
   // Video enhance (interpolate + upscale): a model-free post-process (frame interpolation +
   // AI upscale) on a source video. A fixed sentinel, not a checkpoint filename.
   if (/^video-enhance$/i.test(model)) return "enhance";
+  // MiniMax H3 — omni-modal video (text/image/video/audio in, video WITH native stereo
+  // audio out). Two weight files, not two modes of one file:
+  //   minimax_h3_fl2va_…  → text→video and first/last-frame image→video
+  //   minimax_h3_ref2va_… → reference-driven (identity / camera / voice from references)
+  // Both are real filenames on disk, so neither needs a sentinel. Placed first because it
+  // is disjoint from every ordering trap below — no minimax filename contains wan / ltx /
+  // animate / scail / bernini / hunyuan, and none of theirs contains "minimax".
+  if (/minimax.?h3/i.test(model)) return "minimax-h3";
   // Bernini (video-edit), Animate (pose-transfer) and SCAIL-2 (character animation)
   // are all WAN variants whose filenames contain "wan" — check them BEFORE the
   // generic /wan/ branch.
@@ -583,7 +591,13 @@ function videoTypeOf(model) {
 // fp8mixed (Sulphur's naming) sits BEFORE the bare fp8 alternative — alternation takes
 // the first match, so "fp8|fp8mixed" would match "fp8" and then fail the [_.-]|$
 // lookahead on the trailing "mixed", leaving the file unclassified.
-const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8mixed|fp8_mixed|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|int8_convrot|int8|fp16|bf16";
+// MiniMax H3's "pruned_int8_convrot" is the SAME int8 tier as its plain
+// "int8_convrot" sibling — "pruned" only means the modulation weights were replaced
+// by an equivalent lookup table (~40% of the parameters, no quality change). It has to
+// be listed as one token, before the bare int8_convrot alternative, so the whole suffix
+// is stripped: otherwise "..._fl2va_pruned" and "..._fl2va" (bf16) look like two
+// different models and split into two dropdown entries.
+const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8mixed|fp8_mixed|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|pruned_int8_convrot|int8_convrot|int8|fp16|bf16";
 const PRECISION_RE = new RegExp(`(?:^|[_-])(${PRECISION_TOKENS})(?=[_.-]|$)`, "i");
 const PRECISION_RE_G = new RegExp(`(?:^|[_-])(?:${PRECISION_TOKENS})(?=[_.-]|$)`, "ig");
 function precisionOf(name) {
@@ -593,7 +607,8 @@ function precisionOf(name) {
   if (tok.startsWith("nvfp4")) return "nvfp4";
   if (tok === "mxfp8") return "mxfp8";
   if (tok.startsWith("fp8")) return "fp8";
-  if (tok.startsWith("int8")) return "int8";
+  if (tok.includes("int8")) return "int8"; // includes, not startsWith — "pruned_int8_convrot"
+
   return "fp16"; // fp16 / bf16 — the unquantised tier
 }
 
@@ -1090,6 +1105,8 @@ function marketName(name) {
     [/pix2pix|instruct.?pix/, "Instruct-Pix2Pix"],
     [/sulphur/, "LTX-2 Sulphur"],
     [/ltx/, "LTX-2.3 22B"],
+    [/minimax.?h3.*ref2va/, "MiniMax H3 (r2v)"], // before the family rule
+    [/minimax.?h3/, "MiniMax H3 (t2v / i2v)"],
     [/phantom.*14b/, "Phantom-Wan 14B"],
     [/phantom/, "Phantom-Wan 1.3B"],
     [/hunyuan[._-]?3d/, "Hunyuan3D 2.1"], // before the generic /hunyuan/ video rule
@@ -1123,6 +1140,12 @@ function capsFor(name, group, type, entry) {
   if (name === INFINITETALK_SPEAK) return ["i2v", "audio"]; // photo + speech/TTS → talking video
   if (type === "dancer") return ["i2v", "audio"]; // reference photo + MUSIC → dance video synced to it
   if (entry && entry.needsVideo) return name === BERNINI_AUTO ? ["i2v", "v2v"] : ["v2v"];
+  // MiniMax H3 generates its soundtrack in the same forward pass as the picture (one
+  // latent, two VAEs at decode) — the same "audio" claim LTX gets. ref2va is reference-
+  // DRIVEN: it always needs at least one reference image, so it is i2v, never t2v. Its
+  // optional reference VIDEO is a style/motion exemplar, not a clip to edit, so it does
+  // NOT get the v2v tag (which the UI reads as "requires a source video").
+  if (type === "minimax-h3") return /ref2va/i.test(name) ? ["i2v", "audio"] : ["t2v", "i2v", "audio"];
   if (name === LTX_MSR) return ["i2v", "audio"];   // reference-image driven, generates a soundtrack
   switch (type) {
     case "phantom": return ["i2v"];
@@ -1172,6 +1195,9 @@ function videoRank(n) {
   if (/phantom.*14b/i.test(n)) return 4;
   if (/phantom/i.test(n)) return 5;
   if (/hunyuan/i.test(n)) return 6;
+  // MiniMax H3 sits with the general generators; ref2va right after its fl2va sibling.
+  if (/minimax.?h3.*ref2va/i.test(n)) return 6.6;
+  if (/minimax.?h3/i.test(n)) return 6.5;
   if (LTX_MODEL_RE.test(n)) return 7;
   // scail BEFORE animate: the "scail2_animate" sentinel contains "animate", so the
   // generic /animate/ test would otherwise claim it (same ordering trap as videoTypeOf).
@@ -1243,6 +1269,13 @@ function isModelReady(name, group, type) {
   // Wan-Dancer — verified end-to-end on the live box (Aug 2026): photo + music →
   // dance video, 480×832 budget, turbo, keyframe planning + per-segment refinement.
   if (/dancer/i.test(b)) return true;
+  // MiniMax H3 is deliberately absent (→ not ready, greyed + warned but selectable).
+  // The MODEL is verified on the box — 864×480 / 124 frames in 57 s with a real stereo
+  // track — but that was a run of the stock template in ComfyUI, not of this builder.
+  // Promote fl2va once a graph from buildMiniMaxH3 renders end-to-end, and ref2va only
+  // after the reference NEGATIVE CONTROL passes (same seed with and without references
+  // must differ) — ComfyUI silently ignores unrecognised autogrow slots, so a succeeding
+  // run proves nothing about whether the references were actually used.
   const READY = [
     /flux1?.?dev/, /flux.*kontext/, /pony/,          // classic txt2img + kontext edit
     /z.?image/, /boogu/, /hidream/, /qwen.?image/,   // image gen + edit families
@@ -1320,6 +1353,18 @@ async function proxyComfyModels(req, res) {
       // (keeping videoTypeOf="ltx" so it also stays OUT of the image/ckpt list). dev-fp8 remains
       // the standalone LTX generator.
       if (vt === "ltx" && /ltx.*distill/i.test(n) && !LTX_COMPONENT_RE.test(n)) continue;
+      // MiniMax H3 — TWO weight files, two entries (no sentinel: both are real names
+      // on disk). fl2va takes 0-2 optional keyframes (none → t2v, one → i2v, two → first
+      // and last frame); ref2va REQUIRES at least one reference image and additionally
+      // accepts a reference video and reference audio. dedupePrecision below collapses
+      // each one's precision variants (pruned int8 / bf16) into a single entry.
+      if (vt === "minimax-h3") {
+        const isRef = /ref2va/i.test(n);
+        videoModels.push({ name: n, type: vt,
+          label: isRef ? "MiniMax H3 (r2v)" : "MiniMax H3 (t2v / i2v)",
+          ...(isRef ? { needsImages: 1 } : {}) });
+        continue;
+      }
       // Bernini = WAN 2.2 MoE video-edit. Collapse its high/low pair into ONE
       // "bernini" entry (v2v / rv2v auto-picked at generation time).
       // needsVideo: requires a SOURCE VIDEO input (video-edit / pose transfer) —
@@ -1434,7 +1479,14 @@ async function proxyComfyModels(req, res) {
     // over the preset); scail2 / animate / bernini hardcode a schedule their distill LoRA
     // is bound to, and silently ignore the fields. Decided HERE rather than by a type list
     // on the frontend so adding a model can't leave the two out of step.
-    for (const m of videoModels) m.samplerTunable = !!videoPreset(m.type, m.name, true);
+    // cfg is a SEPARATE flag because MiniMax H3 is the one model where the other three
+    // fields are live but cfg is not: its graph guides with a BasicGuider (single
+    // conditioning, no negative branch), so there is nowhere for a guidance scale to go.
+    // Showing it would be a control that silently does nothing.
+    for (const m of videoModels) {
+      m.samplerTunable = !!videoPreset(m.type, m.name, true);
+      m.cfgTunable = m.samplerTunable && m.type !== "minimax-h3";
+    }
     // Checkpoints that are COMPANIONS to another model rather than something to
     // txt2img list: plain checkpoints (excluding edit/video/HiDream/companions) +
     // HiDream-I1 (a diffusion model loaded specially with QuadrupleCLIPLoader).
@@ -1525,8 +1577,12 @@ async function proxyComfyModels(req, res) {
     // precision token from their option text. It can't work this out for itself — it
     // only ever sees the surviving representative, never the siblings it stands for.
     const imageCollapsed = imageOut.filter((n) => all.filter((x) => precisionBase(x) === precisionBase(n)).length > 1);
-    // Logical within-group order (was disk-scan order) — sort in place before the
-    // frontend renders them. IMAGE_UPSCALE is appended after, so it stays last.
+    // Logical within-group order (was disk-scan order). NOTE: the frontend now re-sorts
+    // every group ALPHABETICALLY by the name it displays (only it knows that string —
+    // localized tool labels, market names, stripped filenames), so this no longer decides
+    // what the user sees. It survives as a deterministic order for any other consumer of
+    // this endpoint; the rank tables below are the record of the old curated order.
+    // IMAGE_UPSCALE is appended after, so it stays last here.
     imageOut.sort((a, b) => imageRank(a) - imageRank(b));
     editOut.sort((a, b) => editRank(a.name) - editRank(b.name));
     videoOut.sort((a, b) => videoRank(a.name) - videoRank(b.name));
@@ -2391,6 +2447,21 @@ async function videoCompanions(videoType, model, opts = {}) {
     if (missing.length) throw new Error("Missing files required by Hunyuan video:\n- " + missing.join("\n- "));
     return { clipL, llava, vae };
   }
+  if (videoType === "minimax-h3") {
+    // Qwen3-VL-32B text encoder (CLIPLoader with type "minimax" — a new enum value in
+    // ComfyUI 0.30) plus TWO VAEs. The audio VAE is not optional even for fl2va, which
+    // has no audio input: H3 samples picture and sound into ONE latent, so the audio VAE
+    // is what turns the audio half of that latent into a track at decode time.
+    const clip = find(clips, /qwen3vl.*minimax|minimax.*qwen3vl/i) || find(clips, /minimax/i);
+    const vae = find(vaes, /minimax.*h3.*video.*vae/i) || find(vaes, /minimax.*video.*vae/i);
+    const audioVae = find(vaes, /minimax.*h3.*audio.*vae/i) || find(vaes, /minimax.*audio.*vae/i);
+    const missing = [];
+    if (!clip) missing.push("qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors → text_encoders/");
+    if (!vae) missing.push("minimax_h3_video_vae_fp16.safetensors → vae/");
+    if (!audioVae) missing.push("minimax_h3_audio_vae_fp32.safetensors → vae/");
+    if (missing.length) throw new Error("Missing files required by MiniMax H3:\n- " + missing.join("\n- "));
+    return { clip, vae, audioVae };
+  }
   if (model === LTX_MSR) {
     // The ⚙ precision preference selects the transformer tier (fp8_scaled default,
     // mxfp8_block32 / int8_convrot / bf16 if downloaded and chosen).
@@ -2496,6 +2567,29 @@ function videoPreset(videoType, model, turbo) {
   if (videoType === "hunyuan") {
     return { sampler: "euler", scheduler: "simple", cfg: 6, steps: 20, shift: 7.0, width: 720, height: 480, length: 49, fps: 24, dimMult: 16, lenMult: 4 };
   }
+  if (videoType === "minimax-h3") {
+    // Straight off the three official ComfyUI templates, which all ship the SAME
+    // sampling: res_multistep + simple, 20 steps, and a BasicGuider — one conditioning
+    // branch, no negative prompt and no CFG knob anywhere in the graph. `cfg` is carried
+    // only so the shared config plumbing and the done-line have a value to show; nothing
+    // reads it into the workflow. (20/simple is the template default and, like every
+    // shipped default, is UNMEASURED — worth a step sweep once the size question settles.)
+    //
+    // 864×480 is the templates' own default (ResolutionSelector at 0.4 MP) and is the
+    // size actually MEASURED to fit: 124 frames peaked at 34.10/34.19 GB VRAM on a 32GB
+    // RTX 5090 (99.7%) with 64.5/68.2 GB system RAM, in 57 s. There is no headroom left
+    // at that size on that box, so the default stays where it was verified and larger
+    // sizes are an explicit ⚙ / --size opt-in.
+    //
+    // length: the node's own tooltip states a TRAINED range of ~124-362 frames at 24 fps
+    // (≈5-15 s) on a 17k+5 grid. The shipped t2v/i2v templates default to 2 s → 56 frames,
+    // which is BELOW that range — hence lenMin/lenMax. Note this also closes the usual
+    // "shorten the clip to fit VRAM" escape hatch: 124 is the floor, so on a memory-bound
+    // box resolution is the only dial left.
+    return { sampler: "res_multistep", scheduler: "simple", cfg: 1, steps: 20, shift: 0,
+      width: 864, height: 480, length: 124, fps: 24,
+      dimMult: 32, lenMult: 17, lenOffset: 5, lenMin: 124, lenMax: 362 };
+  }
   if (model === LTX_MSR) {
     // MSR's own distilled route: single stage, no latent upscale, 8-step schedule at
     // cfg 1 with euler_ancestral. The recipe/model-card value is 50 fps, but fps is a
@@ -2539,6 +2633,20 @@ function videoPreset(videoType, model, turbo) {
   return null;
 }
 
+// Snap a requested frame count onto the model's grid: lenMult·n + lenOffset. lenOffset
+// defaults to 1 (every model here except MiniMax H3, whose grid is 17k+5). When a preset
+// declares lenMin/lenMax — a TRAINED range the model shouldn't be pushed outside of —
+// clamp first, then step back inside if snapping crossed an edge.
+function snapLength(L, p) {
+  const off = p.lenOffset != null ? p.lenOffset : 1;
+  const lo = p.lenMin != null ? p.lenMin : p.lenMult + off;
+  const hi = p.lenMax != null ? p.lenMax : Infinity;
+  const snapped = Math.round((Math.min(hi, Math.max(lo, L)) - off) / p.lenMult) * p.lenMult + off;
+  if (snapped < lo) return snapped + p.lenMult;
+  if (snapped > hi) return snapped - p.lenMult;
+  return snapped;
+}
+
 function resolveVideoConfig(videoType, opts, model, turbo) {
   const p = videoPreset(videoType, model, turbo);
   if (!p) return null;
@@ -2563,8 +2671,8 @@ function resolveVideoConfig(videoType, opts, model, turbo) {
     shift: opts.shift != null ? opts.shift : p.shift,
     width: snap(baseW, p.dimMult),
     height: snap(baseH, p.dimMult),
-    // Frame count must be lenMult·n + 1 — snap to the nearest valid value.
-    length: Math.max(p.lenMult + 1, Math.round((L - 1) / p.lenMult) * p.lenMult + 1),
+    // Frame count must sit on the model's grid — snap to the nearest valid value.
+    length: snapLength(L, p),
     fps: opts.fps || p.fps,
   };
 }
@@ -2874,6 +2982,87 @@ function buildHunyuanVideo({ model, prompt, negative, comp, seed, v }) {
 //   • buildLtxSingleStage — the older one-pass LTXVScheduler path (fallback)
 // Both support the same three input modes: t2v (no image), i2v (one image), and
 // keyframes (2+ images pinned at evenly-spaced frames via a chain of LTXVAddGuide).
+// Reference caps straight off the node's own autogrow config (min 0 / max N).
+const H3_MAX_REF_IMAGES = 9;
+
+// MiniMax H3 — ONE graph shape for both weight files; which node it hangs on is the task:
+//   MiniMaxH3ImageToVideo     (fl2va) — prompt alone = t2v, + first_frame / last_frame = i2v / FLF
+//   MiniMaxH3ReferenceToVideo (ref2va) — reference images (≤9), video (≤3) and audio (≤3)
+// Both nodes do their OWN text encoding — they take the CLIP and the raw prompt string
+// directly and return the positive conditioning plus a sized empty latent. So there is no
+// CLIPTextEncode and no negative branch anywhere: BasicGuider carries a single
+// conditioning and the graph has no CFG at all.
+//
+// Picture and sound come out of ONE latent: the sampler's single output is decoded twice,
+// by the video VAE and by the audio VAE, and CreateVideo muxes them into one file. That
+// pairing is what applyVideoCodec's tail rewrite has to preserve.
+//
+// ⚠️ The reference slots are COMFY_AUTOGROW_V3 inputs. They expand to FLAT, zero-indexed
+// keys (ref_image_0, ref_video_0, ref_video_audio_0, ref_audio_0); the group names
+// (ref_images, …) never appear in an API-format prompt. ComfyUI does not validate these
+// slots — verified by submitting graphs with dangling and mistyped links, which passed
+// validation silently — so a wrong key here does not fail: it runs to completion having
+// quietly ignored the references. Any change to these names must be checked with a
+// NEGATIVE CONTROL (same seed, with and without references; the outputs must differ),
+// never by observing that the job succeeded.
+function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
+  refImageNames, refVideoName, refAudioName, refImageSize }) {
+  const isRef = /ref2va/i.test(model || "");
+  const refs = (Array.isArray(refImageNames) ? refImageNames : []).filter(Boolean).slice(0, H3_MAX_REF_IMAGES);
+  const wf = {
+    "unet":  { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    // type "minimax" is a CLIPLoader enum value new in ComfyUI 0.30 — the Qwen3-VL-32B
+    // encoder is shared by both H3 weight files.
+    "clip":  { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "minimax", device: "default" } },
+    "vae":   { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "avae":  { class_type: "VAELoader", inputs: { vae_name: comp.audioVae } },
+    "noise": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
+    "samp":  { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
+    "sig":   { class_type: "BasicScheduler", inputs: { model: ["unet", 0], scheduler: v.scheduler, steps: v.steps, denoise: 1.0 } },
+    "guide": { class_type: "BasicGuider", inputs: { model: ["unet", 0], conditioning: ["h3", 0] } },
+    "ks":    { class_type: "SamplerCustomAdvanced", inputs: { noise: ["noise", 0], guider: ["guide", 0], sampler: ["samp", 0], sigmas: ["sig", 0], latent_image: ["h3", 1] } },
+    "vdec":  { class_type: "VAEDecode", inputs: { samples: ["ks", 0], vae: ["vae", 0] } },
+    "adec":  { class_type: "VAEDecodeAudio", inputs: { samples: ["ks", 0], vae: ["avae", 0] } },
+    "cv":    { class_type: "CreateVideo", inputs: { images: ["vdec", 0], audio: ["adec", 0], fps: v.fps } },
+    "save":  { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } },
+  };
+  const h3 = { clip: ["clip", 0], vae: ["vae", 0], prompt: prompt || "",
+    width: v.width, height: v.height, length: v.length };
+  if (isRef) {
+    // ref2va ENCODES reference audio, so unlike fl2va it takes the audio VAE as an input.
+    h3.audio_vae = ["avae", 0];
+    // "match" scales each reference to the generation's pixel area; "max" runs the
+    // reference pipeline at a 2048px short edge for the best identity fidelity. Reference
+    // tokens ride through EVERY sampling step, so "max" can be several times slower.
+    h3.ref_image_size = refImageSize === "max" ? "max" : "match";
+    refs.forEach((name, i) => {
+      wf[`ri${i}`] = { class_type: "LoadImage", inputs: { image: name } };
+      h3[`ref_image_${i}`] = [`ri${i}`, 0];
+    });
+    if (refVideoName) {
+      // Frames and the clip's own soundtrack come off the SAME GetVideoComponents node
+      // (slot 0 = IMAGE, slot 1 = AUDIO) and must carry the matching index — the audio
+      // slot is documented as "soundtrack of the same-numbered reference video".
+      wf["rlv"] = { class_type: "LoadVideo", inputs: { file: refVideoName } };
+      wf["rgvc"] = { class_type: "GetVideoComponents", inputs: { video: ["rlv", 0] } };
+      h3.ref_video_0 = ["rgvc", 0];
+      h3.ref_video_audio_0 = ["rgvc", 1];
+    }
+    if (refAudioName) {
+      wf["rla"] = { class_type: "LoadAudio", inputs: { audio: refAudioName } };
+      h3.ref_audio_0 = ["rla", 0];
+    }
+    wf["h3"] = { class_type: "MiniMaxH3ReferenceToVideo", inputs: h3 };
+  } else {
+    // fl2va: the two keyframes are optional and independent — first only (i2v), last only
+    // (generate INTO a still), or both (first-and-last-frame). Neither = pure t2v.
+    if (firstFrameName) { wf["ff"] = { class_type: "LoadImage", inputs: { image: firstFrameName } }; h3.first_frame = ["ff", 0]; }
+    if (lastFrameName) { wf["lf"] = { class_type: "LoadImage", inputs: { image: lastFrameName } }; h3.last_frame = ["lf", 0]; }
+    wf["h3"] = { class_type: "MiniMaxH3ImageToVideo", inputs: h3 };
+  }
+  return wf;
+}
+
 function buildLtxVideo(args) {
   const comp = args.comp || {};
   if (comp.msr) return buildLtxMsr(args);
@@ -5847,6 +6036,57 @@ async function generateComfyImage(req, res) {
         const outFrames = srcFrames ? Math.min(wantFrames, srcFrames) : wantFrames;
         videoDims = { width: v.width, height: v.height, length: outFrames, fps: v.fps };
         if (srcFrames > wantFrames) videoDims.truncatedFrom = srcFrames; // pinned/preset length cut the clip
+      } else if (videoType === "minimax-h3") {
+        // MiniMax H3. Two weight files with different input contracts, one branch:
+        //   fl2va  — 0-2 attached images become first_frame / last_frame (none = t2v)
+        //   ref2va — every attached image is a REFERENCE (≤9); an attached video and/or
+        //            audio become reference exemplars too (not a clip to edit)
+        // Neither graph has a negative branch, so a typed negative prompt is inert here —
+        // the "don't do X" instructions belong in the prompt itself, which is also where
+        // the soundtrack is described (dialogue, SFX, music are part of the same prompt).
+        const isRef = /ref2va/i.test(model);
+        if (isRef && !(Array.isArray(images) && images.length)) {
+          sendJson(res, 400, { error: "MiniMax H3 (r2v) needs at least one reference image — attach one (up to 9), then /imagine <description>. For plain text→video or first/last-frame, pick MiniMax H3 (t2v / i2v) instead." });
+          return;
+        }
+        const comp = await videoCompanions("minimax-h3", model, opts);
+        const vOpts = { ...opts };
+        // Render at the first attachment's aspect ratio (keeping the preset's pixel
+        // budget) unless a size was pinned — same reasoning as the generic i2v path: a
+        // stretched conditioning frame is what produces ghosted / doubled edges.
+        if (Array.isArray(images) && images.length && !opts.width && !opts.height) {
+          const dims = imageDims(images[0]);
+          if (dims && dims.width && dims.height) vOpts.aspect = dims.width / dims.height;
+        }
+        const v = resolveVideoConfig("minimax-h3", vOpts, model, false);
+        let firstFrameName = null, lastFrameName = null, refImageNames = null;
+        if (isRef) {
+          // DISTINCT filenames per reference — uploadImage overwrites by name, so a shared
+          // default would collapse all nine references onto the last image.
+          refImageNames = [];
+          const refs = images.slice(0, H3_MAX_REF_IMAGES);
+          for (let i = 0; i < refs.length; i++) refImageNames.push(await uploadImage(refs[i], controller.signal, `heykoko_h3ref${i}.png`));
+          imagesUsed = refImageNames.length;
+        } else if (Array.isArray(images) && images.length) {
+          firstFrameName = await uploadImage(images[0], controller.signal, "heykoko_h3first.png");
+          imagesUsed = 1;
+          if (images.length >= 2) {
+            lastFrameName = await uploadImage(images[1], controller.signal, "heykoko_h3last.png");
+            imagesUsed = 2;
+          }
+        }
+        // ref2va's optional exemplars. The node takes up to 3 of each, but the request
+        // shape carries a single source video and a single audio file, so one of each is
+        // all that can arrive here — the builder writes them at index 0.
+        let refVideoName = null, refAudioName = null;
+        if (isRef) {
+          if (sourceVideoName || sourceVideo) refVideoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+          if (sourceAudioName || sourceAudio) refAudioName = sourceAudioName || await uploadAudio(sourceAudio, controller.signal, sourceAudioMime);
+        }
+        workflow = buildMiniMaxH3({ model, prompt, comp, v, seed,
+          firstFrameName, lastFrameName, refImageNames, refVideoName, refAudioName,
+          refImageSize: opts.h3RefSize });
+        videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
       } else if (model === PANO_T2I) {
         // A recipe, not a checkpoint: it picks its own weights and forces 2:1, since
         // an equirectangular panorama is 360° across and 180° tall by definition.
@@ -6802,3 +7042,6 @@ module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, uploa
 // TEMP (SCAIL-2 single-window ceiling test harness — REVERT after): expose the real
 // builder + companion resolver so a Node harness reuses the verified graph topology.
 module.exports._scailTest = { buildWanAnimate, animateSaveNodeId, buildScail2, hasLocalTool, scail2Companions, scail2SaveNodeId, scail2Segments, mergeScail2Segments, applyVfi, config };
+// MiniMax H3: expose the builder + the length/size resolution so a harness can check the
+// real graph against ComfyUI's /object_info without spending a GPU minute on a render.
+module.exports._h3Test = { buildMiniMaxH3, videoPreset, resolveVideoConfig, snapLength, videoTypeOf, precisionBase, precisionOf, applyVideoCodec };
