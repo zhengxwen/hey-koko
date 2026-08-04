@@ -2830,6 +2830,21 @@ button.secondary:disabled {
   font-size: 14px;
   line-height: 1;
 }
+
+/* Speak button — a plain toggle: click reads the selection, click again stops.
+   speech.js writes word labels ("Speak"/"Pause"/…) into this button's textContent,
+   which would wreck a 26px icon square, so font-size:0 swallows them and the icon
+   is drawn by ::before off the isSpeaking class speech.js toggles. There is no
+   paused state here, so the reading icon is "stop", not "pause". */
+.hlBtn.hlSpeak {
+  font-size: 0;
+}
+.hlBtn.hlSpeak::before {
+  content: "🔊";
+  font-size: 14px;
+  line-height: 1;
+}
+.hlBtn.hlSpeak.isSpeaking::before { content: "⏹"; }
 .hlBtn:hover { background: var(--surface-hover); }
 .hlDot {
   width: 15px; height: 15px;

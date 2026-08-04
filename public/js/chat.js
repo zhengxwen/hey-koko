@@ -4350,6 +4350,8 @@ const HL_COLORS = [
 let hlLastStyle = "yellow";
 let hlTarget = null;   // { bodyEl, msgIndex } — the bubble the selection is in
 let hlBar = null, hlPopover = null, hlPopoverTextarea = null;
+let hlSpeakBtn = null;   // the toolbar's speak button — doubles as the stop control
+let hlSpeechTimer = null;
 let hlPopoverTarget = null;  // { msgIndex, hlIdx }
 // Drag state for the pen handle. hlManualPos = the user dragged the toolbar, so a
 // still-active selection must NOT snap it back to the selection rect.
@@ -4364,6 +4366,10 @@ let hlCapturedRange = null;
 let hlButtonPressing = false;
 
 function hideHlToolbar() {
+  // While the selection is being read aloud the toolbar must stay put — it holds the
+  // only stop control. Losing the selection (the usual hide trigger) is expected here,
+  // since clicking the button or anywhere else collapses it.
+  if (hlSpeakBtn && state.activeSpeechButton === hlSpeakBtn) return;
   if (hlBar) { hlBar.hidden = true; hlBar.classList.remove("expanded"); }
   hlTarget = null;
   hlManualPos = false;
@@ -4496,6 +4502,49 @@ function copyHlSelection() {
   if (text) navigator.clipboard?.writeText(text).catch(() => {});
 }
 
+// Read the selection aloud. Unlike copy this does NOT hide the toolbar: speech is
+// long-running, so the button has to stay put to double as the stop control.
+// Plain toggle — click reads, click again stops. No pause state (that is the
+// bubble speak button's contract, not this one), so this deliberately bypasses
+// speakMessage's click handling and calls stopSpeech directly.
+// The button sits outside any .message, so speakMessage takes its no-highlighting
+// path and simply reads the text it is given.
+function speakHlSelection(btn) {
+  if (state.activeSpeechButton === btn) {   // already reading → stop outright
+    stopSpeech();
+    dismissHlToolbarAfterSpeech();
+    return;
+  }
+  const range = getHlRange();
+  const text = range ? range.toString().trim() : "";
+  if (!text) return;
+  speakMessage(text, btn);
+  // speakMessage sets a tooltip describing pause / sentence-jump controls; neither
+  // applies here. It assigns synchronously, so this override lands after it.
+  // stopSpeech() restores the idle "Speak" title on its own.
+  btn.title = t("hl_speakStop");
+  // hideHlToolbar is suppressed for the duration, so something has to put the bar
+  // away once the reading ends on its own. speech.js exposes no "finished" hook, so
+  // watch the flag it clears; the poll stops with the speech.
+  clearInterval(hlSpeechTimer);
+  hlSpeechTimer = setInterval(() => {
+    if (state.activeSpeechButton === btn) return;
+    clearInterval(hlSpeechTimer);
+    hlSpeechTimer = null;
+    dismissHlToolbarAfterSpeech();
+  }, 400);
+}
+
+// Put the toolbar away once reading stops — but only if the selection is gone. If the
+// user still has text selected they are likely to act on it again, so leave the bar.
+function dismissHlToolbarAfterSpeech() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) { hideHlToolbar(); return; }
+  // Kept open: collapse back to the pen unless the pointer is actually on the bar —
+  // mouseleave was suppressed during the reading, so nothing else will fire it.
+  if (hlBar && !hlBar.matches(":hover")) hlBar.classList.remove("expanded");
+}
+
 // Open the note editor for highlight `hlIdx` owned by (host, ctx), anchored to its
 // rendered span. `focusNew` selects-all so an empty note is ready to type.
 function openHlNote(host, ctx, hlIdx, focusNew = false) {
@@ -4607,6 +4656,14 @@ export function initHighlightUI() {
   tools.appendChild(buildHlBtn(t("hl_comment"), () => applyHlStyle(hlLastStyle, true), { glyph: "💬" }));
   tools.appendChild(buildHlBtn(t("hl_clear"), () => clearHlSelection(), { glyph: "✕" }));
   tools.appendChild(buildHlBtn(t("btn_copy"), () => copyHlSelection(), { glyph: "📋" }));
+  // Speak. No glyph here: speech.js drives this button's state by overwriting its
+  // textContent with word labels ("Pause"/"Resume"/"Speak"), which would wreck a
+  // 26px icon square — so .hlSpeak hides the text and draws the icon via ::before,
+  // switching on the isSpeaking/isPaused classes speech.js already toggles.
+  const speakBtn = buildHlBtn(t("btn_speak"), () => speakHlSelection(speakBtn));
+  speakBtn.classList.add("hlSpeak");
+  hlSpeakBtn = speakBtn;
+  tools.appendChild(speakBtn);
   hlBar.appendChild(tools);
 
   // Keep the text selection alive when pressing the tool buttons (mousedown would
@@ -4624,7 +4681,12 @@ export function initHighlightUI() {
   // spawns as the small collapsed square, even if it appears under the cursor
   // (CSS :hover would expand it immediately in that case).
   hlBar.addEventListener("mouseover", () => hlBar.classList.add("expanded"));
-  hlBar.addEventListener("mouseleave", () => hlBar.classList.remove("expanded"));
+  hlBar.addEventListener("mouseleave", () => {
+    // Collapsing hides .hlTools entirely (display:none), which would take the stop
+    // control away mid-reading — stay expanded until the speech ends.
+    if (hlSpeakBtn && state.activeSpeechButton === hlSpeakBtn) return;
+    hlBar.classList.remove("expanded");
+  });
   document.body.appendChild(hlBar);
 
   // Note editor popover.
