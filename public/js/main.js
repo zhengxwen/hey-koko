@@ -468,6 +468,13 @@ if (dom.numCtxSelect) {
   });
   dom.llmParamsClose?.addEventListener("click", close);
   modal?.addEventListener("mousedown", (e) => { if (e.target === modal) close(); });
+  // Both caps feed buildMessages, so a change also refreshes the context meter.
+  for (const el of [dom.llmMaxImages, dom.llmMaxMessages]) {
+    el?.addEventListener("change", () => {
+      saveCurrentSettings();
+      renderContextMeter();
+    });
+  }
 }
 // Marks that the user EXPLICITLY picked a PDF engine (vs. the app-chosen default).
 // Needed because in WKWebView a `selected hidden` <option> silently falls through to

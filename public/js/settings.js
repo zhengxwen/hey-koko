@@ -123,6 +123,8 @@ export function saveCurrentSettings() {
       libraryTool: dom.libraryToolToggle?.checked ?? true,
       browserTool: dom.browserToolToggle?.checked ?? true,
       numCtx: dom.numCtxSelect?.value || "32768",
+      llmMaxImages: dom.llmMaxImages?.value || "",
+      llmMaxMessages: dom.llmMaxMessages?.value || "",
       pdfEngine: dom.pdfEngineSelect?.value || "mineru",
       embedModel: dom.embedModelSelect?.value || "qwen3-embedding:8b",
       libraryDistill: dom.libraryDistillToggle?.checked ?? true,
@@ -371,6 +373,9 @@ export function loadSavedSettings() {
   if (dom.browserToolToggle) dom.browserToolToggle.checked = savedSettings.browserTool !== undefined ? !!savedSettings.browserTool : true;
   // Context window
   if (savedSettings.numCtx && dom.numCtxSelect) dom.numCtxSelect.value = savedSettings.numCtx;
+  // Optional LLM caps — empty string means "no limit" and is the default.
+  if (dom.llmMaxImages) dom.llmMaxImages.value = savedSettings.llmMaxImages ?? "";
+  if (dom.llmMaxMessages) dom.llmMaxMessages.value = savedSettings.llmMaxMessages ?? "";
   if (savedSettings.pdfEngine && dom.pdfEngineSelect) dom.pdfEngineSelect.value = savedSettings.pdfEngine;
   // Embedding model selection is applied by loadEmbedModels (after options load).
   // Library distill card defaults to ON; respect an explicit saved off-choice.

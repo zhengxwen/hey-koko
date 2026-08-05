@@ -446,7 +446,10 @@ export function markdownToHtml(markdown, opts) {
     }
 
     if (!line.trim()) {
-      closeList();
+      // A blank line does NOT end a list (CommonMark): items separated by blanks
+      // stay in the same <ol>/<ul> so numbering keeps counting 1, 2, 3, … A real
+      // non-list line (paragraph/heading/…) closes the list via its own closeList(),
+      // and any open list is closed at end-of-input.
       continue;
     }
 

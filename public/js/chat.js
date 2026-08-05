@@ -1063,6 +1063,16 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
   }
 }
 
+// Read one of the optional LLM caps (⚙ panel). Returns null for "no limit" — the
+// default — which is what an empty field, whitespace or a bogus value all mean.
+// 0 is a real value (send no images at all), so it must survive the check.
+function llmCap(input) {
+  const raw = (input?.value ?? "").trim();
+  if (!raw) return null;
+  const n = Math.floor(Number(raw));
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 function buildMessages(tabId = state.activeTabId, contextEndIndex = -1) {
   const tab = getTab(tabId) || getActiveTab();
   // Optionally only consider messages up to (and including) contextEndIndex.
@@ -1101,6 +1111,33 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
   const GAP_MS = 4 * 60 * 60 * 1000;
   let lastTs = null;
 
+  // (C) Optional user caps from the LLM ⚙ panel. Both default to empty = no limit.
+  // The image budget is resolved HERE, before the mapping loop, rather than by
+  // stripping images afterwards: the loop bakes an image name→order list into the
+  // outgoing text, and that list has to describe exactly the images that survive.
+  // Budget is spent newest-first, since the images nearest the question matter most.
+  const maxImages = llmCap(dom.llmMaxImages);
+  const imageBudget = new Map();   // message object → how many of its images to send
+  if (maxImages != null) {
+    let left = maxImages;
+    for (let i = relevantMessages.length - 1; i >= 0; i--) {
+      const n = relevantMessages[i].contextImages?.length || 0;
+      if (!n) continue;
+      const take = Math.min(n, left);
+      imageBudget.set(relevantMessages[i], take);
+      left -= take;
+    }
+  }
+  // The images this bubble may send: the newest `take` of them, or null when none
+  // survive. Returns the untouched array when no cap is set.
+  const sendableImages = (msg) => {
+    const imgs = msg.contextImages;
+    if (!imgs?.length) return null;
+    if (maxImages == null) return imgs;
+    const take = imageBudget.get(msg) || 0;
+    return take > 0 ? imgs.slice(-take) : null;
+  };
+
   const mapped = [];
   let summaryMappedIdx = -1;
   for (const msg of relevantMessages) {
@@ -1133,7 +1170,8 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
       const message = { role: "user", content: msg.content };
       // `images` here is Ollama's chat-API field name — keep it; the source is our
       // stored contextImages.
-      if (msg.contextImages?.length) message.images = msg.contextImages;
+      const imgs = sendableImages(msg);
+      if (imgs) message.images = imgs;
       mapped.push(message);
       if (msg.timestamp) lastTs = msg.timestamp;
       continue;
@@ -1144,7 +1182,10 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
     // turn anyway. So an assistant bubble that carries contextImages — e.g. a /tool
     // context bubble holding a clipboard image or a screenshot — is forwarded as a user
     // turn, exactly like the file-preview branch above. Display role is unaffected.
-    const sendRole = (msg.role === "assistant" && msg.contextImages?.length) ? "user" : msg.role;
+    // Note this keys off the STORED images, not the capped ones: a bubble whose images
+    // were all cut is plain text now, so it should go back to being an assistant turn.
+    const msgImages = sendableImages(msg);
+    const sendRole = (msg.role === "assistant" && msgImages) ? "user" : msg.role;
     const message = { role: sendRole, content: msg.content };
     // Ephemeral context prefixes (prepended to the OUTGOING content only, never stored):
     // the time-away note first, then the attached-image name map.
@@ -1152,13 +1193,15 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
     if (sendTime && msg.role === "user" && lastTs && msg.timestamp && (msg.timestamp - lastTs) > GAP_MS) {
       prefix += `${getPrompt("timeGapContext", (msg.timestamp - lastTs) / 3600000)}\n\n`;
     }
-    if (msg.contextImages?.length) {
-      message.images = msg.contextImages;
+    if (msgImages) {
+      message.images = msgImages;
       // When the upload kept original filenames, prepend a deduped name→order list so the
       // user can refer to an image by filename ("describe chart.png"). The model receives
       // images as a bare ordered array (no labels), so this mapping lives in the text.
+      // Names are taken from the TAIL to stay aligned with the images actually sent.
       if (msg.imageNames?.some(Boolean)) {
-        const labeled = dedupeImageNames(msg.imageNames.slice(0, msg.contextImages.length));
+        const names = msg.imageNames.slice(0, msg.contextImages.length).slice(-msgImages.length);
+        const labeled = dedupeImageNames(names);
         const list = labeled.map((nm, i) => `${i + 1}. ${nm}`).join("  ");
         prefix += `${getPrompt("imageNamesContext", labeled.length, list)}\n\n`;
       }
@@ -1191,8 +1234,23 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
     total -= estMsg(mapped[dropTo]);
     dropTo++;
   }
-  const omitted = dropTo - dropFrom;
-  const kept = dropFrom > 0 ? [mapped[0], ...mapped.slice(dropTo)] : mapped.slice(dropTo);
+  let omitted = dropTo - dropFrom;
+  let kept = dropFrom > 0 ? [mapped[0], ...mapped.slice(dropTo)] : mapped.slice(dropTo);
+
+  // User cap on how much conversation goes out (LLM ⚙; empty = no limit). Applied on
+  // top of the num_ctx fit, keeping the newest turns and still pinning the compact
+  // summary. Anything it drops is added to the omitted count so the context meter and
+  // the sending pill keep telling the truth about what was left out.
+  const maxMessages = llmCap(dom.llmMaxMessages);
+  if (maxMessages != null && maxMessages > 0) {
+    const pinned = dropFrom > 0 ? 1 : 0;          // the compact summary, if present
+    const body = kept.slice(pinned);
+    if (body.length > maxMessages) {
+      omitted += body.length - maxMessages;
+      kept = [...kept.slice(0, pinned), ...body.slice(-maxMessages)];
+    }
+  }
+
   tab.ctxOmittedMsgs = omitted;
   tab.ctxSentMsgs = kept.length;
   if (tab === getActiveTab()) renderContextMeter();

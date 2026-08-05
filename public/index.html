@@ -699,6 +699,7 @@
               <option value="">Auto</option>
               <option value="fp8">fp8</option>
               <option value="mxfp8">mxfp8</option>
+              <option value="int8">int8</option>
               <option value="nvfp4">nvfp4</option>
               <option value="fp16">fp16 / bf16</option>
             </select>
@@ -754,8 +755,12 @@
             <input id="comfyParamDenoise" type="number" min="0.1" max="1" step="0.05" placeholder="Auto (0.75)" />
           </label>
           <label>
-            <span id="comfyParamLengthLabel" title="Frame count must be 4n+1 (WAN/Hunyuan) or 8n+1 (LTX) — values auto-snap to the nearest valid one. Duration = frames ÷ fps.">Video length (frames)</span>
-            <input id="comfyParamLength" type="number" min="5" max="241" step="4" placeholder="Auto (49)" title="Frame count must be 4n+1 (WAN/Hunyuan) or 8n+1 (LTX) — values auto-snap to the nearest valid one. Duration = frames ÷ fps." />
+            <span id="comfyParamLengthLabel" title="Frame count must be 4n+1 (WAN/Hunyuan) or 8n+1 (LTX) — values auto-snap to the nearest valid one. You can also type a DURATION — &quot;10s&quot; becomes the frame count for that many seconds at this model&#39;s fps.">Video length (frames)</span>
+            <!-- type=text, not number: a number field silently discards "10s" as you type it.
+                 min/max/step are still set (by updateComfyMultiHint) and read back by the
+                 snap logic — they are the model's real frame grid, just enforced in JS now. -->
+            <input id="comfyParamLength" type="text" inputmode="decimal" autocomplete="off" min="5" max="241" step="4" placeholder="Auto (49)" title="Frame count must be 4n+1 (WAN/Hunyuan) or 8n+1 (LTX) — values auto-snap to the nearest valid one. You can also type a DURATION — &quot;10s&quot; becomes the frame count for that many seconds at this model&#39;s fps." />
+            <small id="comfyParamLengthHint" class="comfyParamHint" hidden></small>
           </label>
           <label>
             <span id="comfyParamFpsLabel" title="Leave on Auto unless you want slow motion. Lowering FPS does NOT generate more movement — the same frames are just spread over more time. For a longer clip raise Video length; for smoother playback use Smooth to FPS.">Video FPS</span>
@@ -1109,6 +1114,7 @@
           <button id="llmParamsClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
         </div>
         <div class="comfyParamsBody">
+          <p class="hint" id="llmParamsHint">Leave empty = no limit</p>
           <label class="numCtxLabel">
             <span id="numCtxLabelText">Context window</span>
             <select id="numCtxSelect">
@@ -1117,6 +1123,14 @@
               <option value="16384">16384</option>
               <option value="32768" selected>32768</option>
             </select>
+          </label>
+          <label>
+            <span id="llmMaxImagesLabel" title="Recommended 2-4. Each image costs roughly 768 tokens, and most vision models reliably attend to only a few at a time.">Images sent to the model (max)</span>
+            <input id="llmMaxImages" type="number" min="0" max="200" step="1" placeholder="no limit" title="Recommended 2-4. Each image costs roughly 768 tokens, and most vision models reliably attend to only a few at a time." />
+          </label>
+          <label>
+            <span id="llmMaxMessagesLabel" title="Recommended 20-40. Counts single messages, so one question plus its reply is 2. The context window already drops older ones on its own.">Conversation turns sent (max)</span>
+            <input id="llmMaxMessages" type="number" min="1" max="500" step="1" placeholder="no limit" title="Recommended 20-40. Counts single messages, so one question plus its reply is 2. The context window already drops older ones on its own." />
           </label>
         </div>
       </div>

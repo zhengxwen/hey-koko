@@ -956,6 +956,10 @@ p {
    display:grid, so its children inherit a layout that outranks the UA hidden rule. */
 .comfyParamWarn { color: var(--warn, #d98324); font-size: 0.82em; line-height: 1.35; margin-top: 2px; }
 .comfyParamWarn[hidden] { display: none; }
+/* Neutral sibling of .comfyParamWarn — states a fact about the field's value
+   (e.g. how long a frame count actually is) rather than warning about it. */
+.comfyParamHint { color: var(--muted, #8a8f98); font-size: 0.82em; line-height: 1.35; margin-top: 2px; }
+.comfyParamHint[hidden] { display: none; }
 
 /* The ⚙ ComfyUI params form carries 30+ fields — give it ~3× the shared 360px modal
    width and flow the fields into columns so most of it fits without scrolling.
