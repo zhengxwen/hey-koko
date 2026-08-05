@@ -551,6 +551,12 @@ export function addBlockCopyButtons(container) {
   root.querySelectorAll("pre:not(.mermaid)").forEach((el) => {
     attachCopyButton(el, () => el.querySelector("code")?.textContent ?? el.textContent);
   });
+  // Blockquotes — copy the quoted text (as rendered, without the > markers).
+  // Only the outermost quote gets a button; nested quotes are covered by it.
+  root.querySelectorAll("blockquote").forEach((el) => {
+    if (el.parentElement?.closest("blockquote")) return;
+    attachCopyButton(el, () => el.innerText || el.textContent);
+  });
 }
 
 export function highlightCodeBlocks(container) {
