@@ -452,6 +452,23 @@ if (dom.numCtxSelect) {
     renderContextMeter();
   });
 }
+// ⚙ next to the LLM model select — holds the context-window setting (same modal
+// pattern as the ComfyUI / ask parameter popups).
+{
+  const modal = dom.llmParamsModal;
+  const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); close(); } };
+  const close = () => {
+    if (modal) modal.hidden = true;
+    document.removeEventListener("keydown", onKey);
+  };
+  dom.llmParamsBtn?.addEventListener("click", () => {
+    if (!modal) return;
+    modal.hidden = false;
+    document.addEventListener("keydown", onKey);
+  });
+  dom.llmParamsClose?.addEventListener("click", close);
+  modal?.addEventListener("mousedown", (e) => { if (e.target === modal) close(); });
+}
 // Marks that the user EXPLICITLY picked a PDF engine (vs. the app-chosen default).
 // Needed because in WKWebView a `selected hidden` <option> silently falls through to
 // the first visible option (pdf.js) at load — see syncPdfEngineOptions.

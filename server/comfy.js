@@ -591,15 +591,16 @@ function videoTypeOf(model) {
 // fp8mixed (Sulphur's naming) sits BEFORE the bare fp8 alternative — alternation takes
 // the first match, so "fp8|fp8mixed" would match "fp8" and then fail the [_.-]|$
 // lookahead on the trailing "mixed", leaving the file unclassified.
-// MiniMax H3's "pruned_int8_convrot" is the SAME int8 tier as its plain
-// "int8_convrot" sibling — "pruned" only means the modulation weights were replaced
-// by an equivalent lookup table (~40% of the parameters, no quality change). It has to
-// be listed as one token, before the bare int8_convrot alternative, so the whole suffix
-// is stripped: otherwise "..._fl2va_pruned" and "..._fl2va" (bf16) look like two
-// different models and split into two dropdown entries.
-const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8mixed|fp8_mixed|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|pruned_int8_convrot|int8_convrot|int8|fp16|bf16";
-const PRECISION_RE = new RegExp(`(?:^|[_-])(${PRECISION_TOKENS})(?=[_.-]|$)`, "i");
-const PRECISION_RE_G = new RegExp(`(?:^|[_-])(?:${PRECISION_TOKENS})(?=[_.-]|$)`, "ig");
+const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8mixed|fp8_mixed|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|int8_convrot|int8|fp16|bf16";
+// "pruned" is an OPTIONAL PREFIX on the quantisation token, not a token of its own.
+// MiniMax H3 ships the same tier both ways (…_pruned_int8_convrot, …_pruned_fp8_scaled,
+// and community …_pruned_nvfp4): pruning only replaces the modulation weights (~40% of
+// the parameters) with an equivalent lookup table, so it is the same model at the same
+// precision. Treating it as a prefix is what makes every H3 variant collapse to one
+// base; writing it into the token list instead only ever fixes the ONE spelling listed
+// there, and the next variant silently splits into a second identical dropdown entry.
+const PRECISION_RE = new RegExp(`(?:^|[_-])(?:pruned_)?(${PRECISION_TOKENS})(?=[_.-]|$)`, "i");
+const PRECISION_RE_G = new RegExp(`(?:^|[_-])(?:pruned_)?(?:${PRECISION_TOKENS})(?=[_.-]|$)`, "ig");
 function precisionOf(name) {
   const m = PRECISION_RE.exec(name || "");
   if (!m) return null;

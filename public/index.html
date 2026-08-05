@@ -128,26 +128,19 @@
 
         <div class="panelTabContent" data-panel-content="more">
           <div class="modelGroup">
-            <label id="modelLabel">
-              <span id="modelLabelText">LLM model</span>
-              <select id="modelSelect">
-                <option value="llama3.1:8b">llama3.1:8b</option>
-                <option value="qwen2.5:7b">qwen2.5:7b</option>
-                <option value="mistral:7b">mistral:7b</option>
-              </select>
-            </label>
+            <div class="comfyModelRow">
+              <label id="modelLabel">
+                <span id="modelLabelText">LLM model</span>
+                <select id="modelSelect">
+                  <option value="llama3.1:8b">llama3.1:8b</option>
+                  <option value="qwen2.5:7b">qwen2.5:7b</option>
+                  <option value="mistral:7b">mistral:7b</option>
+                </select>
+              </label>
+              <button id="llmParamsBtn" type="button" class="secondary comfyParamsBtn" title="LLM parameters">⚙</button>
+            </div>
           </div>
           <div class="urlRow"><button id="editLlmUrl" type="button" class="urlEditBtn" title="Edit address">✎</button><span id="llmUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
-
-          <label class="numCtxLabel">
-            <span id="numCtxLabelText">Context window</span>
-            <select id="numCtxSelect">
-              <option value="4096">4096</option>
-              <option value="8192">8192</option>
-              <option value="16384">16384</option>
-              <option value="32768" selected>32768</option>
-            </select>
-          </label>
 
           <label id="imageModelLabel">
             <span id="imageModelLabelText">Image model</span>
@@ -1104,6 +1097,27 @@
             <button id="libraryUrlCancel" type="button" class="secondary">取消</button>
             <button id="libraryUrlConfirm" type="button">导入</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LLM parameters (⚙ next to the LLM model select) -->
+    <div id="llmParamsModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal comfyParamsModal" role="dialog" aria-modal="true" aria-labelledby="llmParamsTitle">
+        <div class="scanModalHeader">
+          <h3 id="llmParamsTitle" class="scanModalTitle">LLM parameters</h3>
+          <button id="llmParamsClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
+        </div>
+        <div class="comfyParamsBody">
+          <label class="numCtxLabel">
+            <span id="numCtxLabelText">Context window</span>
+            <select id="numCtxSelect">
+              <option value="4096">4096</option>
+              <option value="8192">8192</option>
+              <option value="16384">16384</option>
+              <option value="32768" selected>32768</option>
+            </select>
+          </label>
         </div>
       </div>
     </div>
