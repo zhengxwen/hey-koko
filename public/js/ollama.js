@@ -1505,6 +1505,9 @@ export function updateComfyParamVisibility() {
   for (const el of [dom.comfyParamBerniniMode, dom.comfyParamRefMaxSize]) setVis(el, /bernini/i.test(m));
   // Edit-task lines are VIDEO tasks — hide them for the bernini image entries.
   setVis(dom.comfyParamBerniniTask, /bernini/i.test(m) && !/bernini_(image_edit|subject_image|text_image)/i.test(m));
+  // EasyCache is only WIRED into the MiniMax H3 builder — showing it elsewhere would be
+  // a control that reaches no graph. Gated by name, like the H3 reference-detail knob.
+  setVis(dom.comfyParamEasyCache, /minimax.?h3/i.test(m), ".comfyParamCheck");
   // "Silent video" — only where there is a track to drop (generated or carried through).
   setVis(dom.comfyParamNoAudio, !!(state.comfyAudioModels && state.comfyAudioModels.has(m)), ".comfyParamCheck");
   // MiniMax H3: reference sizing exists only on the reference→video weights (ref2va).

@@ -939,6 +939,10 @@
               <option value="generic">Generic assistant</option>
             </select>
           </label>
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="MiniMax H3 only: splice ComfyUI's core EasyCache node in front of the guider. It reuses the previous sampling step's result whenever the step-to-step change is small, trading some fidelity for speed (community reports around 25% on H3, none of it from a controlled test). Uses the node's own defaults: reuse_threshold 0.2, active between 15% and 95% of the schedule. WHAT IT DOES NOT DO: it removes sampling compute, not weights, and it keeps an extra cached tensor — so it is no help when the limit is memory, and on a card that is already at its VRAM ceiling it can push a working run over. It also has less to exploit here than the quoted figures suggest: those come from 40-50 step runs, H3 samples in 20, and H3 is already CFG-free so the largest single saving is spent. Try a lower step count first — that costs nothing and no quality is guessed at.">
+            <input id="comfyParamEasyCache" type="checkbox" />
+            <span id="comfyParamEasyCacheLabel">EasyCache speedup (MiniMax H3)</span>
+          </label>
           <label class="checkboxLabel isMultiline comfyParamCheck" title="Deliver the video with NO audio track. Done in the graph, not by asking the model: the audio input is unhooked from the muxer, so the result is silent regardless of what the model produced. For MiniMax H3 this is the only reliable way to get a silent clip — picture and sound come out of ONE latent, so the model always generates a soundtrack and there is no negative prompt to suppress it; this simply throws it away. Note it does NOT make generation faster: the audio is still sampled, only the (cheap) audio decode and the mux are skipped. For source-video models it drops the SOURCE clip's audio instead.">
             <input id="comfyParamNoAudio" type="checkbox" />
             <span id="comfyParamNoAudioLabel">Silent video (drop the audio track)</span>

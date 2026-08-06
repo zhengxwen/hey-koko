@@ -81,6 +81,7 @@ export function saveCurrentSettings() {
         videoCrf: dom.comfyParamVideoCrf?.value || "",
         berniniMode: dom.comfyParamBerniniMode?.value || "",
         berniniTask: dom.comfyParamBerniniTask?.value || "",
+        easyCache: dom.comfyParamEasyCache?.checked || false,
         noAudio: dom.comfyParamNoAudio?.checked || false,
         h3RefSize: dom.comfyParamH3RefSize?.value || "",
         danceStyle: dom.comfyParamDanceStyle?.value || "",
@@ -309,6 +310,7 @@ export function loadSavedSettings() {
     // a saved quality/lightx2v choice survives the upgrade.
     if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = cp.berniniMode || (cp.berniniLightx2v ? "lightx2v" : cp.berniniQuality ? "quality" : "");
     if (dom.comfyParamBerniniTask) dom.comfyParamBerniniTask.value = cp.berniniTask || "";
+    if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = !!cp.easyCache;
     if (dom.comfyParamNoAudio) dom.comfyParamNoAudio.checked = !!cp.noAudio;
     if (dom.comfyParamH3RefSize) dom.comfyParamH3RefSize.value = cp.h3RefSize || "";
     if (dom.comfyParamDanceStyle) dom.comfyParamDanceStyle.value = cp.danceStyle || "";

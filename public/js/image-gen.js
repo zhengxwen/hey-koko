@@ -116,6 +116,8 @@ function comfyOverrides() {
   // explicit pick is the ONLY way to reach them; empty = infer from the attachments.
   const berniniTask = dom.comfyParamBerniniTask?.value || "";
   if (berniniTask) ov.berniniTask = berniniTask;
+  // EasyCache: opt-in step-reuse patch (MiniMax H3). Only travels when checked.
+  if (dom.comfyParamEasyCache?.checked) ov.easyCache = true;
   // Silent output — a graph-level unhook, not a request to the model (see the server's
   // applyMuteAudio). Only travels when checked.
   if (dom.comfyParamNoAudio?.checked) ov.noAudio = true;

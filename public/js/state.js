@@ -100,6 +100,7 @@ export const dom = {
   comfyModelWarn: document.querySelector("#comfyModelWarn"),
   comfyParamBerniniMode: document.querySelector("#comfyParamBerniniMode"),
   comfyParamBerniniTask: document.querySelector("#comfyParamBerniniTask"),
+  comfyParamEasyCache: document.querySelector("#comfyParamEasyCache"),
   comfyParamNoAudio: document.querySelector("#comfyParamNoAudio"),
   comfyParamH3RefSize: document.querySelector("#comfyParamH3RefSize"),
   comfyParamDanceStyle: document.querySelector("#comfyParamDanceStyle"),

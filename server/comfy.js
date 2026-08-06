@@ -3273,7 +3273,7 @@ const H3_MAX_REF_IMAGES = 9;
 // itself proof the keys landed — which is how the current names were confirmed (both
 // weight files verified end-to-end, Aug 2026). "It validated" still proves nothing.
 function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
-  refImageNames, refVideoName, refAudioName, refImageSize }) {
+  refImageNames, refVideoName, refAudioName, refImageSize, easyCache }) {
   const isRef = /ref2va/i.test(model || "");
   const refs = (Array.isArray(refImageNames) ? refImageNames : []).filter(Boolean).slice(0, H3_MAX_REF_IMAGES);
   const wf = {
@@ -3286,7 +3286,20 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     "noise": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
     "samp":  { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
     "sig":   { class_type: "BasicScheduler", inputs: { model: ["unet", 0], scheduler: v.scheduler, steps: v.steps, denoise: 1.0 } },
-    "guide": { class_type: "BasicGuider", inputs: { model: ["unet", 0], conditioning: ["h3", 0] } },
+    // EasyCache (⚙, off by default) — a core MODEL→MODEL patch that reuses the previous
+    // step's result whenever the step-to-step change falls under reuse_threshold, at the
+    // cost of some fidelity. The defaults are the node's own. It is spliced in ONLY
+    // between the UNET and the guider: BasicScheduler keeps the RAW model, because sigmas
+    // must not depend on whether caching is on.
+    //
+    // Expectations, so this isn't mistaken for a fix: it removes sampling COMPUTE, not
+    // weights, and it holds an extra cached tensor — no help at all on a box that is
+    // memory-bound, and on a 32GB card it can push a tight run over. It also has less to
+    // work with here than the "~25%" the community quotes: 20 steps leave less
+    // step-to-step redundancy than the 40-50-step runs those figures come from, and H3
+    // already runs CFG-free (BasicGuider), so the single biggest saving is spent.
+    ...(easyCache ? { "ec": { class_type: "EasyCache", inputs: { model: ["unet", 0], reuse_threshold: 0.2, start_percent: 0.15, end_percent: 0.95, verbose: false } } } : {}),
+    "guide": { class_type: "BasicGuider", inputs: { model: [easyCache ? "ec" : "unet", 0], conditioning: ["h3", 0] } },
     "ks":    { class_type: "SamplerCustomAdvanced", inputs: { noise: ["noise", 0], guider: ["guide", 0], sampler: ["samp", 0], sigmas: ["sig", 0], latent_image: ["h3", 1] } },
     "vdec":  { class_type: "VAEDecode", inputs: { samples: ["ks", 0], vae: ["vae", 0] } },
     "adec":  { class_type: "VAEDecodeAudio", inputs: { samples: ["ks", 0], vae: ["avae", 0] } },
@@ -6395,7 +6408,7 @@ async function generateComfyImage(req, res) {
         }
         workflow = buildMiniMaxH3({ model, prompt, comp, v, seed,
           firstFrameName, lastFrameName, refImageNames, refVideoName, refAudioName,
-          refImageSize: opts.h3RefSize });
+          refImageSize: opts.h3RefSize, easyCache: !!opts.easyCache });
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
       } else if (model === PANO_T2I) {
         // A recipe, not a checkpoint: it picks its own weights and forces 2:1, since
