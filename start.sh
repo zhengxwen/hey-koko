@@ -12,6 +12,14 @@ fi
 # Apple Silicon lives in /opt/homebrew/bin (not on PATH outside login shells).
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 
+# One-time (~7 MB): download the pinned, checksum-verified UI libraries into
+# public/vendor/ so the app runs fully offline. Safe to fail (offline install,
+# firewall): missing files just load from the CDN at runtime instead.
+# Skip explicitly with HEYKOKO_NO_VENDOR=1.
+if [ -z "$HEYKOKO_NO_VENDOR" ]; then
+  node scripts/fetch-vendor.js --quiet || echo "UI library download incomplete — falling back to CDN at runtime."
+fi
+
 # Open the browser: macOS always has a GUI; on Linux only when a graphical
 # session exists (skipped over plain SSH).
 if [ "$(uname)" = "Darwin" ]; then

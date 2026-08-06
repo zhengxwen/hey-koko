@@ -3,6 +3,10 @@ node_modules/
 package-lock.json
 yarn.lock
 
+# Vendored third-party UI libraries (downloaded by scripts/fetch-vendor.js,
+# pinned + checksummed in server/vendor-manifest.json — never committed)
+public/vendor/
+
 # Environment variables
 .env
 .env.local

@@ -2753,8 +2753,8 @@ function parseEml(raw) {
 
 async function loadPdfJs() {
   if (window.pdfjsLib) return window.pdfjsLib;
-  const pdfjsLib = await import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs";
+  const pdfjsLib = await import("/vendor/pdfjs/pdf.min.mjs");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.min.mjs";
   window.pdfjsLib = pdfjsLib;
   return pdfjsLib;
 }
@@ -2763,7 +2763,7 @@ async function loadMammoth() {
   if (window.mammoth) return window.mammoth;
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js";
+    script.src = "/vendor/mammoth/mammoth.browser.min.js";
     script.onload = () => resolve(window.mammoth);
     script.onerror = () => reject(new Error("Failed to load mammoth.js"));
     document.head.appendChild(script);
@@ -2823,7 +2823,7 @@ async function loadJSZip() {
   if (window.JSZip) return window.JSZip;
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+    script.src = "/vendor/jszip/jszip.min.js";
     script.onload = () => resolve(window.JSZip);
     script.onerror = () => reject(new Error("Failed to load JSZip"));
     document.head.appendChild(script);

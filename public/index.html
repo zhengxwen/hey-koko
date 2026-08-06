@@ -31,13 +31,16 @@
         } catch(e) {}
       })();
     </script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
-    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css" id="hljsThemeLight" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css" id="hljsThemeDark" disabled />
-    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/r.min.js"></script>
+    <!-- Pinned third-party UI libs, served same-origin: from public/vendor/ when
+         downloaded (scripts/fetch-vendor.js), else proxied from the CDN by the
+         server with checksum verification. See server/vendor-manifest.json. -->
+    <link rel="stylesheet" href="/vendor/katex/katex.min.css" />
+    <script src="/vendor/katex/katex.min.js"></script>
+    <script src="/vendor/mermaid/mermaid.min.js"></script>
+    <link rel="stylesheet" href="/vendor/highlightjs/github.min.css" id="hljsThemeLight" />
+    <link rel="stylesheet" href="/vendor/highlightjs/github-dark.min.css" id="hljsThemeDark" disabled />
+    <script src="/vendor/highlightjs/highlight.min.js"></script>
+    <script src="/vendor/highlightjs/languages/r.min.js"></script>
     <!-- pdf.js and mammoth.js are loaded lazily when needed -->
     <link rel="stylesheet" href="/styles.css" />
   </head>

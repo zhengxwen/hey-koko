@@ -56,6 +56,19 @@ else
   rm -rf "${ICONSET}"
 fi
 
+# ─── Vendor UI libraries ──────────────────────────────────────────
+# Download the pinned, checksum-verified third-party UI libs into
+# public/vendor/ so the bundled app works fully offline. FATAL if incomplete:
+# a distributable .app must never silently depend on CDN availability.
+if node "${SRC_DIR}/scripts/fetch-vendor.js" --quiet; then
+  echo "  ✓ UI libraries vendored (offline-complete bundle)"
+else
+  echo "  ✗ UI library download incomplete (network/firewall?) — aborting build."
+  echo "    The .app bundle must be fully offline. Fix the network (or try again),"
+  echo "    run 'node scripts/fetch-vendor.js', then rebuild."
+  exit 1
+fi
+
 # ─── Copy project files ───────────────────────────────────────────
 cp "${SRC_DIR}/server.js" "${APP_FILES}/"
 cp -R "${SRC_DIR}/server" "${APP_FILES}/server"

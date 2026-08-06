@@ -57,6 +57,7 @@ const { zoteroCollectionsHandler, zoteroItemsHandler, zoteroSyncAnnotationsHandl
 const { serveStarmap } = require("./server/star-map");
 const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file");
 const bgQueue = require("./server/jobs");   // Option B: server-side background job queue
+const vendor = require("./server/vendor");  // pinned third-party UI libs: local-first, CDN fallback
 const feeds = require("./server/feeds");    // news-feeds.md: news subscription library
 
 console.log("[hey-koko] All modules loaded, starting server...");
@@ -501,6 +502,11 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === "GET" && req.url.startsWith("/vendor/")) {
+    vendor.serveVendor(req, res);   // disk first, else checksum-verified CDN fallback
+    return;
+  }
+
   if (req.method === "GET") {
     serveStatic(req, res);
     return;
@@ -513,5 +519,11 @@ const server = http.createServer((req, res) => {
 server.listen(config.PORT, "127.0.0.1", () => {
   console.log(`Local AI companion: http://127.0.0.1:${config.PORT}`);
   console.log(`Ollama endpoint: ${config.ollamaUrl}`);
+  const vs = vendor.vendorStatus();
+  if (vs.present === vs.total) {
+    console.log(`UI libraries: ${vs.present}/${vs.total} local (fully offline)`);
+  } else {
+    console.log(`UI libraries: ${vs.present}/${vs.total} local — missing files load from CDN; run "node scripts/fetch-vendor.js" for offline use`);
+  }
   feeds.startPolling();   // news-feeds.md: begin the subscription poll timer
 });

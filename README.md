@@ -65,7 +65,7 @@ macOS steps below — for **Linux** and **Windows** see [docs/install.md](docs/i
    node server.js
    ```
 
-   Or run `./start.sh` / double-click `start.command` — both start the server and open the browser automatically.
+   Or run `./start.sh` / double-click `start.command` — both start the server and open the browser automatically, and on first run download the six pinned UI libraries (~7 MB, sha256-verified) into `public/vendor/` so the app works **fully offline** afterwards. Skip that with `HEYKOKO_NO_VENDOR=1` (missing files then load from the CDN at runtime).
 
 6. Open your browser at:
 
@@ -227,7 +227,7 @@ OLLAMA_URL=http://127.0.0.1:11434 HEYKOKO_PORT=1314 node server.js
 - **Backend**: Node.js (zero dependencies, pure `http` module)
 - **Frontend**: Vanilla HTML/CSS/JS (no build step); IndexedDB for local persistence
 - **AI Engine**: Ollama (local LLM inference); optional ComfyUI (local image/video generation)
-- **CDN Libraries**: KaTeX, Mermaid, highlight.js, pdf.js, mammoth.js, JSZip
+- **UI Libraries**: KaTeX, Mermaid, highlight.js, pdf.js, mammoth.js, JSZip — no third-party code in the repo; each is pinned to an exact version + sha256 checksum in `server/vendor-manifest.json` and downloaded once (~7 MB) by `scripts/fetch-vendor.js` for fully-offline use. Not downloaded? The server proxies them from the pinned CDN URLs, checksum-verified either way.
 
 
 ## License
