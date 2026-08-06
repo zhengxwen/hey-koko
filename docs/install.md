@@ -40,7 +40,7 @@ The macOS quick start lives in the [README](../README.md#quick-start). This page
    node server.js
    ```
 
-   Or run `./start.sh`, which also opens the browser automatically (when a graphical session exists).
+   Or run `./start.command` (double-click it in macOS Finder), which also opens the browser automatically (when a graphical session exists). It is a plain shell script — the extension only exists so Finder will run it on double-click.
 
 5. Open your browser at:
 
@@ -140,7 +140,7 @@ $env:OLLAMA_URL = "http://127.0.0.1:11434"; $env:HEYKOKO_PORT = "1314"; node ser
 | `IMAGE_OLLAMA_URL` | `OLLAMA_URL` | Separate Ollama endpoint for image analysis (vision models), if different from the chat one |
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | ComfyUI API endpoint (also editable in the UI) |
 | `HEYKOKO_PORT` | `1314` | Server port |
-| `HEYKOKO_NO_VENDOR` | — | Set to `1` to skip the one-time download of pinned UI libraries (KaTeX, Mermaid, …) into `public/vendor/` by `start.sh`/`start.bat`; missing files then load from the CDN at runtime (checksum-verified either way) |
+| `HEYKOKO_NO_VENDOR` | — | Set to `1` to skip the one-time download of pinned UI libraries (KaTeX, Mermaid, …) into `public/vendor/` by `start.command`/`start.bat`; missing files then load from the CDN at runtime (checksum-verified either way) |
 | `LLM_TASK_CTX` | `24576` | Ollama context window (`num_ctx`) for internal LLM tasks (subtitle formatting, library distill/rerank). Ollama's small default would silently truncate long prompts |
 | `URL_CONTENT_MAX_CHARS` | `40000` | Max characters kept from a fetched webpage (`/url`); `0` = unlimited. YouTube transcripts are never truncated |
 | `WHISPER_MODEL` | auto-detect | Path to whisper.cpp model file |

@@ -6,7 +6,7 @@
 // each file to an exact version + sha256, and the frontend always references
 // the same-origin path /vendor/<path>. Two ways that path gets satisfied:
 //   1. Offline (preferred): scripts/fetch-vendor.js downloads the files into
-//      public/vendor/ (gitignored) — start.sh/build-app.sh do this by default.
+//      public/vendor/ (gitignored) — start.command/build-app.sh do this by default.
 //   2. Online fallback: if a file is missing on disk, this module fetches it
 //      from the pinned CDN URL, verifies the checksum, and serves it from an
 //      in-memory cache. A checksum mismatch is refused (502), never served.
