@@ -503,6 +503,26 @@ function applyComfyModels(data) {
       }
       dom.comfyParamUpscaleModel.value = (savedUp === "off" || ups.includes(savedUp)) ? savedUp : "";
     }
+    // ⚙ "de-artifact model": the 1x RESTORATION models, which live in the same ComfyUI
+    // folder but are a different kind of thing (they resize nothing) — the server splits
+    // the two lists so neither picker can offer the other's models.
+    if (dom.comfyParamRestoreModel) {
+      const res = data.restoreModels || [];
+      const savedRes = (saved.comfyParams && saved.comfyParams.restoreModel) || "";
+      dom.comfyParamRestoreModel.options[0].textContent = t("comfy_restoreModel_auto");
+      dom.comfyParamRestoreModel.options[1].textContent = t("comfy_restoreModel_blur");
+      for (const o of [...dom.comfyParamRestoreModel.options].slice(2)) o.remove();  // keep Auto + Blur
+      for (const n of res) {
+        const o = document.createElement("option");
+        o.value = n; o.textContent = n.replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
+        dom.comfyParamRestoreModel.appendChild(o);
+      }
+      dom.comfyParamRestoreModel.value = (savedRes === "off" || res.includes(savedRes)) ? savedRes : "";
+    }
+    if (dom.comfyParamUpscaleTarget) {
+      const labels = ["comfy_upscaleTarget_auto", "comfy_upscaleTarget_1080", "comfy_upscaleTarget_1440", "comfy_upscaleTarget_4k"];
+      [...dom.comfyParamUpscaleTarget.options].forEach((o, i) => { if (labels[i]) o.textContent = t(labels[i]); });
+    }
     // ⚙ "panorama base model": Auto + every checkpoint that can drive the recipe.
     // A saved pick that is no longer installed falls back to Auto rather than
     // silently generating with something the user did not choose.
@@ -1305,6 +1325,106 @@ export function updateScailWindowWarning() {
   el.hidden = !risky;
 }
 
+// ── ⚙ Video length: frames, or a duration ─────────────────────────────────────
+// The field's unit is FRAMES, because that is what every generator actually takes and
+// what its grid is expressed in. But nobody thinks in frames — they think "about ten
+// seconds" — and the conversion needs the model's own fps and frame grid to come out
+// right, which is exactly what the user doesn't have to hand. So the field also accepts
+// a duration ("10s", "1.5s", "90 sec") and converts it here, in place, so the frame
+// count it resolved to is visible BEFORE the render rather than inferred from the result.
+
+// The frame grid + rate to convert against. min/step/max are read back off the input,
+// where updateComfyMultiHint has already written the selected model's real preset
+// values — so there is no second table here to drift out of step with the server's.
+function lengthGrid() {
+  const el = dom.comfyParamLength;
+  const v = dom.comfyModelSelect?.value || "";
+  const info = (v && state.comfyLenInfo && state.comfyLenInfo.get(v)) || null;
+  // A ⚙ fps override changes what a second IS, but only on models whose rate the field
+  // can actually reach — elsewhere the model's own rate is the only true one.
+  const tunable = !!(state.comfyFpsTunable && state.comfyFpsTunable.has(v));
+  const ovFps = tunable ? Number(dom.comfyParamFps?.value) : NaN;
+  const min = Number(el?.min) || 5;
+  return {
+    min,
+    step: Number(el?.step) || 4,
+    max: Number(el?.max) || 0,
+    // Grid origin, from the server's own preset. Absent (a model with no preset) → the
+    // generic grid starts at min, which for those is 5 with step 4 = the 4n+1 rule.
+    off: info && info.off != null ? info.off : min,
+    fps: (isFinite(ovFps) && ovFps > 0) ? ovFps : (info ? info.fps : 24),
+  };
+}
+
+// Nearest valid frame count for this model — a direct port of the server's snapLength,
+// in the same order (clamp into the trained range, snap onto step·n + off, then push
+// back inside if the snap left it), so the number shown here is the number rendered.
+function snapFrames(n, g) {
+  const hi = g.max || Infinity;
+  let out = Math.round((Math.min(hi, Math.max(g.min, n)) - g.off) / g.step) * g.step + g.off;
+  if (out < g.min) out += g.step;
+  if (out > hi) out -= g.step;
+  return out;
+}
+
+// Read the field as either a frame count or a duration. Accepts "10s", "10 s", "10sec",
+// "10 seconds", the Chinese second-suffixes listed in the pattern below, and a bare
+// number (frames). Returns null for anything unparseable — including the empty field,
+// which means "Auto" and must be left exactly as it is.
+function parseLength(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  const m = /^(\d+(?:\.\d+)?)\s*(s|sec|secs|second|seconds|秒|秒钟|秒鐘)$/i.exec(s);
+  if (m) return { seconds: parseFloat(m[1]) };
+  const n = /^(\d+(?:\.\d+)?)$/.exec(s);
+  return n ? { frames: parseFloat(n[1]) } : null;
+}
+
+// Resolve whatever is typed to a snapped frame count and write it back. Runs on commit
+// (blur / Enter), never mid-keystroke — rewriting "1" to "5" while someone is still
+// typing "10s" would make the field impossible to use.
+export function normalizeLengthField() {
+  const el = dom.comfyParamLength;
+  if (!el) return;
+  const parsed = parseLength(el.value);
+  if (!parsed) { if (el.value.trim()) el.value = ""; updateLengthHint(); return; }
+  const g = lengthGrid();
+  const frames = parsed.seconds != null ? parsed.seconds * g.fps : parsed.frames;
+  el.value = String(snapFrames(frames, g));
+  updateLengthHint();
+}
+
+// One grid step up or down — a text field has no spinner, so ↑/↓ are re-implemented on
+// the model's REAL grid rather than the fixed 1 a number field would have used. From an
+// empty field it starts at that model's own Auto length, so the first press lands
+// somewhere sensible instead of at the bottom of the range.
+export function stepLengthField(dir) {
+  const el = dom.comfyParamLength;
+  if (!el) return;
+  const g = lengthGrid();
+  const cur = parseLength(el.value);
+  const info = state.comfyLenInfo?.get(dom.comfyModelSelect?.value || "");
+  const from = cur
+    ? (cur.seconds != null ? cur.seconds * g.fps : cur.frames)
+    : (info ? info.auto : g.min);
+  el.value = String(snapFrames(snapFrames(from, g) + (dir > 0 ? g.step : -g.step), g));
+  updateLengthHint();
+}
+
+// Say what the current frame count is in seconds — the same arithmetic in reverse, so
+// a converted duration can be checked against what was asked for, and a hand-typed
+// frame count stops being an opaque number.
+export function updateLengthHint() {
+  const el = dom.comfyParamLengthHint;
+  if (!el) return;
+  const parsed = parseLength(dom.comfyParamLength?.value);
+  const g = lengthGrid();
+  if (!parsed) { el.hidden = true; el.textContent = ""; return; }   // empty = Auto; the field's own label carries the hiding
+  const frames = parsed.seconds != null ? snapFrames(parsed.seconds * g.fps, g) : parsed.frames;
+  el.textContent = t("comfy_lengthHint", { sec: (frames / g.fps).toFixed(1), frames: snapFrames(frames, g), fps: g.fps });
+  el.hidden = false;
+}
+
 export function updateComfyParamVisibility() {
   const m = dom.comfyModelSelect?.value || "";
   if (!m) return;
@@ -1412,8 +1532,11 @@ export function updateComfyParamVisibility() {
   // 长片内存策略:SCAIL-2 与 Wan Animate 共用(两者都有输出侧累积的问题)。
   setVis(dom.comfyParamScailMemory, scail2 || animate);
   updateScailWindowWarning();
+  updateLengthHint();   // the grid + fps it reports are per-model
   // Upscale-model pipelines only (image-upscale / video-enhance) — the upscale-denoise % + the upscale-model picker.
-  for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel]) setVis(el, upscale);
+  for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel, dom.comfyParamRestoreModel]) setVis(el, upscale);
+  // The output target is a VIDEO-upscale control: the image path takes its size from --size.
+  setVis(dom.comfyParamUpscaleTarget, /video-enhance/i.test(m));
   // Image-edit / txt2img only.
   setVis(dom.comfyParamImageCfg, diffusion && !video && !mesh);
   // Quantisation preference — diffusion models only (the upscale pipelines load an
@@ -1598,6 +1721,8 @@ function initComfyParamsModal() {
     dom.comfyParamPanoRefine,
     dom.comfyParamTargetFps,
     dom.comfyParamUpscaleDenoise,
+    dom.comfyParamUpscaleTarget,
+    dom.comfyParamRestoreModel,
     dom.comfyParamUpscaleModel,
     dom.comfyParamRelight,
     dom.comfyParamRefMaxSize,
@@ -1632,6 +1757,10 @@ function initComfyParamsModal() {
     document.addEventListener("keydown", onKeydown);
   }
   function close() {
+    // Escape closes without blurring the focused field, so a typed duration would never
+    // reach its change handler and "10s" would read back as no value at all.
+    normalizeLengthField();
+    saveCurrentSettings();
     modal.hidden = true;
     document.removeEventListener("keydown", onKeydown);
   }
@@ -1653,6 +1782,20 @@ function initComfyParamsModal() {
   // The window-size caution depends on the chosen multiplier, so it has to re-evaluate on
   // change — open() alone would only catch it when the panel is reopened.
   dom.comfyParamScailWindow?.addEventListener("change", updateScailWindowWarning);
+  // Length: resolve on COMMIT only (blur / Enter), so a half-typed "10s" is never
+  // rewritten out from under the cursor; the hint tracks every keystroke. The re-save
+  // is not redundant — the generic `fields` loop above is registered first, so it
+  // persists the raw text; this overwrites it with the resolved frame count.
+  dom.comfyParamLength?.addEventListener("change", () => { normalizeLengthField(); saveCurrentSettings(); });
+  dom.comfyParamLength?.addEventListener("input", updateLengthHint);
+  dom.comfyParamLength?.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    stepLengthField(e.key === "ArrowUp" ? 1 : -1);
+    saveCurrentSettings();
+  });
+  // A ⚙ fps override redefines the second, so the same frame count means a new duration.
+  dom.comfyParamFps?.addEventListener("change", updateLengthHint);
   // Checkboxes carry .checked, not .value, so they're outside `fields`. The splat-mesh
   // one also gates the mesh-detail row, so it re-runs visibility on toggle.
   dom.comfyParamKeepBackground?.addEventListener("change", () => saveCurrentSettings());

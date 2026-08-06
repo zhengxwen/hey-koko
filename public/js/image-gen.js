@@ -102,6 +102,8 @@ function comfyOverrides() {
   const upDenoise = num(dom.comfyParamUpscaleDenoise?.value);
   if (upDenoise !== undefined && upDenoise > 0) ov.upscaleDenoise = Math.min(1, upDenoise / 100); // upscale denoise % → 0–1
   if (dom.comfyParamUpscaleModel?.value) ov.upscaleModel = dom.comfyParamUpscaleModel.value; // manual upscale model (empty = auto)
+  if (dom.comfyParamRestoreModel?.value) ov.restoreModel = dom.comfyParamRestoreModel.value; // 1x de-artifact model ("off" = the blur fallback)
+  if (dom.comfyParamUpscaleTarget?.value) ov.upscaleTarget = Number(dom.comfyParamUpscaleTarget.value); // long side, px (empty = 2x capped)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
   if (dom.comfyParamVideoCodec?.value) ov.videoCodec = dom.comfyParamVideoCodec.value; // video: h264 (default) | h265, via VHS_VideoCombine
   const videoCrf = num(dom.comfyParamVideoCrf?.value);
@@ -1284,7 +1286,9 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       doneLine += `\n${t("msg_upscaleUsed", { model: stripModelExt(lastData.upscaleModel) }, plang)}`;
     }
     if (lastData.upscaleDenoise > 0) {
-      doneLine += `\n${t("msg_denoiseUsed", { pct: Math.round(lastData.upscaleDenoise * 100) }, plang)}`;
+      doneLine += `\n${lastData.restoreModel
+        ? t("msg_denoiseModel", { pct: Math.round(lastData.upscaleDenoise * 100), model: stripModelExt(lastData.restoreModel) }, plang)
+        : t("msg_denoiseUsed", { pct: Math.round(lastData.upscaleDenoise * 100) }, plang)}`;
     }
     // LTX LoRA actually mounted. Stated because the picker can hold a choice the
     // server declines to apply (Sulphur's LoRA on the Sulphur checkpoint, which
@@ -1838,7 +1842,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   let errorCount = 0;
   let lastError = "";
   let noopMessage = null; // server did nothing on purpose (e.g. upscale=Off) → plain notice, not an error
-  let upscaleModelUsed = null, upscaleDenoiseUsed = 0; // HD upscale algorithm used → shown in the done line
+  let upscaleModelUsed = null, upscaleDenoiseUsed = 0, restoreModelUsed = null; // HD upscale algorithm used → shown in the done line
   let precisionUsedTier = null; // precision tier actually loaded → always named in the done line
   let precisionNoteUsed = null; // ⚙ precision fallback/mix, when the request could not be honoured
   // The panorama LoRA was asked for but dropped, because the chosen base is not the
@@ -1952,7 +1956,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 noopMessage = data.message || t("img_nothingToDo");
               } else if (r.ok) {
                 const imgs = (data.images || []).filter((s) => s && s.length > 100);
-                if (data.upscaleModel) { upscaleModelUsed = data.upscaleModel; upscaleDenoiseUsed = data.upscaleDenoise || 0; }
+                if (data.upscaleModel) { upscaleModelUsed = data.upscaleModel; upscaleDenoiseUsed = data.upscaleDenoise || 0; restoreModelUsed = data.restoreModel || null; }
                 if (data.precisionUsed) precisionUsedTier = data.precisionUsed;
                 if (data.precisionNote) precisionNoteUsed = data.precisionNote;
                 if (data.panoLoraSkipped) panoLoraSkippedBase = data.panoLoraSkipped.base;
@@ -2036,7 +2040,11 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       // HD upscale (image-upscale) — name the model + denoise algorithm actually used.
       if (upscaleModelUsed) doneLine += `\n${t("msg_upscaleUsed", { model: stripModelExt(upscaleModelUsed) }, plang)}`;
       if (panoLoraSkippedBase) doneLine += `\n${t("msg_panoLoraSkipped", { base: stripModelExt(panoLoraSkippedBase) }, plang)}`;
-      if (upscaleDenoiseUsed > 0) doneLine += `\n${t("msg_denoiseUsed", { pct: Math.round(upscaleDenoiseUsed * 100) }, plang)}`;
+      // Name the de-artifact MODEL when one ran — otherwise the switch from the blur
+      // fallback to a real restoration network is invisible, and they differ in cost.
+      if (upscaleDenoiseUsed > 0) doneLine += `\n${restoreModelUsed
+        ? t("msg_denoiseModel", { pct: Math.round(upscaleDenoiseUsed * 100), model: stripModelExt(restoreModelUsed) }, plang)
+        : t("msg_denoiseUsed", { pct: Math.round(upscaleDenoiseUsed * 100) }, plang)}`;
     }
 
     const replyMsg = {

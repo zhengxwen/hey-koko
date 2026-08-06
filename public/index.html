@@ -880,6 +880,22 @@
               <option value="off">Off (no upscale)</option>
             </select>
           </label>
+          <label>
+            <span id="comfyParamUpscaleTargetLabel" title="Video upscale only: how big the result should be. The named targets set the LONG side. Cost is not smooth across this list — a target past 2x of the source jumps to a 4x model (measured 321 vs 1236 ms per frame).">Upscale to</span>
+            <select id="comfyParamUpscaleTarget">
+              <option value="">Auto (2x, max 2160)</option>
+              <option value="1920">1080p (long side 1920)</option>
+              <option value="2560">1440p (long side 2560)</option>
+              <option value="3840">4K (long side 3840)</option>
+            </select>
+          </label>
+          <label>
+            <span id="comfyParamRestoreModelLabel" title="Upscale only, and only when Denoise is above 0: WHICH cleaner runs before the upscaler. A restoration model costs a FULL extra pass over every frame — measured 443 ms/frame against the 2x upscale's own 321 ms.">De-artifact model</span>
+            <select id="comfyParamRestoreModel">
+              <option value="">Auto (model if installed)</option>
+              <option value="off">Blur (built-in, cheaper)</option>
+            </select>
+          </label>
           <label title="LTX models only (LTX-2.3 / Sulphur): an optional LoRA patched onto the checkpoint. HOW TO CHOOSE — None: the plain model, and the right answer unless you want one of the effects below. A style/finetune LoRA (e.g. Sulphur): gives another model's look while keeping this one's schedule; use it over plain LTX-2.3 at ~0.8-1.0. A distilled/speed LoRA: only pays off if you ALSO lower steps and set cfg to 1 by hand (this preset is the 30-step / cfg 3 dev schedule), around 0.5. Each option carries its own hint. Greyed out = that finetune is already baked into the selected checkpoint (Sulphur ships as both a checkpoint and a LoRA, and stacking them applies it twice) — pick the plain LTX-2.3 checkpoint to use it. The done line reports which LoRA was actually applied. Options are the LTX-family files in ComfyUI/models/loras/.">
             <span id="comfyParamLtxLoraLabel">LTX LoRA</span>
             <select id="comfyParamLtxLora">

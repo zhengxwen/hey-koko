@@ -33,6 +33,17 @@ Each model family ships with sane sampling defaults (Flux guidance distillation,
 - **WAN 2.2 14B** is a two-expert (high-noise + low-noise) model — Hey-Koko chains both experts automatically and collapses the pair into a single dropdown entry. With the **LightX2V 4-step LoRAs** installed it auto-switches to the fast 4-step / cfg-1 path (~6–10× faster).
 - **LTX-2.3** generates synchronized **audio**, muxed into the output MP4.
 
+**Upscaling a finished clip.** Generation and upscaling are deliberately separate steps: generate at 720p, then attach the result to the **Video interpolate + upscale** entry and run it again. ⚙ *Upscale to* names the **long side** (1920 / 2560 / 3840), so a portrait clip gets in height what a landscape one gets in width, and Auto simply doubles the source with the long side capped at 2160.
+
+The cost is *not* smooth across that list, which is the one thing worth knowing before you pick. The upscaler used is the smallest installed model that **reaches** the target, so:
+
+| Target vs. source | Model loaded | Measured |
+|---|---|---|
+| within 2× | a 2× model | 321 ms/frame |
+| beyond 2× | a 4× model, result scaled back down | 1236 ms/frame |
+
+A 720p source at 1440p is exactly 2× and takes the cheap path; the same source at 4K is 3×, so a 4× model runs and roughly 57% of the pixels it computes are thrown away in the downscale — about four times the time per frame for the same clip. If you want 4K without that jump, start from something nearer 1080p. The cheap path only exists if a 2× model is actually installed (e.g. `RealESRGAN_x2plus`); with only 4× models on disk, every target runs the 4× one. A target the source already meets skips the AI pass entirely and just resamples.
+
 **Outlining the subject in a reference photo.** On the models that read an attachment as a *reference* — LTX-2.3 MSR, Phantom, SCAIL-2, WAN Animate, Wan-Dancer, MiniMax H3 (r2v), Bernini's subject→image and its video-edit entry — every staged image carries its own 🖌 button, and the mask painted there means the opposite of inpainting: it says **which part of the photo is the subject**, and only that part is sent. Everything outside the outline becomes flat white and the frame is cropped to the outline, so a person standing in a busy room arrives as just that person. This matters for the same reason it does in the 3D chains: the reference is encoded at a fixed size, so a subject filling a tenth of the photo otherwise spends a tenth of the reference on identity and the rest on a room the model was never asked about. The brush's 🪄 point-select and 🔍 find-by-word both work here, so isolating a person is usually one click.
 
 The models whose attachment becomes a real *frame* deliberately have no such button — plain image-to-video, first/last-frame, LTX Union Control and InfiniteTalk's "photo speaks" all put the picture **into** the clip, where a cut-out would simply give you a white background on screen. Bernini is the one entry that is both: with a source video attached its images are references and the button appears, without one the image is frame 0 and it does not. The originals are never altered — the cut-out is baked at generation time, so clearing the mask and resending goes back to the whole photo.

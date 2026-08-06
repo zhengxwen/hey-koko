@@ -635,6 +635,23 @@ function pickPrecision(all, name, pref) {
   return (all || []).find((n) => precisionBase(n) === base && precisionOf(n) === pref) || name;
 }
 
+// Which build to load when a model ships several and the user expressed NO ⚙
+// preference. fp8 stays first so every model that has an fp8 build behaves exactly as
+// it did before this order existed; the rest only decides the cases that previously
+// had no rule at all and fell through to whatever disk order happened to be — which
+// is how a model shipping int8 + bf16 ended up defaulting to the unquantised 21 GB
+// file. Quantised beats unquantised, and nvfp4 sits last of the quantised tiers
+// because the most aggressive one should be asked for, not handed out by default.
+const PREC_AUTO_ORDER = ["fp8", "mxfp8", "int8", "nvfp4", "fp16"];
+function bestTier(list, nameOf = (x) => x) {
+  const arr = list || [];
+  for (const tier of PREC_AUTO_ORDER) {
+    const hit = arr.find((x) => precisionOf(nameOf(x)) === tier);
+    if (hit) return hit;
+  }
+  return arr[0] || null;   // nothing carries a recognisable token — keep disk order
+}
+
 // Every model file ComfyUI can load (both loaders) — the pool pickPrecision searches.
 async function comfyModelFiles() {
   const [unets, ckpts] = await Promise.all([
@@ -652,14 +669,12 @@ async function comfyModelFiles() {
 // separate UNETLoaders, so a tier only one of them ships in runs mixed rather than
 // failing, and the mix is surfaced on the done-line. Quantised twins tend to land
 // one at a time, so a pair is half-converted for as long as that takes.
-// Best file for one expert: the asked-for tier, else fp8 (what the app loaded before
-// the ⚙ preference existed), else whatever that model ships. null = no such model.
+// Best file for one expert: the asked-for tier, else the PREC_AUTO_ORDER default for
+// what that model ships. null = no such model.
 function pickByBase(all, base, pref) {
   const group = (all || []).filter((n) => precisionBase(n) === base);
   if (!group.length) return null;
-  return group.find((n) => precisionOf(n) === pref)
-      || group.find((n) => precisionOf(n) === "fp8")
-      || group[0];
+  return group.find((n) => precisionOf(n) === pref) || bestTier(group);
 }
 
 async function resolvePrecision(model, pref) {
@@ -886,7 +901,7 @@ async function ltxMsrParts(pref) {
   // Precision-by-TIER (not the generic pickPrecision base-swap): the mxfp8 files carry a
   // "_block32" suffix, so their precisionBase differs and the base-match would silently miss.
   const pickTier = (poolList) => (pref && pref !== "auto" && poolList.find((n) => precisionOf(n) === pref))
-    || poolList.find((n) => precisionOf(n) === "fp8") || poolList[0] || null;
+    || bestTier(poolList);
   // CLEAN path — the full distilled checkpoint (exclude the transformer-only component file).
   const fullDistilled = (ckpts || []).filter((n) => /ltx.*distill/i.test(n) && !/transformer[-_ ]?only/i.test(n));
   const fullCkpt = pickTier(fullDistilled);
@@ -929,11 +944,10 @@ async function ltxUnionParts(pref) {
   const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
   // The FULL distilled checkpoint (exclude the transformer-only component file, which has
   // no VAE). It can ship in several precisions (fp8 / mxfp8 / nvfp4); pick by ⚙ preference,
-  // else fp8 (the verified default), else whatever's present — precisionTierNote names it.
+  // else the PREC_AUTO_ORDER default — precisionTierNote names whichever it lands on.
   const distilled = (ckpts || []).filter((n) => /ltx.*distill/i.test(n) && !/transformer[-_ ]?only/i.test(n));
   const ckpt = (pref && pref !== "auto" && distilled.find((n) => precisionOf(n) === pref))
-    || distilled.find((n) => precisionOf(n) === "fp8")
-    || distilled[0] || null;
+    || bestTier(distilled);
   const parts = {
     ckpt,
     ckptTier: ckpt ? precisionOf(ckpt) : null,
@@ -1533,6 +1547,11 @@ async function proxyComfyModels(req, res) {
           min: preset.lenMin != null ? preset.lenMin : preset.lenMult + off,
           max: preset.lenMax != null ? preset.lenMax : null,
           step: preset.lenMult,
+          // The grid's ORIGIN (snapLength's lenMult·n + lenOffset), sent so the ⚙ field
+          // can snap by the same formula instead of inferring it from `min`. Those agree
+          // only while every declared lenMin happens to sit on the grid — true today, but
+          // a preset that broke it would have the field show a number the server moves.
+          off,
           fps: preset.fps,
           auto: preset.length,
         };
@@ -1599,9 +1618,9 @@ async function proxyComfyModels(req, res) {
       }
       const out = [];
       for (const [, group] of seen) {
-        // Representative = the fp8 build when present (what the app loaded before this
-        // existed), else whatever came first — a stable, precision-independent choice.
-        const rep = group.find((x) => precisionOf(nameOf(x)) === "fp8") || group[0];
+        // Representative = the PREC_AUTO_ORDER default, which is also what "Auto" then
+        // loads (resolvePrecision returns the entry unchanged when no tier is asked for).
+        const rep = bestTier(group, nameOf);
         out.push(group.length > 1 && relabel ? relabel(rep, group) : rep);
       }
       return out;
@@ -1710,7 +1729,7 @@ async function proxyComfyModels(req, res) {
     // the progress estimate matches the graph the server builds; gpuName → shown in the
     // model picker. Both null when unknown.
     const { gib: vramGib, gpuName } = await comfyGpuInfo();
-    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels, panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, hostname, vramGib, gpuName });
+    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels: upscaleModels.filter((n) => !isRestoreModel(n)), restoreModels: upscaleModels.filter(isRestoreModel), panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, hostname, vramGib, gpuName });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [] });
   }
@@ -2841,6 +2860,16 @@ function applyVideoCodec(wf, codec, crf) {
   return true;
 }
 
+// One RIFE/FILM interpolation node. clear_cache_after_n_frames keeps VRAM bounded on long
+// clips; multiplier inserts (m−1) frames between each pair → (N−1)·m + 1 frames out.
+// Shared by applyVfi (post-hoc splice, every other builder) and buildVideoEnhance, which
+// places its own so interpolation can sit BEFORE the chunk split.
+function vfiNodeSpec(method, m, framesRef) {
+  return /film/i.test(method || "")
+    ? { class_type: "FILM VFI", inputs: { ckpt_name: "film_net_fp32.pt", frames: framesRef, clear_cache_after_n_frames: 10, multiplier: m } }
+    : { class_type: "RIFE VFI", inputs: { ckpt_name: "rife47.pth", frames: framesRef, clear_cache_after_n_frames: 10, multiplier: m, fast_mode: true, ensemble: true, scale_factor: 1, dtype: "float32", torch_compile: false, batch_size: 1 } };
+}
+
 function applyVfi(wf, mult, baseFps, method) {
   const m = Math.round(Number(mult) || 0);
   if (!wf || m < 2) return baseFps;
@@ -2854,32 +2883,62 @@ function applyVfi(wf, mult, baseFps, method) {
   cvIds.forEach((cvId, i) => {
     const cv = wf[cvId];
     const vid = i === 0 ? "vfi" : `vfi${i}`;
-    // clear_cache_after_n_frames keeps VRAM bounded on long clips; multiplier inserts
-    // (m−1) interpolated frames between each pair → (N−1)·m + 1 frames out.
-    wf[vid] = /film/i.test(method || "")
-      ? { class_type: "FILM VFI", inputs: { ckpt_name: "film_net_fp32.pt", frames: cv.inputs.images, clear_cache_after_n_frames: 10, multiplier: m } }
-      : { class_type: "RIFE VFI", inputs: { ckpt_name: "rife47.pth", frames: cv.inputs.images, clear_cache_after_n_frames: 10, multiplier: m, fast_mode: true, ensemble: true, scale_factor: 1, dtype: "float32", torch_compile: false, batch_size: 1 } };
+    wf[vid] = vfiNodeSpec(method, m, cv.inputs.images);
     cv.inputs.images = [vid, 0];
     if (newFps > 0) cv.inputs.fps = newFps;
   });
   return newFps > 0 ? newFps : baseFps;
 }
 
-// AI upscale model for the video-enhance (HD) pipeline. Auto-picks a sensible
-// default from models/upscale_models/ (prefer a 4× general model), erroring with a
-// download hint if the folder is empty.
-async function upscaleCompanions(preferred) {
-  const models = await comfyEnum("UpscaleModelLoader", "model_name");
+// models/upscale_models/ holds two different KINDS of model and ComfyUI lists them
+// together: real upscalers (2x / 4x / …) and 1x RESTORATION models (de-artifact,
+// de-JPEG, de-H264) that resize nothing at all. Offering a 1x model as "the upscaler"
+// yields a run that completes and changes the resolution not at all, so the scale is
+// read off the filename here and the two kinds are routed to separate slots.
+//
+// Naming in this ecosystem is one of two shapes — leading "4x-UltraSharp" / "1xDeH264",
+// or trailing "RealESRGAN_x2plus" — and an unrecognised name is treated as an upscaler,
+// because wrongly hiding a working model is worse than listing an odd one.
+function upscaleScaleOf(name) {
+  const n = String(name || "");
+  let m = /(?:^|[^a-z0-9])(\d)\s*x/i.exec(n);            // 4x-UltraSharp, 1xDeH264, 2xLiveAction
+  if (m) return Number(m[1]);
+  m = /x(\d)(?![0-9])/i.exec(n);                          // RealESRGAN_x2plus, …SwinIR-L_x4_GAN
+  if (m) return Number(m[1]);
+  return null;                                            // unknown → assume it upscales
+}
+const isRestoreModel = (n) => upscaleScaleOf(n) === 1;
+
+// AI upscale model for the video-enhance (HD) pipeline. `wantScale` is the ratio the
+// pipeline actually needs (output ÷ source); the auto-pick takes the SMALLEST installed
+// model that reaches it, because overshooting is not free — measured on a 121-frame
+// 1280x704 clip, x4plus cost 1236 ms/frame and 36.5 GiB of system RAM against x2plus's
+// 321 ms and 7.2 GiB, for a result that is then downsampled back anyway.
+async function upscaleCompanions(preferred, wantScale = 0) {
+  const all = await comfyEnum("UpscaleModelLoader", "model_name");
+  const models = all.filter((n) => !isRestoreModel(n));   // 1x restorers are not upscalers
   // A user-picked model (⚙ "upscale model") wins when it's actually installed; otherwise
   // fall through to the auto-pick. Match exact name first, then case-insensitively.
   if (preferred) {
     const exact = models.find((x) => x === preferred) || models.find((x) => x.toLowerCase() === String(preferred).toLowerCase());
-    if (exact) return { model: exact };
+    if (exact) return { model: exact, scale: upscaleScaleOf(exact) };
   }
-  const find = (re) => models.find((x) => re.test(x));
+  const find = (re, pool = models) => pool.find((x) => re.test(x));
+  // Prefer models that REACH the needed ratio without overshooting: exact scale first,
+  // then the smallest that still covers it. Falls through to the general ranking when
+  // nothing declares a usable scale (or no ratio was asked for).
+  let model = null;
+  if (wantScale > 0) {
+    const scaled = models.map((n) => ({ n, s: upscaleScaleOf(n) })).filter((x) => x.s > 1);
+    const exact = scaled.filter((x) => x.s === Math.round(wantScale)).map((x) => x.n);
+    const over = scaled.filter((x) => x.s > wantScale).sort((a, b) => a.s - b.s).map((x) => x.n);
+    const pool = exact.length ? exact : over;
+    // RealESRGAN is the steadier choice on video within whichever tier we land in.
+    if (pool.length) model = find(/realesrgan(?!.*anime)/i, pool) || pool[0];
+  }
   // RealESRGAN first — it cleans compression artifacts and is temporally steadier on
   // video; UltraSharp (sharper but amplifies noise frame-to-frame) is the next choice.
-  const model =
+  model = model ||
     find(/realesrgan.*x4plus(?!.*anime)/i) ||
     find(/realesrgan(?!.*anime)/i) ||
     find(/4x.?ultrasharp/i) ||
@@ -2889,7 +2948,24 @@ async function upscaleCompanions(preferred) {
     find(/x4|x2|2x/i) ||
     models[0];
   if (!model) throw new Error("Missing upscale model: put an upscale model (e.g. RealESRGAN_x4plus.safetensors or 4x-UltraSharp.pth) into ComfyUI/models/upscale_models/ and retry.");
-  return { model };
+  return { model, scale: upscaleScaleOf(model) };
+}
+
+// The 1x restoration model used to pre-clean frames before upscaling — a real
+// de-artifact network in place of the blur-and-blend approximation. Returns null when
+// none is installed, and the caller falls back to that blur rather than failing.
+async function restoreCompanion(preferred) {
+  const models = (await comfyEnum("UpscaleModelLoader", "model_name")).filter(isRestoreModel);
+  if (!models.length) return null;
+  if (preferred) {
+    const exact = models.find((x) => x === preferred) || models.find((x) => x.toLowerCase() === String(preferred).toLowerCase());
+    if (exact) return exact;
+  }
+  // Video codecs first (what a source clip actually suffers from), then the generic
+  // de-JPEG / restore models, which are at least trained on compression too.
+  return models.find((x) => /h ?26[45]|avc|hevc|mpeg/i.test(x))
+      || models.find((x) => /dejpg|jpeg|compress/i.test(x))
+      || models[0];
 }
 
 // Video enhance (interpolate + upscale). Source video → GetVideoComponents → AI-upscale every
@@ -2899,26 +2975,97 @@ async function upscaleCompanions(preferred) {
 // is layered ON TOP by applyVfi (called from the dispatch) — it splices a RIFE/FILM
 // node before CreateVideo and rewrites the (numeric) fps. Single pass over the whole
 // clip (no diffusion); keep clips modest so the upscaled frame batch fits VRAM.
-function buildVideoEnhance({ videoName, upscaleModel, outW, outH, denoise }) {
+// How many frames may be upscaled in ONE ImageUpscaleWithModel call. The node moves the
+// input batch to the GPU but assembles its OUTPUT on the CPU (tiled_scale's default
+// output_device), so the wall this hits is SYSTEM RAM, not VRAM — measured on the 5090:
+// a 121-frame 1280x704 clip cost 1.4-2.1 GiB of VRAM regardless of scale, while RAM went
+// 7.2 GiB at 2x and 36.5 GiB at 4x. Left whole, a 30 s 30 fps 720p clip at 4x would want
+// ~148 GiB before overhead, i.e. more than the machine has.
+const UPSCALE_CHUNK_BUDGET = 6 * 2 ** 30;   // bytes of upscaled frames per chunk
+const UPSCALE_RAM_FACTOR = 1.75;            // measured 36.5 GiB against a 20.9 GiB theoretical
+const UPSCALE_MIN_CHUNK = 8;                // below this the per-chunk overhead dominates
+// ImageFromBatch declares length as INT max 4096, and ComfyUI REJECTS the prompt outright
+// for a larger value — so it bounds both the chunk size and the "take the rest" sweep.
+// (Only the chunked path slices at all; a single tail feeds the batch straight through and
+// is unaffected by this ceiling.)
+const IMAGE_FROM_BATCH_MAX = 4096;
+
+// null = the whole clip fits, keep the single-file path (short clips are the common case
+// and the merge step is pure cost for them). Sizes are computed from the model's NATIVE
+// output, which is the peak — any ImageScale back down happens after that batch exists.
+function upscaleChunkPlan(frames, nativeW, nativeH) {
+  if (!(frames > 0) || !(nativeW > 0) || !(nativeH > 0)) return null;
+  const perFrame = nativeW * nativeH * 3 * 4 * UPSCALE_RAM_FACTOR;
+  if (perFrame * frames <= UPSCALE_CHUNK_BUDGET) return null;
+  // Clamp BEFORE deriving the count — a small frame size can make the memory budget alone
+  // allow tens of thousands of frames per chunk, which the slice node cannot express.
+  const size = Math.min(IMAGE_FROM_BATCH_MAX, Math.max(UPSCALE_MIN_CHUNK, Math.floor(UPSCALE_CHUNK_BUDGET / perFrame)));
+  return { size, count: Math.ceil(frames / size), perFrame };
+}
+
+const enhanceSaveNodeId = (k) => `s${k}`;
+
+// Video enhance (interpolate + upscale). Source video → GetVideoComponents → optional
+// de-artifact pass → optional frame interpolation → AI-upscale every frame → optionally
+// downscale to a bounded HD target (outW/outH, already even; 0 = keep the model's native
+// output) → CreateVideo.
+//
+// `chunk` ({size, count}) splits the upscale into N independent tails, each writing its
+// own file, so the full upscaled batch never exists at once. The dispatch then merges the
+// parts with ffmpeg and muxes the source audio back (the same path SCAIL-2's incremental
+// save uses), which is why chunked tails are written SILENT.
+//
+// Interpolation deliberately runs BEFORE the upscale, at source resolution. Two reasons:
+// it is far cheaper there (a quarter of the pixels at 2x), and it must sit ahead of the
+// chunk split — per-chunk interpolation would leave every chunk boundary without its
+// in-between frames, a visible stutter once per chunk.
+function buildVideoEnhance({ videoName, upscaleModel, outW, outH, denoise, restoreModel, vfi, chunk }) {
   const wf = {
     "5": { class_type: "LoadVideo", inputs: { file: videoName } },
     "6": { class_type: "GetVideoComponents", inputs: { video: ["5", 0] } },
   };
-  const clean = denoiseBeforeUpscale(wf, ["6", 0], denoise, "20", "21"); // pre-clean each frame (denoise)
-  // No upscale model (⚙ "upscale model" = Off) → skip the AI upscale stage: interpolate-only (frames
-  // stay at source resolution; interpolation is still layered on by applyVfi).
-  let framesRef = clean;
-  if (upscaleModel) {
-    wf["7"] = { class_type: "UpscaleModelLoader", inputs: { model_name: upscaleModel } };
-    wf["8"] = { class_type: "ImageUpscaleWithModel", inputs: { upscale_model: ["7", 0], image: clean } };
-    framesRef = ["8", 0];
+  // Pre-clean the REAL frames, before anything invents new ones from them.
+  let framesRef = denoiseBeforeUpscale(wf, ["6", 0], denoise, "20", "21", restoreModel);
+  let fpsRef = ["6", 2];
+  if (vfi && vfi.mult >= 2) {
+    wf["7v"] = vfiNodeSpec(vfi.method, vfi.mult, framesRef);
+    framesRef = ["7v", 0];
+    fpsRef = vfi.fps;                       // a NUMBER once interpolated
   }
-  if (outW > 0 && outH > 0) {
-    wf["9"] = { class_type: "ImageScale", inputs: { image: framesRef, upscale_method: "lanczos", width: outW, height: outH, crop: "disabled" } };
-    framesRef = ["9", 0];
+  if (upscaleModel) wf["7"] = { class_type: "UpscaleModelLoader", inputs: { model_name: upscaleModel } };
+
+  // One tail: [slice] → upscale → [resize] → CreateVideo → SaveVideo.
+  const tail = (k, sliceFrom, sliceLen) => {
+    const p = `c${k}`;
+    let ref = framesRef;
+    if (sliceLen > 0) {
+      wf[`${p}f`] = { class_type: "ImageFromBatch", inputs: { image: ref, batch_index: sliceFrom, length: sliceLen } };
+      ref = [`${p}f`, 0];
+    }
+    if (upscaleModel) {
+      wf[`${p}u`] = { class_type: "ImageUpscaleWithModel", inputs: { upscale_model: ["7", 0], image: ref } };
+      ref = [`${p}u`, 0];
+    }
+    if (outW > 0 && outH > 0) {
+      wf[`${p}s`] = { class_type: "ImageScale", inputs: { image: ref, upscale_method: "lanczos", width: outW, height: outH, crop: "disabled" } };
+      ref = [`${p}s`, 0];
+    }
+    // Chunked parts are silent: the merge takes the audio from the source clip, so audio
+    // here would only be re-encoded per part and then thrown away.
+    const cv = { images: ref, fps: fpsRef };
+    if (!chunk) cv.audio = ["6", 1];
+    wf[`${p}v`] = { class_type: "CreateVideo", inputs: cv };
+    wf[enhanceSaveNodeId(k)] = { class_type: "SaveVideo", inputs: { video: [`${p}v`, 0], filename_prefix: "heykoko_enhance", format: "auto", codec: "auto" } };
+  };
+
+  if (!chunk) tail(0, 0, 0);
+  else for (let k = 0; k < chunk.count; k++) {
+    // The LAST chunk asks for everything that is left, up to the node's own ceiling
+    // (ImageFromBatch clamps `length` down to the frames actually present). The plan is
+    // sized from a probed frame count, and a count that came back short would otherwise
+    // drop the tail of the clip silently — far worse than one oversized final chunk.
+    tail(k, k * chunk.size, k === chunk.count - 1 ? IMAGE_FROM_BATCH_MAX : chunk.size);
   }
-  wf["18"] = { class_type: "CreateVideo", inputs: { images: framesRef, audio: ["6", 1], fps: ["6", 2] } };
-  wf["19"] = { class_type: "SaveVideo", inputs: { video: ["18", 0], filename_prefix: "heykoko_enhance", format: "auto", codec: "auto" } };
   return wf;
 }
 
@@ -2928,10 +3075,22 @@ function buildVideoEnhance({ videoName, upscaleModel, outW, outH, denoise }) {
 // sees it, so it isn't sharpened up. 0 → untouched (sharpest); 1 → full blur (cleanest
 // but softest). Works with ANY upscale model (core nodes only). Adds ImageBlur+ImageBlend
 // under blurId/blendId; returns the cleaned image ref to feed ImageUpscaleWithModel.
-function denoiseBeforeUpscale(wf, srcRef, strength, blurId, blendId) {
+// `restoreModel` (a 1x de-artifact network, see restoreCompanion) replaces the blur with
+// a model that actually removes compression artifacts instead of smearing them — the
+// blend stays, so the ⚙ percentage keeps its meaning either way (0 = untouched,
+// 100 = fully cleaned). Absent, it falls back to the blur rather than failing.
+// COSTS A FULL EXTRA PASS over every frame: measured on 121 frames at 1280x704,
+// 1xDeH264_realplksr ran 443 ms/frame against the 2x upscale's own 321 ms — i.e. more
+// than doubling the job. Never enable it by default.
+function denoiseBeforeUpscale(wf, srcRef, strength, blurId, blendId, restoreModel) {
   const s = Math.max(0, Math.min(1, Number(strength) || 0));
   if (s <= 0) return srcRef;
-  wf[blurId] = { class_type: "ImageBlur", inputs: { image: srcRef, blur_radius: 2, sigma: 1.5 } };
+  if (restoreModel) {
+    wf[blurId + "L"] = { class_type: "UpscaleModelLoader", inputs: { model_name: restoreModel } };
+    wf[blurId] = { class_type: "ImageUpscaleWithModel", inputs: { upscale_model: [blurId + "L", 0], image: srcRef } };
+  } else {
+    wf[blurId] = { class_type: "ImageBlur", inputs: { image: srcRef, blur_radius: 2, sigma: 1.5 } };
+  }
   wf[blendId] = { class_type: "ImageBlend", inputs: { image1: srcRef, image2: [blurId, 0], blend_factor: s, blend_mode: "normal" } };
   return [blendId, 0];
 }
@@ -2940,9 +3099,9 @@ function denoiseBeforeUpscale(wf, srcRef, strength, blurId, blendId) {
 // image. `denoise` (0–1) pre-cleans the input (denoise). `outW/outH` (already even)
 // optionally resize the upscaled result (e.g. --size); 0 = keep the model's native
 // output (usually 4×). Output is a normal image.
-function buildImageUpscale({ imageName, upscaleModel, outW, outH, denoise }) {
+function buildImageUpscale({ imageName, upscaleModel, outW, outH, denoise, restoreModel }) {
   const wf = { "1": { class_type: "LoadImage", inputs: { image: imageName } } };
-  const clean = denoiseBeforeUpscale(wf, ["1", 0], denoise, "5", "6");
+  const clean = denoiseBeforeUpscale(wf, ["1", 0], denoise, "5", "6", restoreModel);
   // No upscale model (⚙ "upscale model" = Off) → passthrough (only denoise / an explicit
   // --size resize apply). Mostly a degenerate case for the image-upscale model.
   let ref = clean;
@@ -5220,12 +5379,13 @@ function comfyErrorHint(exc, d) {
     const id = Number(d && d.node_id);
     return Number.isFinite(id) && id >= 100 ? Math.floor((id - 100) / 20) + 1 : 0;
   })();
-  const where = seg > 1 ? `第 ${seg} 段` : seg === 1 ? "第 1 段" : "";
-  const fix = "可试:⚙「窗口大小」调回 1x、降低分辨率、缩短片段,或换显存更大的机器。";
+  const where = seg ? `segment ${seg}` : "";
+  // "Window size" is the ⚙ field's own English label — the user has to be able to find it.
+  const fix = "Try: set ⚙ Window size back to 1x, lower the resolution, shorten the clip, or use a machine with more VRAM.";
   if (/Fault failed|vbar_fault|model_vbar/i.test(text))
-    return `\n\n⚠️ 显存不足${where ? `(${where}换权重失败)` : ""},不是采样器故障。${fix}`;
+    return `\n\n⚠️ Out of VRAM${where ? ` (${where} failed to swap in its weights)` : ""} — not a sampler fault. ${fix}`;
   if (/CUDA out of memory|OutOfMemoryError|CUDA error: out of memory/i.test(text))
-    return `\n\n⚠️ 显存不足${where ? `(${where})` : ""}。${fix}`;
+    return `\n\n⚠️ Out of VRAM${where ? ` (${where})` : ""}. ${fix}`;
   return "";
 }
 
@@ -5675,20 +5835,28 @@ async function generateComfyImage(req, res) {
           sendJson(res, 200, { noop: true, message: `ℹ️ Nothing to do: neither interpolation nor upscale is enabled — ⚙ "upscale model" is set to "Off", and the target fps (${tf > 0 ? tf : "not set"}) is not higher than the source video fps (${srcFps}). ComfyUI was not called this time.\n\n· To interpolate: \`/imagine <a higher fps>\` (e.g. for a ${srcFps}fps source, enter ${srcFps * 2})\n· To upscale: change ⚙ "upscale model" from "Off" back to "Auto" or a specific model` });
           return;
         }
-        const comp = noUpscale ? null : await upscaleCompanions(opts.upscaleModel);
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
-        // Output size = 2× the source (a clean HD doubling — the 4× upscale model adds
-        // detail, then we downsample for crispness), capped so the long side ≤ 2160 to
-        // avoid 4K+-per-frame monsters. A ⚙ --size sets an explicit budget instead.
-        // 0/0 = keep the source resolution (Off, or source dims unknown).
+        // Output size = 2× the source, capped so the long side ≤ 2160. A ⚙ --size sets an
+        // explicit budget instead. 0/0 = keep the source resolution (Off, or dims unknown).
+        // Computed BEFORE the model is chosen, because the ratio it implies is what the
+        // auto-pick needs: a 2× target should load a 2× model rather than run a 4× one and
+        // throw away 57% of the pixels it just computed (1236 vs 321 ms/frame, measured).
         const HD_LONG_CAP = 2160;
         const even = (n) => Math.max(2, Math.round(n / 2) * 2);
         let outW = 0, outH = 0;
         const sw = Number(sourceVideoWidth), sh = Number(sourceVideoHeight);
+        // ⚙ "Upscale to" names the LONG side (1920 / 2560 / 3840), so a portrait clip gets
+        // in height what a landscape one gets in width — a target expressed as "1080p"
+        // would otherwise mean two different things depending on orientation.
+        const targetLong = Math.round(Number(opts.upscaleTarget) || 0);
         if (opts.width > 0 && opts.height > 0 && sw > 0 && sh > 0) {
-          // Explicit --size → that pixel budget at the source aspect.
+          // Explicit --size → that pixel budget at the source aspect. A per-command flag
+          // outranks the persistent ⚙ setting, same as everywhere else.
           const aspect = sw / sh, budget = opts.width * opts.height;
           outW = even(Math.sqrt(budget * aspect)); outH = even(Math.sqrt(budget / aspect));
+        } else if (!noUpscale && targetLong > 0 && sw > 0 && sh > 0) {
+          const k = targetLong / Math.max(sw, sh);
+          outW = even(sw * k); outH = even(sh * k);
         } else if (!noUpscale && sw > 0 && sh > 0) {
           // Default 2× HD doubling — only when actually upscaling (Off keeps source size).
           let tw = sw * 2, th = sh * 2;
@@ -5696,18 +5864,44 @@ async function generateComfyImage(req, res) {
           if (longSide > HD_LONG_CAP) { const s = HD_LONG_CAP / longSide; tw *= s; th *= s; }
           outW = even(tw); outH = even(th);
         }
-        workflow = buildVideoEnhance({ videoName, upscaleModel: comp ? comp.model : null, outW, outH, denoise: upscaleDenoise });
-        upscaleInfo = { model: comp ? comp.model : null, denoise: upscaleDenoise };
-        // Frame interpolation to the requested fps. applyVfi multiplies the
-        // source fps to a NUMBER and splices RIFE/FILM before CreateVideo.
-        let outFps = srcFps, mult = 1;
+        // Ratio the pipeline actually needs, so the auto-pick can size the model to it.
+        const wantScale = (!noUpscale && sw > 0 && outW > 0) ? outW / sw : 0;
+        // A target the source already meets has nothing for an upscaler to do — running one
+        // and scaling back would cost minutes and add sharpening the user did not ask for.
+        // Plain resampling still happens (outW/outH are set); only the AI pass is dropped.
+        const resizeOnly = wantScale > 0 && wantScale <= 1.02;
+        const comp = (noUpscale || resizeOnly) ? null : await upscaleCompanions(opts.upscaleModel, wantScale);
+        // A real de-artifact model when one is installed and the ⚙ denoise knob is up;
+        // "off" pins the blur fallback, which is cruder but costs no extra pass.
+        const restoreModel = (upscaleDenoise > 0 && opts.restoreModel !== "off")
+          ? await restoreCompanion(opts.restoreModel) : null;
+        // Interpolation is decided HERE and handed to the builder, which places it before
+        // the chunk split — unlike every other video model, where applyVfi splices it in
+        // afterwards. CEIL → interpolated fps ≥ target; a post-pass drops to EXACTLY tf.
+        const mult = willInterp ? Math.max(2, Math.ceil(tf / srcFps)) : 1;
+        const method = /film/i.test(opts.interpMethod || "") ? "film" : "rife";
+        const outFps = mult > 1 ? Math.round(srcFps * mult) : srcFps;
+        // Frames reaching the UPSCALE — after interpolation has already multiplied them.
+        // Sizing the chunk plan off the source count instead would leave (mult−1)/mult of
+        // the clip in no chunk at all, and the render would come back truncated.
+        const framesIn = (mult > 1 && srcFrames > 0) ? (srcFrames - 1) * mult + 1 : srcFrames;
+        // Peak batch is the model's NATIVE output, before any downscale to outW/outH.
+        // With no model (resize-only) the ImageScale result is itself the peak, and it is
+        // just as capable of exhausting RAM — so that path gets a chunk plan too.
+        const mScale = (comp && comp.scale) || 4;   // unknown scale → assume 4x (smaller chunks)
+        const chunk = comp ? upscaleChunkPlan(framesIn, sw * mScale, sh * mScale)
+          : (outW > 0 ? upscaleChunkPlan(framesIn, outW, outH) : null);
+        workflow = buildVideoEnhance({ videoName, upscaleModel: comp ? comp.model : null, outW, outH,
+          denoise: upscaleDenoise, restoreModel, chunk,
+          vfi: mult > 1 ? { mult, method, fps: outFps } : null });
+        upscaleInfo = { model: comp ? comp.model : null, scale: comp ? comp.scale : null, resizeOnly, denoise: upscaleDenoise, restoreModel };
+        if (chunk) {
+          segmentMerge = { label: "Video upscale", saveNodeIds: Array.from({ length: chunk.count }, (_, k) => enhanceSaveNodeId(k)), sourceName: videoName };
+          console.log(`[comfy-gen] upscale chunked: ${framesIn} frames → ${chunk.count} × ${chunk.size} @ ${sw * mScale}x${sh * mScale} (${(chunk.perFrame * chunk.size / 2 ** 30).toFixed(1)} GiB/chunk)`);
+        }
         if (willInterp) {
-          // CEIL → interpolated fps ≥ target; a post-pass drops frames to EXACTLY tf.
-          mult = Math.max(2, Math.ceil(tf / srcFps));
-          const method = /film/i.test(opts.interpMethod || "") ? "film" : "rife";
-          outFps = applyVfi(workflow, mult, srcFps, method);
           videoDims = { width: outW || undefined, height: outH || undefined, fps: outFps, interpolated: mult, interpMethod: method };
-          exactTargetFps = tf; // resample the output down to this exact fps
+          exactTargetFps = tf;
         } else {
           if (tf > 0 && tf <= srcFps) interpWarning = { baseFps: srcFps, targetFps: tf }; // already ≥ target
           videoDims = { width: outW || undefined, height: outH || undefined, fps: outFps };
@@ -6607,15 +6801,20 @@ async function generateComfyImage(req, res) {
           sendJson(res, 200, { noop: true, message: "ℹ️ Nothing to do: ⚙ \"upscale model\" is set to \"Off\", so the image will not change and ComfyUI was not called this time.\n\n· To upscale: change ⚙ \"upscale model\" from \"Off\" back to \"Auto\" or a specific model (default output is 4×)" });
           return;
         }
-        const comp = noImgUpscale ? null : await upscaleCompanions(opts.upscaleModel);
         const imageName = await uploadImage(images[0], controller.signal);
         let outW = 0, outH = 0;
         if (opts.width && opts.height) {
           const ts = editTargetSize(images, opts, 4096);
           if (ts) { outW = snapDim(ts.width, 2); outH = snapDim(ts.height, 2); }
         }
-        workflow = buildImageUpscale({ imageName, upscaleModel: comp ? comp.model : null, outW, outH, denoise: upscaleDenoise });
-        upscaleInfo = { model: comp ? comp.model : null, denoise: upscaleDenoise };
+        // With an explicit --size the ratio is known, so the smallest model that reaches
+        // it wins; without one there is no target and the general ranking applies.
+        const srcDims = imageDims(images[0]);
+        const imgWantScale = (outW > 0 && srcDims && srcDims.width > 0) ? outW / srcDims.width : 0;
+        const comp = noImgUpscale ? null : await upscaleCompanions(opts.upscaleModel, imgWantScale);
+        const restoreModel = upscaleDenoise > 0 ? await restoreCompanion(opts.restoreModel) : null;
+        workflow = buildImageUpscale({ imageName, upscaleModel: comp ? comp.model : null, outW, outH, denoise: upscaleDenoise, restoreModel });
+        upscaleInfo = { model: comp ? comp.model : null, scale: comp ? comp.scale : null, denoise: upscaleDenoise, restoreModel };
         imagesUsed = 1;
       } else if (/hidream.?o1/i.test(model)) {
         // HiDream-O1 (pixel-space UiT): text→image, or reference editing when
@@ -6979,7 +7178,7 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI finished but produced no video file (output nodes: ${nodeIds}). Make sure the workflow includes a SaveVideo node, or retry.` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, imagesUsed });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own
@@ -6990,7 +7189,7 @@ async function generateComfyImage(req, res) {
           : editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         const c = panoCfg || cfg;
         console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${mode}, sampler=${c.sampler}/${c.scheduler}, cfg=${c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${c.steps}, images=${outImages.length}`);
-        sendJson(res, 200, { images: outImages, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined });
+        sendJson(res, 200, { images: outImages, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined });
       }
     } finally {
       clearTimeout(timeout);
@@ -7160,9 +7359,3 @@ async function comfyAutoMask(req, res) {
 }
 
 module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, uploadComfyAudio, comfyAutoMask };
-// TEMP (SCAIL-2 single-window ceiling test harness — REVERT after): expose the real
-// builder + companion resolver so a Node harness reuses the verified graph topology.
-module.exports._scailTest = { buildWanAnimate, animateSaveNodeId, buildScail2, hasLocalTool, scail2Companions, scail2SaveNodeId, scail2Segments, mergeScail2Segments, applyVfi, config };
-// MiniMax H3: expose the builder + the length/size resolution so a harness can check the
-// real graph against ComfyUI's /object_info without spending a GPU minute on a render.
-module.exports._h3Test = { buildMiniMaxH3, videoPreset, resolveVideoConfig, snapLength, videoTypeOf, precisionBase, precisionOf, applyVideoCodec, applyMuteAudio };
