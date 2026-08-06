@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // Chat rendering, message handling, and sending
-import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState, setScrollTop } from './state.js';
+import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState, setScrollTop, applyVideoAudio, trackVideoAudio } from './state.js';
 import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis,
          readFileAsDataUrl, makePreview, convertToJpeg, normalizeOrientation } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams, addBlockCopyButtons } from './markdown.js';
@@ -3813,14 +3813,17 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       // Use the captured thumbnail as the poster so a still shows before playback.
       const vthumb = generatedVideoThumbnails && generatedVideoThumbnails[vi];
       if (vthumb) video.poster = vthumb.startsWith("data:") ? vthumb : `data:image/jpeg;base64,${vthumb}`;
-      video.muted = true;
-      video.volume = 0.5; // unmuting (native control or our icon) restores to 50%, not 100%
+      applyVideoAudio(video);
+      trackVideoAudio(video);
       lazyLoadVideo(video, vData, vmime);
       // Only one video plays at a time — starting this one pauses the others.
       video.addEventListener("play", () => {
         dom.messagesEl.querySelectorAll("video.generatedVideo").forEach((other) => {
           if (other !== video && !other.paused) other.pause();
         });
+        // Adopt the current shared setting: this element may have been built before
+        // the user adjusted the volume on some other clip.
+        applyVideoAudio(video);
       });
       wrapper.appendChild(video);
 
@@ -3854,12 +3857,15 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         video.muted = !video.muted;
         if (!video.muted && video.volume === 0) { video.volume = 0.5; }
       });
-      // Keep the slider/icon in sync whether the user uses this or the native bar.
-      video.addEventListener("volumechange", () => {
+      // Keep the slider/icon in sync whether the user uses this, the native bar, or
+      // the native bar in OS fullscreen — all three land on the same element.
+      const syncVolUi = () => {
         const v = video.muted ? 0 : video.volume;
         volSlider.value = String(v);
         volIcon.textContent = v === 0 ? "🔇" : v < 0.5 ? "🔉" : "🔊";
-      });
+      };
+      video.addEventListener("volumechange", syncVolUi);
+      syncVolUi();   // the shared setting was applied above, before these controls existed
       // Detect an audio track and reveal the slider. mozHasAudio/audioTracks are
       // ready at metadata (Firefox/Safari); Chrome only sets
       // webkitAudioDecodedByteCount once audio decodes, so also check on play.

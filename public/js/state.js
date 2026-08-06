@@ -232,6 +232,38 @@ export const state = {
   comfyDevices: [],                  // detected ComfyUI GPU(s) for display in the model picker: [{ gpuName, vramGib, hostname }] — one per online endpoint/lane
 };
 
+// ── Shared video audio preference ──────────────────────────────────────────
+// One mute/volume setting for EVERY player: the inline bubble clips and the
+// full-window viewer. Whatever the user last chose — our slider/icon, the native
+// control bar, or the native control bar while in OS fullscreen (same element, same
+// `volumechange` event) — becomes the setting the next clip plays at.
+//
+// Session-scoped on purpose, not persisted: a fresh page load starts muted again so
+// audio never surprises the user, which is why every player defaulted to muted.
+export const videoAudio = { muted: true, volume: 0.5 };
+
+// Push the shared setting onto a <video>. Safe to call repeatedly (e.g. on play).
+export function applyVideoAudio(video) {
+  if (!video) return;
+  video.muted = videoAudio.muted;
+  video.volume = videoAudio.volume;
+}
+
+// Record this player's mute/volume changes into the shared setting. No "is this my
+// own write?" flag is needed: applyVideoAudio only ever sets the values the pref
+// already holds, so the echo it provokes matches and falls out at the first check.
+export function trackVideoAudio(video) {
+  if (!video) return;
+  video.addEventListener("volumechange", () => {
+    if (video.muted === videoAudio.muted && video.volume === videoAudio.volume) return;
+    // Unmuting a slider that sits at 0 would be silent — snap to 50% instead. The
+    // resulting write comes back through here and is what actually gets recorded.
+    if (!video.muted && video.volume === 0) { video.volume = 0.5; return; }
+    videoAudio.muted = video.muted;
+    videoAudio.volume = video.volume === 0 ? 0.5 : video.volume;
+  });
+}
+
 // ── Programmatic-scroll guard ──────────────────────────────────────────────
 // A native scrollbar drag fires NO wheel/touch events — only 'scroll' — so the
 // only way to tell a genuine user scroll from our own programmatic scroll is to

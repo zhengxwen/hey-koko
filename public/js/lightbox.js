@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // Image lightbox
-import { dom, state } from './state.js';
+import { dom, state, applyVideoAudio, trackVideoAudio } from './state.js';
 import { getActiveTab } from './tabs.js';
 import { t } from './i18n.js';
 
@@ -311,18 +311,9 @@ export function initVideoLightbox() {
 
   let videos = [];       // the conversation's <video.generatedVideo> elements, in order
   let currentIndex = -1;
-  // Default muted; first unmute restores 50%. The choice is then remembered across
-  // prev/next within a viewing session, but every fresh open starts muted again.
-  let prefMuted = true;
-  let prefVolume = 0.5;
-  let applying = false;  // guards the programmatic volume set below from the listener
-
-  function applyVolume() {
-    applying = true;
-    video.muted = prefMuted;
-    video.volume = prefVolume;
-    applying = false;
-  }
+  // Mute/volume is the app-wide shared setting (state.js), not a viewer-local one, so
+  // it carries between the inline players and this viewer in both directions.
+  trackVideoAudio(video);
 
   function loadIndex(i, autoplay) {
     const srcVideo = videos[i];
@@ -337,7 +328,7 @@ export function initVideoLightbox() {
     vCaption.style.display = label ? "" : "none";
     video.poster = srcVideo.poster || "";
     video.src = srcVideo.currentSrc || srcVideo.src || "";
-    applyVolume();
+    applyVideoAudio(video);
     if (autoplay) video.play().catch(() => {});
     const showNav = videos.length > 1;
     vPrev.style.display = showNav ? "" : "none";
@@ -353,8 +344,6 @@ export function initVideoLightbox() {
     videos = Array.from(dom.messagesEl.querySelectorAll("video.generatedVideo"));
     const idx = videos.indexOf(sourceVideo);
     videos.forEach((v) => { if (!v.paused) v.pause(); }); // no double audio with the inline player
-    prefMuted = true;       // every fresh open defaults to muted
-    prefVolume = 0.5;
     video.controls = true;  // reset (a prior keyboard-nav may have hidden them)
     overlay.classList.add("isOpen");
     loadIndex(idx >= 0 ? idx : 0, true);
@@ -367,15 +356,6 @@ export function initVideoLightbox() {
     video.removeAttribute("src");
     video.load();
   }
-
-  // Track the user's mute/volume choice so it carries across prev/next; the first
-  // unmute (or a drag to 0 then unmute) snaps to 50%.
-  video.addEventListener("volumechange", () => {
-    if (applying) return;
-    if (!video.muted && video.volume === 0) { video.volume = 0.5; return; }
-    prefMuted = video.muted;
-    prefVolume = video.volume === 0 ? 0.5 : video.volume;
-  });
 
   vClose.addEventListener("click", (e) => { e.stopPropagation(); closeVideoLightbox(); });
   vPrev.addEventListener("click", (e) => { e.stopPropagation(); navigate(-1); });
