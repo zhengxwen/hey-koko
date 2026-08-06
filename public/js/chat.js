@@ -1277,7 +1277,11 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     scrollChatToEnd();
   }
 
-  // Build limited message context
+  // Build limited message context. `/0` and `/1` restrict the CONVERSATION history,
+  // not the attachments — so images ride along exactly as they do on a normal send.
+  // `images` is Ollama's chat-API field name; the cloud backends read the same field
+  // (user turns only, hence the role rewrite for an image-bearing assistant bubble,
+  // mirroring buildMessages).
   const system = `${dom.persona.value}\n\n${getPrompt("personaSuffix")}`;
   const messages = [{ role: "system", content: system }];
   if (mode === "1") {
@@ -1285,10 +1289,18 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     const prevIdx = insertIndex - 2; // -1 is the /1 user msg, -2 is the one before
     if (prevIdx >= 0 && tab.messages[prevIdx]) {
       const prev = tab.messages[prevIdx];
-      messages.push({ role: prev.role, content: prev.content });
+      const prevImgs = prev.contextImages?.length ? prev.contextImages : null;
+      const prevMsg = { role: prevImgs && prev.role === "assistant" ? "user" : prev.role, content: prev.content };
+      if (prevImgs) prevMsg.images = prevImgs;
+      messages.push(prevMsg);
     }
   }
-  messages.push({ role: "user", content: userContent });
+  // The /0 or /1 bubble itself is the one just inserted before insertIndex.
+  const selfMsg = tab.messages[insertIndex - 1];
+  const selfImgs = selfMsg?.contextImages?.length ? selfMsg.contextImages : null;
+  const userMsg = { role: "user", content: userContent };
+  if (selfImgs) userMsg.images = selfImgs;
+  messages.push(userMsg);
 
   let content = "";
   let thinkingContent = "";
@@ -2747,6 +2759,9 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     const mode = isolatedMatch[1]; // "0" or "1"
     const actualContent = isolatedMatch[2];
     const userMessage = { role: "user", content, timestamp: Date.now() };
+    // Staged images belong on this bubble like on any other send — isolating the
+    // CONTEXT shouldn't drop the attachment the question is about.
+    attachUploadedImages(userMessage, image);
     tab.messages.push(userMessage);
     saveChat();
     if (state.activeTabId === tabId) renderChat();
