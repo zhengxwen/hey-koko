@@ -105,12 +105,17 @@
 
           <hr class="settingsDivider" />
 
+          <!-- Two per row, paired by what they are: the two libraries, then the
+               archive pair (browse / file this one away), then the two transfers. -->
           <div class="actions">
-            <button id="retrieveChat" type="button" class="secondary">🗄️ Archive Library</button>
+            <button id="galleryBtn" type="button" class="secondary">🎨 Gallery</button>
             <button id="libraryBtn" type="button" class="secondary">📚 Knowledge Library</button>
           </div>
           <div class="actions">
+            <button id="retrieveChat" type="button" class="secondary">🗄️ Archive Library</button>
             <button id="archiveChat" type="button" class="secondary">Archive</button>
+          </div>
+          <div class="actions">
             <div class="exportWrapper">
               <button id="exportChat" type="button" class="secondary">Export</button>
               <div id="exportMenu" class="exportMenu" hidden>
@@ -362,6 +367,7 @@
             </label>
             <div id="reminderList" class="reminderList"></div>
           </div>
+
         </div>
       </aside>
 
@@ -441,6 +447,40 @@
             </label>
             <span id="archiveSelectedCount" class="archiveSelectedCount"></span>
             <button id="archiveDeleteBtn" type="button" class="secondary" disabled>Delete Selected</button>
+          </div>
+        </div>
+
+        <!-- Gallery Overlay: everything ever generated, straight off disk
+             (server/gallery.js). Reuses the archive* classes for styling. -->
+        <div id="galleryOverlay" class="archiveOverlay">
+          <div class="archiveHeader">
+            <button id="galleryCloseBtn" type="button" class="archiveBackBtn" aria-label="Back">←</button>
+            <h2 id="galleryTitle" class="archiveTitle">🎨 Gallery</h2>
+            <div class="archiveToolbar">
+              <input id="gallerySearch" type="text" class="archiveSearchInput" placeholder="Search prompts…" />
+              <select id="galleryTypeFilter" class="libraryRatingFilter">
+                <option value="">All media</option>
+                <option value="image">Images</option>
+                <option value="video">Videos</option>
+                <option value="audio">Audio</option>
+                <option value="mesh">3D</option>
+              </select>
+              <select id="galleryModelFilter" class="libraryRatingFilter">
+                <option value="">All models</option>
+              </select>
+              <!-- Where a file is referenced: open conversations, archives, or both. -->
+              <select id="gallerySourceFilter" class="libraryRatingFilter">
+                <option value="">Anywhere</option>
+                <option value="tabs">In conversations</option>
+                <option value="archives">In archives</option>
+              </select>
+              <button id="galleryTidyBtn" type="button" class="secondary archiveSortBtn" title="Find unreferenced media and stale entries">🧹</button>
+            </div>
+          </div>
+          <p id="galleryStats" class="hint galleryStats"></p>
+          <div class="galleryBody">
+            <div id="galleryGrid" class="galleryGrid"></div>
+            <aside id="galleryDetail" class="galleryDetail" hidden></aside>
           </div>
         </div>
 

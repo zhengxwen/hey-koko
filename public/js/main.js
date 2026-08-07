@@ -583,6 +583,20 @@ function memoryIsSimilar(a, b) {
 }
 
 // Extract durable facts from the current tab's conversation into memory
+// The gallery overlay: everything ever generated, read off disk (js/gallery.js).
+import("./gallery.js").then((g) => {
+  g.setGalleryDeps({
+    renderChat,
+    setInput: (text) => {
+      if (!dom.messageInput) return;
+      dom.messageInput.value = text;
+      dom.messageInput.focus();
+      dom.messageInput.dispatchEvent(new Event("input", { bubbles: true }));  // autosize + button state
+    },
+  });
+  g.initGallery();
+});
+
 if (dom.memoryExtractBtn) {
   let extracting = false;
   dom.memoryExtractBtn.addEventListener("click", async () => {

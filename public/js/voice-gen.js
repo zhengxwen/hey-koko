@@ -10,6 +10,7 @@ import { t } from './i18n.js';
 import { setAvatarState, showExpression } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab } from './tabs.js';
+import { galleryUrl } from './utils.js';
 import { ttsFetch } from './server-queue.js';   // Option B: run TTS on the server queue
 import { markdownToSpeechText } from './speech.js';
 import { foregroundSink } from './gen-sink.js';
@@ -112,7 +113,9 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
     sink.place({
       role: "assistant",
       content: t("msg_audioDone", { size: sizeStr }),
-      generatedAudio: data.audio,
+      // The server files the clip in the gallery and hands back its id; keep the
+      // reference rather than the bytes (see js/utils.js).
+      generatedAudio: (data.mediaIds && data.mediaIds[0]) ? galleryUrl(data.mediaIds[0]) : data.audio,
       audioMime: data.mime || "audio/wav",
       imagePrompt: parsed.text,
       timestamp: Date.now(),

@@ -513,6 +513,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/gallery/delete") { gallery.handleDelete(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/compact") { gallery.handleCompact(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/import") { gallery.handleImport(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/reveal") { gallery.handleReveal(req, res); return; }
 
   if (req.method === "GET" && req.url.startsWith("/vendor/")) {
     vendor.serveVendor(req, res);   // disk first, else checksum-verified CDN fallback

@@ -12,6 +12,7 @@ const os = require("os");
 const path = require("path");
 const config = require("./config");
 const { sendJson, readBody, cleanSpeechText, findCommand } = require("./utils");
+const gallery = require("./gallery");   // /voice clips are filed like any other artifact
 
 // Resolve ffmpeg once (used to transcode the engine's wav → AAC). null if absent.
 let ffmpegPath; // undefined = not probed yet, null = absent, string = path
@@ -235,7 +236,17 @@ async function synthesize(req, res) {
     // base64'd into the persisted chat). Fall back to the source if ffmpeg fails.
     aacPath = await transcodeToAac(srcPath);
     const b64 = fs.readFileSync(aacPath || srcPath).toString("base64");
-    sendJson(res, 200, { audio: b64, mime: aacPath ? "audio/aac" : fallbackMime });
+    const mime = aacPath ? "audio/aac" : fallbackMime;
+    // File it in the gallery like an image or a clip: it is a generated artifact, and
+    // keeping it out of the chat store is the whole point. Best-effort as everywhere.
+    let mediaIds;
+    try {
+      mediaIds = gallery.recordMany([{ kind: "audio", b64, mime, meta: {
+        model: `${engine}:${voice}`, prompt: text,
+        conversationId: body.conversationId, msgId: body.msgId,
+      } }]);
+    } catch (err) { console.error(`[gallery] tts tee failed: ${err.message}`); }
+    sendJson(res, 200, { audio: b64, mediaIds, mime });
   } catch (e) {
     if (!res.headersSent) sendJson(res, 500, { error: e.message });
   } finally {

@@ -1324,9 +1324,29 @@ input[type="file"] {
   display: none;
 }
 
+/* Two per row, equal halves, stacked into one block: gallery/library,
+   archive-library/archive, export/import. A grid rather than a flex row so the
+   columns line up down the whole block instead of each row sizing to its own
+   labels — the labels are wildly different lengths across languages. */
 .actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 10px;
+}
+
+/* A row with one button (Clear current chat) takes the full width. */
+.actions > :only-child {
+  grid-column: 1 / -1;
+}
+
+/* Export is wrapped for its pop-up menu's positioning context; make the wrapper
+   fill its cell so the button inside is the same width as its neighbour. */
+.actions .exportWrapper {
+  display: flex;
+}
+
+.actions .exportWrapper > button {
+  flex: 1;
 }
 
 /* Archive Library / Knowledge Library / Archive / Export / Import / Clear chat:
@@ -7347,3 +7367,166 @@ body.isResizingComposer {
 .comfyCapTable td:first-child { color: #fff; font-weight: 600; } /* model name column */
 .comfyCapTable tbody tr:last-child th,
 .comfyCapTable tbody tr:last-child td { border-bottom: none; }
+
+/* ---- Gallery (作品库) ---------------------------------------------------- */
+/* Grid + detail pane for everything the machine has generated. The grid holds
+   only <img> thumbnails (never <video>): a few hundred video elements would each
+   spin up a decoder. */
+.galleryStats {
+  margin: 0;
+  padding: 4px 14px 8px;
+  opacity: 0.75;
+}
+
+.galleryBody {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.galleryGrid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  padding: 0 14px 14px;
+  align-content: start;
+}
+
+.galleryTile {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--bubble-ai, rgba(128, 128, 128, 0.12));
+  border: 2px solid transparent;
+  padding: 0;
+}
+
+.galleryTile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.galleryTile.isSelected { border-color: var(--accent, #6aa9ff); }
+
+.galleryTile .galleryBadge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.galleryTile .galleryMissing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 12px;
+  opacity: 0.6;
+  text-align: center;
+  padding: 8px;
+}
+
+.galleryDetail {
+  width: 340px;
+  flex: none;
+  overflow-y: auto;
+  padding: 0 14px 14px;
+  border-left: 1px solid var(--divider, rgba(128, 128, 128, 0.25));
+}
+
+.galleryDetail img,
+.galleryDetail video {
+  width: 100%;
+  /* Cap it: a tall render would otherwise push every detail below the fold, and
+     the full-size view is one click away in the file itself. */
+  max-height: 40vh;
+  object-fit: contain;
+  border-radius: 8px;
+  margin-bottom: 10px;
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.galleryDetail dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+
+.galleryDetail dt { opacity: 0.6; }
+.galleryDetail dd { margin: 0; word-break: break-word; }
+
+.galleryDetailPrompt {
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 12px;
+  max-height: 8em;
+  overflow-y: auto;
+}
+
+.galleryActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.galleryActions button { font-size: 12px; }
+
+.galleryRefs {
+  font-size: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.galleryRefs li { margin-bottom: 4px; }
+
+.galleryRefs button {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--accent, #6aa9ff);
+  font: inherit;
+}
+
+.galleryRefs .galleryRefStatic {
+  color: inherit;
+  opacity: 0.7;
+  cursor: default;
+}
+
+/* The bubble a gallery reference jumps back to (chat.js gives each one a
+   data-msg-id; the gallery scrolls to it and flashes it). */
+@keyframes galleryJumpFlash {
+  0%, 100% { background-color: transparent; }
+  30% { background-color: var(--accent-soft, rgba(106, 169, 255, 0.28)); }
+}
+
+.message.isJumpTarget { animation: galleryJumpFlash 1.6s ease-in-out 2; border-radius: 8px; }
+
+/* The two reference groups (open conversations / archives) in the detail pane. */
+.galleryRefsHead {
+  margin: 10px 0 3px;
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+.galleryRefs + .galleryRefsHead { margin-top: 12px; }

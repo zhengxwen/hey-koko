@@ -203,6 +203,8 @@ function record({ kind, mime, b64, buffer, meta = {} }) {
     batchIndex: meta.batchIndex,
     originalName: meta.originalName,
     partial: meta.partial,          // salvaged prefix of an interrupted render
+    migrated: meta.migrated,        // came from the one-time history migration, not a fresh render
+    fromArchive: meta.fromArchive,  // which archive it was pulled out of, when migrated
     contentHash,
   };
   for (const k of Object.keys(entry)) if (entry[k] === undefined) delete entry[k];
@@ -326,25 +328,82 @@ function compact() {
 
 // ---------------------------------------------------------------- references
 
-// Which archived conversations reference these ids. Archives live on the server, so
-// this half of the reference graph is ours; the browser scans its own IndexedDB for
-// the live tabs and merges the two.
+// Which archived conversations reference which artifacts. Note archives do not carry
+// message ids (they are runtime-only), so an archive reference is shown but cannot be
+// jumped into — only open conversations can. Archives live on the
+// server, so this half of the reference graph is ours; the browser scans its own
+// conversations for the live half and merges the two.
+//
+// Rescanning 45 compressed archives on every gallery click is wasteful, so the result
+// is cached to disk as an inverted index keyed by each archive's mtime+size. A file
+// that has not changed is never decompressed again; a changed or new one is re-read
+// and only its entries are replaced. The cache is derived data — delete it and the
+// next call rebuilds it.
+const REFS_CACHE = path.join(GALLERY_DIR, ".archive-refs.json");
+const REF_FIELDS = ["generatedImages", "generatedVideos", "generatedMeshes",
+                    "generatedAudio", "contextImages", "displayImages",
+                    "generatedThumbnails", "generatedVideoThumbnails"];
+
+function idsInMessage(msg) {
+  const ids = new Set();
+  for (const f of REF_FIELDS) {
+    const v = msg[f];
+    const arr = Array.isArray(v) ? v : typeof v === "string" ? [v] : [];
+    for (const s of arr) {
+      if (typeof s === "string" && s.startsWith("/api/gallery/file/")) {
+        ids.add(decodeURIComponent(s.slice("/api/gallery/file/".length)));
+      }
+    }
+  }
+  return ids;
+}
+
+function loadRefsCache() {
+  try { return JSON.parse(fs.readFileSync(REFS_CACHE, "utf8")) || {}; } catch { return {}; }
+}
+
+// { [id]: [{archive, title, msgId, timestamp}] } across every archive.
 function archiveRefs() {
   let archive;
   try { archive = require("./archive"); } catch { return {}; }
-  const out = {};
   let files = [];
-  try { files = archive.scanArchiveFilenames(); } catch { return out; }
+  try { files = archive.scanArchiveFilenames(); } catch { return {}; }
+
+  const cache = loadRefsCache();          // { [filename]: { mtime, size, title, hits: [[id, msgId, ts], …] } }
+  const next = {};
+  let rescanned = 0;
   for (const filename of files) {
+    const abs = path.join(config.ARCHIVES_DIR, filename);
+    let st;
+    try { st = fs.statSync(abs); } catch { continue; }
+    const prev = cache[filename];
+    if (prev && prev.mtime === st.mtimeMs && prev.size === st.size) { next[filename] = prev; continue; }
     let data;
-    try { data = JSON.parse(archive.readArchiveFile(path.join(config.ARCHIVES_DIR, filename))); }
-    catch { continue; }
-    const title = data.title || filename;
+    try { data = JSON.parse(archive.readArchiveFile(abs)); } catch { continue; }
+    const hits = [];
     for (const msg of data.messages || []) {
-      for (const m of msg.genMedia || []) {
-        if (!m || !m.id) continue;
-        (out[m.id] ||= []).push({ archive: filename, title, msgId: msg.id, timestamp: msg.timestamp });
-      }
+      // Normalised to null, not left undefined: these round-trip through the JSON
+      // cache, where undefined would come back as null and make the cold and warm
+      // paths return differently-shaped objects.
+      for (const id of idsInMessage(msg)) hits.push([id, msg.id ?? null, msg.timestamp ?? null]);
+    }
+    next[filename] = { mtime: st.mtimeMs, size: st.size, title: data.title || filename, hits };
+    rescanned++;
+  }
+  if (rescanned || Object.keys(next).length !== Object.keys(cache).length) {
+    try {
+      ensureDir(GALLERY_DIR);
+      const tmp = `${REFS_CACHE}.tmp-${process.pid}`;
+      fs.writeFileSync(tmp, JSON.stringify(next));
+      fs.renameSync(tmp, REFS_CACHE);
+    } catch { /* the cache is an optimisation, not a requirement */ }
+    if (rescanned) console.log(`[gallery] archive reference index: ${rescanned} of ${files.length} archive(s) re-read`);
+  }
+
+  const out = {};
+  for (const [filename, rec] of Object.entries(next)) {
+    for (const [id, msgId, timestamp] of rec.hits) {
+      (out[id] ||= []).push({ archive: filename, title: rec.title, msgId, timestamp });
     }
   }
   return out;
@@ -374,7 +433,7 @@ async function makeThumb(id) {
   const abs = absPathOf(id);
   const out = thumbPathOf(id);
   if (!entry || !abs || !out || !fs.existsSync(abs)) return false;
-  if (entry.kind === "mesh" || entry.kind === "audio") return false;
+  if (entry.kind === "mesh" || entry.kind === "audio") return false;   // nothing to draw
   const bin = await ffmpeg();
   if (!bin) return false;
   const tmp = `${out}.tmp-${process.pid}.jpg`;
@@ -487,6 +546,22 @@ async function handleCompact(req, res) {
   try { sendJson(res, 200, compact()); } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
+// Show the file in the OS file manager. The gallery is a folder of real files, and
+// getting at them is half the point of putting them on disk. The path never comes
+// from the request — only the ledger id does, and it has to already exist.
+function handleReveal(req, res) {
+  readBody(req).then((body) => {
+    const id = String(body.id || "");
+    const abs = get(id) && absPathOf(id);
+    if (!abs || !fs.existsSync(abs)) { sendJson(res, 404, { error: "not in gallery" }); return; }
+    const cmd = process.platform === "darwin" ? ["open", ["-R", abs]]
+      : process.platform === "win32" ? ["explorer", [`/select,${abs}`]]
+      : ["xdg-open", [path.dirname(abs)]];
+    execFile(cmd[0], cmd[1], () => {});
+    sendJson(res, 200, { ok: true });
+  }).catch((e) => sendJson(res, 500, { error: e.message }));
+}
+
 // Register media the server did not generate: dragged-in uploads (P1) and the
 // migration of already-existing chat media (P3).
 async function handleImport(req, res) {
@@ -515,6 +590,6 @@ async function handleImport(req, res) {
 module.exports = {
   GALLERY_DIR, record, recordMany, get, list, stats, remove, compact, archiveRefs, makeThumb,
   handleList, handleFile, handleThumb, handlePutThumb, handleDelete, handleStats, handleRefs,
-  handleCompact, handleImport,
+  handleCompact, handleImport, handleReveal,
   _reset() { entries = null; hashIndex = null; },   // tests
 };

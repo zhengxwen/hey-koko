@@ -271,6 +271,7 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
   // stored media turns into an outgoing payload.
   images = await resolveMediaList(images);
   videos = Array.isArray(videos) ? await Promise.all(videos.map(resolveSourceClip)) : await resolveSourceClip(videos);
+  audio = await resolveSourceClip(audio);   // the InfiniteTalk speech track, same rule
   // A ComfyUI video model (no Ollama image model) routes through generateVideo —
   // capture model + kind at submit time so a later dropdown change can't redirect it.
   const isVideo = !dom.imageModelSelect.value && dom.comfyModelSelect && state.comfyVideoModels.has(dom.comfyModelSelect.value);
@@ -653,6 +654,7 @@ function attachAudioToMessage(userMessage, audio) {
 function messageSourceAudio(m) {
   if (!m || m.role !== "user" || !m.generatedAudio) return null;
   return { base64: m.generatedAudio, mime: m.audioMime || "audio/wav", name: m.audioName || undefined, duration: m.audioDuration || 0 };
+  // NB: base64 may be a gallery reference; enqueueImagineGen resolves it (resolveSourceAudio).
 }
 
 // Stamp a user bubble with a staged image upload (single staged object, or a
@@ -4087,7 +4089,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
   if (hasMedia(generatedAudio)) {
     const amime = audioMime || "audio/wav";
     const aext = amime.includes("aac") ? "aac" : amime.includes("mpeg") ? "mp3" : amime.includes("ogg") ? "ogg" : "wav";
-    const src = generatedAudio.startsWith("data:") ? generatedAudio : `data:${amime};base64,${generatedAudio}`;
+    const src = mediaSrc(generatedAudio, amime);
     const wrapper = document.createElement("div");
     wrapper.className = "audioWrapper";
     const audio = document.createElement("audio");
