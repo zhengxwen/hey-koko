@@ -361,7 +361,7 @@ export async function refreshBgWorkers() {
   // uMesh belongs here for the same reason as the rest: leave a list out of the union and
   // its whole group silently vanishes from the dropdown on the multi-worker path while the
   // single-endpoint path still shows it.
-  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uMesh = new Map(), uUpscale = new Map(), uPano = new Map(), uPanoLora = new Map(), uLtxLora = new Map();
+  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uMesh = new Map(), uUpscale = new Map(), uPano = new Map(), uPanoLora = new Map(), uLtxLora = new Map(), uH3Clip = new Map();
   // Union of the collapsed-group representatives across lanes — without carrying this
   // through, a multi-precision image model would keep its token in the label on the
   // multi-endpoint path while the single-endpoint path hides it.
@@ -383,6 +383,7 @@ export async function refreshBgWorkers() {
       for (const n of (d.panoBases || [])) if (!uPano.has(n)) uPano.set(n, n);
       for (const n of (d.panoLoras || [])) if (!uPanoLora.has(n)) uPanoLora.set(n, n);
       for (const n of (d.ltxLoras || [])) if (!uLtxLora.has(n)) uLtxLora.set(n, n);
+      for (const n of (d.h3TextEncoders || [])) if (!uH3Clip.has(n)) uH3Clip.set(n, n);
       const sets = {
         image: new Set(models),
         edit: new Set(editModels.map((m) => m.name)),
@@ -398,14 +399,21 @@ export async function refreshBgWorkers() {
       for (const n of (d.imageCollapsed || [])) uCollapsed.add(n);
       if (online && typeof d.vramGib === "number" && d.vramGib > 0) vrams.push(d.vramGib);
       if (online && (d.gpuName || d.vramGib)) devices.push({ gpuName: d.gpuName || null, vramGib: (typeof d.vramGib === "number" && d.vramGib > 0) ? d.vramGib : null, hostname: d.hostname || "" });
-      for (const [k, v] of Object.entries(d.modelMeta || {})) if (!uMeta[k]) uMeta[k] = v;
+      // Label/caps are identical across lanes, so first-wins is fine for them — but the
+      // installed QUANTISATIONS are per-box (a 32GB card gets int8, a 128GB box also
+      // carries bf16). First-wins there let one lane decide what the ⚙ precision menu
+      // offers for a model the other lane ships more builds of, so `prec` is UNIONED.
+      for (const [k, v] of Object.entries(d.modelMeta || {})) {
+        if (!uMeta[k]) { uMeta[k] = { ...v }; continue; }
+        if (v.prec) uMeta[k].prec = [...new Set([...(uMeta[k].prec || []), ...v.prec])];
+      }
       for (const n of models) if (!uModels.has(n)) uModels.set(n, n);
       for (const m of editModels) if (!uEdit.has(m.name)) uEdit.set(m.name, m);
       for (const m of videoModels) if (!uVideo.has(m.name)) uVideo.set(m.name, m);
       for (const m of meshModels) if (!uMesh.has(m.name)) uMesh.set(m.name, m);
     } catch { setBgWorkerStatus(url, { online: false }); }
   }));
-  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], meshModels: [...uMesh.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()], vramGib: vrams.length ? Math.min(...vrams) : null, devices });
+  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], meshModels: [...uMesh.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()], h3TextEncoders: [...uH3Clip.values()], vramGib: vrams.length ? Math.min(...vrams) : null, devices });
 }
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
@@ -522,6 +530,26 @@ function applyComfyModels(data) {
     if (dom.comfyParamUpscaleTarget) {
       const labels = ["comfy_upscaleTarget_auto", "comfy_upscaleTarget_1080", "comfy_upscaleTarget_1440", "comfy_upscaleTarget_4k"];
       [...dom.comfyParamUpscaleTarget.options].forEach((o, i) => { if (labels[i]) o.textContent = t(labels[i]); });
+    }
+    // ⚙ "H3 text encoder": Auto + every Qwen3-VL build installed. Listed by FILENAME
+    // rather than by tier — the tier is in the name, and the file is what the user
+    // downloaded and can delete, so naming it keeps the menu honest about what is on the
+    // box. Server order is already best-tier-first. A saved pick that is gone falls back
+    // to Auto rather than requesting a file that would 404 at load time.
+    if (dom.comfyParamH3Clip) {
+      const encs = data.h3TextEncoders || [];
+      const savedEnc = (saved.comfyParams && saved.comfyParams.h3TextEncoder) || "";
+      dom.comfyParamH3Clip.innerHTML = "";
+      const autoE = document.createElement("option");
+      autoE.value = ""; autoE.textContent = t("comfy_h3Clip_auto");
+      dom.comfyParamH3Clip.appendChild(autoE);
+      for (const n of encs) {
+        const o = document.createElement("option");
+        o.value = n; o.textContent = n.replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
+        dom.comfyParamH3Clip.appendChild(o);
+      }
+      dom.comfyParamH3Clip.value = encs.includes(savedEnc) ? savedEnc : "";
+      state.comfyH3Encoders = encs.length;
     }
     // ⚙ "panorama base model": Auto + every checkpoint that can drive the recipe.
     // A saved pick that is no longer installed falls back to Auto rather than
@@ -772,8 +800,12 @@ function ltxLoraHint(name) {
 // VISIBLE with the reason appended — removing them reads as "this app doesn't support
 // it" and invites hunting for a file that is already installed. The original label is
 // stashed on first call so repeated calls restore it instead of stacking annotations.
-// A selection that becomes invalid falls back to the "" (auto / none) option.
-function annotateOptions(sel, isBlocked, reasonKey) {
+// A selection that becomes invalid falls back to the "" (auto / none) option — unless
+// `resetOnBlock` is false, for the cases where "blocked" is only a best GUESS and the
+// server holds the authoritative answer. Blanking a guess is not the safe direction: ""
+// is not "leave it alone", it is a different, ACTIVE choice (auto), and the user is
+// never told it happened.
+function annotateOptions(sel, isBlocked, reasonKey, resetOnBlock = true) {
   if (!sel) return;
   let reset = false;
   for (const o of sel.options) {
@@ -783,7 +815,7 @@ function annotateOptions(sel, isBlocked, reasonKey) {
     o.textContent = blocked ? `${o.dataset.baseLabel} — ${t(reasonKey)}` : o.dataset.baseLabel;
     if (blocked && sel.value === o.value) reset = true;
   }
-  if (reset) sel.value = "";
+  if (reset && resetOnBlock) sel.value = "";
 }
 
 // LoRAs already baked into the selected checkpoint (Sulphur ships as both).
@@ -796,10 +828,17 @@ function syncLtxLoraOptions(model) {
 // Quantisation tiers the selected model doesn't ship in. `prec` absent = the server
 // couldn't tell (no precision token on any file in the group) — restrict nothing
 // rather than grey out everything on a model we know nothing about.
+// NEVER resets the selection: this list is a HINT, not the truth. It can be stale (a
+// weight downloaded since the last refresh) or partial (multi-lane — the tiers come from
+// whichever lane answered, and the job may run on another one that ships more). The
+// server re-reads the real file list per job, honours the tier when it is there, and says
+// "⚠️ 该模型没有装所选精度" when it isn't — so an over-eager grey-out costs nothing here,
+// while blanking the field silently swapped an explicit tier for auto, and auto's
+// PREC_AUTO_ORDER starts at fp8 (picking bf16 then quietly produced an fp8 render).
 function syncPrecisionOptions(model) {
   const tiers = state.comfyModelPrec && state.comfyModelPrec[model];
-  if (!tiers) { annotateOptions(dom.comfyParamPrecision, () => false, "comfy_precision_absent"); return; }
-  annotateOptions(dom.comfyParamPrecision, (v) => !tiers.includes(v), "comfy_precision_absent");
+  if (!tiers) { annotateOptions(dom.comfyParamPrecision, () => false, "comfy_precision_absent", false); return; }
+  annotateOptions(dom.comfyParamPrecision, (v) => !tiers.includes(v), "comfy_precision_absent", false);
 }
 
 // The "auto" fps/length the server picks per video model (mirrors videoPreset in
@@ -1513,6 +1552,9 @@ export function updateComfyParamVisibility() {
   // MiniMax H3: reference sizing exists only on the reference→video weights (ref2va).
   // The t2v/i2v file (fl2va) has no reference pipeline, so the knob would be inert there.
   setVis(dom.comfyParamH3RefSize, /minimax.?h3.*ref2va/i.test(m));
+  // The H3 text-encoder picker applies to BOTH weights (they share the encoder). Hidden
+  // when only one build is installed — a menu whose sole entry equals Auto is noise.
+  setVis(dom.comfyParamH3Clip, /minimax.?h3/i.test(m) && (state.comfyH3Encoders || 0) > 1);
   // LTX family only (incl. Sulphur) — the optional LoRA slot. It is the one builder
   // with a user-pickable LoRA; every other model mounts its LoRAs automatically.
   // Union Control is excluded: it mounts its union IC-LoRA automatically, no user slot.

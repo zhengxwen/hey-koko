@@ -124,6 +124,7 @@ function comfyOverrides() {
   // MiniMax H3 reference sizing — empty means the node's own "match" default, so only a
   // deliberate "max" pick travels (the slow, high-fidelity reference pipeline).
   if (dom.comfyParamH3RefSize?.value) ov.h3RefSize = dom.comfyParamH3RefSize.value;
+  if (dom.comfyParamH3Clip?.value) ov.h3TextEncoder = dom.comfyParamH3Clip.value; // "" = auto (best installed tier)
   // Wan Dancer: dance genre / motion amplitude / duration (seconds) / keyframe-quality.
   if (dom.comfyParamDanceStyle?.value) ov.danceStyle = dom.comfyParamDanceStyle.value;
   if (dom.comfyParamDanceAmplitude?.value) ov.danceAmplitude = dom.comfyParamDanceAmplitude.value;
@@ -1254,12 +1255,19 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     }
     const dur = metaParts.length ? `, ${metaParts.join(", ")}` : "";
     const sizeLine = t("msg_videoDone", { w: lastData.width || "?", h: lastData.height || "?", dur }, plang);
+    // The FILE the server actually loaded, not the dropdown value. Those differ whenever
+    // a model ships several quantisations: the entry is collapsed to one option whose
+    // value is an arbitrary representative of the group, and ⚙ precision then swaps in a
+    // sibling server-side. Naming the pre-flight value made the done-line contradict its
+    // own tier suffix ("…_pruned_fp8_scaled · int8"). Falls back to the selection when an
+    // older server sends no model back.
+    const usedModel = stripModelExt(lastData.model) || vidModel;
     // The tier that actually loaded rides alongside the model name — a model can ship
     // several quantisations and they differ in both speed and fidelity, so which one
     // ran is part of reading the result. Absent for models whose filename carries no
     // precision token.
     let doneLine = (count > 1 ? `${sizeLine} ×${allVideos.length}${allVideos.length < count ? `/${count}` : ""}` : sizeLine)
-      + (vidModel ? ` · ${vidModel}` : "")
+      + (usedModel ? ` · ${usedModel}` : "")
       + (lastData.precisionUsed ? ` · ${lastData.precisionUsed}` : "");
     // Seed(s) used → lets the user reproduce via --seed. Single video shows one;
     // a batch lists each video's seed in display order so any one can be reproduced.
@@ -1594,9 +1602,10 @@ export async function generateMesh(parsed, model, tabId = state.activeTabId, ins
     const plang = getPromptLanguage();
     const totalBytes = allMeshes.reduce((s, b) => s + Math.floor(b.length * 0.75), 0);
     const sizeStr = totalBytes > 1024 * 1024 ? `${(totalBytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(totalBytes / 1024)} KB`;
+    const usedModel = stripModelExt(lastData.model) || meshModelLabel; // loaded file, not the dropdown value
     let doneLine = t("msg_meshDone", { size: sizeStr }, plang)
       + (count > 1 ? ` ×${allMeshes.length}${allMeshes.length < count ? `/${count}` : ""}` : "")
-      + (meshModelLabel ? ` · ${meshModelLabel}` : "")
+      + (usedModel ? ` · ${usedModel}` : "")
       + (lastData.precisionUsed ? ` · ${lastData.precisionUsed}` : "");
     if (count === 1 && typeof lastData.seed === "number") {
       doneLine += `\n${t("msg_seedUsed", { seed: lastData.seed }, plang)}`;
@@ -1846,6 +1855,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   let noopMessage = null; // server did nothing on purpose (e.g. upscale=Off) → plain notice, not an error
   let upscaleModelUsed = null, upscaleDenoiseUsed = 0, restoreModelUsed = null; // HD upscale algorithm used → shown in the done line
   let precisionUsedTier = null; // precision tier actually loaded → always named in the done line
+  let modelFileUsed = null; // FILE the server loaded — differs from the selection once ⚙ precision swaps a sibling in
   let precisionNoteUsed = null; // ⚙ precision fallback/mix, when the request could not be honoured
   // The panorama LoRA was asked for but dropped, because the chosen base is not the
   // family it was trained on. Silence here would look like it had been applied.
@@ -1960,6 +1970,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 const imgs = (data.images || []).filter((s) => s && s.length > 100);
                 if (data.upscaleModel) { upscaleModelUsed = data.upscaleModel; upscaleDenoiseUsed = data.upscaleDenoise || 0; restoreModelUsed = data.restoreModel || null; }
                 if (data.precisionUsed) precisionUsedTier = data.precisionUsed;
+                if (data.model) modelFileUsed = data.model;
                 if (data.precisionNote) precisionNoteUsed = data.precisionNote;
                 if (data.panoLoraSkipped) panoLoraSkippedBase = data.panoLoraSkipped.base;
                 if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
@@ -2025,7 +2036,8 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         : t("msg_imageDone", dims, plang);
       // Append the model used (selected name, extension stripped) + the precision tier
       // that actually loaded. See the video done-line for why the tier is always named.
-      if (shortModel) doneLine += ` · ${shortModel}`;
+      const usedModel = stripModelExt(modelFileUsed) || shortModel;
+      if (usedModel) doneLine += ` · ${usedModel}`;
       if (precisionUsedTier) doneLine += ` · ${precisionUsedTier}`;
       // Seed used (single output only) → lets the user reproduce via --seed.
       if (usedSeed !== null) doneLine += `\n${t("msg_seedUsed", { seed: usedSeed }, plang)}`;

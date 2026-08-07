@@ -953,12 +953,15 @@ p {
 
 /* Inline caution under a ⚙ field (e.g. a window size the current GPU probably cannot fit).
    [hidden] needs restating here for the same reason as the rule above — the parent label is
-   display:grid, so its children inherit a layout that outranks the UA hidden rule. */
-.comfyParamWarn { color: var(--warn, #d98324); font-size: 0.82em; line-height: 1.35; margin-top: 2px; }
+   display:grid, so its children inherit a layout that outranks the UA hidden rule.
+   0.82em was tuned when the panel ran at the global 16px; against its own 13px it lands
+   at 10.7px, which is small enough to read as noise. 0.92em restores roughly the old
+   rendered size. Both classes exist only inside the ⚙ panel, so this is self-contained. */
+.comfyParamWarn { color: var(--warn, #d98324); font-size: 0.92em; line-height: 1.35; margin-top: 2px; }
 .comfyParamWarn[hidden] { display: none; }
 /* Neutral sibling of .comfyParamWarn — states a fact about the field's value
    (e.g. how long a frame count actually is) rather than warning about it. */
-.comfyParamHint { color: var(--muted, #8a8f98); font-size: 0.82em; line-height: 1.35; margin-top: 2px; }
+.comfyParamHint { color: var(--muted, #8a8f98); font-size: 0.92em; line-height: 1.35; margin-top: 2px; }
 .comfyParamHint[hidden] { display: none; }
 
 /* The ⚙ ComfyUI params form carries 30+ fields — give it ~3× the shared 360px modal
@@ -985,6 +988,23 @@ p {
   /* Bottom-align so inputs sharing a row line up even when one label wraps to two
      lines (the same trick .comfyParamRow already uses). */
   align-items: end;
+  /* 30+ fields at the global 16px form font read as oversized here and push the panel
+     past the viewport. Scale the whole form down — children sized in `em`
+     (.comfyParamWarn, .comfyParamHint) follow on their own. */
+  font-size: 13px;
+}
+
+/* Form controls carry `font: inherit` from the global reset, which resolves against
+   their own parent — so they'd pick this up anyway. Stated explicitly so a future
+   per-control font rule can't silently leave the inputs at 16px while the labels shrink.
+   All of this is ID-scoped: the short forms that also wear .comfyParamsBody
+   (mask-point / URL-import / YouTube) keep the default size. */
+#comfyParamsModal .comfyParamsBody input,
+#comfyParamsModal .comfyParamsBody select,
+#comfyParamsModal .comfyParamsBody textarea {
+  font-size: 13px;
+  /* The global 10px/12px padding was sized for 16px text; keep the box proportional. */
+  padding: 7px 10px;
 }
 
 /* Full-width items: the hint/reset header and the model-info banner. The
