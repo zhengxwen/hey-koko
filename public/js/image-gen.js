@@ -16,6 +16,24 @@ import { applyMaskCutouts } from './mask-paint.js';
 // Drop a model file's extension for display (e.g. "RealESRGAN_x4plus.pth" → "RealESRGAN_x4plus").
 const stripModelExt = (n) => (n || "").replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
 
+// The file a run WILL load, for labels shown BEFORE the server answers.
+//
+// A dropdown entry stands for a whole precision group and its value is an arbitrary
+// member of that group, so printing it is wrong for anyone who set ⚙ precision: pick
+// bf16 on MiniMax H3 and the progress bubble still read "…_pruned_fp8_scaled" for the
+// entire 25-minute render. The server sends tier → filename for the group (precFiles)
+// plus the tiers in auto-preference order, which is exactly what resolvePrecision uses,
+// so the same answer can be computed here without a round trip. Falls back to the
+// selection whenever the map is missing (older server, ungrouped model, unknown tier) —
+// the done-line still reports the authoritative name either way.
+function resolvedModelName(model) {
+  const files = state.comfyModelPrecFiles && state.comfyModelPrecFiles[model];
+  if (!files) return stripModelExt(model);
+  const pref = dom.comfyParamPrecision?.value || "";
+  const tiers = (state.comfyModelPrec && state.comfyModelPrec[model]) || [];
+  return stripModelExt((pref && files[pref]) || (!pref && files[tiers[0]]) || model);
+}
+
 // Compact "time remaining" → "m:ss" or "h:mm:ss" (language-neutral).
 function formatEta(sec) {
   sec = Math.max(0, Math.round(sec));
@@ -1002,7 +1020,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   sink.lock(true);
   setAvatarState("thinking");
 
-  const vidModel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
+  const vidModel = resolvedModelName(model); // the file ⚙ precision will actually load, not the group representative
   // Name what the extra images actually did. Wan Animate ignores them — say so, or the
   // user assumes they landed. SCAIL-2 uses them as additional views of the character, so
   // it gets its own wording rather than the generic "N images" count.
@@ -1544,7 +1562,7 @@ export async function generateMesh(parsed, model, tabId = state.activeTabId, ins
   const abortController = { signal: sink.signal };
   sink.lock(true);
   setAvatarState("thinking");
-  const meshModelLabel = (model || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
+  const meshModelLabel = resolvedModelName(model);
   sink.start("mesh", `${t("msg_generatingMesh")}${meshModelLabel ? ` · ${meshModelLabel}` : ""}`);
   await new Promise((r) => setTimeout(r, 0)); // let the bubble paint first
 
@@ -1813,7 +1831,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // Status suffix: which model is generating, and (for multi-image edits) how
   // many reference images are actually being sent.
   const refCount = refImages ? refImages.length : 0;
-  const shortModel = (activeModel || "").replace(/\.(safetensors|ckpt|gguf|pth)$/i, "");
+  const shortModel = resolvedModelName(activeModel);
   const statusSuffix = (shortModel ? ` · ${shortModel}` : "") + (refCount > 1 ? ` · ${t("msg_inputImages", { n: refCount })}` : "");
   const genText = (done) => (totalCount > 1 ? t("msg_generatingCount", { done, total: totalCount }) : t("msg_generating")) + statusSuffix;
 

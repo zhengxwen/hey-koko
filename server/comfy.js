@@ -1683,28 +1683,44 @@ async function proxyComfyModels(req, res) {
     // tell what it ships in — a single untagged file, say. That is reported as absent
     // (no `prec` key) and the frontend then restricts nothing: greying every option on
     // a model we know nothing about would be worse than the status quo.
+    // Also returns tier → FILENAME, so the frontend can name the file a run will actually
+    // load BEFORE the request goes out. The progress bubble is built pre-flight and used
+    // to print the dropdown value, which is an arbitrary representative of the precision
+    // group — on a 25-minute render that meant staring at "…_fp8_scaled" for the whole run
+    // after picking bf16, with the truth only arriving on the done-line.
     const tiersFor = (name) => {
       // A two-expert MoE resolves PER EXPERT, so a tier only ONE twin ships in still
       // loads (mixed, and said so on the done-line). The offer is therefore the UNION
       // over both twins — reading only the high twin would grey out a tier that works.
-      const bases = [precisionBase(name)];
+      const self = precisionBase(name);
+      const bases = [self];
       if (/high_noise/i.test(name)) bases.push(precisionBase(name.replace(/high_noise/ig, "low_noise")));
       const tiers = [];
+      const files = {};
       for (const f of all) {
-        if (!bases.includes(precisionBase(f))) continue;
+        const b = precisionBase(f);
+        if (!bases.includes(b)) continue;
         const t = precisionOf(f);
-        if (t && !tiers.includes(t)) tiers.push(t);
+        if (!t) continue;
+        if (!tiers.includes(t)) tiers.push(t);
+        // Names come from the entry's OWN base only. The union above also sweeps in the
+        // other twin of a MoE pair, and printing the low_noise file for a high_noise
+        // entry would be a new wrong answer in place of the old one.
+        if (b === self && !files[t]) files[t] = f;
       }
-      return tiers;
+      // Sorted so the frontend can read tiers[0] as "what auto picks" without carrying a
+      // second copy of PREC_AUTO_ORDER that could drift from this one.
+      tiers.sort((a, b) => PREC_AUTO_ORDER.indexOf(a) - PREC_AUTO_ORDER.indexOf(b));
+      return { tiers, files };
     };
     const setMeta = (name, group, type, entry) => {
       // Sentinel entries (wan2.2_14B auto, bernini, animate replace, scail animate) carry
       // a synthetic name that matches no file, so tiers are read off the real checkpoint
       // they were derived from — otherwise the models with the most precision variants
       // would be exactly the ones the menu can't describe.
-      const tiers = tiersFor((entry && entry.precFrom) || name);
+      const { tiers, files } = tiersFor((entry && entry.precFrom) || name);
       modelMeta[name] = { label: marketName(name) || baseLabel(name), caps: capsFor(name, group, type, entry), ready: isModelReady(name, group, type) };
-      if (tiers.length) modelMeta[name].prec = tiers;
+      if (tiers.length) { modelMeta[name].prec = tiers; modelMeta[name].precFiles = files; }
     };
     for (const n of imageOut) setMeta(n, "image", null, null);
     for (const n of berniniT2i) setMeta(n, "image", null, null);

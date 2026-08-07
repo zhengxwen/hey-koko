@@ -406,6 +406,7 @@ export async function refreshBgWorkers() {
       for (const [k, v] of Object.entries(d.modelMeta || {})) {
         if (!uMeta[k]) { uMeta[k] = { ...v }; continue; }
         if (v.prec) uMeta[k].prec = [...new Set([...(uMeta[k].prec || []), ...v.prec])];
+        if (v.precFiles) uMeta[k].precFiles = { ...v.precFiles, ...(uMeta[k].precFiles || {}) };
       }
       for (const n of models) if (!uModels.has(n)) uModels.set(n, n);
       for (const m of editModels) if (!uEdit.has(m.name)) uEdit.set(m.name, m);
@@ -636,7 +637,13 @@ function applyComfyModels(data) {
       // greys out the rest. Kept on state because the menu is rebuilt on model change,
       // long after this function has returned.
       state.comfyModelPrec = {};
-      for (const [k, v] of Object.entries(meta)) if (v && v.prec) state.comfyModelPrec[k] = v.prec;
+      // tier → filename for the same group, so a label can name the file a run WILL load
+      // instead of the group's arbitrary representative (see resolvedModelName).
+      state.comfyModelPrecFiles = {};
+      for (const [k, v] of Object.entries(meta)) {
+        if (v && v.prec) state.comfyModelPrec[k] = v.prec;
+        if (v && v.precFiles) state.comfyModelPrecFiles[k] = v.precFiles;
+      }
       // The coloured circles are input→output MODES and read as a set. "audio" is a
       // different axis — an extra property of the output, not another mode — so it gets
       // a pictograph rather than one more colour in the row.
