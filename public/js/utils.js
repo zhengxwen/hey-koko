@@ -11,6 +11,64 @@ export function genId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+// ---- gallery media references ---------------------------------------------
+// A media slot on a message (generatedVideos[i], generatedImages[i], …) holds EITHER
+// raw base64 — how everything used to be stored, and how old conversations, old
+// archives and imported JSON still look — OR a same-origin gallery URL once the file
+// itself lives in ~/.hey-koko/gallery (server/gallery.js). Keeping both in the same
+// slot is what let the switch happen without touching the persistence allowlist, the
+// field migrations, the per-index delete splices or the empty-bubble sweeper.
+// Every renderer goes through mediaSrc(); anything that needs the actual bytes back
+// (outgoing requests, exports) goes through mediaBase64().
+export const GALLERY_PREFIX = "/api/gallery/file/";
+
+export function isMediaRef(v) {
+  return typeof v === "string" && v.startsWith(GALLERY_PREFIX);
+}
+
+// Per-segment encoding: ids carry a "2026-08/" prefix that must stay a real path
+// separator, while the filename may hold CJK or spaces.
+export function galleryUrl(id) {
+  return GALLERY_PREFIX + String(id).split("/").map(encodeURIComponent).join("/");
+}
+
+export function galleryIdOf(v) {
+  return isMediaRef(v) ? decodeURIComponent(v.slice(GALLERY_PREFIX.length)) : null;
+}
+
+// → something an <img>/<video>/<a download> can use directly. Without an explicit
+// mime the container is sniffed from the first base64 characters, as the callers this
+// replaces all did by hand.
+export function mediaSrc(v, mime) {
+  if (typeof v !== "string" || !v) return "";
+  // NB: the test is the explicit gallery prefix, never a bare leading "/" — a JPEG's
+  // base64 starts with "/9j/" and would be mistaken for a URL.
+  if (isMediaRef(v) || v.startsWith("data:") || v.startsWith("blob:") || v.startsWith("http")) return v;
+  const m = mime || (v.startsWith("/9j/") ? "image/jpeg"
+    : v.startsWith("R0lGOD") ? "image/gif"
+    : v.startsWith("UklGR") ? "image/webp" : "image/png");
+  return `data:${m};base64,${v}`;
+}
+
+// → raw base64 (no data: prefix), fetching from the gallery when the slot is a
+// reference. Used by the paths that must ship bytes: re-using a clip as the source of
+// a new render, /analyze, and self-contained exports.
+export async function mediaBase64(v) {
+  if (typeof v !== "string" || !v) return v;
+  if (v.startsWith("data:")) return v.slice(v.indexOf(",") + 1);
+  // Same trap as mediaSrc: "/9j/…" is a JPEG, not a path.
+  if (!isMediaRef(v) && !v.startsWith("blob:") && !v.startsWith("http")) return v;
+  const res = await fetch(v);
+  if (!res.ok) throw new Error(`media fetch failed (${res.status})`);
+  const blob = await res.blob();
+  return await new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).slice(String(fr.result).indexOf(",") + 1));
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(blob);
+  });
+}
+
 // POST JSON and parse the response as JSON, via text so a NON-JSON body gives a clear
 // error instead of the browser's cryptic "did not match the expected pattern". The
 // usual cause: a newly-added route whose server wasn't restarted → serveStatic returns

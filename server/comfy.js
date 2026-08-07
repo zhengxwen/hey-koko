@@ -11,6 +11,34 @@ const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const { hostnameFor } = require("./network");
 const { synthToWav } = require("./tts"); // InfiniteTalk "photo speaks": prompt → local TTS → speech track
+const gallery = require("./gallery"); // every finished artifact is teed to disk before it goes back
+
+// Sniff the container from the first base64 characters — ComfyUI hands back raw
+// base64 with no mime, and the gallery names files by extension.
+function sniffImageMime(b64) {
+  const s = String(b64 || "");
+  if (s.startsWith("/9j/")) return "image/jpeg";
+  if (s.startsWith("R0lGOD")) return "image/gif";
+  if (s.startsWith("UklGR")) return "image/webp";
+  return "image/png";
+}
+
+// Tee finished artifacts into the gallery ledger, returning their ids (aligned with
+// the base64 array) for the response. A bookkeeping failure must never sink a render
+// that already succeeded, so everything here is best-effort.
+function toGallery(kind, arr, mime, meta) {
+  if (!Array.isArray(arr) || !arr.length) return undefined;
+  try {
+    const ids = gallery.recordMany(arr.map((b64, i) => ({
+      kind, b64, mime: mime || sniffImageMime(b64),
+      meta: { ...meta, batchIndex: i },
+    })));
+    return ids.some(Boolean) ? ids : undefined;
+  } catch (err) {
+    console.error(`[gallery] tee failed: ${err.message}`);
+    return undefined;
+  }
+}
 
 // Per-request ComfyUI endpoint. Background jobs can target DIFFERENT machines in
 // parallel, so the target URL must not be a shared mutable global (concurrent
@@ -5594,6 +5622,9 @@ async function generateComfyImage(req, res) {
   let salvageCodec = "h264", salvageCrf = 0;
   let salvagePromptId = null; // the queued prompt, so the catch can re-query /history
   let precisionNote = null; // set only when those differ from the ⚙ request
+  // Gallery metadata, filled in once the request is understood. Hoisted so the SALVAGE
+  // path in the catch can file a partial render under its real prompt/model too.
+  let galleryMeta = null;
   try {
     const body = await readBody(req);
     // Target the ComfyUI endpoint this job was routed to (parallel lanes); default global.
@@ -5679,6 +5710,12 @@ async function generateComfyImage(req, res) {
     const expertPair = prec.experts;
     precisionNote = prec.note;
     precisionUsed = prec.used;
+    // Every sentinel has resolved to a real filename by here, so this records the model
+    // that actually runs (not the dropdown alias).
+    galleryMeta = {
+      model, prompt, negative: negative_prompt, seed, params: opts,
+      conversationId: body.conversationId, msgId: body.msgId,
+    };
     const isMultiImage = Array.isArray(images) && images.length >= 2;
     // Output size for img2img edits, keeping the input's aspect ratio. Only
     // OVERRIDE the builder's natural sizing when we must: a size is specified
@@ -7196,11 +7233,14 @@ async function generateComfyImage(req, res) {
 
       const now = new Date();
       const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+      // The hoisted snapshot plus what only the finished render knows.
+      galleryMeta = { ...galleryMeta, model, precisionUsed };
       if (stillMode) {
         // Single-frame Wan Animate → an IMAGE result (not a video).
         console.log(`${ts} [comfy-gen] model=${model}, mode=animate:still, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, images=${outImages.length}`);
         if (!outImages.length) { sendJson(res, 502, { error: "ComfyUI finished but produced no image. Please retry." }); return; }
-        sendJson(res, 200, { images: outImages, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, imagesUsed });
+        const mediaIds = toGallery("image", outImages, null, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height });
+        sendJson(res, 200, { images: outImages, mediaIds, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, imagesUsed });
       } else if (meshType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=mesh:${meshType}, meshes=${outMeshes.length}, videos=${outVideos.length}`);
         if (!outMeshes.length) {
@@ -7213,7 +7253,8 @@ async function generateComfyImage(req, res) {
         }
         // videos stays in the contract: no 3D chain emits one today (TripoSplat's
         // turntable was dropped), but the client already handles both together.
-        sendJson(res, 200, { meshes: outMeshes, meshMimes, meshNames,
+        const mediaIds = toGallery("mesh", outMeshes, meshMimes[0] || "model/gltf-binary", galleryMeta);
+        sendJson(res, 200, { meshes: outMeshes, mediaIds, meshMimes, meshNames,
           // How the viewer should place its camera. A 360° mesh is a shell you stand
           // INSIDE; orbiting it from outside shows only the half facing you. The
           // client can't infer this from the geometry — a closed object encloses its
@@ -7231,7 +7272,8 @@ async function generateComfyImage(req, res) {
           sendJson(res, 502, { error: `ComfyUI finished but produced no video file (output nodes: ${nodeIds}). Make sure the workflow includes a SaveVideo node, or retry.` });
           return;
         }
-        sendJson(res, 200, { videos: outVideos, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, imagesUsed });
+        const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, imagesUsed });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own
@@ -7242,7 +7284,8 @@ async function generateComfyImage(req, res) {
           : editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         const c = panoCfg || cfg;
         console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${mode}, sampler=${c.sampler}/${c.scheduler}, cfg=${c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${c.steps}, images=${outImages.length}`);
-        sendJson(res, 200, { images: outImages, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined });
+        const mediaIds = toGallery("image", outImages, null, { ...galleryMeta, width: panoDims?.w || width, height: panoDims?.h || height });
+        sendJson(res, 200, { images: outImages, mediaIds, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined });
       }
     } finally {
       clearTimeout(timeout);
@@ -7260,8 +7303,11 @@ async function generateComfyImage(req, res) {
         const partial = await mergeFinishedPrefix(execWatcher, segmentMerge, salvagePromptId, salvageCodec, salvageCrf, undefined);
         if (partial && !clientGone && !res.writableEnded) {
           const why = error.name === "AbortError" ? "was stopped or timed out" : "failed partway";
+          // Salvaged pixels are the ones most worth keeping — file them like any other render.
+          const salvageB64 = partial.buf.toString("base64");
+          const mediaIds = toGallery("video", [salvageB64], "video/mp4", { ...(galleryMeta || {}), precisionUsed, partial: true });
           sendJson(res, 200, {
-            videos: [partial.buf.toString("base64")], videoMime: "video/mp4",
+            videos: [salvageB64], mediaIds, videoMime: "video/mp4",
             model: undefined, videoCodec: partial.codec,
             // The client shows this as a warning next to the clip: the render is INCOMPLETE.
             partial: { done: partial.done, total: partial.total, reason: String(error.message || why).slice(0, 400) },

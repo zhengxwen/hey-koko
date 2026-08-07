@@ -3,7 +3,7 @@
 
 // Archive and retrieve functionality
 import { dom, state } from './state.js';
-import { escapeHtml, mediaFilename } from './utils.js';
+import { escapeHtml, mediaFilename, mediaSrc, isMediaRef } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { applyHighlights } from './highlight.js';
 import { saveTabs } from './settings.js';
@@ -602,7 +602,7 @@ export function initArchive() {
               : ((msg.contextImages || msg.images)?.length ? (msg.contextImages || msg.images) : null);
         if (previews) {
           const imgs = previews.map((p, i) => {
-            const src = p.startsWith("data:") ? p : `data:image/jpeg;base64,${p}`;
+            const src = mediaSrc(p, "image/jpeg");
             const fn = mediaFilename(null, msg.timestamp, "image", "jpg", i, previews.length);
             return `<img class="messageImage" data-filename="${escapeHtml(fn)}" src="${src}" alt="${t("arch_altImage")}" />`;
           }).join("");
@@ -617,20 +617,19 @@ export function initArchive() {
             : msg.generatedVideoThumbnails && msg.generatedVideoThumbnails.length > 0
               ? msg.generatedVideoThumbnails.filter(Boolean)
               : (msg.isFilePreview && (msg.contextImages || msg.images)?.length)
-                ? (msg.contextImages || msg.images).map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
+                ? (msg.contextImages || msg.images).map((img) => mediaSrc(img))
                 : null;
         let genImageHtml = "";
         if (genImgs && genImgs.length > 0) {
           const items = genImgs.map((img, i) => {
-            if (!img || img.length < 100) return "";
-            let src, ext = "png";
-            if (img.startsWith("data:")) { src = img; ext = /jpe?g/.test(img.slice(0, 20)) ? "jpg" : "png"; }
-            else if (img.startsWith("http")) src = img;
-            else {
-              const isJpg = img.startsWith("/9j/");
-              src = `data:${isJpg ? "image/jpeg" : "image/png"};base64,${img}`;
-              ext = isJpg ? "jpg" : "png";
-            }
+            // The length guard drops truncated/garbage base64 — but a gallery reference
+            // is a short URL, so it has to be let through explicitly.
+            const isUrl = !!img && (isMediaRef(img) || img.startsWith("http") || img.startsWith("data:"));
+            if (!img || (!isUrl && img.length < 100)) return "";
+            const src = mediaSrc(img);
+            const ext = /\.jpe?g($|\?)/i.test(src) || img.startsWith("/9j/") || /jpe?g/.test(src.slice(0, 20)) ? "jpg"
+              : /\.(png|webp|gif)($|\?)/i.test(src) ? src.replace(/^.*\.([a-z0-9]+)($|\?).*$/i, "$1").toLowerCase()
+              : "png";
             const fn = mediaFilename(null, msg.timestamp, "image", ext, i, genImgs.length);
             return `<img class="generatedImage" data-filename="${escapeHtml(fn)}" src="${src}" alt="${t("chat_altGenImage")}" />`;
           }).join("");

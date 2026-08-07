@@ -5,7 +5,7 @@
 import { dom, state } from './state.js';
 import { SIZE_PRESETS } from './constants.js';
 import { t, getPromptLanguage } from './i18n.js';
-import { makePreview, escapeHtml } from './utils.js';
+import { makePreview, escapeHtml, galleryUrl, mediaSrc, mediaBase64 } from './utils.js';
 import { setAvatarState, showExpression } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab } from './tabs.js';
@@ -404,9 +404,19 @@ function imageNaturalSize(src) {
 // Bare base64 → a data: URL an <img> will accept, sniffing the container from the
 // first bytes (the same trick the video path already uses inline).
 function b64ToImgSrc(b) {
-  return b.startsWith("data:")
-    ? b
-    : `data:image/${b.startsWith("/9j/") ? "jpeg" : b.startsWith("UklGR") ? "webp" : "png"};base64,${b}`;
+  return mediaSrc(b);   // handles raw base64 and gallery references alike
+}
+
+// What actually gets stored in a message's media array. The server files every
+// finished artifact in the gallery and returns `mediaIds` alongside the base64
+// (server/gallery.js); we keep the reference, not the bytes, so a conversation holds
+// URLs instead of tens of megabytes of video. No id (older server, a chain that
+// isn't teed) → the base64 goes in exactly as it always did.
+function storedSlots(arr, mediaIds) {
+  return (arr || []).map((b64, i) => {
+    const id = mediaIds && mediaIds[i];
+    return id ? galleryUrl(id) : b64;
+  });
 }
 
 // The 360° panorama recipe's own name. It is a recipe rather than a checkpoint, so
@@ -864,10 +874,11 @@ function subscribeComfyProgress(comfyHost, clientId, { onProgress, onPreview }) 
 
 // Read the streamed NDJSON response from /api/generate-image (Ollama path).
 // Lines are {type:"progress",completed,total} during sampling, then a single
-// {type:"done",images,model} (or {type:"error",error}). Drives onProgress and
-// returns {images, model}.
+// {type:"done",images,mediaIds,model} (or {type:"error",error}). Drives onProgress and
+// returns {images, mediaIds, model} — mediaIds is what makes the stored message hold
+// gallery references instead of the pixels.
 async function readOllamaImageStream(r, onProgress) {
-  const result = { images: [], model: undefined };
+  const result = { images: [], mediaIds: undefined, model: undefined };
   if (!r.body) return result;
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
@@ -878,7 +889,7 @@ async function readOllamaImageStream(r, onProgress) {
     let c;
     try { c = JSON.parse(line); } catch { return; }
     if (c.type === "progress") onProgress?.(c.completed, c.total);
-    else if (c.type === "done") { result.images = c.images || []; result.model = c.model; }
+    else if (c.type === "done") { result.images = c.images || []; result.mediaIds = c.mediaIds; result.model = c.model; }
     else if (c.type === "error") throw new Error(c.error || "image generation failed");
   };
   while (true) {
@@ -1522,7 +1533,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       // Poster frame(s) for the just-finished video(s) — appended, not rebuilt.
       const newThumbs = await Promise.all(data.videos.map((v) =>
         videoThumbnail(v.startsWith("data:") ? v : `data:${vmime};base64,${v}`)));
-      allVideos.push(...data.videos);
+      allVideos.push(...storedSlots(data.videos, data.mediaIds));
       for (let k = 0; k < data.videos.length; k++) videoSeeds.push(typeof data.seed === "number" ? data.seed : null);
       allThumbs.push(...newThumbs);
       renderReply(); // show this completed video immediately
@@ -1721,13 +1732,14 @@ export async function generateMesh(parsed, model, tabId = state.activeTabId, ins
         break;
       }
       lastData = data;
-      allMeshes.push(...data.meshes);
+      allMeshes.push(...storedSlots(data.meshes, data.mediaIds));
       allMeshMimes.push(...(data.meshMimes || data.meshes.map(() => "model/gltf-binary")));
       allMeshNames.push(...(data.meshNames || data.meshes.map(() => "")));
       for (let k = 0; k < data.meshes.length; k++) meshSeeds.push(typeof data.seed === "number" ? data.seed : null);
       if (Array.isArray(data.videos) && data.videos.length) {
         const vmime = data.videoMime || "video/mp4";
         const newThumbs = await Promise.all(data.videos.map((v) => videoThumbnail(`data:${vmime};base64,${v}`)));
+        // The mesh chain's mediaIds cover the meshes; its turntable clips stay inline.
         allVideos.push(...data.videos);
         allThumbs.push(...newThumbs);
       }
@@ -1992,7 +2004,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 if (data.precisionNote) precisionNoteUsed = data.precisionNote;
                 if (data.panoLoraSkipped) panoLoraSkippedBase = data.panoLoraSkipped.base;
                 if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
-                generatedImages.push(...imgs);
+                generatedImages.push(...storedSlots(imgs, data.mediaIds));
                 for (let k = 0; k < imgs.length; k++) seeds.push(typeof data.seed === "number" ? data.seed : null);
                 for (const imgData of imgs) {
                   const src = imgData.startsWith("data:")
@@ -2039,7 +2051,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       content = noopMessage; // server intentionally did nothing → plain notice
     }
 
-    const toSrc = (img) => (img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`);
+    const toSrc = (img) => mediaSrc(img);
     const generatedThumbnails = await Promise.all(generatedImages.map((img) => makePreview(toSrc(img), 480)));
 
     // "Image generated (W×H)" in the prompt language, with the real output size
@@ -2106,11 +2118,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         content = `**${t("msg_enhancedPrompt")}**\n${enhancedPromptsShown.map((p) => `> ${p}`).join("\n")}\n\n` + content;
       }
       const generatedThumbnails = await Promise.all(
-        generatedImages.map((img) => {
-          if (img.startsWith("data:")) return makePreview(img, 480);
-          const mime = img.startsWith("/9j/") ? "image/jpeg" : "image/png";
-          return makePreview(`data:${mime};base64,${img}`, 480);
-        })
+        generatedImages.map((img) => makePreview(mediaSrc(img), 480))
       );
       const replyMsg = {
         role: "assistant",

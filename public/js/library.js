@@ -9,7 +9,7 @@
 // the chat-side /ask command). Retrieval is server-side; generation reuses /api/chat.
 
 import { dom, state } from './state.js';
-import { escapeHtml, postJson, stripHeadingEmphasis } from './utils.js';
+import { escapeHtml, postJson, stripHeadingEmphasis, isMediaRef, mediaBase64 } from './utils.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks, addBlockCopyButtons } from './markdown.js';
 import { renderRelationGraph, openEntityGraphModal } from './relation-graph.js';
 import { applyHighlights, registerHighlightHost } from './highlight.js';
@@ -249,6 +249,8 @@ export async function writeTabToLibrary(tab) {
     .map((m, i) => {
       const b = { id: `b${i}`, role: m.role, section: m.librarySection || "", content: m.content || "" };
       if (m.highlights && m.highlights.length) b.highlights = m.highlights;   // carry highlights back to library
+      // A library doc is its own long-lived store: inline the bytes rather than
+      // pointing into the gallery, where the file could later be deleted.
       const addImg = () => { if (m.generatedImages && m.generatedImages[0]) { b.image = m.generatedImages[0]; b.imageMime = m.imageMime || "image/png"; if (m.generatedImageNames && m.generatedImageNames[0]) b.imageName = m.generatedImageNames[0]; } };
       if (m.isLibraryBlock) {
         b.kind = m.libraryKind || "text"; b.embed = true; addImg();
@@ -260,6 +262,13 @@ export async function writeTabToLibrary(tab) {
       }
       return b;
     });
+  // Any block image that is a gallery reference gets pulled inline here, so the
+  // document stays readable even if that artifact is later deleted from the gallery.
+  await Promise.all(blocks.map(async (b) => {
+    if (b.image && isMediaRef(b.image)) {
+      try { b.image = await mediaBase64(b.image); } catch { delete b.image; delete b.imageMime; }
+    }
+  }));
   let meta = tab.libraryMeta || {};
   try { const r = await postJson("/api/library/get", { docId: tab.libraryDocId }); if (r && r.doc) meta = r.doc; } catch {}
   const doc = {

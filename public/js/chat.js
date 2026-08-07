@@ -4,7 +4,8 @@
 // Chat rendering, message handling, and sending
 import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState, setScrollTop, applyVideoAudio, trackVideoAudio } from './state.js';
 import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis,
-         readFileAsDataUrl, makePreview, convertToJpeg, normalizeOrientation } from './utils.js';
+         readFileAsDataUrl, makePreview, convertToJpeg, normalizeOrientation,
+         mediaSrc, mediaBase64, isMediaRef } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams, addBlockCopyButtons } from './markdown.js';
 import { renderRelationGraph } from './relation-graph.js';
 import { setAvatarState, showExpression, detectExpression, isCloudModel, resetAvatarIdle } from './avatar.js';
@@ -250,7 +251,26 @@ function bgImagineLabel(cmds, isVideo, isMesh) {
 // Generation (image/video/audio) always runs through the background queue. This
 // builds the image/video job from the parsed /imagine commands — shared by a fresh
 // send and a resend so the model is snapshotted the same way in both.
+// Gallery references → raw base64, for the paths that must ship bytes. Both helpers
+// pass anything that is already inline straight through, so an old conversation costs
+// nothing extra.
+async function resolveMediaList(list) {
+  if (!Array.isArray(list) || !list.some(isMediaRef)) return list;
+  return await Promise.all(list.map((v) => mediaBase64(v)));
+}
+
+async function resolveSourceClip(clip) {
+  if (!clip || !isMediaRef(clip.base64)) return clip;
+  return { ...clip, base64: await mediaBase64(clip.base64) };
+}
+
 async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertIndex = -1, audio = null, refMasks = null) {
+  // Media re-used as INPUT (a generated clip fed back in as the source of an edit,
+  // a generated image used as a reference) may be a gallery reference; the request
+  // bodies downstream carry bytes, so pull them back here — the one boundary where
+  // stored media turns into an outgoing payload.
+  images = await resolveMediaList(images);
+  videos = Array.isArray(videos) ? await Promise.all(videos.map(resolveSourceClip)) : await resolveSourceClip(videos);
   // A ComfyUI video model (no Ollama image model) routes through generateVideo —
   // capture model + kind at submit time so a later dropdown change can't redirect it.
   const isVideo = !dom.imageModelSelect.value && dom.comfyModelSelect && state.comfyVideoModels.has(dom.comfyModelSelect.value);
@@ -349,11 +369,14 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
 // slim media payload (base64 only — preview blobs / names aren't needed headlessly)
 // so the job can re-run the vision pass detached from the live bubble. anchorIndex
 // lets the no-attachment fallback find the nearest preceding media bubble at run time.
-function enqueueAnalyzeJob(parsed, tabId, image, video, anchorIndex, insertIndex = -1) {
+async function enqueueAnalyzeJob(parsed, tabId, image, video, anchorIndex, insertIndex = -1) {
+  // Same boundary rule as enqueueImagineGen: a persisted job payload holds bytes, so
+  // a re-analysed clip stored as a gallery reference is pulled back here.
+  video = await resolveSourceClip(video);
   let payloadImage = null;
   if (image) {
-    if (image.multi) payloadImage = { multi: image.multi.map((im) => ({ base64: im.base64 })) };
-    else { payloadImage = { base64: image.base64 }; if (image.mask) payloadImage.mask = image.mask; }
+    if (image.multi) payloadImage = { multi: await Promise.all(image.multi.map(async (im) => ({ base64: await mediaBase64(im.base64) }))) };
+    else { payloadImage = { base64: await mediaBase64(image.base64) }; if (image.mask) payloadImage.mask = image.mask; }
   }
   const payloadVideo = video ? { base64: video.base64, mime: video.mime || "video/mp4" } : null;
   enqueueBgJob({
@@ -2345,7 +2368,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
     // timestamps are surfaced to the user as a frame→time table (not to the model).
     const framesFromVideo = async (b64, mime) => {
       showPending(t("analyze_extracting"));
-      const src = b64.startsWith("data:") ? b64 : `data:${mime || "video/mp4"};base64,${b64}`;
+      const src = mediaSrc(b64, mime || "video/mp4");
       const { frames, dropped } = await extractKeyFrames(src, frameTarget);
       frameTimes = frames.map(f => f.t);
       frameScenes = frames.map(f => !!f.scene);
@@ -2961,7 +2984,7 @@ async function backfillVideoThumbnails(message) {
   const mimes = message.videoMimes || [];
   const thumbs = await Promise.all(message.generatedVideos.map((v, i) => {
     const vmime = mimes[i] || "video/mp4";
-    return videoThumbnail(v.startsWith("data:") ? v : `data:${vmime};base64,${v}`);
+    return videoThumbnail(mediaSrc(v, vmime));
   }));
   if (thumbs.some(Boolean)) {
     message.generatedVideoThumbnails = thumbs;
@@ -2976,8 +2999,19 @@ function formatFileSize(bytes) {
 }
 
 // Decoded byte length of a base64 (or data:) string. 0 for remote URLs.
+// Is this media slot worth rendering? Raw base64 shorter than ~100 chars is
+// truncated garbage, but a gallery reference is a 60-character URL — the length test
+// must not apply to it. Every media grid uses this instead of a bare length check.
+function hasMedia(v) {
+  if (typeof v !== "string" || !v) return false;
+  // Only the gallery prefix counts as a short-but-valid slot; a leading "/" alone
+  // would also match every JPEG, whose base64 starts with "/9j/".
+  if (isMediaRef(v) || v.startsWith("http") || v.startsWith("data:") || v.startsWith("blob:")) return true;
+  return v.length > 100;
+}
+
 function base64ByteLength(src) {
-  if (!src || src.startsWith("http")) return 0;
+  if (!src || src.startsWith("http") || isMediaRef(src)) return 0;   // a URL/gallery ref carries no size
   const data = src.startsWith("data:") ? src.slice(src.indexOf(",") + 1) : src;
   const pad = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
   return Math.max(0, Math.floor(data.length * 3 / 4) - pad);
@@ -3197,7 +3231,10 @@ function loadVideoNow(video) {
   if (!stash) return;
   videoLazyData.delete(video);
   video.preload = "metadata"; // header only — the full clip decodes on play
-  video.src = base64ToBlobUrl(stash.data, stash.mime);
+  // A gallery reference is just a URL: the browser range-streams it from disk, which
+  // beats decoding tens of megabytes of base64 into a blob. Inline base64 (old
+  // conversations, imported JSON) still goes through the blob path.
+  video.src = isMediaRef(stash.data) ? stash.data : base64ToBlobUrl(stash.data, stash.mime);
 }
 // The fullscreen video viewer (lightbox.js) navigates across clips that may still
 // be lazy — let it force any source video's blob src in.
@@ -3223,12 +3260,7 @@ function lazyLoadVideo(video, base64, mime) {
 // image thumbnail src (exact filename match against the bubble's name arrays).
 // Only same-bubble images resolve; anything else returns null → stays literal text.
 function buildBubbleImageResolver(genThumbs, genFull, genNames, userThumbs, userFull, userNames) {
-  const norm = (s) => {
-    if (!s || typeof s !== "string") return null;
-    if (s.startsWith("data:") || s.startsWith("http")) return s;
-    if (s.length < 100) return null; // a filename/short string, not a base64 image
-    return `data:${s.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${s}`;
-  };
+  const norm = (s) => (hasMedia(s) ? mediaSrc(s) : null);   // filenames/short strings aren't media
   const map = new Map();
   const add = (name, thumb, full) => {
     if (!name) return;
@@ -3548,7 +3580,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       const dlSrc = full
         ? (full.startsWith("data:") || full.startsWith("http")
             ? full
-            : `data:${full.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${full}`)
+            : mediaSrc(full))
         : src;
       const fname = mediaFilename(dlNames?.[imgIdx], timestamp, "image", imageExtFromSrc(dlSrc), imgIdx, previews.length);
       image.dataset.filename = fname; // shown as the lightbox caption
@@ -3590,7 +3622,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
           if (!mm) return;
           const b64 = mm.contextImages?.[bubbleRefMask ? imgIdx : 0] || "";
           const fullSrc = b64
-            ? (b64.startsWith("data:") || b64.startsWith("http") ? b64 : `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`)
+            ? mediaSrc(b64)
             : src;
           const prior = bubbleRefMask ? (mm.imageMasks?.[imgIdx] || null) : (mm.mask || null);
           const result = await openMaskModal(fullSrc, prior);
@@ -3710,7 +3742,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
   // full-res for display only when no thumbnail exists (legacy data / URL-only previews).
   const gridImages = generatedThumbnails && generatedThumbnails.length > 0 ? generatedThumbnails : generatedImages;
   if (gridImages && gridImages.length > 0) {
-    const validImages = gridImages.filter((img) => img && (img.startsWith("http") || img.length > 100));
+    const validImages = gridImages.filter(hasMedia);
     const fullImages = generatedImages && generatedImages.length > 0 ? generatedImages : null;
     const ytId = Number.isInteger(index) && getActiveTab().messages[index]?.ytVideoId;
 
@@ -3735,24 +3767,9 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         }
         const img = document.createElement("img");
         img.className = "generatedImage";
-        if (imgData.startsWith("data:")) {
-          img.src = imgData;
-        } else if (imgData.startsWith("http")) {
-          img.src = imgData;
-        } else {
-          const mime = imgData.startsWith("/9j/") ? "image/jpeg" : "image/png";
-          img.src = `data:${mime};base64,${imgData}`;
-        }
+        img.src = mediaSrc(imgData);
         if (fullImages && fullImages[i]) {
-          const full = fullImages[i];
-          if (full.startsWith("data:")) {
-            img.dataset.fullSrc = full;
-          } else if (full.startsWith("http")) {
-            img.dataset.fullSrc = full;
-          } else {
-            const fmime = full.startsWith("/9j/") ? "image/jpeg" : "image/png";
-            img.dataset.fullSrc = `data:${fmime};base64,${full}`;
-          }
+          img.dataset.fullSrc = mediaSrc(fullImages[i]);
         } else if (ytId) {
           img.dataset.fullSrc = `https://img.youtube.com/vi/${ytId}/maxresdefault.jpg`;
         }
@@ -3797,7 +3814,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     if (vgrid) vgrid.className = "videoGrid";
     for (let vi = 0; vi < generatedVideos.length; vi++) {
       const vData = generatedVideos[vi];
-      if (!vData || vData.length < 100) continue;
+      if (!hasMedia(vData)) continue;
       // Per-clip mime (a batch can mix codecs); fall back to the first, then mp4.
       const vmime = vmimes[vi] || vmimes[0] || "video/mp4";
       const vext = vmime.includes("webm") ? "webm" : vmime.includes("quicktime") ? "mov" : "mp4";
@@ -3827,7 +3844,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       // lazyLoadVideo — so a tab full of large clips doesn't stall every refresh.
       // Use the captured thumbnail as the poster so a still shows before playback.
       const vthumb = generatedVideoThumbnails && generatedVideoThumbnails[vi];
-      if (vthumb) video.poster = vthumb.startsWith("data:") ? vthumb : `data:image/jpeg;base64,${vthumb}`;
+      if (vthumb) video.poster = mediaSrc(vthumb, "image/jpeg");
       applyVideoAudio(video);
       trackVideoAudio(video);
       lazyLoadVideo(video, vData, vmime);
@@ -3970,7 +3987,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       // else builds one on demand (see makeDownloadButton) — avoids decoding the
       // clip at render time just to populate the link.
       wrapper.appendChild(makeDownloadButton("videoDownloadBtn",
-        () => video.currentSrc || video.src || base64ToBlobUrl(vData, vmime),
+        () => video.currentSrc || video.src || (isMediaRef(vData) ? vData : base64ToBlobUrl(vData, vmime)),
         vname, base64ByteLength(vData), t("btn_downloadVideo")));
       if (mediaRowEnabled) {
         // Lazily create the row when there were no images, then keep it above text.
@@ -4001,7 +4018,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       mgrid.className = "meshGrid";
       for (let mi = 0; mi < meshes.length; mi++) {
         const data = meshes[mi];
-        if (!data || data.length < 100) continue;
+        if (!hasMedia(data)) continue;
         const mmime = (meshMsg.meshMimes && meshMsg.meshMimes[mi]) || "model/gltf-binary";
         const rawName = (meshMsg.meshNames && meshMsg.meshNames[mi]) || "";
         const mext = (rawName.match(/\.(glb|gltf|spz|ply|ksplat)$/i) || [, "glb"])[1].toLowerCase();
@@ -4039,7 +4056,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
           btnHost = view;
           import("./glb-viewer.js").then((v) => {
             if (!v.isSupported()) { mc.hidden = true; showCard(); return; }
-            v.attachMesh(mc, () => data, { name: rawName, cacheKey: `${rawName}:${data.length}:${data.slice(0, 32)}`, onFallback: showCard,
+            v.attachMesh(mc, () => mediaBase64(data), { name: rawName, cacheKey: `${rawName}:${data.length}:${data.slice(0, 32)}`, onFallback: showCard,
               // "panorama" = a sphere you stand inside; "forward" = a window in
               // front of the camera. Both are looked out of rather than orbited.
               view: meshMsg.meshView });
@@ -4051,7 +4068,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         // Appended AFTER the canvas so they paint over the interactive GL overlay,
         // which mounts itself directly after it. Lazy href — the base64→blob decode
         // happens on hover/focus, not at render.
-        btnHost.appendChild(makeDownloadButton("meshDownloadBtn", () => base64ToBlobUrl(data, mmime), mname, base64ByteLength(data), t("btn_downloadMesh")));
+        btnHost.appendChild(makeDownloadButton("meshDownloadBtn", () => (isMediaRef(data) ? data : base64ToBlobUrl(data, mmime)), mname, base64ByteLength(data), t("btn_downloadMesh")));
         if (role !== "user") {
           const del = document.createElement("button");
           del.className = "meshDeleteBtn";
@@ -4067,7 +4084,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
   }
 
   // AI-generated speech (/voice command) — base64 wav as <audio> + download.
-  if (generatedAudio && generatedAudio.length > 100) {
+  if (hasMedia(generatedAudio)) {
     const amime = audioMime || "audio/wav";
     const aext = amime.includes("aac") ? "aac" : amime.includes("mpeg") ? "mp3" : amime.includes("ogg") ? "ogg" : "wav";
     const src = generatedAudio.startsWith("data:") ? generatedAudio : `data:${amime};base64,${generatedAudio}`;
@@ -4188,7 +4205,7 @@ export function renderChat() {
     // For file previews, prefer display-only thumbnails (which already bundle any
     // inline images as previews); otherwise derive the grid from contextImages.
     const genImages = message.generatedImages || (message.isFilePreview && !message.generatedThumbnails?.length && message.contextImages?.length
-      ? message.contextImages.map(img => img.startsWith("data:") ? img : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`)
+      ? message.contextImages.map((img) => mediaSrc(img))
       : undefined);
     const previews = message.displayImages;
     const el = renderMessage(message.role, message.content, previews, index, message.timestamp, genImages, message.generatedThumbnails, message.generatedVideos, message.videoMimes, message.generatedAudio, message.audioMime, message.generatedVideoThumbnails);

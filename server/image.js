@@ -5,6 +5,7 @@ const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const claude = require("./claude");
 const openai = require("./openai");
+const gallery = require("./gallery");   // generated images are teed to disk, not only to the chat
 
 const IMAGE_MODEL_PATTERNS = [/flux/i, /z-image/i, /sdxl/i, /stable-diffusion/i, /imagen/i];
 
@@ -125,7 +126,23 @@ async function generateImage(req, res) {
     }
 
     const resultImages = image ? [image] : outImages;
-    res.write(JSON.stringify({ type: "done", images: resultImages, model }) + "\n");
+    // Tee into the gallery before the done line so the client gets ids alongside the
+    // pixels (see server/gallery.js) — best-effort: never fail a finished generation.
+    let mediaIds;
+    try {
+      if (resultImages.length) {
+        mediaIds = gallery.recordMany(resultImages.map((b64, i) => ({
+          kind: "image", b64,
+          mime: b64.startsWith("/9j/") ? "image/jpeg" : "image/png",
+          meta: {
+            model, prompt, negative: negative_prompt, seed: options?.seed,
+            width: options?.width, height: options?.height, params: options || undefined,
+            conversationId: body.conversationId, msgId: body.msgId, batchIndex: i,
+          },
+        })));
+      }
+    } catch (err) { console.error(`[gallery] tee failed: ${err.message}`); }
+    res.write(JSON.stringify({ type: "done", images: resultImages, mediaIds, model }) + "\n");
     res.end();
 
     const now = new Date();

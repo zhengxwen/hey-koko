@@ -58,6 +58,7 @@ const { serveStarmap } = require("./server/star-map");
 const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file");
 const bgQueue = require("./server/jobs");   // Option B: server-side background job queue
 const vendor = require("./server/vendor");  // pinned third-party UI libs: local-first, CDN fallback
+const gallery = require("./server/gallery"); // on-disk home for generated/uploaded media
 const feeds = require("./server/feeds");    // news-feeds.md: news subscription library
 
 console.log("[hey-koko] All modules loaded, starting server...");
@@ -501,6 +502,17 @@ const server = http.createServer((req, res) => {
     parseHtml(req, res);
     return;
   }
+
+  // Gallery: on-disk home of every generated/uploaded artifact (server/gallery.js).
+  if (req.method === "GET" && req.url.startsWith("/api/gallery/list")) { gallery.handleList(req, res); return; }
+  if (req.method === "GET" && req.url.startsWith("/api/gallery/file/")) { gallery.handleFile(req, res); return; }
+  if (req.method === "GET" && req.url.startsWith("/api/gallery/thumb/")) { gallery.handleThumb(req, res); return; }
+  if (req.method === "GET" && req.url.startsWith("/api/gallery/stats")) { gallery.handleStats(req, res); return; }
+  if (req.method === "GET" && req.url.startsWith("/api/gallery/refs")) { gallery.handleRefs(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/thumb") { gallery.handlePutThumb(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/delete") { gallery.handleDelete(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/compact") { gallery.handleCompact(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/import") { gallery.handleImport(req, res); return; }
 
   if (req.method === "GET" && req.url.startsWith("/vendor/")) {
     vendor.serveVendor(req, res);   // disk first, else checksum-verified CDN fallback

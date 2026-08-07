@@ -5,6 +5,7 @@
 import { dom, state, applyVideoAudio, trackVideoAudio } from './state.js';
 import { getActiveTab } from './tabs.js';
 import { t } from './i18n.js';
+import { mediaSrc } from './utils.js';
 
 export function initLightbox() {
   const lightbox = document.createElement("div");
@@ -86,8 +87,7 @@ export function initLightbox() {
           const msg = getActiveTab().messages[Number(msgIndex)];
           const imgIndex = Number(img.dataset.imgIndex) || 0;
           if (msg && msg.contextImages && msg.contextImages[imgIndex]) {
-            const full = msg.contextImages[imgIndex];
-            srcs.push(full.startsWith("data:") ? full : `data:image/jpeg;base64,${full}`);
+            srcs.push(mediaSrc(msg.contextImages[imgIndex], "image/jpeg"));
           } else {
             srcs.push(img.src);
           }
@@ -259,8 +259,7 @@ export function initLightbox() {
       const msg = getActiveTab().messages[Number(msgIndex)];
       const imgIndex = Number(img.dataset.imgIndex) || 0;
       if (msg && msg.contextImages && msg.contextImages[imgIndex]) {
-        const full = msg.contextImages[imgIndex];
-        src = full.startsWith("data:") ? full : `data:image/jpeg;base64,${full}`;
+        src = mediaSrc(msg.contextImages[imgIndex], "image/jpeg");
       }
     }
     openLightbox(src);

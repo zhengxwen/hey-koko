@@ -286,6 +286,10 @@ async function runJob(job) {
 
   const body = { ...job.payload, clientId: job.clientId };
   if (job.comfyUrl) body.comfyUrl = job.comfyUrl;
+  // Carry the job's conversation coordinates into the generator so the gallery ledger
+  // can record which conversation a background render belongs to.
+  if (job.conversationId) body.conversationId = job.conversationId;
+  if (job.msgId) body.msgId = job.msgId;
 
   if (job.engine === "ollama") {                 // /api/generate-image → NDJSON stream
     const r = await loopbackPost("/api/generate-image", body, ctrl.signal);
@@ -297,7 +301,7 @@ async function runJob(job) {
       if (o.type === "done") out = o; else if (o.error) throw new Error(o.error);
     }
     if (!out || !out.images) throw new Error("no result");
-    return { images: out.images, model: out.model };
+    return { images: out.images, mediaIds: out.mediaIds, model: out.model };
   }
 
   const r = await loopbackPost("/api/generate-comfy", body, ctrl.signal);   // self-contained JSON result

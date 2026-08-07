@@ -3,7 +3,8 @@
 
 // Main entry point - imports and initializes all modules
 import { dom, state, refreshScrollState, onMessagesScroll } from './state.js';
-import { readFileAsDataUrl, convertToJpeg, normalizeOrientation, makePreview, escapeHtml, genId } from './utils.js';
+import { readFileAsDataUrl, convertToJpeg, normalizeOrientation, makePreview, escapeHtml, genId,
+         mediaSrc, mediaBase64, isMediaRef } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
 import { initAvatar, updateCloudBadge, relocalizeAvatarPicker } from './avatar.js';
@@ -1268,10 +1269,7 @@ function exportTimeStr(ts, withSeconds = false) {
 }
 
 function exportImgSrc(img) {
-  if (!img) return null;
-  if (img.startsWith("data:") || img.startsWith("http")) return img;
-  const mime = img.startsWith("/9j/") ? "image/jpeg" : "image/png";
-  return `data:${mime};base64,${img}`;
+  return img ? mediaSrc(img) : null;
 }
 
 function exportImages(m) {
@@ -1282,6 +1280,27 @@ function exportImages(m) {
   // Generated videos are represented by their poster thumbnails in exports.
   if (m.generatedVideoThumbnails?.length) out.push(...m.generatedVideoThumbnails.filter(Boolean));
   return out.map(exportImgSrc).filter(Boolean);
+}
+
+// An export leaves this machine (mailed, archived, opened on another computer), so it
+// must carry its own bytes: pull every gallery reference back inline first. Returns a
+// copy — the live conversation keeps its references.
+const REF_MEDIA_FIELDS = ["generatedImages", "generatedVideos", "generatedMeshes",
+                          "generatedThumbnails", "generatedVideoThumbnails",
+                          "contextImages", "displayImages"];
+async function materializeTab(tab) {
+  const messages = await Promise.all(tab.messages.map(async (msg) => {
+    const m = { ...msg };
+    for (const f of REF_MEDIA_FIELDS) {
+      if (Array.isArray(m[f]) && m[f].some(isMediaRef)) {
+        m[f] = await Promise.all(m[f].map(async (v) => {
+          try { return await mediaBase64(v); } catch { return v; }   // deleted file → leave the ref
+        }));
+      }
+    }
+    return m;
+  }));
+  return { ...tab, messages };
 }
 
 function exportNames() {
@@ -1393,9 +1412,11 @@ function exportPdf(tab) {
     if (!fmt) return;
     exportMenu.hidden = true;
     const tab = getActiveTab();
-    if (fmt === "md") exportMarkdown(tab);
-    else if (fmt === "pdf") exportPdf(tab);
-    else if (fmt === "json") exportJson(tab);
+    materializeTab(tab).then((full) => {
+      if (fmt === "md") exportMarkdown(full);
+      else if (fmt === "pdf") exportPdf(full);
+      else if (fmt === "json") exportJson(full);
+    });
   });
   document.addEventListener("click", (e) => {
     if (!exportMenu.hidden && !e.target.closest(".exportWrapper")) exportMenu.hidden = true;
@@ -1451,23 +1472,15 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
         // but NOT for file/bg previews, which legitimately have contextImages and no
         // displayImages (they render via generatedThumbnails / the file-preview path).
         if (!m.isFilePreview && m.contextImages?.length && !m.displayImages?.length) {
-          m.displayImages = await Promise.all(m.contextImages.map((b64) => {
-            const src = b64.startsWith("data:")
-              ? b64
-              : `data:${b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${b64}`;
-            return makePreview(src);
-          }));
+          m.displayImages = await Promise.all(m.contextImages.map((b64) => makePreview(mediaSrc(b64))));
         }
         // Likewise, exports drop generatedThumbnails when generatedImages exist — the grid
         // now displays the light 480px thumbnail, so regenerate it from the full-res images.
         // Remote (http) full-res can't be canvas-downscaled (CORS), so keep the URL as-is.
         if (m.generatedImages?.length && !m.generatedThumbnails?.length) {
           m.generatedThumbnails = await Promise.all(m.generatedImages.map((img) => {
-            if (img.startsWith("http")) return img;
-            const src = img.startsWith("data:")
-              ? img
-              : `data:${img.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${img}`;
-            return makePreview(src, 480);
+            if (img.startsWith("http")) return img;   // remote full-res: CORS blocks canvas downscaling
+            return makePreview(mediaSrc(img), 480);
           }));
         }
         return m;

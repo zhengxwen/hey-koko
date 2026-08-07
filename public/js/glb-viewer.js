@@ -738,7 +738,9 @@ export function attachMesh(canvas, getBase64, opts = {}) {
   const load = async () => {
     let entry = cacheGet(key);
     if (!entry) {
-      const scene = await parseGLB(b64ToArrayBuffer(getBase64()), { view: mode });
+      // getBase64 may hand back a promise: a mesh stored as a gallery reference has
+      // to be fetched before it can be parsed.
+      const scene = await parseGLB(b64ToArrayBuffer(await getBase64()), { view: mode });
       // Unparseable → hide the canvas and tell the caller, so it can put the file
       // card back. This is async and lazy (it happens on scroll-in), which is why
       // the caller can't just check a return value.
