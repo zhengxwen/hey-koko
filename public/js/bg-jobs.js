@@ -705,8 +705,14 @@ function makeBgSink(job, controller) {
     clearBubble() {},          // placeholder persists until place() swaps it
     // Swap the placeholder message for the real result (keeping its id/position).
     place(msg) {
+      // Canceled mid-run → the job is already out of state.bgJobs and its bubble has been
+      // settled (dropped, or annotated with the cancel note over whatever it did produce).
+      // This used to be covered by findMsg failing, because cancel ALWAYS spliced the
+      // bubble; now that a bubble holding results survives, a late place() would overwrite
+      // that note — so check the job itself, the way releaseEnhancingJob does.
+      if (!state.bgJobs.includes(job)) return;
       const found = findMsg(job.msgId);
-      if (!found) return; // canceled / deleted mid-run — drop the result
+      if (!found) return; // deleted mid-run — drop the result
       msg.id = job.msgId;
       // Generation bubbles (image/video/audio): record the SERVER-authoritative generation
       // time + duration, so the bubble shows when it was actually produced (and the ⏱ how
@@ -803,12 +809,24 @@ function refreshPlaceholders() {
 
 // ---- cancel / retry --------------------------------------------------------
 
-// Cancel & remove a job: abort if running, drop its placeholder (or result) bubble.
+// Mark an already-produced result bubble as user-canceled instead of deleting it.
+// An "Nx" run re-place()s its bubble after EVERY sub-run, so by the time the user hits
+// cancel the bubble can already hold finished videos/images — splicing it out would
+// throw those away along with the run that was actually stopped. Idempotent (a second
+// cancel of the same bubble must not stack the note). Returns whether it changed.
+function noteCanceled(msg) {
+  if (msg.bgCanceled) return false;
+  msg.bgCanceled = true;
+  const note = t('bg_canceledNote');
+  msg.content = msg.content && msg.content.trim() ? `${msg.content}\n\n${note}` : note;
+  return true;
+}
+
 // Cancel + remove ONE job in memory (abort runner, free the submit gate, cancel the
-// server job, drop its bubble, splice it out) WITHOUT the saveChat/persist/refresh side
+// server job, settle its bubble, splice it out) WITHOUT the saveChat/persist/refresh side
 // effects — so a bulk clear can do those ONCE at the end instead of per job (which, over a
-// big queue, re-renders the whole chat N times and freezes the drawer). Returns whether a
-// chat bubble was removed (→ the caller must saveChat).
+// big queue, re-renders the whole chat N times and freezes the drawer). Returns whether the
+// CHAT changed (bubble dropped or annotated) → the caller must saveChat.
 function removeJobInMemory(job) {
   const ctrl = jobControllers.get(job.id);
   if (ctrl) { try { ctrl.abort(); } catch {} jobControllers.delete(job.id); }
@@ -816,13 +834,18 @@ function removeJobInMemory(job) {
   // behind a job that's now gone.
   if (job._submitRelease) { job._submitRelease(); job._submitRelease = null; }
   if (job.serverJobId) cancelServerJob(job.serverJobId);   // Option B: cancel it on the server too
-  // Remove the bubble (placeholder or already-finished result) from its tab.
+  // The bubble: an untouched PLACEHOLDER has produced nothing, so it goes. Once place()
+  // has swapped in a real result (an Nx run does that after every sub-run) the bubble owns
+  // finished output — keep it and just note that the rest was canceled.
   const found = findMsg(job.msgId);
-  let removedBubble = false;
-  if (found) { found.tab.messages.splice(found.index, 1); removedBubble = true; }
+  let chatChanged = false;
+  if (found) {
+    if (found.msg.bgPlaceholder) { found.tab.messages.splice(found.index, 1); chatChanged = true; }
+    else chatChanged = noteCanceled(found.msg);
+  }
   const idx = state.bgJobs.indexOf(job);
   if (idx >= 0) state.bgJobs.splice(idx, 1);
-  return removedBubble;
+  return chatChanged;
 }
 export function cancelBgJob(jobId) {
   const job = state.bgJobs.find((j) => j.id === jobId);

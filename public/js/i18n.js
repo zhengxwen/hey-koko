@@ -1091,6 +1091,9 @@ const UI = {
     bg_preparing: "preparing…",
     bg_statusError: "⚠ Failed",
     bg_statusCanceled: "Canceled",
+    // Baked into a result bubble whose job was canceled after it had already produced
+    // output (e.g. "/imagine 3x" stopped after the 2nd video) — the bubble is kept.
+    bg_canceledNote: "⛔ Canceled by you — the remaining runs did not start.",
     bg_statusInterrupted: "⚠ Interrupted (page reload)",
     bg_empty: "No background jobs",
     bg_jumpTitle: "Jump to its chat position",
@@ -2406,6 +2409,7 @@ const UI = {
     bg_preparing: "准备中…",
     bg_statusError: "⚠ 生成失败",
     bg_statusCanceled: "已取消",
+    bg_canceledNote: "⛔ 任务已被用户取消，剩余的生成没有执行。",
     bg_statusInterrupted: "⚠ 已中断（页面刷新）",
     bg_empty: "暂无后台任务",
     bg_jumpTitle: "跳到对话中的位置",
@@ -3720,6 +3724,7 @@ const UI = {
     bg_preparing: "準備中…",
     bg_statusError: "⚠ 生成失敗",
     bg_statusCanceled: "已取消",
+    bg_canceledNote: "⛔ 任務已被使用者取消，剩餘的生成沒有執行。",
     bg_statusInterrupted: "⚠ 已中斷（頁面刷新）",
     bg_empty: "暫無後台任務",
     bg_jumpTitle: "跳到對話中的位置",
