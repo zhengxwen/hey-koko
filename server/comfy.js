@@ -1334,13 +1334,22 @@ async function proxyComfyModels(req, res) {
     const q = new URL(req.url, "http://x").searchParams.get("comfyUrl");
     const scanUrl = normComfyUrl(q) || config.comfyUrl;
     comfyCtx.enterWith({ comfyUrl: scanUrl });
-    const [ckpts, unets, upscaleModels, allLoras, hostname] = await Promise.all([
+    const [ckpts, unets, upscaleModels, allLoras, clips, hostname] = await Promise.all([
       comfyEnum("CheckpointLoaderSimple", "ckpt_name"),
       comfyEnum("UNETLoader", "unet_name"),
       comfyEnum("UpscaleModelLoader", "model_name").catch(() => []),
       comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+      comfyEnum("CLIPLoader", "clip_name").catch(() => []),
       hostnameFor(scanUrl).catch(() => ""),
     ]);
+    // H3's text encoders, offered as a ⚙ list. NOT collapsed into one entry the way the
+    // diffusion models are: the three tiers differ by 15.7 / 27.1 / 51.5 GB on a box where
+    // that budget competes with the DiT, so picking the encoder is a decision the user
+    // makes independently of the ⚙ precision tier — mixing (bf16 DiT + nvfp4 encoder) is
+    // a legitimate configuration, not a fallback. Sorted best-tier-first so the list reads
+    // in the same order the "auto" rule would choose.
+    const h3TextEncoders = clips.filter((n) => H3_CLIP_RE.test(n))
+      .sort((a, b) => PREC_AUTO_ORDER.indexOf(precisionOf(a)) - PREC_AUTO_ORDER.indexOf(precisionOf(b)));
     // LTX is the only family with a user-pickable LoRA slot (⚙ "LTX LoRA"), so the
     // list is filtered to LTX-family files by the same name test the checkpoints use.
     // Other builders mount their LoRAs automatically and take no input here.
@@ -1729,9 +1738,9 @@ async function proxyComfyModels(req, res) {
     // the progress estimate matches the graph the server builds; gpuName → shown in the
     // model picker. Both null when unknown.
     const { gib: vramGib, gpuName } = await comfyGpuInfo();
-    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels: upscaleModels.filter((n) => !isRestoreModel(n)), restoreModels: upscaleModels.filter(isRestoreModel), panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, hostname, vramGib, gpuName });
+    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels: upscaleModels.filter((n) => !isRestoreModel(n)), restoreModels: upscaleModels.filter(isRestoreModel), panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, h3TextEncoders, hostname, vramGib, gpuName });
   } catch {
-    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [] });
+    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [], h3TextEncoders: [] });
   }
 }
 
@@ -2526,7 +2535,19 @@ async function videoCompanions(videoType, model, opts = {}) {
     // ComfyUI 0.30) plus TWO VAEs. The audio VAE is not optional even for fl2va, which
     // has no audio input: H3 samples picture and sound into ONE latent, so the audio VAE
     // is what turns the audio half of that latent into a track at decode time.
-    const clip = find(clips, /qwen3vl.*minimax|minimax.*qwen3vl/i) || find(clips, /minimax/i);
+    //
+    // The text encoder ships in three tiers spanning 15.7-51.5 GB (nvfp4_awq / int8_convrot
+    // / bf16) and it is the piece that reads the prompt, so which one loads is a real
+    // quality-vs-memory choice rather than an implementation detail. ⚙ picks it by name;
+    // "auto" goes through bestTier so a downloaded bf16 doesn't win just by sorting first
+    // (plain enum order put "bf16" ahead of "int8_convrot", silently swapping a 27 GB
+    // encoder for a 51.5 GB one the moment the file landed).
+    const clipGroup = clips.filter((x) => H3_CLIP_RE.test(x));
+    const wantClip = String(opts.h3TextEncoder || "").trim();
+    const clip = (wantClip && clipGroup.find((x) => x === wantClip))
+      || (opts.precision && opts.precision !== "auto" && clipGroup.find((x) => precisionOf(x) === opts.precision))
+      || bestTier(clipGroup)
+      || find(clips, /minimax/i);
     const vae = find(vaes, /minimax.*h3.*video.*vae/i) || find(vaes, /minimax.*video.*vae/i);
     const audioVae = find(vaes, /minimax.*h3.*audio.*vae/i) || find(vaes, /minimax.*audio.*vae/i);
     const missing = [];
@@ -3244,6 +3265,9 @@ function buildHunyuanVideo({ model, prompt, negative, comp, seed, v }) {
 // keyframes (2+ images pinned at evenly-spaced frames via a chain of LTXVAddGuide).
 // Reference caps straight off the node's own autogrow config (min 0 / max N).
 const H3_MAX_REF_IMAGES = 9;
+// The H3 text encoders on disk. Shared by videoCompanions (which loads one) and
+// proxyComfyModels (which offers the list to ⚙) so the two cannot drift apart.
+const H3_CLIP_RE = /qwen3vl.*minimax|minimax.*qwen3vl/i;
 
 // MiniMax H3 — ONE graph shape for both weight files; which node it hangs on is the task:
 //   MiniMaxH3ImageToVideo     (fl2va) — prompt alone = t2v, + first_frame / last_frame = i2v / FLF

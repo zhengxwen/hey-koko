@@ -814,6 +814,10 @@
             <input id="comfyParamMogeFov" type="number" min="0" max="170" step="1" placeholder="Auto" />
           </label>
           <label>
+            <span id="comfyParamH3ClipLabel" title="MiniMax H3 only. Which build of the Qwen3-VL-32B text encoder reads your prompt. The three tiers are 15.7 GB (nvfp4_awq), 27.1 GB (int8_convrot) and 51.5 GB (bf16) — on a box where that budget competes with the 21-40 GB diffusion model, this is a real choice, and it is independent of the model precision above (bf16 model + nvfp4 encoder is a legitimate mix). Auto prefers a quantised build over the unquantised one.">H3 text encoder</span>
+            <select id="comfyParamH3Clip"></select>
+          </label>
+          <label>
             <span id="comfyParamPanoModelLabel" title="Which checkpoint the 360° panorama recipe generates with. Auto prefers a panorama-tuned checkpoint if you have one, then Flux — measured, Flux's raw output already meets at the edges twice as well as z-image's. Only checkpoints are listed: the graph loads one model that must bring its own CLIP and VAE, for the generation and for the seam repair, so UNET-only models are not eligible. The sampler settings follow whichever you pick.">Panorama base model</span>
             <select id="comfyParamPanoModel"></select>
           </label>

@@ -64,6 +64,7 @@ export function saveCurrentSettings() {
         meshGaussians: dom.comfyParamMeshGaussians?.value || "",
         mogeDetail: dom.comfyParamMogeDetail?.value || "",
         mogeFov: dom.comfyParamMogeFov?.value || "",
+        h3TextEncoder: dom.comfyParamH3Clip?.value || "",
         panoModel: dom.comfyParamPanoModel?.value || "",
         panoLora: dom.comfyParamPanoLora?.value || "",
         panoLoraStrength: dom.comfyParamPanoLoraStrength?.value || "",

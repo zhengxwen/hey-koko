@@ -80,6 +80,8 @@ export const dom = {
   comfyParamMeshGaussians: document.querySelector("#comfyParamMeshGaussians"),
   comfyParamMogeDetail: document.querySelector("#comfyParamMogeDetail"),
   comfyParamMogeFov: document.querySelector("#comfyParamMogeFov"),
+  comfyParamH3Clip: document.querySelector("#comfyParamH3Clip"),
+  comfyParamH3ClipLabel: document.querySelector("#comfyParamH3ClipLabel"),
   comfyParamPanoModel: document.querySelector("#comfyParamPanoModel"),
   comfyParamPanoLora: document.querySelector("#comfyParamPanoLora"),
   comfyParamPanoLoraStrength: document.querySelector("#comfyParamPanoLoraStrength"),
