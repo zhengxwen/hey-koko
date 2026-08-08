@@ -593,6 +593,16 @@ import("./gallery.js").then((g) => {
       dom.messageInput.focus();
       dom.messageInput.dispatchEvent(new Event("input", { bubbles: true }));  // autosize + button state
     },
+    // Stage a gallery artifact as an attachment on the next message. Goes through
+    // selectFile(), the same path a dropped file takes, so previews, limits and the
+    // image/video/audio routing are whatever they already are.
+    attachMedia: async (url, name) => {
+      if (getActiveTab().locked) return;
+      try {
+        const file = await mediaUrlToFile(url, name);
+        if (file) await selectFile(file);
+      } catch { /* the frame stays in the strip; nothing was staged */ }
+    },
   });
   g.initGallery();
 });
@@ -1189,16 +1199,35 @@ function draggedImageUrl(dt) {
   // uri-list may hold several lines (comments start with #); take the first URL.
   const url = raw.split(/\r?\n/).find((l) => l && !l.startsWith("#")) || "";
   if (/^data:image\//i.test(url)) return url;
+  // A frame dragged out of the gallery filmstrip. Accepted whatever it is — a clip
+  // staged as a source video is as useful here as a reference image — and it is our
+  // own endpoint, so there is nothing to sniff.
+  if (/^https?:\/\/[^/]+\/api\/gallery\/file\//i.test(url)) return url;
   if (/^https?:\/\//i.test(url) && /\.(jpe?g|png|gif|webp|bmp|avif)(\?|#|$)/i.test(url)) return url;
   return null;
 }
 
-async function imageUrlToFile(url) {
+// Fetch a URL and hand it to the normal attachment path as a File. `name` keeps the
+// gallery's own filename when there is one; selectFile() routes by mime, so an image
+// becomes a reference image and a clip becomes a staged source video.
+async function mediaUrlToFile(url, name) {
   const res = await fetch(url);
   const blob = await res.blob();
-  if (!blob.type.startsWith("image/")) return null;
   const ext = (blob.type.split("/")[1] || "png").split("+")[0].replace("jpeg", "jpg");
-  return new File([blob], `dropped-image.${ext}`, { type: blob.type });
+  let base = name;
+  if (!base) {
+    const last = decodeURIComponent(String(url).split("?")[0].split("/").pop() || "");
+    base = /\.[a-z0-9]{2,5}$/i.test(last) ? last : `dropped-media.${ext}`;
+  }
+  return new File([blob], base, { type: blob.type });
+}
+
+async function imageUrlToFile(url) {
+  const file = await mediaUrlToFile(url);
+  // Anything that is not an image only gets through on the gallery path, which
+  // carries its own filename; a bare dragged URL still has to be a picture.
+  return file && (file.type.startsWith("image/") || file.type.startsWith("video/") ||
+                  file.type.startsWith("audio/")) ? file : null;
 }
 
 // When dragging a bubble image, the browser puts the <img>'s own src on the

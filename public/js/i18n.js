@@ -1316,7 +1316,9 @@ const UI = {
     gal_typeImage: "Images",
     gal_typeVideo: "Videos",
     gal_typeMesh: "3D",
-    gal_allModels: "All models",
+    gal_viewMedium: "Medium",
+    gal_viewSmall: "Small",
+    gal_viewList: "List",
     gal_srcAny: "Anywhere",
     gal_srcTabs: "In conversations",
     gal_srcArchives: "In archives",
@@ -1324,6 +1326,14 @@ const UI = {
     gal_tidyTitle: "Find unreferenced media and stale entries",
     gal_empty: "Nothing here yet. Generated images and videos land in the gallery automatically.",
     gal_noneMatch: "Nothing matches these filters.",
+    gal_desc: "Description",
+    gal_descPlaceholder: "Your own words — searched along with the prompt and the filename",
+    gal_descSaved: "saved",
+    gal_descHint: "click away to save, Esc to discard",
+    gal_useAsRef: "Use as reference",
+    gal_useAsRefHint: "Attach it to your next message",
+    gal_stripToggle: "Show/hide the gallery filmstrip",
+    gal_stripOpen: "Open the gallery",
     gal_noPreview: "no preview",
     gal_stats: "${n} item(s) \u00b7 ${size} \u00b7 ${images} image(s), ${videos} video(s) \u00b7 thumbnails ${thumbs} (rebuildable)",
     gal_fModel: "Model",
@@ -2674,7 +2684,9 @@ const UI = {
     gal_typeImage: "图片",
     gal_typeVideo: "视频",
     gal_typeMesh: "3D",
-    gal_allModels: "全部模型",
+    gal_viewMedium: "中图",
+    gal_viewSmall: "小图",
+    gal_viewList: "列表",
     gal_srcAny: "全部来源",
     gal_srcTabs: "仅对话",
     gal_srcArchives: "仅存档",
@@ -2682,6 +2694,14 @@ const UI = {
     gal_tidyTitle: "找出没有被任何对话引用的媒体和失效条目",
     gal_empty: "这里还是空的。生成的图片和视频会自动进入作品库。",
     gal_noneMatch: "没有符合这些筛选条件的媒体。",
+    gal_desc: "描述",
+    gal_descPlaceholder: "自己写的说明 —— 和提示词、文件名一起被搜索",
+    gal_descSaved: "已保存",
+    gal_descHint: "点击别处保存,Esc 放弃",
+    gal_useAsRef: "用作参考图",
+    gal_useAsRefHint: "挂到下一条消息上",
+    gal_stripToggle: "显示/隐藏作品库胶片条",
+    gal_stripOpen: "打开作品库",
     gal_noPreview: "无预览",
     gal_stats: "${n} 件 · ${size} · 图片 ${images}、视频 ${videos} · 缩略图 ${thumbs}（可重建）",
     gal_fModel: "模型",
@@ -4032,7 +4052,9 @@ const UI = {
     gal_typeImage: "圖片",
     gal_typeVideo: "影片",
     gal_typeMesh: "3D",
-    gal_allModels: "全部模型",
+    gal_viewMedium: "中圖",
+    gal_viewSmall: "小圖",
+    gal_viewList: "列表",
     gal_srcAny: "全部來源",
     gal_srcTabs: "僅對話",
     gal_srcArchives: "僅封存",
@@ -4040,6 +4062,14 @@ const UI = {
     gal_tidyTitle: "找出沒有被任何對話引用的媒體和失效條目",
     gal_empty: "這裡還是空的。生成的圖片和影片會自動進入作品庫。",
     gal_noneMatch: "沒有符合這些篩選條件的媒體。",
+    gal_desc: "描述",
+    gal_descPlaceholder: "自己寫的說明 —— 和提示詞、檔名一起被搜尋",
+    gal_descSaved: "已儲存",
+    gal_descHint: "點擊別處儲存,Esc 放棄",
+    gal_useAsRef: "用作參考圖",
+    gal_useAsRefHint: "掛到下一則訊息上",
+    gal_stripToggle: "顯示/隱藏作品庫膠片條",
+    gal_stripOpen: "開啟作品庫",
     gal_noPreview: "無預覽",
     gal_stats: "${n} 件 · ${size} · 圖片 ${images}、影片 ${videos} · 縮圖 ${thumbs}（可重建）",
     gal_fModel: "模型",
@@ -4298,6 +4328,8 @@ const BINDINGS = [
   { sel: "#galleryTitle", key: "gal_title" },
   { sel: "#gallerySearch", key: "gal_searchPlaceholder", attr: "placeholder" },
   { sel: "#galleryTidyBtn", key: "gal_tidyTitle", attr: "title" },
+  { sel: "#galleryStripToggle", key: "gal_stripToggle", attr: "title" },
+  { sel: "#galleryStripOpen", key: "gal_stripOpen", attr: "title" },
   { sel: "#proactiveLabelText", key: "label_proactive" },
   { sel: "#dailyGreetingLabelText", key: "label_dailyGreeting" },
   { sel: "#idleNudgeLabelText", key: "label_idleNudge" },
@@ -4746,8 +4778,14 @@ export function applyUILanguage() {
       if (key) opt.textContent = t(key);
     }
   }
-  const galModel = document.querySelector("#galleryModelFilter");
-  if (galModel && galModel.options[0]) galModel.options[0].textContent = t("gal_allModels");
+  const galView = document.querySelector("#galleryViewFilter");
+  if (galView) {
+    for (const opt of galView.options) {
+      const key = opt.value === "md" ? "gal_viewMedium" : opt.value === "sm" ? "gal_viewSmall"
+        : "gal_viewList";
+      opt.textContent = t(key);
+    }
+  }
   const galSource = document.querySelector("#gallerySourceFilter");
   if (galSource) {
     for (const opt of galSource.options) {

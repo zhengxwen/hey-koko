@@ -465,14 +465,18 @@
                 <option value="audio">Audio</option>
                 <option value="mesh">3D</option>
               </select>
-              <select id="galleryModelFilter" class="libraryRatingFilter">
-                <option value="">All models</option>
-              </select>
               <!-- Where a file is referenced: open conversations, archives, or both. -->
               <select id="gallerySourceFilter" class="libraryRatingFilter">
                 <option value="">Anywhere</option>
                 <option value="tabs">In conversations</option>
                 <option value="archives">In archives</option>
+              </select>
+              <!-- How the grid is drawn. Three tile sizes plus a list; the choice is
+                   remembered and switching it only restyles what is already there. -->
+              <select id="galleryViewFilter" class="libraryRatingFilter">
+                <option value="md">Medium</option>
+                <option value="sm">Small</option>
+                <option value="list">List</option>
               </select>
               <button id="galleryTidyBtn" type="button" class="secondary archiveSortBtn" title="Find unreferenced media and stale entries">🧹</button>
             </div>
@@ -660,7 +664,14 @@
             </div>
             <textarea id="messageInput" rows="2" placeholder="Say something to Bella..." autofocus></textarea>
           </div>
-          <button id="quickPromptBtn" type="button" class="quickPromptBtn" title="Quick prompts (type / or ? to trigger)">«</button>
+          <!-- One grid cell, two stacked buttons: the filmstrip toggle sits directly
+               above « rather than inside the strip it hides (nothing to click on a
+               hidden strip). -->
+          <div class="composerStackCol">
+            <button id="galleryStripToggle" type="button" class="galleryStripToggle"
+                    title="Show/hide the gallery filmstrip">🎨</button>
+            <button id="quickPromptBtn" type="button" class="quickPromptBtn" title="Quick prompts (type / or ? to trigger)">«</button>
+          </div>
           <button id="askSuggestBtn" type="button" class="askSuggestBtn" title="Let AI suggest a question">?</button>
           <label class="uploadButton" title="Upload file">
             <input id="fileInput" type="file" accept="image/*,video/*,audio/*,.pdf,.docx,.pptx,.eml,.txt,.md,.markdown" multiple />
@@ -670,6 +681,15 @@
           <div id="sendStatus" class="sendStatus" role="status" aria-live="polite" hidden></div>
           <button id="stopTranslateBtn" type="button" class="stopTranslateBtn" hidden>Stop Translation</button>
         </form>
+
+        <!-- Gallery filmstrip: the last few artifacts, on hand while chatting. Drag a
+             frame onto the composer (or press its +) to attach it as a reference;
+             click it to open the full gallery on that item. Collapses to its bar. -->
+        <div id="galleryStrip" class="galleryStrip">
+          <div id="galleryStripRow" class="galleryStripRow"></div>
+          <button id="galleryStripOpen" type="button" class="galleryStripOpen"
+                  title="Open the gallery">⤢</button>
+        </div>
       </section>
 
       <!-- Highlights & notes browser — a right-docked panel that squeezes the

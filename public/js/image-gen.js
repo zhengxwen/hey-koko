@@ -413,6 +413,12 @@ function b64ToImgSrc(b) {
 // URLs instead of tens of megabytes of video. No id (older server, a chain that
 // isn't teed) → the base64 goes in exactly as it always did.
 function storedSlots(arr, mediaIds) {
+  // Every generated artifact passes through here, which makes it the one place that
+  // can tell the gallery filmstrip something new landed.
+  const fresh = (mediaIds || []).filter(Boolean);
+  if (fresh.length) {
+    try { window.dispatchEvent(new CustomEvent("hk-media-generated", { detail: { ids: fresh } })); } catch { /* no DOM */ }
+  }
   return (arr || []).map((b64, i) => {
     const id = mediaIds && mediaIds[i];
     return id ? galleryUrl(id) : b64;

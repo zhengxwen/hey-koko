@@ -248,7 +248,7 @@ function list({ type, model, source, q, before, limit = 60 } = {}) {
   if (type) all = all.filter((e) => e.kind === type);
   if (model) all = all.filter((e) => (e.model || "").includes(model));
   if (source) all = all.filter((e) => (e.source || "generated") === source);
-  if (needle) all = all.filter((e) => `${e.prompt || ""} ${e.originalName || ""}`.toLowerCase().includes(needle));
+  if (needle) all = all.filter((e) => `${e.prompt || ""} ${e.originalName || ""} ${e.desc || ""}`.toLowerCase().includes(needle));
   all.sort((a, b) => b.ts - a.ts || (a.path < b.path ? 1 : -1));
   if (before) all = all.filter((e) => e.ts < Number(before));
   const page = all.slice(0, Math.min(500, Math.max(1, Number(limit) || 60)));
@@ -306,6 +306,25 @@ function remove(ids) {
     removed++;
   }
   return { removed };
+}
+
+// The one user-editable field. It is deliberately NOT the prompt: the prompt is the
+// record of what actually produced the file (and what "Run it again" reloads), so it
+// stays read-only, and anything the user wants to write for their own retrieval goes
+// here. Both are matched by search.
+//
+// Written the same way as everything else — append a fresh full record; the later
+// line wins at load time, and compact() collapses the history.
+function describe(id, desc) {
+  load();
+  const cur = entries.get(id);
+  if (!cur) return null;
+  const text = String(desc == null ? "" : desc).trim().slice(0, 2000);
+  const next = { ...cur };
+  if (text) next.desc = text; else delete next.desc;
+  entries.set(id, next);
+  append(next);
+  return next;
 }
 
 // Rewrite the ledger without tombstones/orphans. The one place a full rewrite is
@@ -527,6 +546,15 @@ async function handlePutThumb(req, res) {
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
+async function handleDescribe(req, res) {
+  try {
+    const body = await readBody(req);
+    const e = describe(String(body.id || ""), body.desc);
+    if (!e) { sendJson(res, 404, { error: "not in gallery" }); return; }
+    sendJson(res, 200, { ok: true, desc: e.desc || "" });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
 async function handleDelete(req, res) {
   try {
     const body = await readBody(req);
@@ -588,8 +616,8 @@ async function handleImport(req, res) {
 }
 
 module.exports = {
-  GALLERY_DIR, record, recordMany, get, list, stats, remove, compact, archiveRefs, makeThumb,
-  handleList, handleFile, handleThumb, handlePutThumb, handleDelete, handleStats, handleRefs,
-  handleCompact, handleImport, handleReveal,
+  GALLERY_DIR, record, recordMany, get, list, stats, remove, describe, compact, archiveRefs, makeThumb,
+  handleList, handleFile, handleThumb, handlePutThumb, handleDelete, handleDescribe, handleStats,
+  handleRefs, handleCompact, handleImport, handleReveal,
   _reset() { entries = null; hashIndex = null; },   // tests
 };

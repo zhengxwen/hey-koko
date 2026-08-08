@@ -23,7 +23,7 @@ import { openArchivedChat } from './archive.js';
 let items = [];            // current page of ledger entries
 let selected = null;       // the entry shown in the detail pane
 let archiveRefs = {};      // id -> [{archive, title, msgId}] (server side of the graph)
-let deps = { renderChat: () => {}, setInput: () => {} };
+let deps = { renderChat: () => {}, setInput: () => {}, attachMedia: () => {} };
 
 export function setGalleryDeps(d) { deps = { ...deps, ...d }; }
 
@@ -118,8 +118,151 @@ function tileFor(entry) {
       : entry.kind === "mesh" ? "3D" : entry.kind === "audio" ? "🔊" : entry.kind;
     btn.appendChild(badge);
   }
+  // Built for every tile but only shown in list view (CSS). Switching views is then
+  // one attribute on the grid — no re-render, no second tile builder.
+  const text = document.createElement("span");
+  text.className = "galleryTileText";
+  // The full ledger id, month folder and all — this is what the file is called on
+  // disk, and the row is where you go to find that out.
+  const name = document.createElement("span");
+  name.className = "galleryTileName";
+  name.textContent = entry.path;
+  name.title = entry.path;    // the row can be narrower than the path is long
+  const meta = document.createElement("span");
+  meta.className = "galleryTileMeta";
+  meta.textContent = [fmtDate(entry.ts), fmtSize(entry.bytes), entry.model,
+                      entry.prompt || entry.desc || entry.originalName].filter(Boolean).join(" · ");
+  text.append(name, meta);
+  btn.appendChild(text);
+
   btn.addEventListener("click", () => selectItem(entry.path));
   return btn;
+}
+
+// Two tile sizes plus a list. Remembered across sessions — a view preference the
+// user has to set again every time is not a preference.
+const VIEW_KEY = "heykoko-gallery-view";
+const VIEWS = ["md", "sm", "list"];
+
+function applyView(v) {
+  const view = VIEWS.includes(v) ? v : "md";
+  const grid = el("galleryGrid");
+  if (grid) grid.dataset.view = view;
+  try { localStorage.setItem(VIEW_KEY, view); } catch { /* private mode */ }
+  return view;
+}
+
+// Normalised here, not just in applyView: a stored view that no longer exists (the
+// old "lg") must not be written into the dropdown, or it lands on a blank option.
+function savedView() {
+  let v;
+  try { v = localStorage.getItem(VIEW_KEY); } catch { /* private mode */ }
+  return VIEWS.includes(v) ? v : "md";
+}
+
+// ---------------------------------------------------------------------------
+// The filmstrip: the last few artifacts, kept beside the conversation.
+// ---------------------------------------------------------------------------
+
+const STRIP_KEY = "heykoko-gallery-strip";
+const STRIP_LIMIT = 40;
+let stripItems = [];
+let flashIds = new Set();     // ids to highlight on the next strip render
+
+const stripOpen = () => { try { return localStorage.getItem(STRIP_KEY) !== "0"; } catch { return true; } };
+
+function setStripOpen(open) {
+  const strip = el("galleryStrip");
+  if (strip) strip.classList.toggle("isCollapsed", !open);
+  // The switch is outside the strip (in the composer), so it has to carry the state.
+  el("galleryStripToggle")?.classList.toggle("isOn", !!open);
+  el("galleryStripToggle")?.setAttribute("aria-pressed", open ? "true" : "false");
+  try { localStorage.setItem(STRIP_KEY, open ? "1" : "0"); } catch { /* private mode */ }
+  if (open) refreshStrip();
+}
+
+function stripTile(entry) {
+  const url = `/api/gallery/file/${entry.path.split("/").map(encodeURIComponent).join("/")}`;
+  const cell = document.createElement("div");
+  cell.className = "galleryStripCell";
+  cell.dataset.id = entry.path;
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "galleryStripThumb";
+  btn.title = entry.prompt || entry.desc || entry.originalName || entry.path;
+  const img = document.createElement("img");
+  img.loading = "lazy";
+  img.alt = btn.title;
+  img.src = `/api/gallery/thumb/${entry.path.split("/").map(encodeURIComponent).join("/")}`;
+  img.onerror = () => { img.remove(); btn.textContent = entry.kind === "video" ? "▶" : entry.kind === "audio" ? "🔊" : "3D"; };
+  btn.appendChild(img);
+  // Clicking a frame opens the gallery on it — the strip is a shortcut into the
+  // full view, not a second half-featured one.
+  btn.addEventListener("click", () => { openGallery().then(() => selectItem(entry.path)); });
+
+  // The composer already accepts a dropped image URL (main.js: text/uri-list →
+  // imageUrlToFile → selectFile), so dragging a frame there needs no new plumbing —
+  // only the right payload.
+  cell.draggable = true;
+  cell.addEventListener("dragstart", (ev) => {
+    try {
+      ev.dataTransfer.setData("text/uri-list", new URL(url, location.href).href);
+      ev.dataTransfer.setData("text/plain", new URL(url, location.href).href);
+      ev.dataTransfer.effectAllowed = "copy";
+    } catch { /* browser said no */ }
+  });
+
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "galleryStripAdd";
+  add.textContent = "＋";
+  add.title = t("gal_useAsRef");
+  add.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    deps.attachMedia(url, entry.path.split("/").pop());
+    add.textContent = "✓";
+    setTimeout(() => { add.textContent = "＋"; }, 1200);
+  });
+
+  cell.append(btn, add);
+  if (entry.kind !== "image") {
+    const badge = document.createElement("span");
+    badge.className = "galleryBadge";
+    badge.textContent = entry.kind === "video" ? "▶" : entry.kind === "audio" ? "🔊" : "3D";
+    btn.appendChild(badge);
+  }
+  if (flashIds.has(entry.path)) cell.classList.add("isNew");
+  return cell;
+}
+
+async function refreshStrip() {
+  const row = el("galleryStripRow");
+  if (!row || !stripOpen()) return;
+  try {
+    const r = await fetch(`/api/gallery/list?limit=${STRIP_LIMIT}`).then((x) => x.json());
+    stripItems = r.items || [];
+  } catch { return; }
+  row.innerHTML = "";
+  for (const e of stripItems) row.appendChild(stripTile(e));
+  if (flashIds.size) {
+    const first = row.querySelector(".galleryStripCell.isNew");
+    if (first) first.scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+    // The class stays on the element; clear the set so the next refresh is calm.
+    setTimeout(() => {
+      flashIds.clear();
+      row.querySelectorAll(".isNew").forEach((n) => n.classList.remove("isNew"));
+    }, 4000);
+  }
+}
+
+// Called when a render finishes (image-gen.js emits it from storedSlots, the one
+// place every generated artifact passes through).
+function onMediaGenerated(ids) {
+  const list = (ids || []).filter(Boolean);
+  if (!list.length) return;
+  flashIds = new Set(list);
+  refreshStrip();
 }
 
 function renderDetail() {
@@ -139,12 +282,63 @@ function renderDetail() {
     pane.appendChild(media);
   }
 
+  // The prompt is provenance — what actually produced this file, and what "Run it
+  // again" reloads — so it is shown as-is and not editable.
   if (e.prompt) {
     const p = document.createElement("p");
     p.className = "galleryDetailPrompt";
     p.textContent = e.prompt;
     pane.appendChild(p);
   }
+
+  // The description is the editable half: whatever the user wants to be able to find
+  // this by later. Search matches it alongside the prompt and the original filename.
+  const descLabel = document.createElement("p");
+  // Its own class, not .galleryRefsHead: same look, but the reference groups below
+  // are counted by that selector.
+  descLabel.className = "hint galleryDescHead";
+  descLabel.textContent = t("gal_desc");
+  const desc = document.createElement("textarea");
+  desc.className = "galleryDesc";
+  desc.rows = 2;
+  desc.value = e.desc || "";
+  desc.placeholder = t("gal_descPlaceholder");
+  // Saved on blur rather than per keystroke: every save appends a ledger line, and
+  // one line per character typed would be absurd. Escape throws the edit away
+  // (same as the tab-title rename in main.js). While it has focus the label spells
+  // both of those out — an invisible commit rule is a trap.
+  desc.addEventListener("change", async () => {
+    const text = desc.value.trim();
+    if (text === (e.desc || "")) return;
+    try {
+      const r = await fetch("/api/gallery/describe", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: e.path, desc: text }) }).then((x) => x.json());
+      if (r && r.ok) {
+        e.desc = r.desc;                                  // `e` is the live object in `items`
+        descLabel.textContent = `${t("gal_desc")} · ${t("gal_descSaved")}`;
+        setTimeout(() => { descLabel.textContent = t("gal_desc"); }, 1800);
+      }
+    } catch { /* the box keeps the text; the next blur retries */ }
+  });
+  desc.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    // Put the saved text back BEFORE blurring: restoring the value the field had at
+    // focus is also what stops the browser from firing `change` on the way out.
+    desc.value = e.desc || "";
+    desc.blur();
+    // Nothing else in the gallery listens for Escape, but the document does (it stops
+    // speech) — this key press was about this box.
+    ev.stopPropagation();
+    ev.preventDefault();
+  });
+  desc.addEventListener("focus", () => {
+    descLabel.textContent = `${t("gal_desc")} · ${t("gal_descHint")}`;
+  });
+  desc.addEventListener("blur", () => {
+    // Leave a "saved" flash alone; only clear the hint we put up on focus.
+    if (descLabel.textContent.includes(t("gal_descHint"))) descLabel.textContent = t("gal_desc");
+  });
+  pane.append(descLabel, desc);
 
   const dl = document.createElement("dl");
   const rows = [
@@ -175,6 +369,12 @@ function renderDetail() {
     actions.appendChild(b);
     return b;
   };
+  // Send it back into the conversation as an attachment — the point of having the
+  // gallery open next to the chat at all. Closes the overlay so the composer is there.
+  if (e.kind !== "mesh") act(t("gal_useAsRef"), () => {
+    deps.attachMedia(url, e.path.split("/").pop());
+    closeGallery();
+  }, t("gal_useAsRefHint"));
   if (e.prompt) act(t("gal_copyPrompt"), () => navigator.clipboard?.writeText(e.prompt));
   // Re-run fills the composer and stops: a render costs real GPU minutes, so the
   // user presses Enter, not us.
@@ -258,6 +458,7 @@ async function deleteItem(entry) {
     body: JSON.stringify({ ids: [entry.path] }) });
   selected = null;
   await refresh();
+  await refreshStrip();
 }
 
 // 🧹 — the outlet for media kept when a conversation was deleted. Everything the
@@ -277,6 +478,7 @@ async function tidy() {
   await fetch("/api/gallery/compact", { method: "POST" });
   selected = null;
   await refresh();
+  await refreshStrip();
 }
 
 async function loadArchiveRefs() {
@@ -289,12 +491,10 @@ async function loadArchiveRefs() {
 async function refresh() {
   const q = el("gallerySearch")?.value.trim() || "";
   const type = el("galleryTypeFilter")?.value || "";
-  const model = el("galleryModelFilter")?.value || "";
   const source = el("gallerySourceFilter")?.value || "";
   const params = new URLSearchParams({ limit: "200" });
   if (q) params.set("q", q);
   if (type) params.set("type", type);
-  if (model) params.set("model", model);
   const [list, stats] = await Promise.all([
     fetch(`/api/gallery/list?${params}`).then((r) => r.json()).catch(() => ({ items: [] })),
     fetch("/api/gallery/stats").then((r) => r.json()).catch(() => null),
@@ -333,15 +533,6 @@ async function refresh() {
     }) + (source ? ` · ${t("gal_shown", { n: items.length })}` : "");
   }
 
-  // Model filter options are derived from what is actually in the gallery.
-  const sel = el("galleryModelFilter");
-  if (sel) {
-    const models = [...new Set((list.items || []).map((e) => e.model).filter(Boolean))].sort();
-    const cur = sel.value;
-    while (sel.options.length > 1) sel.remove(1);
-    for (const m of models) sel.add(new Option(m, m));
-    if (models.includes(cur)) sel.value = cur;
-  }
   if (selected && !items.some((e) => e.path === selected.path)) { selected = null; }
   renderDetail();
 }
@@ -356,6 +547,9 @@ export async function openGallery() {
 
 export function closeGallery() {
   el("galleryOverlay")?.classList.remove("isOpen");
+  // Whatever happened in there — imports, deletes, a tidy — the strip is the view
+  // that stays on screen, so it re-reads on the way out.
+  refreshStrip();
 }
 
 export function initGallery() {
@@ -370,8 +564,20 @@ export function initGallery() {
   });
   el("galleryCloseBtn")?.addEventListener("click", closeGallery);
   el("galleryTidyBtn")?.addEventListener("click", tidy);
+
+  // Filmstrip
+  setStripOpen(stripOpen());
+  el("galleryStripToggle")?.addEventListener("click", () => setStripOpen(!stripOpen()));
+  el("galleryStripOpen")?.addEventListener("click", openGallery);
+  window.addEventListener("hk-media-generated", (ev) => onMediaGenerated(ev.detail && ev.detail.ids));
+  refreshStrip();
   el("galleryTypeFilter")?.addEventListener("change", refresh);
-  el("galleryModelFilter")?.addEventListener("change", refresh);
+  const viewSel = el("galleryViewFilter");
+  if (viewSel) {
+    viewSel.value = savedView();
+    applyView(viewSel.value);
+    viewSel.addEventListener("change", () => applyView(viewSel.value));
+  }
   // Re-reads the archive half of the graph first: the answer depends on it, and the
   // server side is a cached index, so asking again is cheap.
   el("gallerySourceFilter")?.addEventListener("change", async () => { await loadArchiveRefs(); await refresh(); });
