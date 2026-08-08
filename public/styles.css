@@ -5127,15 +5127,15 @@ body.isResizingComposer {
   position: absolute;
   right: 6px;
   bottom: 6px;
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   display: grid;
   place-items: center;
   border: none;
-  border-radius: 6px;
+  border-radius: 5px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  font-size: 15px;
+  font-size: 12px;
   text-decoration: none;
   cursor: pointer;
   opacity: 0;
@@ -5152,28 +5152,28 @@ body.isResizingComposer {
 }
 
 /* "Replace image" overlay, immediately left of the download button
-   (download is right:6px + 28px wide → its left edge is at 34px; +2px gap). */
+   (download is right:6px + 22px wide → its left edge is at 28px; +2px gap). */
 .messageReplaceBtn {
   position: absolute;
-  right: 36px;
+  right: 30px;
   bottom: 6px;
   box-sizing: border-box;
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   /* Override the global button rule (min-height:42px / padding:0 16px) so this
-     stays a 28×28 square with the icon centered. */
+     stays a 22×22 square with the icon centered. */
   min-width: 0;
   min-height: 0;
   padding: 0;
   display: grid;
   place-items: center;
   border: none;
-  border-radius: 6px;
+  border-radius: 5px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   /* ⬆ is the emoji-presentation twin of the download button's ⬇, so use the
-     same 15px — they then render as an identical up/down pair. */
-  font-size: 15px;
+     same 12px — they then render as an identical up/down pair. */
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
   opacity: 0;
@@ -5195,20 +5195,20 @@ body.isResizingComposer {
   right: 6px;
   top: 6px;
   box-sizing: border-box;
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   /* Override the global button rule (min-height:42px / padding:0 16px) so the blue
-     background stays a 28×28 square with the icon centered. */
+     background stays a 22×22 square with the icon centered. */
   min-width: 0;
   min-height: 0;
   padding: 0;
   display: grid;
   place-items: center;
   border: none;
-  border-radius: 6px;
+  border-radius: 5px;
   background: rgba(0, 0, 0, 0.5);
   color: #fff;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
   opacity: 0;

@@ -210,31 +210,6 @@ function comfyPositive(promptText) {
   return base ? `${base}, ${add}` : add;
 }
 
-// Whether the currently-selected ComfyUI model can use an inpaint mask. True for
-// any image model that takes a source image (plain checkpoints + all instruction
-// editors + boogu img2img); false for the Ollama path, video models, and the
-// txt2img-only models that have no source latent to mask (HiDream-I1 / Z-Image).
-// Shared by the compose-area staged thumbnail and the sent-bubble mask button so
-// both surfaces agree on when the 🖌 control appears.
-export function comfyModelSupportsMask() {
-  const comfyModel = dom.comfyModelSelect?.value;
-  if (!comfyModel) return false;
-  if (dom.imageModelSelect?.value) return false; // Ollama image model wins → no mask
-  if (state.comfyVideoModels && state.comfyVideoModels.has(comfyModel)) return false;
-  // Reference-driven models read a mask as a subject CUTOUT instead — that surface
-  // owns the 🖌 button on those, and the two must never both claim it.
-  if (comfyModelSupportsRefMask()) return false;
-  if (/hidream.?i1|z.?image/i.test(comfyModel)) return false; // txt2img-only
-  if (/hidream.?o1/i.test(comfyModel)) return false; // O1 edits via reference conditioning on an empty latent — no source latent to mask
-  if (comfyModel === "image-upscale") return false; // pure upscale — nothing to mask
-  // A 360° panorama IS the whole scene — there is no subject to isolate in it.
-  if (comfyModel === "moge-panorama") return false;
-  // The 360° recipe already derives its own mask from the attached photo's coverage;
-  // a painted one would fight it for the same input.
-  if (comfyModel === PANORAMA_RECIPE) return false;
-  return true;
-}
-
 // Whether the selected ComfyUI model reads its attachments as REFERENCES, so EVERY
 // staged image gets a 🖌 button and the mask painted there is a subject cutout
 // ("keep what is inside") rather than an inpaint region. The model list is decided
@@ -242,12 +217,39 @@ export function comfyModelSupportsMask() {
 // entry, where the same attachment is a reference alongside a source clip but the
 // first FRAME without one — cutting out a first frame would whiten the video.
 export function comfyModelSupportsRefMask() {
-  const comfyModel = dom.comfyModelSelect?.value;
-  if (!comfyModel) return false;
   if (dom.imageModelSelect?.value) return false;         // Ollama image model wins
-  if (!state.comfyRefMaskModels?.has(comfyModel)) return false;
-  if (comfyModel === BERNINI_AUTO && !state.selectedVideo) return false; // i2v → the image is frame 0
+  return modelReadsRefMask(dom.comfyModelSelect?.value, !!state.selectedVideo);
+}
+
+// The same judgement for an ARBITRARY model name rather than the dropdown's current
+// value — /imagine -m names the model per run, so the one that will read the mask is
+// only known when the job runs. Used by generateImage to decide how a painted region
+// is meant (see normalizeMasks there).
+export function modelReadsRefMask(model, hasSourceVideo = false) {
+  if (!model) return false;
+  if (!state.comfyRefMaskModels?.has(model)) return false;
+  if (model === BERNINI_AUTO && !hasSourceVideo) return false; // i2v → the image is frame 0
   return true;
+}
+
+// Which way this run reads the painted regions. A region is the SAME pixels either way;
+// only the reading differs — reference-driven models take it as a subject cutout
+// ("keep what is inside", per image), everything else as an inpaint region on image 0
+// ("repaint what is inside"). The 🖌 button cannot decide that any more, since -m can
+// name a model the dropdown never showed, so it always offers the brush and stores the
+// region; the reading is settled here, against the model that actually runs. Never both
+// at once: handing a cutout to an inpainter would repaint the very subject it kept.
+export function maskRoles({ imageModel, comfyModel, hasSourceVideo, mask, refMasks }) {
+  if (imageModel || !comfyModel) return { mask, refMasks };   // Ollama path — untouched
+  if (modelReadsRefMask(comfyModel, hasSourceVideo)) {
+    if (mask && !(Array.isArray(refMasks) && refMasks[0])) {
+      refMasks = Array.isArray(refMasks) ? refMasks.slice() : [];
+      refMasks[0] = mask;
+    }
+    return { mask: null, refMasks };
+  }
+  // masks on images 2..n mean nothing to a non-reference model
+  return { mask: mask || (Array.isArray(refMasks) ? refMasks[0] : null) || null, refMasks: null };
 }
 
 export function parseNoteCommand(input) {
@@ -445,10 +447,11 @@ function b64ToImgSrc(b) {
 // isn't teed) → the base64 goes in exactly as it always did.
 function storedSlots(arr, mediaIds) {
   // Every generated artifact passes through here, which makes it the one place that
-  // can tell the gallery filmstrip something new landed.
+  // can tell the gallery filmstrip something new landed. Uploads fire the same event
+  // from main.js fileIntoGallery().
   const fresh = (mediaIds || []).filter(Boolean);
   if (fresh.length) {
-    try { window.dispatchEvent(new CustomEvent("hk-media-generated", { detail: { ids: fresh } })); } catch { /* no DOM */ }
+    try { window.dispatchEvent(new CustomEvent("hk-media-added", { detail: { ids: fresh } })); } catch { /* no DOM */ }
   }
   return (arr || []).map((b64, i) => {
     const id = mediaIds && mediaIds[i];
@@ -1826,6 +1829,11 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // video path. SCAIL-2 is excluded: it has no still path (the driving video IS the
   // input), so it must stay on the video path and report the missing-video error.
   const isAnimateStill = isWanAnimateModel(comfyModel) && !initVideo && Array.isArray(refImages) && refImages.length >= 2;
+
+  // Settle what the painted regions MEAN for the model that is actually about to run.
+  ({ mask: maskB64, refMasks } = maskRoles({
+    imageModel, comfyModel, hasSourceVideo: !!initVideo, mask: maskB64, refMasks,
+  }));
 
   // A selected ComfyUI 3D model routes to the mesh path (checked before the video
   // path — mesh models are in neither set, but the order documents the intent).

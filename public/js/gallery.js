@@ -343,9 +343,9 @@ function wireDropZone(node) {
   });
 }
 
-// Called when a render finishes (image-gen.js emits it from storedSlots, the one
-// place every generated artifact passes through).
-function onMediaGenerated(ids) {
+// Something new landed in the gallery: a finished render (image-gen.js storedSlots)
+// or a file the user attached (main.js fileIntoGallery).
+function onMediaAdded(ids) {
   const list = (ids || []).filter(Boolean);
   if (!list.length) return;
   flashIds = new Set(list);
@@ -736,7 +736,7 @@ export function initGallery() {
   setStripOpen(stripOpen());
   el("galleryStripToggle")?.addEventListener("click", () => setStripOpen(!stripOpen()));
   el("galleryStripOpen")?.addEventListener("click", openGallery);
-  window.addEventListener("hk-media-generated", (ev) => onMediaGenerated(ev.detail && ev.detail.ids));
+  window.addEventListener("hk-media-added", (ev) => onMediaAdded(ev.detail && ev.detail.ids));
   wireDropZone(el("galleryOverlay"));
   wireDropZone(el("galleryStrip"));
   refreshStrip();

@@ -12,7 +12,7 @@ import { pauseOrStopSpeech, populateVoiceList } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveTabsNow, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, clearSelectedAudio, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint, openModelBrowser, openComfyModelPicker, syncComfyModelPickLabel, relocalizeComfyModels, relocalizeBrowseOption, BROWSE_MODELS_VALUE } from './ollama.js';
-import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsMask, comfyModelSupportsRefMask } from './image-gen.js';
+import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsRefMask } from './image-gen.js';
 import { setDeps as voiceGenSetDeps } from './voice-gen.js';
 import { setRenderChat as translateSetRenderChat, stopTranslation } from './translate.js';
 import { renderChat, sendMessage, setGenerating, regenerateReply, analyzeMedia, generateProactiveReply, markStopping, showSendError, initHighlightUI } from './chat.js';
@@ -1709,15 +1709,18 @@ function renderStagedImagePreview() {
     btn.addEventListener("click", () => removeStagedImage(idx));
     thumb.appendChild(btn);
 
-    // 🖌 mask. Two different meanings, never both at once:
-    //  • inpaint — on the FIRST staged image (the scene) with a mask-capable ComfyUI
-    //    model. Single image → local repaint; multi-image (person-swap) → the mask on
-    //    image #1 locks its background pixel-for-pixel while the person from the other
-    //    image(s) is composed into the masked region.
-    //  • subject cutout — on EVERY image of a reference-driven model (r2v / subject→
-    //    image), where the mask says which part of the photo IS the subject.
+    // 🖌 mask, on every staged image and whatever the selected model — the region is
+    // the same pixels either way and the model that reads it is only settled when the
+    // job runs (/imagine -m can name one the dropdown doesn't show). Two readings:
+    //  • inpaint — image #1 (the scene) with a mask-capable model. Single image →
+    //    local repaint; multi-image (person-swap) → the mask locks the background
+    //    pixel-for-pixel while the person from the other image(s) is composed in.
+    //  • subject cutout — reference-driven models (r2v / subject→image), where the
+    //    mask says which part of the photo IS the subject.
+    // generateImage picks the reading; the title below just reflects the current
+    // dropdown, which is the likely one.
     const refMask = comfyModelSupportsRefMask();
-    if (refMask || (idx === 0 && comfyModelSupportsMask())) {
+    {
       const maskBtn = document.createElement("button");
       maskBtn.type = "button";
       maskBtn.className = "previewThumbMask" + (img.mask ? " hasMask" : "");
@@ -1750,8 +1753,51 @@ function renderStagedImagePreview() {
 }
 
 // Append newly staged images to the existing selection (instead of replacing).
+// File a user-supplied attachment into the gallery. Everything the app renders is
+// already filed server-side; a photo the user brings in is media too, and it is the
+// only kind that used to exist nowhere but inside the conversation.
+//
+// The bytes go up raw (not base64-in-JSON) and the server dedups on content hash, so
+// attaching the same picture repeatedly costs one file. Best-effort by design: this
+// must never be able to stop an attachment from being staged.
+// Staged images carry only their base64, and it may have been converted since the
+// file was picked (JPEG re-encode, EXIF bake-in) — so trust the bytes over the
+// caller's label, or the gallery ends up with .jpg files that are really PNGs.
+function sniffImageMime(b64, fallback) {
+  if (b64.startsWith("/9j/")) return "image/jpeg";
+  if (b64.startsWith("iVBOR")) return "image/png";
+  if (b64.startsWith("UklGR")) return "image/webp";
+  if (b64.startsWith("R0lGOD")) return "image/gif";
+  return fallback;
+}
+
+async function fileIntoGallery(b64, mime, name) {
+  try {
+    if (!b64) return;
+    const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const r = await fetch("/api/gallery/upload", {
+      method: "POST",
+      headers: { "Content-Type": mime || "application/octet-stream",
+                 "X-Gallery-Name": encodeURIComponent(name || "") },
+      body: bin,
+    });
+    const j = await r.json().catch(() => null);
+    if (j && j.id && !j.deduped) {
+      window.dispatchEvent(new CustomEvent("hk-media-added", { detail: { ids: [j.id] } }));
+    }
+  } catch (e) {
+    console.warn("[gallery] could not file the attachment:", e.message);
+  }
+}
+
 function addStagedImages(newImages) {
   if (!newImages || newImages.length === 0) return;
+  for (const im of newImages) {
+    // The staged bytes, not the original file: EXIF rotation is already baked in and
+    // exotic formats converted, so this is the picture the conversation will use.
+    fileIntoGallery(im.base64, sniffImageMime(im.base64 || "", im.mime || "image/jpeg"),
+                    im.displayName || im.name);
+  }
   state.animateMaskPoint = null; // staging changes the scene → drop any old Replace point
   const all = [...getStagedImages(), ...newImages];
   state.selectedImage = all.length === 1 ? all[0] : { multi: all, preview: all[0].preview };
@@ -1795,6 +1841,7 @@ async function selectAudioFile(file) {
     name: file.name,
     duration: duration || 0,
   };
+  fileIntoGallery(state.selectedAudio.base64, state.selectedAudio.mime, file.name);
   clearSelectedFile(); // audio + documents are mutually exclusive (different send paths)
   renderStagedAudioPreview();
   dom.messageInput.focus();
@@ -1873,6 +1920,11 @@ function renderStagedVideoPreview() {
 // Append newly staged source videos to the existing selection (no hard count cap).
 function addStagedVideos(newVideos) {
   if (!newVideos || newVideos.length === 0) return;
+  // Same reason as images, and it matters more here: a staged clip exists as base64
+  // inside the tab record and nowhere else. "It came off the user's disk" is not a
+  // safety net — the conversation is what has to survive, and IndexedDB is exactly
+  // the store that lost everything once.
+  for (const v of newVideos) fileIntoGallery(v.base64, v.mime || "video/mp4", v.displayName || v.name);
   // A new source clip changes the scene → drop any old Replace point. The point is
   // pinned to the FIRST staged video, so only clear it when starting from empty.
   if (getStagedVideos().length === 0) state.animateMaskPoint = null;

@@ -162,6 +162,9 @@ function saveChatMessage(message) {
   // reload/edit it after a refresh and a resend regenerates with it. Without this
   // the mask lives only in memory and vanishes on reload.
   if (message.mask) stored.mask = message.mask;
+  // Per-image painted regions (the 🖌 button writes these; msg.mask is the older
+  // single-mask slot). Sparse — holes mean "no mask on that image".
+  if (message.imageMasks?.some(Boolean)) stored.imageMasks = message.imageMasks;
   if (message.generatedThumbnails && message.generatedThumbnails.length > 0) {
     stored.generatedThumbnails = message.generatedThumbnails;
   }

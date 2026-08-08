@@ -12,7 +12,7 @@ import { setAvatarState, showExpression, detectExpression, isCloudModel, resetAv
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.js';
-import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractKeyFrames, comfyModelSupportsMask, comfyModelSupportsRefMask } from './image-gen.js';
+import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractKeyFrames, comfyModelSupportsRefMask } from './image-gen.js';
 import { openMaskModal } from './mask-paint.js';
 import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
@@ -714,18 +714,12 @@ function attachUploadedImages(userMessage, image) {
   userMessage.displayImages = list.map((img) => img.preview);
   const displayNames = list.map((img) => img.displayName || null);
   if (displayNames.some(Boolean)) userMessage.imageNames = displayNames;
-  // Painted masks ride along, as ONE of two things — never both, or the subject
-  // cutout would be handed to an inpainter as a region to repaint as well:
-  //  • reference-driven model → a per-image cutout array (keep what is inside),
-  //  • anything else → the single inpaint mask, painted on the FIRST image (the
-  //    scene) and locking its background outside the painted region.
-  if (comfyModelSupportsRefMask()) {
-    const masks = list.map((img) => img.mask || undefined);
-    if (masks.some(Boolean)) userMessage.imageMasks = masks;
-  } else {
-    const maskCarrier = image.multi ? image.multi[0] : image;
-    if (maskCarrier && maskCarrier.mask) userMessage.mask = maskCarrier.mask;
-  }
+  // Painted masks ride along as ONE per-image array, whatever the model. Which way a
+  // region is read — an inpaint region on the first image, or a subject cutout — is a
+  // question for the model that ends up running (see generateImage), not for the one
+  // that happened to be selected while painting: /imagine -m can name another.
+  const masks = list.map((img) => img.mask || undefined);
+  if (masks.some(Boolean)) userMessage.imageMasks = masks;
 }
 
 // Disambiguate repeated filenames by suffixing -1, -2 (before the extension) so each
@@ -3637,18 +3631,16 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         wrapper.appendChild(makeReplaceImageButton(index, imgIdx));
       }
       wrapper.appendChild(makeDownloadButton("imageDownloadBtn", dlSrc, fname, base64ByteLength(dlSrc), t("btn_downloadImage")));
-      // Inpaint mask: on the FIRST image of a USER bubble, when a mask-capable
-      // ComfyUI model is selected, float a 🖌 button (top-right) to paint/edit the
-      // region. Single image → local repaint; multi-image (person-swap) → the mask
-      // on image #1 (the scene) locks its background outside the painted region.
-      // The mask is stored once on the message; a resend regenerates with it.
-      // …and on EVERY image when a reference-driven model (r2v / subject→image) is
-      // selected, where the mask is a SUBJECT CUTOUT instead: only what is inside it
-      // reaches the model. Those live in msg.imageMasks[imgIdx]; the inpaint mask
-      // stays on msg.mask. Either way a resend regenerates with what is stored.
+      // 🖌 on EVERY image of a USER bubble, always — the model that will read the mask
+      // is chosen at generation time (the dropdown, or /imagine -m), so hiding the brush
+      // on the model that happens to be selected while looking at an old bubble would be
+      // gating on the wrong thing. The painted region is stored per image in
+      // msg.imageMasks[imgIdx]; how it is READ — inpaint region on image 0, or subject
+      // cutout — is decided against the running model in generateImage. msg.mask is the
+      // older single-mask slot, still honoured for messages that carry one.
       const bubbleRefMask = comfyModelSupportsRefMask();
-      if (role === "user" && Number.isInteger(index) && (bubbleRefMask || (imgIdx === 0 && comfyModelSupportsMask()))) {
-        const has = bubbleRefMask ? !!msg?.imageMasks?.[imgIdx] : !!msg?.mask;
+      if (role === "user" && Number.isInteger(index)) {
+        const has = !!(msg?.imageMasks?.[imgIdx] || (imgIdx === 0 && msg?.mask));
         const maskBtn = document.createElement("button");
         maskBtn.type = "button";
         maskBtn.className = "messageMaskBtn" + (has ? " hasMask" : "");
@@ -3662,21 +3654,19 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
           const tab = getActiveTab();
           const mm = tab?.messages?.[index];
           if (!mm) return;
-          const b64 = mm.contextImages?.[bubbleRefMask ? imgIdx : 0] || "";
+          const b64 = mm.contextImages?.[imgIdx] || "";
           const fullSrc = b64
             ? mediaSrc(b64)
             : src;
-          const prior = bubbleRefMask ? (mm.imageMasks?.[imgIdx] || null) : (mm.mask || null);
+          const prior = mm.imageMasks?.[imgIdx] || (imgIdx === 0 ? mm.mask || null : null);
           const result = await openMaskModal(fullSrc, prior);
           if (result === null) return; // cancelled (X / Cancel / Esc) → leave the mask untouched
-          if (bubbleRefMask) {
-            // Sparse by design: index i holds image i's cutout, holes are "no mask".
-            const masks = mm.imageMasks || (mm.imageMasks = []);
-            masks[imgIdx] = result || undefined;   // "" = cleared via apply → drop it
-            if (!masks.some(Boolean)) delete mm.imageMasks;
-          } else {
-            mm.mask = result || undefined;
-          }
+          // Sparse by design: index i holds image i's region, holes are "no mask".
+          const masks = mm.imageMasks || (mm.imageMasks = []);
+          masks[imgIdx] = result || undefined;   // "" = cleared via apply → drop it
+          if (!masks.some(Boolean)) delete mm.imageMasks;
+          // The older single-mask slot would otherwise shadow an edit of image 0.
+          if (imgIdx === 0) delete mm.mask;
           saveChat();
           renderChat();
         });
