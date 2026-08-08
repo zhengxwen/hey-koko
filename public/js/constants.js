@@ -70,6 +70,21 @@ export const SIZE_PRESETS = {
   "720p-portrait": "720x1280",
   "1080p": "1920x1080",
   "1080p-portrait": "1080x1920",
+  // 21:9 reduces to 7:3, so 1792×768 is the ratio exactly — and both sides divide by 64,
+  // the strictest dimMult any builder uses, so nothing snaps it off-ratio. Same value as
+  // the dropdown's ultrawide entry; the flag and the menu must not disagree.
+  // Named "ultrawide" rather than "21:9": every other preset here is a word, and a colon
+  // now means something specific elsewhere in the command surface (a model id's mode).
+  // No portrait twin: a 9:21 frame is not a thing anyone asks a model for.
+  //
+  // The /64 rule quantizes this ratio hard: exact 7:3 needs width 7k and height 3k with
+  // both divisible by 64, so k must itself be a multiple of 64 — the ONLY exact rungs are
+  // 448×192, 896×384, 1344×576 and 1792×768. Small is 896×384: a quarter of the pixels,
+  // so roughly 4× faster, for drafting. Its 384px side is under what most current
+  // checkpoints are trained at, so expect it to be rougher than the full size — that is
+  // the trade it exists to make.
+  "ultrawide-small": "896x384",
+  ultrawide: "1792x768",
   "2k": "2560x1440",
   "2k-portrait": "1440x2560",
   "4k": "3840x2160",

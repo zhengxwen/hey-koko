@@ -11,6 +11,8 @@ import { TOOL_CMD_ALIASES } from './tool-cmd.js';
 // The "/imagine -m …" completion reads the same model index the flag resolves against.
 // Safe direction: ollama.js never reaches mentions.js.
 import { matchModels, splitModelToken } from './ollama.js';
+// The named --size values, so the popup offers exactly what the flag accepts.
+import { SIZE_PRESETS } from './constants.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", video: "📺", doc: "📝", chat: "💬", other: "📎" };
 export const kindIcon = (k) => KIND_ICON[k] || "📎";
@@ -65,9 +67,9 @@ export async function loadMentionArchives() {
 
 // If the cursor sits inside an "@partial" (library docs) or "#partial" (conversation
 // archives) token within an "/ask …" line — or an "@partial" (tool alias) within a
-// "/tool …" line, or the argument of "-m"/"--model" within an "/imagine …" line —
-// return { sigil, partial, start, mode } (start = index where the replacement begins,
-// mode = "ask" | "tool" | "model"); otherwise null.
+// "/tool …" line, or the argument of "-m"/"--model" or "--size" within an "/imagine …"
+// line — return { sigil, partial, start, mode } (start = index where the replacement
+// begins, mode = "ask" | "tool" | "model" | "size"); otherwise null.
 export function mentionContext(input) {
   if (!input) return null;
   const val = input.value;
@@ -78,11 +80,15 @@ export function mentionContext(input) {
   const cursor = input.selectionStart;
   const before = val.slice(0, cursor);
   if (isImagine) {
-    // The model flag's argument. Unlike the others this token carries no sigil, so the
-    // replacement starts at the token itself (start is not backed up by one).
+    // A flag's ARGUMENT. Unlike the @/# tokens these carry no sigil, so the replacement
+    // starts at the token itself (start is not backed up by one).
     const mm = before.match(/(?:^|\s)(?:-m|--model)\s+(\S*)$/);
-    if (!mm) return null;
-    return { sigil: "", partial: mm[1], start: cursor - mm[1].length, mode: "model" };
+    if (mm) return { sigil: "", partial: mm[1], start: cursor - mm[1].length, mode: "model" };
+    // "--size" only — "-s" is the short form of "--second" (a duration), so completing it
+    // with resolutions would offer values the flag would reject.
+    const sm = before.match(/(?:^|\s)--size\s+(\S*)$/);
+    if (sm) return { sigil: "", partial: sm[1], start: cursor - sm[1].length, mode: "size" };
+    return null;
   }
   const m = before.match(/(?:^|\s)([@#])(\S*)$/);   // '@'/'#' preceded by start/space, no space to cursor
   if (!m) return null;
@@ -123,7 +129,29 @@ function archiveShort(filename) {
 export function showMentionPopup(filter, sigil = "@", mode = "ask") {
   const f = (filter || "").toLowerCase();
   let items;
-  if (mode === "model") {
+  // A non-selectable note under the rows. Only the size popup uses one: its list is the
+  // NAMED sizes, but --size also takes a literal WxH, and nothing on screen said so.
+  let hint = "";
+  if (mode === "size") {
+    // "/imagine --size …": the NAMED sizes. A raw WxH is always allowed too, but there is
+    // nothing to complete about it — the hint below says so instead. The description
+    // carries the pixel count because that is what decides how long the render takes,
+    // which is the whole reason to reach for a smaller preset.
+    items = Object.entries(SIZE_PRESETS)
+      .filter(([name]) => !f || name.toLowerCase().includes(f))
+      .map(([name, dims]) => {
+        const [w, h] = dims.split("x").map(Number);
+        const mp = (w * h) / 1e6;
+        return {
+          // Filled glyphs, not the hollow ▭/▯ pair: at this size the hollow portrait one
+          // renders as a hairline and reads as a missing character rather than a shape.
+          sigil: "", token: name, icon: w > h ? "▬" : w < h ? "▮" : "◼",
+          name,
+          desc: `${w}×${h} · ${mp < 1 ? mp.toFixed(2) : mp.toFixed(1)} MP`,
+        };
+      });
+    hint = t("mention_sizeCustom");
+  } else if (mode === "model") {
     // "/imagine -m …": complete a canonical model id, or — once an "@" is typed — the
     // precision tiers that model actually ships. Rows come from matchModels, the same
     // function the flag resolves with, so the popup can never offer something the flag
@@ -171,7 +199,9 @@ export function showMentionPopup(filter, sigil = "@", mode = "ask") {
       .map((d) => ({ sigil: "@", token: d.docId, icon: kindIcon(d.docKind), name: d.title || d.docId, desc: `@${d.docId}` }));
     items = [...folders, ...docs];
   }
-  if (!items.length) { hideMentionPopup(); return; }
+  // The hint alone is enough to keep the popup open — and a filter matching NO preset is
+  // exactly when the user is already typing a custom size and most needs to see it.
+  if (!items.length && !hint) { hideMentionPopup(); return; }
   dom.mentionPopup.innerHTML = "";
   state.mentionActiveIndex = 0;
   items.forEach((it, i) => {
@@ -187,6 +217,14 @@ export function showMentionPopup(filter, sigil = "@", mode = "ask") {
     el.addEventListener("mouseenter", () => setMentionActive(i));
     dom.mentionPopup.appendChild(el);
   });
+  // Not a .commandItem on purpose: setMentionActive / moveMentionSelection walk that
+  // class, so a hint built from it would become an arrow-key stop that inserts nothing.
+  if (hint) {
+    const h = document.createElement("div");
+    h.className = "commandPopupHint";
+    h.textContent = hint;
+    dom.mentionPopup.appendChild(h);
+  }
   dom.mentionPopup.hidden = false;
 }
 

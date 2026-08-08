@@ -193,22 +193,24 @@
           </div>
 
           <div class="imageGenOptions" id="imageGenOptions">
-            <label title="/imagine [Nx] [options] prompt&#10;&#10;Parameters:&#10;  Nx — batch N images (e.g. 4x), max 8&#10;  --enhance / -e — AI enhance prompt&#10;  --size WxH or preset — custom size&#10;     presets: 480p, 480p-portrait, 720p, 720p-portrait, 1080p, 1080p-portrait&#10;  --steps N — steps (1~100)&#10;  --seed N — seed (0~2147483647)&#10;  --no text — negative prompt">
-              <span id="imageSizeLabelText">Default Image Size</span>
+            <label title="/imagine [Nx] [options] prompt&#10;&#10;Parameters:&#10;  Nx — batch N images (e.g. 4x), max 8&#10;  --enhance / -e — AI enhance prompt&#10;  --size WxH or preset — custom size&#10;     presets: 480p, 720p, 1080p (add -portrait for vertical), ultrawide, ultrawide-small&#10;  -s / --second N — video length in seconds&#10;  --steps N — steps (1~100)&#10;  --seed N — seed (0~2147483647)&#10;  --no text — negative prompt">
+              <span id="imageSizeLabelText">Default Media Size</span>
               <select id="defaultImageSize">
                 <option value="auto">Auto</option>
                 <option value="512x512">512×512 (Small)</option>
                 <option value="1024x1024">1024×1024 (Large)</option>
-                <option value="768x1152">768×1152 (Portrait)</option>
-                <option value="1152x768">1152×768 (Landscape)</option>
-                <option value="1344x768">1344×768 (Wide)</option>
-                <option value="768x1344">768×1344 (Tall)</option>
                 <option value="854x480">854×480 (480p Landscape)</option>
                 <option value="480x854">480×854 (480p Portrait)</option>
                 <option value="1280x720">1280×720 (720p Landscape)</option>
                 <option value="720x1280">720×1280 (720p Portrait)</option>
                 <option value="1920x1080">1920×1080 (1080p Landscape)</option>
                 <option value="1080x1920">1080×1920 (1080p Portrait)</option>
+                <!-- 21:9 reduces to 7:3, so these are the ratio EXACTLY and both sides
+                     divide by 64 — the strictest dimMult any builder uses (LTX Union), so
+                     no model has to snap them to something that is no longer 21:9.
+                     Small first, matching Small-before-Large above. -->
+                <option value="896x384">896×384 (21:9 Ultrawide, Small)</option>
+                <option value="1792x768">1792×768 (21:9 Ultrawide)</option>
               </select>
             </label>
             <label class="voiceRateLabel">

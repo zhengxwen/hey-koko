@@ -340,7 +340,14 @@ export function loadSavedSettings() {
     if (dom.comfyParamPoseStart) dom.comfyParamPoseStart.value = cp.poseStart || "";
     if (dom.comfyParamPoseEnd) dom.comfyParamPoseEnd.value = cp.poseEnd || "";
   }
-  if (savedSettings.defaultImageSize) dom.defaultImageSize.value = savedSettings.defaultImageSize;
+  if (savedSettings.defaultImageSize) {
+    // A size saved before the list was trimmed (the old Portrait/Landscape/Wide/Tall
+    // entries) matches no option, which leaves the <select> showing BLANK — assigning an
+    // absent value sets selectedIndex to -1 rather than falling back. Land on Auto so the
+    // control always reads as something.
+    dom.defaultImageSize.value = savedSettings.defaultImageSize;
+    if (dom.defaultImageSize.selectedIndex < 0) dom.defaultImageSize.value = "auto";
+  }
   if (savedSettings.requestTimeout) {
     dom.requestTimeoutInput.value = savedSettings.requestTimeout;
     dom.requestTimeoutValue.textContent = savedSettings.requestTimeout;

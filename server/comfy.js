@@ -2654,7 +2654,7 @@ function videoPreset(videoType, model, turbo) {
   return null;
 }
 
-// The frame rate a requested DURATION (--sec) should be measured against — the rate the
+// The frame rate a requested DURATION (-s / --second) should be measured against — the rate the
 // builder about to run will really mux at, so "10s" comes back as 10 seconds of video.
 // Preset models carry their own (fpsFixed ones ignore the ⚙ override, exactly as
 // resolveVideoConfig does). The preset-less builders (bernini / animate / scail2 /
@@ -5643,11 +5643,11 @@ async function generateComfyImage(req, res) {
     // 3D mesh chains (Hunyuan3D / TripoSplat / MoGe) — output is a .glb/.spz FILE.
     const meshType = meshTypeOf(model);
 
-    // "/imagine --sec 10": a DURATION, resolved to a frame count HERE — the first point
+    // "/imagine -s 10": a DURATION, resolved to a frame count HERE — the first point
     // where the model is a real filename, so the rate is the one that will actually be
     // used. Every downstream consumer of opts.length (resolveVideoConfig's grid snap, and
     // the source-driven builders' own clamps) then works unchanged. It OVERRIDES the ⚙
-    // length field: that field is a saved preference, --sec was typed for this one run —
+    // length field: that field is a saved preference, -s was typed for this one run —
     // the same precedence every other /imagine flag has over the panel.
     if (videoType && opts.lengthSec > 0) {
       opts.length = Math.max(1, Math.round(opts.lengthSec * videoRateFor(videoType, model, opts, sourceVideoFps)));

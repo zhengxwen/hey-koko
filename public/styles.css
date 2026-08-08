@@ -3679,6 +3679,18 @@ body.isResizingComposer {
   display: none;
 }
 
+/* Non-selectable footer note in a completion popup (the --size list uses it to say a
+   literal WxH also works). Deliberately NOT a .commandItem: the keyboard navigation
+   walks that class, and a row that inserts nothing must not be an arrow-key stop. */
+.commandPopupHint {
+  padding: 6px 10px 4px;
+  margin-top: 2px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .commandItem {
   display: flex;
   align-items: center;

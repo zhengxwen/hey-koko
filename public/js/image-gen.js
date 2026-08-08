@@ -307,7 +307,7 @@ function parseImagineCommand(input) {
   // Long flags plus the two short ones. A short flag has to be listed HERE as well as
   // handled below — the loop is what decides whether the token is a flag at all, so a
   // branch alone would never be reached and the flag would silently become prompt text.
-  while (rest.startsWith("--") || /^-e\b/.test(rest) || /^-m\s/.test(rest)) {
+  while (rest.startsWith("--") || /^-e\b/.test(rest) || /^-[ms]\s/.test(rest)) {
     if (/^(--enhance|-e)\b/.test(rest)) {
       result.enhance = true;
       rest = rest.replace(/^(--enhance|-e)\s*/, "").trim();
@@ -354,14 +354,16 @@ function parseImagineCommand(input) {
       if (!mFlag) return { error: t("img_modelNeedsArg") };
       result.modelToken = mFlag[1].toLowerCase();
       rest = rest.replace(/^(?:-m|--model)\s+\S+\s*/, "").trim();
-    } else if (/^--sec\s/.test(rest)) {
+    } else if (/^(?:-s|--second)\s/.test(rest)) {
       // Video length as a DURATION. Kept in seconds all the way to the server, which
       // converts against the rate the chosen model will actually mux at (a preset's own
       // fps, or the source clip's for the source-driven builders) and snaps the result
       // onto that model's frame grid. Converting here would need all three of those
       // facts in the browser — and would go stale the moment the model changed.
-      // A trailing "s" is accepted so "--sec 10s" reads the way people write it.
-      const secFlag = rest.match(/^--sec\s+(\S+)/);
+      // A trailing "s" is accepted so "-s 10s" reads the way people write it.
+      // Safe beside "--seed": "--second" and "--seed" diverge at the 6th character, and
+      // the short "-s" needs whitespace right after it.
+      const secFlag = rest.match(/^(?:-s|--second)\s+(\S+)/);
       if (!secFlag) return { error: t("img_secNeedsArg") };
       const val = secFlag[1];
       const n = parseFloat(String(val).replace(/s$/i, ""));
@@ -369,7 +371,7 @@ function parseImagineCommand(input) {
         return { error: t("img_secInvalid", { val }) };
       }
       result.options.lengthSec = n;
-      rest = rest.replace(/^--sec\s+\S+\s*/, "").trim();
+      rest = rest.replace(/^(?:-s|--second)\s+\S+\s*/, "").trim();
     } else if (/^--seed\s/.test(rest)) {
       const seedFlag = rest.match(/^--seed\s+(\S+)/);
       if (!seedFlag) return { error: t("img_seedNeedsArg") };
