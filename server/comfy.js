@@ -10,6 +10,11 @@ const { AsyncLocalStorage } = require("async_hooks");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 const { hostnameFor } = require("./network");
+const {
+  PRECISION_RE_G, PREC_AUTO_ORDER,
+  precisionOf, precisionBase, pickPrecision, bestTier,
+  canonicalModelId, galleryModelId, labelForId,
+} = require("./model-names");
 const { synthToWav } = require("./tts"); // InfiniteTalk "photo speaks": prompt → local TTS → speech track
 const gallery = require("./gallery"); // every finished artifact is teed to disk before it goes back
 
@@ -601,84 +606,8 @@ function videoTypeOf(model) {
   return null;
 }
 
-// ── Quantisation variants ────────────────────────────────────────────────────
-// The same weights ship as sibling files differing ONLY by a quantisation token
-// (wan2.2_bernini_r_high_noise_{fp8_scaled,mxfp8}.safetensors). Strip the token and
-// two files that are the same model collapse to one "base"; the ⚙ precision
-// preference then picks which sibling to actually load.
-//
-// Tokens are matched longest-first so fp8_e4m3fn_scaled doesn't degrade to "fp8"
-// and leave "_e4m3fn_scaled" glued to the base. NOTE the HF filename
-// wan2.1_14B_SCAIL_2_nvfp4_mxpf8_mix has "mxPF8" — a typo upstream, not mxfp8; it's
-// an nvfp4 file and must not be matched by the mxfp8 rule.
-//
-// This list is RECOGNITION, not the ⚙ menu (which is the <option> set in index.html).
-// int8 stays here despite not being offerable: an installed int8 build must still be
-// recognised as a variant so it collapses into its model's single dropdown entry
-// instead of showing up as a separate model.
-// fp8mixed (Sulphur's naming) sits BEFORE the bare fp8 alternative — alternation takes
-// the first match, so "fp8|fp8mixed" would match "fp8" and then fail the [_.-]|$
-// lookahead on the trailing "mixed", leaving the file unclassified.
-const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8mixed|fp8_mixed|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|int8_convrot|int8|fp16|bf16";
-// "pruned" is an OPTIONAL PREFIX on the quantisation token, not a token of its own.
-// MiniMax H3 ships the same tier both ways (…_pruned_int8_convrot, …_pruned_fp8_scaled,
-// and community …_pruned_nvfp4): pruning only replaces the modulation weights (~40% of
-// the parameters) with an equivalent lookup table, so it is the same model at the same
-// precision. Treating it as a prefix is what makes every H3 variant collapse to one
-// base; writing it into the token list instead only ever fixes the ONE spelling listed
-// there, and the next variant silently splits into a second identical dropdown entry.
-const PRECISION_RE = new RegExp(`(?:^|[_-])(?:pruned_)?(${PRECISION_TOKENS})(?=[_.-]|$)`, "i");
-const PRECISION_RE_G = new RegExp(`(?:^|[_-])(?:pruned_)?(?:${PRECISION_TOKENS})(?=[_.-]|$)`, "ig");
-function precisionOf(name) {
-  const m = PRECISION_RE.exec(name || "");
-  if (!m) return null;
-  const tok = m[1].toLowerCase();
-  if (tok.startsWith("nvfp4")) return "nvfp4";
-  if (tok === "mxfp8") return "mxfp8";
-  if (tok.startsWith("fp8")) return "fp8";
-  if (tok.includes("int8")) return "int8"; // includes, not startsWith — "pruned_int8_convrot"
-
-  return "fp16"; // fp16 / bf16 — the unquantised tier
-}
-
-// Filename minus its quantisation token + extension — the identity a set of
-// precision variants share.
-function precisionBase(name) {
-  return String(name || "")
-    .replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "")
-    .replace(PRECISION_RE_G, "")
-    .replace(/[_-]{2,}/g, "_")
-    .replace(/^[_-]+|[_-]+$/g, "")
-    .toLowerCase();
-}
-
-// Swap `name` for its sibling at the preferred precision. PER-FILE best effort: a
-// tier the sibling doesn't ship in keeps the name unchanged rather than failing —
-// which is what lets a half-quantised MoE pair (mxfp8 high + fp8 low) load instead
-// of 404 while only one twin has been re-quantised.
-function pickPrecision(all, name, pref) {
-  if (!name || !pref || pref === "auto") return name;
-  if (precisionOf(name) === pref) return name;
-  const base = precisionBase(name);
-  return (all || []).find((n) => precisionBase(n) === base && precisionOf(n) === pref) || name;
-}
-
-// Which build to load when a model ships several and the user expressed NO ⚙
-// preference. fp8 stays first so every model that has an fp8 build behaves exactly as
-// it did before this order existed; the rest only decides the cases that previously
-// had no rule at all and fell through to whatever disk order happened to be — which
-// is how a model shipping int8 + bf16 ended up defaulting to the unquantised 21 GB
-// file. Quantised beats unquantised, and nvfp4 sits last of the quantised tiers
-// because the most aggressive one should be asked for, not handed out by default.
-const PREC_AUTO_ORDER = ["fp8", "mxfp8", "int8", "nvfp4", "fp16"];
-function bestTier(list, nameOf = (x) => x) {
-  const arr = list || [];
-  for (const tier of PREC_AUTO_ORDER) {
-    const hit = arr.find((x) => precisionOf(nameOf(x)) === tier);
-    if (hit) return hit;
-  }
-  return arr[0] || null;   // nothing carries a recognisable token — keep disk order
-}
+// Model identity (canonical ids) + quantisation-variant recognition live in
+// server/model-names.js — the gallery and the picker need the same answers.
 
 // Every model file ComfyUI can load (both loaders) — the pool pickPrecision searches.
 async function comfyModelFiles() {
@@ -1099,70 +1028,9 @@ const IMAGE_UPSCALE = "image-upscale";
 // ── Dropdown display metadata ────────────────────────────────────────────────
 // The picker used to show raw filenames in scan order, so the same list mixed
 // clean labels ("wan2.2_14B") with precision-suffixed ones ("…_fp8_e4m3fn") and
-// the entries fell in whatever order the disk returned. These helpers give every
-// model ONE consistent market name, a stable within-group order, and a set of
-// capability tags — the frontend renders the tags as coloured dots + a legend.
-
-// A clean, precision-free display name. `precisionBase` has already dropped the
-// quantisation token + extension + collapsed separators, so matching happens on
-// that normalised form; returns null when no family rule applies (caller falls
-// back to `baseLabel`, which is the same normalised string title-cased as-is).
-function marketName(name) {
-  const sentinels = {
-    [WAN14B_AUTO]: "Wan 2.2 14B",
-    [BERNINI_AUTO]: "Bernini (i2v / video edit)",
-    [BERNINI_INSERT]: "Bernini (insert image)",
-    [BERNINI_IMG_EDIT]: "Bernini (image edit / relight)",
-    [BERNINI_IMG_SUBJECT]: "Bernini (subject → image)",
-    [BERNINI_T2I]: "Bernini (text → image)",
-    [PANO_T2I]: "360° panorama (text or photo → equirect)",
-    [ANIMATE_REPLACE]: "Wan Animate (replace)",
-    [SCAIL2_ANIMATE]: "SCAIL-2 (animate)",
-    [LTX_MSR]: "LTX-2.3 MSR",
-    [LTX_UNION]: "LTX-2.3 Union",
-    [INFINITETALK]: "InfiniteTalk (dub / lip-sync)",
-    [INFINITETALK_SPEAK]: "InfiniteTalk (photo speaks)",
-    [VIDEO_ENHANCE]: "Video interpolate + upscale",
-    [TRIPOSPLAT]: "TripoSplat (image → 3D splat)",
-    [MOGE_MESH]: "MoGe-2 (photo → 3D scene)",
-    [MOGE_PANORAMA]: "MoGe-2 (360° panorama → 3D scene)",
-  };
-  if (name in sentinels) return sentinels[name];
-  const b = precisionBase(name);
-  // Ordered: a more specific pattern must precede the family it belongs to
-  // (kontext before flux, image-edit before image, phantom-14b before phantom).
-  const rules = [
-    [/flux.*kontext/, "Flux.1 Kontext"],
-    [/flux1?.?dev/, "Flux.1 dev"],
-    [/pony/, "Pony Diffusion V6 XL"],
-    [/hidream.?i1/, "HiDream-I1"],
-    [/hidream.?o1/, "HiDream-O1"],
-    [/hidream.?e1/, "HiDream-E1.1"],
-    [/z.?image.?turbo/, "Z-Image Turbo"],
-    [/boogu.*edit/, "Boogu Edit"],
-    [/boogu.*base/, "Boogu (base)"],
-    [/boogu.*turbo/, "Boogu (turbo)"],
-    [/qwen.?image.?edit/, "Qwen-Image-Edit 2509"],
-    [/qwen.?image/, "Qwen-Image"],
-    [/omnigen/, "OmniGen2"],
-    [/pix2pix|instruct.?pix/, "Instruct-Pix2Pix"],
-    [/sulphur/, "LTX-2 Sulphur"],
-    [/ltx/, "LTX-2.3 22B"],
-    [/minimax.?h3.*ref2va/, "MiniMax H3 (r2v)"], // before the family rule
-    [/minimax.?h3/, "MiniMax H3 (t2v / i2v)"],
-    [/phantom.*14b/, "Phantom-Wan 14B"],
-    [/phantom/, "Phantom-Wan 1.3B"],
-    [/hunyuan[._-]?3d/, "Hunyuan3D 2.1"], // before the generic /hunyuan/ video rule
-    [/hunyuan/, "HunyuanVideo"],
-    [/dancer/, "Wan Dancer (music → dance)"],
-    [/fun.?vace/, "Wan 2.2 Fun-VACE"],
-    [/ti2v.*5b/, "Wan 2.2 TI2V 5B"],
-    [/animate/, "Wan Animate (move)"],
-    [/scail/, "SCAIL-2 (replace)"],
-  ];
-  for (const [re, label] of rules) if (re.test(b)) return label;
-  return null;
-}
+// the entries fell in whatever order the disk returned. Names now come from
+// model-names.js (canonical id → label); what remains here is the stable
+// within-group order and the capability tags the frontend draws as coloured dots.
 
 // Capability tags shown as coloured dots after the model. Codes travel to the
 // frontend (which owns the emoji + legend), so the palette lives in one place.
@@ -1747,7 +1615,12 @@ async function proxyComfyModels(req, res) {
       // they were derived from — otherwise the models with the most precision variants
       // would be exactly the ones the menu can't describe.
       const { tiers, files } = tiersFor((entry && entry.precFrom) || name);
-      modelMeta[name] = { label: marketName(name) || baseLabel(name), caps: capsFor(name, group, type, entry), ready: isModelReady(name, group, type) };
+      // `id` is this model's canonical, install-independent identity (model-names.js) —
+      // what `-m` matches, what the gallery records, and what survives downloading another
+      // quantisation (which moves `name`, the group's representative filename). The label
+      // is derived FROM the id, so rewording one can never re-partition anything.
+      const id = canonicalModelId(name);
+      modelMeta[name] = { id, label: labelForId(id) || baseLabel(name), caps: capsFor(name, group, type, entry), ready: isModelReady(name, group, type) };
       if (tiers.length) { modelMeta[name].prec = tiers; modelMeta[name].precFiles = files; }
     };
     for (const n of imageOut) setMeta(n, "image", null, null);
@@ -1755,7 +1628,9 @@ async function proxyComfyModels(req, res) {
     for (const n of panoT2i) setMeta(n, "image", null, null);
     // The upscale sentinel keeps its localized frontend label ("Image HD"), so send
     // no name here — only the ⚪ tool dot.
-    modelMeta[IMAGE_UPSCALE] = { label: null, caps: ["tool"], ready: true };
+    // label stays null (the frontend supplies the localized one), but the id must not —
+    // it is how `-m` and the gallery name this entry.
+    modelMeta[IMAGE_UPSCALE] = { id: canonicalModelId(IMAGE_UPSCALE), label: null, caps: ["tool"], ready: true };
     for (const m of editOut) setMeta(m.name, "edit", m.type, m);
     for (const m of videoOut) setMeta(m.name, "video", m.type, m);
     for (const m of meshOut) setMeta(m.name, "mesh", m.type, m);
@@ -5726,9 +5601,12 @@ async function generateComfyImage(req, res) {
     precisionNote = prec.note;
     precisionUsed = prec.used;
     // Every sentinel has resolved to a real filename by here, so this records the model
-    // that actually runs (not the dropdown alias).
+    // that actually runs (not the dropdown alias) — plus the canonical id, which needs
+    // BOTH names: the request's (a sentinel carries the graph mode) and the resolved
+    // file's (which is the only thing that knows t2v from i2v behind the merged entry).
     galleryMeta = {
-      model, prompt, negative: negative_prompt, seed, params: opts,
+      model, modelId: galleryModelId(body.model, model),
+      prompt, negative: negative_prompt, seed, params: opts,
       conversationId: body.conversationId, msgId: body.msgId,
     };
     const isMultiImage = Array.isArray(images) && images.length >= 2;
@@ -7258,8 +7136,10 @@ async function generateComfyImage(req, res) {
 
       const now = new Date();
       const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
-      // The hoisted snapshot plus what only the finished render knows.
-      galleryMeta = { ...galleryMeta, model, precisionUsed };
+      // The hoisted snapshot plus what only the finished render knows. `model` can have
+      // moved since the snapshot (a builder swapping in a companion file), so the id is
+      // recomputed from it rather than left pointing at the pre-flight name.
+      galleryMeta = { ...galleryMeta, model, modelId: galleryModelId(body.model, model), precisionUsed };
       if (stillMode) {
         // Single-frame Wan Animate → an IMAGE result (not a video).
         console.log(`${ts} [comfy-gen] model=${model}, mode=animate:still, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, images=${outImages.length}`);

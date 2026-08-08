@@ -105,11 +105,16 @@ function sanitize(s, max) {
     .slice(0, max);
 }
 
-// "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors" → "wan2.2-t2v-high-noise-14b-fp8"
-// Underscores become dashes here (and only here) so the "_" field separators in the
-// filename stay readable; an upload's original name keeps its own underscores.
-function shortModel(model) {
-  const base = String(model || "model").replace(/\.(safetensors|ckpt|gguf|pt|sft)$/i, "");
+// The model segment of a generated file's name. This is the canonical id
+// ("wan2.2-14b-i2v"), NOT the filename that ran: the id is already lowercase, already
+// free of the quantisation token, and stays put when another build is downloaded — so
+// the gallery folder sorts and groups by model instead of by build. The exact file and
+// its tier are still on the ledger line (model / precisionUsed).
+// ":" separates a mode and is not legal in a filename, so it becomes "-".
+function shortModel(modelId, model) {
+  const base = String(modelId || model || "model")
+    .replace(/\.(safetensors|ckpt|gguf|pt|sft)$/i, "")
+    .replace(/:/g, "-");
   return sanitize(base.toLowerCase().replace(/_/g, "-"), 32) || "model";
 }
 
@@ -171,7 +176,7 @@ function record({ kind, mime, b64, buffer, meta = {} }) {
   } else {
     const seedPart = meta.seed !== undefined && meta.seed !== null ? `_s${meta.seed}` : "";
     const idxPart = meta.batchIndex ? `_${meta.batchIndex + 1}` : "";
-    base = `${stamp}_${shortModel(meta.model)}${seedPart}${idxPart}`;
+    base = `${stamp}_${shortModel(meta.modelId, meta.model)}${seedPart}${idxPart}`;
   }
 
   const { name, id } = uniquePath(dirAbs, rel, base, ext);
@@ -188,7 +193,8 @@ function record({ kind, mime, b64, buffer, meta = {} }) {
     source,
     mime: mime || EXT_MIME[ext] || "application/octet-stream",
     bytes: buf.length,
-    model: meta.model,
+    model: meta.model,          // the exact file that ran — for reproduction / forensics
+    modelId: meta.modelId,      // canonical identity — what the UI groups and filters by
     prompt: meta.prompt,
     negative: meta.negative,
     seed: meta.seed,
@@ -246,7 +252,16 @@ function list({ type, model, source, q, before, limit = 60 } = {}) {
   const needle = String(q || "").toLowerCase();
   let all = [...entries.values()];
   if (type) all = all.filter((e) => e.kind === type);
-  if (model) all = all.filter((e) => (e.model || "").includes(model));
+  // Match the canonical id: exact, or a "model:" prefix so asking for "bernini" returns
+  // every mode of it. Falls back to the raw filename for anything recorded without an id.
+  if (model) {
+    const want = String(model).toLowerCase();
+    all = all.filter((e) => {
+      const id = String(e.modelId || "").toLowerCase();
+      if (id) return id === want || id.startsWith(want + ":");
+      return (e.model || "").toLowerCase().includes(want);
+    });
+  }
   if (source) all = all.filter((e) => (e.source || "generated") === source);
   if (needle) all = all.filter((e) => `${e.prompt || ""} ${e.originalName || ""} ${e.desc || ""}`.toLowerCase().includes(needle));
   all.sort((a, b) => b.ts - a.ts || (a.path < b.path ? 1 : -1));
@@ -258,12 +273,20 @@ function list({ type, model, source, q, before, limit = 60 } = {}) {
 function stats() {
   load();
   let bytes = 0, images = 0, videos = 0, other = 0;
+  // Which models are actually represented, for the gallery's model filter. Counted on the
+  // MODEL (everything before the ":"), not the mode: five Bernini tasks are one entry in
+  // the picker, and the list filter matches by that same prefix. Counting has to happen
+  // here rather than in the browser — /list is paged, so a page never sees every model.
+  const modelCount = new Map();
   for (const e of entries.values()) {
     bytes += e.bytes || 0;
     if (e.kind === "image") images++;
     else if (e.kind === "video") videos++;
     else other++;
+    const id = String(e.modelId || "").split(":")[0];
+    if (id) modelCount.set(id, (modelCount.get(id) || 0) + 1);
   }
+  const models = [...modelCount].map(([id, n]) => ({ id, n })).sort((a, b) => b.n - a.n || a.id.localeCompare(b.id));
   let thumbBytes = 0;
   const walk = (dir) => {
     let ents = [];
@@ -276,7 +299,7 @@ function stats() {
     }
   };
   walk(GALLERY_DIR);
-  return { count: entries.size, bytes, images, videos, other, thumbBytes, tombstones: tombstoneCount, dir: GALLERY_DIR };
+  return { count: entries.size, bytes, images, videos, other, thumbBytes, tombstones: tombstoneCount, dir: GALLERY_DIR, models };
 }
 
 // ---------------------------------------------------------------- delete

@@ -304,7 +304,10 @@ function parseImagineCommand(input) {
     rest = rest.slice(0, noMatch.index).trim();
   }
 
-  while (rest.startsWith("--") || /^-e\b/.test(rest)) {
+  // Long flags plus the two short ones. A short flag has to be listed HERE as well as
+  // handled below — the loop is what decides whether the token is a flag at all, so a
+  // branch alone would never be reached and the flag would silently become prompt text.
+  while (rest.startsWith("--") || /^-e\b/.test(rest) || /^-m\s/.test(rest)) {
     if (/^(--enhance|-e)\b/.test(rest)) {
       result.enhance = true;
       rest = rest.replace(/^(--enhance|-e)\s*/, "").trim();
@@ -341,6 +344,16 @@ function parseImagineCommand(input) {
       }
       result.options.steps = n;
       rest = rest.replace(/^--steps\s+\S+\s*/, "").trim();
+    } else if (/^(?:-m|--model)\s/.test(rest)) {
+      // Pick the model for THIS run only — the dropdown is untouched, exactly like every
+      // other flag overriding its ⚙ counterpart. The token is a canonical id from
+      // model-names.js, optionally with an "@tier" precision qualifier.
+      // Resolution needs the live model list, so it happens in the caller (which has it);
+      // here we only capture the token and reject the obviously malformed.
+      const mFlag = rest.match(/^(?:-m|--model)\s+(\S+)/);
+      if (!mFlag) return { error: t("img_modelNeedsArg") };
+      result.modelToken = mFlag[1].toLowerCase();
+      rest = rest.replace(/^(?:-m|--model)\s+\S+\s*/, "").trim();
     } else if (/^--sec\s/.test(rest)) {
       // Video length as a DURATION. Kept in seconds all the way to the server, which
       // converts against the rate the chosen model will actually mux at (a preset's own

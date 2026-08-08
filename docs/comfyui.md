@@ -39,8 +39,13 @@ The cost is *not* smooth across that list, which is the one thing worth knowing 
 
 | Target vs. source | Model loaded | Measured |
 |---|---|---|
-| within 2× | a 2× model | 321 ms/frame |
-| beyond 2× | a 4× model, result scaled back down | 1236 ms/frame |
+| below 2.5× | a 2× model, result resampled up to the target | 321 ms/frame |
+| 2.5× and above | a 4× model, result scaled back down | 1236 ms/frame |
+
+The boundary is 2.5 because the ratio is *rounded* to pick the model, not truncated — it is a
+consequence of that rounding, not a measured quality threshold. Between 2× and 2.5× the 2× model
+cannot quite reach the target and ordinary resampling covers the gap: at 2.03× (a 710p source at
+1440p) that gap is 1.3% and invisible; at 2.4× it is 20% and the result will look a little soft.
 
 A 720p source at 1440p is exactly 2× and takes the cheap path; the same source at 4K is 3×, so a 4× model runs and roughly 57% of the pixels it computes are thrown away in the downscale — about four times the time per frame for the same clip. If you want 4K without that jump, start from something nearer 1080p. The cheap path only exists if a 2× model is actually installed (e.g. `RealESRGAN_x2plus`); with only 4× models on disk, every target runs the 4× one. A target the source already meets skips the AI pass entirely and just resamples.
 
@@ -112,12 +117,26 @@ The basic ones also work with Ollama image models:
 | Flag | Effect |
 |------|--------|
 | `--size WxH` | Explicit output size (e.g. `--size 832x480`), or presets `480p`/`720p`/`1080p` (`-portrait` for vertical). For image-to-video the aspect ratio follows the input image. |
+| `-m` / `--model <id>` | Pick the ComfyUI model for this run, overriding the dropdown without changing it. Takes a **canonical model id** — lowercase, no precision (`wan2.2-14b`, `phantom-1.3b`, `ltx2.3-22b`); a `:` suffix names a *mode* that shares the same weights (`bernini:insert`, `scail2-14b:animate`, `wan-animate-14b:replace`). Typing `-m ` in the message box pops a completion list. An ambiguous prefix is refused rather than guessed. Append `@tier` to pin a quantisation for this run (`-m zimage-turbo@nvfp4`); only tiers actually installed are accepted. Choosing a video model this way makes the run a video run, whatever the dropdown says. |
 | `--sec N` | Video length as a **duration** in seconds (e.g. `--sec 10`) instead of a frame count. Converted using the rate the chosen model actually runs at, then snapped onto that model's frame grid, so the result lands within a fraction of a second of what was asked for. On the source-driven builders (Bernini, Wan Animate, SCAIL-2, InfiniteTalk dubbing, LTX Union) it is measured against the **source clip's** rate and still capped by the source's own length — so `--sec 5` on a 20-second clip processes the first 5 seconds. Overrides the ⚙ video-length field; ignored by image models. |
 | `--steps N` | Sampling steps |
 | `--seed N` | Fixed seed (reproducible) |
 | `--enhance` / `-e` | Rewrite the prompt with an LLM first — image-oriented for images, motion/camera-oriented for video. The improved prompt is shown before generation. |
 | `--no <text>` | Negative prompt |
 | `4x <prompt>` | Batch (generate N images) |
+
+### Model ids
+
+Every model has one canonical id: lowercase, carrying the family, version and (where upstream
+publishes one) the parameter count — but never the quantisation. `fp8` / `mxfp8` / `nvfp4` /
+`int8` / `bf16` are properties of the *build*, not of the model, so they live in the ⚙ precision
+setting and the `@tier` qualifier instead. Downloading another build of a model therefore never
+changes its id, which is what lets the gallery group a model's output across builds and lets a
+saved choice keep resolving.
+
+A `:` separates a **mode** — the same weights driven by a different workflow. So the model behind
+any id is everything before the `:`, and asking the gallery for `bernini` returns all five of its
+modes at once.
 
 Sampler, scheduler, CFG, guidance, image-CFG, denoise, video length, and FPS can be overridden in the **⚙ Advanced generation params** popup (next to the ComfyUI model dropdown). `/imagine` flags take precedence over the popup, which takes precedence over the per-model defaults.
 

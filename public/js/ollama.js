@@ -684,7 +684,10 @@ function applyComfyModels(data) {
         // hint line under the dropdown is what actually guarantees the text is readable.
         option.title = comfyModelHint(name);
         parent.appendChild(option);
-        if (bucket) bucket.push({ name, label: base, ready, dots: capDots(name).trim(), hint: option.title });
+        // `id` is the model's canonical identity (server/model-names.js) — stable across
+        // installed quantisations, unlike `name` (the group's representative filename).
+        // It is what `-m/--model` matches and what its popup completes to.
+        if (bucket) bucket.push({ name, id: (meta[name] && meta[name].id) || null, label: base, ready, dots: capDots(name).trim(), hint: option.title });
       };
       if (models.length) {
         const group = document.createElement("optgroup");
@@ -770,6 +773,15 @@ function applyComfyModels(data) {
       state.comfyModelReady = readyMap;
       // The 4-column picker renders from this; the <select> stays authoritative.
       state.comfyModelGroups = groups.filter((g) => g.items.length);
+      // Flat lookup for "/imagine -m <id>": canonical id → the dropdown VALUE to send.
+      // Derived from the very rows the picker shows, so the flag can never offer a model
+      // the picker doesn't have (or resolve to a stale name). Rows with no id are skipped
+      // — an unnamed model can still be picked from the dropdown, just not by flag.
+      state.comfyModelIndex = state.comfyModelGroups.flatMap((g) =>
+        g.items.filter((it) => it.id).map((it) => ({
+          id: it.id, value: it.name, label: it.label, group: g.key, ready: it.ready, dots: it.dots,
+          tiers: state.comfyModelPrec[it.name] || [],
+        })));
     }
   } catch {
     /* leave placeholder */
@@ -780,6 +792,65 @@ function applyComfyModels(data) {
     updateImageGenOptions();
     updateComfyMultiHint();
   }
+}
+
+// ── "/imagine -m <model>" resolution ─────────────────────────────────────────
+// Turns what the user typed into the dropdown VALUE to send. Resolution happens in the
+// browser (not the server) because that is where the merged multi-worker model list
+// lives and where the background job snapshots its modelOverride — and because a typo
+// should be an error BEFORE a job is queued, not after it reaches the GPU.
+
+// Split "id@tier" into its parts. The tier rides OUTSIDE the name on purpose: precision
+// is a property of the build, not of the model, so it never became part of the id.
+export function splitModelToken(token) {
+  const s = String(token || "").trim().toLowerCase();
+  const at = s.lastIndexOf("@");
+  if (at <= 0) return { id: s, tier: "" };
+  return { id: s.slice(0, at), tier: s.slice(at + 1) };
+}
+
+// Candidate rows for a partial id — exact first, then prefix, then substring on either
+// the id or the display label. Used by both the resolver and the popup, so what the
+// popup offers and what the flag accepts can never disagree.
+export function matchModels(partial) {
+  const idx = state.comfyModelIndex || [];
+  const p = String(partial || "").trim().toLowerCase();
+  if (!p) return idx.slice();
+  const exact = idx.filter((m) => m.id === p);
+  if (exact.length) return exact;
+  const pre = idx.filter((m) => m.id.startsWith(p));
+  const sub = idx.filter((m) => !m.id.startsWith(p) && (m.id.includes(p) || m.label.toLowerCase().includes(p)));
+  return [...pre, ...sub];
+}
+
+// Resolve a "-m" token to { value, tier } or an { error, candidates } explaining why not.
+// An ambiguous prefix is NEVER silently narrowed to one model — picking for the user is
+// how you render the wrong thing for twenty GPU-minutes.
+export function resolveModelToken(token) {
+  const { id, tier } = splitModelToken(token);
+  if (!id) return { error: "empty" };
+  const idx = state.comfyModelIndex || [];
+  if (!idx.length) return { error: "noModels" };
+  const hits = matchModels(id);
+  if (!hits.length) {
+    // Nearest few by shared prefix length, so the error can suggest instead of just refusing.
+    const near = idx
+      .map((m) => ({ m, n: [...m.id].findIndex((c, i) => c !== id[i]) }))
+      .sort((a, b) => (b.n < 0 ? 99 : b.n) - (a.n < 0 ? 99 : a.n))
+      .slice(0, 4).map((x) => x.m.id);
+    return { error: "unknown", id, candidates: near };
+  }
+  if (hits.length > 1 && !hits.some((m) => m.id === id)) {
+    return { error: "ambiguous", id, candidates: hits.slice(0, 6).map((m) => m.id) };
+  }
+  const hit = hits.find((m) => m.id === id) || hits[0];
+  if (tier) {
+    // Only offer a tier the model actually ships: silently ignoring an impossible one
+    // would run at a precision the user did not ask for and never say so.
+    if (!hit.tiers.includes(tier)) return { error: "tier", id: hit.id, tier, candidates: hit.tiers };
+    return { value: hit.value, id: hit.id, tier };
+  }
+  return { value: hit.value, id: hit.id, tier: "" };
 }
 
 // Mirrors LTX_MODEL_RE in server/comfy.js — "sulphur" is an LTX-family checkpoint whose

@@ -21,6 +21,9 @@ import { parseToolCommand, handleToolCommand } from './tool-cmd.js';
 import { isTranscriptSection, transcriptMark, cardMark } from './library.js';
 import { parseAskCommand, handleAskCommand, handleAutoAsk } from './ask.js';
 import { kindIcon } from './mentions.js';
+// -m/--model resolution lives with the model index it reads (ollama.js). Safe direction:
+// ollama.js never reaches chat.js, so this adds no cycle.
+import { resolveModelToken } from './ollama.js';
 import { buildPendingGenBubble } from './pending-gen.js';
 import { enqueueBgJob, releaseEnhancingJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
 import { chatFetch } from './server-queue.js';
@@ -272,12 +275,49 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
   images = await resolveMediaList(images);
   videos = Array.isArray(videos) ? await Promise.all(videos.map(resolveSourceClip)) : await resolveSourceClip(videos);
   audio = await resolveSourceClip(audio);   // the InfiniteTalk speech track, same rule
+  // "-m/--model <id>[@tier]" picks the model for THIS run, overriding the dropdown
+  // WITHOUT touching it. Resolved here, before anything else reads the selection, so the
+  // job kind below follows the chosen model — a video id typed while the dropdown holds
+  // an image model has to produce a video job, not an image job that then runs a video
+  // workflow. All /imagine lines in one send share one job, hence one model: disagreeing
+  // -m values are refused rather than silently resolved to whichever came first.
+  const tokens = [...new Set(validCmds.map((c) => c && c.modelToken).filter(Boolean))];
+  let pickedComfy = "", pickedTier = "";
+  if (tokens.length) {
+    const fail = (msg) => {
+      const tab = getTab(tabId);
+      if (tab) {
+        tab.messages.push({ role: "assistant", content: t("msg_commandError", { error: msg }), timestamp: Date.now() });
+        saveChat();
+        if (state.activeTabId === tabId) renderChat();
+      }
+    };
+    if (tokens.length > 1) { fail(t("img_modelConflict", { list: tokens.join(", ") })); return; }
+    const r = resolveModelToken(tokens[0]);
+    if (r.error) {
+      const list = (r.candidates || []).join(", ");
+      fail(r.error === "unknown" ? t("img_modelUnknown", { val: tokens[0], list })
+        : r.error === "ambiguous" ? t("img_modelAmbiguous", { val: tokens[0], list })
+        : r.error === "tier" ? t("img_modelTier", { val: r.id, tier: r.tier, list })
+        : t("img_modelNoList"));
+      return;
+    }
+    pickedComfy = r.value;
+    pickedTier = r.tier;
+  }
   // A ComfyUI video model (no Ollama image model) routes through generateVideo —
   // capture model + kind at submit time so a later dropdown change can't redirect it.
-  const isVideo = !dom.imageModelSelect.value && dom.comfyModelSelect && state.comfyVideoModels.has(dom.comfyModelSelect.value);
+  // With -m in play the Ollama image model is bypassed outright: the flag names a
+  // ComfyUI model, so this run is a ComfyUI run whatever the other dropdown says.
+  const comfyModel = pickedComfy || (dom.comfyModelSelect ? dom.comfyModelSelect.value : "");
+  const imageModel = pickedComfy ? "" : dom.imageModelSelect.value;
+  const isVideo = !imageModel && comfyModel && state.comfyVideoModels.has(comfyModel);
   // A ComfyUI 3D model → a "mesh" job (routes through generateMesh; .glb/.spz result).
-  const isMesh = !dom.imageModelSelect.value && dom.comfyModelSelect && state.comfyMeshModels && state.comfyMeshModels.has(dom.comfyModelSelect.value);
-  const modelOverride = { imageModel: dom.imageModelSelect.value, comfyModel: dom.comfyModelSelect ? dom.comfyModelSelect.value : "" };
+  const isMesh = !imageModel && comfyModel && state.comfyMeshModels && state.comfyMeshModels.has(comfyModel);
+  const modelOverride = { imageModel, comfyModel };
+  // "@tier" is a per-run ⚙ precision: stamp it on every command's options so it travels
+  // with the request the same way the panel's value would.
+  if (pickedTier) for (const c of validCmds) if (c && c.options) c.options.precision = pickedTier;
   // BATCH video-edit: one bg job per source clip (each runs the same workflow → its
   // own output). All jobs share the reference images + mask point; the Replace point
   // is pinned to the FIRST clip server-side. No source video (or an image model that

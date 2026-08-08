@@ -130,7 +130,10 @@ function tileFor(entry) {
   name.title = entry.path;    // the row can be narrower than the path is long
   const meta = document.createElement("span");
   meta.className = "galleryTileMeta";
-  meta.textContent = [fmtDate(entry.ts), fmtSize(entry.bytes), entry.model,
+  // The canonical id, not the file that ran: it is short, lowercase, and the same string
+  // across quantisations, so a list of tiles reads as a list of MODELS. The exact file
+  // and its precision are still one click away in the detail pane.
+  meta.textContent = [fmtDate(entry.ts), fmtSize(entry.bytes), entry.modelId || entry.model,
                       entry.prompt || entry.desc || entry.originalName].filter(Boolean).join(" · ");
   text.append(name, meta);
   btn.appendChild(text);
@@ -467,7 +470,10 @@ function renderDetail() {
 
   const dl = document.createElement("dl");
   const rows = [
-    [t("gal_fModel"), e.model],
+    // Both, because they answer different questions: the id is what to type after -m,
+    // the filename is what to reproduce with.
+    [t("gal_fModel"), e.modelId || e.model],
+    [t("gal_fModelFile"), e.modelId && e.model && e.model !== e.modelId ? e.model : ""],
     [t("gal_fSeed"), e.seed],
     [t("gal_fSize"), e.width && e.height ? `${e.width}×${e.height}` : ""],
     [t("gal_fLength"), e.kind === "video" && e.length ? `${e.length}f${e.fps ? ` @${e.fps}fps` : ""}` : ""],
@@ -624,9 +630,14 @@ async function refresh() {
   const q = el("gallerySearch")?.value.trim() || "";
   const type = el("galleryTypeFilter")?.value || "";
   const source = el("gallerySourceFilter")?.value || "";
+  const model = el("galleryModelFilter")?.value || "";
   const params = new URLSearchParams({ limit: "200" });
   if (q) params.set("q", q);
   if (type) params.set("type", type);
+  // Server-side (unlike the source filter): the ledger is the only place that knows every
+  // entry's model, and filtering before the page limit is what makes it a real filter
+  // rather than a narrowing of whatever 200 happened to come back.
+  if (model) params.set("model", model);
   const [list, stats] = await Promise.all([
     fetch(`/api/gallery/list?${params}`).then((r) => r.json()).catch(() => ({ items: [] })),
     fetch("/api/gallery/stats").then((r) => r.json()).catch(() => null),
@@ -654,6 +665,30 @@ async function refresh() {
     for (const e of items) grid.appendChild(tileFor(e));
   }
 
+  // Refill the model facet from the ledger-wide counts. Rebuilt each refresh (a new
+  // render adds models) but only when the option set actually changed, so the user's
+  // current pick is not dropped mid-interaction.
+  const modelSel = el("galleryModelFilter");
+  if (modelSel && stats && Array.isArray(stats.models)) {
+    const want = ["", ...stats.models.map((m) => m.id)].join("\u0000");
+    if (modelSel.dataset.built !== want) {
+      const keep = modelSel.value;
+      modelSel.innerHTML = "";
+      const any = document.createElement("option");
+      any.value = ""; any.textContent = t("gal_allModels");
+      modelSel.appendChild(any);
+      for (const m of stats.models) {
+        const o = document.createElement("option");
+        o.value = m.id; o.textContent = `${m.id} (${m.n})`;
+        modelSel.appendChild(o);
+      }
+      // A model can vanish from the list (its last file deleted) while it is the active
+      // filter — falling back to "all" beats leaving a selection that matches nothing.
+      modelSel.value = [...modelSel.options].some((o) => o.value === keep) ? keep : "";
+      modelSel.dataset.built = want;
+    }
+  }
+
   const statsEl = el("galleryStats");
   if (statsEl && stats) {
     // The stats line describes the whole gallery; say so separately when the view
@@ -662,7 +697,7 @@ async function refresh() {
       n: stats.count, size: fmtSize(stats.bytes),
       images: stats.images, videos: stats.videos,
       thumbs: fmtSize(stats.thumbBytes),
-    }) + (source ? ` · ${t("gal_shown", { n: items.length })}` : "");
+    }) + ((source || model) ? ` · ${t("gal_shown", { n: items.length })}` : "");
   }
 
   if (selected && !items.some((e) => e.path === selected.path)) { selected = null; }
@@ -706,6 +741,7 @@ export function initGallery() {
   wireDropZone(el("galleryStrip"));
   refreshStrip();
   el("galleryTypeFilter")?.addEventListener("change", refresh);
+  el("galleryModelFilter")?.addEventListener("change", refresh);
   const viewSel = el("galleryViewFilter");
   if (viewSel) {
     viewSel.value = savedView();

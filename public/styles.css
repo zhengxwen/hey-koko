@@ -3666,6 +3666,13 @@ body.isResizingComposer {
   box-shadow: var(--shadow);
   padding: 4px;
   z-index: 100;
+  /* The popup is anchored to the TOP of the input and grows UPWARD, so an uncapped list
+     (the model catalogue is 45 entries) runs off the top of the window with its first
+     rows unreachable. Cap it and scroll instead; setMentionActive keeps the keyboard
+     selection in view. */
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .commandPopup[hidden] {

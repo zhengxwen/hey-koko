@@ -8,6 +8,9 @@ import { dom, state } from './state.js';
 import { escapeHtml } from './utils.js';
 import { t } from './i18n.js';
 import { TOOL_CMD_ALIASES } from './tool-cmd.js';
+// The "/imagine -m …" completion reads the same model index the flag resolves against.
+// Safe direction: ollama.js never reaches mentions.js.
+import { matchModels, splitModelToken } from './ollama.js';
 
 const KIND_ICON = { paper: "📄", slides: "📊", blog: "🌐", video: "📺", doc: "📝", chat: "💬", other: "📎" };
 export const kindIcon = (k) => KIND_ICON[k] || "📎";
@@ -62,16 +65,25 @@ export async function loadMentionArchives() {
 
 // If the cursor sits inside an "@partial" (library docs) or "#partial" (conversation
 // archives) token within an "/ask …" line — or an "@partial" (tool alias) within a
-// "/tool …" line — return { sigil, partial, start, mode } (start = index of the
-// sigil char, mode = "ask" | "tool"); otherwise null.
+// "/tool …" line, or the argument of "-m"/"--model" within an "/imagine …" line —
+// return { sigil, partial, start, mode } (start = index where the replacement begins,
+// mode = "ask" | "tool" | "model"); otherwise null.
 export function mentionContext(input) {
   if (!input) return null;
   const val = input.value;
   const isAsk = /^\/ask(\s|$)/.test(val);
   const isTool = /^\/tool(\s|$)/.test(val);
-  if ((!isAsk && !isTool) || val.includes("\n")) return null;
+  const isImagine = /^\/imagine(\s|$)/.test(val);
+  if ((!isAsk && !isTool && !isImagine) || val.includes("\n")) return null;
   const cursor = input.selectionStart;
   const before = val.slice(0, cursor);
+  if (isImagine) {
+    // The model flag's argument. Unlike the others this token carries no sigil, so the
+    // replacement starts at the token itself (start is not backed up by one).
+    const mm = before.match(/(?:^|\s)(?:-m|--model)\s+(\S*)$/);
+    if (!mm) return null;
+    return { sigil: "", partial: mm[1], start: cursor - mm[1].length, mode: "model" };
+  }
   const m = before.match(/(?:^|\s)([@#])(\S*)$/);   // '@'/'#' preceded by start/space, no space to cursor
   if (!m) return null;
   if (isTool && m[1] === "#") return null;          // /tool has no archive scope
@@ -82,6 +94,9 @@ function setMentionActive(index) {
   const items = dom.mentionPopup.querySelectorAll(".commandItem");
   items.forEach((el, i) => el.classList.toggle("isActive", i === index));
   state.mentionActiveIndex = index;
+  // The list scrolls now, so the highlight can sit outside the visible box. "nearest"
+  // moves the minimum amount — it doesn't yank an already-visible row to the middle.
+  items[index]?.scrollIntoView({ block: "nearest" });
 }
 
 // Distinct sub-folders (with every ancestor) any doc lives in — for "@folder/" scope.
@@ -108,7 +123,31 @@ function archiveShort(filename) {
 export function showMentionPopup(filter, sigil = "@", mode = "ask") {
   const f = (filter || "").toLowerCase();
   let items;
-  if (mode === "tool") {
+  if (mode === "model") {
+    // "/imagine -m …": complete a canonical model id, or — once an "@" is typed — the
+    // precision tiers that model actually ships. Rows come from matchModels, the same
+    // function the flag resolves with, so the popup can never offer something the flag
+    // would then reject.
+    const { id, tier } = splitModelToken(filter);
+    if (String(filter).includes("@")) {
+      const exact = (state.comfyModelIndex || []).find((m) => m.id === id);
+      items = ((exact && exact.tiers) || [])
+        .filter((x) => !tier || x.startsWith(tier))
+        .map((x) => ({ sigil: "", token: `${id}@${x}`, icon: "🎚", name: `${id}@${x}`, desc: t("comfy_tierInstalled") }));
+    } else {
+      // NOT capped: a bare "-m " is a request to see the whole catalogue, and the point
+      // of the popup is to teach the id vocabulary. The list scrolls (.commandPopup has
+      // a max-height) and arrow-keys keep the active row in view.
+      items = matchModels(id).map((m) => ({
+        // The capability dots are emoji: index [0] would cut a surrogate pair in half and
+        // render "◆". Spread first so the unit taken is a whole code point.
+        sigil: "", token: m.id, icon: [...(m.dots || "")][0] || "🎬",
+        // The id leads: it is the vocabulary being taught, and what actually gets typed.
+        name: m.id + (m.ready ? "" : " ⚠️"),
+        desc: m.label,
+      }));
+    }
+  } else if (mode === "tool") {
     // "/tool @…" → the fixed tool-alias list (tool-cmd.js), not library docs.
     items = TOOL_CMD_ALIASES
       .filter((a) => !f || a.alias.startsWith(f))
@@ -174,11 +213,15 @@ export function selectActiveMention() {
   const ctx = mentionContext(input);
   if (!active || !ctx) { hideMentionPopup(); return; }
   const token = active.dataset.token;
-  const sigil = active.dataset.sigil || "@";
+  // `??`, not `||`: the model rows carry an EMPTY sigil (-m's argument has none), and an
+  // empty string is falsy — `|| "@"` inserted a stray "@" in front of every model id.
+  const sigil = active.dataset.sigil ?? "@";
   const val = input.value;
   const cursor = input.selectionStart;
   input.value = val.slice(0, ctx.start) + `${sigil}${token} ` + val.slice(cursor);
-  const pos = ctx.start + token.length + 2;   // just past "<sigil>token " (sigil is 1 char)
+  // Just past "<sigil>token ". The sigil is one char for @/#, but EMPTY for the model
+  // mode (-m's argument carries none), so its length has to be measured, not assumed.
+  const pos = ctx.start + sigil.length + token.length + 1;
   input.setSelectionRange(pos, pos);
   hideMentionPopup();
   input.focus();

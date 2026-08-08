@@ -465,6 +465,12 @@
                 <option value="audio">Audio</option>
                 <option value="mesh">3D</option>
               </select>
+              <!-- Which model made it. Options are canonical model ids, filled in from
+                   what the ledger actually contains; picking one matches all of that
+                   model's modes (bernini → bernini:insert, bernini:t2i, …). -->
+              <select id="galleryModelFilter" class="libraryRatingFilter">
+                <option value="">All models</option>
+              </select>
               <!-- Where a file is referenced: open conversations, archives, or both. -->
               <select id="gallerySourceFilter" class="libraryRatingFilter">
                 <option value="">Anywhere</option>
