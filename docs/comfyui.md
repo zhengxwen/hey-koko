@@ -112,6 +112,7 @@ The basic ones also work with Ollama image models:
 | Flag | Effect |
 |------|--------|
 | `--size WxH` | Explicit output size (e.g. `--size 832x480`), or presets `480p`/`720p`/`1080p` (`-portrait` for vertical). For image-to-video the aspect ratio follows the input image. |
+| `--sec N` | Video length as a **duration** in seconds (e.g. `--sec 10`) instead of a frame count. Converted using the rate the chosen model actually runs at, then snapped onto that model's frame grid, so the result lands within a fraction of a second of what was asked for. On the source-driven builders (Bernini, Wan Animate, SCAIL-2, InfiniteTalk dubbing, LTX Union) it is measured against the **source clip's** rate and still capped by the source's own length — so `--sec 5` on a 20-second clip processes the first 5 seconds. Overrides the ⚙ video-length field; ignored by image models. |
 | `--steps N` | Sampling steps |
 | `--seed N` | Fixed seed (reproducible) |
 | `--enhance` / `-e` | Rewrite the prompt with an LLM first — image-oriented for images, motion/camera-oriented for video. The improved prompt is shown before generation. |

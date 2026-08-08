@@ -7394,6 +7394,10 @@ body.isResizingComposer {
   align-content: start;
 }
 
+/* The empty/no-match line is a grid item like any tile; without this it is squeezed
+   into one 150px column and wraps after three characters. */
+.galleryGrid > .hint { grid-column: 1 / -1; }
+
 /* Four views, all driven off one attribute on the grid (gallery.js applyView), so
    switching restyles the tiles already in the DOM instead of rebuilding them. */
 .galleryGrid[data-view="md"] { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
@@ -7547,6 +7551,37 @@ body.isResizingComposer {
   margin: 0 0 12px;
   max-height: 8em;
   overflow-y: auto;
+}
+
+/* Dragging files over the gallery (overlay or filmstrip): both are drop zones that
+   file the bytes straight into ~/.hey-koko/gallery. */
+#galleryOverlay.isDropTarget,
+.galleryStrip.isDropTarget {
+  outline: 2px dashed var(--accent, #6aa9ff);
+  outline-offset: -6px;
+}
+
+/* Only the strip needs a positioning context for the hint; the overlay already has
+   one, and giving it `position: relative` would cancel its `inset: 0` and collapse
+   it to content height the moment a drag started. */
+.galleryStrip.isDropTarget { position: relative; }
+
+#galleryOverlay.isDropTarget::after,
+.galleryStrip.isDropTarget::after {
+  content: attr(data-drophint);
+  position: absolute;
+  inset: auto 0 12px;
+  margin: 0 auto;
+  width: max-content;
+  max-width: 90%;
+  padding: 6px 14px;
+  border-radius: 14px;
+  background: var(--accent, #6aa9ff);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 3;
 }
 
 /* ---- Gallery filmstrip (under the composer) ------------------------------- */
@@ -7721,7 +7756,23 @@ body.isResizingComposer {
   margin-bottom: 12px;
 }
 
-.galleryActions button { font-size: 12px; }
+/* Three quarters of the global 42px button height — this is a dense side pane, and
+   the "Save as…" link stretches to match (the row is a flex container). */
+.galleryActions button { font-size: 12px; min-height: 32px; }
+
+/* Confirmation for a button whose effect is invisible (copying). The label swaps for
+   a moment; this makes the swap register as an event rather than a glitch. */
+.galleryActions button.isFlash {
+  background: var(--accent, #6aa9ff);
+  color: #fff;
+  animation: galleryBtnFlash 320ms ease-out;
+}
+
+@keyframes galleryBtnFlash {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.07); }
+  100% { transform: scale(1); }
+}
 
 .galleryRefs {
   font-size: 12px;

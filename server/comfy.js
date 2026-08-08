@@ -2779,6 +2779,21 @@ function videoPreset(videoType, model, turbo) {
   return null;
 }
 
+// The frame rate a requested DURATION (--sec) should be measured against — the rate the
+// builder about to run will really mux at, so "10s" comes back as 10 seconds of video.
+// Preset models carry their own (fpsFixed ones ignore the ⚙ override, exactly as
+// resolveVideoConfig does). The preset-less builders (bernini / animate / scail2 /
+// infinitetalk / ltx-union) take their rate from the SOURCE clip; only "photo speaks"
+// (InfiniteTalk with no source) has none, and its builders default to 25.
+// turbo is passed as true to match the lenInfo the ⚙ length field was built from — it
+// only moves LTX's rate, and by 1 fps.
+function videoRateFor(videoType, model, opts, srcFps) {
+  const p = videoPreset(videoType, model, true);
+  if (p) return p.fpsFixed ? p.fps : (Number(opts.fps) || p.fps);
+  const fallback = (videoType === "infinitetalk" || videoType === "ltx-union") ? 25 : 16;
+  return Number(srcFps) || Number(opts.fps) || fallback;
+}
+
 // Snap a requested frame count onto the model's grid: lenMult·n + lenOffset. lenOffset
 // defaults to 1 (every model here except MiniMax H3, whose grid is 17k+5). When a preset
 // declares lenMin/lenMax — a TRAINED range the model shouldn't be pushed outside of —
@@ -5749,6 +5764,16 @@ async function generateComfyImage(req, res) {
     const videoType = berniniImageTask ? null : videoTypeOf(model);
     // 3D mesh chains (Hunyuan3D / TripoSplat / MoGe) — output is a .glb/.spz FILE.
     const meshType = meshTypeOf(model);
+
+    // "/imagine --sec 10": a DURATION, resolved to a frame count HERE — the first point
+    // where the model is a real filename, so the rate is the one that will actually be
+    // used. Every downstream consumer of opts.length (resolveVideoConfig's grid snap, and
+    // the source-driven builders' own clamps) then works unchanged. It OVERRIDES the ⚙
+    // length field: that field is a saved preference, --sec was typed for this one run —
+    // the same precedence every other /imagine flag has over the panel.
+    if (videoType && opts.lengthSec > 0) {
+      opts.length = Math.max(1, Math.round(opts.lengthSec * videoRateFor(videoType, model, opts, sourceVideoFps)));
+    }
 
     // Instruction-edit models require a reference image to edit.
     if (editType && !isImg2Img) {

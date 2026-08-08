@@ -247,13 +247,97 @@ async function refreshStrip() {
   for (const e of stripItems) row.appendChild(stripTile(e));
   if (flashIds.size) {
     const first = row.querySelector(".galleryStripCell.isNew");
-    if (first) first.scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+    // Scroll the row itself, NOT element.scrollIntoView(): that walks up and scrolls
+    // every scrollable ancestor, and .chatArea is overflow:hidden — it accepts a
+    // programmatic scroll, shifts the whole panel sideways, and has no scrollbar to
+    // put it back. Only a reload undoes it.
+    if (first) row.scrollTo({ left: Math.max(0, first.offsetLeft - row.offsetLeft - 8), behavior: "smooth" });
     // The class stays on the element; clear the set so the next refresh is calm.
     setTimeout(() => {
       flashIds.clear();
       row.querySelectorAll(".isNew").forEach((n) => n.classList.remove("isNew"));
     }, 4000);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Dropping files in. Bytes go up raw (POST /api/gallery/upload) rather than as
+// base64 in JSON: a dropped clip can be hundreds of megabytes.
+// ---------------------------------------------------------------------------
+
+const isMediaFile = (f) => /^(image|video|audio)\//i.test(f.type || "") || /\.(glb|gltf)$/i.test(f.name || "");
+
+async function uploadFiles(files) {
+  const all = [...files];
+  if (!all.length) return;
+  // Drop a folder's worth of stuff and some of it will not be media. Those are
+  // counted and reported, not turned into a modal — a stray .txt is not an error
+  // worth blocking the drop for.
+  const list = all.filter(isMediaFile);
+  let added = 0, deduped = 0;
+  const failed = [];
+  for (const f of list) {
+    try {
+      const r = await fetch("/api/gallery/upload", {
+        method: "POST",
+        headers: { "Content-Type": f.type || "application/octet-stream",
+                   "X-Gallery-Name": encodeURIComponent(f.name || "") },
+        body: f,
+      });
+      const j = await r.json().catch(() => null);
+      if (r.ok && j && j.id) { if (j.deduped) deduped++; else { added++; flashIds.add(j.id); } }
+      else failed.push(`${f.name}: ${(j && j.error) || r.status}`);
+    } catch (e) { failed.push(`${f.name}: ${e.message}`); }
+  }
+  await refresh();
+  await refreshStrip();
+  const note = el("galleryStats");
+  if (note) {
+    const parts = [t("gal_dropAdded", { n: added })];
+    if (deduped) parts.push(t("gal_dropDuplicate", { n: deduped }));
+    const skipped = all.length - list.length;
+    if (skipped) parts.push(t("gal_dropSkipped", { n: skipped }));
+    if (failed.length) parts.push(t("gal_dropFailed", { n: failed.length }));
+    const was = note.textContent;
+    note.textContent = parts.join(" · ");
+    setTimeout(() => { if (note.textContent === parts.join(" · ")) note.textContent = was; }, 5000);
+  }
+  if (failed.length) console.warn("[gallery] upload failed:\n" + failed.join("\n"));
+}
+
+// Both the gallery overlay and the filmstrip take drops. Wired with one function so
+// the two cannot drift apart.
+function wireDropZone(node) {
+  if (!node) return;
+  let depth = 0;   // dragenter/leave fire for every child; count instead of guessing
+  node.addEventListener("dragover", (ev) => {
+    if (!ev.dataTransfer?.types.includes("Files")) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "copy";
+  });
+  node.addEventListener("dragenter", (ev) => {
+    if (!ev.dataTransfer?.types.includes("Files")) return;
+    // preventDefault here as well as on dragover: a dragenter that is not cancelled
+    // leaves this element a non-target, and a real OS drag then never delivers a
+    // dragover or drop at all. (A synthetic DragEvent does, which is exactly how
+    // this shipped broken while its test passed.)
+    ev.preventDefault();
+    depth++;
+    // Read at drag time so a language switch needs no re-wiring; CSS shows it
+    // through content: attr(data-drophint).
+    node.dataset.drophint = t("gal_dropHint");
+    node.classList.add("isDropTarget");
+  });
+  node.addEventListener("dragleave", () => {
+    if (--depth <= 0) { depth = 0; node.classList.remove("isDropTarget"); }
+  });
+  node.addEventListener("drop", (ev) => {
+    if (!ev.dataTransfer?.types.includes("Files")) return;
+    ev.preventDefault();
+    depth = 0;
+    node.classList.remove("isDropTarget");
+    uploadFiles(ev.dataTransfer.files);
+  });
 }
 
 // Called when a render finishes (image-gen.js emits it from storedSlots, the one
@@ -263,6 +347,41 @@ function onMediaGenerated(ids) {
   if (!list.length) return;
   flashIds = new Set(list);
   refreshStrip();
+}
+
+// Say it on the button itself: swap the label, pulse, put it back. Re-entrant clicks
+// are ignored so the original label cannot be lost.
+function flashLabel(btn, text, ms = 1400) {
+  if (!btn || btn.dataset.flashing) return;
+  const original = btn.textContent;
+  btn.dataset.flashing = "1";
+  btn.textContent = text;
+  btn.classList.add("isFlash");
+  setTimeout(() => {
+    btn.textContent = original;
+    btn.classList.remove("isFlash");
+    delete btn.dataset.flashing;
+  }, ms);
+}
+
+// navigator.clipboard exists only in a secure context — over http on a LAN address
+// (not localhost) it is undefined, which is exactly when a silent no-op is most
+// confusing. Fall back to the old selection trick, and report honestly if both fail.
+async function copyText(s) {
+  try {
+    await navigator.clipboard.writeText(s);
+    return true;
+  } catch { /* fall through */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = s;
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch { return false; }
 }
 
 function renderDetail() {
@@ -279,6 +398,12 @@ function renderDetail() {
     const media = document.createElement(tag);
     media.src = url;
     if (tag !== "img") { media.controls = true; media.preload = "metadata"; }
+    // A video that has not been played shows a blank rectangle until its first frame
+    // is decoded. The gallery already keeps a frame grab for the grid — use it here
+    // too, so the pane looks like the thumbnail the user just clicked.
+    if (tag === "video") {
+      media.poster = `/api/gallery/thumb/${e.path.split("/").map(encodeURIComponent).join("/")}`;
+    }
     pane.appendChild(media);
   }
 
@@ -375,7 +500,13 @@ function renderDetail() {
     deps.attachMedia(url, e.path.split("/").pop());
     closeGallery();
   }, t("gal_useAsRefHint"));
-  if (e.prompt) act(t("gal_copyPrompt"), () => navigator.clipboard?.writeText(e.prompt));
+  // Copying puts nothing on screen, so the button has to say it happened — and say
+  // it plainly when it did not.
+  if (e.prompt) {
+    const copyBtn = act(t("gal_copyPrompt"), async () => {
+      flashLabel(copyBtn, (await copyText(e.prompt)) ? t("gal_copied") : t("gal_copyFailed"));
+    });
+  }
   // Re-run fills the composer and stops: a render costs real GPU minutes, so the
   // user presses Enter, not us.
   if (e.prompt) act(t("gal_rerun"), () => {
@@ -383,16 +514,17 @@ function renderDetail() {
     deps.setInput(`/imagine ${e.prompt}${seedFlag}`);
     closeGallery();
   }, t("gal_rerunHint"));
-  const dl2 = document.createElement("a");
-  dl2.className = "secondary"; dl2.href = url; dl2.download = e.path.split("/").pop();
-  dl2.textContent = t("gal_download");
-  dl2.style.cssText = "font-size:12px;display:inline-flex;align-items:center;padding:4px 10px;text-decoration:none";
-  actions.appendChild(dl2);
   act(t("gal_reveal"), async () => {
     await fetch("/api/gallery/reveal", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: e.path }) });
   });
   act(t("gal_delete"), () => deleteItem(e));
+  // Last: it is an <a download>, not a button, and the odd one out belongs at the end.
+  const dl2 = document.createElement("a");
+  dl2.className = "secondary"; dl2.href = url; dl2.download = e.path.split("/").pop();
+  dl2.textContent = t("gal_download");
+  dl2.style.cssText = "font-size:12px;display:inline-flex;align-items:center;padding:4px 10px;text-decoration:none";
+  actions.appendChild(dl2);
   pane.appendChild(actions);
 
   // Where it is used. Open conversations and archives are two different places, so
@@ -570,6 +702,8 @@ export function initGallery() {
   el("galleryStripToggle")?.addEventListener("click", () => setStripOpen(!stripOpen()));
   el("galleryStripOpen")?.addEventListener("click", openGallery);
   window.addEventListener("hk-media-generated", (ev) => onMediaGenerated(ev.detail && ev.detail.ids));
+  wireDropZone(el("galleryOverlay"));
+  wireDropZone(el("galleryStrip"));
   refreshStrip();
   el("galleryTypeFilter")?.addEventListener("change", refresh);
   const viewSel = el("galleryViewFilter");

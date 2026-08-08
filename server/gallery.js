@@ -590,6 +590,45 @@ function handleReveal(req, res) {
   }).catch((e) => sendJson(res, 500, { error: e.message }));
 }
 
+// Files dropped straight onto the gallery. The body is the file itself, not base64
+// in JSON: a dropped clip can be hundreds of megabytes, and base64 would inflate it
+// by a third and then hand the whole thing to JSON.parse as one string. The metadata
+// rides in headers instead.
+const MAX_UPLOAD = 2 * 1024 * 1024 * 1024;
+
+function kindForMime(mime, name) {
+  const m = String(mime || "").toLowerCase();
+  if (m.startsWith("image/")) return "image";
+  if (m.startsWith("video/")) return "video";
+  if (m.startsWith("audio/")) return "audio";
+  if (m === "model/gltf-binary" || /\.(glb|gltf)$/i.test(name || "")) return "mesh";
+  return null;
+}
+
+async function handleUpload(req, res) {
+  try {
+    const name = decodeURIComponent(req.headers["x-gallery-name"] || "");
+    const mime = String(req.headers["content-type"] || "application/octet-stream").split(";")[0];
+    const kind = kindForMime(mime, name);
+    if (!kind) { sendJson(res, 415, { error: `not a media file (${mime})` }); return; }
+
+    const chunks = [];
+    let size = 0;
+    for await (const c of req) {
+      size += c.length;
+      if (size > MAX_UPLOAD) { req.destroy(); sendJson(res, 413, { error: "file too large" }); return; }
+      chunks.push(c);
+    }
+    const buffer = Buffer.concat(chunks);
+    if (!buffer.length) { sendJson(res, 400, { error: "empty file" }); return; }
+
+    // Dedup is on (record's default for uploads): dropping the same picture twice
+    // should land on the file that is already there.
+    const e = record({ kind, mime, buffer, meta: { source: "upload", originalName: name } });
+    sendJson(res, 200, { id: e.path, deduped: !!e.deduped, kind });
+  } catch (err) { sendJson(res, 500, { error: err.message }); }
+}
+
 // Register media the server did not generate: dragged-in uploads (P1) and the
 // migration of already-existing chat media (P3).
 async function handleImport(req, res) {
@@ -618,6 +657,6 @@ async function handleImport(req, res) {
 module.exports = {
   GALLERY_DIR, record, recordMany, get, list, stats, remove, describe, compact, archiveRefs, makeThumb,
   handleList, handleFile, handleThumb, handlePutThumb, handleDelete, handleDescribe, handleStats,
-  handleRefs, handleCompact, handleImport, handleReveal,
+  handleRefs, handleCompact, handleImport, handleUpload, handleReveal,
   _reset() { entries = null; hashIndex = null; },   // tests
 };

@@ -514,6 +514,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/gallery/describe") { gallery.handleDescribe(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/compact") { gallery.handleCompact(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/import") { gallery.handleImport(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/upload") { gallery.handleUpload(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/reveal") { gallery.handleReveal(req, res); return; }
 
   if (req.method === "GET" && req.url.startsWith("/vendor/")) {
