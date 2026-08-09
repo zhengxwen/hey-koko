@@ -1784,13 +1784,32 @@ function renderStagedImagePreview() {
 //
 // `preview` is the thumbnail the composer already generated. Handing it to the server
 // saves the bubble from pulling the full-size file just to draw a 360px box.
-function stageIntoGallery(obj, mime, name, preview) {
-  obj.galleryIdPromise = fileIntoGallery(obj.base64, mime, name).then((id) => {
-    if (!id) return null;
-    obj.galleryId = id;
-    if (preview) cacheGalleryThumb(id, preview);
-    return id;
+// Natural pixel size of a base64 picture. Cheap (the browser decodes it anyway for the
+// preview) and it is the only place the size is knowable without parsing image headers
+// server-side. Resolves undefined rather than rejecting: a size we could not read must
+// never be able to stop an attachment from being staged.
+function imageNaturalSize(b64, mime) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => resolve(undefined);
+    img.src = `data:${mime || "image/png"};base64,${b64}`;
   });
+}
+
+// `dims` may be a promise (measuring a picture means decoding it). The whole chain is
+// assigned to galleryIdPromise SYNCHRONOUSLY: settleGalleryIds awaits that field before
+// a send, and a field that only appears an await later would let the send race past it
+// and store bytes instead of a reference.
+function stageIntoGallery(obj, mime, name, preview, dims) {
+  obj.galleryIdPromise = Promise.resolve(dims)
+    .then((d) => fileIntoGallery(obj.base64, mime, name, d))
+    .then((id) => {
+      if (!id) return null;
+      obj.galleryId = id;
+      if (preview) cacheGalleryThumb(id, preview);
+      return id;
+    });
   return obj.galleryIdPromise;
 }
 
@@ -1798,9 +1817,11 @@ function addStagedImages(newImages) {
   if (!newImages || newImages.length === 0) return;
   for (const im of newImages) {
     // The staged bytes, not the original file: EXIF rotation is already baked in and
-    // exotic formats converted, so this is the picture the conversation will use.
-    stageIntoGallery(im, sniffImageMime(im.base64 || "", im.mime || "image/jpeg"),
-                     im.displayName || im.name, im.preview);
+    // exotic formats converted, so this is the picture the conversation will use —
+    // which is also the picture whose dimensions belong on the ledger.
+    const mime = sniffImageMime(im.base64 || "", im.mime || "image/jpeg");
+    stageIntoGallery(im, mime, im.displayName || im.name, im.preview,
+                     imageNaturalSize(im.base64 || "", mime));
   }
   state.animateMaskPoint = null; // staging changes the scene → drop any old Replace point
   const all = [...getStagedImages(), ...newImages];
@@ -1930,7 +1951,8 @@ function addStagedVideos(newVideos) {
   // store that lost everything once. Tens of megabytes per clip also make this the
   // single biggest thing NOT to keep a second copy of.
   for (const v of newVideos) {
-    stageIntoGallery(v, v.mime || "video/mp4", v.displayName || v.name, v.thumbnail);
+    stageIntoGallery(v, v.mime || "video/mp4", v.displayName || v.name, v.thumbnail,
+                     (v.width && v.height) ? { width: v.width, height: v.height } : undefined);
   }
   // A new source clip changes the scene → drop any old Replace point. The point is
   // pinned to the FIRST staged video, so only clear it when starting from empty.

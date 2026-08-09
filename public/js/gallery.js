@@ -237,6 +237,50 @@ function setStripOpen(open) {
   if (open) refreshStrip();
 }
 
+// Filmstrip tooltip. A hovering user is asking "what IS this frame" — the specs answer
+// that in a glance, the prompt does not (and a full video prompt fills the screen, which
+// is why it comes last and clipped). Format is the extension, not the MIME type: it is
+// what the file is actually called. A clip's duration is derived (frames ÷ fps) because
+// that is the number in the head, while frames+fps is what the ledger records.
+const TOOLTIP_PROMPT_MAX = 140;
+
+function specLine(e) {
+  const bits = [];
+  const ext = (e.path.split(".").pop() || "").toUpperCase();
+  if (e.width && e.height) bits.push(`${e.width}×${e.height}`);
+  if (ext) bits.push(ext);
+  if (e.kind === "video") {
+    if (e.fps) bits.push(`${e.fps}fps`);
+    // length is frames; show seconds too, since that is how the clip is discussed.
+    if (e.length) bits.push(e.fps ? `${e.length}f · ${(e.length / e.fps).toFixed(1)}s` : `${e.length}f`);
+  }
+  if (e.bytes) bits.push(fmtSize(e.bytes));
+  return bits.join(" · ");
+}
+
+function tooltipFor(entry) {
+  // Filename first: it is this frame's identity, and it is the SAME name the chat calls
+  // the picture by (imageNames → the manifest the model reads), so a tooltip is how you
+  // match "image 2" in a draft prompt to the thumbnail in front of you. The month folder
+  // is dropped — it is the same for everything on screen.
+  const lines = [entry.path.split("/").pop(), specLine(entry)];
+  const model = entry.modelId || entry.model;
+  if (model) lines.push(model);
+  // The upload's own filename is already inside the gallery name, so only a prompt or a
+  // description earns the last line.
+  const text = entry.prompt || entry.desc || "";
+  if (text) {
+    const clipped = text.length > TOOLTIP_PROMPT_MAX
+      ? `${text.slice(0, TOOLTIP_PROMPT_MAX).trimEnd()}…` : text;
+    lines.push(clipped);
+  }
+  return lines.filter(Boolean).join("\n") || entry.path;
+}
+
+// Exposed for the test suite: the formatter is pure, so it can be checked against
+// synthetic ledger entries instead of starting a render to produce a real one.
+export const __tooltipFor = tooltipFor;
+
 function stripTile(entry) {
   const url = `/api/gallery/file/${entry.path.split("/").map(encodeURIComponent).join("/")}`;
   const cell = document.createElement("div");
@@ -246,10 +290,11 @@ function stripTile(entry) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "galleryStripThumb";
-  btn.title = entry.prompt || entry.desc || entry.originalName || entry.path;
+  btn.title = tooltipFor(entry);
   const img = document.createElement("img");
   img.loading = "lazy";
-  img.alt = btn.title;
+  // alt is read aloud and shown when the thumbnail fails — the subject, not the specs.
+  img.alt = entry.prompt || entry.originalName || entry.kind;
   img.src = galleryThumbUrl(entry.path);
   img.onerror = () => { img.remove(); btn.textContent = entry.kind === "video" ? "▶" : entry.kind === "audio" ? "🔊" : "3D"; };
   btn.appendChild(img);
@@ -736,10 +781,49 @@ function renderDetail() {
   }
 }
 
+// Specs an entry should have but doesn't. Older items predate the ledger recording
+// them — an upload from before the browser measured its pictures, a clip the history
+// migration pulled out of an archive — and the ledger cannot invent them.
+function specsMissing(e) {
+  if (!e) return false;
+  const want = e.kind === "video" ? ["width", "height", "fps", "length"] : ["width", "height"];
+  return e.kind !== "mesh" && e.kind !== "audio" && want.some((k) => !e[k]);
+}
+
+// Ask the server to ffprobe an item whose specs are incomplete, then repaint. Opening
+// an item is exactly the right moment: the user is looking at it, the file is local, and
+// the answer is recorded so it only ever happens once per item. Asked at most once per
+// session per item, so an item ffprobe genuinely cannot read (no ffprobe installed, an
+// exotic container) doesn't re-ask on every click.
+const probed = new Set();
+async function backfillSpecs(entry) {
+  if (!entry || probed.has(entry.path) || !specsMissing(entry)) return;
+  probed.add(entry.path);
+  try {
+    const r = await fetch("/api/gallery/probe", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: entry.path }),
+    });
+    const j = await r.json();
+    if (!j || !j.entry) return;
+    // Update every copy: the page list, the filmstrip cache, and the open pane — the
+    // same discipline the ★ rating needs, or the next refresh paints the old values back.
+    // (refreshStrip re-fetches from the ledger, so the strip's tooltip is corrected by
+    // its next natural repaint; patching the cache keeps it right until then.)
+    const patch = (arr) => { const i = arr.findIndex((e) => e.path === entry.path); if (i >= 0) arr[i] = { ...arr[i], ...j.entry }; };
+    patch(items);
+    patch(stripItems);
+    const cell = document.querySelector(`.galleryStripCell[data-id="${CSS.escape(entry.path)}"] .galleryStripThumb`);
+    if (cell) cell.title = tooltipFor({ ...entry, ...j.entry });
+    if (selected && selected.path === entry.path) { selected = { ...selected, ...j.entry }; renderDetail(); }
+  } catch { /* offline or no ffprobe — the item simply keeps showing what it knows */ }
+}
+
 function selectItem(id) {
   selected = items.find((e) => e.path === id) || null;
   document.querySelectorAll(".galleryTile").forEach((n) => n.classList.toggle("isSelected", n.dataset.id === id));
   renderDetail();
+  backfillSpecs(selected);
 }
 
 async function deleteItem(entry) {

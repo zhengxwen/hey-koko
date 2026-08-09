@@ -384,6 +384,79 @@ function rate(id, rating) {
   return next;
 }
 
+// ---------------------------------------------------------------- backfill
+
+let ffprobePath;   // undefined = unprobed, null = absent, string = path
+function ffprobe() {
+  if (ffprobePath !== undefined) return Promise.resolve(ffprobePath);
+  return findCommand("ffprobe").then((p) => (ffprobePath = p));
+}
+
+// What an entry SHOULD know about itself. Pixel size for everything; a clip also has a
+// frame rate and a length. Anything missing is what backfill goes looking for.
+function missingSpecs(e) {
+  if (!e) return [];
+  const want = ["width", "height"];
+  if (e.kind === "video") want.push("fps", "length");
+  return want.filter((k) => !e[k]);
+}
+
+// Read a file's real specs with ffprobe. Entries can be missing them for perfectly
+// ordinary reasons — an upload from before the browser started measuring, a clip pulled
+// out of an old archive by the history migration, a render whose path could not compute
+// its own size — and the ledger has no way to invent them. Unlike comfy.js's probeVideo
+// this reads the stored file directly: no temp copy, since the file is already on disk.
+// Returns {} when ffprobe is absent or the file is unreadable; callers treat that as
+// "still unknown", never as an error.
+async function probeSpecs(absPath) {
+  const bin = await ffprobe();
+  if (!bin) return {};
+  const out = await new Promise((resolve) => {
+    execFile(bin, ["-v", "error", "-select_streams", "v:0",
+      "-show_entries", "stream=width,height,r_frame_rate,nb_frames,duration",
+      "-of", "default=noprint_wrappers=1", absPath],
+      { timeout: 20000 }, (err, stdout) => resolve(err ? "" : String(stdout)));
+  });
+  const kv = {};
+  for (const line of out.trim().split("\n")) { const i = line.indexOf("="); if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1); }
+  const [num, den] = String(kv.r_frame_rate || "").split("/").map(Number);
+  const fps = (num && den) ? num / den : (num || 0);
+  const dur = parseFloat(kv.duration || "0");
+  // nb_frames is exact when the container carries it; otherwise fps × duration. A still
+  // image reports 1 frame at a nominal rate — neither is a fact worth recording.
+  const nb = parseInt(kv.nb_frames, 10);
+  const specs = {};
+  const w = parseInt(kv.width, 10), h = parseInt(kv.height, 10);
+  if (w > 0) specs.width = w;
+  if (h > 0) specs.height = h;
+  if (fps > 0 && dur > 0) {
+    specs.fps = Math.round(fps * 100) / 100;
+    specs.length = nb > 0 ? nb : Math.round(fps * dur);
+  }
+  return specs;
+}
+
+// Fill in an entry's missing specs, recording them so the work is done once. Appends a
+// fresh record like every other edit (later line wins). Returns the entry either way —
+// unchanged when nothing was missing, or when ffprobe could not tell us anything.
+async function backfill(id) {
+  load();
+  const cur = entries.get(id);
+  if (!cur) return null;
+  const want = missingSpecs(cur);
+  if (!want.length) return cur;
+  const abs = path.join(GALLERY_DIR, cur.path);
+  let specs = {};
+  try { if (fs.statSync(abs).isFile()) specs = await probeSpecs(abs); } catch { /* gone → nothing to learn */ }
+  const found = want.filter((k) => specs[k]);
+  if (!found.length) return cur;
+  const next = { ...cur };
+  for (const k of found) next[k] = specs[k];
+  entries.set(id, next);
+  append(next);
+  return next;
+}
+
 // Rewrite the ledger without tombstones/orphans. The one place a full rewrite is
 // allowed — temp file + rename, so a crash mid-compact leaves the old ledger intact.
 function compact() {
@@ -628,6 +701,18 @@ async function handleRate(req, res) {
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
+// POST /api/gallery/probe { id } → { ok, entry } with any missing specs filled in.
+// Idempotent and cheap when there is nothing to learn (no ffprobe run at all), so the
+// UI can simply ask every time it opens an item.
+async function handleProbe(req, res) {
+  try {
+    const body = await readBody(req);
+    const e = await backfill(String(body.id || ""));
+    if (!e) { sendJson(res, 404, { error: "not in gallery" }); return; }
+    sendJson(res, 200, { ok: true, entry: e });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
 async function handleDelete(req, res) {
   try {
     const body = await readBody(req);
@@ -697,7 +782,11 @@ async function handleUpload(req, res) {
 
     // Dedup is on (record's default for uploads): dropping the same picture twice
     // should land on the file that is already there.
-    const e = record({ kind, mime, buffer, meta: { source: "upload", originalName: name } });
+    // Pixel size, measured by the browser (it had already decoded the file). Optional —
+    // an upload from a client that doesn't send it is still a perfectly good entry.
+    const dim = (h) => { const n = parseInt(req.headers[h], 10); return Number.isFinite(n) && n > 0 ? n : undefined; };
+    const e = record({ kind, mime, buffer, meta: { source: "upload", originalName: name,
+                                                   width: dim("x-gallery-width"), height: dim("x-gallery-height") } });
     sendJson(res, 200, { id: e.path, deduped: !!e.deduped, kind });
   } catch (err) { sendJson(res, 500, { error: err.message }); }
 }
@@ -730,6 +819,7 @@ async function handleImport(req, res) {
 module.exports = {
   GALLERY_DIR, record, recordMany, get, list, stats, remove, describe, rate, compact, archiveRefs, makeThumb,
   handleList, handleFile, handleThumb, handlePutThumb, handleDelete, handleDescribe, handleRate, handleStats,
-  handleRefs, handleCompact, handleImport, handleUpload, handleReveal,
+  handleRefs, handleCompact, handleImport, handleUpload, handleReveal, handleProbe,
+  backfill, missingSpecs,
   _reset() { entries = null; hashIndex = null; },   // tests
 };

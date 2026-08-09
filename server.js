@@ -514,6 +514,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/gallery/delete") { gallery.handleDelete(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/describe") { gallery.handleDescribe(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/rate") { gallery.handleRate(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/probe") { gallery.handleProbe(req, res); return; }
   if (req.method === "GET" && req.url === "/api/skills") { skills.handleList(req, res); return; }
   if (req.method === "POST" && req.url === "/api/skills/compose") { skills.handleCompose(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/compact") { gallery.handleCompact(req, res); return; }

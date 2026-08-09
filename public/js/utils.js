@@ -76,16 +76,21 @@ export function galleryName(idOrRef) {
 // stable identity for it. Best-effort by design: this must never be able to stop an
 // attachment from being staged, so every failure comes back as null and the caller keeps
 // the bytes inline.
-export async function fileIntoGallery(b64, mime, name) {
+export async function fileIntoGallery(b64, mime, name, dims) {
   try {
     if (!b64) return null;
     const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-    const r = await fetch("/api/gallery/upload", {
-      method: "POST",
-      headers: { "Content-Type": mime || "application/octet-stream",
-                 "X-Gallery-Name": encodeURIComponent(name || "") },
-      body: bin,
-    });
+    // Pixel dimensions ride along when the caller knows them. Only the browser does:
+    // it has already decoded the picture to make a thumbnail, whereas the server would
+    // have to parse image headers itself. Without this an UPLOADED reference shows no
+    // size anywhere — the ledger only ever learned width/height from a render.
+    const headers = { "Content-Type": mime || "application/octet-stream",
+                      "X-Gallery-Name": encodeURIComponent(name || "") };
+    if (dims && dims.width && dims.height) {
+      headers["X-Gallery-Width"] = String(dims.width);
+      headers["X-Gallery-Height"] = String(dims.height);
+    }
+    const r = await fetch("/api/gallery/upload", { method: "POST", headers, body: bin });
     const j = await r.json().catch(() => null);
     if (j && j.id && !j.deduped) {
       window.dispatchEvent(new CustomEvent("hk-media-added", { detail: { ids: [j.id] } }));
