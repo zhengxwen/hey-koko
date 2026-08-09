@@ -409,7 +409,10 @@ function indexEntryOf(doc) {
     // hasCard: whether a distillation card (kind:"card") leads the blocks.
     importedAt: doc.importedAt || undefined,
     publishedAt: doc.publishedAt || undefined,
-    rating: doc.rating || undefined,           // manual 1-5 ★ (absent = unrated)
+    // Manual 0–5 ★ in half steps. `?? undefined`, NOT `|| undefined`: a rating of 0 is a
+    // score ("read it, not worth keeping") and has to survive into the index, where
+    // absent genuinely means never graded.
+    rating: doc.rating ?? undefined,
     hasCard: (doc.blocks || []).some(b => b.kind === "card") || undefined,
     // Entity NAMES only (cap 15, ~300B/doc) — the structure layer's index projection.
     // Powers the entity inverted index, shared-entity related, star-map edges, /ask -a.
@@ -2483,22 +2486,33 @@ async function distillDocInternal(docId, { metadata = false, model, language = "
 
 // POST /api/library/distill  { docId, model, language?, metadata? } → regenerate one
 // doc's card inline (the panel's "re-extract" button; batch backfill goes through jobs.js).
-// POST /api/library/rate { docId, rating: 0..5 in 0.5 steps } → { ok, rating } — 0 clears.
-// A manual quality mark, shown as ★ in the list and next to the preview title.
+// POST /api/library/rate { docId, rating } → { ok, rating }
+//   rating: a number 0..5 in 0.5 steps to score, or null to un-score.
+//
+// THREE STATES, not two. No `rating` field means "not graded yet"; `rating: 0` means
+// "read it, it is not worth keeping" — a real verdict you can filter for and act on.
+// 0 used to be the clear, which made "bad" unsayable and lumped a rejected paper in with
+// the hundred you have not opened. Clearing is therefore its own value: null.
+//
+// Everything below is written with == null / ?? rather than truthiness on purpose: a
+// single `if (rating)` or `rating || undefined` anywhere in this path silently turns a
+// deliberate zero back into "ungraded".
 async function rateLibraryDoc(req, res) {
   try {
     const body = await readBody(req);
     const docId = String(body.docId || "");
-    const rating = Math.max(0, Math.min(5, Math.round((Number(body.rating) || 0) * 2) / 2));
+    const n = Number(body.rating);
+    const clear = body.rating == null || body.rating === "" || !Number.isFinite(n);
+    const rating = clear ? null : Math.max(0, Math.min(5, Math.round(n * 2) / 2));
     const doc = readDoc(docId);
     if (!doc) { sendJson(res, 404, { error: "Document not found" }); return; }
-    if (rating) doc.rating = rating; else delete doc.rating;
+    if (rating == null) delete doc.rating; else doc.rating = rating;
     writeDoc(doc);
     // Update the index entry IN PLACE — upsertIndex pushes to the end, which would
     // reshuffle the list's default import order on every rating click.
     const arr = loadIndex();
     const e = arr.find((d) => d.docId === docId);
-    if (e) { e.rating = rating || undefined; saveIndex(arr); }
+    if (e) { if (rating == null) delete e.rating; else e.rating = rating; saveIndex(arr); }
     sendJson(res, 200, { ok: true, rating });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }

@@ -247,11 +247,25 @@ function absPathOf(id) {
   return abs.startsWith(GALLERY_DIR) ? abs : null;
 }
 
-function list({ type, model, source, q, before, limit = 60 } = {}) {
+function list({ type, model, source, q, rating, before, limit = 60 } = {}) {
   load();
   const needle = String(q || "").toLowerCase();
   let all = [...entries.values()];
   if (type) all = all.filter((e) => e.kind === type);
+  // Named values rather than numbers, because "0" would otherwise be ambiguous between
+  // "rated exactly zero" and "rated at least zero" (= rated at all). Note every test is
+  // written against `e.rating != null`: `>= 3` on an absent rating is false anyway, but
+  // `>= 0` would sweep in every unrated file, which is precisely the confusion this
+  // whole field exists to avoid.
+  if (rating) {
+    if (rating === "unrated") all = all.filter((e) => e.rating == null);
+    else if (rating === "rated") all = all.filter((e) => e.rating != null);
+    else if (rating === "zero") all = all.filter((e) => e.rating === 0);
+    else {
+      const min = Number(rating);
+      if (Number.isFinite(min)) all = all.filter((e) => e.rating != null && e.rating >= min);
+    }
+  }
   // Match the canonical id: exact, or a "model:" prefix so asking for "bernini" returns
   // every mode of it. Falls back to the raw filename for anything recorded without an id.
   if (model) {
@@ -345,6 +359,26 @@ function describe(id, desc) {
   const text = String(desc == null ? "" : desc).trim().slice(0, 2000);
   const next = { ...cur };
   if (text) next.desc = text; else delete next.desc;
+  entries.set(id, next);
+  append(next);
+  return next;
+}
+
+// Manual score, 0–5 in half steps. UNRATED AND ZERO ARE DIFFERENT THINGS here: no field
+// means "not looked at yet", `rating: 0` means "looked at it, it is a reject" — a real
+// verdict worth filtering for (and worth deleting in bulk). The library conflates them,
+// using 0 as its clear; this one cannot, so clearing is its own value: rating === null.
+//
+// Written like every other edit — a fresh full record appended to the ledger, later line
+// wins. Re-rating the same file a dozen times costs a dozen short lines until compact().
+function rate(id, rating) {
+  load();
+  const cur = entries.get(id);
+  if (!cur) return null;
+  const next = { ...cur };
+  const n = Number(rating);
+  if (rating == null || rating === "" || !Number.isFinite(n)) delete next.rating;
+  else next.rating = Math.max(0, Math.min(5, Math.round(n * 2) / 2));
   entries.set(id, next);
   append(next);
   return next;
@@ -508,6 +542,7 @@ function handleList(req, res) {
       model: u.searchParams.get("model") || undefined,
       source: u.searchParams.get("source") || undefined,
       q: u.searchParams.get("q") || undefined,
+      rating: u.searchParams.get("rating") || undefined,
       before: u.searchParams.get("before") || undefined,
       limit: u.searchParams.get("limit") || undefined,
     }));
@@ -579,6 +614,17 @@ async function handleDescribe(req, res) {
     const e = describe(String(body.id || ""), body.desc);
     if (!e) { sendJson(res, 404, { error: "not in gallery" }); return; }
     sendJson(res, 200, { ok: true, desc: e.desc || "" });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+// { id, rating } — a number 0..5 to score, null to un-score. `?? null` throughout, never
+// `|| null`: a rating of 0 is a value, not an absence.
+async function handleRate(req, res) {
+  try {
+    const body = await readBody(req);
+    const e = rate(String(body.id || ""), body.rating);
+    if (!e) { sendJson(res, 404, { error: "not in gallery" }); return; }
+    sendJson(res, 200, { ok: true, rating: e.rating ?? null });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
@@ -682,8 +728,8 @@ async function handleImport(req, res) {
 }
 
 module.exports = {
-  GALLERY_DIR, record, recordMany, get, list, stats, remove, describe, compact, archiveRefs, makeThumb,
-  handleList, handleFile, handleThumb, handlePutThumb, handleDelete, handleDescribe, handleStats,
+  GALLERY_DIR, record, recordMany, get, list, stats, remove, describe, rate, compact, archiveRefs, makeThumb,
+  handleList, handleFile, handleThumb, handlePutThumb, handleDelete, handleDescribe, handleRate, handleStats,
   handleRefs, handleCompact, handleImport, handleUpload, handleReveal,
   _reset() { entries = null; hashIndex = null; },   // tests
 };

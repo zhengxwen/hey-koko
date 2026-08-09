@@ -481,6 +481,17 @@
               </select>
               <!-- How the grid is drawn. Three tile sizes plus a list; the choice is
                    remembered and switching it only restyles what is already there. -->
+              <!-- Unrated and ★0 are separate options because they are separate states:
+                   never graded vs. graded a reject. -->
+              <select id="galleryRatingFilter" class="libraryRatingFilter" title="Filter by rating">
+                <option value="">All ratings</option>
+                <option value="5">★5</option>
+                <option value="4">★4+</option>
+                <option value="3">★3+</option>
+                <option value="zero">★0 (rejects)</option>
+                <option value="rated">Rated</option>
+                <option value="unrated">Unrated</option>
+              </select>
               <select id="galleryViewFilter" class="libraryRatingFilter">
                 <option value="md">Medium</option>
                 <option value="sm">Small</option>
@@ -511,6 +522,10 @@
                 <option value="5">★5</option>
                 <option value="4">★4+</option>
                 <option value="3">★3+</option>
+                <!-- ★0 and Unrated are separate states: read and rejected vs. never
+                     graded. See rateLibraryDoc in server/library.js. -->
+                <option value="zero">★0 (rejects)</option>
+                <option value="rated">Rated</option>
                 <option value="unrated">Unrated</option>
               </select>
               <div class="libraryViewsWrapper">

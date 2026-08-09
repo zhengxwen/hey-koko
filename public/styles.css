@@ -4589,12 +4589,18 @@ body.isResizingComposer {
 
 /* ★ manual-rating widget riding the library preview title. Each star = a muted base
    glyph plus a gold overlay clipped to 0/50/100% width (half-star capable). */
+/* [0] ★★★★★ [✕] — the library's preview-title widget and the gallery's detail row are
+   the same control, so they share the star and chip rules. */
 .libDocStars {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   margin-left: 10px;
   font-weight: 400;
   white-space: nowrap;
   user-select: none;
 }
+.libDocStarRow { white-space: nowrap; }
 .libDocStar {
   position: relative;
   display: inline-block;
@@ -7562,6 +7568,60 @@ body.isResizingComposer {
 
 .galleryDetail dt { opacity: 0.6; }
 .galleryDetail dd { margin: 0; word-break: break-word; }
+
+/* ★ rating row in the detail pane: [0] ★★★★★ [✕] label. */
+.galleryRateRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 10px;
+  font-size: 18px;
+}
+/* Both chips are <button>, so the global button rules (white text, 42px tall, bold)
+   have to be undone here or they arrive as two large filled blocks. */
+.rateZeroBtn,
+.rateClearBtn {
+  min-height: 0;
+  padding: 1px 7px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--muted, inherit);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.rateZeroBtn:hover,
+.rateClearBtn:hover { border-color: #f0a417; color: inherit; }
+/* Rated zero is a STATE, not a hover — it has to look as committed as three gold stars
+   would, or "reject" and "not looked at yet" read the same at a glance. */
+.rateZeroBtn.isOn {
+  background: #f0a417;
+  border-color: #f0a417;
+  color: #1a1a1a;
+}
+.rateClearBtn[hidden] { display: none; }
+.galleryRateLabel { font-size: 12px; }
+
+/* The score on the tile itself. Opposite corner from .galleryBadge (bottom-LEFT), so a
+   rated video shows both without them overlapping. */
+.galleryTile .galleryRateBadge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.55);
+  color: #f0a417;
+  pointer-events: none;
+}
+.galleryTile .galleryRateBadge[hidden] { display: none; }
+/* In list view the meta line already spells out ★N — a floating badge on top of a 44px
+   row would just cover the thumbnail. */
+.galleryGrid[data-view="list"] .galleryTile .galleryRateBadge { display: none; }
 
 .galleryDetailPrompt {
   font-size: 12px;

@@ -333,7 +333,9 @@ const UI = {
     lib_sortRate: "Rating high→low",
     lib_rateFilterAll: "All ratings",
     lib_rateFilterUnrated: "Unrated",
-    lib_rateHint: "Rate this doc — left half of a star = half a point (e.g. 3.5); click the current value again to clear",
+    lib_rateHint: "Left half of a star = half a point (e.g. 3.5); click the current score again to un-rate",
+    lib_rateZeroHint: "Score it 0 — read it, not worth keeping. Different from never having rated it",
+    lib_rateClearHint: "Remove the rating (back to unrated)",
     lib_rateFailed: "Rating failed: ${error}",
     lib_ytMemberToggle: "🔒 Members-only",
     lib_ytMemberToggleHint: "Tick/untick all members-only videos. They can be imported once you export a member account's youtube.com cookies to ~/.hey-koko/youtube-cookies.txt (Netscape cookies.txt format — see README).",
@@ -1342,6 +1344,17 @@ const UI = {
     gal_reclaimTitle: "File media still stored inside conversations into the gallery, and keep only a reference",
     gal_empty: "Nothing here yet. Generated images and videos land in the gallery automatically.",
     gal_noneMatch: "Nothing matches these filters.",
+    gal_rateHint: "Click a star's left half for a half score; click the current score to un-rate",
+    gal_rateZeroHint: "Score it 0 — a reject. Different from never having rated it",
+    gal_rateClearHint: "Remove the rating (back to unrated)",
+    gal_rateUnrated: "not rated",
+    gal_rateValue: "\u2605 ${n}",
+    gal_rateFailed: "could not save the rating",
+    gal_rateFilterRated: "Rated",
+    gal_rateFilterUnrated: "Unrated",
+    gal_rateFilterZero: "\u26050 (rejects)",
+    gal_allRatings: "All ratings",
+    gal_ratingFilterTitle: "Filter by rating",
     gal_desc: "Description",
     gal_descPlaceholder: "Your own words — searched along with the prompt and the filename",
     gal_descSaved: "saved",
@@ -1742,7 +1755,9 @@ const UI = {
     lib_sortRate: "分数 高→低",
     lib_rateFilterAll: "全部分数",
     lib_rateFilterUnrated: "未评分",
-    lib_rateHint: "给文档打分——点星的左半＝半星（如 3.5），再点当前分数可清除",
+    lib_rateHint: "点星的左半＝半星（如 3.5）；再点当前分数则取消评分",
+    lib_rateZeroHint: "打 0 分 —— 看过了，不值得留。这和「没打过分」是两回事",
+    lib_rateClearHint: "去掉评分（回到未评分）",
     lib_rateFailed: "打分失败：${error}",
     lib_ytMemberToggle: "🔒 会员专属",
     lib_ytMemberToggleHint: "一键勾选/取消所有会员专属视频。把会员账号的 youtube.com cookies 导出到 ~/.hey-koko/youtube-cookies.txt（Netscape cookies.txt 格式，详见 README）后即可正常导入。",
@@ -2740,6 +2755,17 @@ const UI = {
     gal_reclaimTitle: "把还存在对话里的媒体归入作品库，对话里只保留引用",
     gal_empty: "这里还是空的。生成的图片和视频会自动进入作品库。",
     gal_noneMatch: "没有符合这些筛选条件的媒体。",
+    gal_rateHint: "点星星左半边给半分；再点当前分数则取消评分",
+    gal_rateZeroHint: "打 0 分 —— 废片。这和「没打过分」是两回事",
+    gal_rateClearHint: "去掉评分（回到未评分）",
+    gal_rateUnrated: "未评分",
+    gal_rateValue: "\u2605 ${n}",
+    gal_rateFailed: "评分没能保存",
+    gal_rateFilterRated: "已评分",
+    gal_rateFilterUnrated: "未评分",
+    gal_rateFilterZero: "\u26050（废片）",
+    gal_allRatings: "全部评分",
+    gal_ratingFilterTitle: "按评分筛选",
     gal_desc: "描述",
     gal_descPlaceholder: "自己写的说明 —— 和提示词、文件名一起被搜索",
     gal_descSaved: "已保存",
@@ -3140,7 +3166,9 @@ const UI = {
     lib_sortRate: "分數 高→低",
     lib_rateFilterAll: "全部分數",
     lib_rateFilterUnrated: "未評分",
-    lib_rateHint: "給文件打分——點星的左半＝半星（如 3.5），再點當前分數可清除",
+    lib_rateHint: "點星的左半＝半星（如 3.5）；再點目前分數則取消評分",
+    lib_rateZeroHint: "打 0 分 —— 看過了，不值得留。這和「沒打過分」是兩回事",
+    lib_rateClearHint: "去掉評分（回到未評分）",
     lib_rateFailed: "打分失敗：${error}",
     lib_ytMemberToggle: "🔒 會員專屬",
     lib_ytMemberToggleHint: "一鍵勾選/取消所有會員專屬影片。把會員帳號的 youtube.com cookies 匯出到 ~/.hey-koko/youtube-cookies.txt（Netscape cookies.txt 格式，詳見 README）後即可正常匯入。",
@@ -4138,6 +4166,17 @@ const UI = {
     gal_reclaimTitle: "把還存在對話裡的媒體歸入作品庫，對話裡只保留引用",
     gal_empty: "這裡還是空的。生成的圖片和影片會自動進入作品庫。",
     gal_noneMatch: "沒有符合這些篩選條件的媒體。",
+    gal_rateHint: "點星星左半邊給半分；再點目前分數則取消評分",
+    gal_rateZeroHint: "打 0 分 —— 廢片。這和「沒打過分」是兩回事",
+    gal_rateClearHint: "去掉評分（回到未評分）",
+    gal_rateUnrated: "未評分",
+    gal_rateValue: "\u2605 ${n}",
+    gal_rateFailed: "評分沒能儲存",
+    gal_rateFilterRated: "已評分",
+    gal_rateFilterUnrated: "未評分",
+    gal_rateFilterZero: "\u26050（廢片）",
+    gal_allRatings: "全部評分",
+    gal_ratingFilterTitle: "按評分篩選",
     gal_desc: "描述",
     gal_descPlaceholder: "自己寫的說明 —— 和提示詞、檔名一起被搜尋",
     gal_descSaved: "已儲存",
@@ -4857,6 +4896,8 @@ export function applyUILanguage() {
     for (const opt of libRateFilter.options) {
       if (opt.value === "") opt.textContent = t("lib_rateFilterAll");
       else if (opt.value === "unrated") opt.textContent = t("lib_rateFilterUnrated");
+      else if (opt.value === "rated") opt.textContent = t("gal_rateFilterRated");
+      else if (opt.value === "zero") opt.textContent = t("gal_rateFilterZero");
     }
   }
   // Gallery filter dropdowns (their options are static markup, unlike the model
@@ -4876,6 +4917,17 @@ export function applyUILanguage() {
       const key = opt.value === "md" ? "gal_viewMedium" : opt.value === "sm" ? "gal_viewSmall"
         : "gal_viewList";
       opt.textContent = t(key);
+    }
+  }
+  // The numeric rows (★5 / ★4+ / ★3+ / ★0) are the same glyphs in every language, so
+  // only the three worded rows need translating.
+  const galRating = document.querySelector("#galleryRatingFilter");
+  if (galRating) {
+    galRating.title = t("gal_ratingFilterTitle");
+    for (const opt of galRating.options) {
+      const key = opt.value === "" ? "gal_allRatings" : opt.value === "rated" ? "gal_rateFilterRated"
+        : opt.value === "unrated" ? "gal_rateFilterUnrated" : opt.value === "zero" ? "gal_rateFilterZero" : null;
+      if (key) opt.textContent = t(key);
     }
   }
   const galSource = document.querySelector("#gallerySourceFilter");

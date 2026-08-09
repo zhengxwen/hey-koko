@@ -1780,7 +1780,9 @@ export function initLibrary() {
     // Date: publishedAt (YouTube upload date) beats the coarser year when present.
     // ★N = the manual rating (set from the preview pane's star widget).
     const venueShort = d.venue ? (d.venue.length > 30 ? d.venue.slice(0, 30) + "…" : d.venue) : "";
-    const meta = [d.hasCard ? "📇 " + d.docKind : d.docKind, d.rating ? "★" + d.rating : "", shortAuthors(d.authors), venueShort ? "📗 " + venueShort : "", d.publishedAt || d.year].filter(Boolean).join(" · ");
+    // `!= null`, not truthiness: ★0 is a grade the list has to show, or a rejected doc
+    // is indistinguishable from one nobody has opened yet.
+    const meta = [d.hasCard ? "📇 " + d.docKind : d.docKind, d.rating != null ? "★" + d.rating : "", shortAuthors(d.authors), venueShort ? "📗 " + venueShort : "", d.publishedAt || d.year].filter(Boolean).join(" · ");
     card.innerHTML = `
       <input type="checkbox" class="archiveCardCheckbox" ${selected.has(d.docId) ? "checked" : ""} />
       <div class="archiveCardInfo">
@@ -1802,13 +1804,22 @@ export function initLibrary() {
     listEl.innerHTML = "";
     let list = [...docs];
     if (activeTagFilter) list = list.filter((d) => (d.tags || []).some((tg) => tg && tg.name === activeTagFilter));
-    if (ratingFilter === "unrated") list = list.filter((d) => !d.rating);
-    else if (ratingFilter) list = list.filter((d) => (d.rating || 0) >= Number(ratingFilter));
+    // Named values rather than bare numbers, because "0" would be ambiguous between
+    // "rated exactly zero" and "rated at least zero" (= rated at all). Every numeric
+    // test guards on `!= null` first: `>= 0` would otherwise sweep in the ungraded pile,
+    // which is exactly the confusion the third state exists to remove.
+    if (ratingFilter === "unrated") list = list.filter((d) => d.rating == null);
+    else if (ratingFilter === "rated") list = list.filter((d) => d.rating != null);
+    else if (ratingFilter === "zero") list = list.filter((d) => d.rating === 0);
+    else if (ratingFilter) list = list.filter((d) => d.rating != null && d.rating >= Number(ratingFilter));
     if (scores) {
       list = list.filter((d) => scores.has(d.docId)).sort((a, b) => scores.get(b.docId) - scores.get(a.docId));
     } else if (sortMode === "rate") {
-      // Rating high→low; unrated sink to the end, ties keep import order (stable sort).
-      list.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+      // Rating high→low, ties keep import order (stable sort). Ungraded sorts BELOW ★0:
+      // "rejected" is a judgement and outranks "never looked at", so the bottom of the
+      // list reads reject-then-backlog rather than the two shuffled together.
+      const rank = (d) => (d.rating ?? -1);
+      list.sort((a, b) => rank(b) - rank(a));
     } else if (sortMode === "new" || sortMode === "old") {
       // Date sort applies inside each folder too (the tree below groups a pre-sorted
       // list, so node.files inherit this order). Undated docs always sink to the end.
@@ -1890,18 +1901,66 @@ export function initLibrary() {
   // ---- doc browse (editable bubble stream) ----
   // ★ rating widget appended to the preview title. Half-star capable: each star is a
   // muted base ★ with a gold overlay clipped to 0/50/100% width; clicking a star's LEFT
-  // half sets n−0.5, the right half sets n, and clicking the current value clears.
+  // half sets n−0.5 and the right half sets n.
+  //
+  // THREE STATES, not two:
+  //   unrated  — never graded. No field on the doc.
+  //   0        — read it, not worth keeping. A real score, filterable, printed as ★0.
+  //   0.5–5    — a grade.
+  //
+  // 0 used to double as the clear, which made "bad" unsayable and buried a rejected
+  // paper among the hundred nobody has opened. So 0 gets its own button and clearing
+  // gets the ✕ — plus the familiar click-the-current-value shortcut, which always
+  // CLEARS rather than dropping to zero (an ambiguous ★1 → 0 would make the two
+  // states impossible to tell apart by feel).
+  //
   // Persists via /api/library/rate; the list card's "★N" meta updates immediately.
   function renderPreviewStars(doc) {
     const wrap = document.createElement("span");
     wrap.className = "libDocStars";
-    wrap.title = t("lib_rateHint");
+
+    const zero = document.createElement("button");
+    zero.type = "button";
+    zero.className = "rateZeroBtn";
+    zero.textContent = "0";
+    zero.title = t("lib_rateZeroHint");
+
+    const stars = document.createElement("span");
+    stars.className = "libDocStarRow";
+    stars.title = t("lib_rateHint");
+
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "rateClearBtn";
+    clear.textContent = "✕";
+    clear.title = t("lib_rateClearHint");
+
     const paint = () => {
-      [...wrap.children].forEach((s, idx) => {
-        const frac = Math.max(0, Math.min(1, (doc.rating || 0) - idx));
+      const r = doc.rating;
+      [...stars.children].forEach((s, idx) => {
+        const frac = Math.max(0, Math.min(1, (r ?? 0) - idx));
         s.querySelector(".libDocStarFill").style.width = (frac * 100) + "%";
       });
+      zero.classList.toggle("isOn", r === 0);
+      clear.hidden = r == null;
     };
+
+    // `next` is a number to score, or null to un-score. == null / ?? throughout: 0 is a
+    // value, and one `||` here would delete it on the way through.
+    const send = async (next) => {
+      try {
+        const r = await postJson("/api/library/rate", { docId: doc.docId, rating: next });
+        if (r && r.error) throw new Error(r.error);
+        doc.rating = r.rating ?? undefined;
+        const entry = docs.find((d) => d.docId === doc.docId);
+        if (entry) { if (doc.rating == null) delete entry.rating; else entry.rating = doc.rating; }
+        paint();
+        renderList();
+      } catch (e2) { setStatus(t("lib_rateFailed", { error: e2.message })); }
+    };
+
+    zero.addEventListener("click", () => send(doc.rating === 0 ? null : 0));
+    clear.addEventListener("click", () => send(null));
     for (let i = 1; i <= 5; i++) {
       const s = document.createElement("span");
       s.className = "libDocStar";
@@ -1910,22 +1969,15 @@ export function initLibrary() {
       fill.className = "libDocStarFill";
       fill.textContent = "★";
       s.appendChild(fill);
-      s.addEventListener("click", async (e) => {
+      s.addEventListener("click", (e) => {
         const val = e.offsetX < s.offsetWidth / 2 ? i - 0.5 : i;
-        const next = (doc.rating || 0) === val ? 0 : val;
-        try {
-          const r = await postJson("/api/library/rate", { docId: doc.docId, rating: next });
-          if (r && r.error) throw new Error(r.error);
-          doc.rating = next || undefined;
-          const entry = docs.find((d) => d.docId === doc.docId);
-          if (entry) entry.rating = doc.rating;
-          paint();
-          renderList();
-        } catch (e2) { setStatus(t("lib_rateFailed", { error: e2.message })); }
+        send(doc.rating === val ? null : val);
       });
-      wrap.appendChild(s);
+      stars.appendChild(s);
     }
+
     paint();
+    wrap.append(zero, stars, clear);
     previewTitle.appendChild(wrap);
   }
 

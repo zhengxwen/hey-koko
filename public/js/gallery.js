@@ -96,6 +96,37 @@ function jumpToArchive(filename) {
   openArchivedChat(filename);
 }
 
+// ★N for a tile, or "" when the file has never been graded. Zero is a score like any
+// other and prints as ★0 — the whole point of separating it from unrated is that you
+// can SEE the difference at a glance.
+const ratingLabel = (r) => (r == null ? "" : `★${r}`);
+
+// Repaint one tile's rating in place after a star click, so the grid agrees with the
+// detail pane without re-fetching the page.
+function paintTileRating(id, rating) {
+  const tile = document.querySelector(`.galleryTile[data-id="${CSS.escape(id)}"]`);
+  if (!tile) return;
+  const badge = tile.querySelector(".galleryRateBadge");
+  if (badge) {
+    badge.textContent = ratingLabel(rating);
+    badge.hidden = rating == null;
+  }
+  const entry = items.find((e) => e.path === id);
+  const meta = tile.querySelector(".galleryTileMeta");
+  // Only when the entry is still on this page — rebuilding the line from a missing
+  // entry would print "NaN" where the date should be.
+  if (meta && entry) meta.textContent = metaLineFor({ ...entry, rating });
+}
+
+function metaLineFor(entry) {
+  // The canonical id, not the file that ran: it is short, lowercase, and the same string
+  // across quantisations, so a list of tiles reads as a list of MODELS. The exact file
+  // and its precision are still one click away in the detail pane.
+  return [ratingLabel(entry.rating), fmtDate(entry.ts), fmtSize(entry.bytes),
+          entry.modelId || entry.model,
+          entry.prompt || entry.desc || entry.originalName].filter(Boolean).join(" · ");
+}
+
 function tileFor(entry) {
   const btn = document.createElement("button");
   btn.type = "button";
@@ -137,13 +168,18 @@ function tileFor(entry) {
   name.title = entry.path;    // the row can be narrower than the path is long
   const meta = document.createElement("span");
   meta.className = "galleryTileMeta";
-  // The canonical id, not the file that ran: it is short, lowercase, and the same string
-  // across quantisations, so a list of tiles reads as a list of MODELS. The exact file
-  // and its precision are still one click away in the detail pane.
-  meta.textContent = [fmtDate(entry.ts), fmtSize(entry.bytes), entry.modelId || entry.model,
-                      entry.prompt || entry.desc || entry.originalName].filter(Boolean).join(" · ");
+  meta.textContent = metaLineFor(entry);
   text.append(name, meta);
   btn.appendChild(text);
+
+  // The score, shown on the picture itself in the grid views (the list row reads it off
+  // the meta line above). Built unconditionally and hidden while unrated, so a click in
+  // the detail pane can fill it in without rebuilding the tile.
+  const rateBadge = document.createElement("span");
+  rateBadge.className = "galleryRateBadge";
+  rateBadge.textContent = ratingLabel(entry.rating);
+  rateBadge.hidden = entry.rating == null;
+  btn.appendChild(rateBadge);
 
   btn.addEventListener("click", () => selectItem(entry.path));
   return btn;
@@ -394,6 +430,96 @@ async function copyText(s) {
   } catch { return false; }
 }
 
+// ★ rating for the selected artifact. Half-star capable like the library's, but with one
+// deliberate difference: THREE states, not two.
+//
+//   unrated  — never looked at. No field in the ledger.
+//   0        — looked at, it is a reject. A real score, filterable, printed as ★0.
+//   0.5–5    — a grade.
+//
+// The library uses 0 as its clear, which makes "bad" unsayable; a gallery is a pile of
+// renders where "this one is a dud" is the single most common verdict, so it gets its
+// own button. Clearing therefore needs its own affordance too — the ✕, plus the usual
+// click-the-current-value shortcut, which always clears rather than dropping to zero (an
+// ambiguous ★1 → 0 would make the two states impossible to tell apart by feel).
+function rateWidget(e) {
+  const row = document.createElement("div");
+  row.className = "galleryRateRow";
+
+  const zero = document.createElement("button");
+  zero.type = "button";
+  zero.className = "rateZeroBtn";
+  zero.textContent = "0";
+  zero.title = t("gal_rateZeroHint");
+
+  // The same star strip the library's preview title uses (.libDocStarRow / .libDocStar):
+  // one control, one set of rules, so a fix to either lands in both.
+  const stars = document.createElement("span");
+  stars.className = "libDocStarRow";
+  stars.title = t("gal_rateHint");
+
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "rateClearBtn";
+  clear.textContent = "✕";
+  clear.title = t("gal_rateClearHint");
+
+  const label = document.createElement("span");
+  label.className = "hint galleryRateLabel";
+
+  const paint = () => {
+    const r = e.rating;
+    [...stars.children].forEach((s, idx) => {
+      const frac = Math.max(0, Math.min(1, (r ?? 0) - idx));
+      s.querySelector(".libDocStarFill").style.width = `${frac * 100}%`;
+    });
+    zero.classList.toggle("isOn", r === 0);
+    clear.hidden = r == null;
+    label.textContent = r == null ? t("gal_rateUnrated") : t("gal_rateValue", { n: r });
+  };
+
+  // `next` is a number to score, or null to un-score. Everything here is written with
+  // == null / ?? rather than truthiness, because 0 is a value.
+  const send = async (next) => {
+    try {
+      const r = await fetch("/api/gallery/rate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: e.path, rating: next }),
+      }).then((x) => x.json());
+      if (!r || r.error) throw new Error((r && r.error) || "rate failed");
+      e.rating = r.rating ?? null;      // `e` is the live object inside `items`
+      paint();
+      paintTileRating(e.path, e.rating);
+      // A rating filter is on and this file may no longer belong in the list — re-run it
+      // rather than leaving a row that contradicts the filter above it.
+      if (el("galleryRatingFilter")?.value) refresh();
+    } catch {
+      label.textContent = t("gal_rateFailed");
+    }
+  };
+
+  zero.addEventListener("click", () => send(e.rating === 0 ? null : 0));
+  clear.addEventListener("click", () => send(null));
+  for (let i = 1; i <= 5; i++) {
+    const s = document.createElement("span");
+    s.className = "libDocStar";
+    s.textContent = "★";
+    const fill = document.createElement("span");
+    fill.className = "libDocStarFill";
+    fill.textContent = "★";
+    s.appendChild(fill);
+    s.addEventListener("click", (ev) => {
+      const val = ev.offsetX < s.offsetWidth / 2 ? i - 0.5 : i;
+      send(e.rating === val ? null : val);
+    });
+    stars.appendChild(s);
+  }
+
+  paint();
+  row.append(zero, stars, clear, label);
+  return row;
+}
+
 function renderDetail() {
   const pane = el("galleryDetail");
   if (!pane) return;
@@ -416,6 +542,8 @@ function renderDetail() {
     }
     pane.appendChild(media);
   }
+
+  pane.appendChild(rateWidget(e));
 
   // The prompt is provenance — what actually produced this file, and what "Run it
   // again" reloads — so it is shown as-is and not editable.
@@ -668,9 +796,14 @@ async function refresh() {
   const type = el("galleryTypeFilter")?.value || "";
   const source = el("gallerySourceFilter")?.value || "";
   const model = el("galleryModelFilter")?.value || "";
+  const rating = el("galleryRatingFilter")?.value || "";
   const params = new URLSearchParams({ limit: "200" });
   if (q) params.set("q", q);
   if (type) params.set("type", type);
+  // Server-side for the same reason as the model facet: filtering before the page limit
+  // is what makes "show me everything I rated ★4+" a real query rather than a narrowing
+  // of whichever 200 came back.
+  if (rating) params.set("rating", rating);
   // Server-side (unlike the source filter): the ledger is the only place that knows every
   // entry's model, and filtering before the page limit is what makes it a real filter
   // rather than a narrowing of whatever 200 happened to come back.
@@ -734,7 +867,7 @@ async function refresh() {
       n: stats.count, size: fmtSize(stats.bytes),
       images: stats.images, videos: stats.videos,
       thumbs: fmtSize(stats.thumbBytes),
-    }) + ((source || model) ? ` · ${t("gal_shown", { n: items.length })}` : "");
+    }) + ((source || model || rating) ? ` · ${t("gal_shown", { n: items.length })}` : "");
   }
 
   if (selected && !items.some((e) => e.path === selected.path)) { selected = null; }
@@ -780,6 +913,7 @@ export function initGallery() {
   refreshStrip();
   el("galleryTypeFilter")?.addEventListener("change", refresh);
   el("galleryModelFilter")?.addEventListener("change", refresh);
+  el("galleryRatingFilter")?.addEventListener("change", refresh);
   const viewSel = el("galleryViewFilter");
   if (viewSel) {
     viewSel.value = savedView();
