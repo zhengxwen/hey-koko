@@ -1434,7 +1434,7 @@ function exportPdf(tab) {
     .ts{font-weight:400;color:#aaa;margin-left:8px;font-size:12px}
     .body{font-size:14px}.plain{white-space:pre-wrap}
     .imgs img{max-width:100%;border-radius:8px;margin-top:8px}
-    pre{background:#f4f4f4;padding:10px;border-radius:8px;overflow-x:auto;font-size:12.5px}
+    pre{background:#f4f4f4;padding:10px;border-radius:8px;overflow-x:auto;font-size:12.5px;white-space:pre-wrap;overflow-wrap:break-word}
     code{font-family:ui-monospace,Menlo,monospace}
     table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px 8px}
     @media print{.msg{background:#fff !important;border:1px solid #eee}}`;

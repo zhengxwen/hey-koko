@@ -2507,7 +2507,11 @@ button.secondary:disabled {
   border-radius: 8px;
   background: var(--bubble);
   color: var(--ink);
-  white-space: pre;
+  /* Wrap long lines instead of forcing a horizontal scrollbar; break-word handles
+     unbroken tokens (URLs, base64). overflow:auto stays as a fallback for content
+     that still can't wrap (e.g. wide tables rendered inside a block). */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
   border: 1px solid var(--line);
 }
 
@@ -2637,9 +2641,8 @@ button.secondary:disabled {
 }
 
 /* ▶ on a dispatchable code block (```imagine, or first line "/imagine …"): fills the
-   composer with the block, ready for the user's Enter. Sits left of the copy chip.
-   ALWAYS visible, unlike the hover-only copy chip — it is the handoff the prompt
-   workshop is building toward, not a convenience. Accent-tinted to say "actionable". */
+   composer with the block, ready for the user's Enter. Sits left of the copy chip and
+   behaves exactly like it: hidden until the block is hovered, semi-transparent chip. */
 .mdImagineBtn {
   position: absolute;
   top: 6px;
@@ -2653,16 +2656,24 @@ button.secondary:disabled {
   place-items: center;
   border: none;
   border-radius: 6px;
-  background: var(--accent, #6aa9ff);
+  background: rgba(0, 0, 0, 0.35);
   color: #fff;
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.85;
-  transition: opacity 0.15s ease;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
   z-index: 2;
 }
-.mdImagineBtn:hover { opacity: 1; }
+
+.mdBlockWrap:hover .mdImagineBtn {
+  opacity: 0.75;
+}
+
+.mdImagineBtn:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.55);
+}
 
 .messageImage {
   display: block;
