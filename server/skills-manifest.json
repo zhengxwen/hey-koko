@@ -1,0 +1,26 @@
+{
+  "h3-prompt-writing": {
+    "repo": "https://github.com/MiniMax-AI/MiniMax-H3",
+    "models": ["minimax-h3"],
+    "ids": ["minimax-h3-t2v", "minimax-h3-r2v"],
+    "duration": { "minSec": 5.2, "maxSec": 15 },
+    "modes": { "base": "references/base-en.txt", "ref": "references/ref-en.txt" },
+    "files": {
+      "SKILL.md": {
+        "url": "https://raw.githubusercontent.com/MiniMax-AI/MiniMax-H3/main/skills/h3-prompt-writing/SKILL.md",
+        "sha256": "003b9dac9785df5207a88581629c51c1747c061282c7d48f7032618bd141a93d",
+        "bytes": 1912
+      },
+      "references/base-en.txt": {
+        "url": "https://raw.githubusercontent.com/MiniMax-AI/MiniMax-H3/main/skills/h3-prompt-writing/references/base-en.txt",
+        "sha256": "2cfebc096a6e08370f288d468d90b60f7f9bcb938f94bf090816e910e48e75fc",
+        "bytes": 15773
+      },
+      "references/ref-en.txt": {
+        "url": "https://raw.githubusercontent.com/MiniMax-AI/MiniMax-H3/main/skills/h3-prompt-writing/references/ref-en.txt",
+        "sha256": "1e574f356716ad55612247ffb7bbccbcdb484ad96599d63c7dca1af186b1fab7",
+        "bytes": 23553
+      }
+    }
+  }
+}

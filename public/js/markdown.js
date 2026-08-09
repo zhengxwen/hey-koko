@@ -4,6 +4,7 @@
 // Markdown parsing and rendering
 import { escapeHtml } from './utils.js';
 import { t } from './i18n.js';
+import { dom } from './state.js';   // leaf module — safe here; used by the ```imagine button
 
 function renderMath(math, displayMode) {
   if (typeof katex === "undefined") return `<code>${escapeHtml(math)}</code>`;
@@ -535,6 +536,49 @@ function attachCopyButton(el, getText) {
   wrap.appendChild(btn);
 }
 
+// A code block that IS a render command. Two signals, either suffices — the fence tag
+// ```imagine (what the /skill wrapper instructs), or a first line starting with
+// "/imagine" (the fallback for a model that wrote the command but forgot the tag).
+// This is the DETERMINISTIC half of the prompt-workshop handoff: whatever the LLM did
+// or did not do with its instructions, a block that looks like a dispatchable command
+// gets a real button. The button FILLS the composer and stops — never auto-sends —
+// because pressing "start a twenty-minute render" is the user's keystroke, not ours.
+function isImagineBlock(pre) {
+  const code = pre.querySelector("code");
+  if (!code) return false;
+  if (/\blanguage-imagine\b/.test(code.className)) return true;
+  return /^\/imagine(\s|$)/.test((code.textContent || "").trimStart());
+}
+
+function attachImagineButton(pre) {
+  const wrap = pre.parentElement?.classList.contains("mdBlockWrap") ? pre.parentElement : null;
+  if (!wrap || wrap.querySelector(".mdImagineBtn")) return;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "mdImagineBtn";
+  btn.title = t("md_toImagine");
+  btn.setAttribute("aria-label", t("md_toImagine"));
+  btn.textContent = "▶";
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const code = pre.querySelector("code");
+    let text = ((code ? code.textContent : pre.textContent) || "").trim();
+    if (!text) return;
+    // The tag names the intent, so inside a ```imagine block the model may write the
+    // bare prompt and skip the dispatch line — tolerate that by NOT requiring it here.
+    // (No model/duration can be invented for it deterministically; a bare "/imagine "
+    // prefix still beats a dead button, and the composer is editable.)
+    if (!/^\/imagine(\s|$)/.test(text)) text = `/imagine\n${text}`;
+    if (!dom.messageInput) return;
+    dom.messageInput.value = text;
+    dom.messageInput.focus();
+    dom.messageInput.dispatchEvent(new Event("input", { bubbles: true }));  // autosize + button state
+    btn.textContent = "✓";
+    setTimeout(() => { btn.textContent = "▶"; }, 1200);
+  });
+  wrap.appendChild(btn);
+}
+
 export function addBlockCopyButtons(container) {
   const root = container || document.querySelector("#messages");
   if (!root) return;
@@ -550,6 +594,9 @@ export function addBlockCopyButtons(container) {
   // Plain fenced code. `pre.mermaid` is excluded above by :not().
   root.querySelectorAll("pre:not(.mermaid)").forEach((el) => {
     attachCopyButton(el, () => el.querySelector("code")?.textContent ?? el.textContent);
+    // Dispatchable render commands additionally get the ▶ fill-the-composer button —
+    // after attachCopyButton, which builds the .mdBlockWrap the button hangs off.
+    if (isImagineBlock(el)) attachImagineButton(el);
   });
   // Blockquotes — copy the quoted text (as rendered, without the > markers).
   // Only the outermost quote gets a button; nested quotes are covered by it.

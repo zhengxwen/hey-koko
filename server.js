@@ -59,6 +59,7 @@ const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file")
 const bgQueue = require("./server/jobs");   // Option B: server-side background job queue
 const vendor = require("./server/vendor");  // pinned third-party UI libs: local-first, CDN fallback
 const gallery = require("./server/gallery"); // on-disk home for generated/uploaded media
+const skills = require("./server/skills");   // model prompt-writing guides for /skill
 const feeds = require("./server/feeds");    // news-feeds.md: news subscription library
 
 console.log("[hey-koko] All modules loaded, starting server...");
@@ -513,6 +514,8 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/gallery/delete") { gallery.handleDelete(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/describe") { gallery.handleDescribe(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/rate") { gallery.handleRate(req, res); return; }
+  if (req.method === "GET" && req.url === "/api/skills") { skills.handleList(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/skills/compose") { skills.handleCompose(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/compact") { gallery.handleCompact(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/import") { gallery.handleImport(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/upload") { gallery.handleUpload(req, res); return; }

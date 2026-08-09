@@ -55,6 +55,34 @@ export async function loadMentionDocs() {
   } catch { /* keep the previous list */ }
 }
 
+// Installed prompt-writing skills (for "/skill -m" completion): name + the model-id
+// prefixes each maps to. Lazily primed the first time the popup opens.
+let _skills = [];
+let _skillsLoaded = false;      // true only once the fetch has SETTLED — while it is
+let _skillsPromise = null;      // in flight the popup shows "…", not a false "none"
+function loadMentionSkills() {
+  if (!_skillsPromise) {
+    _skillsPromise = (async () => {
+      try {
+        const r = await fetch("/api/skills");
+        const j = await r.json();
+        _skills = (j.skills || []).filter((s) => s.installed);
+      } catch { /* server down → empty, hint says none */ }
+      _skillsLoaded = true;
+    })();
+  }
+  return _skillsPromise;
+}
+// Does this canonical model id have a guide? Same prefix rule as server skillForModel.
+function skillNameForModelId(id) {
+  for (const s of _skills) {
+    for (const p of s.models || []) {
+      if (id === p || id.startsWith(p + "-") || id.startsWith(p + ":")) return s.name;
+    }
+  }
+  return null;
+}
+
 // Refresh the conversation-archive list (for "#" mentions). Called on init and
 // lazily when a "#" popup first opens; cheap GET returning per-archive metadata.
 export async function loadMentionArchives() {
@@ -76,14 +104,19 @@ export function mentionContext(input) {
   const isAsk = /^\/ask(\s|$)/.test(val);
   const isTool = /^\/tool(\s|$)/.test(val);
   const isImagine = /^\/imagine(\s|$)/.test(val);
-  if ((!isAsk && !isTool && !isImagine) || val.includes("\n")) return null;
+  const isSkill = /^\/skill(\s|$)/.test(val);
+  if ((!isAsk && !isTool && !isImagine && !isSkill) || val.includes("\n")) return null;
   const cursor = input.selectionStart;
   const before = val.slice(0, cursor);
-  if (isImagine) {
+  if (isImagine || isSkill) {
     // A flag's ARGUMENT. Unlike the @/# tokens these carry no sigil, so the replacement
     // starts at the token itself (start is not backed up by one).
     const mm = before.match(/(?:^|\s)(?:-m|--model)\s+(\S*)$/);
-    if (mm) return { sigil: "", partial: mm[1], start: cursor - mm[1].length, mode: "model" };
+    // /skill gets its own mode: same catalogue machinery, but filtered to models that
+    // actually have a prompt-writing guide — the popup must not offer a model the
+    // command would then refuse.
+    if (mm) return { sigil: "", partial: mm[1], start: cursor - mm[1].length, mode: isSkill ? "skillmodel" : "model" };
+    if (isSkill) return null;
     // "--size" only — "-s" is the short form of "--second" (a duration), so completing it
     // with resolutions would offer values the flag would reject.
     const sm = before.match(/(?:^|\s)--size\s+(\S*)$/);
@@ -174,6 +207,47 @@ export function showMentionPopup(filter, sigil = "@", mode = "ask") {
         name: m.id + (m.ready ? "" : " ⚠️"),
         desc: m.label,
       }));
+    }
+  } else if (mode === "skillmodel") {
+    // "/skill -m …": only models that HAVE a prompt-writing guide. Offering the full
+    // catalogue would complete ids the command must then refuse — the popup and the
+    // command speak from the same map (server skillForModel ↔ skillNameForModelId).
+    if (!_skillsLoaded) {
+      // Lazy prime — and REPAINT when it lands. "Ready by next keystroke" (the archive
+      // pattern) is wrong here: "-m " ends in a space, so there routinely IS no next
+      // keystroke — the user stops and reads, and what they would read is a stale
+      // "no skills installed" hint sitting over a perfectly installed skill.
+      loadMentionSkills().then(() => {
+        const ctx = mentionContext(dom.messageInput);
+        if (ctx && ctx.mode === "skillmodel") showMentionPopup(ctx.partial, ctx.sigil, ctx.mode);
+      });
+    }
+    const { id } = splitModelToken(filter);
+    // Two sources, live one preferred per skill: the ComfyUI catalogue (richer labels,
+    // ready flags) when it is loaded, else the skill's own canonical ids from the
+    // manifest. Prompt writing happens BEFORE a render — it must not require the
+    // render box to be reachable (its IP wanders, and it may simply be off).
+    const rows = [];
+    const seen = new Set();
+    for (const s of _skills) {
+      const live = matchModels(id).filter((m) => s.models.some(
+        (p) => m.id === p || m.id.startsWith(p + "-") || m.id.startsWith(p + ":")));
+      const cands = live.length
+        ? live.map((m) => ({ id: m.id, name: m.id + (m.ready ? "" : " ⚠️"), desc: `${m.label} · ${s.name}` }))
+        : (s.ids || s.models)
+            .filter((x) => !id || x.startsWith(id) || x.includes(id))
+            .map((x) => ({ id: x, name: x, desc: s.name }));
+      for (const c of cands) {
+        if (seen.has(c.id)) continue;
+        seen.add(c.id);
+        rows.push({ sigil: "", token: c.id, icon: "📖", name: c.name, desc: c.desc });
+      }
+    }
+    items = rows;
+    if (!items.length) {
+      // Three empty states, told apart honestly: still fetching ("…"), fetched and
+      // nothing installed, or installed but nothing matches what was typed.
+      hint = !_skillsLoaded ? "…" : t(_skills.length ? "mention_skillNoMatch" : "mention_skillNone");
     }
   } else if (mode === "tool") {
     // "/tool @…" → the fixed tool-alias list (tool-cmd.js), not library docs.

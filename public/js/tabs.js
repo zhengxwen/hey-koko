@@ -94,6 +94,11 @@ export function setRenderChat(fn) { _renderChat = fn; }
 
 let _renderAttachments = null;
 export function setRenderAttachments(fn) { _renderAttachments = fn; }
+// Repaint the composer's attachment previews from the current state. Exposed for the
+// paths that RESTORE staged media after main.js's send handler has already cleared it
+// (e.g. /skill hands the pictures to the conversation but keeps them staged for the
+// /imagine that follows).
+export function renderAttachments() { if (_renderAttachments) _renderAttachments(); }
 
 // Staged compose-area attachments (image/file/video) are global in `state`, not
 // per-tab, so switching tabs would otherwise wipe them. Keep a session-only,

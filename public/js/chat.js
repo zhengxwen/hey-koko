@@ -12,7 +12,7 @@ import { renderRelationGraph } from './relation-graph.js';
 import { setAvatarState, showExpression, detectExpression, isCloudModel, resetAvatarIdle } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
-import { getActiveTab, getTab, createTab, switchTab, renderTabs } from './tabs.js';
+import { getActiveTab, getTab, createTab, switchTab, renderTabs, renderAttachments } from './tabs.js';
 import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractKeyFrames, comfyModelSupportsRefMask } from './image-gen.js';
 import { openMaskModal } from './mask-paint.js';
 import { parseVoiceCommand } from './voice-gen.js';
@@ -798,6 +798,211 @@ function dedupeImageNames(names) {
     const dot = n.lastIndexOf(".");
     return dot > 0 ? `${n.slice(0, dot)}-${k}${n.slice(dot)}` : `${n}-${k}`;
   });
+}
+
+// ---- /skill: load a model's official prompt-writing guide into the chat ----------
+// Syntax:  /skill                     → list installed skills (no LLM call)
+//          /skill 想法…               → guide for the ComfyUI dropdown's current model
+//          /skill -m h3 想法…         → guide for an explicitly named model
+// The -m matcher is /imagine's (resolveModelToken): same completion semantics, same
+// refusal to guess on an ambiguous prefix.
+function parseSkillCommand(content) {
+  if (!/^\/skill(\s|$)/.test(content)) return null;
+  let rest = content.replace(/^\/skill\s*/, "");
+  const result = { modelToken: "", prompt: "" };
+  // The short flag lives in the SAME regex as the long one — a separate check is how
+  // "-m" once fell through into the prompt text (see /imagine's history).
+  const mFlag = rest.match(/^(?:--model|-m)\s+(\S+)\s*/);
+  if (mFlag) {
+    result.modelToken = mFlag[1].toLowerCase();
+    rest = rest.slice(mFlag[0].length);
+  }
+  result.prompt = rest.trim();
+  return result;
+}
+
+// The canonical id of the model the ComfyUI dropdown currently points at, or "".
+// comfyModelIndex rows carry { id, value }; the select's value is the file name.
+function currentComfyModelId() {
+  const val = dom.comfyModelSelect ? dom.comfyModelSelect.value : "";
+  const entry = (state.comfyModelIndex || []).find((m) => m.value === val);
+  return entry ? entry.id : "";
+}
+
+// The installed skills' own canonical ids — /skill's model vocabulary when the ComfyUI
+// catalogue is empty (box off, IP moved). Writing a prompt is precisely the work that
+// happens BEFORE the render machine needs to be reachable, so /skill must resolve from
+// the manifest alone. Same discipline as resolveModelToken: ambiguity is refused with
+// candidates, never guessed.
+async function skillOwnModels() {
+  try {
+    const skills = ((await (await fetch("/api/skills")).json()).skills || []).filter((s) => s.installed);
+    return skills.flatMap((s) => (s.ids && s.ids.length ? s.ids : s.models));
+  } catch { return []; }
+}
+
+function matchSkillToken(token, ids) {
+  if (ids.includes(token)) return { id: token };
+  const hits = ids.filter((x) => x.startsWith(token) || x.includes(token));
+  if (hits.length === 1) return { id: hits[0] };
+  if (hits.length > 1) return { error: "ambiguous", candidates: hits };
+  return { error: "unknown", candidates: ids.slice(0, 6) };
+}
+
+async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video) {
+  const say = (text) => {
+    tab.messages.push({ role: "assistant", content: text, timestamp: Date.now() });
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+  };
+  const pushUser = () => {
+    tab.messages.push({ role: "user", content: rawContent, timestamp: Date.now() });
+  };
+
+  // Bare "/skill" = the catalogue, not a conversation turn: which skills are on disk,
+  // which models they map to, and whether the current dropdown pick has one. Doubles
+  // as the post-fetch self-check, so it must never cost an LLM call. "-m" without an
+  // idea is different — naming a model IS asking to load its guide (handled below).
+  if (!cmd.prompt && !cmd.modelToken) {
+    pushUser();
+    let skillsList = [];
+    try { skillsList = (await (await fetch("/api/skills")).json()).skills || []; } catch { /* server down → empty */ }
+    const installed = skillsList.filter((s) => s.installed);
+    if (!installed.length) { say(t("skill_noneInstalled")); return; }
+    const curId = currentComfyModelId();
+    const rows = installed.map((s) => {
+      const models = s.models.join(", ") || "—";
+      const isCurrent = s.models.some((p) => curId === p || curId.startsWith(p + "-") || curId.startsWith(p + ":"));
+      return `- **${s.name}** ← ${models}${isCurrent ? `  ✓ ${t("skill_currentModel")}` : ""}`;
+    }).join("\n");
+    say(`${t("skill_listHeader")}\n\n${rows}\n\n${t("skill_usage")}`);
+    return;
+  }
+
+  // Which model is this guide for? -m wins; otherwise the dropdown — you are writing
+  // a prompt for whatever you are about to render with. Every path here must work
+  // with ComfyUI unreachable: the live catalogue is preferred for its labels and
+  // tier knowledge, the skills' own id list is the always-available fallback.
+  let modelId = "";
+  if (cmd.modelToken) {
+    const r = resolveModelToken(cmd.modelToken);
+    if (!r.error) {
+      modelId = r.id;
+    } else {
+      const fb = matchSkillToken(cmd.modelToken, await skillOwnModels());
+      if (fb.id) {
+        modelId = fb.id;
+      } else {
+        // Prefer the live catalogue's error when there IS a live catalogue (its
+        // suggestions cover every model); otherwise speak from the skill list.
+        const err = r.error !== "noModels" ? r : fb;
+        const list = (err.candidates || []).join(", ");
+        pushUser();
+        say(t("msg_commandError", { error:
+          err.error === "ambiguous" ? t("img_modelAmbiguous", { val: cmd.modelToken, list })
+          : t("img_modelUnknown", { val: cmd.modelToken, list }) }));
+        return;
+      }
+    }
+  } else {
+    modelId = currentComfyModelId();
+    if (!modelId) {
+      // Dropdown unknown (catalogue empty). One installed skill → it is the only
+      // thing /skill could mean, so use it; several → ask for -m rather than guess.
+      const own = await skillOwnModels();
+      const distinct = [...new Set(own)];
+      if (distinct.length === 1) modelId = distinct[0];
+      else if (distinct.length > 1 && own.length) { pushUser(); say(t("skill_pickModel", { list: distinct.join(", ") })); return; }
+      else { pushUser(); say(t("skill_noCurrentModel")); return; }
+    }
+  }
+
+  // Fetch the guide. A model without a skill is an error with a map, never a silent
+  // fallback to some other model's guide — the wrong format spec is worse than none.
+  let composed;
+  try {
+    composed = await (await fetch("/api/skills/compose", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: modelId }),
+    })).json();
+  } catch (e) { pushUser(); say(t("msg_commandError", { error: e.message })); return; }
+  if (!composed || composed.error || composed.none) {
+    pushUser();
+    const inst = (composed && composed.installed || []).join(", ");
+    say(composed && composed.error ? t("msg_commandError", { error: composed.error })
+      : inst ? t("skill_noSkillForModel", { model: modelId, list: inst })
+      : t("skill_noneInstalled"));
+    return;
+  }
+
+  // What is staged right now, told to the assistant in words: it cannot see the
+  // composer, and for the base guide the staged pictures are what decide between
+  // T2VA / I2VA / FL2VA — a decision the conversation should make knowingly.
+  // Load-only (no idea yet) gets the "pending" wording: the pictures are staged but
+  // will only ARRIVE with the user's next message — "look at them" now would invite
+  // a vision hallucination about images the model has not been sent.
+  const imgCount = image ? (image.multi ? image.multi.length : 1) : 0;
+  const vidCount = video ? (video.multi ? video.multi.length : 1) : 0;
+  // The model's trained duration window rides along when the manifest knows it —
+  // the assistant must refuse a duration the render would silently clamp, because a
+  // 15s clip cut from a prompt whose timing notation says 30.00s is mis-paced
+  // end to end (server snapLength clamps without saying so).
+  const durNote = composed.duration && composed.duration.maxSec
+    ? " " + getPrompt("skillDurationNote", composed.duration.minSec, composed.duration.maxSec)
+    : "";
+  const stagedNote = getPrompt(cmd.prompt ? "skillStaged" : "skillStagedPending", imgCount, vidCount) + durNote;
+
+  // The guide bubble. Header states the off switch (fold = pause); the guide itself
+  // sits inside <details> — collapsed ON SCREEN, but fully part of the outgoing
+  // context. The message-level fold is deliberately NOT used for display: folded
+  // bubbles are excluded from the model context entirely, which is exactly why
+  // folding this bubble later works as the exit from prompt mode.
+  const guideMsg = {
+    role: "assistant",
+    content: `${getPrompt("skillHeader", composed.name, composed.mode)}\n\n` +
+      `${getPrompt("skillWrapper", modelId, stagedNote)}\n\n` +
+      `<details>\n<summary>${getPrompt("skillGuideSummary")}</summary>\n\n${composed.text}\n\n</details>`,
+    timestamp: Date.now(),
+  };
+  // Load-only: "/skill -m <model>" with no idea. The command line and the guide go
+  // into the chat, the composer keeps whatever is staged, and NO reply is generated —
+  // the guide's header is the confirmation, and the user speaks when ready. Their
+  // next plain message carries the staged pictures and gets the first draft.
+  if (!cmd.prompt) {
+    pushUser();
+    tab.messages.push(guideMsg);
+    saveChat();
+    if (state.activeTabId === tabId) renderChat();
+    if (image || video) {
+      if (image) state.selectedImage = image;
+      if (video) state.selectedVideo = video;
+      renderAttachments();
+    }
+    return;
+  }
+
+  tab.messages.push(guideMsg);
+
+  // The user's idea, with the staged pictures attached so a vision model can see the
+  // reference subjects it is writing about.
+  const userMessage = { role: "user", content: cmd.prompt, timestamp: Date.now() };
+  await settleGalleryIds(image);
+  attachUploadedImages(userMessage, image);
+  tab.messages.push(userMessage);
+  saveChat();
+  if (state.activeTabId === tabId) renderChat();
+
+  // Give the attachments BACK to the composer: main.js's send handler cleared them,
+  // but the /imagine this conversation is building toward needs them still staged —
+  // consuming them here would force the user to re-attach everything at the end.
+  if (image || video) {
+    if (image) state.selectedImage = image;
+    if (video) state.selectedVideo = video;
+    renderAttachments();
+  }
+
+  // First draft, as a normal streamed reply.
+  await regenerateReply(tabId, -1, -1);
 }
 
 function deleteMessageVideo(msgIndex, vidIndex) {
@@ -2872,6 +3077,16 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
       return;
     }
     await handleToolCommand(toolCmd, tab, tabId, null, false, content);
+    return;
+  }
+
+  // Handle /skill — load a video model's official prompt-writing guide into THIS
+  // conversation, then iterate on the prompt in ordinary chat (the guide bubble stays
+  // in context; folding it is the off switch). Generation stays a separate, manual
+  // /imagine: the whole point is polishing the prompt before any GPU time is spent.
+  const skillCmd = content ? parseSkillCommand(content) : null;
+  if (skillCmd) {
+    await handleSkillCommand(skillCmd, tab, tabId, content, image, video);
     return;
   }
 

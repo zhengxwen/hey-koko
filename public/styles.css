@@ -2636,6 +2636,34 @@ button.secondary:disabled {
   opacity: 1;
 }
 
+/* ▶ on a dispatchable code block (```imagine, or first line "/imagine …"): fills the
+   composer with the block, ready for the user's Enter. Sits left of the copy chip.
+   ALWAYS visible, unlike the hover-only copy chip — it is the handoff the prompt
+   workshop is building toward, not a convenience. Accent-tinted to say "actionable". */
+.mdImagineBtn {
+  position: absolute;
+  top: 6px;
+  right: 38px;
+  min-width: 0;
+  min-height: 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent, #6aa9ff);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+  z-index: 2;
+}
+.mdImagineBtn:hover { opacity: 1; }
+
 .messageImage {
   display: block;
   width: min(240px, 100%);
@@ -7409,14 +7437,26 @@ body.isResizingComposer {
   min-height: 0;
 }
 
+/* Fixed tracks, BOTH axes. Two bugs came out of not doing that:
+   · `minmax(150px, 1fr)` let every tile stretch into the leftover space, so a thumbnail
+     changed size whenever the detail pane opened and stole 340px of width — "medium"
+     was 189px with the pane shut and 211px with it open.
+   · With only the columns declared, the row track was sized from the tiles' content
+     (an <img> at height:100% contributes nothing) while each tile's own height came
+     from `aspect-ratio: 1` and the column width. The two disagreed — 211px tiles in
+     179px rows — and every tile spilled over the one below it.
+   Declaring grid-auto-rows to match the column width makes the track and the tile the
+   same size by construction, and the size stops depending on how wide the panel is. */
 .galleryGrid {
   flex: 1;
   overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, 150px);
+  grid-auto-rows: 150px;
+  gap: 5px;
   padding: 0 14px 14px;
   align-content: start;
+  justify-content: start;
 }
 
 /* The empty/no-match line is a grid item like any tile; without this it is squeezed
@@ -7425,8 +7465,8 @@ body.isResizingComposer {
 
 /* Four views, all driven off one attribute on the grid (gallery.js applyView), so
    switching restyles the tiles already in the DOM instead of rebuilding them. */
-.galleryGrid[data-view="md"] { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
-.galleryGrid[data-view="sm"] { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.galleryGrid[data-view="md"] { grid-template-columns: repeat(auto-fill, 150px); grid-auto-rows: 150px; }
+.galleryGrid[data-view="sm"] { grid-template-columns: repeat(auto-fill, 96px); grid-auto-rows: 96px; gap: 3px; }
 
 .galleryGrid[data-view="list"] {
   display: flex;
