@@ -101,21 +101,31 @@ function jumpToArchive(filename) {
 // can SEE the difference at a glance.
 const ratingLabel = (r) => (r == null ? "" : `★${r}`);
 
-// Repaint one tile's rating in place after a star click, so the grid agrees with the
-// detail pane without re-fetching the page.
+// Repaint a score wherever it is currently on screen — the grid tile, the filmstrip
+// frame, or both — so everything agrees with the detail pane without re-fetching. The
+// strip keeps its own cached page (`stripItems`), so that copy is updated too, or the
+// next refreshStrip would paint the old score back.
 function paintTileRating(id, rating) {
+  const setBadge = (node) => {
+    if (!node) return;
+    node.textContent = ratingLabel(rating);
+    node.hidden = rating == null;
+  };
+
   const tile = document.querySelector(`.galleryTile[data-id="${CSS.escape(id)}"]`);
-  if (!tile) return;
-  const badge = tile.querySelector(".galleryRateBadge");
-  if (badge) {
-    badge.textContent = ratingLabel(rating);
-    badge.hidden = rating == null;
+  if (tile) {
+    setBadge(tile.querySelector(".galleryRateBadge"));
+    const entry = items.find((e) => e.path === id);
+    const meta = tile.querySelector(".galleryTileMeta");
+    // Only when the entry is still on this page — rebuilding the line from a missing
+    // entry would print "NaN" where the date should be.
+    if (meta && entry) meta.textContent = metaLineFor({ ...entry, rating });
   }
-  const entry = items.find((e) => e.path === id);
-  const meta = tile.querySelector(".galleryTileMeta");
-  // Only when the entry is still on this page — rebuilding the line from a missing
-  // entry would print "NaN" where the date should be.
-  if (meta && entry) meta.textContent = metaLineFor({ ...entry, rating });
+
+  const cell = document.querySelector(`.galleryStripCell[data-id="${CSS.escape(id)}"]`);
+  if (cell) setBadge(cell.querySelector(".galleryStripRate"));
+  const stripEntry = stripItems.find((e) => e.path === id);
+  if (stripEntry) { if (rating == null) delete stripEntry.rating; else stripEntry.rating = rating; }
 }
 
 function metaLineFor(entry) {
@@ -278,6 +288,15 @@ function stripTile(entry) {
     badge.textContent = entry.kind === "video" ? "▶" : entry.kind === "audio" ? "🔊" : "3D";
     btn.appendChild(badge);
   }
+  // The score, opposite corner from the kind badge. Inside the thumb, so it rides the
+  // hover zoom with the picture instead of sitting still while the frame grows.
+  // Built for every frame and hidden while unrated, so rating one from the detail pane
+  // fills it in without rebuilding the strip.
+  const rateBadge = document.createElement("span");
+  rateBadge.className = "galleryStripRate";
+  rateBadge.textContent = ratingLabel(entry.rating);
+  rateBadge.hidden = entry.rating == null;
+  btn.appendChild(rateBadge);
   if (flashIds.has(entry.path)) cell.classList.add("isNew");
   return cell;
 }

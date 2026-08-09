@@ -641,6 +641,13 @@ async function resolvePrecision(model, pref) {
   // for" signal and stays null when the request was honoured.
   const out = { model, experts: null, note: null, used: precisionOf(model) };
   if (!model || !pref || pref === "auto") return out;
+  // Sentinels that name a PIPELINE rather than a weight file: an upscale chain loads an
+  // ESRGAN net, a mesh chain ships one file, and none of them has a quantised sibling to
+  // pick between. The ⚙ tier is hidden for these in the UI but still travels with the
+  // request (it is a persistent setting, not a per-run one), and without this guard it
+  // came back as "no build at the precision you selected" — a warning about a choice the
+  // pipeline never had.
+  if (PRECISION_FREE.has(model)) return out;
   const all = await comfyModelFiles();
   // A two-expert MoE is identified by its NAME. It must NOT be identified by "does the
   // same-precision twin exist", which looks equivalent but isn't: bernini's mxfp8 high
@@ -1024,6 +1031,10 @@ const VIDEO_ENHANCE = "video-enhance";
 // image is run through the AI upscale model. Lives in the image `models` list; the
 // dispatch matches it by exact name (no diffusion model, no companion files).
 const IMAGE_UPSCALE = "image-upscale";
+
+// Dropdown entries that are a pipeline, not a weight file — no quantisation to prefer.
+// Read by resolvePrecision, which runs long after this module has finished loading.
+const PRECISION_FREE = new Set([VIDEO_ENHANCE, IMAGE_UPSCALE, TRIPOSPLAT, MOGE_MESH, MOGE_PANORAMA]);
 
 // ── Dropdown display metadata ────────────────────────────────────────────────
 // The picker used to show raw filenames in scan order, so the same list mixed

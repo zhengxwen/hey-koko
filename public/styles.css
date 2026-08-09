@@ -7791,6 +7791,24 @@ body.isResizingComposer {
   pointer-events: none;
 }
 
+/* The score on a filmstrip frame. Bottom-right, opposite the kind badge, so a rated
+   video shows "▶" and "★4" side by side rather than stacked on each other. Inside the
+   thumb, so it rides the hover zoom with the picture. */
+.galleryStripThumb .galleryStripRate {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  border-radius: 8px;
+  color: #f0a417;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+.galleryStripThumb .galleryStripRate[hidden] { display: none; }
+
 /* "Attach to the next message". Hidden until the frame is hovered so the strip
    stays a strip of pictures. */
 .galleryStripAdd {
