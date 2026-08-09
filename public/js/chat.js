@@ -5,7 +5,7 @@
 import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState, setScrollTop, applyVideoAudio, trackVideoAudio } from './state.js';
 import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis,
          readFileAsDataUrl, makePreview, convertToJpeg, normalizeOrientation,
-         mediaSrc, mediaBase64, isMediaRef, galleryUrl, galleryThumbUrl,
+         mediaSrc, mediaBase64, isMediaRef, galleryUrl, galleryThumbUrl, galleryIdOf, galleryName,
          fileIntoGallery, sniffImageMime, cacheGalleryThumb } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams, addBlockCopyButtons } from './markdown.js';
 import { renderRelationGraph } from './relation-graph.js';
@@ -323,7 +323,10 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
     const r = resolveModelToken(tokens[0]);
     if (r.error) {
       const list = (r.candidates || []).join(", ");
-      fail(r.error === "unknown" ? t("img_modelUnknown", { val: tokens[0], list })
+      // A catalogue of nothing but model-free tools explains the odd suggestions
+      // ("closest: image-upscale") far better than a typo would — say so.
+      const comfyHint = r.toolsOnly ? ` ${t("img_checkComfy")}` : "";
+      fail(r.error === "unknown" ? t("img_modelUnknown", { val: tokens[0], list }) + comfyHint
         : r.error === "ambiguous" ? t("img_modelAmbiguous", { val: tokens[0], list })
         : r.error === "tier" ? t("img_modelTier", { val: r.id, tier: r.tier, list })
         : t("img_modelNoList"));
@@ -702,7 +705,9 @@ function attachVideosToMessage(userMessage, videos) {
   // and the one that actually decides whether a tab record is 200KB or 200MB.
   userMessage.generatedVideos = videos.map(v => (v.galleryId ? galleryUrl(v.galleryId) : v.base64));
   userMessage.videoMimes = videos.map(v => v.mime || "video/mp4");
-  userMessage.videoNames = videos.map(v => v.name || null);
+  // Same naming rule as the pictures: the gallery filename is the one name, so a clip's
+  // download name matches what it is called everywhere else.
+  userMessage.videoNames = videos.map(v => galleryName(v.galleryId) || v.name || null);
   if (videos.some(v => v.thumbnail || v.galleryId)) {
     userMessage.generatedVideoThumbnails = videos.map(
       (v) => (v.galleryId ? galleryThumbUrl(v.galleryId) : v.thumbnail || null));
@@ -733,11 +738,13 @@ function messageSourceAudio(m) {
 // { multi:[...] } selection). Parallel arrays carry the distinct roles:
 //   contextImages     — the full-res picture, the ONLY images forwarded to the model
 //   displayImages     — its 360px thumbnail, shown in the bubble only
-//   imageNames — the user's ORIGINAL filenames. Used BOTH as the download/caption
-//                       name and injected into the model prompt so the user can refer to
-//                       an image by name (see buildMessages). Only set when at least one
-//                       original name is known (drag/select have it; pasted images don't —
-//                       those fall back to a timestamp download name). A single-image
+//   imageNames        — the GALLERY filename of each picture (galleryName), which is
+//                       the one name every surface uses: the download/caption name and
+//                       the manifest injected into the model prompt (see buildMessages).
+//                       Derived from the reference stored alongside it, so the two can
+//                       never drift. Falls back to the upload's own filename for a
+//                       picture the gallery never took (upload failed / offline), and to
+//                       null for a pasted image with no name at all. A single-image
 //                       inpaint mask rides along too.
 // Wait — briefly — for the gallery ids of everything staged on this send. Paste-then-Enter
 // can outrun the upload, and an attachment whose id has not landed yet gets stored as
@@ -773,7 +780,10 @@ function attachUploadedImages(userMessage, image) {
   // upload failed, or one written before any of this, is still perfectly valid.
   userMessage.contextImages = list.map((img) => (img.galleryId ? galleryUrl(img.galleryId) : img.base64));
   userMessage.displayImages = list.map((img) => (img.galleryId ? galleryThumbUrl(img.galleryId) : img.preview));
-  const displayNames = list.map((img) => img.displayName || null);
+  // Name from the gallery id — the same value that just went into contextImages — so
+  // the name and the picture are two views of one fact. The upload's own filename is
+  // only a fallback for a picture the gallery refused.
+  const displayNames = list.map((img) => galleryName(img.galleryId) || img.displayName || null);
   if (displayNames.some(Boolean)) userMessage.imageNames = displayNames;
   // Painted masks ride along as ONE per-image array, whatever the model. Which way a
   // region is read — an inpaint region on the first image, or a subject cutout — is a
@@ -849,6 +859,61 @@ function matchSkillToken(token, ids) {
   return { error: "unknown", candidates: ids.slice(0, 6) };
 }
 
+// Is this bubble a /skill guide? `skillGuide` is the marker, but conversations from
+// before it existed have to keep working — prompt mode governs whether the composer
+// holds on to its references, so failing to recognise an older guide silently breaks
+// the render at the end of the workshop. Those bubbles are still identifiable: the
+// header opens with 📖 in every locale.
+const GUIDE_HEADER = "\u{1F4D6}";
+function isGuideBubble(m) {
+  if (!m || m.role !== "assistant") return false;
+  return !!m.skillGuide || (typeof m.content === "string" && m.content.startsWith(GUIDE_HEADER));
+}
+
+// Guide bubbles still governing this conversation: injected by /skill and not folded
+// (folding is the documented off switch — a folded guide is out of the model's context,
+// so it governs nothing).
+function activeGuides(tab) {
+  return (tab.messages || []).filter((m) => isGuideBubble(m) && !m.folded);
+}
+
+// The newest turn of the CURRENT workshop that carried media. Used only when a ▶
+// dispatch finds an empty composer: staged attachments are session state (an in-memory
+// Map — a page reload wipes them) while the conversation and its draft persist, so a
+// prompt polished before a refresh would otherwise dispatch with no reference at all
+// and the r2v render fails at the GPU. Bounded to messages AFTER the active guide, so
+// this can never reach back and attach some unrelated photo from earlier in the chat.
+function workshopMediaTurn(tab) {
+  const msgs = tab.messages || [];
+  let start = -1;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (isGuideBubble(msgs[i]) && !msgs[i].folded) { start = i; break; }
+  }
+  if (start < 0) return null;   // no prompt mode → nothing to revive
+  for (let i = msgs.length - 1; i > start; i--) {
+    const m = msgs[i];
+    if (m.role !== "user") continue;
+    if (m.contextImages?.length || m.generatedVideos?.length) return m;
+  }
+  return null;
+}
+
+function activeGuideModels(tab) {
+  return [...new Set(activeGuides(tab).map((m) => m.skillGuide))];
+}
+
+// Fold every active guide and report what they covered. Called when a NEW guide is
+// about to take over; folding rather than deleting keeps the history intact and lets
+// the user undo it with one click on ▼.
+function foldActiveGuides(tab) {
+  const out = [];
+  for (const m of activeGuides(tab)) {
+    m.folded = true;
+    out.push({ model: m.skillGuide, kind: m.skillKind || "" });
+  }
+  return out;
+}
+
 async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video) {
   const say = (text) => {
     tab.messages.push({ role: "assistant", content: text, timestamp: Date.now() });
@@ -897,10 +962,11 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video) {
         // suggestions cover every model); otherwise speak from the skill list.
         const err = r.error !== "noModels" ? r : fb;
         const list = (err.candidates || []).join(", ");
+        const comfyHint = err.toolsOnly ? ` ${t("img_checkComfy")}` : "";
         pushUser();
         say(t("msg_commandError", { error:
           err.error === "ambiguous" ? t("img_modelAmbiguous", { val: cmd.modelToken, list })
-          : t("img_modelUnknown", { val: cmd.modelToken, list }) }));
+          : t("img_modelUnknown", { val: cmd.modelToken, list }) + comfyHint }));
         return;
       }
     }
@@ -929,9 +995,17 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video) {
   if (!composed || composed.error || composed.none) {
     pushUser();
     const inst = (composed && composed.installed || []).join(", ");
+    // Nothing was loaded, so nothing is folded — a typo or an unsupported model must
+    // not silently destroy the guide the user is working under. But saying only "no
+    // skill for wan2.2" reads as "you now have no guide", when in fact the previous
+    // model's guide is still in context and still the loudest instruction there:
+    // the next draft would come out in ITS format, carrying ITS dispatch line, and ▶
+    // would render on the wrong model. Name what is still governing.
+    const stillOn = activeGuideModels(tab);
+    const stillNote = stillOn.length ? ` ${t("skill_guideStillActive", { list: stillOn.join(", ") })}` : "";
     say(composed && composed.error ? t("msg_commandError", { error: composed.error })
-      : inst ? t("skill_noSkillForModel", { model: modelId, list: inst })
-      : t("skill_noneInstalled"));
+      : inst ? t("skill_noSkillForModel", { model: modelId, list: inst }) + stillNote
+      : t("skill_noneInstalled") + stillNote);
     return;
   }
 
@@ -950,16 +1024,48 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video) {
   const durNote = composed.duration && composed.duration.maxSec
     ? " " + getPrompt("skillDurationNote", composed.duration.minSec, composed.duration.maxSec)
     : "";
-  const stagedNote = getPrompt(cmd.prompt ? "skillStaged" : "skillStagedPending", imgCount, vidCount) + durNote;
+  // Ref2VA ground rules ride only on the ref guide: the failure modes they guard
+  // against (invented subject_definitions from an unseen picture, references mapped
+  // to the wrong subjects, "I meant this as the first frame") only exist when the
+  // prompt is ABOUT reference images.
+  const refNote = composed.mode === "ref" ? " " + getPrompt("skillRefNote") : "";
+  // The staged note is mode-aware: under the ref guide the pictures are Ref2VA
+  // reference subjects, and with nothing staged the right move is to ask for them —
+  // the base wording ("assume T2VA", "image count decides I2VA/FL2VA") describes
+  // modes that do not exist on the r2v weights.
+  const isRef = composed.mode === "ref";
+  const stagedNote = getPrompt(cmd.prompt ? "skillStaged" : "skillStagedPending", imgCount, vidCount, isRef) + durNote + refNote;
 
   // The guide bubble. Header states the off switch (fold = pause); the guide itself
   // sits inside <details> — collapsed ON SCREEN, but fully part of the outgoing
   // context. The message-level fold is deliberately NOT used for display: folded
   // bubbles are excluded from the model context entirely, which is exactly why
   // folding this bubble later works as the exit from prompt mode.
+  // Retire whatever guide was governing before this one. Two guides at once is not a
+  // richer context, it is a contradiction: each says "follow this format EXACTLY", so
+  // the assistant has to pick one — and re-loading the SAME guide just pays its ~4-6k
+  // tokens twice. Folding is the existing off switch, so this is precisely the action
+  // the user would take by hand, and it is reversible: unfold to bring the old one back.
+  const superseded = foldActiveGuides(tab);
+  const supersededNote = superseded.length
+    ? ` ${getPrompt("skillSupersededNote", [...new Set(superseded.map((g) => g.model))].join(", "))}` : "";
+  // Switching between an IMAGE guide and a VIDEO one is a different kind of switch: it
+  // is usually two parallel pieces of work, not one replacing the other, and folding
+  // back and forth is where you eventually forget to fold and draft in the wrong
+  // format. Suggest a separate tab — but only suggest: opening one is the user's move,
+  // and there are real cases (a still, then that still driving a ref-to-video) where a
+  // shared context is exactly right. Silent on unknown kinds (guides from before the
+  // manifest declared one) rather than guessing.
+  const kindClash = composed.kind && superseded.some((g) => g.kind && g.kind !== composed.kind);
+  const newTabNote = kindClash ? ` ${getPrompt("skillNewTabHint")}` : "";
   const guideMsg = {
     role: "assistant",
-    content: `${getPrompt("skillHeader", composed.name, composed.mode)}\n\n` +
+    // The model this guide governs + the media kind it writes for, so a later /skill
+    // (or a failed one) can find it and tell an image↔video switch from a plain one.
+    // Guide bubbles from before these fields existed simply won't be folded automatically.
+    skillGuide: modelId,
+    skillKind: composed.kind || "",
+    content: `${getPrompt("skillHeader", composed.name, composed.mode)}${supersededNote}${newTabNote}\n\n` +
       `${getPrompt("skillWrapper", modelId, stagedNote)}\n\n` +
       `<details>\n<summary>${getPrompt("skillGuideSummary")}</summary>\n\n${composed.text}\n\n</details>`,
     timestamp: Date.now(),
@@ -1441,26 +1547,65 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
   // stripping images afterwards: the loop bakes an image name→order list into the
   // outgoing text, and that list has to describe exactly the images that survive.
   // Budget is spent newest-first, since the images nearest the question matter most.
+  // (C1) Duplicate pictures. A reference image legitimately rides many bubbles — the
+  // prompt workshop re-attaches the same file to every iteration turn — and at ~768
+  // tokens a copy, six rounds with two references waste ~9k tokens re-sending pictures
+  // the model already has. Identity is the gallery id, which the slot IS (galleryIdOf),
+  // so this is exact rather than a guess; slots still holding raw bytes have no stable
+  // identity and are never deduped (dropping a picture we cannot PROVE is a duplicate
+  // is the one unacceptable outcome). The newest occurrence is kept — nearest the question.
+  //
+  // Granularity is the whole BUBBLE, all-or-nothing, and that is the load-bearing part:
+  // a prompt refers to its references by position ("subject_definitions … image 2"), and
+  // the renderer feeds the command bubble's list in stored order. If dedup could strip
+  // image 1 and keep image 2, the model would see a one-image array whose ordinals no
+  // longer match what ComfyUI will be handed — mapping the wrong subject, silently, for
+  // twenty GPU-minutes. So a bubble either sends its complete ordered set or none of it,
+  // and a bubble that sends none still states that set BY NAME in text, so "the first
+  // picture" keeps resolving.
   const maxImages = llmCap(dom.llmMaxImages);
+  const dupTurn = new Set();       // bubbles whose whole image set is carried by a later one
+  {
+    const seenIds = new Set();
+    for (let i = relevantMessages.length - 1; i >= 0; i--) {
+      const imgs = relevantMessages[i].contextImages;
+      if (!imgs?.length) continue;
+      const ids = imgs.map(galleryIdOf);
+      if (ids.every((id) => id && seenIds.has(id))) dupTurn.add(relevantMessages[i]);
+      else for (const id of ids) if (id) seenIds.add(id);
+    }
+  }
+  // (C2) The ⚙ image cap, charged newest-first over the bubbles that still carry images.
+  // Unchanged semantics: a partially funded bubble keeps its LAST images.
   const imageBudget = new Map();   // message object → how many of its images to send
   if (maxImages != null) {
     let left = maxImages;
     for (let i = relevantMessages.length - 1; i >= 0; i--) {
-      const n = relevantMessages[i].contextImages?.length || 0;
-      if (!n) continue;
+      const msg = relevantMessages[i];
+      const n = msg.contextImages?.length || 0;
+      if (!n || dupTurn.has(msg)) continue;
       const take = Math.min(n, left);
-      imageBudget.set(relevantMessages[i], take);
+      imageBudget.set(msg, take);
       left -= take;
     }
   }
-  // The images this bubble may send: the newest `take` of them, or null when none
-  // survive. Returns the untouched array when no cap is set.
+  // The images this bubble may send: its whole set, the newest `take` of them, or null.
   const sendableImages = (msg) => {
     const imgs = msg.contextImages;
-    if (!imgs?.length) return null;
+    if (!imgs?.length || dupTurn.has(msg)) return null;
     if (maxImages == null) return imgs;
     const take = imageBudget.get(msg) || 0;
     return take > 0 ? imgs.slice(-take) : null;
+  };
+  // The ordered "1. name  2. name" manifest for a bubble's images. `count` says how many
+  // of them the model is actually being handed, so names stay aligned with the array it
+  // receives (the cap takes a tail slice); pass the full length for a deduped bubble,
+  // where the list is the whole point and no array accompanies it.
+  const imageManifest = (msg, count) => {
+    if (!msg.imageNames?.some(Boolean)) return "";
+    const names = msg.imageNames.slice(0, msg.contextImages.length).slice(-count);
+    const labeled = dedupeImageNames(names);
+    return labeled.map((nm, i) => `${i + 1}. ${nm}`).join("  ");
   };
 
   const mapped = [];
@@ -1518,18 +1663,23 @@ ${nameInstruction}${getPrompt("personaSuffix")}${memoryBlock}${timeBlock}`;
     if (sendTime && msg.role === "user" && lastTs && msg.timestamp && (msg.timestamp - lastTs) > GAP_MS) {
       prefix += `${getPrompt("timeGapContext", (msg.timestamp - lastTs) / 3600000)}\n\n`;
     }
+    // A bubble whose whole picture set is the SAME files a later turn carries: name that
+    // set, in its own order, instead of letting a turn that reads "use the character in
+    // this picture" arrive with nothing attached and no way to resolve "the first one".
+    // Costs a line of text; saves ~768 tokens per picture not re-sent.
+    if (dupTurn.has(msg)) {
+      const n = msg.contextImages.length;
+      prefix += `${getPrompt("imageDedupContext", n, imageManifest(msg, n))}\n\n`;
+    }
     if (msgImages) {
       message.images = msgImages;
-      // When the upload kept original filenames, prepend a deduped name→order list so the
-      // user can refer to an image by filename ("describe chart.png"). The model receives
-      // images as a bare ordered array (no labels), so this mapping lives in the text.
-      // Names are taken from the TAIL to stay aligned with the images actually sent.
-      if (msg.imageNames?.some(Boolean)) {
-        const names = msg.imageNames.slice(0, msg.contextImages.length).slice(-msgImages.length);
-        const labeled = dedupeImageNames(names);
-        const list = labeled.map((nm, i) => `${i + 1}. ${nm}`).join("  ");
-        prefix += `${getPrompt("imageNamesContext", labeled.length, list)}\n\n`;
-      }
+      // When the upload kept original filenames, prepend a name→order list so the user
+      // can refer to an image by filename ("describe chart.png") or position. The model
+      // receives images as a bare ordered array (no labels), so this mapping lives in
+      // the text — and it is what keeps "image 2" in a draft pointing at the same file
+      // ComfyUI will receive second.
+      const list = imageManifest(msg, msgImages.length);
+      if (list) prefix += `${getPrompt("imageNamesContext", msgImages.length, list)}\n\n`;
     }
     if (prefix) message.content = `${prefix}${msg.content || ""}`.trimEnd();
     mapped.push(message);
@@ -2970,6 +3120,12 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   // A newly sent message always scrolls to the bottom — drop any resend scroll pin.
   state.scrollPin = null;
 
+  // One-shot flag from the ▶ chip (markdown.js). Read and cleared HERE, at the single
+  // entry point, so a send that never reaches the /imagine branch can't leave it armed
+  // for the user's next real message.
+  const foldCommandBubble = state.foldNextCommandBubble;
+  state.foldNextCommandBubble = false;
+
   markActivity();
 
   // Handle /remind command — schedule a proactive reminder
@@ -3123,21 +3279,46 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   const imagineCmds = content ? parseImagineCommands(content) : null;
   if (imagineCmds) {
     const userMessage = { role: "user", content, timestamp: Date.now() };
+    // Dispatched by ▶ from a draft that is already on screen: the command bubble would
+    // repeat that prompt verbatim, on screen and in the model's context. Fold it — the
+    // existing fold both collapses the bubble and drops it from buildMessages. Nothing
+    // is lost: the full command still lives here as the resend anchor and the record of
+    // which attachments produced the clip, one ▼ away. A HAND-TYPED /imagine is never
+    // folded — there is no draft above it, so that bubble IS the only record.
+    if (foldCommandBubble) userMessage.folded = true;
     // Attached video(s) are the SOURCE for a video-edit model (Bernini / Animate).
     // Several clips can be staged → each runs the workflow once (batch). They ride on
     // the user bubble for display (reusing the generatedVideos field).
-    const imagineVideos = stagedVideoList(video);
+    let imagineVideos = stagedVideoList(video);
+    // ▶ with an empty composer. Staged attachments are session state — a page reload
+    // wipes them — while the draft and its ▶ button persist in the conversation, so a
+    // prompt polished yesterday would dispatch with no reference and die at the GPU
+    // ("r2v needs at least one reference"). Re-use the media of the workshop's newest
+    // media turn: the references ARE what that turn attached. Copied field-for-field
+    // rather than re-derived, so gallery references, names and 🖌 masks all carry over
+    // intact. Only ▶ does this — a hand-typed /imagine keeps meaning exactly what it
+    // says, attachments and all.
+    if (foldCommandBubble && !image && !imagineVideos.length) {
+      const src = workshopMediaTurn(tab);
+      if (src) {
+        for (const k of ["contextImages", "displayImages", "imageNames", "imageMasks"]) {
+          if (src[k]) userMessage[k] = src[k].slice();
+        }
+        imagineVideos = messageSourceVideos(src);
+        attachVideosToMessage(userMessage, imagineVideos);
+      }
+    }
     // An attached image turns /imagine into image-to-image (instruction editing).
     await settleGalleryIds(image, imagineVideos, audio);
-    attachUploadedImages(userMessage, image);
-    attachVideosToMessage(userMessage, imagineVideos);
+    if (image) attachUploadedImages(userMessage, image);
+    if (video) attachVideosToMessage(userMessage, imagineVideos);
     // Speech audio (InfiniteTalk dubbing) rides the user bubble + the gen payload.
     attachAudioToMessage(userMessage, audio);
     tab.messages.push(userMessage);
     const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
     // A bare "/imagine" (no prompt) is valid only when something is attached
     // (image or video) — the gen is then attachment-driven (video edit / img2img).
-    const hasAttach = !!(image || imagineVideos.length);
+    const hasAttach = !!(userMessage.contextImages?.length || imagineVideos.length);
     const validCmds = imagineCmds.filter((cmd) => cmd && !cmd.error && (cmd.prompt || hasAttach));
     if (firstError) {
       tab.messages.push({ role: "assistant", content: t("msg_commandError", { error: firstError.error }), timestamp: Date.now() });
@@ -3281,6 +3462,20 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   saveChat();
   if (state.activeTabId === tabId) renderChat();
 
+  // Prompt-workshop mode (an unfolded /skill guide governs this tab): the staged
+  // pictures/clips are the FUTURE /imagine's inputs, not just this turn's payload.
+  // A plain send normally consumes them — which means one iteration turn ("make it
+  // slower") silently empties the composer, and the ▶ dispatch at the end renders an
+  // r2v with no reference subject. So while a guide is active, hand them back after
+  // attaching, exactly like the /skill turn itself does (the 🖌 mask lives on the
+  // staged object, so it survives the round trip). Folding the guide — the documented
+  // exit from prompt mode — restores normal consumption.
+  if ((image || video) && activeGuides(tab).length && state.activeTabId === tabId) {
+    if (image) state.selectedImage = image;
+    if (video) state.selectedVideo = video;
+    renderAttachments();
+  }
+
   // A video with no accompanying text/image is purely an upload — nothing for the
   // model to respond to, so don't trigger a reply.
   if (plainVideos.length && !content && !image) return;
@@ -3409,9 +3604,10 @@ function makeReplaceImageButton(msgIndex, imgIdx) {
       msg.contextImages[imgIdx] = id ? galleryUrl(id) : b64;
       if (Array.isArray(msg.displayImages)) msg.displayImages[imgIdx] = id ? galleryThumbUrl(id) : preview;
       // imageNames is optional (pasted images have none) — materialise it so the
-      // new file's name is used for the download/caption and the model prompt.
+      // replacement's name is used for the download/caption and the model prompt. Same
+      // rule as a fresh attach: the gallery name, falling back to the file's own.
       if (!Array.isArray(msg.imageNames)) msg.imageNames = new Array(msg.contextImages.length).fill(null);
-      msg.imageNames[imgIdx] = file.name;
+      msg.imageNames[imgIdx] = galleryName(id) || file.name;
       // Masks are painted ON pixels, so neither kind survives a swapped picture: the
       // inpaint mask belongs to image #0, a subject cutout to this exact index.
       if (imgIdx === 0 && msg.mask) delete msg.mask;

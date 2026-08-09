@@ -107,7 +107,11 @@ async function handleCompose(req, res) {
     // — H3: 124–362 frames @24fps on a 17k+5 grid ≈ 5.2–15.1s). Handed to the browser so
     // the prompt-writing wrapper can refuse durations the render would silently clamp:
     // a clamped clip with 30.00s timing notation in its prompt is mis-paced end to end.
-    sendJson(res, 200, { name, mode: mode || "", text, duration: def.duration || null });
+    // "image" | "video" — what this guide writes prompts FOR. A manifest fact rather
+    // than a lookup in the live catalogue, because /skill has to work with ComfyUI
+    // unreachable (writing prompts is what happens before the render box is up). The
+    // browser uses it to suggest a separate tab when the user switches media kinds.
+    sendJson(res, 200, { name, mode: mode || "", text, duration: def.duration || null, kind: def.kind || "" });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 

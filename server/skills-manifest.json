@@ -1,10 +1,22 @@
 {
   "h3-prompt-writing": {
     "repo": "https://github.com/MiniMax-AI/MiniMax-H3",
-    "models": ["minimax-h3"],
-    "ids": ["minimax-h3-t2v", "minimax-h3-r2v"],
-    "duration": { "minSec": 5.2, "maxSec": 15 },
-    "modes": { "base": "references/base-en.txt", "ref": "references/ref-en.txt" },
+    "models": [
+      "minimax-h3"
+    ],
+    "kind": "video",
+    "ids": [
+      "minimax-h3-t2v",
+      "minimax-h3-r2v"
+    ],
+    "duration": {
+      "minSec": 5.2,
+      "maxSec": 15
+    },
+    "modes": {
+      "base": "references/base-en.txt",
+      "ref": "references/ref-en.txt"
+    },
     "files": {
       "SKILL.md": {
         "url": "https://raw.githubusercontent.com/MiniMax-AI/MiniMax-H3/main/skills/h3-prompt-writing/SKILL.md",

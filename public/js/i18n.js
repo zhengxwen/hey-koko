@@ -792,7 +792,7 @@ const UI = {
     chat_altGenImage: "AI-generated image",
     chat_altImgLoadFail: "Image failed to load",
     hl_speakStop: "Click to stop",
-    md_toImagine: "Fill the composer with this render command \u2014 review, then press Enter to start",
+    md_toImagine: "Run this render command now \u2014 use the copy button instead if you want to edit it first",
     md_copyBlock: "Copy",
     md_copied: "Copied",
     chat_delImgTitle: "Delete image",
@@ -857,11 +857,13 @@ const UI = {
     skill_pickModel: "ComfyUI is unreachable, so the dropdown can't choose for you \u2014 and the installed skills cover several models: ${list}. Pick one with `-m` (they use different guides).",
     skill_noCurrentModel: "Could not tell which model to load a guide for \u2014 the ComfyUI model list is not loaded. Name one explicitly: `/skill -m h3 your idea\u2026`",
     skill_noSkillForModel: "No prompt-writing skill for \"${model}\". Installed: ${list}. Pick one of those with `-m`, or just chat without a guide.",
-    img_modelUnknown: "No model called \"${val}\". Closest: ${list}",
+    skill_guideStillActive: "Note: the guide for ${list} is STILL loaded and still shapes the next draft \u2014 fold its \u{1F4D6} bubble if you are switching away from it.",
+    img_modelUnknown: "No model called \"${val}\". Closest: ${list}.",
     img_modelAmbiguous: "\"${val}\" matches several models: ${list}. Type more of the name.",
     img_modelTier: "${val} has no ${tier} build installed. It ships: ${list}",
     img_modelConflict: "One /imagine send can only use one model, but -m was given as: ${list}",
     img_modelNoList: "The ComfyUI model list has not loaded yet — check the ComfyUI connection.",
+    img_checkComfy: "The list holds no ComfyUI models at all, only the model-free tools — is ComfyUI connected?",
     img_secNeedsArg: "-s/--second needs a value. Format: -s 10 (video length in seconds)",
     img_secInvalid: "Invalid -s/--second value: \"${val}\". Must be a duration in seconds from 0~600, e.g. -s 10",
     img_seedNeedsArg: "--seed needs a value. Format: --seed 42",
@@ -2221,7 +2223,7 @@ const UI = {
     chat_altGenImage: "AI 生成的图片",
     chat_altImgLoadFail: "图片加载失败",
     hl_speakStop: "点击停止朗读",
-    md_toImagine: "把这条渲染命令填入输入框——确认后按回车开始生成",
+    md_toImagine: "立即执行这条渲染命令——想先改再跑就用复制按钮",
     md_copyBlock: "复制",
     md_copied: "已复制",
     chat_delImgTitle: "删除图片",
@@ -2286,11 +2288,13 @@ const UI = {
     skill_pickModel: "ComfyUI 不在线，下拉无法替你选择——而已装 skill 覆盖多个模型：${list}。请用 `-m` 指定一个（它们的指南不同）。",
     skill_noCurrentModel: "无法确定要载入哪个模型的指南——ComfyUI 模型列表还没加载。请显式指定：`/skill -m h3 你的想法…`",
     skill_noSkillForModel: "\"${model}\" 没有对应的提示词 skill。已安装：${list}。可用 `-m` 选择其中之一，或不带指南直接聊。",
-    img_modelUnknown: "没有叫 \"${val}\" 的模型。最接近的：${list}",
+    skill_guideStillActive: "注意：${list} 的指南仍然生效，接下来的草稿还会按它的格式来——若要改用别的模型，请折叠那条 \u{1F4D6} 气泡。",
+    img_modelUnknown: "没有叫 \"${val}\" 的模型。最接近的：${list}。",
     img_modelAmbiguous: "\"${val}\" 匹配到多个模型：${list}。请再多打几个字。",
     img_modelTier: "${val} 没有安装 ${tier} 版本。已安装：${list}",
     img_modelConflict: "一次 /imagine 只能用一个模型，但 -m 指定了：${list}",
     img_modelNoList: "ComfyUI 模型列表还没加载，请检查 ComfyUI 连接。",
+    img_checkComfy: "列表里没有任何 ComfyUI 模型，只剩不需要权重的工具——是否正确连接了 ComfyUI？",
     img_secNeedsArg: "-s/--second 需要参数。格式：-s 10（视频时长，秒）",
     img_secInvalid: "-s/--second 值无效：\"${val}\"。需为 0~600 秒的时长，例如 -s 10",
     img_seedNeedsArg: "--seed 需要参数。格式：--seed 42",
@@ -3643,7 +3647,7 @@ const UI = {
     chat_altGenImage: "AI 生成的圖片",
     chat_altImgLoadFail: "圖片載入失敗",
     hl_speakStop: "點擊停止朗讀",
-    md_toImagine: "把這條渲染命令填入輸入框——確認後按回車開始生成",
+    md_toImagine: "立即執行這條渲染命令——想先改再跑就用複製按鈕",
     md_copyBlock: "複製",
     md_copied: "已複製",
     chat_delImgTitle: "刪除圖片",
@@ -3708,11 +3712,13 @@ const UI = {
     skill_pickModel: "ComfyUI 不在線，下拉無法替你選擇——而已裝 skill 覆蓋多個模型：${list}。請用 `-m` 指定一個（它們的指南不同）。",
     skill_noCurrentModel: "無法確定要載入哪個模型的指南——ComfyUI 模型列表還沒載入。請顯式指定：`/skill -m h3 你的想法…`",
     skill_noSkillForModel: "\"${model}\" 沒有對應的提示詞 skill。已安裝：${list}。可用 `-m` 選擇其中之一，或不帶指南直接聊。",
-    img_modelUnknown: "沒有叫 \"${val}\" 的模型。最接近的：${list}",
+    skill_guideStillActive: "注意：${list} 的指南仍然生效，接下來的草稿還會按它的格式來——若要改用別的模型，請折疊那條 \u{1F4D6} 氣泡。",
+    img_modelUnknown: "沒有叫 \"${val}\" 的模型。最接近的：${list}。",
     img_modelAmbiguous: "\"${val}\" 匹配到多個模型：${list}。請再多打幾個字。",
     img_modelTier: "${val} 沒有安裝 ${tier} 版本。已安裝：${list}",
     img_modelConflict: "一次 /imagine 只能用一個模型，但 -m 指定了：${list}",
     img_modelNoList: "ComfyUI 模型列表還沒載入，請檢查 ComfyUI 連線。",
+    img_checkComfy: "列表裡沒有任何 ComfyUI 模型，只剩不需要權重的工具——是否正確連接了 ComfyUI？",
     img_secNeedsArg: "-s/--second 需要參數。格式：-s 10（影片時長，秒）",
     img_secInvalid: "-s/--second 值無效：\"${val}\"。需為 0~600 秒的時長，例如 -s 10",
     img_seedNeedsArg: "--seed 需要參數。格式：--seed 42",
@@ -4296,6 +4302,7 @@ const PROMPTS = {
     nameInstructionSingle: (name) => `The user wants you to call them "${name}".`,
     nameInstructionMulti: (names) => `The user has provided these names for you to use: ${names.map(n => `"${n}"`).join(", ")}. Naturally choose one based on the chat context; don't always use the same one.`,
     imageNamesContext: (n, list) => `[Attached ${n} image(s), in order: ${list}. When the user refers to an image by its filename, map it to this order.]`,
+    imageDedupContext: (n, list) => `[This turn has the same ${n} image(s) that a later turn attaches${list ? `, in this order: ${list}` : ""}. To save context they are sent once, with that later turn \u2014 treat them as present here, in the same order.]`,
     currentTimeContext: (d) => { const w = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]; const p = (n) => String(n).padStart(2, "0"); return `[Current time: ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${w} ${p(d.getHours())}:${p(d.getMinutes())}. Be aware of the time when it naturally matters; don't recite it.]`; },
     timeGapContext: (hours) => { let s; if (hours < 24) s = `${Math.round(hours)} hour(s)`; else if (hours < 24 * 7) s = `${Math.round(hours / 24)} day(s)`; else s = `${Math.round(hours / (24 * 7))} week(s)`; return `[The user is replying about ${s} after the previous message. If it fits, acknowledge the gap naturally; don't make it awkward.]`; },
     compactSummary: "You are a conversation summary assistant. Compress the following conversation into a concise summary, retaining all important information, key decisions, code snippets, and conclusions. The summary should let someone quickly understand what was discussed. Output in English.",
@@ -4328,13 +4335,20 @@ const PROMPTS = {
     askSuggestNoContext: "Please generate 5 interesting general questions for the user to choose from.",
     imageFallback: "Please look at this image.",
     skillHeader: (name, mode) => `\u{1F4D6} Prompt guide loaded: **${name}**${mode ? ` \u00b7 ${mode === "ref" ? "Ref2VA (reference subjects)" : "base modes (T2VA / I2VA / FL2VA / L2VA)"}` : ""} \u2014 fold this bubble to pause prompt mode; unfold to resume.`,
-    skillWrapper: (model, staged) => `[You are now the user's prompt-writing assistant for the video model "${model}". The official guide is included below \u2014 follow it EXACTLY: field names, section order, alignment line placement and timing notation are a strict format, not suggestions. ${staged} Workflow: draft a complete prompt from the user's idea, then iterate as they request changes. Ask about anything the format needs that they have not given \u2014 especially the intended DURATION, which the timing notation depends on. Format every complete draft as ONE fenced code block TAGGED \`imagine\` (open it with \`\`\`imagine), structured in two layers: line 1 is the DISPATCH LINE \`/imagine -m ${model} -s <duration>s\` (the agreed length in seconds), which belongs to the hey-koko app and is NOT part of the prompt \u2014 the guide's format rules govern only what comes AFTER it, so the guide's own required first line (e.g. the alignment instruction) is the block's SECOND line. Never omit the dispatch line, even though the guide does not mention it: without it the user cannot start the render by pasting the block. Until a duration is agreed, ask instead of guessing: it fixes both the -s flag and the prompt's timing notation. Explanations follow the user's language; dialogue, lyrics and on-screen text keep their original language, per the guide.]`,
-    skillStaged: (imgs, vids) => imgs || vids
-      ? `Currently staged in the composer: ${imgs ? `${imgs} image(s)` : ""}${imgs && vids ? " and " : ""}${vids ? `${vids} video clip(s)` : ""} \u2014 they are attached to the user's message, look at them; for base modes the image count decides between T2VA / I2VA / FL2VA (confirm first-frame vs last-frame when only one image is staged).`
-      : "Nothing is staged in the composer right now, so assume T2VA (pure text) unless the user says otherwise.",
-    skillStagedPending: (imgs, vids) => imgs || vids
-      ? `The composer currently holds ${imgs ? `${imgs} staged image(s)` : ""}${imgs && vids ? " and " : ""}${vids ? `${vids} staged video clip(s)` : ""} \u2014 they will arrive WITH the user's next message (you cannot see them yet); for base modes the image count decides between T2VA / I2VA / FL2VA (confirm first-frame vs last-frame when only one image is staged).`
-      : "Nothing is staged in the composer right now, so assume T2VA (pure text) unless the user says otherwise. Wait for the user's idea before drafting anything.",
+    skillSupersededNote: (list) => `(The previously loaded guide for ${list} has been folded \u2014 only this one applies now; unfold it to bring it back.)`,
+    skillNewTabHint: () => `(This switches between an image guide and a video one \u2014 if both lines of work are still going, a separate chat tab for each is easier than folding back and forth.)`,
+    skillRefNote: () => `Ref2VA ground rules: (1) If you cannot actually SEE the attached reference image(s), say so plainly and ask the user to describe each subject\u2019s appearance \u2014 NEVER write subject_definitions from a picture you have not seen. (2) With several references, state which image is which subject (\u201cimage 1 = the woman in red, image 2 = the dog\u201d) and get the user\u2019s confirmation before the first draft \u2014 a mixed-up mapping renders the wrong subject. (3) Confirm intent early: r2v keeps the subjects\u2019 IDENTITY inside a newly composed scene; it does NOT use the picture as the first frame (that is I2VA on the t2v weights). If the user actually wants first-frame animation, suggest switching the model instead of drafting the wrong kind. (4) Mention once that each reference can be brush-masked (\u{1F58C}) so only the subject inside the outline is passed, keeping its background out of the video.`,
+    skillWrapper: (model, staged) => `[You are now the user's prompt-writing assistant for the video model "${model}". The official guide is included below \u2014 follow it EXACTLY: field names, section order, alignment line placement and timing notation are a strict format, not suggestions. ${staged} Workflow: draft a complete prompt from the user's idea, then iterate as they request changes. Ask about anything the format needs that they have not given \u2014 especially the intended DURATION, which the timing notation depends on. Format every complete draft as ONE fenced code block TAGGED \`imagine\` (open it with \`\`\`imagine), structured in two layers: line 1 is the DISPATCH LINE \`/imagine -m ${model} --second <duration>s\` (the agreed length in seconds), which belongs to the hey-koko app and is NOT part of the prompt \u2014 the guide's format rules govern only what comes AFTER it, so the guide's own required first line (e.g. the alignment instruction) is the block's SECOND line. Never omit the dispatch line, even though the guide does not mention it: without it the user cannot start the render by pasting the block. Until a duration is agreed, ask instead of guessing: it fixes both the --second flag and the prompt's timing notation. Explanations follow the user's language; dialogue, lyrics and on-screen text keep their original language, per the guide.]`,
+    skillStaged: (imgs, vids, isRef) => imgs || vids
+      ? `Currently staged in the composer: ${imgs ? `${imgs} image(s)` : ""}${imgs && vids ? " and " : ""}${vids ? `${vids} video clip(s)` : ""} \u2014 they are attached to the user's message, look at them; ${isRef ? "they are the Ref2VA REFERENCE SUBJECTS: identity carriers for a newly composed scene, not first/last frames." : "for base modes the image count decides between T2VA / I2VA / FL2VA (confirm first-frame vs last-frame when only one image is staged)."}`
+      : (isRef
+        ? "Nothing is staged right now \u2014 but r2v needs reference image(s). Ask the user to attach them (they will ride the next message) before finalizing a draft."
+        : "Nothing is staged in the composer right now, so assume T2VA (pure text) unless the user says otherwise."),
+    skillStagedPending: (imgs, vids, isRef) => imgs || vids
+      ? `The composer currently holds ${imgs ? `${imgs} staged image(s)` : ""}${imgs && vids ? " and " : ""}${vids ? `${vids} staged video clip(s)` : ""} \u2014 they will arrive WITH the user's next message (you cannot see them yet); ${isRef ? "they are the Ref2VA REFERENCE SUBJECTS: identity carriers for a newly composed scene, not first/last frames." : "for base modes the image count decides between T2VA / I2VA / FL2VA (confirm first-frame vs last-frame when only one image is staged)."}`
+      : (isRef
+        ? "Nothing is staged yet \u2014 the user is still picking reference image(s). When their message arrives with pictures attached, those are the Ref2VA reference subjects. If they give their idea WITHOUT any picture, ask for the reference images before finalizing a draft \u2014 r2v cannot run without them."
+        : "Nothing is staged in the composer right now, so assume T2VA (pure text) unless the user says otherwise. Wait for the user's idea before drafting anything."),
     skillDurationNote: (min, max) => `HARD DURATION LIMIT: this model renders clips of ${min}\u2013${max} seconds ONLY. Never draft for a longer duration \u2014 the renderer silently clamps to ${max}s, leaving the prompt's timing notation wrong for the whole clip. If the user asks for more, say the model caps at ${max}s and draft for ${max}s (or suggest splitting into shots).`,
     skillGuideSummary: "\u{1F4DA} Full guide (click to view)",
   },
@@ -4345,6 +4359,7 @@ const PROMPTS = {
     nameInstructionSingle: (name) => `用户希望你称呼他/她为"${name}"。`,
     nameInstructionMulti: (names) => `用户提供了以下称呼供你选用：${names.map(n => `"${n}"`).join("、")}。请根据当前聊天内容和语境，自然地选择其中一个或多个来称呼用户，不需要每次都用，也不要每次都一样。`,
     imageNamesContext: (n, list) => `【本条附带 ${n} 张图片，按顺序依次为：${list}。当用户用文件名指代某张图片时，请据此对应到相应的图。】`,
+    imageDedupContext: (n, list) => `【本条附带的 ${n} 张图片与后面某条消息是同一份文件${list ? `，顺序依次为：${list}` : ""}。为节省上下文，它们只随后面那条发送一次——请视为此处也有这些图，且顺序相同。】`,
     currentTimeContext: (d) => { const w = ["日","一","二","三","四","五","六"][d.getDay()]; const p = (n) => String(n).padStart(2, "0"); return `【当前时间：${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 周${w} ${p(d.getHours())}:${p(d.getMinutes())}。在自然相关时可以体现你知道现在几点，但不要生硬复述时间。】`; },
     timeGapContext: (hours) => { let s; if (hours < 24) s = `${Math.round(hours)} 小时`; else if (hours < 24 * 7) s = `${Math.round(hours / 24)} 天`; else s = `${Math.round(hours / (24 * 7))} 周`; return `【用户距上一条消息约 ${s} 后才回复。若合适可以自然地体现你注意到了这段间隔，但别显得刻意。】`; },
     compactSummary: "你是一个对话摘要助手。请将以下对话内容压缩为简明扼要的摘要，保留所有重要信息、关键决定、代码片段和结论。摘要应该让人能快速了解之前聊了什么。用中文输出。",
@@ -4377,13 +4392,20 @@ const PROMPTS = {
     askSuggestNoContext: "请生成5个有趣的通用问题供用户选择。",
     imageFallback: "请看看这张图片。",
     skillHeader: (name, mode) => `\u{1F4D6} 已载入提示词指南：**${name}**${mode ? ` \u00b7 ${mode === "ref" ? "Ref2VA（参考主体）" : "基础模式（T2VA / I2VA / FL2VA / L2VA）"}` : ""} —— 折叠此气泡可暂停提示词模式，展开即恢复。`,
-    skillWrapper: (model, staged) => `【你现在是用户的视频模型「${model}」提示词写作助手。官方指南附在下方——必须【严格】遵循：段名、段落顺序、对齐行位置、时间标注都是硬格式，不是参考建议。${staged}工作方式：先根据用户的想法出一版完整提示词，然后按用户要求迭代修改。格式需要而用户没给的信息要主动问——尤其是【时长】，时间标注依赖它。每一版完整草稿都输出为【一个】以 \`imagine\` 为语言标签的代码块（用 \`\`\`imagine 开头），分两层：第一行是【派发行】\`/imagine -m ${model} -s <时长>s\`（填定好的秒数）——它属于 hey-koko 应用，【不属于提示词本身】；指南的格式规则只约束它之后的内容，所以指南要求的首行（如对齐指令行）从代码块第二行开始。指南里没提派发行，但它【绝不能省】：没有它用户无法整块粘贴开跑。时长没定之前先问，别猜：它同时决定 -s 参数和提示词里的时间标注。解释性文字用用户的语言；对白、歌词、画面文字按指南要求保留原语言。】`,
-    skillStaged: (imgs, vids) => imgs || vids
-      ? `当前 composer 暂存了：${imgs ? `${imgs} 张图片` : ""}${imgs && vids ? "和" : ""}${vids ? `${vids} 段视频` : ""}——它们已附在用户消息上，请查看；基础模式下图片数量决定 T2VA / I2VA / FL2VA（只有一张图时先确认它是首帧还是尾帧）。`
-      : "当前 composer 没有暂存任何媒体，除非用户另有说明，按 T2VA（纯文字）处理。",
-    skillStagedPending: (imgs, vids) => imgs || vids
-      ? `composer 目前暂存了 ${imgs ? `${imgs} 张图片` : ""}${imgs && vids ? "和" : ""}${vids ? `${vids} 段视频` : ""}——它们会随用户的【下一条】消息附上（你现在还看不到）；基础模式下图片数量决定 T2VA / I2VA / FL2VA（只有一张图时先确认它是首帧还是尾帧）。`
-      : "当前 composer 没有暂存任何媒体，除非用户另有说明，按 T2VA（纯文字）处理。等用户说出想法后再动笔。",
+    skillSupersededNote: (list) => `（已折叠上一份 ${list} 的指南——现在只有这一份生效；展开那条气泡即可恢复。）`,
+    skillNewTabHint: () => `（这是在图片指南和视频指南之间切换——如果两条线都还在做，建议各开一个对话 Tab，比来回折叠省事。）`,
+    skillRefNote: () => `Ref2VA 基本规则：(1) 如果你实际上看不到所附的参考图，请直说，并请用户逐一描述主体外观——绝不能对着没看到的图片编写 subject_definitions。(2) 多张参考图时，先写明对应关系（「第 1 张=红衣女子，第 2 张=那只狗」）并请用户确认后再出第一版草稿——对应搞错就会渲染出错误的主体。(3) 尽早确认意图：r2v 是在全新构图的画面中保持主体身份，并不是把图片当作第一帧（那是 t2v 权重上的 I2VA）；如果用户其实想要首帧动画，应建议换模型而不是硬写。(4) 顺带提一次：每张参考图都可以用画笔（\u{1F58C}）只圈选主体，这样只传轮廓内的内容，参考图的背景不会串进视频。`,
+    skillWrapper: (model, staged) => `【你现在是用户的视频模型「${model}」提示词写作助手。官方指南附在下方——必须【严格】遵循：段名、段落顺序、对齐行位置、时间标注都是硬格式，不是参考建议。${staged}工作方式：先根据用户的想法出一版完整提示词，然后按用户要求迭代修改。格式需要而用户没给的信息要主动问——尤其是【时长】，时间标注依赖它。每一版完整草稿都输出为【一个】以 \`imagine\` 为语言标签的代码块（用 \`\`\`imagine 开头），分两层：第一行是【派发行】\`/imagine -m ${model} --second <时长>s\`（填定好的秒数）——它属于 hey-koko 应用，【不属于提示词本身】；指南的格式规则只约束它之后的内容，所以指南要求的首行（如对齐指令行）从代码块第二行开始。指南里没提派发行，但它【绝不能省】：没有它用户无法整块粘贴开跑。时长没定之前先问，别猜：它同时决定 --second 参数和提示词里的时间标注。解释性文字用用户的语言；对白、歌词、画面文字按指南要求保留原语言。】`,
+    skillStaged: (imgs, vids, isRef) => imgs || vids
+      ? `当前 composer 暂存了：${imgs ? `${imgs} 张图片` : ""}${imgs && vids ? "和" : ""}${vids ? `${vids} 段视频` : ""}——它们已附在用户消息上，请查看；${isRef ? "它们是 Ref2VA 的参考主体：在全新构图的画面里保持身份，不是首帧/尾帧。" : "基础模式下图片数量决定 T2VA / I2VA / FL2VA（只有一张图时先确认它是首帧还是尾帧）。"}`
+      : (isRef
+        ? "当前没有暂存任何媒体——但 r2v 需要参考图。请先让用户附上参考图（会随下一条消息进来）再定稿。"
+        : "当前 composer 没有暂存任何媒体，除非用户另有说明，按 T2VA（纯文字）处理。"),
+    skillStagedPending: (imgs, vids, isRef) => imgs || vids
+      ? `composer 目前暂存了 ${imgs ? `${imgs} 张图片` : ""}${imgs && vids ? "和" : ""}${vids ? `${vids} 段视频` : ""}——它们会随用户的【下一条】消息附上（你现在还看不到）；${isRef ? "它们是 Ref2VA 的参考主体：在全新构图的画面里保持身份，不是首帧/尾帧。" : "基础模式下图片数量决定 T2VA / I2VA / FL2VA（只有一张图时先确认它是首帧还是尾帧）。"}`
+      : (isRef
+        ? "当前还没有暂存任何媒体——用户还在挑参考图。等用户的消息带着图片进来，那些图就是 Ref2VA 的参考主体。如果用户只说了想法而没附图，先向用户要参考图再定稿——r2v 没有参考图跑不了。"
+        : "当前 composer 没有暂存任何媒体，除非用户另有说明，按 T2VA（纯文字）处理。等用户说出想法后再动笔。"),
     skillDurationNote: (min, max) => `【时长硬上限】这个模型只能渲染 ${min}\u2013${max} 秒的片段。绝不要按更长的时长起草——渲染端会静默夹到 ${max} 秒，届时提示词里的时间标注全片错位。用户要更长时，直说模型上限是 ${max} 秒，按 ${max} 秒起草（或建议拆成多镜头分段生成）。`,
     skillGuideSummary: "\u{1F4DA} 指南全文（点开查看）",
   },
@@ -4394,6 +4416,7 @@ const PROMPTS = {
     nameInstructionSingle: (name) => `使用者希望你稱呼他/她為「${name}」。`,
     nameInstructionMulti: (names) => `使用者提供了以下稱呼供你選用：${names.map(n => `「${n}」`).join("、")}。請根據當前聊天內容和語境，自然地選擇其中一個或多個來稱呼使用者，不需要每次都用，也不要每次都一樣。`,
     imageNamesContext: (n, list) => `【本條附帶 ${n} 張圖片，按順序依次為：${list}。當使用者用檔名指代某張圖片時，請據此對應到相應的圖。】`,
+    imageDedupContext: (n, list) => `【本條附帶的 ${n} 張圖片與後面某條訊息是同一份檔案${list ? `，順序依次為：${list}` : ""}。為節省上下文，它們只隨後面那條發送一次——請視為此處也有這些圖，且順序相同。】`,
     currentTimeContext: (d) => { const w = ["日","一","二","三","四","五","六"][d.getDay()]; const p = (n) => String(n).padStart(2, "0"); return `【目前時間：${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 週${w} ${p(d.getHours())}:${p(d.getMinutes())}。在自然相關時可以體現你知道現在幾點，但不要生硬複述時間。】`; },
     timeGapContext: (hours) => { let s; if (hours < 24) s = `${Math.round(hours)} 小時`; else if (hours < 24 * 7) s = `${Math.round(hours / 24)} 天`; else s = `${Math.round(hours / (24 * 7))} 週`; return `【使用者距上一條訊息約 ${s} 後才回覆。若合適可以自然地體現你注意到了這段間隔，但別顯得刻意。】`; },
     compactSummary: "你是一個對話摘要助手。請將以下對話內容壓縮為簡明扼要的摘要，保留所有重要資訊、關鍵決定、程式碼片段和結論。摘要應該讓人能快速了解之前聊了什麼。用繁體中文輸出。",
@@ -4426,13 +4449,20 @@ const PROMPTS = {
     askSuggestNoContext: "請生成5個有趣的通用問題供使用者選擇。",
     imageFallback: "請看看這張圖片。",
     skillHeader: (name, mode) => `\u{1F4D6} 已載入提示詞指南：**${name}**${mode ? ` \u00b7 ${mode === "ref" ? "Ref2VA（參考主體）" : "基礎模式（T2VA / I2VA / FL2VA / L2VA）"}` : ""} —— 折疊此氣泡可暫停提示詞模式，展開即恢復。`,
-    skillWrapper: (model, staged) => `【你現在是使用者的視訊模型「${model}」提示詞寫作助手。官方指南附在下方——必須【嚴格】遵循：段名、段落順序、對齊行位置、時間標註都是硬格式，不是參考建議。${staged}工作方式：先根據使用者的想法出一版完整提示詞，然後按使用者要求迭代修改。格式需要而使用者沒給的資訊要主動問——尤其是【時長】，時間標註依賴它。每一版完整草稿都輸出為【一個】以 \`imagine\` 為語言標籤的程式碼區塊（用 \`\`\`imagine 開頭），分兩層：第一行是【派發行】\`/imagine -m ${model} -s <時長>s\`（填定好的秒數）——它屬於 hey-koko 應用，【不屬於提示詞本身】；指南的格式規則只約束它之後的內容，所以指南要求的首行（如對齊指令行）從程式碼區塊第二行開始。指南裡沒提派發行，但它【絕不能省】：沒有它使用者無法整塊貼上開跑。時長沒定之前先問，別猜：它同時決定 -s 參數和提示詞裡的時間標註。解釋性文字用使用者的語言；對白、歌詞、畫面文字按指南要求保留原語言。】`,
-    skillStaged: (imgs, vids) => imgs || vids
-      ? `目前 composer 暫存了：${imgs ? `${imgs} 張圖片` : ""}${imgs && vids ? "和" : ""}${vids ? `${vids} 段影片` : ""}——它們已附在使用者訊息上，請查看；基礎模式下圖片數量決定 T2VA / I2VA / FL2VA（只有一張圖時先確認它是首幀還是尾幀）。`
-      : "目前 composer 沒有暫存任何媒體，除非使用者另有說明，按 T2VA（純文字）處理。",
-    skillStagedPending: (imgs, vids) => imgs || vids
-      ? `composer 目前暫存了 ${imgs ? `${imgs} 張圖片` : ""}${imgs && vids ? "和" : ""}${vids ? `${vids} 段影片` : ""}——它們會隨使用者的【下一條】訊息附上（你現在還看不到）；基礎模式下圖片數量決定 T2VA / I2VA / FL2VA（只有一張圖時先確認它是首幀還是尾幀）。`
-      : "目前 composer 沒有暫存任何媒體，除非使用者另有說明，按 T2VA（純文字）處理。等使用者說出想法後再動筆。",
+    skillSupersededNote: (list) => `（已折疊上一份 ${list} 的指南——現在只有這一份生效；展開那條氣泡即可恢復。）`,
+    skillNewTabHint: () => `（這是在圖片指南和影片指南之間切換——如果兩條線都還在做，建議各開一個對話 Tab，比來回折疊省事。）`,
+    skillRefNote: () => `Ref2VA 基本規則：(1) 如果你實際上看不到所附的參考圖，請直說，並請用戶逐一描述主體外觀——絕不能對著沒看到的圖片編寫 subject_definitions。(2) 多張參考圖時，先寫明對應關係（「第 1 張=紅衣女子，第 2 張=那隻狗」）並請用戶確認後再出第一版草稿——對應搞錯就會渲染出錯誤的主體。(3) 儘早確認意圖：r2v 是在全新構圖的畫面中保持主體身份，並不是把圖片當作第一幀（那是 t2v 權重上的 I2VA）；如果用戶其實想要首幀動畫，應建議換模型而不是硬寫。(4) 順帶提一次：每張參考圖都可以用畫筆（\u{1F58C}）只圈選主體，這樣只傳輪廓內的內容，參考圖的背景不會串進視頻。`,
+    skillWrapper: (model, staged) => `【你現在是使用者的視訊模型「${model}」提示詞寫作助手。官方指南附在下方——必須【嚴格】遵循：段名、段落順序、對齊行位置、時間標註都是硬格式，不是參考建議。${staged}工作方式：先根據使用者的想法出一版完整提示詞，然後按使用者要求迭代修改。格式需要而使用者沒給的資訊要主動問——尤其是【時長】，時間標註依賴它。每一版完整草稿都輸出為【一個】以 \`imagine\` 為語言標籤的程式碼區塊（用 \`\`\`imagine 開頭），分兩層：第一行是【派發行】\`/imagine -m ${model} --second <時長>s\`（填定好的秒數）——它屬於 hey-koko 應用，【不屬於提示詞本身】；指南的格式規則只約束它之後的內容，所以指南要求的首行（如對齊指令行）從程式碼區塊第二行開始。指南裡沒提派發行，但它【絕不能省】：沒有它使用者無法整塊貼上開跑。時長沒定之前先問，別猜：它同時決定 --second 參數和提示詞裡的時間標註。解釋性文字用使用者的語言；對白、歌詞、畫面文字按指南要求保留原語言。】`,
+    skillStaged: (imgs, vids, isRef) => imgs || vids
+      ? `目前 composer 暫存了：${imgs ? `${imgs} 張圖片` : ""}${imgs && vids ? "和" : ""}${vids ? `${vids} 段影片` : ""}——它們已附在使用者訊息上，請查看；${isRef ? "它們是 Ref2VA 的參考主體：在全新構圖的畫面裡保持身份，不是首幀/尾幀。" : "基礎模式下圖片數量決定 T2VA / I2VA / FL2VA（只有一張圖時先確認它是首幀還是尾幀）。"}`
+      : (isRef
+        ? "目前沒有暫存任何媒體——但 r2v 需要參考圖。請先讓使用者附上參考圖（會隨下一條訊息進來）再定稿。"
+        : "目前 composer 沒有暫存任何媒體，除非使用者另有說明，按 T2VA（純文字）處理。"),
+    skillStagedPending: (imgs, vids, isRef) => imgs || vids
+      ? `composer 目前暫存了 ${imgs ? `${imgs} 張圖片` : ""}${imgs && vids ? "和" : ""}${vids ? `${vids} 段影片` : ""}——它們會隨使用者的【下一條】訊息附上（你現在還看不到）；${isRef ? "它們是 Ref2VA 的參考主體：在全新構圖的畫面裡保持身份，不是首幀/尾幀。" : "基礎模式下圖片數量決定 T2VA / I2VA / FL2VA（只有一張圖時先確認它是首幀還是尾幀）。"}`
+      : (isRef
+        ? "目前還沒有暫存任何媒體——使用者還在挑參考圖。等使用者的訊息帶著圖片進來，那些圖就是 Ref2VA 的參考主體。如果使用者只說了想法而沒附圖，先向使用者要參考圖再定稿——r2v 沒有參考圖跑不了。"
+        : "目前 composer 沒有暫存任何媒體，除非使用者另有說明，按 T2VA（純文字）處理。等使用者說出想法後再動筆。"),
     skillDurationNote: (min, max) => `【時長硬上限】這個模型只能渲染 ${min}\u2013${max} 秒的片段。絕不要按更長的時長起草——渲染端會靜默夾到 ${max} 秒，屆時提示詞裡的時間標註全片錯位。使用者要更長時，直說模型上限是 ${max} 秒，按 ${max} 秒起草（或建議拆成多鏡頭分段生成）。`,
     skillGuideSummary: "\u{1F4DA} 指南全文（點開查看）",
   },

@@ -53,6 +53,20 @@ export function galleryIdOf(v) {
   return decodeURIComponent(v.slice(prefix.length));
 }
 
+// THE display name of a piece of media: its gallery filename, without the "2026-08/"
+// month folder. One name everywhere — the manifest the model reads, the download
+// button, the lightbox caption — because the alternative (the user's original filename)
+// is neither unique nor stable: the same picture re-attached from the gallery arrived
+// under a different name than when it was first dropped, so a prompt saying "the bird in
+// heroine.png" could stop resolving halfway through a conversation. The gallery name is
+// globally unique by construction (timestamp + source + collision suffix) and it is the
+// name the file actually has on disk, so every surface agrees. Longer, but it is mostly
+// machines reading it. Returns "" for media that never made it into the gallery.
+export function galleryName(idOrRef) {
+  const id = isMediaRef(idOrRef) ? galleryIdOf(idOrRef) : (idOrRef || "");
+  return String(id).split("/").pop() || "";
+}
+
 // File media into the gallery and return the id it was given. Everything the app
 // generates is already filed server-side; a photo or clip the user brings in is media
 // too, and it used to exist nowhere but inside the conversation.

@@ -233,6 +233,7 @@ export const state = {
   comfyAudioInModels: new Set(),     // …video-in models that ALSO need a SPEECH AUDIO file (InfiniteTalk dubbing)
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
   comfyRefMaskModels: new Set(),     // models whose attachments are REFERENCES → each staged image gets a 🖌 subject cutout
+  foldNextCommandBubble: false,      // set by the ▶ chip on a ```imagine block: the command bubble the next send creates is a RECEIPT of a prompt already on screen (the draft right above it), so it arrives folded — collapsed, and out of the LLM context. One-shot: consumed by the next sendMessage
   scrollPin: null,                   // when set (resend/edit in place), auto-scroll holds this scrollTop instead of jumping to the bottom
   _pinClearTimer: null,              // delayed release of scrollPin once generation fully ends
   stickToBottom: true,               // streaming auto-scroll only while the user sits near the bottom (so they can scroll up mid-generation)

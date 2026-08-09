@@ -2640,9 +2640,9 @@ button.secondary:disabled {
   opacity: 1;
 }
 
-/* ▶ on a dispatchable code block (```imagine, or first line "/imagine …"): fills the
-   composer with the block, ready for the user's Enter. Sits left of the copy chip and
-   behaves exactly like it: hidden until the block is hovered, semi-transparent chip. */
+/* ▶ on a dispatchable code block (```imagine, or first line "/imagine …"): runs the
+   command straight away. Sits left of the copy chip and looks exactly like it —
+   hidden until the block is hovered, semi-transparent chip. */
 .mdImagineBtn {
   position: absolute;
   top: 6px;

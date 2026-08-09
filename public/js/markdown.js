@@ -4,7 +4,7 @@
 // Markdown parsing and rendering
 import { escapeHtml } from './utils.js';
 import { t } from './i18n.js';
-import { dom } from './state.js';   // leaf module — safe here; used by the ```imagine button
+import { dom, state } from './state.js';   // leaf module — safe here; used by the ```imagine button
 
 function renderMath(math, displayMode) {
   if (typeof katex === "undefined") return `<code>${escapeHtml(math)}</code>`;
@@ -541,8 +541,9 @@ function attachCopyButton(el, getText) {
 // "/imagine" (the fallback for a model that wrote the command but forgot the tag).
 // This is the DETERMINISTIC half of the prompt-workshop handoff: whatever the LLM did
 // or did not do with its instructions, a block that looks like a dispatchable command
-// gets a real button. The button FILLS the composer and stops — never auto-sends —
-// because pressing "start a twenty-minute render" is the user's keystroke, not ours.
+// gets a real button. ▶ RUNS it — the prompt was already reviewed across the whole
+// workshop conversation, so a second confirmation step in the composer is just friction.
+// The copy chip next to it is the route for anyone who wants to edit before running.
 function isImagineBlock(pre) {
   const code = pre.querySelector("code");
   if (!code) return false;
@@ -562,16 +563,40 @@ function attachImagineButton(pre) {
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
     const code = pre.querySelector("code");
-    let text = ((code ? code.textContent : pre.textContent) || "").trim();
-    if (!text) return;
-    // The tag names the intent, so inside a ```imagine block the model may write the
-    // bare prompt and skip the dispatch line — tolerate that by NOT requiring it here.
-    // (No model/duration can be invented for it deterministically; a bare "/imagine "
-    // prefix still beats a dead button, and the composer is editable.)
-    if (!/^\/imagine(\s|$)/.test(text)) text = `/imagine\n${text}`;
-    if (!dom.messageInput) return;
+    const raw = ((code ? code.textContent : pre.textContent) || "").trim();
+    if (!raw || !dom.messageInput || !dom.chatForm) return;
+    // Running is gated on the block ACTUALLY being a command: it must open with
+    // "/imagine". A ```imagine block whose dispatch line the model forgot is only a
+    // prompt body — no model or duration can be invented for it — so it gets the bare
+    // prefix and goes to the composer for the user to complete, never straight to a GPU.
+    const isCommand = /^\/imagine(\s|$)/.test(raw);
+    const text = isCommand ? raw : `/imagine\n${raw}`;
+    // Likewise while a stream or generation is running: the send button IS the stop
+    // button then, so submitting would abort that instead of dispatching.
+    const busy = !!(state.currentAbortController || state.imageGenAbortController);
+    if (!isCommand || busy) {
+      dom.messageInput.value = text;
+      dom.messageInput.focus();
+      dom.messageInput.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+    // Dispatch through the composer's own submit path rather than calling the
+    // generator directly: staged reference images/clips, parse errors and the
+    // background queue then behave exactly as if the user had typed the command.
+    // The submit handler reads and clears the field synchronously (before its first
+    // await), so the user's unsent draft can be put straight back afterwards.
+    const draft = dom.messageInput.value;
     dom.messageInput.value = text;
-    dom.messageInput.focus();
+    // The prompt is already on screen in the block right above, so the command bubble
+    // this send creates is a receipt, not new content — sendMessage folds it (collapsed
+    // + out of context) on seeing this one-shot flag.
+    state.foldNextCommandBubble = true;
+    dom.chatForm.requestSubmit();
+    // sendMessage consumes the flag synchronously (the submit handler has no await
+    // before it), so this only disarms the case where the handler bailed out early —
+    // a stale flag must never fold the user's next hand-typed command.
+    state.foldNextCommandBubble = false;
+    dom.messageInput.value = draft;
     dom.messageInput.dispatchEvent(new Event("input", { bubbles: true }));  // autosize + button state
     btn.textContent = "✓";
     setTimeout(() => { btn.textContent = "▶"; }, 1200);

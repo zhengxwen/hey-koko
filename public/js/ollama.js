@@ -691,7 +691,10 @@ function applyComfyModels(data) {
         // `id` is the model's canonical identity (server/model-names.js) — stable across
         // installed quantisations, unlike `name` (the group's representative filename).
         // It is what `-m/--model` matches and what its popup completes to.
-        if (bucket) bucket.push({ name, id: (meta[name] && meta[name].id) || null, label: base, ready, dots: capDots(name).trim(), hint: option.title });
+        // `caps` rides along raw (not just as the display dots) so callers can tell a
+        // model-free TOOL from a real checkpoint — that is how an empty ComfyUI scan is
+        // recognised: the tools are offered unconditionally, the checkpoints are not.
+        if (bucket) bucket.push({ name, id: (meta[name] && meta[name].id) || null, label: base, ready, caps: (meta[name] && meta[name].caps) || [], dots: capDots(name).trim(), hint: option.title });
       };
       if (models.length) {
         const group = document.createElement("optgroup");
@@ -783,7 +786,8 @@ function applyComfyModels(data) {
       // — an unnamed model can still be picked from the dropdown, just not by flag.
       state.comfyModelIndex = state.comfyModelGroups.flatMap((g) =>
         g.items.filter((it) => it.id).map((it) => ({
-          id: it.id, value: it.name, label: it.label, group: g.key, ready: it.ready, dots: it.dots,
+          id: it.id, value: it.name, label: it.label, group: g.key, ready: it.ready,
+          caps: it.caps, dots: it.dots,
           tiers: state.comfyModelPrec[it.name] || [],
         })));
     }
@@ -827,6 +831,19 @@ export function matchModels(partial) {
   return [...pre, ...sub];
 }
 
+// image-upscale / video-enhance and friends need no diffusion weights, so the server
+// offers them even when the checkpoint scan came back empty. A catalogue made up of
+// NOTHING but those means no model files were seen — nearly always a ComfyUI that isn't
+// reachable (or points at the wrong box), not a user typo. Callers use this to say so
+// instead of suggesting "did you mean image-upscale?" for a video model.
+// A row with no caps at all (older server, no modelMeta) counts as real: an unknown
+// model must never be mistaken for evidence of an empty scan.
+export function comfyCatalogueToolsOnly() {
+  const idx = state.comfyModelIndex || [];
+  if (!idx.length) return false;   // that is "noModels", a different error
+  return idx.every((m) => Array.isArray(m.caps) && m.caps.length > 0 && m.caps.every((c) => c === "tool"));
+}
+
 // Resolve a "-m" token to { value, tier } or an { error, candidates } explaining why not.
 // An ambiguous prefix is NEVER silently narrowed to one model — picking for the user is
 // how you render the wrong thing for twenty GPU-minutes.
@@ -842,7 +859,7 @@ export function resolveModelToken(token) {
       .map((m) => ({ m, n: [...m.id].findIndex((c, i) => c !== id[i]) }))
       .sort((a, b) => (b.n < 0 ? 99 : b.n) - (a.n < 0 ? 99 : a.n))
       .slice(0, 4).map((x) => x.m.id);
-    return { error: "unknown", id, candidates: near };
+    return { error: "unknown", id, candidates: near, toolsOnly: comfyCatalogueToolsOnly() };
   }
   if (hits.length > 1 && !hits.some((m) => m.id === id)) {
     return { error: "ambiguous", id, candidates: hits.slice(0, 6).map((m) => m.id) };
