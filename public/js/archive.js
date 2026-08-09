@@ -3,11 +3,11 @@
 
 // Archive and retrieve functionality
 import { dom, state } from './state.js';
-import { escapeHtml, mediaFilename, mediaSrc, isMediaRef, mediaBase64 } from './utils.js';
+import { escapeHtml, mediaFilename, mediaSrc, isMediaRef } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { applyHighlights } from './highlight.js';
 import { saveTabs } from './settings.js';
-import { getActiveTab, createTab, closeTab, switchTab, renderTabs, migrateVideoFields } from './tabs.js';
+import { getActiveTab, createTab, closeTab, switchTab, renderTabs, migrateVideoFields, migrateGalleryIds } from './tabs.js';
 import { t } from './i18n.js';
 import { tabActiveJobCount, cancelTabJobs } from './bg-jobs.js';   // Option B: warn + cancel jobs on archive
 import { initListKeyNav } from './list-keynav.js';
@@ -693,23 +693,6 @@ export function initArchive() {
     }
   }
 
-  // Pull uploaded images back inline after a restore. Fire-and-forget: the bubble
-  // already renders from the reference, and this only has to win before the user
-  // sends the conversation onwards.
-  async function rehydrateUploads(messages) {
-    const jobs = [];
-    for (const m of messages) {
-      if (!Array.isArray(m.contextImages)) continue;
-      m.contextImages.forEach((v, i) => {
-        if (!isMediaRef(v)) return;
-        jobs.push(mediaBase64(v).then((b64) => { m.contextImages[i] = b64; }).catch(() => {}));
-      });
-    }
-    if (!jobs.length) return;
-    await Promise.all(jobs);
-    saveTabs();
-  }
-
   archiveRestoreBtn.addEventListener("click", async () => {
     if (selectedArchives.size === 0) return;
     try {
@@ -729,13 +712,15 @@ export function initArchive() {
           if (typeof m.timestamp === "string") {
             m.timestamp = new Date(m.timestamp.replace(" ", "T")).getTime();
           }
-          migrateVideoFields(m); // fold any legacy scalar video fields into the arrays
+          migrateVideoFields(m);  // fold any legacy scalar video fields into the arrays
+          migrateGalleryIds(m);   // …and any contextImageIds array into the slots themselves
           return m;
         });
-        // An archive may store its uploads as gallery references (scripts/migrate-archives.js).
-        // Generated media can stay a reference — it is only ever displayed — but contextImages
-        // is what buildMessages hands to the model, synchronously, so those come back inline.
-        rehydrateUploads(messages);
+        // Gallery references in a restored archive stay references. They used to be
+        // pulled back inline here, because buildMessages hands contextImages to the model
+        // synchronously — that is now handled at the send boundary instead
+        // (hydrateOutgoingImages), so a restore no longer re-inflates the conversation
+        // into IndexedDB just to be able to send it.
         const tab = createTab(conv.title || t("arch_restoredConv"), messages, conv.personality || null);
         if (conv.persona) tab.persona = conv.persona;
         if (conv.tags) tab.tags = conv.tags;

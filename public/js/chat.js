@@ -5,7 +5,8 @@
 import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollState, setScrollTop, applyVideoAudio, trackVideoAudio } from './state.js';
 import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis,
          readFileAsDataUrl, makePreview, convertToJpeg, normalizeOrientation,
-         mediaSrc, mediaBase64, isMediaRef } from './utils.js';
+         mediaSrc, mediaBase64, isMediaRef, galleryUrl, galleryThumbUrl,
+         fileIntoGallery, sniffImageMime, cacheGalleryThumb } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams, addBlockCopyButtons } from './markdown.js';
 import { renderRelationGraph } from './relation-graph.js';
 import { setAvatarState, showExpression, detectExpression, isCloudModel, resetAvatarIdle } from './avatar.js';
@@ -265,6 +266,32 @@ async function resolveMediaList(list) {
 async function resolveSourceClip(clip) {
   if (!clip || !isMediaRef(clip.base64)) return clip;
   return { ...clip, base64: await mediaBase64(clip.base64) };
+}
+
+// buildMessages() is synchronous and stays that way — it is called from three places
+// mid-send and reads nothing but the tab. So the references it copies into
+// `message.images` are turned back into bytes HERE, one step before the request goes
+// out. This is the whole reason storing references is affordable: the bytes exist on
+// disk, and the only moment anything needs them in memory is the moment they are sent.
+//
+// One fetch per distinct id per request (same picture in two bubbles = one fetch), and
+// the file route is cacheable, so a long conversation re-sent repeatedly mostly hits the
+// browser cache. An image whose file has gone (deleted from the gallery) is dropped from
+// the outgoing turn rather than sent as a URL string the model would read as garbage;
+// the bubble still shows the broken slot, so the loss is visible rather than silent.
+async function hydrateOutgoingImages(messages) {
+  const cache = new Map();
+  const load = (v) => {
+    if (!cache.has(v)) cache.set(v, mediaBase64(v).catch(() => null));
+    return cache.get(v);
+  };
+  for (const m of messages) {
+    if (!Array.isArray(m.images) || !m.images.some(isMediaRef)) continue;
+    const resolved = await Promise.all(m.images.map((v) => (isMediaRef(v) ? load(v) : v)));
+    m.images = resolved.filter(Boolean);
+    if (!m.images.length) delete m.images;
+  }
+  return messages;
 }
 
 async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertIndex = -1, audio = null, refMasks = null) {
@@ -671,10 +698,15 @@ function stagedVideoList(video) {
 // resend / batch dispatch.
 function attachVideosToMessage(userMessage, videos) {
   if (!videos || !videos.length) return;
-  userMessage.generatedVideos = videos.map(v => v.base64);
+  // Reference once filed, bytes only as the fallback — same rule as the images above,
+  // and the one that actually decides whether a tab record is 200KB or 200MB.
+  userMessage.generatedVideos = videos.map(v => (v.galleryId ? galleryUrl(v.galleryId) : v.base64));
   userMessage.videoMimes = videos.map(v => v.mime || "video/mp4");
   userMessage.videoNames = videos.map(v => v.name || null);
-  if (videos.some(v => v.thumbnail)) userMessage.generatedVideoThumbnails = videos.map(v => v.thumbnail || null);
+  if (videos.some(v => v.thumbnail || v.galleryId)) {
+    userMessage.generatedVideoThumbnails = videos.map(
+      (v) => (v.galleryId ? galleryThumbUrl(v.galleryId) : v.thumbnail || null));
+  }
   if (videos.some(v => v.width != null)) userMessage.videoWidths = videos.map(v => v.width ?? null);
   if (videos.some(v => v.height != null)) userMessage.videoHeights = videos.map(v => v.height ?? null);
 }
@@ -684,7 +716,7 @@ function attachVideosToMessage(userMessage, videos) {
 // and persists like generated speech; name/duration ride along for resend.
 function attachAudioToMessage(userMessage, audio) {
   if (!audio || !audio.base64) return;
-  userMessage.generatedAudio = audio.base64;
+  userMessage.generatedAudio = audio.galleryId ? galleryUrl(audio.galleryId) : audio.base64;
   userMessage.audioMime = audio.mime || "audio/wav";
   if (audio.name) userMessage.audioName = audio.name;
   if (audio.duration) userMessage.audioDuration = audio.duration;
@@ -699,19 +731,48 @@ function messageSourceAudio(m) {
 
 // Stamp a user bubble with a staged image upload (single staged object, or a
 // { multi:[...] } selection). Parallel arrays carry the distinct roles:
-//   contextImages     — full-res base64, the ONLY images forwarded to the model
-//   displayImages     — 360px JPEG thumbnails (makePreview), shown in the bubble only
+//   contextImages     — the full-res picture, the ONLY images forwarded to the model
+//   displayImages     — its 360px thumbnail, shown in the bubble only
 //   imageNames — the user's ORIGINAL filenames. Used BOTH as the download/caption
 //                       name and injected into the model prompt so the user can refer to
 //                       an image by name (see buildMessages). Only set when at least one
 //                       original name is known (drag/select have it; pasted images don't —
 //                       those fall back to a timestamp download name). A single-image
 //                       inpaint mask rides along too.
+// Wait — briefly — for the gallery ids of everything staged on this send. Paste-then-Enter
+// can outrun the upload, and an attachment whose id has not landed yet gets stored as
+// bytes instead of a reference. A few seconds of patience usually avoids that. Capped,
+// because the alternative to losing the race is a stuck Send button, and inline bytes
+// are a fallback every reader already handles.
+//
+// A video is worth waiting longer for than an image: it is the payload whose second copy
+// actually hurts, and it is also the slowest to upload.
+function settleGalleryIds(...staged) {
+  const pending = [];
+  for (const s of staged) {
+    if (!s) continue;
+    for (const item of (s.multi || (Array.isArray(s) ? s : [s]))) {
+      if (item && item.galleryIdPromise) pending.push(item.galleryIdPromise);
+    }
+  }
+  if (!pending.length) return Promise.resolve();
+  return Promise.race([
+    Promise.all(pending),
+    new Promise((r) => setTimeout(r, 6000)),
+  ]);
+}
+
 function attachUploadedImages(userMessage, image) {
   if (!image) return;
   const list = image.multi || [image];
-  userMessage.contextImages = list.map((img) => img.base64);
-  userMessage.displayImages = list.map((img) => img.preview);
+  // Both slots hold a gallery reference once the file is on disk (main.js
+  // stageIntoGallery), and the bytes only while it is not — a picture is stored once,
+  // in the gallery, not a second time base64-inflated inside IndexedDB. There is no
+  // parallel id array: the reference IS the id (galleryIdOf), which is what keeps the
+  // two from ever disagreeing. Slots stay mixed-format per element, so a bubble whose
+  // upload failed, or one written before any of this, is still perfectly valid.
+  userMessage.contextImages = list.map((img) => (img.galleryId ? galleryUrl(img.galleryId) : img.base64));
+  userMessage.displayImages = list.map((img) => (img.galleryId ? galleryThumbUrl(img.galleryId) : img.preview));
   const displayNames = list.map((img) => img.displayName || null);
   if (displayNames.some(Boolean)) userMessage.imageNames = displayNames;
   // Painted masks ride along as ONE per-image array, whatever the model. Which way a
@@ -1587,7 +1648,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
   const showThinking = dom.showThinkingCheckbox?.checked || false;
 
   try {
-    const messages = buildMessages(tabId, contextEndIndex);
+    const messages = await hydrateOutgoingImages(buildMessages(tabId, contextEndIndex));
     // Surface how many images this request carries on the "sending" pill (foreground only —
     // bg jobs run headless without it).
     if (!bg) {
@@ -1838,7 +1899,8 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
 
   let content = "";
   try {
-    const messages = [...buildMessages(tabId, contextEndIndex), { role: "user", content: instruction }];
+    const messages = await hydrateOutgoingImages(
+      [...buildMessages(tabId, contextEndIndex), { role: "user", content: instruction }]);
     setSendingImageCount(countOutgoingImages(messages));
     const response = await fetch("/api/chat", {
       method: "POST",
@@ -2098,7 +2160,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
   setPending(t("msg_thinking"));
 
   const genStart = Date.now();
-  const messages = buildMessages(tabId, contextEndIndex);
+  const messages = await hydrateOutgoingImages(buildMessages(tabId, contextEndIndex));
   // Tell the model what tools exist and when to use them (in the prompt language).
   // Mention search_library only when the knowledge-library tool is actually active.
   if (messages[0] && messages[0].role === "system") {
@@ -2441,7 +2503,8 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
         if (m.role !== "user") continue;
         const hasImg = m.contextImages?.length, hasVid = m.generatedVideos?.length;
         if (!hasImg && !hasVid) continue;
-        const imgs = hasImg ? m.contextImages.map(rawBase64) : [];
+        // Vision analysis ships bytes: pull anything stored as a gallery reference back.
+        const imgs = hasImg ? (await resolveMediaList(m.contextImages)).map(rawBase64) : [];
         videoFrames = hasVid ? await framesFromVideo(m.generatedVideos[0], m.videoMimes?.[0]) : [];
         imageCount = imgs.length;
         frameCount = videoFrames.length;
@@ -2820,6 +2883,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     const userMessage = { role: "user", content, timestamp: Date.now() };
     // Staged images belong on this bubble like on any other send — isolating the
     // CONTEXT shouldn't drop the attachment the question is about.
+    await settleGalleryIds(image);
     attachUploadedImages(userMessage, image);
     tab.messages.push(userMessage);
     saveChat();
@@ -2844,12 +2908,13 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   const imagineCmds = content ? parseImagineCommands(content) : null;
   if (imagineCmds) {
     const userMessage = { role: "user", content, timestamp: Date.now() };
-    // An attached image turns /imagine into image-to-image (instruction editing).
-    attachUploadedImages(userMessage, image);
     // Attached video(s) are the SOURCE for a video-edit model (Bernini / Animate).
     // Several clips can be staged → each runs the workflow once (batch). They ride on
     // the user bubble for display (reusing the generatedVideos field).
     const imagineVideos = stagedVideoList(video);
+    // An attached image turns /imagine into image-to-image (instruction editing).
+    await settleGalleryIds(image, imagineVideos, audio);
+    attachUploadedImages(userMessage, image);
     attachVideosToMessage(userMessage, imagineVideos);
     // Speech audio (InfiniteTalk dubbing) rides the user bubble + the gen payload.
     attachAudioToMessage(userMessage, audio);
@@ -2899,9 +2964,10 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   const analyzeCmd = content ? parseAnalyzeCommand(content) : null;
   if (analyzeCmd) {
     const userMessage = { role: "user", content, timestamp: Date.now() };
-    attachUploadedImages(userMessage, image);
     // /analyze inspects only the FIRST staged clip (vision analysis isn't batched).
     const analyzeVideos = stagedVideoList(video);
+    await settleGalleryIds(image, analyzeVideos);
+    attachUploadedImages(userMessage, image);
     attachVideosToMessage(userMessage, analyzeVideos);
     tab.messages.push(userMessage);
     // anchorIndex = the bubble just before this /analyze command, for the
@@ -2985,12 +3051,12 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     timestamp: Date.now(),
   };
 
-  attachUploadedImages(userMessage, image);
-
   // Uploaded video(s) ride along on the user bubble for display only. They reuse the
   // generatedVideos field so they render/persist like generated clips, but
   // buildMessages() never forwards videos to the model — so there's no AI analysis.
   const plainVideos = stagedVideoList(video);
+  await settleGalleryIds(image, plainVideos, audio);
+  attachUploadedImages(userMessage, image);
   attachVideosToMessage(userMessage, plainVideos);
   // Uploaded speech audio: display-only on a plain send (a player on the bubble);
   // it only drives generation via /imagine with an audio-capable video model.
@@ -3119,8 +3185,14 @@ function makeReplaceImageButton(msgIndex, imgIdx) {
       const sendDataUrl = needsConvert ? await convertToJpeg(dataUrl) : await normalizeOrientation(dataUrl, file.type);
       const preview = await makePreview(sendDataUrl);
       if (!Array.isArray(msg.contextImages)) return;
-      msg.contextImages[imgIdx] = sendDataUrl.split(",")[1];
-      if (Array.isArray(msg.displayImages)) msg.displayImages[imgIdx] = preview;
+      // A swapped-in picture is an attachment like any other: file it, then store the
+      // reference. Waited on rather than fired off, because unlike the send path there
+      // is no deadline here — nothing is blocked on this finishing.
+      const b64 = sendDataUrl.split(",")[1];
+      const id = await fileIntoGallery(b64, sniffImageMime(b64, file.type || "image/jpeg"), file.name);
+      if (id) cacheGalleryThumb(id, preview);
+      msg.contextImages[imgIdx] = id ? galleryUrl(id) : b64;
+      if (Array.isArray(msg.displayImages)) msg.displayImages[imgIdx] = id ? galleryThumbUrl(id) : preview;
       // imageNames is optional (pasted images have none) — materialise it so the
       // new file's name is used for the download/caption and the model prompt.
       if (!Array.isArray(msg.imageNames)) msg.imageNames = new Array(msg.contextImages.length).fill(null);

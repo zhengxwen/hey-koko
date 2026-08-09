@@ -8,7 +8,7 @@ import { saveTabs, saveChat, syncPersonaEditable } from './settings.js';
 import { resolvePersonaText } from './presets.js';
 import { stopSpeech } from './speech.js';
 import { dbLoadTabs, dbLoadActiveTabId, migrateFromLocalStorage, dbDeleteDatabase } from './db.js';
-import { genId } from './utils.js';
+import { genId, isMediaRef, galleryUrl, galleryThumbUrl } from './utils.js';
 import { t } from './i18n.js';
 import { tabActiveJobCount, cancelTabJobs } from './bg-jobs.js';   // Option B: warn + cancel jobs on delete
 
@@ -34,7 +34,30 @@ export function migrateImageFields(m) {
   delete m.previewImage;
   if (m.imageDisplayNames && !m.imageNames) m.imageNames = m.imageDisplayNames;
   delete m.imageDisplayNames;
+  migrateGalleryIds(m);
   migrateVideoFields(m);
+}
+
+// contextImageIds was a parallel array naming the gallery file each attachment had been
+// filed as, kept BESIDE the base64 it duplicated. Two records of one thing, which is one
+// too many — the slot itself now holds the reference, and the id is read back off it
+// (galleryIdOf). Fold the old shape in: a slot with a known id becomes a reference, its
+// bytes drop, and the array goes away. Holes stay inline, exactly as they render today.
+export function migrateGalleryIds(m) {
+  if (!m || !Array.isArray(m.contextImageIds)) return;
+  if (Array.isArray(m.contextImages)) {
+    m.contextImages = m.contextImages.map((v, i) => {
+      const id = m.contextImageIds[i];
+      return id && !isMediaRef(v) ? galleryUrl(id) : v;
+    });
+    if (Array.isArray(m.displayImages)) {
+      m.displayImages = m.displayImages.map((v, i) => {
+        const id = m.contextImageIds[i];
+        return id && !isMediaRef(v) ? galleryThumbUrl(id) : v;
+      });
+    }
+  }
+  delete m.contextImageIds;
 }
 
 // Legacy single-video bubbles stored scalar videoMime/videoName/videoWidth/videoHeight

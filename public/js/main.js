@@ -4,7 +4,8 @@
 // Main entry point - imports and initializes all modules
 import { dom, state, refreshScrollState, onMessagesScroll } from './state.js';
 import { readFileAsDataUrl, convertToJpeg, normalizeOrientation, makePreview, escapeHtml, genId,
-         mediaSrc, mediaBase64, isMediaRef } from './utils.js';
+         mediaSrc, mediaBase64, isMediaRef, galleryThumbUrl, galleryIdOf, cacheGalleryThumb,
+         fileIntoGallery, sniffImageMime } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
 import { initAvatar, updateCloudBadge, relocalizeAvatarPicker } from './avatar.js';
@@ -1514,14 +1515,18 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
         // Regenerate it for uploaded-image bubbles so they render an inline thumbnail —
         // but NOT for file/bg previews, which legitimately have contextImages and no
         // displayImages (they render via generatedThumbnails / the file-preview path).
+        // A slot that is already a gallery reference has a thumbnail on the server —
+        // point at it rather than downloading the full picture to shrink it again.
         if (!m.isFilePreview && m.contextImages?.length && !m.displayImages?.length) {
-          m.displayImages = await Promise.all(m.contextImages.map((b64) => makePreview(mediaSrc(b64))));
+          m.displayImages = await Promise.all(m.contextImages.map(
+            (v) => (isMediaRef(v) ? galleryThumbUrl(galleryIdOf(v)) : makePreview(mediaSrc(v)))));
         }
         // Likewise, exports drop generatedThumbnails when generatedImages exist — the grid
         // now displays the light 480px thumbnail, so regenerate it from the full-res images.
         // Remote (http) full-res can't be canvas-downscaled (CORS), so keep the URL as-is.
         if (m.generatedImages?.length && !m.generatedThumbnails?.length) {
           m.generatedThumbnails = await Promise.all(m.generatedImages.map((img) => {
+            if (isMediaRef(img)) return galleryThumbUrl(galleryIdOf(img));   // already on disk
             if (img.startsWith("http")) return img;   // remote full-res: CORS blocks canvas downscaling
             return makePreview(mediaSrc(img), 480);
           }));
@@ -1752,42 +1757,26 @@ function renderStagedImagePreview() {
   dom.imagePreview.hidden = false;
 }
 
-// Append newly staged images to the existing selection (instead of replacing).
-// File a user-supplied attachment into the gallery. Everything the app renders is
-// already filed server-side; a photo the user brings in is media too, and it is the
-// only kind that used to exist nowhere but inside the conversation.
+// File a staged attachment and remember, ON the staged object itself, which gallery
+// file it turned out to be. That object is the same reference the composer holds, so by
+// send time the attachment knows its id and the message can store a reference instead of
+// the bytes (see attachUploadedImages / attachVideosToMessage in chat.js).
 //
-// The bytes go up raw (not base64-in-JSON) and the server dedups on content hash, so
-// attaching the same picture repeatedly costs one file. Best-effort by design: this
-// must never be able to stop an attachment from being staged.
-// Staged images carry only their base64, and it may have been converted since the
-// file was picked (JPEG re-encode, EXIF bake-in) — so trust the bytes over the
-// caller's label, or the gallery ends up with .jpg files that are really PNGs.
-function sniffImageMime(b64, fallback) {
-  if (b64.startsWith("/9j/")) return "image/jpeg";
-  if (b64.startsWith("iVBOR")) return "image/png";
-  if (b64.startsWith("UklGR")) return "image/webp";
-  if (b64.startsWith("R0lGOD")) return "image/gif";
-  return fallback;
-}
-
-async function fileIntoGallery(b64, mime, name) {
-  try {
-    if (!b64) return;
-    const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-    const r = await fetch("/api/gallery/upload", {
-      method: "POST",
-      headers: { "Content-Type": mime || "application/octet-stream",
-                 "X-Gallery-Name": encodeURIComponent(name || "") },
-      body: bin,
-    });
-    const j = await r.json().catch(() => null);
-    if (j && j.id && !j.deduped) {
-      window.dispatchEvent(new CustomEvent("hk-media-added", { detail: { ids: [j.id] } }));
-    }
-  } catch (e) {
-    console.warn("[gallery] could not file the attachment:", e.message);
-  }
+// Content-addressed, so the same picture staged anywhere gets the same id — that is the
+// identity masks and the reference graph need. The promise is kept alongside the id
+// because sending can outrun the round trip (paste, then Enter); the send path waits
+// briefly on it, and falls back to inline bytes if it loses that race.
+//
+// `preview` is the thumbnail the composer already generated. Handing it to the server
+// saves the bubble from pulling the full-size file just to draw a 360px box.
+function stageIntoGallery(obj, mime, name, preview) {
+  obj.galleryIdPromise = fileIntoGallery(obj.base64, mime, name).then((id) => {
+    if (!id) return null;
+    obj.galleryId = id;
+    if (preview) cacheGalleryThumb(id, preview);
+    return id;
+  });
+  return obj.galleryIdPromise;
 }
 
 function addStagedImages(newImages) {
@@ -1795,8 +1784,8 @@ function addStagedImages(newImages) {
   for (const im of newImages) {
     // The staged bytes, not the original file: EXIF rotation is already baked in and
     // exotic formats converted, so this is the picture the conversation will use.
-    fileIntoGallery(im.base64, sniffImageMime(im.base64 || "", im.mime || "image/jpeg"),
-                    im.displayName || im.name);
+    stageIntoGallery(im, sniffImageMime(im.base64 || "", im.mime || "image/jpeg"),
+                     im.displayName || im.name, im.preview);
   }
   state.animateMaskPoint = null; // staging changes the scene → drop any old Replace point
   const all = [...getStagedImages(), ...newImages];
@@ -1841,7 +1830,7 @@ async function selectAudioFile(file) {
     name: file.name,
     duration: duration || 0,
   };
-  fileIntoGallery(state.selectedAudio.base64, state.selectedAudio.mime, file.name);
+  stageIntoGallery(state.selectedAudio, state.selectedAudio.mime, file.name, null);
   clearSelectedFile(); // audio + documents are mutually exclusive (different send paths)
   renderStagedAudioPreview();
   dom.messageInput.focus();
@@ -1922,9 +1911,12 @@ function addStagedVideos(newVideos) {
   if (!newVideos || newVideos.length === 0) return;
   // Same reason as images, and it matters more here: a staged clip exists as base64
   // inside the tab record and nowhere else. "It came off the user's disk" is not a
-  // safety net — the conversation is what has to survive, and IndexedDB is exactly
-  // the store that lost everything once.
-  for (const v of newVideos) fileIntoGallery(v.base64, v.mime || "video/mp4", v.displayName || v.name);
+  // safety net — the conversation is what has to survive, and IndexedDB is exactly the
+  // store that lost everything once. Tens of megabytes per clip also make this the
+  // single biggest thing NOT to keep a second copy of.
+  for (const v of newVideos) {
+    stageIntoGallery(v, v.mime || "video/mp4", v.displayName || v.name, v.thumbnail);
+  }
   // A new source clip changes the scene → drop any old Replace point. The point is
   // pinned to the FIRST staged video, so only clear it when starting from empty.
   if (getStagedVideos().length === 0) state.animateMaskPoint = null;

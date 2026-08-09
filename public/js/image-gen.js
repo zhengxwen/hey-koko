@@ -5,7 +5,8 @@
 import { dom, state } from './state.js';
 import { SIZE_PRESETS } from './constants.js';
 import { t, getPromptLanguage } from './i18n.js';
-import { makePreview, escapeHtml, galleryUrl, mediaSrc, mediaBase64 } from './utils.js';
+import { makePreview, escapeHtml, galleryUrl, galleryThumbUrl, galleryIdOf, isMediaRef,
+         mediaSrc, mediaBase64, cacheGalleryThumb } from './utils.js';
 import { setAvatarState, showExpression } from './avatar.js';
 import { saveChat } from './settings.js';
 import { getTab } from './tabs.js';
@@ -457,6 +458,18 @@ function storedSlots(arr, mediaIds) {
     const id = mediaIds && mediaIds[i];
     return id ? galleryUrl(id) : b64;
   });
+}
+
+// The display thumbnails for those same artifacts. An artifact on disk already has a
+// server-side thumbnail (ffmpeg, cached) — point at it instead of downloading the
+// full-size render just to shrink it into a data: URL that then lives in IndexedDB
+// forever. Only the slots that stayed inline still get a browser-made preview.
+async function thumbSlots(arr) {
+  return await Promise.all((arr || []).map((v) => {
+    if (isMediaRef(v)) return galleryThumbUrl(galleryIdOf(v));
+    if (typeof v === "string" && v.startsWith("http")) return v;  // remote: CORS blocks canvas
+    return makePreview(mediaSrc(v), 480);
+  }));
 }
 
 // The 360° panorama recipe's own name. It is a recipe rather than a checkpoint, so
@@ -1570,12 +1583,21 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       }
       lastData = data;
       const vmime = data.videoMime || "video/mp4";
-      // Poster frame(s) for the just-finished video(s) — appended, not rebuilt.
-      const newThumbs = await Promise.all(data.videos.map((v) =>
+      // Poster frame(s) for the just-finished video(s) — appended, not rebuilt. Made in
+      // the browser because the bytes are in hand, then handed to the server so the
+      // stored slot can be a thumbnail reference rather than one more data: URL sitting
+      // in the tab record for the life of the conversation.
+      const posters = await Promise.all(data.videos.map((v) =>
         videoThumbnail(v.startsWith("data:") ? v : `data:${vmime};base64,${v}`)));
-      allVideos.push(...storedSlots(data.videos, data.mediaIds));
+      const slots = storedSlots(data.videos, data.mediaIds);
+      allVideos.push(...slots);
       for (let k = 0; k < data.videos.length; k++) videoSeeds.push(typeof data.seed === "number" ? data.seed : null);
-      allThumbs.push(...newThumbs);
+      allThumbs.push(...slots.map((slot, i) => {
+        if (!isMediaRef(slot)) return posters[i];
+        const id = galleryIdOf(slot);
+        cacheGalleryThumb(id, posters[i]);
+        return galleryThumbUrl(id);
+      }));
       renderReply(); // show this completed video immediately
     }
     sink.clearBubble();
@@ -2097,7 +2119,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
     }
 
     const toSrc = (img) => mediaSrc(img);
-    const generatedThumbnails = await Promise.all(generatedImages.map((img) => makePreview(toSrc(img), 480)));
+    const generatedThumbnails = await thumbSlots(generatedImages);
 
     // "Image generated (W×H)" in the prompt language, with the real output size
     // (decoded from the first image — covers txt2img, img2img and Ollama alike).
@@ -2162,9 +2184,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       if (enhancedPromptsShown.length > 0) {
         content = `**${t("msg_enhancedPrompt")}**\n${enhancedPromptsShown.map((p) => `> ${p}`).join("\n")}\n\n` + content;
       }
-      const generatedThumbnails = await Promise.all(
-        generatedImages.map((img) => makePreview(mediaSrc(img), 480))
-      );
+      const generatedThumbnails = await thumbSlots(generatedImages);
       const replyMsg = {
         role: "assistant",
         content,

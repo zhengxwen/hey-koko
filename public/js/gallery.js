@@ -4,16 +4,18 @@
 // Client side of the gallery (server/gallery.js): the view over everything the
 // machine has ever generated.
 //
-// Media generated from now on is filed by the server and lives in a message as a
-// /api/gallery/file/<id> reference (see utils.js). Conversations that predate that
-// still carry their pixels inline; they are moved by archiving them and running
-// scripts/migrate-archives.js, which works server-side where the files already are —
-// there is deliberately no second, in-browser migration path.
+// Media generated or attached from now on is filed on disk and lives in a message as a
+// /api/gallery/file/<id> reference (see utils.js) — one copy, in the gallery. Older
+// conversations still carry their pixels inline. Archived ones are moved server-side by
+// scripts/migrate-archives.js, where the files already are; the ones still open in a tab
+// are reachable only from here, which is what ♻️ (reclaim) is for.
 
 import { state } from './state.js';
 import { t } from './i18n.js';
-import { galleryIdOf } from './utils.js';
+import { galleryIdOf, galleryThumbUrl, galleryUrl, isMediaRef, fileIntoGallery,
+         sniffImageMime, cacheGalleryThumb } from './utils.js';
 import { switchTab } from './tabs.js';
+import { saveTabs } from './settings.js';
 import { openArchivedChat } from './archive.js';
 
 // ---------------------------------------------------------------------------
@@ -40,17 +42,22 @@ function fmtDate(ts) {
 // Where a given artifact is used. The live tabs live in this browser, the archives
 // live on the server — each side scans what it owns and the two are merged. No
 // synchronisation protocol, because neither side has to know about the other's.
+// Thumbnail slots are scanned too: a bubble's inline preview can be the only reference
+// to a file (galleryIdOf reads either prefix), and deleting out from under it would
+// leave a blank box with no warning.
+const LIVE_REF_FIELDS = ["generatedImages", "generatedVideos", "generatedMeshes", "generatedAudio",
+                         "contextImages", "displayImages",
+                         "generatedThumbnails", "generatedVideoThumbnails"];
+
 function liveRefs(id) {
-  const url = `/api/gallery/file/`;
   const hits = [];
   for (const tab of state.tabs || []) {
     for (const msg of tab.messages || []) {
-      for (const f of ["generatedImages", "generatedVideos", "generatedMeshes", "generatedAudio",
-                       "contextImages", "displayImages"]) {
+      for (const f of LIVE_REF_FIELDS) {
         const v0 = msg[f];
         const arr = Array.isArray(v0) ? v0 : typeof v0 === "string" ? [v0] : null;
         if (!arr) continue;
-        if (arr.some((v) => typeof v === "string" && v.startsWith(url) && galleryIdOf(v) === id)) {
+        if (arr.some((v) => galleryIdOf(v) === id)) {
           hits.push({ tabId: tab.id, tabTitle: tab.title, msgId: msg.id, timestamp: msg.timestamp,
                       excerpt: (msg.content || "").replace(/\s+/g, " ").slice(0, 60) });
           break;
@@ -97,7 +104,7 @@ function tileFor(entry) {
   const img = document.createElement("img");
   img.loading = "lazy";
   img.alt = entry.prompt || entry.originalName || entry.kind;
-  img.src = `/api/gallery/thumb/${entry.path.split("/").map(encodeURIComponent).join("/")}`;
+  img.src = galleryThumbUrl(entry.path);
   // No thumbnail and none makeable (a 3D file, or no ffmpeg for a video): say so
   // rather than showing a broken image.
   img.onerror = () => {
@@ -197,7 +204,7 @@ function stripTile(entry) {
   const img = document.createElement("img");
   img.loading = "lazy";
   img.alt = btn.title;
-  img.src = `/api/gallery/thumb/${entry.path.split("/").map(encodeURIComponent).join("/")}`;
+  img.src = galleryThumbUrl(entry.path);
   img.onerror = () => { img.remove(); btn.textContent = entry.kind === "video" ? "▶" : entry.kind === "audio" ? "🔊" : "3D"; };
   btn.appendChild(img);
   // Clicking a frame opens the gallery on it — the strip is a shortcut into the
@@ -405,7 +412,7 @@ function renderDetail() {
     // is decoded. The gallery already keeps a frame grab for the grid — use it here
     // too, so the pane looks like the thumbnail the user just clicked.
     if (tag === "video") {
-      media.poster = `/api/gallery/thumb/${e.path.split("/").map(encodeURIComponent).join("/")}`;
+      media.poster = galleryThumbUrl(e.path);
     }
     pane.appendChild(media);
   }
@@ -599,6 +606,118 @@ async function deleteItem(entry) {
   await refreshStrip();
 }
 
+// ♻️ — media that is still stored INSIDE the open conversations. Each slot is filed into
+// the gallery and replaced by a reference, so the picture ends up in one place rather
+// than two: on disk, and base64-inflated a second time inside IndexedDB. Nothing is
+// deleted and nothing leaves the machine — this only moves bytes out of the tab record.
+//
+// New attachments and renders already store references. This is for conversations
+// written before that, and for the occasional slot whose upload lost the race at send
+// time. The full slot decides: a thumbnail follows the artifact it previews (and the
+// preview we already have is handed to the server, so it stays the exact same picture).
+const RECLAIM_GROUPS = [
+  { full: "contextImages",   thumb: "displayImages",             names: "imageNames",          mimes: null,         fallback: "image/jpeg" },
+  { full: "generatedImages", thumb: "generatedThumbnails",       names: "generatedImageNames", mimes: null,         fallback: "image/png" },
+  { full: "generatedVideos", thumb: "generatedVideoThumbnails",  names: "videoNames",          mimes: "videoMimes", fallback: "video/mp4" },
+  { full: "generatedMeshes", thumb: null,                        names: "meshNames",           mimes: "meshMimes",  fallback: "model/gltf-binary" },
+];
+
+// A slot holding actual bytes — raw base64 or a data: URL. http stays put (someone
+// else's file), blob: is a transient object URL, and a gallery reference is already done.
+// The length floor keeps a stray short string from being treated as media.
+function isInlineBytes(v) {
+  return typeof v === "string" && v.length > 64 && !isMediaRef(v)
+    && !v.startsWith("http") && !v.startsWith("blob:");
+}
+
+const rawOf = (v) => (v.startsWith("data:") ? v.slice(v.indexOf(",") + 1) : v);
+const estBytes = (v) => Math.round(rawOf(v).length * 3 / 4);
+
+function inlineSlots() {
+  const out = [];
+  for (const tab of state.tabs || []) {
+    for (const msg of tab.messages || []) {
+      for (const g of RECLAIM_GROUPS) {
+        const arr = msg[g.full];
+        if (!Array.isArray(arr)) continue;
+        arr.forEach((v, i) => { if (isInlineBytes(v)) out.push({ msg, g, i, v }); });
+      }
+      // generatedAudio is the one scalar slot (a single speech track per bubble).
+      if (isInlineBytes(msg.generatedAudio)) {
+        out.push({ msg, g: { full: "generatedAudio", scalar: true, fallback: "audio/wav" }, i: -1, v: msg.generatedAudio });
+      }
+    }
+  }
+  return out;
+}
+
+function slotMime(slot) {
+  const { msg, g, i, v } = slot;
+  if (g.full === "generatedAudio") return msg.audioMime || g.fallback;
+  if (g.mimes && Array.isArray(msg[g.mimes]) && msg[g.mimes][i]) return msg[g.mimes][i];
+  // Images: trust the bytes, not the field's nominal type (same reason as an upload).
+  if (!g.mimes) return sniffImageMime(rawOf(v), g.fallback);
+  return g.fallback;
+}
+
+function slotName(slot) {
+  const { msg, g, i } = slot;
+  if (g.full === "generatedAudio") return msg.audioName || "";
+  return (g.names && Array.isArray(msg[g.names]) && msg[g.names][i]) || "";
+}
+
+async function reclaim() {
+  const slots = inlineSlots();
+  if (!slots.length) { alert(t("gal_reclaimNone")); return; }
+  const total = slots.reduce((n, s) => n + estBytes(s.v), 0);
+  if (!confirm(t("gal_reclaimConfirm", { n: slots.length, size: fmtSize(total) }))) return;
+
+  const stats = el("galleryStats");
+  let done = 0, failed = 0, freed = 0;
+  // One at a time: this is a background tidy-up, not something the user waits on, and a
+  // conversation full of video would otherwise fire dozens of concurrent uploads.
+  for (const slot of slots) {
+    if (stats) stats.textContent = t("gal_reclaimProgress", { done, total: slots.length });
+    const id = await fileIntoGallery(rawOf(slot.v), slotMime(slot), slotName(slot));
+    if (!id) { failed++; continue; }
+    const { msg, g, i } = slot;
+    if (g.scalar) msg[g.full] = galleryUrl(id);
+    else msg[g.full][i] = galleryUrl(id);
+    // Hand over the preview this bubble already had, then point at it. Without this the
+    // server would fall back to serving the full-size file as its own "thumbnail".
+    if (g.thumb && Array.isArray(msg[g.thumb]) && msg[g.thumb][i]) {
+      cacheGalleryThumb(id, msg[g.thumb][i]);
+      msg[g.thumb][i] = galleryThumbUrl(id);
+    }
+    freed += estBytes(slot.v);
+    done++;
+  }
+  // A thumbnail whose artifact was ALREADY a reference (filed at send time, preview left
+  // inline) never appears in the scan above — catch those in one pass at the end.
+  for (const tab of state.tabs || []) {
+    for (const msg of tab.messages || []) {
+      for (const g of RECLAIM_GROUPS) {
+        if (!g.thumb || !Array.isArray(msg[g.full]) || !Array.isArray(msg[g.thumb])) continue;
+        msg[g.full].forEach((full, i) => {
+          const thumb = msg[g.thumb][i];
+          if (!isMediaRef(full) || !isInlineBytes(thumb)) return;
+          cacheGalleryThumb(galleryIdOf(full), thumb);
+          msg[g.thumb][i] = galleryThumbUrl(galleryIdOf(full));
+          freed += estBytes(thumb);
+        });
+      }
+    }
+  }
+  saveTabs();
+  deps.renderChat();
+  await refresh();
+  await refreshStrip();
+  if (stats) {
+    stats.textContent = t("gal_reclaimDone", { n: done, size: fmtSize(freed) })
+      + (failed ? ` · ${t("gal_reclaimFailed", { n: failed })}` : "");
+  }
+}
+
 // 🧹 — the outlet for media kept when a conversation was deleted. Everything the
 // reference graph cannot account for is offered up in one place.
 async function tidy() {
@@ -730,6 +849,7 @@ export function initGallery() {
     renderDetail();
   });
   el("galleryCloseBtn")?.addEventListener("click", closeGallery);
+  el("galleryReclaimBtn")?.addEventListener("click", reclaim);
   el("galleryTidyBtn")?.addEventListener("click", tidy);
 
   // Filmstrip

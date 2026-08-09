@@ -153,6 +153,8 @@ function saveChatMessage(message) {
   if (message.locked) stored.locked = true;
   // Uploaded-image fields: displayImages (thumbnails, shown in the bubble) and
   // contextImages (full-res, what's actually sent to the model). See migrateImageFields.
+  // Either may hold a gallery reference rather than bytes — which, for a bubble with
+  // four photos on it, is the difference between a ~20MB record and a ~200 byte one.
   if (message.displayImages) stored.displayImages = message.displayImages;
   if (message.contextImages) stored.contextImages = message.contextImages;
   // Original upload filenames — injected into the model prompt so the user can refer to

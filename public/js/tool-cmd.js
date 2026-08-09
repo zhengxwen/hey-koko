@@ -12,7 +12,8 @@
 import { dom, state, scrollChatToEnd } from './state.js';
 import { setAvatarState } from './avatar.js';
 import { saveChat } from './settings.js';
-import { makePreview } from './utils.js';
+import { makePreview, fileIntoGallery, sniffImageMime, galleryUrl, galleryThumbUrl,
+         cacheGalleryThumb } from './utils.js';
 import { t, getPrompt } from './i18n.js';
 
 // Dependencies injected from main.js to avoid circular imports (url-fetch.js pattern).
@@ -288,8 +289,13 @@ export async function handleToolCommand(parsed, tab, tabId, cursor = null, skipU
         : imgArr.map((im, i) => `image_${String(i + 1).padStart(2, "0")}.${im.mime === "image/png" ? "png" : "jpg"}`);
     } else if (result.image) {
       // Single image (clipboard paste / chrome-ppt screenshot): sent → contextImages.
-      contextMsg.contextImages = [result.image];
-      contextMsg.displayImages = [await makePreview(`data:${result.imageMime};base64,${result.image}`, 480)];
+      // A screenshot exists nowhere but here, so it is filed like any other attachment
+      // and the bubble stores the reference — same rule as a staged upload.
+      const preview = await makePreview(`data:${result.imageMime};base64,${result.image}`, 480);
+      const id = await fileIntoGallery(result.image, sniffImageMime(result.image, result.imageMime), result.imageName || "");
+      if (id) cacheGalleryThumb(id, preview);
+      contextMsg.contextImages = [id ? galleryUrl(id) : result.image];
+      contextMsg.displayImages = [id ? galleryThumbUrl(id) : preview];
     }
     placeMsg(tab, contextMsg, cursor);
 

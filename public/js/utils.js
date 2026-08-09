@@ -20,20 +20,94 @@ export function genId() {
 // field migrations, the per-index delete splices or the empty-bubble sweeper.
 // Every renderer goes through mediaSrc(); anything that needs the actual bytes back
 // (outgoing requests, exports) goes through mediaBase64().
+//
+// THE RULE: a slot carries bytes only while the file is not in the gallery. Once it is
+// on disk the slot becomes a reference and the bytes are dropped, so a picture is stored
+// once — in ~/.hey-koko/gallery — instead of twice (there AND base64-inflated inside
+// IndexedDB). Anything that files media is therefore expected to swap the slot, not to
+// stamp an id beside it.
+//
+// Two prefixes, because a slot can point at the artifact or at its 360px thumbnail
+// (displayImages / generatedThumbnails, which used to be inline data: URLs). Both are
+// references — isMediaRef and galleryIdOf accept either, so a thumbnail slot inlines on
+// export and resolves on demand exactly like a full-size one.
 export const GALLERY_PREFIX = "/api/gallery/file/";
+export const GALLERY_THUMB_PREFIX = "/api/gallery/thumb/";
 
 export function isMediaRef(v) {
-  return typeof v === "string" && v.startsWith(GALLERY_PREFIX);
+  return typeof v === "string" && (v.startsWith(GALLERY_PREFIX) || v.startsWith(GALLERY_THUMB_PREFIX));
 }
 
 // Per-segment encoding: ids carry a "2026-08/" prefix that must stay a real path
 // separator, while the filename may hold CJK or spaces.
-export function galleryUrl(id) {
-  return GALLERY_PREFIX + String(id).split("/").map(encodeURIComponent).join("/");
+function refUrl(prefix, id) {
+  return prefix + String(id).split("/").map(encodeURIComponent).join("/");
 }
 
+export function galleryUrl(id) { return refUrl(GALLERY_PREFIX, id); }
+export function galleryThumbUrl(id) { return refUrl(GALLERY_THUMB_PREFIX, id); }
+
 export function galleryIdOf(v) {
-  return isMediaRef(v) ? decodeURIComponent(v.slice(GALLERY_PREFIX.length)) : null;
+  if (!isMediaRef(v)) return null;
+  const prefix = v.startsWith(GALLERY_PREFIX) ? GALLERY_PREFIX : GALLERY_THUMB_PREFIX;
+  return decodeURIComponent(v.slice(prefix.length));
+}
+
+// File media into the gallery and return the id it was given. Everything the app
+// generates is already filed server-side; a photo or clip the user brings in is media
+// too, and it used to exist nowhere but inside the conversation.
+//
+// The bytes go up raw (not base64-in-JSON) and the server dedups on content hash, so the
+// same picture attached repeatedly costs one file — which is also what makes the id a
+// stable identity for it. Best-effort by design: this must never be able to stop an
+// attachment from being staged, so every failure comes back as null and the caller keeps
+// the bytes inline.
+export async function fileIntoGallery(b64, mime, name) {
+  try {
+    if (!b64) return null;
+    const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const r = await fetch("/api/gallery/upload", {
+      method: "POST",
+      headers: { "Content-Type": mime || "application/octet-stream",
+                 "X-Gallery-Name": encodeURIComponent(name || "") },
+      body: bin,
+    });
+    const j = await r.json().catch(() => null);
+    if (j && j.id && !j.deduped) {
+      window.dispatchEvent(new CustomEvent("hk-media-added", { detail: { ids: [j.id] } }));
+    }
+    return (j && j.id) || null;
+  } catch (e) {
+    console.warn("[gallery] could not file the attachment:", e.message);
+    return null;
+  }
+}
+
+// Staged images carry only their base64, and it may have been converted since the file
+// was picked (JPEG re-encode, EXIF bake-in) — so trust the bytes over the caller's
+// label, or the gallery ends up with .jpg files that are really PNGs.
+export function sniffImageMime(b64, fallback) {
+  if (b64.startsWith("/9j/")) return "image/jpeg";
+  if (b64.startsWith("iVBOR")) return "image/png";
+  if (b64.startsWith("UklGR")) return "image/webp";
+  if (b64.startsWith("R0lGOD")) return "image/gif";
+  return fallback;
+}
+
+// Hand the server a thumbnail the browser already made. /api/gallery/thumb generates its
+// own with ffmpeg, and falls back to serving the full-size image when there is none —
+// correct, but it means a bubble showing a "thumbnail" would pull the whole picture.
+// Posting the preview we were going to throw away costs one request and makes the
+// fallback unnecessary. Fire-and-forget: a failure only means the fallback stays.
+export function cacheGalleryThumb(id, dataUrl) {
+  if (!id || typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return;
+  try {
+    fetch("/api/gallery/thumb", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, jpeg: dataUrl }),
+    }).catch(() => {});
+  } catch { /* no network, no thumbnail — the fallback covers it */ }
 }
 
 // → something an <img>/<video>/<a download> can use directly. Without an explicit

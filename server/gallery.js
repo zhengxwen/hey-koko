@@ -386,15 +386,19 @@ const REF_FIELDS = ["generatedImages", "generatedVideos", "generatedMeshes",
                     "generatedAudio", "contextImages", "displayImages",
                     "generatedThumbnails", "generatedVideoThumbnails"];
 
+// Both prefixes count: a slot can point at the artifact or at its thumbnail (a bubble's
+// inline preview), and either one means that archive still uses the file.
+const REF_PREFIXES = ["/api/gallery/file/", "/api/gallery/thumb/"];
+
 function idsInMessage(msg) {
   const ids = new Set();
   for (const f of REF_FIELDS) {
     const v = msg[f];
     const arr = Array.isArray(v) ? v : typeof v === "string" ? [v] : [];
     for (const s of arr) {
-      if (typeof s === "string" && s.startsWith("/api/gallery/file/")) {
-        ids.add(decodeURIComponent(s.slice("/api/gallery/file/".length)));
-      }
+      if (typeof s !== "string") continue;
+      const prefix = REF_PREFIXES.find((p) => s.startsWith(p));
+      if (prefix) ids.add(decodeURIComponent(s.slice(prefix.length)));
     }
   }
   return ids;
