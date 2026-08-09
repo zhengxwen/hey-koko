@@ -532,6 +532,10 @@ function applyComfyModels(data) {
       const labels = ["comfy_upscaleTarget_auto", "comfy_upscaleTarget_1080", "comfy_upscaleTarget_1440", "comfy_upscaleTarget_4k"];
       [...dom.comfyParamUpscaleTarget.options].forEach((o, i) => { if (labels[i]) o.textContent = t(labels[i]); });
     }
+    if (dom.comfyParamSharpen) {
+      const labels = ["comfy_sharpen_off", "comfy_sharpen_light", "comfy_sharpen_medium", "comfy_sharpen_strong"];
+      [...dom.comfyParamSharpen.options].forEach((o, i) => { if (labels[i]) o.textContent = t(labels[i]); });
+    }
     // ⚙ "H3 text encoder": Auto + every Qwen3-VL build installed. Listed by FILENAME
     // rather than by tier — the tier is in the name, and the file is what the user
     // downloaded and can delete, so naming it keeps the menu honest about what is on the
@@ -1660,6 +1664,9 @@ export function updateComfyParamVisibility() {
   for (const el of [dom.comfyParamUpscaleDenoise, dom.comfyParamUpscaleModel, dom.comfyParamRestoreModel]) setVis(el, upscale);
   // The output target is a VIDEO-upscale control: the image path takes its size from --size.
   setVis(dom.comfyParamUpscaleTarget, /video-enhance/i.test(m));
+  // Sharpening is wired into the video-enhance builder only (the image upscale tail has
+  // no equivalent node), so it stays with that entry.
+  setVis(dom.comfyParamSharpen, /video-enhance/i.test(m));
   // Image-edit / txt2img only.
   setVis(dom.comfyParamImageCfg, diffusion && !video && !mesh);
   // Quantisation preference — diffusion models only (the upscale pipelines load an

@@ -3,7 +3,8 @@
 
 // Archive and retrieve functionality
 import { dom, state } from './state.js';
-import { escapeHtml, mediaFilename, mediaSrc, isMediaRef } from './utils.js';
+import { escapeHtml, mediaFilename, mediaSrc, isMediaRef,
+         inlineMediaSlots, fileInlineMedia } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { applyHighlights } from './highlight.js';
 import { saveTabs } from './settings.js';
@@ -105,6 +106,27 @@ export function initArchive() {
     if (nActive > 0) {
       if (!confirm(t("bg_closeActiveJobs", { n: nActive }))) return;
       cancelTabJobs(tab.id);
+    }
+
+    // Anything still stored inline goes to disk BEFORE the snapshot is taken, so the
+    // archive is written with references from the start and never has to be repaired
+    // afterwards by scripts/migrate-archives.js. Deliberately run against the LIVE
+    // messages, not the copy below: filing the copy would shrink the archive while
+    // leaving the same bytes sitting in IndexedDB, which is half the job. The
+    // conversation on screen keeps rendering throughout — the slots become references
+    // to the very same pictures, and the server dedups on content hash, so archiving
+    // a conversation twice files nothing the second time.
+    const pendingSlots = inlineMediaSlots(tab.messages).length;
+    if (pendingSlots) {
+      const loadEl = document.querySelector("#chatLoading");
+      const wasHidden = !!loadEl && loadEl.hidden;
+      if (loadEl) loadEl.hidden = false;
+      try {
+        await fileInlineMedia(tab.messages);
+        saveTabs();
+      } finally {
+        if (loadEl && wasHidden) loadEl.hidden = true;
+      }
     }
 
     const exportMessages = tab.messages.map((msg) => {

@@ -70,6 +70,8 @@ export const dom = {
   comfyParamUpscaleTargetLabel: document.querySelector("#comfyParamUpscaleTargetLabel"),
   comfyParamRestoreModel: document.querySelector("#comfyParamRestoreModel"),
   comfyParamRestoreModelLabel: document.querySelector("#comfyParamRestoreModelLabel"),
+  comfyParamSharpen: document.querySelector("#comfyParamSharpen"),
+  comfyParamSharpenLabel: document.querySelector("#comfyParamSharpenLabel"),
   comfyParamFps: document.querySelector("#comfyParamFps"),
   comfyParamTimeout: document.querySelector("#comfyParamTimeout"),
   comfyParamMeshDetail: document.querySelector("#comfyParamMeshDetail"),

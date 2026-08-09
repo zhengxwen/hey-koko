@@ -5,7 +5,7 @@
 import { dom, state, refreshScrollState, onMessagesScroll } from './state.js';
 import { readFileAsDataUrl, convertToJpeg, normalizeOrientation, makePreview, escapeHtml, genId,
          mediaSrc, mediaBase64, isMediaRef, galleryThumbUrl, galleryIdOf, cacheGalleryThumb,
-         fileIntoGallery, sniffImageMime } from './utils.js';
+         fileIntoGallery, sniffImageMime, fileInlineMedia, inlineMediaSlots } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { initTheme } from './theme.js';
 import { initAvatar, updateCloudBadge, relocalizeAvatarPicker } from './avatar.js';
@@ -1533,6 +1533,21 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
         }
         return m;
       }));
+      // An export is deliberately self-contained: materializeTab inlines every reference
+      // so the file works on a machine that has never seen this gallery. Importing it
+      // would therefore pour all of that base64 straight back into IndexedDB — the exact
+      // thing references exist to avoid. So file it on the way in, and keep references.
+      //
+      // Round-tripping your own export costs nothing: the server dedups on a content
+      // hash, so each picture lands back on the id it already had. Importing someone
+      // else's conversation adds their media to the gallery once, which is the point —
+      // it is now media this machine has, on disk, like anything else.
+      // Uploading is slower than parsing, so keep (or raise) the overlay across it —
+      // otherwise a photo-heavy import looks finished while it is still filing.
+      const wasHidden = !!loadEl && loadEl.hidden;
+      if (loadEl && inlineMediaSlots(messages).length) loadEl.hidden = false;
+      await fileInlineMedia(messages);
+      if (loadEl && wasHidden && !showOverlay) loadEl.hidden = true;
       // Resolve the exported personality (built-in key or a custom preset NAME) back
       // to a local selection — re-binding to a matching local preset when we have one.
       // data.persona is intentionally ignored even when present: persona text is

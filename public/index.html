@@ -972,6 +972,15 @@
               <option value="off">Blur (built-in, cheaper)</option>
             </select>
           </label>
+          <label>
+            <span id="comfyParamSharpenLabel" title="Video upscale only: an unsharp-mask pass AFTER the resize. Set the upscale model to Off and leave the size alone to sharpen a clip at its original resolution and nothing else. Do not overdo it — past Medium, video picks up halos that flicker frame to frame.">Sharpen</span>
+            <select id="comfyParamSharpen">
+              <option value="">Off</option>
+              <option value="light">Light</option>
+              <option value="medium">Medium</option>
+              <option value="strong">Strong</option>
+            </select>
+          </label>
           <label title="LTX models only (LTX-2.3 / Sulphur): an optional LoRA patched onto the checkpoint. HOW TO CHOOSE — None: the plain model, and the right answer unless you want one of the effects below. A style/finetune LoRA (e.g. Sulphur): gives another model's look while keeping this one's schedule; use it over plain LTX-2.3 at ~0.8-1.0. A distilled/speed LoRA: only pays off if you ALSO lower steps and set cfg to 1 by hand (this preset is the 30-step / cfg 3 dev schedule), around 0.5. Each option carries its own hint. Greyed out = that finetune is already baked into the selected checkpoint (Sulphur ships as both a checkpoint and a LoRA, and stacking them applies it twice) — pick the plain LTX-2.3 checkpoint to use it. The done line reports which LoRA was actually applied. Options are the LTX-family files in ComfyUI/models/loras/.">
             <span id="comfyParamLtxLoraLabel">LTX LoRA</span>
             <select id="comfyParamLtxLora">

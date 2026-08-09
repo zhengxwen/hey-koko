@@ -122,6 +122,7 @@ function comfyOverrides() {
   if (upDenoise !== undefined && upDenoise > 0) ov.upscaleDenoise = Math.min(1, upDenoise / 100); // upscale denoise % → 0–1
   if (dom.comfyParamUpscaleModel?.value) ov.upscaleModel = dom.comfyParamUpscaleModel.value; // manual upscale model (empty = auto)
   if (dom.comfyParamRestoreModel?.value) ov.restoreModel = dom.comfyParamRestoreModel.value; // 1x de-artifact model ("off" = the blur fallback)
+  if (dom.comfyParamSharpen?.value) ov.sharpen = dom.comfyParamSharpen.value; // video upscale: post-resize unsharp mask (light|medium|strong)
   if (dom.comfyParamUpscaleTarget?.value) ov.upscaleTarget = Number(dom.comfyParamUpscaleTarget.value); // long side, px (empty = 2x capped)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
   if (dom.comfyParamVideoCodec?.value) ov.videoCodec = dom.comfyParamVideoCodec.value; // video: h264 (default) | h265, via VHS_VideoCombine
@@ -1381,6 +1382,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       doneLine += `\n${lastData.restoreModel
         ? t("msg_denoiseModel", { pct: Math.round(lastData.upscaleDenoise * 100), model: stripModelExt(lastData.restoreModel) }, plang)
         : t("msg_denoiseUsed", { pct: Math.round(lastData.upscaleDenoise * 100) }, plang)}`;
+    }
+    // Sharpening leaves no other trace in the result — same size, same model, same fps —
+    // so the done line is the only place it is visible.
+    if (lastData.sharpen) {
+      doneLine += `\n${t("msg_sharpenUsed", { level: t(`comfy_sharpen_${lastData.sharpen}`, {}, plang) }, plang)}`;
     }
     // LTX LoRA actually mounted. Stated because the picker can hold a choice the
     // server declines to apply (Sulphur's LoRA on the Sulphur checkpoint, which

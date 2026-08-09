@@ -94,6 +94,106 @@ export function sniffImageMime(b64, fallback) {
   return fallback;
 }
 
+// ---- filing a whole conversation's inline media ----------------------------
+// Every media slot a message can carry, paired with the thumbnail that previews it and
+// the parallel arrays holding each slot's name and mime. Used to sweep media OUT of a
+// conversation and onto disk: the gallery ♻️ button does it to the open tabs, and
+// importing a JSON export does it to what it just parsed.
+export const MEDIA_SLOT_GROUPS = [
+  { full: "contextImages",   thumb: "displayImages",            names: "imageNames",          mimes: null,         fallback: "image/jpeg" },
+  { full: "generatedImages", thumb: "generatedThumbnails",      names: "generatedImageNames", mimes: null,         fallback: "image/png" },
+  { full: "generatedVideos", thumb: "generatedVideoThumbnails", names: "videoNames",          mimes: "videoMimes", fallback: "video/mp4" },
+  { full: "generatedMeshes", thumb: null,                       names: "meshNames",           mimes: "meshMimes",  fallback: "model/gltf-binary" },
+];
+// generatedAudio is the one scalar slot (a single speech track per bubble).
+const AUDIO_GROUP = { full: "generatedAudio", scalar: true, fallback: "audio/wav" };
+
+// A slot holding actual bytes — raw base64 or a data: URL. http stays put (someone
+// else's file), blob: is a transient object URL, and a gallery reference is already done.
+// The length floor keeps a stray short string from being treated as media.
+export function isInlineBytes(v) {
+  return typeof v === "string" && v.length > 64 && !isMediaRef(v)
+    && !v.startsWith("http") && !v.startsWith("blob:");
+}
+
+export const rawBytesOf = (v) => (v.startsWith("data:") ? v.slice(v.indexOf(",") + 1) : v);
+export const estInlineBytes = (v) => Math.round(rawBytesOf(v).length * 3 / 4);
+
+// Every slot in these messages that still carries its bytes.
+export function inlineMediaSlots(messages) {
+  const out = [];
+  for (const msg of messages || []) {
+    if (!msg) continue;
+    for (const g of MEDIA_SLOT_GROUPS) {
+      const arr = msg[g.full];
+      if (!Array.isArray(arr)) continue;
+      arr.forEach((v, i) => { if (isInlineBytes(v)) out.push({ msg, g, i, v }); });
+    }
+    if (isInlineBytes(msg.generatedAudio)) out.push({ msg, g: AUDIO_GROUP, i: -1, v: msg.generatedAudio });
+  }
+  return out;
+}
+
+function slotMime({ msg, g, i, v }) {
+  if (g.scalar) return msg.audioMime || g.fallback;
+  if (g.mimes && Array.isArray(msg[g.mimes]) && msg[g.mimes][i]) return msg[g.mimes][i];
+  // Images: trust the bytes, not the field's nominal type (same reason as an upload).
+  if (!g.mimes) return sniffImageMime(rawBytesOf(v), g.fallback);
+  return g.fallback;
+}
+
+function slotName({ msg, g, i }) {
+  if (g.scalar) return msg.audioName || "";
+  return (g.names && Array.isArray(msg[g.names]) && msg[g.names][i]) || "";
+}
+
+// File every inline slot in these messages and rewrite it as a reference, IN PLACE.
+// Returns { filed, failed, freed } in bytes-no-longer-duplicated.
+//
+// The server dedups on a content hash, so this is safe to run over and over and over the
+// same pictures: importing a conversation that was exported from this machine files
+// nothing new and lands on the very same ids it had before. That is also why an
+// attachment shared by three conversations costs one file, not three.
+//
+// Uploads run one at a time on purpose — a video-heavy conversation would otherwise fire
+// dozens of concurrent multi-hundred-megabyte requests at the local server.
+export async function fileInlineMedia(messages, onProgress) {
+  const slots = inlineMediaSlots(messages);
+  let filed = 0, failed = 0, freed = 0;
+  for (const slot of slots) {
+    if (onProgress) onProgress(filed + failed, slots.length);
+    const id = await fileIntoGallery(rawBytesOf(slot.v), slotMime(slot), slotName(slot));
+    if (!id) { failed++; continue; }
+    const { msg, g, i } = slot;
+    if (g.scalar) msg[g.full] = galleryUrl(id);
+    else msg[g.full][i] = galleryUrl(id);
+    // Hand over the preview this bubble already had, then point at it. Without this the
+    // server would fall back to serving the full-size file as its own "thumbnail".
+    if (g.thumb && Array.isArray(msg[g.thumb]) && msg[g.thumb][i]) {
+      cacheGalleryThumb(id, msg[g.thumb][i]);
+      msg[g.thumb][i] = galleryThumbUrl(id);
+    }
+    freed += estInlineBytes(slot.v);
+    filed++;
+  }
+  // A thumbnail whose artifact was ALREADY a reference (filed at send time, preview left
+  // inline) never appears in the scan above — catch those in one pass at the end.
+  for (const msg of messages || []) {
+    if (!msg) continue;
+    for (const g of MEDIA_SLOT_GROUPS) {
+      if (!g.thumb || !Array.isArray(msg[g.full]) || !Array.isArray(msg[g.thumb])) continue;
+      msg[g.full].forEach((full, i) => {
+        const thumb = msg[g.thumb][i];
+        if (!isMediaRef(full) || !isInlineBytes(thumb)) return;
+        cacheGalleryThumb(galleryIdOf(full), thumb);
+        msg[g.thumb][i] = galleryThumbUrl(galleryIdOf(full));
+        freed += estInlineBytes(thumb);
+      });
+    }
+  }
+  return { filed, failed, freed };
+}
+
 // Hand the server a thumbnail the browser already made. /api/gallery/thumb generates its
 // own with ffmpeg, and falls back to serving the full-size image when there is none —
 // correct, but it means a bubble showing a "thumbnail" would pull the whole picture.

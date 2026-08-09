@@ -12,8 +12,8 @@
 
 import { state } from './state.js';
 import { t } from './i18n.js';
-import { galleryIdOf, galleryThumbUrl, galleryUrl, isMediaRef, fileIntoGallery,
-         sniffImageMime, cacheGalleryThumb } from './utils.js';
+import { galleryIdOf, galleryThumbUrl, inlineMediaSlots, fileInlineMedia,
+         estInlineBytes } from './utils.js';
 import { switchTab } from './tabs.js';
 import { saveTabs } from './settings.js';
 import { openArchivedChat } from './archive.js';
@@ -611,109 +611,27 @@ async function deleteItem(entry) {
 // than two: on disk, and base64-inflated a second time inside IndexedDB. Nothing is
 // deleted and nothing leaves the machine — this only moves bytes out of the tab record.
 //
-// New attachments and renders already store references. This is for conversations
-// written before that, and for the occasional slot whose upload lost the race at send
-// time. The full slot decides: a thumbnail follows the artifact it previews (and the
-// preview we already have is handed to the server, so it stays the exact same picture).
-const RECLAIM_GROUPS = [
-  { full: "contextImages",   thumb: "displayImages",             names: "imageNames",          mimes: null,         fallback: "image/jpeg" },
-  { full: "generatedImages", thumb: "generatedThumbnails",       names: "generatedImageNames", mimes: null,         fallback: "image/png" },
-  { full: "generatedVideos", thumb: "generatedVideoThumbnails",  names: "videoNames",          mimes: "videoMimes", fallback: "video/mp4" },
-  { full: "generatedMeshes", thumb: null,                        names: "meshNames",           mimes: "meshMimes",  fallback: "model/gltf-binary" },
-];
-
-// A slot holding actual bytes — raw base64 or a data: URL. http stays put (someone
-// else's file), blob: is a transient object URL, and a gallery reference is already done.
-// The length floor keeps a stray short string from being treated as media.
-function isInlineBytes(v) {
-  return typeof v === "string" && v.length > 64 && !isMediaRef(v)
-    && !v.startsWith("http") && !v.startsWith("blob:");
-}
-
-const rawOf = (v) => (v.startsWith("data:") ? v.slice(v.indexOf(",") + 1) : v);
-const estBytes = (v) => Math.round(rawOf(v).length * 3 / 4);
-
-function inlineSlots() {
-  const out = [];
-  for (const tab of state.tabs || []) {
-    for (const msg of tab.messages || []) {
-      for (const g of RECLAIM_GROUPS) {
-        const arr = msg[g.full];
-        if (!Array.isArray(arr)) continue;
-        arr.forEach((v, i) => { if (isInlineBytes(v)) out.push({ msg, g, i, v }); });
-      }
-      // generatedAudio is the one scalar slot (a single speech track per bubble).
-      if (isInlineBytes(msg.generatedAudio)) {
-        out.push({ msg, g: { full: "generatedAudio", scalar: true, fallback: "audio/wav" }, i: -1, v: msg.generatedAudio });
-      }
-    }
-  }
-  return out;
-}
-
-function slotMime(slot) {
-  const { msg, g, i, v } = slot;
-  if (g.full === "generatedAudio") return msg.audioMime || g.fallback;
-  if (g.mimes && Array.isArray(msg[g.mimes]) && msg[g.mimes][i]) return msg[g.mimes][i];
-  // Images: trust the bytes, not the field's nominal type (same reason as an upload).
-  if (!g.mimes) return sniffImageMime(rawOf(v), g.fallback);
-  return g.fallback;
-}
-
-function slotName(slot) {
-  const { msg, g, i } = slot;
-  if (g.full === "generatedAudio") return msg.audioName || "";
-  return (g.names && Array.isArray(msg[g.names]) && msg[g.names][i]) || "";
-}
-
+// New attachments and renders already store references, and an import files its media on
+// the way in. This is for conversations written before any of that, and for the
+// occasional slot whose upload lost the race at send time. The sweep itself lives in
+// utils.js (fileInlineMedia) because the import path runs the very same pass.
 async function reclaim() {
-  const slots = inlineSlots();
+  const msgs = (state.tabs || []).flatMap((tab) => tab.messages || []);
+  const slots = inlineMediaSlots(msgs);
   if (!slots.length) { alert(t("gal_reclaimNone")); return; }
-  const total = slots.reduce((n, s) => n + estBytes(s.v), 0);
+  const total = slots.reduce((n, s) => n + estInlineBytes(s.v), 0);
   if (!confirm(t("gal_reclaimConfirm", { n: slots.length, size: fmtSize(total) }))) return;
 
   const stats = el("galleryStats");
-  let done = 0, failed = 0, freed = 0;
-  // One at a time: this is a background tidy-up, not something the user waits on, and a
-  // conversation full of video would otherwise fire dozens of concurrent uploads.
-  for (const slot of slots) {
-    if (stats) stats.textContent = t("gal_reclaimProgress", { done, total: slots.length });
-    const id = await fileIntoGallery(rawOf(slot.v), slotMime(slot), slotName(slot));
-    if (!id) { failed++; continue; }
-    const { msg, g, i } = slot;
-    if (g.scalar) msg[g.full] = galleryUrl(id);
-    else msg[g.full][i] = galleryUrl(id);
-    // Hand over the preview this bubble already had, then point at it. Without this the
-    // server would fall back to serving the full-size file as its own "thumbnail".
-    if (g.thumb && Array.isArray(msg[g.thumb]) && msg[g.thumb][i]) {
-      cacheGalleryThumb(id, msg[g.thumb][i]);
-      msg[g.thumb][i] = galleryThumbUrl(id);
-    }
-    freed += estBytes(slot.v);
-    done++;
-  }
-  // A thumbnail whose artifact was ALREADY a reference (filed at send time, preview left
-  // inline) never appears in the scan above — catch those in one pass at the end.
-  for (const tab of state.tabs || []) {
-    for (const msg of tab.messages || []) {
-      for (const g of RECLAIM_GROUPS) {
-        if (!g.thumb || !Array.isArray(msg[g.full]) || !Array.isArray(msg[g.thumb])) continue;
-        msg[g.full].forEach((full, i) => {
-          const thumb = msg[g.thumb][i];
-          if (!isMediaRef(full) || !isInlineBytes(thumb)) return;
-          cacheGalleryThumb(galleryIdOf(full), thumb);
-          msg[g.thumb][i] = galleryThumbUrl(galleryIdOf(full));
-          freed += estBytes(thumb);
-        });
-      }
-    }
-  }
+  const { filed, failed, freed } = await fileInlineMedia(msgs, (done, n) => {
+    if (stats) stats.textContent = t("gal_reclaimProgress", { done, total: n });
+  });
   saveTabs();
   deps.renderChat();
   await refresh();
   await refreshStrip();
   if (stats) {
-    stats.textContent = t("gal_reclaimDone", { n: done, size: fmtSize(freed) })
+    stats.textContent = t("gal_reclaimDone", { n: filed, size: fmtSize(freed) })
       + (failed ? ` · ${t("gal_reclaimFailed", { n: failed })}` : "");
   }
 }

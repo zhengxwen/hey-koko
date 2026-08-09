@@ -2958,6 +2958,14 @@ function upscaleChunkPlan(frames, nativeW, nativeH) {
   return { size, count: Math.ceil(frames / size), perFrame };
 }
 
+// Post-resize sharpening for the video-enhance pipeline. Named steps rather than a free
+// number: the useful range of an unsharp mask is narrow, and past it video picks up halos
+// that flicker frame to frame — worse than the softness it was meant to fix. Values are
+// the `alpha` of core ComfyUI's ImageSharpen (a 3x3 unsharp mask at sigma 1.0), which is
+// present on every install and takes plain scalars.
+const SHARPEN_LEVELS = { light: 0.3, medium: 0.6, strong: 0.9 };
+const sharpenAlphaOf = (level) => SHARPEN_LEVELS[String(level || "").toLowerCase()] || 0;
+
 const enhanceSaveNodeId = (k) => `s${k}`;
 
 // Video enhance (interpolate + upscale). Source video → GetVideoComponents → optional
@@ -2974,7 +2982,7 @@ const enhanceSaveNodeId = (k) => `s${k}`;
 // it is far cheaper there (a quarter of the pixels at 2x), and it must sit ahead of the
 // chunk split — per-chunk interpolation would leave every chunk boundary without its
 // in-between frames, a visible stutter once per chunk.
-function buildVideoEnhance({ videoName, upscaleModel, outW, outH, denoise, restoreModel, vfi, chunk }) {
+function buildVideoEnhance({ videoName, upscaleModel, outW, outH, denoise, restoreModel, sharpen, vfi, chunk }) {
   const wf = {
     "5": { class_type: "LoadVideo", inputs: { file: videoName } },
     "6": { class_type: "GetVideoComponents", inputs: { video: ["5", 0] } },
@@ -3004,6 +3012,13 @@ function buildVideoEnhance({ videoName, upscaleModel, outW, outH, denoise, resto
     if (outW > 0 && outH > 0) {
       wf[`${p}s`] = { class_type: "ImageScale", inputs: { image: ref, upscale_method: "lanczos", width: outW, height: outH, crop: "disabled" } };
       ref = [`${p}s`, 0];
+    }
+    // AFTER the resize, never before: sharpening what is about to be resampled just
+    // feeds the filter its own halos. Inside the tail, so a chunked run sharpens every
+    // chunk rather than only the first.
+    if (sharpen > 0) {
+      wf[`${p}h`] = { class_type: "ImageSharpen", inputs: { image: ref, sharpen_radius: 1, sigma: 1.0, alpha: sharpen } };
+      ref = [`${p}h`, 0];
     }
     // Chunked parts are silent: the merge takes the audio from the source clip, so audio
     // here would only be re-encoded per part and then thrown away.
@@ -5822,10 +5837,15 @@ async function generateComfyImage(req, res) {
         const willInterp = tf > 0 && tf > srcFps;       // interpolate only when target fps > source
         const willResize = opts.width > 0 && opts.height > 0; // explicit --size
         const willDenoise = upscaleDenoise > 0;
+        // Sharpening alone is a valid job: with the upscale model Off and no resize, the
+        // clip keeps its exact size and only gets the filter — which is the whole point
+        // of the knob ("sharpen this, don't touch anything else").
+        const sharpen = sharpenAlphaOf(opts.sharpen);
+        const willSharpen = sharpen > 0;
         // Neither interpolation nor upscale (nor denoise / explicit resize) → ComfyUI has nothing to do.
         // Tell the user in the bubble instead of running a pointless re-encode.
-        if (noUpscale && !willInterp && !willResize && !willDenoise) {
-          sendJson(res, 200, { noop: true, message: `ℹ️ Nothing to do: neither interpolation nor upscale is enabled — ⚙ "upscale model" is set to "Off", and the target fps (${tf > 0 ? tf : "not set"}) is not higher than the source video fps (${srcFps}). ComfyUI was not called this time.\n\n· To interpolate: \`/imagine <a higher fps>\` (e.g. for a ${srcFps}fps source, enter ${srcFps * 2})\n· To upscale: change ⚙ "upscale model" from "Off" back to "Auto" or a specific model` });
+        if (noUpscale && !willInterp && !willResize && !willDenoise && !willSharpen) {
+          sendJson(res, 200, { noop: true, message: `ℹ️ Nothing to do: neither interpolation nor upscale is enabled — ⚙ "upscale model" is set to "Off", and the target fps (${tf > 0 ? tf : "not set"}) is not higher than the source video fps (${srcFps}). ComfyUI was not called this time.\n\n· To interpolate: \`/imagine <a higher fps>\` (e.g. for a ${srcFps}fps source, enter ${srcFps * 2})\n· To upscale: change ⚙ "upscale model" from "Off" back to "Auto" or a specific model\n· To sharpen at the original size: set ⚙ "Sharpen" to Light/Medium/Strong and leave the upscale model Off` });
           return;
         }
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
@@ -5885,9 +5905,9 @@ async function generateComfyImage(req, res) {
         const chunk = comp ? upscaleChunkPlan(framesIn, sw * mScale, sh * mScale)
           : (outW > 0 ? upscaleChunkPlan(framesIn, outW, outH) : null);
         workflow = buildVideoEnhance({ videoName, upscaleModel: comp ? comp.model : null, outW, outH,
-          denoise: upscaleDenoise, restoreModel, chunk,
+          denoise: upscaleDenoise, restoreModel, sharpen, chunk,
           vfi: mult > 1 ? { mult, method, fps: outFps } : null });
-        upscaleInfo = { model: comp ? comp.model : null, scale: comp ? comp.scale : null, resizeOnly, denoise: upscaleDenoise, restoreModel };
+        upscaleInfo = { model: comp ? comp.model : null, scale: comp ? comp.scale : null, resizeOnly, denoise: upscaleDenoise, restoreModel, sharpen: opts.sharpen || null };
         if (chunk) {
           segmentMerge = { label: "Video upscale", saveNodeIds: Array.from({ length: chunk.count }, (_, k) => enhanceSaveNodeId(k)), sourceName: videoName };
           console.log(`[comfy-gen] upscale chunked: ${framesIn} frames → ${chunk.count} × ${chunk.size} @ ${sw * mScale}x${sh * mScale} (${(chunk.perFrame * chunk.size / 2 ** 30).toFixed(1)} GiB/chunk)`);
@@ -7178,7 +7198,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
-        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, imagesUsed });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own
