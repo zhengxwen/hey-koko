@@ -17,6 +17,7 @@ import { galleryIdOf, galleryThumbUrl, inlineMediaSlots, fileInlineMedia,
 import { switchTab } from './tabs.js';
 import { saveTabs } from './settings.js';
 import { openArchivedChat } from './archive.js';
+import { openVideoEditor } from './video-edit.js';
 
 // ---------------------------------------------------------------------------
 // The gallery view: everything ever generated, read straight off disk.
@@ -25,7 +26,15 @@ import { openArchivedChat } from './archive.js';
 let items = [];            // current page of ledger entries
 let selected = null;       // the entry shown in the detail pane
 let archiveRefs = {};      // id -> [{archive, title, msgId}] (server side of the graph)
+let activeFolder = null;   // folder facet: null = everything, "root" = unfiled, else a fid
+let folderList = [];       // [{fid, name, n}] from /api/gallery/stats
+const selectedIds = new Set();   // checkbox multi-select, for bulk move (and 🎬 later)
 let deps = { renderChat: () => {}, setInput: () => {}, attachMedia: () => {} };
+
+// Drag payload for tiles → folder chips. A custom type, so the existing Files drop
+// zone (wireDropZone guards on "Files") and the composer's text/uri-list path both
+// stay out of each other's way.
+const DRAG_IDS_TYPE = "application/x-hk-gallery-ids";
 
 export function setGalleryDeps(d) { deps = { ...deps, ...d }; }
 
@@ -128,11 +137,24 @@ function paintTileRating(id, rating) {
   if (stripEntry) { if (rating == null) delete stripEntry.rating; else stripEntry.rating = rating; }
 }
 
+// What the file IS, for a tile caption: pixel size, and for a clip its rate and running
+// time. The byte size is already on that line, so it is not repeated here. Empty for an
+// entry whose specs are still unknown — which is what backfillSpecs then goes and fixes.
+function specsLabel(e) {
+  const bits = [];
+  if (e.width && e.height) bits.push(`${e.width}×${e.height}`);
+  if (e.kind === "video") {
+    if (e.fps) bits.push(`${e.fps}fps`);
+    if (e.length) bits.push(e.fps ? `${(e.length / e.fps).toFixed(1)}s` : `${e.length}f`);
+  }
+  return bits.join(" · ");
+}
+
 function metaLineFor(entry) {
   // The canonical id, not the file that ran: it is short, lowercase, and the same string
   // across quantisations, so a list of tiles reads as a list of MODELS. The exact file
   // and its precision are still one click away in the detail pane.
-  return [ratingLabel(entry.rating), fmtDate(entry.ts), fmtSize(entry.bytes),
+  return [ratingLabel(entry.rating), fmtDate(entry.ts), specsLabel(entry), fmtSize(entry.bytes),
           entry.modelId || entry.model,
           entry.prompt || entry.desc || entry.originalName].filter(Boolean).join(" · ");
 }
@@ -142,9 +164,25 @@ function tileFor(entry) {
   btn.type = "button";
   btn.className = "galleryTile";
   btn.dataset.id = entry.path;
+
+  // Drag a tile onto a folder chip to file it. When the dragged tile is part of the
+  // current selection the whole selection rides along — that is what a selection is for.
+  btn.draggable = true;
+  btn.addEventListener("dragstart", (ev) => {
+    try {
+      const ids = selectedIds.has(entry.path) ? [...selectedIds] : [entry.path];
+      ev.dataTransfer.setData(DRAG_IDS_TYPE, JSON.stringify(ids));
+      // Keep the composer's drop path working too (main.js: text/uri-list → attach).
+      const url = new URL(`/api/gallery/file/${entry.path.split("/").map(encodeURIComponent).join("/")}`, location.href).href;
+      ev.dataTransfer.setData("text/uri-list", url);
+      ev.dataTransfer.setData("text/plain", url);
+      ev.dataTransfer.effectAllowed = "copyMove";
+    } catch { /* browser said no */ }
+  });
+
   const img = document.createElement("img");
   img.loading = "lazy";
-  img.alt = entry.prompt || entry.originalName || entry.kind;
+  img.alt = entry.displayName || entry.prompt || entry.originalName || entry.kind;
   img.src = galleryThumbUrl(entry.path);
   // No thumbnail and none makeable (a 3D file, or no ffmpeg for a video): say so
   // rather than showing a broken image.
@@ -170,17 +208,37 @@ function tileFor(entry) {
   // one attribute on the grid — no re-render, no second tile builder.
   const text = document.createElement("span");
   text.className = "galleryTileText";
-  // The full ledger id, month folder and all — this is what the file is called on
-  // disk, and the row is where you go to find that out.
+  // The display name when one is set, else the full ledger id, month folder and all —
+  // the tooltip always keeps the on-disk path, since that is what the row is for.
   const name = document.createElement("span");
   name.className = "galleryTileName";
-  name.textContent = entry.path;
+  name.textContent = entry.displayName || entry.path;
   name.title = entry.path;    // the row can be narrower than the path is long
   const meta = document.createElement("span");
   meta.className = "galleryTileMeta";
   meta.textContent = metaLineFor(entry);
   text.append(name, meta);
   btn.appendChild(text);
+
+  // Multi-select checkbox (library.js's checkbox + Set pattern). A span, not an
+  // <input>: the tile is a <button> and nested interactive elements are invalid. It
+  // stops propagation so ticking never opens the detail pane.
+  const check = document.createElement("span");
+  check.className = "galleryTileCheck";
+  check.setAttribute("role", "checkbox");
+  check.setAttribute("aria-checked", selectedIds.has(entry.path) ? "true" : "false");
+  check.textContent = selectedIds.has(entry.path) ? "✓" : "";
+  if (selectedIds.has(entry.path)) btn.classList.add("isChecked");
+  check.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const on = !selectedIds.has(entry.path);
+    if (on) selectedIds.add(entry.path); else selectedIds.delete(entry.path);
+    check.textContent = on ? "✓" : "";
+    check.setAttribute("aria-checked", on ? "true" : "false");
+    btn.classList.toggle("isChecked", on);
+    updateBulkBar();
+  });
+  btn.appendChild(check);
 
   // The score, shown on the picture itself in the grid views (the list row reads it off
   // the meta line above). Built unconditionally and hidden while unrated, so a click in
@@ -214,6 +272,180 @@ function savedView() {
   let v;
   try { v = localStorage.getItem(VIEW_KEY); } catch { /* private mode */ }
   return VIEWS.includes(v) ? v : "md";
+}
+
+// ---------------------------------------------------------------------------
+// Virtual folders. A chip is three things at once: a filter (click), a drop target
+// (drag tiles onto it), and — when active — the place its ✎/🗑 live. Folders are
+// ledger metadata; nothing on disk moves, so references never break.
+// ---------------------------------------------------------------------------
+
+async function moveIds(ids, fid) {
+  if (!ids.length) return;
+  try {
+    const r = await fetch("/api/gallery/move", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, folder: fid }),
+    }).then((x) => x.json());
+    if (!r || r.error) throw new Error((r && r.error) || "move failed");
+  } catch (e) { console.warn("[gallery] move failed:", e.message); }
+  selectedIds.clear();
+  updateBulkBar();
+  await refresh();
+}
+
+// Accept tile drags on a chip. Same hard-won rule as wireDropZone: preventDefault on
+// BOTH dragenter and dragover, or a real OS drag never delivers the drop (and a
+// synthetic test event does — see the comment there).
+function wireChipDrop(chip, fid) {
+  const wants = (ev) => ev.dataTransfer?.types.includes(DRAG_IDS_TYPE);
+  chip.addEventListener("dragover", (ev) => {
+    if (!wants(ev)) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "move";
+  });
+  chip.addEventListener("dragenter", (ev) => {
+    if (!wants(ev)) return;
+    ev.preventDefault();
+    chip.classList.add("isDropTarget");
+  });
+  chip.addEventListener("dragleave", () => chip.classList.remove("isDropTarget"));
+  chip.addEventListener("drop", (ev) => {
+    if (!wants(ev)) return;
+    ev.preventDefault();
+    ev.stopPropagation();   // keep it away from the overlay's file-drop zone
+    chip.classList.remove("isDropTarget");
+    let ids = [];
+    try { ids = JSON.parse(ev.dataTransfer.getData(DRAG_IDS_TYPE)) || []; } catch { /* not ours */ }
+    moveIds(ids, fid);
+  });
+}
+
+// Rebuilt on every refresh — a handful of chips, and the active state lives here.
+function renderFolderChips() {
+  const row = el("galleryFolders");
+  if (!row) return;
+  row.innerHTML = "";
+
+  const chip = (label, key, fid, title) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "galleryFolderChip";
+    b.textContent = label;
+    if (title) b.title = title;
+    b.classList.toggle("isActive", activeFolder === key);
+    b.addEventListener("click", () => {
+      activeFolder = activeFolder === key ? null : key;
+      refresh();
+    });
+    // "All" is not a place, so it takes no drops; root and real folders do.
+    if (key !== null) wireChipDrop(b, fid);
+    row.appendChild(b);
+    return b;
+  };
+
+  chip(t("gal_folderAll"), null);
+  chip(`📂 ${t("gal_folderRoot")}`, "root", null, t("gal_folderRootHint"));
+  for (const f of folderList) {
+    const b = chip(`📁 ${f.name} (${f.n})`, f.fid, f.fid);
+    if (activeFolder !== f.fid) continue;
+    // Rename / delete only on the active chip — the row stays calm otherwise.
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "galleryFolderChip galleryFolderTool";
+    edit.textContent = "✎";
+    edit.title = t("gal_folderRename");
+    edit.addEventListener("click", async () => {
+      const name = prompt(t("gal_folderNamePrompt"), f.name);
+      if (name == null || !name.trim() || name.trim() === f.name) return;
+      await fetch("/api/gallery/folder-rename", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fid: f.fid, name: name.trim() }) });
+      refresh();
+    });
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "galleryFolderChip galleryFolderTool";
+    del.textContent = "🗑";
+    del.title = t("gal_folderDelete");
+    del.addEventListener("click", async () => {
+      if (!confirm(t("gal_folderDeleteConfirm", { name: f.name }))) return;
+      await fetch("/api/gallery/folder-delete", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fid: f.fid }) });
+      activeFolder = null;
+      refresh();
+    });
+    b.after(edit, del);
+  }
+
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "galleryFolderChip galleryFolderAdd";
+  add.textContent = "＋";
+  add.title = t("gal_folderNew");
+  add.addEventListener("click", async () => {
+    const name = prompt(t("gal_folderNamePrompt"));
+    if (name == null || !name.trim()) return;
+    // Deliberately NOT auto-activated: a fresh folder is empty, and jumping into it
+    // would blank the grid — hiding the very tiles the user wants to drag into it.
+    await fetch("/api/gallery/folder", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim() }) }).catch(() => null);
+    refresh();
+  });
+  row.appendChild(add);
+}
+
+// The bulk bar under the chips: visible only while something is ticked.
+function updateBulkBar() {
+  const bar = el("galleryBulkBar");
+  if (!bar) return;
+  bar.hidden = selectedIds.size === 0;
+  if (bar.hidden) { bar.innerHTML = ""; return; }
+  bar.innerHTML = "";
+
+  const count = document.createElement("span");
+  count.className = "hint";
+  count.textContent = t("gal_selectedN", { n: selectedIds.size });
+
+  const move = document.createElement("select");
+  move.className = "libraryRatingFilter";
+  const opt = (v, label) => {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = label;
+    move.appendChild(o);
+  };
+  opt("", t("gal_moveTo"));
+  opt("root", `📂 ${t("gal_folderRoot")}`);
+  for (const f of folderList) opt(f.fid, `📁 ${f.name}`);
+  move.addEventListener("change", () => {
+    if (!move.value) return;
+    moveIds([...selectedIds], move.value === "root" ? null : move.value);
+  });
+
+  // ✂️ — send the selected videos to the editor (trim + stitch). Enabled only when
+  // the selection actually contains a video; non-videos are skipped by the editor.
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = "secondary";
+  edit.textContent = `✂️ ${t("vedit_open")}`;
+  const vids = [...selectedIds].filter((id) => items.find((e) => e.path === id)?.kind !== "image");
+  edit.disabled = !vids.length;
+  edit.addEventListener("click", () => openVideoEditor([...selectedIds]));
+
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "secondary";
+  clear.textContent = t("gal_clearSel");
+  clear.addEventListener("click", () => {
+    selectedIds.clear();
+    document.querySelectorAll(".galleryTile.isChecked").forEach((n) => {
+      n.classList.remove("isChecked");
+      const c = n.querySelector(".galleryTileCheck");
+      if (c) { c.textContent = ""; c.setAttribute("aria-checked", "false"); }
+    });
+    updateBulkBar();
+  });
+
+  bar.append(count, move, edit, clear);
 }
 
 // ---------------------------------------------------------------------------
@@ -262,8 +494,10 @@ function tooltipFor(entry) {
   // Filename first: it is this frame's identity, and it is the SAME name the chat calls
   // the picture by (imageNames → the manifest the model reads), so a tooltip is how you
   // match "image 2" in a draft prompt to the thumbnail in front of you. The month folder
-  // is dropped — it is the same for everything on screen.
-  const lines = [entry.path.split("/").pop(), specLine(entry)];
+  // is dropped — it is the same for everything on screen. A display name leads when set,
+  // with the real filename kept right behind it.
+  const base = entry.path.split("/").pop();
+  const lines = [entry.displayName ? `${entry.displayName} · ${base}` : base, specLine(entry)];
   const model = entry.modelId || entry.model;
   if (model) lines.push(model);
   // The upload's own filename is already inside the gallery name, so only a prompt or a
@@ -294,7 +528,7 @@ function stripTile(entry) {
   const img = document.createElement("img");
   img.loading = "lazy";
   // alt is read aloud and shown when the thumbnail fails — the subject, not the specs.
-  img.alt = entry.prompt || entry.originalName || entry.kind;
+  img.alt = entry.displayName || entry.prompt || entry.originalName || entry.kind;
   img.src = galleryThumbUrl(entry.path);
   img.onerror = () => { img.remove(); btn.textContent = entry.kind === "video" ? "▶" : entry.kind === "audio" ? "🔊" : "3D"; };
   btn.appendChild(img);
@@ -609,6 +843,50 @@ function renderDetail() {
 
   pane.appendChild(rateWidget(e));
 
+  // The display name: rename without touching the disk. Same commit discipline as the
+  // description below — change saves, Escape restores, the label spells the rule out.
+  const nameLabel = document.createElement("p");
+  // Its own class (.galleryNameHead), not .galleryDescHead — the description's label
+  // is targeted by that class elsewhere and this one must not shadow it.
+  nameLabel.className = "hint galleryNameHead";
+  nameLabel.textContent = t("gal_name");
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "galleryRenameInput";
+  nameInput.value = e.displayName || "";
+  nameInput.placeholder = t("gal_namePlaceholder");
+  nameInput.addEventListener("change", async () => {
+    const text = nameInput.value.trim();
+    if (text === (e.displayName || "")) return;
+    try {
+      const r = await fetch("/api/gallery/rename", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: e.path, name: text }) }).then((x) => x.json());
+      if (r && r.ok) {
+        if (r.displayName) e.displayName = r.displayName; else delete e.displayName;   // `e` is the live object in `items`
+        nameLabel.textContent = `${t("gal_name")} · ${t("gal_descSaved")}`;
+        setTimeout(() => { nameLabel.textContent = t("gal_name"); }, 1800);
+        // Repaint the copies already on screen without a refetch.
+        const tile = document.querySelector(`.galleryTile[data-id="${CSS.escape(e.path)}"]`);
+        const nameEl = tile?.querySelector(".galleryTileName");
+        if (nameEl) nameEl.textContent = e.displayName || e.path;
+        const cell = document.querySelector(`.galleryStripCell[data-id="${CSS.escape(e.path)}"] .galleryStripThumb`);
+        if (cell) cell.title = tooltipFor(e);
+      }
+    } catch { /* the box keeps the text; the next blur retries */ }
+  });
+  nameInput.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    nameInput.value = e.displayName || "";
+    nameInput.blur();
+    ev.stopPropagation();
+    ev.preventDefault();
+  });
+  nameInput.addEventListener("focus", () => { nameLabel.textContent = `${t("gal_name")} · ${t("gal_descHint")}`; });
+  nameInput.addEventListener("blur", () => {
+    if (nameLabel.textContent.includes(t("gal_descHint"))) nameLabel.textContent = t("gal_name");
+  });
+  pane.append(nameLabel, nameInput);
+
   // The prompt is provenance — what actually produced this file, and what "Run it
   // again" reloads — so it is shown as-is and not editable.
   if (e.prompt) {
@@ -675,10 +953,14 @@ function renderDetail() {
     [t("gal_fModelFile"), e.modelId && e.model && e.model !== e.modelId ? e.model : ""],
     [t("gal_fSeed"), e.seed],
     [t("gal_fSize"), e.width && e.height ? `${e.width}×${e.height}` : ""],
-    [t("gal_fLength"), e.kind === "video" && e.length ? `${e.length}f${e.fps ? ` @${e.fps}fps` : ""}` : ""],
+    // Frames are what the ledger stores and what a render is configured in; seconds are
+    // what the clip is actually discussed in. Show both rather than making anyone divide.
+    [t("gal_fLength"), e.kind === "video" && e.length
+      ? `${e.length}f${e.fps ? ` @${e.fps}fps · ${(e.length / e.fps).toFixed(1)}s` : ""}` : ""],
     [t("gal_fPrecision"), e.precisionUsed],
     [t("gal_fWhen"), fmtDate(e.ts)],
     [t("gal_fBytes"), fmtSize(e.bytes)],
+    [t("gal_fFolder"), e.folder ? (folderList.find((f) => f.fid === e.folder)?.name || "") : ""],
     [t("gal_fFile"), e.path],
   ];
   for (const [k, v] of rows) {
@@ -719,6 +1001,8 @@ function renderDetail() {
     deps.setInput(`/imagine ${e.prompt}${seedFlag}`);
     closeGallery();
   }, t("gal_rerunHint"));
+  // ✂️ — trim/stitch this clip (and any others picked in the editor's lane later).
+  if (e.kind === "video") act(`✂️ ${t("vedit_open")}`, () => openVideoEditor([e.path]), t("vedit_openHint"));
   act(t("gal_reveal"), async () => {
     await fetch("/api/gallery/reveal", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: e.path }) });
@@ -806,16 +1090,20 @@ async function backfillSpecs(entry) {
     });
     const j = await r.json();
     if (!j || !j.entry) return;
-    // Update every copy: the page list, the filmstrip cache, and the open pane — the
-    // same discipline the ★ rating needs, or the next refresh paints the old values back.
-    // (refreshStrip re-fetches from the ledger, so the strip's tooltip is corrected by
-    // its next natural repaint; patching the cache keeps it right until then.)
+    // Update every copy AND everything already painted from it: the page list, its
+    // tile caption, the filmstrip cache and its tooltip, and the open detail pane. Same
+    // discipline the ★ rating needs — patch the caches or the next refresh paints the
+    // old values back, repaint the DOM or the user has to reopen the gallery to see it.
+    const merged = { ...entry, ...j.entry };
     const patch = (arr) => { const i = arr.findIndex((e) => e.path === entry.path); if (i >= 0) arr[i] = { ...arr[i], ...j.entry }; };
     patch(items);
     patch(stripItems);
+    const tile = document.querySelector(`.galleryTile[data-id="${CSS.escape(entry.path)}"]`);
+    const meta = tile && tile.querySelector(".galleryTileMeta");
+    if (meta) meta.textContent = metaLineFor(items.find((e) => e.path === entry.path) || merged);
     const cell = document.querySelector(`.galleryStripCell[data-id="${CSS.escape(entry.path)}"] .galleryStripThumb`);
-    if (cell) cell.title = tooltipFor({ ...entry, ...j.entry });
-    if (selected && selected.path === entry.path) { selected = { ...selected, ...j.entry }; renderDetail(); }
+    if (cell) cell.title = tooltipFor(merged);
+    if (selected && selected.path === entry.path) { selected = merged; renderDetail(); }
   } catch { /* offline or no ffprobe — the item simply keeps showing what it knows */ }
 }
 
@@ -833,6 +1121,7 @@ async function deleteItem(entry) {
   await fetch("/api/gallery/delete", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids: [entry.path] }) });
   selected = null;
+  selectedIds.delete(entry.path);
   await refresh();
   await refreshStrip();
 }
@@ -883,6 +1172,7 @@ async function tidy() {
     body: JSON.stringify({ ids: orphans.map((e) => e.path) }) });
   await fetch("/api/gallery/compact", { method: "POST" });
   selected = null;
+  selectedIds.clear();
   await refresh();
   await refreshStrip();
 }
@@ -911,6 +1201,7 @@ async function refresh() {
   // entry's model, and filtering before the page limit is what makes it a real filter
   // rather than a narrowing of whatever 200 happened to come back.
   if (model) params.set("model", model);
+  if (activeFolder) params.set("folder", activeFolder);
   const [list, stats] = await Promise.all([
     fetch(`/api/gallery/list?${params}`).then((r) => r.json()).catch(() => ({ items: [] })),
     fetch("/api/gallery/stats").then((r) => r.json()).catch(() => null),
@@ -925,14 +1216,23 @@ async function refresh() {
     return source === "tabs" ? r.live.length > 0 : r.archived.length > 0;
   });
 
+  folderList = (stats && Array.isArray(stats.folders)) ? stats.folders : folderList;
+  // The active folder can vanish under us (deleted from another window): fall back
+  // to "everything" rather than filtering by a fid that matches nothing forever.
+  if (activeFolder && activeFolder !== "root" && !folderList.some((f) => f.fid === activeFolder)) activeFolder = null;
+  renderFolderChips();
+  updateBulkBar();
+
   const grid = el("galleryGrid");
   if (grid) {
     grid.innerHTML = "";
     if (!items.length) {
       const empty = document.createElement("p");
       empty.className = "hint";
-      // "Nothing matches" and "nothing exists" are different things to be told.
-      empty.textContent = all.length ? t("gal_noneMatch") : t("gal_empty");
+      // "Nothing matches", "this folder is empty", and "nothing exists" are three
+      // different things to be told.
+      empty.textContent = all.length ? t("gal_noneMatch")
+        : activeFolder ? t("gal_folderEmpty") : t("gal_empty");
       grid.appendChild(empty);
     }
     for (const e of items) grid.appendChild(tileFor(e));
@@ -970,7 +1270,7 @@ async function refresh() {
       n: stats.count, size: fmtSize(stats.bytes),
       images: stats.images, videos: stats.videos,
       thumbs: fmtSize(stats.thumbBytes),
-    }) + ((source || model || rating) ? ` · ${t("gal_shown", { n: items.length })}` : "");
+    }) + ((source || model || rating || activeFolder) ? ` · ${t("gal_shown", { n: items.length })}` : "");
   }
 
   if (selected && !items.some((e) => e.path === selected.path)) { selected = null; }

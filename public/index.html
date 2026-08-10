@@ -501,10 +501,36 @@
               <button id="galleryTidyBtn" type="button" class="secondary archiveSortBtn" title="Find unreferenced media and stale entries">🧹</button>
             </div>
           </div>
-          <p id="galleryStats" class="hint galleryStats"></p>
           <div class="galleryBody">
             <div id="galleryGrid" class="galleryGrid"></div>
             <aside id="galleryDetail" class="galleryDetail" hidden></aside>
+          </div>
+          <!-- Footer, not header (user's call): the grid is what the eye should land
+               on. Bulk-select actions (hidden until something is ticked), then the
+               virtual folder chips — filters and drop targets at once, pure ledger
+               metadata (server/gallery.js) — then the totals line, which also hosts
+               upload / reclaim progress notes (gallery.js). -->
+          <div id="galleryBulkBar" class="galleryBulkBar" hidden></div>
+          <div id="galleryFolders" class="galleryFolders"></div>
+          <p id="galleryStats" class="hint galleryStats"></p>
+        </div>
+
+        <!-- Video editor overlay (public/js/video-edit.js; engine server/video-edit.js):
+             trim + stitch gallery clips with local ffmpeg. Opened from the gallery's
+             ✂️ entry points. AFTER the gallery overlay in the DOM so it stacks above it
+             (same z-index). Body content is built by JS. -->
+        <div id="veditOverlay" class="archiveOverlay">
+          <div class="archiveHeader">
+            <button id="veditCloseBtn" type="button" class="archiveBackBtn" aria-label="Back">←</button>
+            <h2 id="veditTitle" class="archiveTitle">✂️ Video editor</h2>
+          </div>
+          <div class="veditBody">
+            <div class="veditPreviewWrap">
+              <video id="veditPreview" controls playsinline></video>
+            </div>
+            <div id="veditLane" class="veditLane"></div>
+            <div id="veditTrim" class="veditTrim"></div>
+            <div id="veditExportBar" class="veditExportBar"></div>
           </div>
         </div>
 

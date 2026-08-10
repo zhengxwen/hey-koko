@@ -18,7 +18,7 @@ import { getTab, switchTab } from './tabs.js';
 import { t, getPrompt } from './i18n.js';
 import { generateImage } from './image-gen.js';
 import { generateSpeech } from './voice-gen.js';
-import { setServerQueueDeps, cancelServerJob, ackServerJob, pauseServerJob, resumeServerJob, reorderServerJobs, cancelConversationServerJobs, serverJobTiming } from './server-queue.js';   // Option B
+import { setServerQueueDeps, cancelServerJob, ackServerJob, pauseServerJob, resumeServerJob, reorderServerJobs, cancelConversationServerJobs, serverJobTiming, veditFetch } from './server-queue.js';   // Option B
 
 // Feature flag: the multi-endpoint "ComfyUI workers (parallel)" manager. When false the
 // workers bar is hidden in the drawer AND refreshBgWorkers ignores any saved workers,
@@ -463,6 +463,8 @@ async function runJob(job) {
     await runUrl(job, sink);
   } else if (job.kind === 'libimport') {
     await runLibImport(job, sink);
+  } else if (job.kind === 'vedit') {
+    await runVedit(job, sink);
   } else {
     // image OR video OR mesh — generateImage routes to generateVideo / generateMesh
     // by the selected model's capability set.
@@ -588,6 +590,18 @@ async function runUrl(job, sink) {
 async function runLibImport(job, sink) {
   if (_libraryImport) await _libraryImport(job.payload || {}, sink);
   removePlaceholder(job);
+}
+
+// Simple video editor (kind 'vedit'): drawer-only job — the server trims/concats with
+// local ffmpeg (/api/video-edit via jobs.js) and files the result into the gallery.
+// No chat bubble; on success the filmstrip flashes the new clip (hk-media-added).
+async function runVedit(job, sink) {
+  const r = await veditFetch(job.payload || {}, {
+    bgJob: job, conversationId: job.tabId, msgId: job.msgId, label: job.label, signal: sink.signal,
+  });
+  const d = await r.json();
+  if (!r.ok || !d || !d.id) { sink.fail((d && d.error) || t('vedit_failed')); return; }
+  window.dispatchEvent(new CustomEvent('hk-media-added', { detail: { ids: [d.id] } }));
 }
 
 // Background sink: same shape as foregroundSink, but writes to the job record +
@@ -1005,7 +1019,7 @@ export function jumpToJob(jobId) {
 
 // ---- drawer UI -------------------------------------------------------------
 
-const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', mesh: '🧊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄' };
+const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', mesh: '🧊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄', vedit: '✂️' };
 
 export function openBgDrawer(flashJobId) {
   state.bgDrawerOpen = true;
@@ -1377,6 +1391,8 @@ function jobDetail(job) {
   } else if (job.kind === 'image' || job.kind === 'video' || job.kind === 'mesh') {
     const m = p.modelOverride || {};
     return clipCtx(m.comfyModel || m.imageModel || '', 44);
+  } else if (job.kind === 'vedit') {
+    return t('vedit_jobDetail', { n: (p.clips || []).length });
   } else if (job.kind === 'libimport') {
     // Once a YouTube import has fetched the video title (early, before the whisper pass),
     // show "YouTube · <video title>" in place of the URL (the full URL stays in the tooltip).

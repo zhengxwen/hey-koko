@@ -281,6 +281,22 @@ async function runJob(job) {
     return result;
   }
 
+  if (job.kind === "vedit") {                    // /api/video-edit → streamed NDJSON (progress + done)
+    let result = null, errored = null;
+    await loopbackStream("/api/video-edit", job.payload, ctrl.signal, (line) => {
+      let o; try { o = JSON.parse(line); } catch { return; }
+      if (o.type === "progress") {
+        if (o.stage) job.label = o.stage;
+        job.progress = o.progress || null;
+        emitUpdate(job);
+      } else if (o.type === "done") result = o.result;
+      else if (o.type === "error") errored = o.error;
+    });
+    if (errored) throw new Error(errored);
+    if (!result) throw new Error("video edit: no result");
+    return result;                               // { id, entry, codec }
+  }
+
   if (job.kind === "libimport") return runLibImportJob(job, ctrl.signal);
   if (job.kind === "starmap") return require("./star-map").computeStarmap(job, ctrl.signal, emitUpdate);
 

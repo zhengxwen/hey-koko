@@ -608,6 +608,9 @@ import("./gallery.js").then((g) => {
   g.initGallery();
 });
 
+// The video editor overlay: trim + stitch gallery clips (js/video-edit.js).
+import("./video-edit.js").then((ve) => ve.initVideoEditor());
+
 if (dom.memoryExtractBtn) {
   let extracting = false;
   dom.memoryExtractBtn.addEventListener("click", async () => {

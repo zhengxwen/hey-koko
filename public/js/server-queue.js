@@ -155,6 +155,14 @@ export function youtubeFetch(payload, meta) {
     (err) => { if (err && err.name === 'AbortError') throw err; return { ok: false, json: async () => ({ error: (err && err.message) || 'failed' }) }; },
   );
 }
+// Simple video editor: trim/concat runs as ONE server job (local lane, ffmpeg);
+// result is { id, entry, codec } — the freshly-filed gallery entry.
+export function veditFetch(payload, meta) {
+  return submitAndAwait(payload, { ...meta, kind: 'vedit', engine: 'vedit' }).then(
+    (data) => ({ ok: true, json: async () => data }),
+    (err) => { if (err && err.name === 'AbortError') throw err; return { ok: false, json: async () => ({ error: (err && err.message) || 'failed' }) }; },
+  );
+}
 // Knowledge-library import: the whole pipeline (fetch/whisper/parse → embed → distill
 // card) runs as ONE server job in the 'lib' lane; result is { docId, blockCount, … }.
 export function libImportFetch(payload, meta) {

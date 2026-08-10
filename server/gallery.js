@@ -42,6 +42,7 @@ const EXT_MIME = Object.fromEntries(Object.entries(MIME_EXT).map(([m, e]) => [e,
 
 let entries = null;          // Map<id, entry> — live entries, tombstones applied
 let hashIndex = null;        // Map<contentHash, id> — upload dedup
+let folders = null;          // Map<fid, {fid, name, ts}> — virtual folders (metadata only)
 let tombstoneCount = 0;
 
 function ensureDir(dir) {
@@ -54,6 +55,7 @@ function load() {
   if (entries) return;
   entries = new Map();
   hashIndex = new Map();
+  folders = new Map();
   tombstoneCount = 0;
   let raw = "";
   try { raw = fs.readFileSync(INDEX_FILE, "utf8"); } catch { return; }
@@ -67,6 +69,12 @@ function load() {
       if (gone?.contentHash) hashIndex.delete(gone.contentHash);
       entries.delete(rec.path);
       tombstoneCount++;
+    } else if (rec.op === "folder") {
+      // Virtual folder: fid is the stable identity, the name is just its label.
+      // A rename is the same fid appended with a new name — later line wins.
+      if (rec.fid) folders.set(rec.fid, { fid: rec.fid, name: rec.name || "", ts: rec.ts });
+    } else if (rec.op === "folder-delete") {
+      if (rec.fid) folders.delete(rec.fid);
     } else if (rec.path) {
       entries.set(rec.path, rec);
       if (rec.contentHash) hashIndex.set(rec.contentHash, rec.path);
@@ -247,11 +255,15 @@ function absPathOf(id) {
   return abs.startsWith(GALLERY_DIR) ? abs : null;
 }
 
-function list({ type, model, source, q, rating, before, limit = 60 } = {}) {
+function list({ type, model, source, q, rating, before, limit = 60, folder } = {}) {
   load();
   const needle = String(q || "").toLowerCase();
   let all = [...entries.values()];
   if (type) all = all.filter((e) => e.kind === type);
+  // Folder facet: undefined = everything, "root" = unfiled, else a fid. An entry whose
+  // folder was deleted (dangling fid) reads as root everywhere.
+  if (folder === "root") all = all.filter((e) => !e.folder || !folders.has(e.folder));
+  else if (folder) all = all.filter((e) => e.folder === folder);
   // Named values rather than numbers, because "0" would otherwise be ambiguous between
   // "rated exactly zero" and "rated at least zero" (= rated at all). Note every test is
   // written against `e.rating != null`: `>= 3` on an absent rating is false anyway, but
@@ -277,7 +289,7 @@ function list({ type, model, source, q, rating, before, limit = 60 } = {}) {
     });
   }
   if (source) all = all.filter((e) => (e.source || "generated") === source);
-  if (needle) all = all.filter((e) => `${e.prompt || ""} ${e.originalName || ""} ${e.desc || ""}`.toLowerCase().includes(needle));
+  if (needle) all = all.filter((e) => `${e.prompt || ""} ${e.originalName || ""} ${e.desc || ""} ${e.displayName || ""}`.toLowerCase().includes(needle));
   all.sort((a, b) => b.ts - a.ts || (a.path < b.path ? 1 : -1));
   if (before) all = all.filter((e) => e.ts < Number(before));
   const page = all.slice(0, Math.min(500, Math.max(1, Number(limit) || 60)));
@@ -313,7 +325,8 @@ function stats() {
     }
   };
   walk(GALLERY_DIR);
-  return { count: entries.size, bytes, images, videos, other, thumbBytes, tombstones: tombstoneCount, dir: GALLERY_DIR, models };
+  // Folder facet with zero-count folders included — an empty folder exists to be filled.
+  return { count: entries.size, bytes, images, videos, other, thumbBytes, tombstones: tombstoneCount, dir: GALLERY_DIR, models, folders: listFolders() };
 }
 
 // ---------------------------------------------------------------- delete
@@ -379,6 +392,103 @@ function rate(id, rating) {
   const n = Number(rating);
   if (rating == null || rating === "" || !Number.isFinite(n)) delete next.rating;
   else next.rating = Math.max(0, Math.min(5, Math.round(n * 2) / 2));
+  entries.set(id, next);
+  append(next);
+  return next;
+}
+
+// ---------------------------------------------------------------- virtual folders & display names
+//
+// Both are metadata-only: the on-disk path (= the id, = every URL ever written into a
+// conversation or archive) never changes, which is what makes them safe. A folder is a
+// ledger op record with a minted fid; entries point at the fid, so renaming a folder
+// touches one line and zero entries. Display names never touch the filesystem either,
+// so they skip sanitize() — that policy exists for paths, not labels.
+
+function cleanDisplayName(s) {
+  return String(s == null ? "" : s).replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, 120);
+}
+
+function listFolders() {
+  load();
+  const count = new Map();
+  for (const e of entries.values()) {
+    if (e.folder && folders.has(e.folder)) count.set(e.folder, (count.get(e.folder) || 0) + 1);
+  }
+  return [...folders.values()]
+    .map((f) => ({ fid: f.fid, name: f.name, n: count.get(f.fid) || 0 }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function createFolder(name) {
+  load();
+  const clean = cleanDisplayName(name);
+  if (!clean) return { error: "empty name" };
+  for (const f of folders.values()) if (f.name === clean) return { error: "duplicate name", fid: f.fid };
+  const fid = `f_${crypto.randomBytes(4).toString("hex")}`;
+  const rec = { op: "folder", fid, name: clean, ts: Date.now() };
+  folders.set(fid, { fid, name: clean, ts: rec.ts });
+  append(rec);
+  return { fid, name: clean };
+}
+
+function renameFolder(fid, name) {
+  load();
+  const cur = folders.get(fid);
+  if (!cur) return null;
+  const clean = cleanDisplayName(name);
+  if (!clean) return { error: "empty name" };
+  const rec = { op: "folder", fid, name: clean, ts: Date.now() };
+  folders.set(fid, { fid, name: clean, ts: rec.ts });
+  append(rec);
+  return { fid, name: clean };
+}
+
+// Deleting a folder never deletes media: its entries drop back to the root. The sweep
+// appends de-foldered entry lines so counts stay honest without waiting for a compact.
+function deleteFolder(fid) {
+  load();
+  if (!folders.has(fid)) return null;
+  let swept = 0;
+  for (const [id, e] of entries) {
+    if (e.folder !== fid) continue;
+    const next = { ...e };
+    delete next.folder;
+    entries.set(id, next);
+    append(next);
+    swept++;
+  }
+  folders.delete(fid);
+  append({ op: "folder-delete", fid, ts: Date.now() });
+  return { swept };
+}
+
+// Bulk move. fid === null moves back to the root. Same append-full-record discipline
+// as describe()/rate().
+function setFolder(ids, fid) {
+  load();
+  if (fid != null && !folders.has(fid)) return { error: "no such folder" };
+  let moved = 0;
+  for (const id of ids || []) {
+    const cur = entries.get(id);
+    if (!cur) continue;
+    if ((cur.folder || null) === (fid || null)) { moved++; continue; }
+    const next = { ...cur };
+    if (fid) next.folder = fid; else delete next.folder;
+    entries.set(id, next);
+    append(next);
+    moved++;
+  }
+  return { moved };
+}
+
+function setDisplayName(id, name) {
+  load();
+  const cur = entries.get(id);
+  if (!cur) return null;
+  const clean = cleanDisplayName(name);
+  const next = { ...cur };
+  if (clean) next.displayName = clean; else delete next.displayName;
   entries.set(id, next);
   append(next);
   return next;
@@ -467,7 +577,11 @@ function compact() {
     const abs = absPathOf(e.path);
     return abs && fs.existsSync(abs);
   });
-  fs.writeFileSync(tmp, live.map((e) => JSON.stringify(e)).join("\n") + (live.length ? "\n" : ""));
+  // Folder records first: they are op lines, not entries, and would otherwise be
+  // silently destroyed by the rewrite — taking every empty folder with them.
+  const folderLines = [...folders.values()].map((f) => JSON.stringify({ op: "folder", fid: f.fid, name: f.name, ts: f.ts }));
+  const lines = [...folderLines, ...live.map((e) => JSON.stringify(e))];
+  fs.writeFileSync(tmp, lines.join("\n") + (lines.length ? "\n" : ""));
   fs.renameSync(tmp, INDEX_FILE);
   const dropped = entries.size - live.length;
   entries = null;   // force reload
@@ -618,6 +732,7 @@ function handleList(req, res) {
       rating: u.searchParams.get("rating") || undefined,
       before: u.searchParams.get("before") || undefined,
       limit: u.searchParams.get("limit") || undefined,
+      folder: u.searchParams.get("folder") || undefined,
     }));
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
@@ -630,15 +745,39 @@ function handleFile(req, res) {
     sendJson(res, 404, { error: "not in gallery" });
     return;
   }
-  res.writeHead(200, {
+  const total = fs.statSync(abs).size;
+  const headers = {
     "Content-Type": entry.mime || "application/octet-stream",
-    "Content-Length": fs.statSync(abs).size,
     // Content at a given id never changes (a re-render mints a new id), so caching is
     // safe and worth a lot for video. Deliberately NOT "immutable"/a year: deleting
     // from the gallery has to actually stop showing the artifact, so a reload
     // revalidates and a day at most papers over it.
     "Cache-Control": "public, max-age=86400",
-  });
+    // Without this, <video> cannot seek past what it has buffered: a scrub over a
+    // multi-hundred-MB clip would re-download from byte 0 every time.
+    "Accept-Ranges": "bytes",
+  };
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers?.range || ""));
+  if (m && (m[1] || m[2])) {
+    // bytes=a-b, bytes=a- (open-ended), bytes=-n (suffix: last n bytes).
+    let start = m[1] ? parseInt(m[1], 10) : total - parseInt(m[2], 10);
+    let end = m[1] && m[2] ? parseInt(m[2], 10) : total - 1;
+    if (start < 0) start = 0;
+    if (end > total - 1) end = total - 1;
+    if (start > end || start >= total) {
+      res.writeHead(416, { "Content-Range": `bytes */${total}` });
+      res.end();
+      return;
+    }
+    res.writeHead(206, {
+      ...headers,
+      "Content-Range": `bytes ${start}-${end}/${total}`,
+      "Content-Length": end - start + 1,
+    });
+    fs.createReadStream(abs, { start, end }).pipe(res);
+    return;
+  }
+  res.writeHead(200, { ...headers, "Content-Length": total });
   fs.createReadStream(abs).pipe(res);
 }
 
@@ -698,6 +837,54 @@ async function handleRate(req, res) {
     const e = rate(String(body.id || ""), body.rating);
     if (!e) { sendJson(res, 404, { error: "not in gallery" }); return; }
     sendJson(res, 200, { ok: true, rating: e.rating ?? null });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+// { id, name } — set/clear the display name. Empty name clears back to the basename.
+async function handleRename(req, res) {
+  try {
+    const body = await readBody(req);
+    const e = setDisplayName(String(body.id || ""), body.name);
+    if (!e) { sendJson(res, 404, { error: "not in gallery" }); return; }
+    sendJson(res, 200, { ok: true, displayName: e.displayName || "" });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+// { ids, folder } — bulk move into a folder (fid) or back to the root (null).
+async function handleMove(req, res) {
+  try {
+    const body = await readBody(req);
+    const r = setFolder(body.ids || [], body.folder ?? null);
+    if (r.error) { sendJson(res, 400, r); return; }
+    sendJson(res, 200, { ok: true, ...r });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+async function handleFolderCreate(req, res) {
+  try {
+    const body = await readBody(req);
+    const r = createFolder(body.name);
+    if (r.error) { sendJson(res, 400, r); return; }
+    sendJson(res, 200, { ok: true, ...r });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+async function handleFolderRename(req, res) {
+  try {
+    const body = await readBody(req);
+    const r = renameFolder(String(body.fid || ""), body.name);
+    if (!r) { sendJson(res, 404, { error: "no such folder" }); return; }
+    if (r.error) { sendJson(res, 400, r); return; }
+    sendJson(res, 200, { ok: true, ...r });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+async function handleFolderDelete(req, res) {
+  try {
+    const body = await readBody(req);
+    const r = deleteFolder(String(body.fid || ""));
+    if (!r) { sendJson(res, 404, { error: "no such folder" }); return; }
+    sendJson(res, 200, { ok: true, ...r });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
@@ -818,8 +1005,10 @@ async function handleImport(req, res) {
 
 module.exports = {
   GALLERY_DIR, record, recordMany, get, list, stats, remove, describe, rate, compact, archiveRefs, makeThumb,
+  setDisplayName, setFolder, createFolder, renameFolder, deleteFolder, listFolders, absPathOf, probeSpecs,
   handleList, handleFile, handleThumb, handlePutThumb, handleDelete, handleDescribe, handleRate, handleStats,
   handleRefs, handleCompact, handleImport, handleUpload, handleReveal, handleProbe,
+  handleRename, handleMove, handleFolderCreate, handleFolderRename, handleFolderDelete,
   backfill, missingSpecs,
-  _reset() { entries = null; hashIndex = null; },   // tests
+  _reset() { entries = null; hashIndex = null; folders = null; },   // tests
 };

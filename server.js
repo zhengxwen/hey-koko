@@ -59,6 +59,7 @@ const { getCapabilities, parseFile, parseHtml } = require("./server/parse-file")
 const bgQueue = require("./server/jobs");   // Option B: server-side background job queue
 const vendor = require("./server/vendor");  // pinned third-party UI libs: local-first, CDN fallback
 const gallery = require("./server/gallery"); // on-disk home for generated/uploaded media
+const { handleVideoEdit } = require("./server/video-edit"); // trim/concat gallery clips locally (ffmpeg)
 const skills = require("./server/skills");   // model prompt-writing guides for /skill
 const feeds = require("./server/feeds");    // news-feeds.md: news subscription library
 
@@ -521,6 +522,14 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/gallery/import") { gallery.handleImport(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/upload") { gallery.handleUpload(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/reveal") { gallery.handleReveal(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/rename") { gallery.handleRename(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/move") { gallery.handleMove(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/folder") { gallery.handleFolderCreate(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/folder-rename") { gallery.handleFolderRename(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/folder-delete") { gallery.handleFolderDelete(req, res); return; }
+
+  // Simple video editor: trim + concat gallery clips with local ffmpeg (server/video-edit.js).
+  if (req.method === "POST" && req.url === "/api/video-edit") { handleVideoEdit(req, res); return; }
 
   if (req.method === "GET" && req.url.startsWith("/vendor/")) {
     vendor.serveVendor(req, res);   // disk first, else checksum-verified CDN fallback
