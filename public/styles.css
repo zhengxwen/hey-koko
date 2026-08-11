@@ -7714,10 +7714,9 @@ body.isResizingComposer {
   outline-offset: -6px;
 }
 
-/* Only the strip needs a positioning context for the hint; the overlay already has
-   one, and giving it `position: relative` would cancel its `inset: 0` and collapse
-   it to content height the moment a drag started. */
-.galleryStrip.isDropTarget { position: relative; }
+/* The hint is placed against its zone. The strip already carries `position: relative`
+   (see .galleryStrip); the overlay must NOT — that would cancel its `inset: 0` and
+   collapse it to content height the moment a drag started. */
 
 #galleryOverlay.isDropTarget::after,
 .galleryStrip.isDropTarget::after {
@@ -7742,6 +7741,9 @@ body.isResizingComposer {
 .galleryStrip {
   display: flex;
   align-items: center;
+  /* Positioning context for the drop hint and the drop-report pill, both of which are
+     absolutely placed against the strip. */
+  position: relative;
   gap: 6px;
   padding: 4px 8px;
   border-top: 1px solid var(--line);
@@ -7763,6 +7765,43 @@ body.isResizingComposer {
      padding box, so without the horizontal part the first and last frames grow
      straight into the edge and lose a sliver. */
   padding: 6px 5px;
+}
+
+/* "You are looking at a subset." The strip follows the gallery's filter, and that filter
+   is set in a panel that is usually shut — without this chip a filtered strip is
+   indistinguishable from media that has gone missing. Clicking it clears the filter.
+   flex: none so it keeps its width and the row of frames gives way instead. */
+.galleryStripFilter {
+  flex: none;
+  align-self: center;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 8px;
+  min-height: 0;
+  border: 1px solid var(--accent, #6aa9ff);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--accent, #6aa9ff);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.galleryStripFilter:hover { background: var(--surface-hover); }
+
+/* The strip with nothing in it. Centred in the row rather than left-aligned like a
+   frame would be, so it reads as a state of the whole strip, not as an item in it. */
+.galleryStripEmpty {
+  margin: 0;
+  align-self: center;
+  flex: 1;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
 }
 
 /* Its switch lives in the composer now, so it can hide completely. */
@@ -7908,6 +7947,47 @@ body.isResizingComposer {
 .galleryStripCell.isNew .galleryStripThumb {
   box-shadow: 0 0 0 2px var(--accent, #6aa9ff);
   animation: galleryJumpFlash 1.2s ease-in-out 2;
+}
+
+/* A file dropped that was already filed. Amber, not the accent: "this one, already
+   yours" is a different message from "this one is new", and the two can light up in
+   the same drop. Same glow shape so they read as one family. */
+.galleryStripCell.isDupe .galleryStripThumb,
+.galleryTile.isDupe {
+  box-shadow: 0 0 0 2px #e0a63c;
+  /* Pulses the ring, not a background colour: a thumbnail covers its own background, so
+     the jump-flash keyframe would be invisible under the picture. box-shadow costs no
+     layout, so the frame still does not move. */
+  animation: galleryDupePulse 1s ease-in-out 3;
+}
+
+@keyframes galleryDupePulse {
+  0%, 100% { box-shadow: 0 0 0 2px #e0a63c; }
+  50% { box-shadow: 0 0 0 5px rgba(224, 166, 60, 0.45); }
+}
+
+.galleryTile.isNew {
+  box-shadow: 0 0 0 2px var(--accent, #6aa9ff);
+  animation: galleryJumpFlash 1.2s ease-in-out 2;
+}
+
+/* Drop report for the filmstrip, standing in for the overlay footer when the overlay
+   is shut. Pinned to the strip's own box (see .galleryStrip position) so the row can
+   scroll underneath it. Inside the strip and clear of the ⤢ button: above it would land
+   on the composer's Send, and as a flex item it would squeeze the frames sideways for
+   the five seconds it is up. */
+.galleryStripNote {
+  position: absolute;
+  right: 34px;
+  top: 3px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: var(--surface-hover, rgba(0, 0, 0, 0.75));
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 4;
 }
 
 /* The one editable field in the detail pane (server/gallery.js `describe`). */

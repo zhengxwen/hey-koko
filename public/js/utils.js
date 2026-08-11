@@ -45,12 +45,19 @@ function refUrl(prefix, id) {
 }
 
 export function galleryUrl(id) { return refUrl(GALLERY_PREFIX, id); }
-export function galleryThumbUrl(id) { return refUrl(GALLERY_THUMB_PREFIX, id); }
+// `variant` asks the server for a smaller rendition of the same thumbnail (?s=strip).
+// It is a rendering detail, not part of the identity — a URL carrying one is something
+// to put in an <img>, never something to store in a message.
+export function galleryThumbUrl(id, variant) {
+  return refUrl(GALLERY_THUMB_PREFIX, id) + (variant ? `?s=${encodeURIComponent(variant)}` : "");
+}
 
 export function galleryIdOf(v) {
   if (!isMediaRef(v)) return null;
   const prefix = v.startsWith(GALLERY_PREFIX) ? GALLERY_PREFIX : GALLERY_THUMB_PREFIX;
-  return decodeURIComponent(v.slice(prefix.length));
+  // Drop any query string before decoding: the id is the path, and a rendition hint that
+  // leaked into a stored slot must not become part of the file's identity.
+  return decodeURIComponent(v.slice(prefix.length).split("?")[0]);
 }
 
 // THE display name of a piece of media: its gallery filename, without the "2026-08/"

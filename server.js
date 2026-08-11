@@ -530,6 +530,7 @@ const server = http.createServer((req, res) => {
 
   // Gallery: on-disk home of every generated/uploaded artifact (server/gallery.js).
   if (req.method === "GET" && req.url.startsWith("/api/gallery/list")) { gallery.handleList(req, res); return; }
+  if (req.method === "GET" && req.url.startsWith("/api/gallery/entry")) { gallery.handleEntry(req, res); return; }
   if (req.method === "GET" && req.url.startsWith("/api/gallery/file/")) { gallery.handleFile(req, res); return; }
   if (req.method === "GET" && req.url.startsWith("/api/gallery/thumb/")) { gallery.handleThumb(req, res); return; }
   if (req.method === "GET" && req.url.startsWith("/api/gallery/stats")) { gallery.handleStats(req, res); return; }

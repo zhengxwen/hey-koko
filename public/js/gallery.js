@@ -249,6 +249,11 @@ function tileFor(entry) {
   rateBadge.hidden = entry.rating == null;
   btn.appendChild(rateBadge);
 
+  // Same two highlights the filmstrip uses, for the same reason — a drop onto the
+  // overlay has to answer "what did that do?" wherever the user was looking.
+  if (flashIds.has(entry.path)) btn.classList.add("isNew");
+  else if (dupIds.has(entry.path)) btn.classList.add("isDupe");
+
   btn.addEventListener("click", () => selectItem(entry.path));
   return btn;
 }
@@ -453,9 +458,37 @@ function updateBulkBar() {
 // ---------------------------------------------------------------------------
 
 const STRIP_KEY = "heykoko-gallery-strip";
-const STRIP_LIMIT = 40;
-let stripItems = [];
+// A page, not a ceiling: scrolling to the end of the row asks for the next one. The
+// upper bound exists because every loaded frame is a decoded bitmap held in memory, and
+// a strip nobody scrolls back through should not grow without limit.
+const STRIP_PAGE = 40;
+const STRIP_MAX = 480;
+let stripItems = [];            // what is on the row now, oldest page last
+let stripCursor = null;         // {ts, path} of the last SERVER item, for the next page
+let stripHasMore = false;
+let stripKey = "";              // the filter the loaded pages belong to; a change resets paging
+let stripLoading = false;
 let flashIds = new Set();     // ids to highlight on the next strip render
+// Dropping a file that is already filed adds nothing, so "nothing happened" is exactly
+// what the screen would otherwise show. These ids get their own highlight — the answer
+// to "did that work?" is the file itself, pointed at.
+let dupIds = new Set();
+// Entries for ids that must be shown whether or not the current page or the current
+// filter would have included them: a duplicate deep in the ledger, or a render that
+// landed while the gallery is filtered to something else.
+const pinEntries = new Map();
+let pinnedCount = 0;            // how many the last render had to prepend
+// ONE timer, started by the event that lit something up — never by a render. Renders
+// come from everywhere (a finished job, opening the overlay, a rating), and letting each
+// one queue its own countdown had two faces of the same bug: the oldest timer went off
+// moments after a fresh drop and stole its highlight, while a busy strip kept pushing the
+// deadline back so a ring could sit there indefinitely.
+let highlightTimer = null;
+const HIGHLIGHT_MS = 4000;
+function armHighlightClear() {
+  clearTimeout(highlightTimer);
+  highlightTimer = setTimeout(clearDropHighlights, HIGHLIGHT_MS);
+}
 
 const stripOpen = () => { try { return localStorage.getItem(STRIP_KEY) !== "0"; } catch { return true; } };
 
@@ -529,7 +562,10 @@ function stripTile(entry) {
   img.loading = "lazy";
   // alt is read aloud and shown when the thumbnail fails — the subject, not the specs.
   img.alt = entry.displayName || entry.prompt || entry.originalName || entry.kind;
-  img.src = galleryThumbUrl(entry.path);
+  // The strip rendition: ~10KB and ~90KB of decoded bitmap per frame instead of ~50KB
+  // and ~390KB. That ratio is what lets the row page on and on without the tab growing
+  // heavier every time the user scrolls back through it.
+  img.src = galleryThumbUrl(entry.path, "strip");
   img.onerror = () => { img.remove(); btn.textContent = entry.kind === "video" ? "▶" : entry.kind === "audio" ? "🔊" : "3D"; };
   btn.appendChild(img);
   // Clicking a frame opens the gallery on it — the strip is a shortcut into the
@@ -576,32 +612,211 @@ function stripTile(entry) {
   rateBadge.textContent = ratingLabel(entry.rating);
   rateBadge.hidden = entry.rating == null;
   btn.appendChild(rateBadge);
-  if (flashIds.has(entry.path)) cell.classList.add("isNew");
+  cell.dataset.sig = stripSig(entry);
+  paintStripHighlight(cell);
   return cell;
 }
 
+// Everything a frame draws that can change without the file changing. The diff rebuilds
+// a cell only when this moves, so a refresh normally touches no DOM at all — which is
+// what keeps the row's scroll position (and its decoded bitmaps) through a refresh.
+function stripSig(e) {
+  return [e.rating ?? "", e.displayName || "", e.width || "", e.height || "", e.fps || "",
+          e.length || "", e.bytes || "", (e.prompt || e.desc || "").length].join("|");
+}
+
+// Drop two copies of the same picture in one go and the second one dedups against the
+// first: that file is new, not a duplicate of something you already had. New wins.
+function paintStripHighlight(cell) {
+  const id = cell.dataset.id;
+  cell.classList.toggle("isNew", flashIds.has(id));
+  cell.classList.toggle("isDupe", !flashIds.has(id) && dupIds.has(id));
+}
+
+// One timer takes the highlights off both views, because one drop can light up both.
+function clearDropHighlights() {
+  clearTimeout(highlightTimer);
+  highlightTimer = null;
+  flashIds.clear();
+  dupIds.clear();
+  pinEntries.clear();
+  document.querySelectorAll(".galleryTile.isNew, .galleryTile.isDupe, .galleryStripCell.isNew, .galleryStripCell.isDupe")
+    .forEach((n) => n.classList.remove("isNew", "isDupe"));
+  // A pinned frame sits out of date order (or outside the filter entirely), so it cannot
+  // just quietly lose its ring and stay — once it has been seen, put the strip back the
+  // way the gallery's filter has it.
+  if (pinnedCount) { pinnedCount = 0; refreshStrip(); }
+}
+
+// Ids that have to appear whatever the page and the filter say: a duplicate matched deep
+// in the ledger, or a render that landed while the gallery is filtered to something else
+// ("where did my picture go?" is not an acceptable answer to finishing a render). Their
+// entries come free with a dedup upload; anything else is fetched by id.
+async function pinsToShow() {
+  const wanted = [...new Set([...flashIds, ...dupIds])];
+  if (!wanted.length) return [];
+  const have = new Set(stripItems.map((e) => e.path));
+  const missing = wanted.filter((id) => !have.has(id));
+  await Promise.all(missing.filter((id) => !pinEntries.has(id)).map(async (id) => {
+    try {
+      const r = await fetch(`/api/gallery/entry?id=${encodeURIComponent(id)}`);
+      const e = r.ok ? await r.json() : null;
+      if (e && e.path) pinEntries.set(id, e);
+    } catch { /* it will simply not be pinned */ }
+  }));
+  return missing.map((id) => pinEntries.get(id)).filter(Boolean).sort((a, b) => b.ts - a.ts);
+}
+
+// Re-read the strip. Keeps whatever depth the user has already scrolled to, so a finished
+// render does not throw them back to the first page.
 async function refreshStrip() {
   const row = el("galleryStripRow");
   if (!row || !stripOpen()) return;
+  const f = currentFilter();
+  const sameFilter = filterKey(f) === stripKey;
+  const depth = sameFilter ? Math.min(Math.max(stripItems.length, STRIP_PAGE), STRIP_MAX) : STRIP_PAGE;
+  await loadStripPage(f, { reset: true, limit: depth });
+  // A new filter is a new question — start it at the beginning. Leaving the old offset
+  // in place also means the browser clamps it to the end of the shorter list, which the
+  // scroll handler reads as "they want more" and pages in the rest immediately.
+  if (!sameFilter) row.scrollLeft = 0;
+  await paintStrip();
+}
+
+// One page of the gallery's current filter. `reset` starts over at the newest; otherwise
+// it continues from the cursor, which is the last SERVER item — not the last displayed
+// one, since the source facet is filtered here and would otherwise skip ahead.
+async function loadStripPage(f, { reset, limit = STRIP_PAGE } = {}) {
+  if (stripLoading) return;
+  stripLoading = true;
   try {
-    const r = await fetch(`/api/gallery/list?limit=${STRIP_LIMIT}`).then((x) => x.json());
-    stripItems = r.items || [];
-  } catch { return; }
-  row.innerHTML = "";
-  for (const e of stripItems) row.appendChild(stripTile(e));
-  if (flashIds.size) {
-    const first = row.querySelector(".galleryStripCell.isNew");
+    const params = filterParams(f, { limit: String(limit) });
+    if (!reset && stripCursor) {
+      params.set("before", String(stripCursor.ts));
+      params.set("beforePath", stripCursor.path);
+    }
+    let r;
+    try { r = await fetch(`/api/gallery/list?${params}`).then((x) => x.json()); }
+    catch { return; }
+    const raw = r.items || [];
+    const last = raw[raw.length - 1];
+    if (reset) stripCursor = null;
+    if (last) stripCursor = { ts: last.ts, path: last.path };
+    const page = applySourceFilter(raw, f.source);
+    stripItems = reset ? page : [...stripItems, ...page];
+    stripKey = filterKey(f);
+    stripHasMore = !!r.hasMore && stripItems.length < STRIP_MAX;
+  } finally { stripLoading = false; }
+}
+
+// Keyed diff, not innerHTML = "". A rebuild would reset the row's scroll position on
+// every unrelated refresh — unbearable once the strip is something you scroll back
+// through — and would re-decode every visible thumbnail while it was at it.
+async function paintStrip() {
+  const row = el("galleryStripRow");
+  if (!row) return;
+  const f = currentFilter();
+  const pins = await pinsToShow();
+  pinnedCount = pins.length;
+  const shown = pins.length ? [...pins, ...stripItems] : stripItems;
+
+  const existing = new Map();
+  for (const node of [...row.children]) {
+    if (node.dataset && node.dataset.id) existing.set(node.dataset.id, node);
+    else node.remove();      // the empty-state paragraph
+  }
+  let at = row.firstChild;
+  for (const e of shown) {
+    let cell = existing.get(e.path);
+    if (cell && cell.dataset.sig !== stripSig(e)) { const fresh = stripTile(e); cell.replaceWith(fresh); cell = fresh; }
+    else if (!cell) cell = stripTile(e);
+    else paintStripHighlight(cell);
+    existing.delete(e.path);
+    if (at === cell) at = cell.nextSibling;
+    else row.insertBefore(cell, at);
+  }
+  for (const gone of existing.values()) gone.remove();
+
+  renderStripFilterChip(f);
+
+  if (!shown.length) {
+    const empty = document.createElement("p");
+    empty.className = "galleryStripEmpty";
+    // "Nothing matches the filter", "this folder is empty" and "nothing exists yet" are
+    // three different things to be told — the same distinction the grid makes. A blank
+    // bar, which is what this used to be, reads as broken in all three.
+    const onlyFolder = f.folder && !(f.q || f.type || f.source || f.model || f.rating);
+    empty.textContent = onlyFolder ? t("gal_folderEmpty")
+      : filterIsOn(f) ? t("gal_noneMatch") : t("gal_stripEmpty");
+    row.appendChild(empty);
+    return;
+  }
+
+  if (flashIds.size || dupIds.size) {
+    const first = row.querySelector(".galleryStripCell.isNew, .galleryStripCell.isDupe");
     // Scroll the row itself, NOT element.scrollIntoView(): that walks up and scrolls
     // every scrollable ancestor, and .chatArea is overflow:hidden — it accepts a
     // programmatic scroll, shifts the whole panel sideways, and has no scrollbar to
     // put it back. Only a reload undoes it.
     if (first) row.scrollTo({ left: Math.max(0, first.offsetLeft - row.offsetLeft - 8), behavior: "smooth" });
-    // The class stays on the element; clear the set so the next refresh is calm.
-    setTimeout(() => {
-      flashIds.clear();
-      row.querySelectorAll(".isNew").forEach((n) => n.classList.remove("isNew"));
-    }, 4000);
   }
+  // A page that does not fill the row leaves nothing to scroll, and scrolling is what
+  // asks for the next one — so ask here instead. Happens whenever the source facet
+  // (filtered in the browser) throws most of a page away.
+  if (stripHasMore && row.scrollWidth <= row.clientWidth + 4) void loadMoreStrip();
+}
+
+async function loadMoreStrip() {
+  if (stripLoading || !stripHasMore) return;
+  await loadStripPage(currentFilter(), { reset: false });
+  await paintStrip();
+}
+
+// Infinite scroll: ask for the next page two screens before the end, so the frames are
+// there by the time the user reaches them.
+function onStripScroll() {
+  const row = el("galleryStripRow");
+  if (!row || !stripHasMore || stripLoading) return;
+  if (row.scrollLeft + row.clientWidth < row.scrollWidth - row.clientWidth * 2) return;
+  void loadMoreStrip();
+}
+
+// The strip shows the gallery's filter, which is defined in a panel that is usually shut
+// — so the strip has to say when it is showing a subset. Without this a filtered strip is
+// indistinguishable from lost media.
+function renderStripFilterChip(f) {
+  const strip = el("galleryStrip");
+  if (!strip) return;
+  const old = strip.querySelector(".galleryStripFilter");
+  if (!filterIsOn(f)) { old?.remove(); return; }
+
+  // Read the labels off the controls themselves, so each facet is described in whatever
+  // language the gallery is already using.
+  const pick = (id) => { const s = el(id); return s && s.value ? s.selectedOptions[0]?.textContent.trim() : ""; };
+  const folderName = f.folder === "root" ? t("gal_folderRoot")
+    : folderList.find((x) => x.fid === f.folder)?.name || "";
+  const bits = [f.q ? `“${f.q}”` : "", pick("galleryTypeFilter"), pick("galleryRatingFilter"),
+                pick("gallerySourceFilter"), f.model, folderName].filter(Boolean);
+  const label = `🔎 ${bits.join(" · ")}`;
+  if (old && old.dataset.label === label) return;
+  old?.remove();
+
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "galleryStripFilter";
+  chip.dataset.label = label;
+  chip.textContent = `${label} ✕`;
+  chip.title = t("gal_stripFilterHint");
+  chip.addEventListener("click", () => {
+    for (const id of ["gallerySearch", "galleryTypeFilter", "gallerySourceFilter",
+                      "galleryModelFilter", "galleryRatingFilter"]) {
+      const node = el(id);
+      if (node) node.value = "";
+    }
+    activeFolder = null;
+    refresh();
+  });
+  strip.insertBefore(chip, strip.firstChild);
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +826,20 @@ async function refreshStrip() {
 
 const isMediaFile = (f) => /^(image|video|audio)\//i.test(f.type || "") || /\.(glb|gltf)$/i.test(f.name || "");
 
+// A transient pill over the filmstrip — the strip's answer to the overlay's footer.
+// Anchored to the strip rather than dropped into the row, which scrolls sideways and
+// would carry the message off screen.
+function stripNote(text) {
+  const strip = el("galleryStrip");
+  if (!strip || !text) return;
+  strip.querySelector(".galleryStripNote")?.remove();
+  const pill = document.createElement("div");
+  pill.className = "galleryStripNote";
+  pill.textContent = text;
+  strip.appendChild(pill);
+  setTimeout(() => pill.remove(), 5000);
+}
+
 async function uploadFiles(files) {
   const all = [...files];
   if (!all.length) return;
@@ -618,6 +847,10 @@ async function uploadFiles(files) {
   // counted and reported, not turned into a modal — a stray .txt is not an error
   // worth blocking the drop for.
   const list = all.filter(isMediaFile);
+  // Each drop answers for itself. Carrying the last one's marks forward would show a file
+  // dropped twice in quick succession as still-new instead of "you already have this" —
+  // the highlight has to describe THIS drop.
+  clearDropHighlights();
   let added = 0, deduped = 0;
   const failed = [];
   for (const f of list) {
@@ -629,23 +862,39 @@ async function uploadFiles(files) {
         body: f,
       });
       const j = await r.json().catch(() => null);
-      if (r.ok && j && j.id) { if (j.deduped) deduped++; else { added++; flashIds.add(j.id); } }
+      if (r.ok && j && j.id) {
+        if (j.deduped) {
+          deduped++;
+          // Keep the ledger entry: the match may be older than anything on screen, and
+          // the strip has no other way to fetch a single arbitrary id.
+          dupIds.add(j.id);
+          if (j.entry) pinEntries.set(j.id, j.entry);
+        } else { added++; flashIds.add(j.id); }
+      }
       else failed.push(`${f.name}: ${(j && j.error) || r.status}`);
     } catch (e) { failed.push(`${f.name}: ${e.message}`); }
   }
-  await refresh();
-  await refreshStrip();
+  if (added || deduped) armHighlightClear();
+  await refresh();     // …which refreshes the strip too
+
+  const skipped = all.length - list.length;
+  const parts = [];
+  // "added 0" only when it is the whole story — otherwise the count that matters leads.
+  if (added || !(deduped || skipped || failed.length)) parts.push(t("gal_dropAdded", { n: added }));
+  if (deduped) parts.push(t("gal_dropDuplicate", { n: deduped }));
+  if (skipped) parts.push(t("gal_dropSkipped", { n: skipped }));
+  if (failed.length) parts.push(t("gal_dropFailed", { n: failed.length }));
+  const line = parts.join(" · ");
+
   const note = el("galleryStats");
   if (note) {
-    const parts = [t("gal_dropAdded", { n: added })];
-    if (deduped) parts.push(t("gal_dropDuplicate", { n: deduped }));
-    const skipped = all.length - list.length;
-    if (skipped) parts.push(t("gal_dropSkipped", { n: skipped }));
-    if (failed.length) parts.push(t("gal_dropFailed", { n: failed.length }));
     const was = note.textContent;
-    note.textContent = parts.join(" · ");
-    setTimeout(() => { if (note.textContent === parts.join(" · ")) note.textContent = was; }, 5000);
+    note.textContent = line;
+    setTimeout(() => { if (note.textContent === line) note.textContent = was; }, 5000);
   }
+  // That footer lives inside the overlay. A drop onto the filmstrip with the overlay
+  // shut would report into a box nobody can see, so the strip gets the same line.
+  if (!el("galleryOverlay")?.classList.contains("isOpen")) stripNote(line);
   if (failed.length) console.warn("[gallery] upload failed:\n" + failed.join("\n"));
 }
 
@@ -690,6 +939,7 @@ function onMediaAdded(ids) {
   const list = (ids || []).filter(Boolean);
   if (!list.length) return;
   flashIds = new Set(list);
+  armHighlightClear();
   refreshStrip();
 }
 
@@ -1184,37 +1434,60 @@ async function loadArchiveRefs() {
   } catch { archiveRefs = {}; }
 }
 
-async function refresh() {
-  const q = el("gallerySearch")?.value.trim() || "";
-  const type = el("galleryTypeFilter")?.value || "";
-  const source = el("gallerySourceFilter")?.value || "";
-  const model = el("galleryModelFilter")?.value || "";
-  const rating = el("galleryRatingFilter")?.value || "";
-  const params = new URLSearchParams({ limit: "200" });
-  if (q) params.set("q", q);
-  if (type) params.set("type", type);
+// The gallery's filter controls are the single definition of "which media are we talking
+// about" — the grid and the filmstrip are two views of the same answer, so both read it
+// from here rather than each deciding for itself.
+function currentFilter() {
+  return {
+    q: el("gallerySearch")?.value.trim() || "",
+    type: el("galleryTypeFilter")?.value || "",
+    source: el("gallerySourceFilter")?.value || "",
+    model: el("galleryModelFilter")?.value || "",
+    rating: el("galleryRatingFilter")?.value || "",
+    folder: activeFolder || "",
+  };
+}
+
+const filterIsOn = (f) => !!(f.q || f.type || f.source || f.model || f.rating || f.folder);
+const filterKey = (f) => `${f.q} ${f.type} ${f.source} ${f.model} ${f.rating} ${f.folder}`;
+
+function filterParams(f, extra = {}) {
+  const params = new URLSearchParams(extra);
+  if (f.q) params.set("q", f.q);
+  if (f.type) params.set("type", f.type);
   // Server-side for the same reason as the model facet: filtering before the page limit
   // is what makes "show me everything I rated ★4+" a real query rather than a narrowing
   // of whichever 200 came back.
-  if (rating) params.set("rating", rating);
+  if (f.rating) params.set("rating", f.rating);
   // Server-side (unlike the source filter): the ledger is the only place that knows every
   // entry's model, and filtering before the page limit is what makes it a real filter
   // rather than a narrowing of whatever 200 happened to come back.
-  if (model) params.set("model", model);
-  if (activeFolder) params.set("folder", activeFolder);
+  if (f.model) params.set("model", f.model);
+  if (f.folder) params.set("folder", f.folder);
+  return params;
+}
+
+// The source filter is applied here rather than server-side: half the reference graph
+// (the open conversations) only exists in this browser, so the server could not answer
+// it. Note it runs after the fetch limit, so it narrows a page rather than paging
+// through matches.
+function applySourceFilter(list, source) {
+  if (!source) return list;
+  return list.filter((e) => {
+    const r = refsFor(e.path);
+    return source === "tabs" ? r.live.length > 0 : r.archived.length > 0;
+  });
+}
+
+async function refresh() {
+  const f = currentFilter();
+  const params = filterParams(f, { limit: "200" });
   const [list, stats] = await Promise.all([
     fetch(`/api/gallery/list?${params}`).then((r) => r.json()).catch(() => ({ items: [] })),
     fetch("/api/gallery/stats").then((r) => r.json()).catch(() => null),
   ]);
   const all = list.items || [];
-  // The source filter is applied here rather than server-side: half the reference
-  // graph (the open conversations) only exists in this browser, so the server could
-  // not answer it. Note it runs after the fetch limit, so it narrows a page rather
-  // than paging through matches.
-  items = !source ? all : all.filter((e) => {
-    const r = refsFor(e.path);
-    return source === "tabs" ? r.live.length > 0 : r.archived.length > 0;
-  });
+  items = applySourceFilter(all, f.source);
 
   folderList = (stats && Array.isArray(stats.folders)) ? stats.folders : folderList;
   // The active folder can vanish under us (deleted from another window): fall back
@@ -1236,6 +1509,11 @@ async function refresh() {
       grid.appendChild(empty);
     }
     for (const e of items) grid.appendChild(tileFor(e));
+    // Scroll a just-dropped (or just-recognised) file into view. Set scrollTop on the
+    // grid itself rather than calling scrollIntoView, which walks up and scrolls every
+    // scrollable ancestor — the same trap the filmstrip documents.
+    const hit = grid.querySelector(".galleryTile.isNew, .galleryTile.isDupe");
+    if (hit) grid.scrollTo({ top: Math.max(0, hit.offsetTop - grid.offsetTop - 8), behavior: "smooth" });
   }
 
   // Refill the model facet from the ledger-wide counts. Rebuilt each refresh (a new
@@ -1270,11 +1548,15 @@ async function refresh() {
       n: stats.count, size: fmtSize(stats.bytes),
       images: stats.images, videos: stats.videos,
       thumbs: fmtSize(stats.thumbBytes),
-    }) + ((source || model || rating || activeFolder) ? ` · ${t("gal_shown", { n: items.length })}` : "");
+    }) + (filterIsOn(f) ? ` · ${t("gal_shown", { n: items.length })}` : "");
   }
 
   if (selected && !items.some((e) => e.path === selected.path)) { selected = null; }
   renderDetail();
+  // The filmstrip is the same query in another shape, so it follows every filter change
+  // from here. Not awaited: the grid is what the user is looking at while the overlay
+  // is open, and the strip only has to be right by the time it is uncovered.
+  refreshStrip();
 }
 
 export async function openGallery() {
@@ -1310,6 +1592,9 @@ export function initGallery() {
   setStripOpen(stripOpen());
   el("galleryStripToggle")?.addEventListener("click", () => setStripOpen(!stripOpen()));
   el("galleryStripOpen")?.addEventListener("click", openGallery);
+  // Infinite scroll. passive: this listener never cancels the scroll, and saying so
+  // keeps the row's own scrolling off the main thread's critical path.
+  el("galleryStripRow")?.addEventListener("scroll", onStripScroll, { passive: true });
   window.addEventListener("hk-media-added", (ev) => onMediaAdded(ev.detail && ev.detail.ids));
   wireDropZone(el("galleryOverlay"));
   wireDropZone(el("galleryStrip"));

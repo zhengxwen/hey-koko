@@ -255,7 +255,7 @@ function absPathOf(id) {
   return abs.startsWith(GALLERY_DIR) ? abs : null;
 }
 
-function list({ type, model, source, q, rating, before, limit = 60, folder } = {}) {
+function list({ type, model, source, q, rating, before, beforePath, limit = 60, folder } = {}) {
   load();
   const needle = String(q || "").toLowerCase();
   let all = [...entries.values()];
@@ -291,7 +291,16 @@ function list({ type, model, source, q, rating, before, limit = 60, folder } = {
   if (source) all = all.filter((e) => (e.source || "generated") === source);
   if (needle) all = all.filter((e) => `${e.prompt || ""} ${e.originalName || ""} ${e.desc || ""} ${e.displayName || ""}`.toLowerCase().includes(needle));
   all.sort((a, b) => b.ts - a.ts || (a.path < b.path ? 1 : -1));
-  if (before) all = all.filter((e) => e.ts < Number(before));
+  // Cursor: everything that sorts AFTER the given entry. A timestamp alone is not a
+  // cursor — a batch render writes several records in the same millisecond, and `ts <`
+  // would step straight over the siblings of whichever one ended the previous page.
+  // With beforePath the tie is broken exactly the way the sort above breaks it.
+  if (before) {
+    const bts = Number(before);
+    all = beforePath
+      ? all.filter((e) => e.ts < bts || (e.ts === bts && e.path < beforePath))
+      : all.filter((e) => e.ts < bts);
+  }
   const page = all.slice(0, Math.min(500, Math.max(1, Number(limit) || 60)));
   return { items: page, total: all.length, hasMore: all.length > page.length };
 }
@@ -331,10 +340,21 @@ function stats() {
 
 // ---------------------------------------------------------------- delete
 
-function thumbPathOf(id) {
+// The default rendition (360 on the long edge). No suffix, for the same reason it is not
+// being renamed: every thumbnail on disk already has this name, including the previews
+// the browser uploaded, and a rename would throw all of them away to buy tidiness.
+function thumbPathOf(id, variant) {
   const abs = absPathOf(id);
   if (!abs) return null;
-  return path.join(path.dirname(abs), `.${path.basename(abs)}.jpg`);
+  const suffix = variant && THUMB_VARIANTS[variant] ? `.${variant}` : "";
+  return path.join(path.dirname(abs), `.${path.basename(abs)}${suffix}.jpg`);
+}
+
+// Everything derived from one entry. Deletion walks THIS, not a single hard-coded path —
+// the moment there were two renditions, unlinking one of them started leaving the other
+// behind forever (nothing else on the server ever removes a derived file).
+function derivedPathsOf(id) {
+  return [thumbPathOf(id), ...Object.keys(THUMB_VARIANTS).map((v) => thumbPathOf(id, v))].filter(Boolean);
 }
 
 function remove(ids) {
@@ -345,8 +365,7 @@ function remove(ids) {
     const abs = absPathOf(id);
     if (abs) {
       try { fs.unlinkSync(abs); } catch { /* already gone */ }
-      const th = thumbPathOf(id);
-      if (th) { try { fs.unlinkSync(th); } catch { /* none */ } }
+      for (const th of derivedPathsOf(id)) { try { fs.unlinkSync(th); } catch { /* none */ } }
     }
     const gone = entries.get(id);
     if (gone?.contentHash) hashIndex.delete(gone.contentHash);
@@ -687,6 +706,48 @@ function ffmpeg() {
 const THUMB_EDGE = 360;
 const SCALE_FILTER = `scale='if(gt(iw,ih),${THUMB_EDGE},-2)':'if(gt(iw,ih),-2,${THUMB_EDGE})'`;
 
+// A second, much smaller rendition for the filmstrip, whose frames are 84x63 CSS px.
+// Named for its CONSUMER, not its pixel count: which box it has to cover will change if
+// that frame is ever resized, but who it is for will not — and a name that stays put is
+// a file that gets overwritten instead of orphaned. (Nothing sweeps derived files: see
+// derivedPathsOf, which is why a per-size name would leave litter forever.)
+//
+// A BOX, not an edge. The frames use object-fit: cover, so both axes have to be covered
+// independently — sizing by the long edge would leave a 9:16 portrait 108px wide inside
+// a frame that needs 185, i.e. visibly soft exactly where it is least expected. The box
+// below is the frame at its hover size (84x63 scaled by 1.1) on a 2x display, plus a
+// little headroom: 92.4x69.3 CSS -> 185x139 device px.
+const THUMB_VARIANTS = {
+  strip: { w: 200, h: 150 },
+};
+// "Increase to fit, do not crop": scale so the picture covers the box on both axes and
+// keep the whole frame. Deliberately NOT a crop — a cropped rendition is no longer a
+// thumbnail OF the picture, and the next reader of these files would be misled once.
+//
+// The min() clamps are load-bearing: covering a 200x150 box means a 3:1 panorama needs
+// to be 450 wide, but its source thumbnail is only 360 — without the clamp the "small"
+// rendition would be an UPSCALE, larger and blurrier than the thing it replaces. Clamped,
+// such a picture simply comes out at its source size and saves nothing, which is the
+// honest answer: an extreme aspect ratio has no slack left at 360.
+const coverFilter = (box) => {
+  const wide = `gt(a,${box.w}/${box.h})`;
+  return `scale='if(${wide},-2,min(iw,${box.w}))':'if(${wide},min(ih,${box.h}),-2)'`;
+};
+
+// This rendition is resampled twice (source -> 360 -> here), and softness compounds. Two
+// cheap corrections, measured on a synthetic edge chart and a photo-like image with the
+// variance of the Laplacian (the standard focus metric):
+//   lanczos over swscale's default bicubic .......... 1.14x / 1.22x sharper, free
+//   plus a mild unsharp .............................. 2.05x / 2.50x, nothing clipped
+// A stronger unsharp (5:5:1.2) reaches 3.9x/5.1x but starts pinning pixels at pure
+// black/white — visible haloing around edges — so 0.6 it is. Luma only (the trailing 0):
+// sharpening chroma at this size buys nothing and colours the fringes.
+// For reference, a single resample straight from the original scores 1.29x, which the
+// unsharp already beats — that is why this still derives from the 360px thumbnail
+// instead of re-decoding a video frame to save the intermediate step.
+const SHARPEN = "unsharp=3:3:0.6:3:3:0";
+const SWS_FLAGS = ["-sws_flags", "lanczos+accurate_rnd"];
+
 function runFfmpeg(bin, args) {
   return new Promise((resolve) => {
     execFile(bin, args, { timeout: 60000 }, (err) => resolve(!err));
@@ -714,6 +775,28 @@ async function makeThumb(id) {
   return true;
 }
 
+// A smaller rendition, downscaled from the default thumbnail rather than from the source:
+// re-deriving from a video would mean seeking and decoding a frame all over again, and
+// the 360px picture already on disk holds every pixel this needs.
+async function makeThumbVariant(id, variant) {
+  const box = THUMB_VARIANTS[variant];
+  const src = thumbPathOf(id);
+  const out = thumbPathOf(id, variant);
+  if (!box || !src || !out) return false;
+  if (!fs.existsSync(src) && !(await makeThumb(id))) return false;
+  const bin = await ffmpeg();
+  if (!bin) return false;
+  const tmp = `${out}.tmp-${process.pid}.jpg`;
+  const run = (vf) => runFfmpeg(bin, ["-i", src, "-frames:v", "1", "-vf", vf, ...SWS_FLAGS, "-q:v", "5", "-y", tmp]);
+  // A cut-down ffmpeg build may not carry `unsharp`. A soft thumbnail beats no thumbnail,
+  // so a failed chain is retried with the scaling alone rather than giving up.
+  let ok = await run(`${coverFilter(box)},${SHARPEN}`);
+  if (!ok) ok = await run(coverFilter(box));
+  if (!ok) { try { fs.unlinkSync(tmp); } catch {} return false; }
+  try { fs.renameSync(tmp, out); } catch { return false; }
+  return true;
+}
+
 // ---------------------------------------------------------------- HTTP handlers
 
 function idFromUrl(url, prefix) {
@@ -731,9 +814,22 @@ function handleList(req, res) {
       q: u.searchParams.get("q") || undefined,
       rating: u.searchParams.get("rating") || undefined,
       before: u.searchParams.get("before") || undefined,
+      beforePath: u.searchParams.get("beforePath") || undefined,
       limit: u.searchParams.get("limit") || undefined,
       folder: u.searchParams.get("folder") || undefined,
     }));
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+// One entry by id. The list endpoint pages and filters, so it cannot answer "give me
+// exactly this one" — which is what a client needs to show a file that is off the page
+// it is displaying, or outside the filter it is displaying.
+function handleEntry(req, res) {
+  try {
+    const u = new URL(req.url, "http://127.0.0.1");
+    const e = get(u.searchParams.get("id") || "");
+    if (!e) { sendJson(res, 404, { error: "not in gallery" }); return; }
+    sendJson(res, 200, e);
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
@@ -788,7 +884,19 @@ async function handleThumb(req, res) {
   const id = idFromUrl(req.url, "/api/gallery/thumb/");
   const entry = get(id);
   if (!entry) { sendJson(res, 404, { error: "not in gallery" }); return; }
-  const th = thumbPathOf(id);
+  // ?s=<variant> asks for a smaller rendition. An ALLOWLIST, not a size: honouring
+  // arbitrary dimensions would turn this into an open resampling service, one that fills
+  // the gallery with derived files nothing ever deletes.
+  const want = new URL(req.url, "http://127.0.0.1").searchParams.get("s") || "";
+  const variant = THUMB_VARIANTS[want] ? want : "";
+  let th = thumbPathOf(id, variant);
+  if (variant && th && !fs.existsSync(th)) {
+    try { await makeThumbVariant(id, variant); } catch { /* fall through */ }
+    // No ffmpeg, or it failed: serve the full-size thumbnail rather than nothing. Note
+    // the fallback is the OTHER THUMBNAIL — never the original media, which is how this
+    // route once "saved" bandwidth by shipping whole pictures.
+    if (!fs.existsSync(th)) th = thumbPathOf(id);
+  }
   if (th && !fs.existsSync(th)) { try { await makeThumb(id); } catch { /* fall through */ } }
   if (th && fs.existsSync(th)) {
     res.writeHead(200, {
@@ -974,7 +1082,10 @@ async function handleUpload(req, res) {
     const dim = (h) => { const n = parseInt(req.headers[h], 10); return Number.isFinite(n) && n > 0 ? n : undefined; };
     const e = record({ kind, mime, buffer, meta: { source: "upload", originalName: name,
                                                    width: dim("x-gallery-width"), height: dim("x-gallery-height") } });
-    sendJson(res, 200, { id: e.path, deduped: !!e.deduped, kind });
+    // The whole entry rides back, not just the id: on a dedup hit the caller wants to
+    // SHOW which file it already had, and that file can be far older than any page it
+    // is currently displaying — without this it would have no way to render it.
+    sendJson(res, 200, { id: e.path, deduped: !!e.deduped, kind, entry: e });
   } catch (err) { sendJson(res, 500, { error: err.message }); }
 }
 
@@ -1006,7 +1117,7 @@ async function handleImport(req, res) {
 module.exports = {
   GALLERY_DIR, record, recordMany, get, list, stats, remove, describe, rate, compact, archiveRefs, makeThumb,
   setDisplayName, setFolder, createFolder, renameFolder, deleteFolder, listFolders, absPathOf, probeSpecs,
-  handleList, handleFile, handleThumb, handlePutThumb, handleDelete, handleDescribe, handleRate, handleStats,
+  handleList, handleEntry, handleFile, handleThumb, handlePutThumb, handleDelete, handleDescribe, handleRate, handleStats,
   handleRefs, handleCompact, handleImport, handleUpload, handleReveal, handleProbe,
   handleRename, handleMove, handleFolderCreate, handleFolderRename, handleFolderDelete,
   backfill, missingSpecs,
