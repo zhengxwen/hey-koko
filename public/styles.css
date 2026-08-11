@@ -5134,8 +5134,10 @@ body.isResizingComposer {
 
 .imageDeleteBtn {
   position: absolute;
-  top: -2px;
-  right: -2px;
+  /* Same row as the 🖌 mask button (top: 6px) and same column as the ⬇ download
+     button (right: 6px), so the four controls read as a tidy 2x2 frame. */
+  top: 6px;
+  right: 6px;
   width: 22px;
   height: 22px;
   min-width: 22px;
@@ -5237,7 +5239,9 @@ body.isResizingComposer {
 /* Inpaint mask edit overlay (top-right) on a single-image user bubble. */
 .messageMaskBtn {
   position: absolute;
-  right: 6px;
+  /* Top-LEFT: the top-right corner belongs to the × delete button, which every
+     image wrapper now carries (user bubbles included). */
+  left: 6px;
   top: 6px;
   box-sizing: border-box;
   width: 22px;
@@ -5389,18 +5393,24 @@ body.isResizingComposer {
 }
 
 .videoDownloadBtn {
+  /* Media action buttons share the user-bubble image style: 22x22, 5px radius,
+     12px glyph. Keep them in step if any one of them changes. */
   position: absolute;
   right: 6px;
   bottom: 6px; /* download → bottom-right */
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  box-sizing: border-box;
   display: grid;
   place-items: center;
   border: none;
-  border-radius: 6px;
+  border-radius: 5px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  font-size: 15px;
+  font-size: 12px;
   text-decoration: none;
   cursor: pointer;
   opacity: 0;
@@ -5426,7 +5436,7 @@ body.isResizingComposer {
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.6);
   color: #fff;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1;
   padding: 0;
   cursor: pointer;
@@ -5436,18 +5446,23 @@ body.isResizingComposer {
 
 /* Fullscreen trigger (top-left) — opens the custom video viewer. */
 .videoFullscreenBtn {
+  /* Media action buttons share the user-bubble image style: 22x22, 5px radius,
+     12px glyph. Keep them in step if any one of them changes. */
   position: absolute;
   top: 6px;
   left: 6px;
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
   display: grid;
   place-items: center;
   border: none;
-  border-radius: 6px;
+  border-radius: 5px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  font-size: 16px;
+  font-size: 12px;
   line-height: 1;
   padding: 0;
   cursor: pointer;
@@ -5459,16 +5474,19 @@ body.isResizingComposer {
 .videoPipBtn {
   position: absolute;
   top: 6px;
-  left: 40px;
-  width: 28px;
-  height: 28px;
+  left: 34px;   /* 6 + 22 + 6 gap, matching the new width */
+  width: 22px;
+  height: 22px;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
   display: grid;
   place-items: center;
   border: none;
-  border-radius: 6px;
+  border-radius: 5px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  font-size: 15px;
+  font-size: 12px;
   line-height: 1;
   padding: 0;
   cursor: pointer;
@@ -5506,15 +5524,15 @@ body.isResizingComposer {
    the control is hovered (up = louder). */
 .videoVolume {
   position: absolute;
-  bottom: 40px; /* above the 28px download button (bottom:6 + 28 + ~6 gap) */
+  bottom: 34px; /* above the 22px download button (bottom:6 + 22 + 6 gap) */
   right: 6px;
   display: flex;
   flex-direction: column-reverse; /* icon at the bottom, slider grows upward */
   align-items: center;
   gap: 4px;
-  width: 28px;
+  width: 22px;   /* same width as the download button below it */
   padding: 4px 0;
-  border-radius: 6px;
+  border-radius: 5px;
   background: rgba(0, 0, 0, 0.55);
   opacity: 0;
   transition: opacity 0.15s ease, background 0.15s ease;
@@ -5544,12 +5562,12 @@ body.isResizingComposer {
   min-width: 22px;
   min-height: 22px;
   box-sizing: border-box;
-  border-radius: 6px;
+  border-radius: 5px;
   display: grid;
   place-items: center;
   cursor: pointer;
   color: #fff;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1;
 }
 

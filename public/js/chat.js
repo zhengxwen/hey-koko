@@ -1116,11 +1116,13 @@ function deleteMessageVideo(msgIndex, vidIndex) {
   if (tab.locked) return;
   const message = tab.messages[msgIndex];
   if (!message) return;
-  if (message.generatedVideos && message.generatedVideos.length > vidIndex) {
-    message.generatedVideos.splice(vidIndex, 1);
-  }
-  if (message.generatedVideoThumbnails && message.generatedVideoThumbnails.length > vidIndex) {
-    message.generatedVideoThumbnails.splice(vidIndex, 1);
+  // Splice EVERY parallel array together or the columns drift: an uploaded clip
+  // carries per-clip mime/name/width/height, so dropping only the video itself would
+  // leave clip N wearing clip N-1's filename and dimensions (same idiom as
+  // deleteMessageMesh below).
+  for (const key of ["generatedVideos", "generatedVideoThumbnails", "videoMimes",
+                     "videoNames", "videoWidths", "videoHeights"]) {
+    if (message[key] && message[key].length > vidIndex) message[key].splice(vidIndex, 1);
   }
   saveChat();
   const scrollY = dom.messagesEl.scrollTop;
@@ -4103,9 +4105,9 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         : src;
       const fname = mediaFilename(dlNames?.[imgIdx], timestamp, "image", imageExtFromSrc(dlSrc), imgIdx, previews.length);
       image.dataset.filename = fname; // shown as the lightbox caption
-      // Non-user bubbles only: a user bubble's top-right corner is already taken by the
-      // 🖌 mask button (same coordinates), and its images are managed with ⬆ replace.
-      if (role !== "user" && Number.isInteger(index)) {
+      // × is top-right on every bubble; on a user bubble the 🖌 mask button moves to
+      // the top-LEFT (see .messageMaskBtn) so the two no longer share that corner.
+      if (Number.isInteger(index)) {
         wrapper.appendChild(makeImageDeleteButton(index, imgIdx));
       }
       // Swap this image for a different file (user bubbles only — the message has
@@ -4472,10 +4474,9 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         wrapper.appendChild(pipBtn);
       }
 
-      // Delete button (top-right) — removes just this video from the message.
-      // User-bubble videos are uploads the message depends on, so they're not
-      // individually deletable (no × shown); delete the whole bubble instead.
-      if (Number.isInteger(index) && role !== "user") {
+      // Delete button (top-right) — removes just this video from the message,
+      // uploaded source clips included (a resend then runs with the ones that remain).
+      if (Number.isInteger(index)) {
         const del = document.createElement("button");
         del.className = "videoDeleteBtn";
         del.type = "button";

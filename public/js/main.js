@@ -899,10 +899,27 @@ dom.scrollToBottomBtn?.addEventListener("click", () => {
 {
   const resizer = document.querySelector("#composerResizer");
   const input = dom.messageInput;
-  const MIN = 48;
-  const maxH = () => Math.max(MIN, Math.round((dom.chatArea?.clientHeight || window.innerHeight) * 0.6));
+  const MIN_FLOOR = 48;
+  // The controls beside the input are bottom-aligned, and the 🎨 filmstrip toggle is
+  // absolutely positioned ABOVE its column (bottom: 100% + 4px), so it sits outside
+  // that column's own box. Shrink the input below their combined footprint and 🎨
+  // escapes above the composer. Measure it rather than hardcoding a number, so the
+  // floor keeps tracking the CSS if those buttons change.
+  const controlsMin = () => {
+    const col = document.querySelector(".composerStackCol");
+    if (!col) return 0;
+    const box = col.getBoundingClientRect();
+    let top = box.top;
+    for (const child of col.children) {
+      const r = child.getBoundingClientRect();
+      if (r.height) top = Math.min(top, r.top);   // absolute children included
+    }
+    return Math.ceil(box.bottom - top);
+  };
+  const minH = () => Math.max(MIN_FLOOR, controlsMin());
+  const maxH = () => Math.max(minH(), Math.round((dom.chatArea?.clientHeight || window.innerHeight) * 0.6));
   const applyHeight = (h) => {
-    const clamped = Math.max(MIN, Math.min(Math.round(h), maxH()));
+    const clamped = Math.max(minH(), Math.min(Math.round(h), maxH()));
     input.style.height = clamped + "px";
     input.style.maxHeight = clamped + "px";   // override the CSS 150px cap so it can grow past it
   };
