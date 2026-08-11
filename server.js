@@ -90,13 +90,36 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Full online catalog from the configured cloud providers (ignores the curated
-  // `models[]` allowlist) — backs the "browse all models" picker dialog.
-  if (req.method === "GET" && req.url === "/api/cloud-models/all") {
-    // Merge every cloud backend's full catalog: Claude (claude.json) + OpenAI-compatible
-    // (openai.json / openrouter.json). Each resolves to [] when unconfigured.
-    Promise.all([claude.listAllModels(), openai.listAllModels()])
-      .then(([c, o]) => sendJson(res, 200, { models: [...c, ...o] }))
+  // Full catalog backing the "all models" picker: everything installed locally plus
+  // every cloud provider's complete list (ignoring the curated `models[]` allowlist).
+  // Ollama is queried live on each call, so pulling a new model and reopening the
+  // picker is all it takes to see it — no restart.
+  if (req.method === "GET" && req.url === "/api/models/all") {
+    const localModels = async () => {
+      try {
+        const r = await fetch(`${config.ollamaUrl}/api/tags`);
+        if (!r.ok) return [];
+        const tags = (await r.json()).models || [];
+        let host = "";
+        try { host = new URL(config.ollamaUrl).host; } catch { host = config.ollamaUrl; }
+        return tags.filter((m) => m.name).map((m) => ({
+          id: m.name,
+          provider: "ollama",
+          local: true,
+          host,
+          name: m.name,
+          // Ollama reports on-disk size, not a context length or price.
+          sizeBytes: m.size || 0,
+          contextLength: 0,
+          pricing: null,
+          description: "",
+        }));
+      } catch { return []; }
+    };
+    // Each source resolves to [] when unconfigured/unreachable, so one being down
+    // never blanks the others.
+    Promise.all([localModels(), claude.listAllModels(), openai.listAllModels()])
+      .then(([l, c, o]) => sendJson(res, 200, { models: [...l, ...c, ...o] }))
       .catch((e) => sendJson(res, 500, { error: e.message, models: [] }));
     return;
   }

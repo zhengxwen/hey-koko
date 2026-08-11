@@ -117,10 +117,10 @@ export function relocalizeBrowseOption() {
 export async function loadModels({ force = false } = {}) {
   const response = await fetch("/api/models");
   const data = await response.json();
-  // The "browse all models" entry is cloud-only — show it just when a cloud
-  // backend is actually configured (any Claude/OpenAI-compatible key), so pure-
-  // local users never see a dead entry. Server-computed, not inferred from the list.
-  const cloudConfigured = data.cloudConfigured === true;
+  // The "all models" entry lists locally-installed models too, and doubles as the
+  // way to pick up a newly pulled Ollama model — so it is useful to pure-local users
+  // as well and is always offered. (data.cloudConfigured is still reported by the
+  // server; nothing gates on it here any more.)
   // Keep the objects (not just names) so we can badge cloud vs local models.
   const entries = (data.models || [])
     .filter((m) => m.name && !NON_LLM_RE.test(m.name));
@@ -137,7 +137,7 @@ export async function loadModels({ force = false } = {}) {
     opt.disabled = true;
     opt.selected = true;
     dom.modelSelect.appendChild(opt);
-    if (cloudConfigured) appendBrowseOption();   // offer the picker only when a cloud key exists
+    appendBrowseOption();   // the picker can still surface a freshly pulled local model
     updateCloudBadge();
     return;
   }
@@ -154,7 +154,7 @@ export async function loadModels({ force = false } = {}) {
     if (m.cloud) option.dataset.cloud = "1";  // lets the send-status pill badge cloud requests
     dom.modelSelect.appendChild(option);
   }
-  if (cloudConfigured) appendBrowseOption();   // last entry — opens the full-catalog picker (cloud-only)
+  appendBrowseOption();   // last entry — opens the full-catalog picker (local + cloud)
 
   if (current && names.includes(current)) {
     dom.modelSelect.value = current;
@@ -182,14 +182,17 @@ const PROVIDER_LABELS = {
   "api.mistral.ai": "Mistral",
 };
 function providerLabel(m) {
+  if (m.local) return t("mb_local");   // installed in Ollama, not a cloud catalogue entry
   const host = String(m.host || "").replace(/^www\./, "");
   return PROVIDER_LABELS[host] || host
     || (m.provider === "openrouter" ? "OpenRouter" : m.provider === "claude" ? "Claude" : "OpenAI");
 }
 
-// Full-catalog model picker. Lists every online chat model from the configured
-// cloud providers (ignores the curated allowlist), searchable; picking one adds it
-// to the dropdown (remembered in localStorage) and selects it.
+// Full-catalog model picker: every model installed locally in Ollama PLUS every
+// online chat model from the configured cloud providers (ignoring the curated
+// allowlist), searchable. Picking one selects it in the dropdown (cloud ids are also
+// remembered in localStorage). Ollama is re-queried on each open, so this is also how
+// a newly pulled local model gets into the list.
 export async function openModelBrowser() {
   const overlay = document.createElement("div");
   overlay.className = "zoteroImportOverlay";   // reuse the modal chrome
@@ -220,10 +223,13 @@ export async function openModelBrowser() {
 
   let all = [];
   try {
-    const r = await fetch("/api/cloud-models/all");
+    const r = await fetch("/api/models/all");
     const d = await r.json();
     if (d.error) throw new Error(d.error);
-    all = d.models || [];
+    // Cloud catalogues are already filtered to chat models server-side; the local
+    // list is raw `ollama list`, so apply the same non-LLM filter the dropdown uses
+    // — otherwise an embedding model is offered here and breaks chat when picked.
+    all = (d.models || []).filter((m) => !(m.local && NON_LLM_RE.test(m.id)));
   } catch (e) {
     listEl.textContent = t("mb_failed", { error: (e && e.message) || "?" });
     return;
@@ -257,6 +263,8 @@ export async function openModelBrowser() {
       const meta = document.createElement("div");
       meta.className = "modelBrowserMeta";
       const bits = [];
+      // Ollama reports size on disk; cloud catalogues report context length + price.
+      if (m.sizeBytes) bits.push(`${(m.sizeBytes / 1e9).toFixed(1)} GB`);
       if (m.contextLength) bits.push(t("mb_ctx", { n: Math.round(m.contextLength / 1000) }));
       if (m.pricing) {
         const pIn = parseFloat(m.pricing.prompt) || 0;
@@ -275,7 +283,11 @@ export async function openModelBrowser() {
       use.className = "zoteroImportGo modelBrowserUse";
       use.textContent = t("mb_use");
       use.addEventListener("click", async () => {
-        saveExtraModel(m.id);
+        // Only cloud ids need remembering: they are absent from the provider
+        // allowlist, so without this they'd vanish from the dropdown on reload. A
+        // locally-installed model is already in /api/models — persisting it would
+        // just add a stale entry that outlives `ollama rm`.
+        if (!m.local) saveExtraModel(m.id);
         await loadModels({ force: true });
         dom.modelSelect.value = m.id;
         dom.modelSelect.dispatchEvent(new Event("change"));   // context meter + settings save
