@@ -4347,12 +4347,22 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       // On an actual decode/format error, surface a note pointing at the download button
       // (already present below), so the file stays usable and the bubble still shows it.
       // Fires only on failure, so a universally-playable h264 clip never shows it.
-      video.addEventListener("error", () => {
+      video.addEventListener("error", async () => {
         if (wrapper.querySelector(".videoUnplayableNote")) return;
         const note = document.createElement("div");
         note.className = "videoUnplayableNote";
         note.textContent = t("msg_videoUnplayable");
         wrapper.appendChild(note);
+        // "I can't decode this" and "it isn't there any more" reach the <video> as the
+        // same error event, and blaming the codec for a file the user deleted from the
+        // gallery sends them hunting for a decoder they do not need. The server knows
+        // which it is, so ask — one byte, via Range, exactly the request that just
+        // failed. Only for gallery references: inline bytes cannot go missing.
+        if (!isMediaRef(vData)) return;
+        try {
+          const r = await fetch(mediaSrc(vData, vmime), { headers: { Range: "bytes=0-0" } });
+          if (r.status === 404) note.textContent = t("msg_videoGone");
+        } catch { /* offline or blocked — leave the codec note, it is the likelier cause */ }
       });
       // No autoplay — the user presses play. Muted by default so audio (LTX) never
       // surprises the user; they raise the volume themselves via the slider/icon or

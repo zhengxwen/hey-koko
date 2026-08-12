@@ -6,16 +6,14 @@
 //
 // Media generated or attached from now on is filed on disk and lives in a message as a
 // /api/gallery/file/<id> reference (see utils.js) — one copy, in the gallery. Older
-// conversations still carry their pixels inline. Archived ones are moved server-side by
-// scripts/migrate-archives.js, where the files already are; the ones still open in a tab
-// are reachable only from here, which is what ♻️ (reclaim) is for.
+// conversations still carry their pixels inline; those are filed by the paths that
+// already touch them — archiving (archive.js), importing a JSON conversation (main.js),
+// and scripts/migrate-archives.js for archives already on disk.
 
 import { state, openPanelOverlay, closePanelOverlay, isPanelOverlayOpen } from './state.js';
 import { t } from './i18n.js';
-import { galleryIdOf, galleryThumbUrl, inlineMediaSlots, fileInlineMedia,
-         estInlineBytes } from './utils.js';
+import { galleryIdOf, galleryThumbUrl } from './utils.js';
 import { switchTab } from './tabs.js';
-import { saveTabs } from './settings.js';
 import { openArchivedChat } from './archive.js';
 import { openVideoEditor } from './video-edit.js';
 
@@ -183,7 +181,7 @@ function tileFor(entry) {
   const img = document.createElement("img");
   img.loading = "lazy";
   img.alt = entry.displayName || entry.prompt || entry.originalName || entry.kind;
-  img.src = galleryThumbUrl(entry.path);
+  img.src = tileThumbUrl(entry.path);
   // No thumbnail and none makeable (a 3D file, or no ffmpeg for a video): say so
   // rather than showing a broken image.
   img.onerror = () => {
@@ -262,11 +260,28 @@ function tileFor(entry) {
 // user has to set again every time is not a preference.
 const VIEW_KEY = "heykoko-gallery-view";
 const VIEWS = ["md", "sm", "list"];
+let galleryView = savedView();
+
+// Which rendition a tile should be showing. The list row's picture is 64x44 CSS — 128x88
+// on a 2x display — where a 360px thumbnail is several times more than anything reaches
+// the screen. The two grid views are the opposite case and must keep the full one: a
+// 150px tile is 300x300 device px, which the 360px thumbnail only just covers (and for
+// wide pictures does not: 360x203 gets stretched to fill a square tile as it is).
+const tileThumbUrl = (id) => galleryThumbUrl(id, galleryView === "list" ? "strip" : "");
 
 function applyView(v) {
   const view = VIEWS.includes(v) ? v : "md";
+  galleryView = view;
   const grid = el("galleryGrid");
   if (grid) grid.dataset.view = view;
+  // Switching views is still one attribute and no re-render — the pictures are the only
+  // thing that has to follow, and swapping a src the browser already has is free.
+  for (const img of grid ? grid.querySelectorAll(".galleryTile img") : []) {
+    const id = img.closest(".galleryTile")?.dataset.id;
+    if (!id) continue;
+    const want = tileThumbUrl(id);
+    if (img.getAttribute("src") !== want) img.setAttribute("src", want);
+  }
   try { localStorage.setItem(VIEW_KEY, view); } catch { /* private mode */ }
   return view;
 }
@@ -397,11 +412,56 @@ function renderFolderChips() {
     refresh();
   });
   row.appendChild(add);
+  paintDeleteChip();
+}
+
+// 🗑 for the ticked media, at the end of the folder row. It appears ONLY while something
+// is ticked: a delete sitting among the folder chips with nothing selected would read as
+// "delete this folder", which is the ✎/🗑 pair on the active chip and an entirely
+// different thing. The count in the label says what it is aimed at.
+function paintDeleteChip() {
+  const row = el("galleryFolders");
+  if (!row) return;
+  row.querySelector(".galleryDeleteSel")?.remove();
+  if (!selectedIds.size) return;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "galleryFolderChip galleryDeleteSel";
+  btn.textContent = `🗑 ${t("gal_deleteSel", { n: selectedIds.size })}`;
+  btn.title = t("gal_deleteSelHint");
+  btn.addEventListener("click", deleteSelected);
+  row.appendChild(btn);
+}
+
+// Deleting several at once. The prompt has to carry what the user cannot see from the
+// ticks alone: how much disk it frees, and how many of the files are still referenced by
+// a conversation — those bubbles turn into placeholders and no undo brings them back.
+async function deleteSelected() {
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+  let bytes = 0, used = 0;
+  for (const id of ids) {
+    bytes += items.find((e) => e.path === id)?.bytes || 0;
+    const r = refsFor(id);
+    if (r.live.length + r.archived.length) used++;
+  }
+  const question = t("gal_confirmDeleteMany", { n: ids.length, size: fmtSize(bytes) })
+    + (used ? `\n\n${t("gal_confirmDeleteManyUsed", { n: used })}` : "");
+  if (!confirm(question)) return;
+  await fetch("/api/gallery/delete", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }) });
+  selectedIds.clear();
+  if (selected && ids.includes(selected.path)) selected = null;
+  await refresh();
+  await refreshStrip();
 }
 
 // The bulk bar under the chips: visible only while something is ticked.
 function updateBulkBar() {
   const bar = el("galleryBulkBar");
+  // The delete chip lives in the folder row, which is not rebuilt when a tick changes —
+  // so it is repainted from here, where every tick already lands.
+  paintDeleteChip();
   if (!bar) return;
   bar.hidden = selectedIds.size === 0;
   if (bar.hidden) { bar.innerHTML = ""; return; }
@@ -1376,36 +1436,6 @@ async function deleteItem(entry) {
   await refreshStrip();
 }
 
-// ♻️ — media that is still stored INSIDE the open conversations. Each slot is filed into
-// the gallery and replaced by a reference, so the picture ends up in one place rather
-// than two: on disk, and base64-inflated a second time inside IndexedDB. Nothing is
-// deleted and nothing leaves the machine — this only moves bytes out of the tab record.
-//
-// New attachments and renders already store references, and an import files its media on
-// the way in. This is for conversations written before any of that, and for the
-// occasional slot whose upload lost the race at send time. The sweep itself lives in
-// utils.js (fileInlineMedia) because the import path runs the very same pass.
-async function reclaim() {
-  const msgs = (state.tabs || []).flatMap((tab) => tab.messages || []);
-  const slots = inlineMediaSlots(msgs);
-  if (!slots.length) { alert(t("gal_reclaimNone")); return; }
-  const total = slots.reduce((n, s) => n + estInlineBytes(s.v), 0);
-  if (!confirm(t("gal_reclaimConfirm", { n: slots.length, size: fmtSize(total) }))) return;
-
-  const stats = el("galleryStats");
-  const { filed, failed, freed } = await fileInlineMedia(msgs, (done, n) => {
-    if (stats) stats.textContent = t("gal_reclaimProgress", { done, total: n });
-  });
-  saveTabs();
-  deps.renderChat();
-  await refresh();
-  await refreshStrip();
-  if (stats) {
-    stats.textContent = t("gal_reclaimDone", { n: filed, size: fmtSize(freed) })
-      + (failed ? ` · ${t("gal_reclaimFailed", { n: failed })}` : "");
-  }
-}
-
 // 🧹 — the outlet for media kept when a conversation was deleted. Everything the
 // reference graph cannot account for is offered up in one place.
 async function tidy() {
@@ -1451,6 +1481,34 @@ function currentFilter() {
 const filterIsOn = (f) => !!(f.q || f.type || f.source || f.model || f.rating || f.folder);
 const filterKey = (f) => `${f.q} ${f.type} ${f.source} ${f.model} ${f.rating} ${f.folder}`;
 
+// The four facets behind the button. The search box and the folder chips are their own
+// visible controls, so they are not counted here — this number answers "how much is the
+// panel hiding", not "how filtered is the gallery".
+const MENU_FACETS = ["galleryTypeFilter", "galleryModelFilter", "gallerySourceFilter", "galleryRatingFilter"];
+
+function setFilterMenuOpen(open) {
+  const menu = el("galleryFilterMenu");
+  const btn = el("galleryFilterBtn");
+  if (!menu || !btn) return;
+  menu.hidden = !open;
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+const filterMenuOpen = () => !!el("galleryFilterMenu") && !el("galleryFilterMenu").hidden;
+
+// Folded away, four dropdowns reading "All …" are also four dropdowns not reading
+// "Videos, ★4+". The count on the button is what keeps a narrowed gallery from looking
+// like a gallery that has lost things.
+function paintFilterButton() {
+  const btn = el("galleryFilterBtn");
+  if (!btn) return;
+  const n = MENU_FACETS.filter((id) => el(id)?.value).length;
+  btn.textContent = n ? `${t("gal_filter")} · ${n}` : t("gal_filter");
+  btn.classList.toggle("isOn", n > 0);
+  const clear = el("galleryFilterClear");
+  if (clear) clear.disabled = !n;
+}
+
 function filterParams(f, extra = {}) {
   const params = new URLSearchParams(extra);
   if (f.q) params.set("q", f.q);
@@ -1489,6 +1547,7 @@ async function refresh() {
   const all = list.items || [];
   items = applySourceFilter(all, f.source);
 
+  paintFilterButton();
   folderList = (stats && Array.isArray(stats.folders)) ? stats.folders : folderList;
   // The active folder can vanish under us (deleted from another window): fall back
   // to "everything" rather than filtering by a fid that matches nothing forever.
@@ -1590,7 +1649,6 @@ export function initGallery() {
     renderDetail();
   });
   el("galleryCloseBtn")?.addEventListener("click", closeGallery);
-  el("galleryReclaimBtn")?.addEventListener("click", reclaim);
   el("galleryTidyBtn")?.addEventListener("click", tidy);
 
   // Filmstrip
@@ -1607,6 +1665,27 @@ export function initGallery() {
   el("galleryTypeFilter")?.addEventListener("change", refresh);
   el("galleryModelFilter")?.addEventListener("change", refresh);
   el("galleryRatingFilter")?.addEventListener("change", refresh);
+
+  // The filter panel. It stays open while facets are set — narrowing by media type and
+  // then by rating is one action in the user's head, and a panel that shut after each
+  // pick would make it three.
+  el("galleryFilterBtn")?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    setFilterMenuOpen(!filterMenuOpen());
+  });
+  el("galleryFilterMenu")?.addEventListener("click", (ev) => ev.stopPropagation());
+  el("galleryFilterClear")?.addEventListener("click", () => {
+    for (const id of MENU_FACETS) { const node = el(id); if (node) node.value = ""; }
+    refresh();
+  });
+  document.addEventListener("click", () => { if (filterMenuOpen()) setFilterMenuOpen(false); });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape" || !filterMenuOpen()) return;
+    setFilterMenuOpen(false);
+    // The overlay itself closes on Escape; this press was about the panel in front of it.
+    ev.stopPropagation();
+  }, true);
+  paintFilterButton();
   const viewSel = el("galleryViewFilter");
   if (viewSel) {
     viewSel.value = savedView();

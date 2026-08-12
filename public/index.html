@@ -460,44 +460,55 @@
             <h2 id="galleryTitle" class="archiveTitle">🎨 Gallery</h2>
             <div class="archiveToolbar">
               <input id="gallerySearch" type="text" class="archiveSearchInput" placeholder="Search prompts…" />
-              <select id="galleryTypeFilter" class="libraryRatingFilter">
-                <option value="">All media</option>
-                <option value="image">Images</option>
-                <option value="video">Videos</option>
-                <option value="audio">Audio</option>
-                <option value="mesh">3D</option>
-              </select>
-              <!-- Which model made it. Options are canonical model ids, filled in from
-                   what the ledger actually contains; picking one matches all of that
-                   model's modes (bernini → bernini:insert, bernini:t2i, …). -->
-              <select id="galleryModelFilter" class="libraryRatingFilter">
-                <option value="">All models</option>
-              </select>
-              <!-- Where a file is referenced: open conversations, archives, or both. -->
-              <select id="gallerySourceFilter" class="libraryRatingFilter">
-                <option value="">Anywhere</option>
-                <option value="tabs">In conversations</option>
-                <option value="archives">In archives</option>
-              </select>
-              <!-- How the grid is drawn. Three tile sizes plus a list; the choice is
-                   remembered and switching it only restyles what is already there. -->
-              <!-- Unrated and ★0 are separate options because they are separate states:
-                   never graded vs. graded a reject. -->
-              <select id="galleryRatingFilter" class="libraryRatingFilter" title="Filter by rating">
-                <option value="">All ratings</option>
-                <option value="5">★5</option>
-                <option value="4">★4+</option>
-                <option value="3">★3+</option>
-                <option value="zero">★0 (rejects)</option>
-                <option value="rated">Rated</option>
-                <option value="unrated">Unrated</option>
-              </select>
+              <!-- The four facets live behind one button: side by side they filled the
+                   header edge to edge, and four dropdowns reading "All …" spend a lot of
+                   room saying nothing. The button carries the count when any is set, so a
+                   narrowed gallery still announces itself with the panel shut. -->
+              <div class="galleryFilterWrap">
+                <button id="galleryFilterBtn" type="button" class="secondary archiveSortBtn"
+                        aria-expanded="false" aria-controls="galleryFilterMenu">Filter</button>
+                <div id="galleryFilterMenu" class="galleryFilterMenu" hidden>
+                  <select id="galleryTypeFilter" class="libraryRatingFilter">
+                    <option value="">All media</option>
+                    <option value="image">Images</option>
+                    <option value="video">Videos</option>
+                    <option value="audio">Audio</option>
+                    <option value="mesh">3D</option>
+                  </select>
+                  <!-- Which model made it. Options are canonical model ids, filled in from
+                       what the ledger actually contains; picking one matches all of that
+                       model's modes (bernini → bernini:insert, bernini:t2i, …). -->
+                  <select id="galleryModelFilter" class="libraryRatingFilter">
+                    <option value="">All models</option>
+                  </select>
+                  <!-- Where a file is referenced: open conversations, archives, or both. -->
+                  <select id="gallerySourceFilter" class="libraryRatingFilter">
+                    <option value="">Anywhere</option>
+                    <option value="tabs">In conversations</option>
+                    <option value="archives">In archives</option>
+                  </select>
+                  <!-- Unrated and ★0 are separate options because they are separate states:
+                       never graded vs. graded a reject. -->
+                  <select id="galleryRatingFilter" class="libraryRatingFilter" title="Filter by rating">
+                    <option value="">All ratings</option>
+                    <option value="5">★5</option>
+                    <option value="4">★4+</option>
+                    <option value="3">★3+</option>
+                    <option value="zero">★0 (rejects)</option>
+                    <option value="rated">Rated</option>
+                    <option value="unrated">Unrated</option>
+                  </select>
+                  <button id="galleryFilterClear" type="button" class="secondary galleryFilterClearBtn">Clear filters</button>
+                </div>
+              </div>
+              <!-- How the grid is drawn. Two tile sizes plus a list; the choice is
+                   remembered and switching it only restyles what is already there. Stays
+                   in the header: it is a way of looking, not a filter. -->
               <select id="galleryViewFilter" class="libraryRatingFilter">
                 <option value="md">Medium</option>
                 <option value="sm">Small</option>
                 <option value="list">List</option>
               </select>
-              <button id="galleryReclaimBtn" type="button" class="secondary archiveSortBtn" title="File media still stored inside conversations into the gallery, and keep only a reference">♻️</button>
               <button id="galleryTidyBtn" type="button" class="secondary archiveSortBtn" title="Find unreferenced media and stale entries">🧹</button>
             </div>
           </div>
@@ -509,7 +520,7 @@
                on. Bulk-select actions (hidden until something is ticked), then the
                virtual folder chips — filters and drop targets at once, pure ledger
                metadata (server/gallery.js) — then the totals line, which also hosts
-               upload / reclaim progress notes (gallery.js). -->
+               drop-and-upload progress notes (gallery.js). -->
           <div id="galleryBulkBar" class="galleryBulkBar" hidden></div>
           <div id="galleryFolders" class="galleryFolders"></div>
           <p id="galleryStats" class="hint galleryStats"></p>

@@ -7748,6 +7748,45 @@ body.isResizingComposer {
   z-index: 3;
 }
 
+/* ---- Gallery filter menu (four facets behind one button) ------------------- */
+
+.galleryFilterWrap { position: relative; flex: none; }
+
+/* .isOn, not a different word: with the panel shut this button is the only thing that
+   says the gallery is showing a subset. */
+#galleryFilterBtn.isOn {
+  border-color: var(--accent, #6aa9ff);
+  color: var(--accent, #6aa9ff);
+}
+
+.galleryFilterMenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  min-width: 200px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+/* The `display: flex` above outranks the [hidden] attribute's UA rule, so hiding has to
+   be said explicitly — the same trap that `label { display: grid }` sets elsewhere. */
+.galleryFilterMenu[hidden] { display: none; }
+
+.galleryFilterMenu select { width: 100%; }
+
+.galleryFilterClearBtn {
+  min-height: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
 /* ---- Gallery filmstrip (under the composer) ------------------------------- */
 
 .galleryStrip {
@@ -8058,6 +8097,17 @@ body.isResizingComposer {
 }
 
 .galleryFolderTool { padding: 2px 7px; }
+
+/* Delete the ticked media. Last in the row and the only red thing in it: destructive and
+   irreversible, sitting among chips that merely filter. Pushed to the far end so it is
+   never the neighbour of a chip someone is aiming for. */
+.galleryDeleteSel {
+  margin-left: auto;
+  background: rgba(214, 69, 69, 0.14);
+  color: #d64545;
+}
+
+.galleryDeleteSel:hover { background: rgba(214, 69, 69, 0.28); }
 
 /* ---- Bulk bar for the checkbox multi-select. Hidden (attribute) until used; when
    shown it is the first footer row, directly under the grid. */

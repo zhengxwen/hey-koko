@@ -123,8 +123,9 @@ export function sniffImageMime(b64, fallback) {
 // ---- filing a whole conversation's inline media ----------------------------
 // Every media slot a message can carry, paired with the thumbnail that previews it and
 // the parallel arrays holding each slot's name and mime. Used to sweep media OUT of a
-// conversation and onto disk: the gallery ♻️ button does it to the open tabs, and
-// importing a JSON export does it to what it just parsed.
+// conversation and onto disk: archiving does it to the tab on its way out, and importing
+// a JSON export does it to what it just parsed. Those two are the only callers — the
+// gallery's manual ♻️ sweep was removed once they covered every way media arrives.
 export const MEDIA_SLOT_GROUPS = [
   { full: "contextImages",   thumb: "displayImages",            names: "imageNames",          mimes: null,         fallback: "image/jpeg" },
   { full: "generatedImages", thumb: "generatedThumbnails",      names: "generatedImageNames", mimes: null,         fallback: "image/png" },
