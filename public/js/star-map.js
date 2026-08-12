@@ -329,13 +329,10 @@ function setSourceTab(s) {
   el.overlay.querySelectorAll("[data-source]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.source === s)));
   // Keep the panel UNDER the map in sync with the source: leaving the map should land
   // in the matching view (library map ↔ library panel, archive map ↔ archive panel).
-  if (s === "archive") {
-    document.querySelector("#libraryOverlay")?.classList.remove("isOpen");
-    openArchivePanel();
-  } else {
-    document.querySelector("#archiveOverlay")?.classList.remove("isOpen");
-    openLibraryPanel();
-  }
+  // openArchivePanel / openLibraryPanel go through openPanelOverlay, which closes
+  // every other full-panel overlay (gallery included) and resyncs the buttons.
+  if (s === "archive") openArchivePanel();
+  else openLibraryPanel();
   load(s);
 }
 

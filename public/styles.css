@@ -1360,6 +1360,18 @@ input[type="file"] {
   min-height: 34px;
 }
 
+/* Pressed look while that panel's overlay is open (state.js keeps .isActive and
+   aria-pressed in step with .isOpen). Inset shadow + accent text so it reads as
+   held-down rather than merely hovered. */
+.actions button.isActive {
+  /* --accent-focus is the per-theme accent tint (it is what focus rings use), so the
+     pressed state follows whichever theme colour is active. */
+  background: var(--accent-focus);
+  color: var(--accent-strong);
+  border-color: var(--accent);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.16);
+}
+
 /* These three rows belong together, so close up the parent .panelTabContent's 16px
    child gap between them (net ~6px) — same technique as .presetActions above. */
 .actions + .actions {

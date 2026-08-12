@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Xiuwen Zheng
 
 // Archive and retrieve functionality
-import { dom, state } from './state.js';
+import { dom, state, openPanelOverlay, closePanelOverlay, isPanelOverlayOpen } from './state.js';
 import { escapeHtml, mediaFilename, mediaSrc, isMediaRef,
          inlineMediaSlots, fileInlineMedia } from './utils.js';
 import { markdownToHtml } from './markdown.js';
@@ -217,17 +217,24 @@ export function initArchive() {
 
   // Retrieve
   document.querySelector("#retrieveChat").addEventListener("click", () => {
+    // Second press on the lit button closes the panel and returns to the chat.
+    if (isPanelOverlayOpen("archiveOverlay")) { closeArchiveOverlay(); return; }
     // Dismiss the star map first — it sits ABOVE the panels, so without this the
     // archive would open invisibly beneath it (same pattern as the library button).
     document.dispatchEvent(new CustomEvent("heykoko:closeStarMap"));
     openArchiveOverlay();
   });
 
+  // Closing must re-enable #archiveChat: openArchiveOverlay disables it, so every
+  // close path has to go through here or the Archive button stays greyed out.
+  function closeArchiveOverlay() {
+    closePanelOverlay("archiveOverlay");
+    archiveChatBtn.disabled = false;
+  }
+
   async function openArchiveOverlay() {
-    // Mutually exclusive with the library panel (same z-index full-area overlays;
-    // the library sits LATER in the DOM and would cover us if left open).
-    document.querySelector("#libraryOverlay")?.classList.remove("isOpen");
-    archiveOverlay.classList.add("isOpen");
+    // Exclusive with the other full-panel overlays — openPanelOverlay closes them.
+    openPanelOverlay("archiveOverlay");
     archivePreview.classList.remove("isOpen");
     archivePreviewEmpty.style.display = "";
     selectedArchives.clear();
@@ -258,10 +265,7 @@ export function initArchive() {
     archiveList.focus({ preventScroll: true });
   }
 
-  document.querySelector("#archiveCloseBtn").addEventListener("click", () => {
-    archiveOverlay.classList.remove("isOpen");
-    archiveChatBtn.disabled = false;
-  });
+  document.querySelector("#archiveCloseBtn").addEventListener("click", closeArchiveOverlay);
 
   archiveSortBtn.addEventListener("click", () => {
     sortNewestFirst = !sortNewestFirst;
@@ -755,7 +759,7 @@ export function initArchive() {
       // To delete an archive, use the "delete" button.
 
       switchTab(state.tabs[0].id);
-      archiveOverlay.classList.remove("isOpen");
+      closePanelOverlay("archiveOverlay");
       archiveChatBtn.disabled = false;
     } catch (e) {
       alert(t("arch_restoreFailed", { error: e.message }));

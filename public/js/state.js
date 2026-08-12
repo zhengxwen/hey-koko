@@ -242,6 +242,51 @@ export const state = {
   comfyDevices: [],                  // detected ComfyUI GPU(s) for display in the model picker: [{ gpuName, vramGib, hostname }] — one per online endpoint/lane
 };
 
+// ── Panel overlays (archive / library / gallery) ───────────────────────────
+// All three fill the chat panel edge-to-edge at the same z-index, so each one
+// completely covers the others. Only ONE may carry .isOpen at a time — and not just
+// for tidiness: .isOpen is `display: flex`, so a covered-but-open panel stays in the
+// render tree and Safari's Find still matches (and scroll-highlights) text nobody
+// can see.
+//
+// Opening goes through here so the set can never drift again: this replaces pairwise
+// "close the other one" calls at each open site, which is exactly how the gallery
+// ended up closing neither of the other two.
+const PANEL_OVERLAYS = [
+  { id: "archiveOverlay", btn: "retrieveChat" },
+  { id: "libraryOverlay", btn: "libraryBtn" },
+  { id: "galleryOverlay", btn: "galleryBtn" },
+];
+
+// Mirror each panel's open state onto its toolbar button: .isActive for the pressed
+// look, aria-pressed so it reads as a toggle to assistive tech.
+export function syncPanelOverlayButtons() {
+  for (const o of PANEL_OVERLAYS) {
+    const btn = document.getElementById(o.btn);
+    if (!btn) continue;
+    const open = !!document.getElementById(o.id)?.classList.contains("isOpen");
+    btn.classList.toggle("isActive", open);
+    btn.setAttribute("aria-pressed", open ? "true" : "false");
+  }
+}
+
+export function isPanelOverlayOpen(id) {
+  return !!document.getElementById(id)?.classList.contains("isOpen");
+}
+
+// Show exactly one panel overlay and close the rest.
+export function openPanelOverlay(id) {
+  for (const o of PANEL_OVERLAYS) {
+    document.getElementById(o.id)?.classList.toggle("isOpen", o.id === id);
+  }
+  syncPanelOverlayButtons();
+}
+
+export function closePanelOverlay(id) {
+  document.getElementById(id)?.classList.remove("isOpen");
+  syncPanelOverlayButtons();
+}
+
 // ── Shared video audio preference ──────────────────────────────────────────
 // One mute/volume setting for EVERY player: the inline bubble clips and the
 // full-window viewer. Whatever the user last chose — our slider/icon, the native

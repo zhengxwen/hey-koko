@@ -8,7 +8,7 @@
 // editable bubble stream, semantic-search, and ask the whole library (panel box +
 // the chat-side /ask command). Retrieval is server-side; generation reuses /api/chat.
 
-import { dom, state } from './state.js';
+import { dom, state, openPanelOverlay, closePanelOverlay, isPanelOverlayOpen } from './state.js';
 import { escapeHtml, postJson, stripHeadingEmphasis, isMediaRef, mediaBase64 } from './utils.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks, addBlockCopyButtons } from './markdown.js';
 import { renderRelationGraph, openEntityGraphModal } from './relation-graph.js';
@@ -421,16 +421,13 @@ export function initLibrary() {
 
   // ---- open / close ----
   function open() {
-    // The two full-area panels are mutually exclusive: the archive overlay sits EARLIER
-    // in the DOM at the same z-index, so left open it would hide under us and clicking
-    // its button later would look dead. Opening one always closes the other — and must
-    // also undo the browser's side effect: openArchiveBrowser disables #archiveChat and
-    // only its OWN close button re-enables it, so closing it from here without this
-    // would leave the Archive button disabled forever.
-    document.querySelector("#archiveOverlay")?.classList.remove("isOpen");
+    // The full-area panels are mutually exclusive; openPanelOverlay closes the rest.
+    // It cannot undo the archive panel's side effect, though: openArchiveBrowser
+    // disables #archiveChat and only its OWN close button re-enables it, so closing it
+    // from here without this would leave the Archive button disabled forever.
     const archiveBtn = document.querySelector("#archiveChat");
     if (archiveBtn) archiveBtn.disabled = false;
-    overlay.classList.add("isOpen");
+    openPanelOverlay("libraryOverlay");
     if (!currentDoc) clearPreview();   // keep the doc being read across close/reopen
     refreshList().then(() => {
       // The shown doc may have been deleted while the panel was closed.
@@ -451,11 +448,13 @@ export function initLibrary() {
   // that's the archive ↔ star-map toggle. The star map's own source-toggle syncing
   // calls open() directly, NOT this handler, so it neither closes nor reopens the map.
   openBtn.addEventListener("click", () => {
+    // Second press on the lit button closes the panel and returns to the chat.
+    if (isPanelOverlayOpen("libraryOverlay")) { closePanelOverlay("libraryOverlay"); return; }
     document.dispatchEvent(new CustomEvent("heykoko:closeStarMap"));
     open();
     document.dispatchEvent(new CustomEvent("heykoko:libraryOpened"));
   });
-  closeBtn.addEventListener("click", () => overlay.classList.remove("isOpen"));
+  closeBtn.addEventListener("click", () => closePanelOverlay("libraryOverlay"));
 
   // ---- refresh (rescan disk) ----
   // Reconcile the library with manual file operations under LIBRARY_DIR: docs the user
@@ -2405,7 +2404,7 @@ export function initLibrary() {
     state.tabs.unshift(tab);
     saveTabs();
     switchTab(tab.id);
-    overlay.classList.remove("isOpen");
+    closePanelOverlay("libraryOverlay");
   }
 
   // ---- edit doc metadata via a small form popup; blocks unchanged → 0 re-embed ----

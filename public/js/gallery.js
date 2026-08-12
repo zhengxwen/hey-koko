@@ -10,7 +10,7 @@
 // scripts/migrate-archives.js, where the files already are; the ones still open in a tab
 // are reachable only from here, which is what ♻️ (reclaim) is for.
 
-import { state } from './state.js';
+import { state, openPanelOverlay, closePanelOverlay, isPanelOverlayOpen } from './state.js';
 import { t } from './i18n.js';
 import { galleryIdOf, galleryThumbUrl, inlineMediaSlots, fileInlineMedia,
          estInlineBytes } from './utils.js';
@@ -1562,20 +1562,25 @@ async function refresh() {
 export async function openGallery() {
   const overlay = el("galleryOverlay");
   if (!overlay) return;
-  overlay.classList.add("isOpen");
+  openPanelOverlay("galleryOverlay");
   await loadArchiveRefs();
   await refresh();
 }
 
 export function closeGallery() {
-  el("galleryOverlay")?.classList.remove("isOpen");
+  closePanelOverlay("galleryOverlay");
   // Whatever happened in there — imports, deletes, a tidy — the strip is the view
   // that stays on screen, so it re-reads on the way out.
   refreshStrip();
 }
 
 export function initGallery() {
-  el("galleryBtn")?.addEventListener("click", openGallery);
+  el("galleryBtn")?.addEventListener("click", () => {
+    // Second press on the lit button closes the panel and returns to the chat.
+    // (The filmstrip's own "open" button below always opens — never toggles.)
+    if (isPanelOverlayOpen("galleryOverlay")) closeGallery();
+    else openGallery();
+  });
   // Click anywhere that is not a tile or the pane itself → close the preview.
   el("galleryOverlay")?.addEventListener("click", (ev) => {
     if (!selected) return;
