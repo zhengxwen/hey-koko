@@ -7477,31 +7477,6 @@ body.isResizingComposer {
 
 .galleryStats:empty { display: none; }
 
-/* A transient answer in the totals line (gallery.js flashStats). The line is grey, small
-   and at the very bottom, while the user is looking at the control they just pressed —
-   so it blinks. Colour and background only: no padding or weight changes, which would
-   nudge the layout every time something is reported. */
-.galleryStats.isFlash {
-  opacity: 1;
-  border-radius: 6px;
-  animation: galleryStatsBlink 0.6s ease-in-out 3;
-}
-
-@keyframes galleryStatsBlink {
-  0%, 100% { background: transparent; color: inherit; }
-  50%      { background: var(--accent, #6aa9ff); color: #fff; }
-}
-
-/* The control that was pressed, when the answer is "not yet". A ring rather than a shake:
-   this is "you need to pick something first", not "that was wrong". box-shadow costs no
-   layout, so nothing in the toolbar shifts. */
-.isNudge { animation: galleryBtnNudge 0.7s ease-out 2; }
-
-@keyframes galleryBtnNudge {
-  0%   { box-shadow: 0 0 0 0 var(--accent, #6aa9ff); }
-  70%  { box-shadow: 0 0 0 8px rgba(106, 169, 255, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(106, 169, 255, 0); }
-}
 
 .galleryBody {
   flex: 1;
@@ -8219,36 +8194,225 @@ body.isResizingComposer {
   gap: 10px;
   padding: 12px 18px 16px;
   min-height: 0;
-  overflow-y: auto;
+  /* No scrolling here: the scrubber and the picker sit ON the bottom edge and the player
+     takes whatever is left, so the player grows with the window instead of the page
+     growing past it. */
+  overflow: hidden;
+}
+
+/* Row one: the timeline's clips beside the player, not stacked above it. Stacked, the
+   two things you compare while cutting — "which clip am I on" and "what does it look
+   like" — could not both be on screen with the scrubber. */
+/* A FIXED height, not "as tall as the video". The <video> box sizes itself to whatever it
+   has loaded — 300x150 with no source, then the clip's own shape — so every load, clear
+   and swap moved this row, and with it the scrubber and the picker underneath. The player
+   now letterboxes inside a stable frame instead. */
+.veditTop {
+  /* Takes the space the bottom stack does not want. The <video> box sizes itself to
+     whatever it has loaded (300x150 with no source, then the clip's own shape), which is
+     why this row can never be sized BY its contents — but with the rows below anchored to
+     the bottom edge, "everything that is left" is a stable frame too, and one the user can
+     change by resizing the window. */
+  flex: 1 1 auto;
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  min-height: 200px;
+}
+
+/* The clip list and the Export row above it: one column, so the row does not run across
+   the player. */
+.veditLaneCol {
+  flex: none;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
 }
 
 .veditPreviewWrap {
-  flex: none;
+  flex: 1;
+  min-height: 0;         /* letterbox inside the row instead of stretching it */
+  position: relative;    /* the fullscreen button sits on the picture */
   display: flex;
   justify-content: center;
+  align-items: center;
   background: #000;
   border-radius: 8px;
+  min-width: 0;
+}
+
+/* Only while the chain is running — the rest of the time the native controls carry their
+   own fullscreen button and two would be one too many. Fades in when the pointer comes to
+   the player, so a chain watched from a distance keeps a clean picture. */
+.veditFsBtn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  cursor: pointer;
+}
+.veditFsBtn[hidden] { display: none; }
+.veditPreviewWrap:hover .veditFsBtn,
+.veditFsBtn:focus-visible { opacity: 1; }
+.veditFsBtn:hover { background: rgba(0, 0, 0, 0.8); }
+/* In the row, max-* only caps: a small clip stays its own size inside the frame. Fullscreen
+   is the one place that reads as broken, so there the picture is scaled to fit instead. */
+.veditPreviewWrap:fullscreen { border-radius: 0; }
+.veditPreviewWrap:fullscreen #veditPreview {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
 }
 
 #veditPreview {
   max-width: 100%;
-  max-height: 42vh;
+  max-height: 100%;      /* the row's height is the frame; the clip fits inside it */
   display: block;
 }
 
+/* Chain preview runs with the native controls off (they re-appear on every src change and
+   dim the picture), so the frame itself is the stop button. */
+#veditPreview.isChaining { cursor: pointer; }
+
 /* The ordered clip cards. Horizontal scroll; the active one is the scrubber's clip. */
+/* The clips in the cut, top to bottom in output order — rows, like the gallery's list
+   view, not tiles. Width is user-set (the splitter beside it), so it is an inline style
+   at runtime; this is only the starting point. Drag-to-reorder is index-based and does
+   not care which way the list runs. */
 .veditLane {
-  flex: none;
+  flex: 1 1 auto;
+  width: 100%;          /* the column beside the splitter owns the width */
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;          /* stretches to the row; scrolls inside it */
   padding: 2px;
 }
 
+/* The handle between the list and the player. Wider than it looks: the visible line is
+   1px, the grab area is the whole 9px, because a 1px drag target is a dexterity test. */
+.veditSplit {
+  flex: none;
+  width: 9px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+}
+
+.veditSplit::after {
+  content: "";
+  position: absolute;
+  inset: 8px 4px;
+  border-radius: 1px;
+  background: var(--line);
+}
+
+.veditSplit:hover::after, .veditSplit.isDragging::after { background: var(--accent, #6aa9ff); }
+
+/* Nothing in the cut yet — the overlay opens this way whenever ✂️ is pressed with no
+   selection, so it has to point at the way out (the picker below). */
+.veditLaneEmpty {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.75;
+}
+
+/* The picker: every clip in the gallery, click to append. This is what makes the editor
+   a place you can walk into empty. */
+.veditPickerWrap {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.veditPickerLabel { font-size: 11px; }
+
+.veditPicker {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 2px;
+  min-height: 62px;
+}
+
+.veditPickFrame {
+  position: relative;
+  flex: none;
+  width: 84px;
+  height: 56px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  background: rgba(128, 128, 128, 0.12);
+  /* Undo the global button styling, as every other thumbnail-shaped button here does. */
+  color: inherit;
+  font-weight: 400;
+  min-height: 0;
+}
+
+.veditPickFrame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.veditPickFrame:hover { border-color: var(--accent, #6aa9ff); }
+
+/* Already in the cut. Not disabled — the same clip twice is a legitimate edit — just
+   marked, so "did I add that one?" has an answer. */
+.veditPickFrame.isUsed img { opacity: 0.45; }
+
+.veditPickUsed {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 7px;
+  background: var(--accent, #6aa9ff);
+  color: #fff;
+}
+
+.veditPickLen {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+}
+
+/* A row, deliberately the same shape as the gallery's list view: thumbnail left, name
+   over a meta line, one line each. Same numbers too (64x44 picture) so the two lists
+   read as the same kind of thing. */
 .veditClipCard {
   position: relative;
   flex: none;
-  width: 120px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px;
   border: 2px solid transparent;
   border-radius: 8px;
   overflow: hidden;
@@ -8259,33 +8423,77 @@ body.isResizingComposer {
 .veditClipCard.isActive { border-color: var(--accent, #6aa9ff); }
 
 .veditClipCard img {
-  width: 100%;
-  height: 68px;
+  flex: none;
+  width: 64px;
+  height: 44px;
+  border-radius: 4px;
   object-fit: cover;
   display: block;
-  pointer-events: none;   /* clicks/drags belong to the card */
+  pointer-events: none;   /* clicks/drags belong to the row */
+}
+
+.veditClipText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;           /* or the name's ellipsis never triggers */
+  flex: 1;
+}
+
+.veditClipName {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .veditClipLabel {
   display: block;
   font-size: 11px;
-  padding: 2px 6px;
-  opacity: 0.8;
+  opacity: 0.7;
+  white-space: nowrap;
 }
 
+/* What the file is (frame size, rate, weight) under what the cut does with it. Dimmer
+   than the trim line: it is reference, not the thing being edited. Clips instead of
+   wrapping, so a long line cannot make one row taller than its neighbours. */
+.veditClipSpec {
+  display: block;
+  font-size: 10px;
+  opacity: 0.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* In the row it sits at the end, not floating over the picture's corner. */
 .veditClipRemove {
-  position: absolute;
-  top: 3px;
-  right: 3px;
+  flex: none;
   width: 18px;
   height: 18px;
+  min-height: 0;
   padding: 0;
   border-radius: 50%;
   font-size: 10px;
   line-height: 18px;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.55);
+  color: inherit;
+  background: rgba(128, 128, 128, 0.25);
   font-weight: 400;
+}
+
+.veditClipRemove:hover { background: rgba(214, 69, 69, 0.6); color: #fff; }
+
+/* The scrubber's slot keeps its height even with nothing in it. Otherwise every time the
+   cut empties — or the active clip's frames are still being extracted — everything below
+   (the picker, the export bar) jumps up and then back down, and the strip you were about
+   to click has moved. */
+.veditTrim {
+  flex: none;
+  min-height: 108px;
+}
+
+.veditTrim:empty {
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.08);
 }
 
 /* The trim scrubber: a filmstrip with shaded cut-away regions and two handles. */
@@ -8355,7 +8563,7 @@ body.isResizingComposer {
 }
 
 .veditTrimControls button,
-.veditExportBar button { font-size: 12px; min-height: 28px; }
+.veditOptsPanel button { font-size: 12px; min-height: 28px; }
 
 .veditTimeField {
   width: 64px;
@@ -8364,15 +8572,60 @@ body.isResizingComposer {
   text-align: right;
 }
 
-.veditExportBar {
+/* Export + ⚙ + the estimate, above the clip list; the settings popover hangs off it. */
+.veditHeadBar {
   flex: none;
+  position: relative;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 8px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(128, 128, 128, 0.18);
 }
+.veditHeadCtl {
+  display: flex;
+  align-items: center;
+  /* The estimate wraps under the buttons rather than reaching across into the player: it
+     grows a lot when the crossfade warning is appended, and the lane drags down to 150px.
+     No overflow:hidden here or on the column — the ⚙ popover is wider than the column and
+     lives inside it. */
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+/* Every export setting, one per row. As a wrapping single row these eight controls moved
+   Export somewhere different on every window width. */
+.veditOptsPanel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px 14px;
+  min-width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+/* The `display: grid` above outranks [hidden]'s UA rule — the recurring trap. */
+.veditOptsPanel[hidden] { display: none; }
+
+.veditOptsName { justify-self: end; }
+.veditOptsCell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.veditOptsCell select { max-width: 100%; }
+.veditOptsFull {
+  grid-column: 1 / -1;
+  max-width: 340px;
+}
+.veditOptsBtn.isOn { background: rgba(106, 169, 255, 0.18); }
 
 .veditFadeField {
   width: 56px;
@@ -8380,16 +8633,30 @@ body.isResizingComposer {
   padding: 4px 6px;
 }
 
-.veditExportBar input[type="range"] { width: 110px; }
-
-.veditExportBtn {
-  font-size: 13px;
-  padding: 4px 18px;
+/* Explicit widths, because the global `input { width: 100% }` would otherwise blow the
+   export bar apart. Empty means "follow the first clip" and the placeholder shows it. */
+.veditSizeField {
+  width: 96px;
+  font-size: 12px;
+  padding: 4px 6px;
 }
+
+.veditOptsPanel input[type="range"] { width: 110px; }
+
+/* Export and ⚙ stand side by side, so they are the same height — a taller Export made the
+   pair look like a button with an afterthought stuck to it. */
+.veditExportBtn,
+.veditOptsBtn {
+  min-height: 30px;
+  padding: 4px 12px;
+  font-size: 13px;
+  line-height: 1;
+}
+.veditExportBtn { padding: 4px 18px; }
 
 .veditEstimate.isWarn { color: #e07a30; opacity: 1; }
 
-.veditFadeHint { flex-basis: 100%; }
+
 
 .galleryActions {
   display: flex;

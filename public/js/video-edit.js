@@ -32,8 +32,11 @@ let active = 0;        // index of the clip under the trim scrubber
 let audioMode = 'keep';
 let audioId = '';
 let fade = 0;          // crossfade seconds; 0 = hard cut
-let codec = 'h264';
+let codec = 'h265';    // half the bytes for the same picture; falls back to h264 server-side
 let crf = 18;
+// Output geometry. 0 = follow the first clip, which is what the cut is normalized to
+// otherwise. Kept across opens, like the codec and quality beside them.
+let outW = 0, outH = 0, outFps = 0;
 let playAll = false;   // preview chains through all clips vs. stops at the active one's out
 
 const clipLen = (c) => Math.max(0, c.out - c.in);
@@ -57,15 +60,23 @@ async function fetchEntry(id) {
   } catch { return null; }
 }
 
+// One gallery id → an editable clip, or null if it is not a video.
+async function toClip(id) {
+  const entry = await fetchEntry(id);
+  if (!entry || entry.kind !== 'video') return null;   // silently skip non-videos in a mixed selection
+  const dur = entry.length && entry.fps ? entry.length / entry.fps : 0;
+  return { id, entry, url: fileUrl(id), dur, in: 0, out: dur, frames: null };
+}
+
+// Opens whether or not anything was selected. An editor that refuses to open until you
+// have already picked your material is a door that only opens from the inside: the
+// picker strip below is how clips get added, and it is only reachable in here.
 export async function openVideoEditor(ids) {
   const list = [];
   for (const id of ids || []) {
-    const entry = await fetchEntry(id);
-    if (!entry || entry.kind !== 'video') continue;   // silently skip non-videos in a mixed selection
-    const dur = entry.length && entry.fps ? entry.length / entry.fps : 0;
-    list.push({ id, entry, url: fileUrl(id), dur, in: 0, out: dur, frames: null });
+    const c = await toClip(id);
+    if (c) list.push(c);
   }
-  if (!list.length) { alert(t('vedit_noClips')); return; }
   clips = list;
   active = 0;
   playAll = false;
@@ -73,15 +84,161 @@ export async function openVideoEditor(ids) {
   const title = el('veditTitle');
   if (title) title.textContent = `✂️ ${t('vedit_title')}`;
   overlay?.classList.add('isOpen');
+  setChainChrome(false);
+  setOptsOpen(false);   // a popover opens closed, however you left it last time
+  applyLaneWidth(savedLaneWidth());
+  wireSplitter();
   renderLane();
   renderTrim();
   renderExportBar();
+  renderPicker();
+  if (clips.length) loadActive(false);
+  else { const v = el('veditPreview'); if (v) v.removeAttribute('src'); }
+}
+
+// Append a clip from the picker and make it the one under the scrubber — appending
+// something you then have to go and click would be half a feature.
+async function addClip(id) {
+  const c = await toClip(id);
+  if (!c) return;
+  clips.push(c);
+  active = clips.length - 1;
+  renderLane();
+  renderTrim();
+  renderExportBar();
+  paintPickerUsed();
   loadActive(false);
+}
+
+// Every clip in the gallery, newest first. Clicking one appends it; ones already in the
+// cut are marked rather than disabled, because using a clip twice is a real edit.
+async function renderPicker() {
+  const row = el('veditPicker');
+  const label = el('veditPickerLabel');
+  if (!row) return;
+  if (label) label.textContent = t('vedit_pickHint');
+  row.innerHTML = '';
+  let items = [];
+  try {
+    const r = await fetch('/api/gallery/list?type=video&limit=60').then((x) => x.json());
+    items = r.items || [];
+  } catch { /* offline: an empty strip, and the message below explains it */ }
+  if (!items.length) {
+    const empty = document.createElement('p');
+    empty.className = 'hint veditLaneEmpty';
+    empty.textContent = t('vedit_noClips');
+    row.appendChild(empty);
+    return;
+  }
+  for (const e of items) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'veditPickFrame';
+    btn.dataset.id = e.path;
+    btn.title = e.displayName || e.path.split('/').pop();
+    const img = document.createElement('img');
+    // The filmstrip rendition: this row is 84px wide frames, same as the composer's.
+    img.src = galleryThumbUrl(e.path, 'strip');
+    img.alt = btn.title;
+    img.loading = 'lazy';
+    img.draggable = false;
+    btn.appendChild(img);
+    if (e.length && e.fps) {
+      const len = document.createElement('span');
+      len.className = 'veditPickLen';
+      len.textContent = fmtSec(e.length / e.fps);
+      btn.appendChild(len);
+    }
+    btn.addEventListener('click', () => addClip(e.path));
+    row.appendChild(btn);
+  }
+  paintPickerUsed();
+}
+
+function paintPickerUsed() {
+  const used = new Map();
+  for (const c of clips) used.set(c.id, (used.get(c.id) || 0) + 1);
+  for (const btn of document.querySelectorAll('.veditPickFrame')) {
+    const n = used.get(btn.dataset.id) || 0;
+    btn.classList.toggle('isUsed', n > 0);
+    btn.querySelector('.veditPickUsed')?.remove();
+    if (!n) continue;
+    const tag = document.createElement('span');
+    tag.className = 'veditPickUsed';
+    tag.textContent = n > 1 ? `✓${n}` : '✓';
+    btn.appendChild(tag);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The splitter between the clip list and the player.
+// ---------------------------------------------------------------------------
+
+const LANE_KEY = 'heykoko-vedit-lane-w';
+const LANE_MIN = 150, LANE_MAX = 560;
+const clampLane = (w) => Math.max(LANE_MIN, Math.min(LANE_MAX, Math.round(w)));
+
+// The COLUMN is what the splitter sizes — the list and the Export row above it move
+// together, or the row would stay behind and reach across the player.
+const laneBox = () => el('veditLaneCol') || el('veditLane');
+
+function applyLaneWidth(w) {
+  const col = laneBox();
+  if (col) col.style.width = `${clampLane(w)}px`;
+}
+
+function savedLaneWidth() {
+  let v;
+  try { v = Number(localStorage.getItem(LANE_KEY)); } catch { /* private mode */ }
+  return Number.isFinite(v) && v >= LANE_MIN ? clampLane(v) : 240;
+}
+
+// Wired on first open. The overlay's markup is static — it is never re-rendered — so the
+// flag is what stops a second open from stacking a second set of listeners.
+function wireSplitter() {
+  const bar = el('veditSplit');
+  const lane = laneBox();
+  if (!bar || !lane || bar.dataset.wired) return;
+  bar.dataset.wired = '1';
+  let startX = 0, startW = 0;
+  bar.addEventListener('pointerdown', (ev) => {
+    startX = ev.clientX;
+    startW = lane.getBoundingClientRect().width;
+    bar.classList.add('isDragging');
+    // Capture, so a fast drag that outruns the 9px handle keeps resizing instead of
+    // dropping the gesture on whatever is under the cursor.
+    bar.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+  });
+  bar.addEventListener('pointermove', (ev) => {
+    if (!bar.classList.contains('isDragging')) return;
+    applyLaneWidth(startW + (ev.clientX - startX));
+  });
+  const end = () => {
+    if (!bar.classList.contains('isDragging')) return;
+    bar.classList.remove('isDragging');
+    try { localStorage.setItem(LANE_KEY, String(Math.round(lane.getBoundingClientRect().width))); } catch { /* private mode */ }
+  };
+  bar.addEventListener('pointerup', end);
+  bar.addEventListener('pointercancel', end);
+  // Keyboard: the handle is a separator, and a separator you cannot move without a mouse
+  // is not one.
+  bar.tabIndex = 0;
+  bar.addEventListener('keydown', (ev) => {
+    const step = ev.key === 'ArrowLeft' ? -16 : ev.key === 'ArrowRight' ? 16 : 0;
+    if (!step) return;
+    ev.preventDefault();
+    applyLaneWidth(lane.getBoundingClientRect().width + step);
+    try { localStorage.setItem(LANE_KEY, String(Math.round(lane.getBoundingClientRect().width))); } catch { /* private mode */ }
+  });
 }
 
 export function closeVideoEditor() {
   const v = el('veditPreview');
   try { v.pause(); } catch { /* not playing */ }
+  playAll = false;
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => { /* already out */ });
+  setChainChrome(false);
   el('veditOverlay')?.classList.remove('isOpen');
 }
 
@@ -105,21 +262,82 @@ function loadActive(andPlay) {
   v.addEventListener('loadedmetadata', seekIn, { once: true });
 }
 
+// Where this clip's turn ends: its out point, or the file's real end if that comes first.
+// The out point is derived from the ledger's length/fps, which can be a hair longer than
+// the container actually is — and a threshold past the end of the media is one the
+// playhead never crosses.
+function chainOutOf(v, c) {
+  const dur = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : Infinity;
+  return Math.min(c.out, dur);
+}
+
+// Chrome's native controls reset with the element on every `src` change, so each handover
+// flashed the control bar AND its full-frame dark scrim back over the picture — with the
+// pointer nowhere near the player. They fade again after ~1s of playback, which is most of
+// a short clip. So the chain runs without them and the player takes a click to stop; the
+// native scrubber was lying during a chain anyway (it reads the current FILE's time, not
+// the cut's).
+function setChainChrome(chaining) {
+  const v = el('veditPreview');
+  if (!v) return;
+  v.controls = !chaining;
+  v.classList.toggle('isChaining', chaining);
+  v.title = chaining ? t('vedit_clickToStop') : '';
+  // Taking the native controls away takes their fullscreen button with them, so ours
+  // stands in for exactly as long as they are gone.
+  paintFullscreenBtn();
+}
+
+// The stage goes fullscreen rather than the <video>: a fullscreened video element draws
+// its own native controls over itself, which is the scrim we just got rid of.
+function toggleFullscreen() {
+  const stage = el('veditStage');
+  if (!stage) return;
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => { /* already out */ });
+  else stage.requestFullscreen?.().catch(() => { /* denied: nothing to undo */ });
+}
+
+function paintFullscreenBtn() {
+  const fs = el('veditFsBtn');
+  if (!fs) return;
+  const on = !!document.fullscreenElement;
+  // One glyph both ways: the pair of arrows-in/arrows-out symbols renders as tofu in
+  // enough fonts that the label is doing the work anyway.
+  fs.title = t(on ? 'vedit_exitFullscreen' : 'vedit_fullscreen');
+  fs.setAttribute('aria-label', fs.title);
+  if (on) fs.hidden = false;   // in fullscreen it is the only way back out
+  else fs.hidden = !playAll;
+}
+
+function advanceChain() {
+  const v = el('veditPreview');
+  if (playAll && active < clips.length - 1) {
+    active++;
+    highlightLane();
+    renderTrim();
+    loadActive(true);
+    return;
+  }
+  try { v?.pause(); } catch { /* already stopped */ }
+  playAll = false;
+  setChainChrome(false);
+}
+
 function onTimeUpdate() {
   const v = el('veditPreview');
   const c = clips[active];
   if (!v || !c || v.paused) return;
-  if (v.currentTime >= c.out - 0.03) {
-    if (playAll && active < clips.length - 1) {
-      active++;
-      highlightLane();
-      renderTrim();
-      loadActive(true);
-    } else {
-      v.pause();
-      playAll = false;
-    }
-  }
+  if (v.currentTime >= chainOutOf(v, c) - 0.03) advanceChain();
+}
+
+// A clip that runs to its NATURAL end never delivers a timeupdate past the out point: the
+// browser fires `ended` and flips `paused` first, so onTimeUpdate returns at its own
+// guard and the chain stops dead. Trimmed clips hand over early and hid this — which is
+// to say it broke on exactly the clips anyone starts with, and the test that "covered"
+// chaining had trimmed both of them.
+function onEnded() {
+  if (!clips[active]) return;
+  advanceChain();
 }
 
 // ---------------------------------------------------------------------------
@@ -128,10 +346,46 @@ function onTimeUpdate() {
 
 let dragFrom = null;
 
+// Position in the cut, how much of the clip survives the trim, and — only once it IS
+// trimmed — what it started as. One function because the scrubber repaints this same
+// label live while a handle is dragged: two copies of the format drifted apart within
+// the hour (the scrubber's kept overwriting the fuller one).
+function clipLabelText(c, i) {
+  const trimmed = clipLen(c);
+  const full = c.dur || 0;
+  return `${i + 1} · ${fmtSec(trimmed)}`
+    + (full && Math.abs(full - trimmed) > 0.01 ? ` / ${fmtSec(full)}` : '');
+}
+
+const fmtSize = (b) => (!b ? '' : b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB`
+  : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+
+// What the clip IS, as opposed to what the cut does with it: frame size, frame rate, file
+// size. Mixed sizes or frame rates are the thing that makes a stitch look wrong (the
+// export normalises everything to the first clip), so they belong where the clips are
+// listed, not two clicks away in the gallery. Whatever the ledger does not know is simply
+// left out rather than printed as a zero.
+function clipSpecText(c) {
+  const e = c.entry || {};
+  const bits = [];
+  if (e.width && e.height) bits.push(`${e.width}×${e.height}`);
+  if (e.fps) bits.push(`${e.fps}fps`);
+  const size = fmtSize(e.bytes);
+  if (size) bits.push(size);
+  return bits.join(' · ');
+}
+
 function renderLane() {
   const lane = el('veditLane');
   if (!lane) return;
   lane.innerHTML = '';
+  if (!clips.length) {
+    const empty = document.createElement('p');
+    empty.className = 'veditLaneEmpty';
+    empty.textContent = t('vedit_laneEmpty');
+    lane.appendChild(empty);
+    return;
+  }
   clips.forEach((c, i) => {
     const card = document.createElement('div');
     card.className = 'veditClipCard' + (i === active ? ' isActive' : '');
@@ -163,6 +417,9 @@ function renderLane() {
     });
     card.addEventListener('click', () => {
       if (active === i) return;
+      // Picking a clip by hand is taking the wheel: the chain stops and the controls come back.
+      playAll = false;
+      setChainChrome(false);
       active = i;
       highlightLane();
       renderTrim();
@@ -170,12 +427,30 @@ function renderLane() {
     });
 
     const img = document.createElement('img');
-    img.src = galleryThumbUrl(c.id);
+    // The strip rendition: these rows are 64x44, exactly the size the gallery's list view
+    // uses and the size that rendition was cut for.
+    img.src = galleryThumbUrl(c.id, 'strip');
     img.alt = c.entry.displayName || c.id.split('/').pop();
     img.draggable = false;
+
+    // Name over meta, like a row in the gallery's list view.
+    const text = document.createElement('div');
+    text.className = 'veditClipText';
+    const name = document.createElement('span');
+    name.className = 'veditClipName';
+    name.textContent = c.entry.displayName || c.id.split('/').pop();
+    name.title = c.id;
     const label = document.createElement('span');
     label.className = 'veditClipLabel';
-    label.textContent = `${i + 1} · ${fmtSec(clipLen(c))}`;
+    label.textContent = clipLabelText(c, i);
+    text.append(name, label);
+    const specs = clipSpecText(c);
+    if (specs) {
+      const spec = document.createElement('span');
+      spec.className = 'veditClipSpec';
+      spec.textContent = specs;
+      text.appendChild(spec);
+    }
     const rm = document.createElement('button');
     rm.type = 'button';
     rm.className = 'veditClipRemove';
@@ -184,14 +459,17 @@ function renderLane() {
     rm.addEventListener('click', (ev) => {
       ev.stopPropagation();
       clips.splice(i, 1);
-      if (!clips.length) { closeVideoEditor(); return; }
-      if (active >= clips.length) active = clips.length - 1;
+      if (active >= clips.length) active = Math.max(0, clips.length - 1);
       renderLane();
       renderTrim();
       renderExportBar();
-      loadActive(false);
+      paintPickerUsed();
+      // Removing the last clip no longer closes the editor: it lands on the same empty
+      // state ✂️ opens with, and the picker is right there to start again.
+      if (clips.length) loadActive(false);
+      else { const v = el('veditPreview'); try { v.pause(); } catch { /* not playing */ } v?.removeAttribute('src'); }
     });
-    card.append(img, label, rm);
+    card.append(img, text, rm);
     lane.appendChild(card);
   });
 }
@@ -262,7 +540,7 @@ function renderTrim() {
     inField.value = c.in.toFixed(2);
     outField.value = c.out.toFixed(2);
     const card = document.querySelector(`.veditClipCard[data-index="${active}"] .veditClipLabel`);
-    if (card) card.textContent = `${active + 1} · ${fmtSec(clipLen(c))}`;
+    if (card) card.textContent = clipLabelText(c, active);
     updateEstimate();
   };
 
@@ -335,14 +613,30 @@ function renderTrim() {
   };
   const setIn = btn('⇤', t('vedit_fromPlayhead'), () => { const v = el('veditPreview'); if (v) commit('in', v.currentTime); });
   const setOut = btn('⇥', t('vedit_fromPlayhead'), () => { const v = el('veditPreview'); if (v) commit('out', v.currentTime); });
-  const playBtn = btn(t('vedit_playAll'), '', () => {
+  // Two buttons, because they answer two different questions: "is THIS trim right" and
+  // "does the whole thing hang together". One toggle made you guess which mode you were
+  // in, and the mode reset itself on every stop.
+  const playOne = btn(t('vedit_playOne'), t('vedit_playOneHint'), () => {
+    playAll = false;
+    setChainChrome(false);
+    const v = el('veditPreview');
+    if (!v) return;
+    // From the in point, not from wherever the playhead was left.
+    v.currentTime = c.in;
+    v.play().catch(() => { /* autoplay policy */ });
+  });
+  const playBtn = btn(t('vedit_playAll'), t('vedit_playAllHint'), () => {
     playAll = true;
+    setChainChrome(true);
     active = 0;
     highlightLane();
     renderTrim();
     loadActive(true);
   });
-  controls.append(lbl('vedit_in'), inField, setIn, lbl('vedit_out'), outField, setOut, playBtn);
+  // With one clip the two buttons would do exactly the same thing, and a pair of buttons
+  // that behave identically is what made the single toggle confusing in the first place.
+  playBtn.disabled = clips.length < 2;
+  controls.append(lbl('vedit_in'), inField, setIn, lbl('vedit_out'), outField, setOut, playOne, playBtn);
 
   box.append(strip, controls);
   paint();
@@ -361,10 +655,27 @@ function updateEstimate() {
   estimateEl.classList.toggle('isWarn', bad);
 }
 
+// Every export setting lives in a popover off the ⚙: they all have defaults worth keeping,
+// and laid out in a row they wrapped and pushed Export around. Starts closed, like any
+// popover — it is not state, it is a drawer.
+const optsOpen = () => !el('veditExportBar')?.hidden;
+function setOptsOpen(open) {
+  const panel = el('veditExportBar');
+  const btn = el('veditOptsBtn');
+  if (panel) panel.hidden = !open;
+  if (btn) {
+    btn.classList.toggle('isOn', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+}
+
 function renderExportBar() {
   const bar = el('veditExportBar');
+  const head = el('veditHeadCtl');
   if (!bar) return;
+  const wasOpen = optsOpen();
   bar.innerHTML = '';
+  if (head) head.innerHTML = '';
 
   const sel = (opts, value, onChange) => {
     const s = document.createElement('select');
@@ -428,12 +739,61 @@ function renderExportBar() {
       updateEstimate();
     });
 
-  const codecSel = sel([['h264', 'H.264'], ['h265', 'H.265']], codec, (v) => { codec = v; });
+  // Output size and rate. Both empty = follow the first clip, and the placeholder says what
+  // that is — the cut is normalized to ONE size and rate either way, so this is the knob
+  // that decides which. Free text rather than a preset list: the sizes that matter here are
+  // whatever the local models happen to render at, and a list would always be missing one.
+  const src = clips[0];
+  const srcSize = src && src.entry.width && src.entry.height ? `${src.entry.width}×${src.entry.height}` : '—';
+  const srcFps = src && src.entry.fps ? String(Math.round(src.entry.fps * 100) / 100) : '—';
+  const sizeField = document.createElement('input');
+  sizeField.type = 'text';               // a number input silently swallows "1280x720"
+  sizeField.className = 'veditSizeField';
+  sizeField.id = 'veditSizeField';
+  sizeField.placeholder = srcSize;
+  sizeField.title = t('vedit_sizeHint', { s: srcSize });
+  sizeField.setAttribute('list', 'veditSizeList');
+  sizeField.value = outW && outH ? `${outW}×${outH}` : '';
+  sizeField.addEventListener('change', () => {
+    const m = sizeField.value.trim().match(/^(\d{2,5})\s*[x×*: ]\s*(\d{2,5})$/);
+    if (!sizeField.value.trim()) { outW = outH = 0; }
+    else if (m) { outW = Number(m[1]); outH = Number(m[2]); }
+    // Anything else is a typo, not an instruction: fall back to the source rather than
+    // rendering something nobody asked for.
+    else { outW = outH = 0; }
+    sizeField.value = outW && outH ? `${outW}×${outH}` : '';
+  });
+  const sizeList = document.createElement('datalist');
+  sizeList.id = 'veditSizeList';
+  for (const s of ['1920×1080', '1280×720', '1080×1920', '720×1280', '1024×1024', '3840×2160']) {
+    const o = document.createElement('option');
+    o.value = s;
+    sizeList.appendChild(o);
+  }
+  // A short list beats a free number: these are the rates local models actually render at
+  // (Wan 16, LTX/most 24) plus the broadcast ones. "" is follow-the-first-clip, and it
+  // names the number so the default is never a mystery.
+  const FPS_CHOICES = [8, 12, 15, 16, 24, 25, 30, 48, 50, 60];
+  const fpsOpts = [['', t('vedit_fpsAuto', { s: srcFps })]];
+  // A rate set earlier that is not on the list still has to be selectable, or reopening
+  // the editor would silently reset it.
+  for (const n of [...new Set([...FPS_CHOICES, ...(outFps ? [outFps] : [])])].sort((a, b) => a - b)) {
+    fpsOpts.push([String(n), `${n} fps`]);
+  }
+  const fpsField = sel(fpsOpts, outFps ? String(outFps) : '', (v) => { outFps = Number(v) || 0; });
+  fpsField.id = 'veditFpsField';
+  fpsField.title = t('vedit_fpsHint', { s: srcFps });
+
+  const codecSel = sel([['h265', 'H.265'], ['h264', 'H.264']], codec, (v) => { codec = v; paintQuality(); });
   const crfField = document.createElement('input');
   crfField.type = 'range';
   crfField.min = '14'; crfField.max = '32'; crfField.step = '1';
   crfField.value = String(crf);
-  crfField.title = t('vedit_quality');
+  // H.265 goes through Apple's hardware encoder, which has no CRF knob — the slider then
+  // only decides the quality of the H.264 fallback. Left usable (that fallback is real on
+  // a machine without the hardware), but it should not pretend to be doing more.
+  const paintQuality = () => { crfField.title = t(codec === 'h265' ? 'vedit_qualityH265' : 'vedit_quality'); };
+  paintQuality();
   crfField.addEventListener('input', () => { crf = Number(crfField.value); crfLabel.textContent = `CRF ${crf}`; });
   const crfLabel = document.createElement('span');
   crfLabel.className = 'hint';
@@ -443,18 +803,49 @@ function renderExportBar() {
   estimateEl.className = 'veditEstimate hint';
 
   const hint = document.createElement('span');
-  hint.className = 'hint veditFadeHint';
+  hint.className = 'hint';
   hint.textContent = t('vedit_fadeHint');
 
   const exportBtn = document.createElement('button');
   exportBtn.type = 'button';
   exportBtn.textContent = t('vedit_export');
   exportBtn.className = 'veditExportBtn';
+  // Nothing in the cut: the editor is open and usable, but there is nothing to render.
+  exportBtn.disabled = !clips.length;
   exportBtn.addEventListener('click', doExport);
 
-  bar.append(lbl('vedit_audio'), audioSel, trackSel,
-             lbl('vedit_transition'), transSel, fadeField,
-             codecSel, crfField, crfLabel, estimateEl, exportBtn, hint);
+  const optsBtn = document.createElement('button');
+  optsBtn.type = 'button';
+  optsBtn.id = 'veditOptsBtn';
+  optsBtn.className = 'secondary veditOptsBtn';
+  optsBtn.textContent = '⚙';
+  optsBtn.title = t('vedit_options');
+  optsBtn.setAttribute('aria-controls', 'veditExportBar');
+  optsBtn.addEventListener('click', (ev) => { ev.stopPropagation(); setOptsOpen(!optsOpen()); });
+
+  head?.append(exportBtn, optsBtn, estimateEl);
+
+  // One setting per row, label left, control right — a wrapping row of eight controls was
+  // how Export ended up somewhere different every time the window changed width.
+  const row = (key, ...controls) => {
+    const name = lbl(key);
+    name.className = 'hint veditOptsName';
+    const cell = document.createElement('div');
+    cell.className = 'veditOptsCell';
+    cell.append(...controls);
+    bar.append(name, cell);
+  };
+  row('vedit_size', sizeField, sizeList);
+  row('vedit_fps', fpsField);
+  row('vedit_audio', audioSel, trackSel);
+  row('vedit_transition', transSel, fadeField);
+  row('vedit_codec', codecSel);
+  row('vedit_qualityLabel', crfField, crfLabel);
+  hint.classList.add('veditOptsFull');
+  bar.append(hint);
+  // A rebuild is not a dismissal. Today every rebuild happens to follow a click outside
+  // (which closes it anyway), but the popover should not depend on that coincidence.
+  setOptsOpen(wasOpen);
   updateEstimate();
 }
 
@@ -468,6 +859,7 @@ function doExport() {
   const payload = {
     clips: clips.map((c) => ({ id: c.id, inSec: Number(c.in.toFixed(3)), outSec: Number(c.out.toFixed(3)) })),
     codec, crf,
+    width: outW || undefined, height: outH || undefined, fps: outFps || undefined,
     audio: audioMode,
     audioId: audioMode === 'track' ? audioId : undefined,
     transition: fade > 0 && clips.length > 1 ? { type: 'crossfade', durSec: fade } : { type: 'none' },
@@ -488,7 +880,33 @@ function doExport() {
 export function initVideoEditor() {
   el('veditCloseBtn')?.addEventListener('click', closeVideoEditor);
   el('veditPreview')?.addEventListener('timeupdate', onTimeUpdate);
+  el('veditPreview')?.addEventListener('ended', onEnded);
+  // With the native controls off for the chain the picture would otherwise be inert, so
+  // the frame itself becomes the stop button.
+  el('veditPreview')?.addEventListener('click', () => {
+    const v = el('veditPreview');
+    if (!v || v.controls) return;   // controls on: the browser handles the click
+    try { v.pause(); } catch { /* already stopped */ }
+    playAll = false;
+    setChainChrome(false);
+  });
+  el('veditFsBtn')?.addEventListener('click', (ev) => { ev.stopPropagation(); toggleFullscreen(); });
+  document.addEventListener('fullscreenchange', paintFullscreenBtn);
+  // Click anywhere else to dismiss the settings popover — including on the clips and the
+  // player, which is where you go next.
+  document.addEventListener('click', (ev) => {
+    if (!optsOpen()) return;
+    if (el('veditHeadBar')?.contains(ev.target)) return;
+    setOptsOpen(false);
+  });
   el('veditOverlay')?.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape') { closeVideoEditor(); ev.stopPropagation(); }
+    if (ev.key !== 'Escape') return;
+    // Escape peels one layer at a time: the popover, then fullscreen, then the editor.
+    if (optsOpen()) { setOptsOpen(false); ev.stopPropagation(); return; }
+    // Escape in fullscreen means "come back out", not "throw away the cut I was building".
+    // Chrome usually eats that keypress itself, but a stray one must not close the editor.
+    if (document.fullscreenElement) { document.exitFullscreen?.().catch(() => {}); ev.stopPropagation(); return; }
+    closeVideoEditor();
+    ev.stopPropagation();
   });
 }

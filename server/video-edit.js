@@ -10,7 +10,8 @@
 //
 // Two-stage pipeline, generalised from mergeScail2Segments (server/comfy.js):
 //   1. NORMALIZE — each clip is trimmed (-ss/-t) and re-encoded to a common signature:
-//      clip 0's pixel size (scale + pad, never distort), one fps, yuv420p, and — when
+//      one pixel size (the requested one, else clip 0's — scale + pad, never distort),
+//      one fps (likewise), yuv420p, and — when
 //      audio is kept — uniform AAC 48k stereo, silent-padded for clips with no track
 //      (the concat/acrossfade steps hard-require every input to have audio).
 //   2. SPLICE — the normalized intermediates agree by construction, so the concat
@@ -105,12 +106,17 @@ async function resolveClips(clips) {
 
 // The main event. `spec`:
 //   { clips: [{id, inSec, outSec}], codec: "h264"|"h265", crf, audio: "keep"|"mute"|"track",
-//     audioId, transition: {type: "none"|"crossfade", durSec}, fps, conversationId, msgId }
+//     audioId, transition: {type: "none"|"crossfade", durSec}, width, height, fps,
+//     conversationId, msgId }
+// codec defaults to h265; width/height/fps default to the first clip's.
 // `onProgress(stage, progress)` fires between ffmpeg runs. Returns { id, entry, codec }.
 async function editVideo(spec, onProgress = () => {}, signal) {
   const clips = await resolveClips(spec.clips);
   const audioMode = ["keep", "mute", "track"].includes(spec.audio) ? spec.audio : "keep";
-  const wantCodec = spec.codec === "h265" ? "h265" : "h264";
+  // H.265 unless asked otherwise: same default as the ⚙ render switch, and the reason is
+  // the same — half the bytes for the same picture. It needs Apple's hardware encoder and
+  // falls back to H.264 further down when there isn't one.
+  const wantCodec = spec.codec === "h264" ? "h264" : "h265";
   const crfN = Number(spec.crf);
   const crf = Number.isFinite(crfN) && crfN > 0 ? Math.min(51, crfN) : CRF_DEFAULT;
 
@@ -136,6 +142,18 @@ async function editVideo(spec, onProgress = () => {}, signal) {
     if (!(await audioCodecOfFile(abs))) throw new Error(`no audio stream in: ${id}`);
     donor = abs;
   }
+
+  // Output geometry. Unset = follow the first clip, which is what the rest of the pipeline
+  // normalizes to anyway. Encoders want even dimensions with yuv420p, so an asked-for size
+  // is rounded rather than refused; the scale filter fits and pads, so any target is safe
+  // (a differently-shaped clip gets bars, never a stretch).
+  const evenSize = (n) => Math.max(16, Math.min(7680, Math.round(n / 2) * 2));
+  const askedW = Number(spec.width) > 0 ? evenSize(Number(spec.width)) : 0;
+  const askedH = Number(spec.height) > 0 ? evenSize(Number(spec.height)) : 0;
+  const askedFps = Number(spec.fps) > 0 ? Math.min(240, Number(spec.fps)) : 0;
+  const W = askedW || clips[0].width;
+  const H = askedH || clips[0].height;
+  const F = askedFps || clips[0].fps;
 
   const uid = crypto.randomUUID();
   const tmp = (name) => path.join(os.tmpdir(), `hk_vedit_${uid}_${name}`);
@@ -163,15 +181,22 @@ async function editVideo(spec, onProgress = () => {}, signal) {
     // pure demuxer stream-copy, zero re-encode (the SCAIL-2 lesson: the demuxer must
     // be gated on a real parameter check, it will not refuse a mismatch itself).
     let copied = false;
-    if (!fade && wantCodec !== "h265" && clips.every((c) => !c.trimmed)) {
+    // Asking for a different size or frame rate is asking for an encode, by definition.
+    const asIs = W === clips[0].width && H === clips[0].height && F === clips[0].fps;
+    if (!fade && asIs && clips.every((c) => !c.trimmed)) {
       const sigs = await Promise.all(clips.map((c) => videoParamsOf(c.abs)));
       const agree = sigs[0] && sigs.every((s) => s === sigs[0]);
+      // Copying only stays honest while the bytes already are what was asked for. Sources
+      // that are h265 ALREADY satisfy an h265 request — which is now the default, so
+      // gating the whole fast path on "not h265" would have re-encoded every plain
+      // concatenation from here on.
+      const codecAgree = /^(hevc|h265)/i.test(sigs[0] || "") === (wantCodec === "h265");
       let audioAgree = true;
-      if (agree && wantAudio) {
+      if (agree && codecAgree && wantAudio) {
         const acs = await Promise.all(clips.map((c) => audioCodecOfFile(c.abs)));
         audioAgree = acs.every((a) => a === acs[0]);   // all "" (silent) also agrees
       }
-      if (agree && audioAgree) {
+      if (agree && codecAgree && audioAgree) {
         onProgress("concat", 0.5);
         await fsp.writeFile(listPath, clips.map((c) => `file '${c.abs}'`).join("\n") + "\n");
         const args = ["-f", "concat", "-safe", "0", "-i", listPath,
@@ -182,9 +207,6 @@ async function editVideo(spec, onProgress = () => {}, signal) {
     }
 
     // ---- Stage 1: normalize each clip to a common signature.
-    const W = clips[0].width, H = clips[0].height;
-    const fpsN = Number(spec.fps);
-    const F = fpsN > 0 ? fpsN : clips[0].fps;
     if (!copied) {
       if (!(W > 0) || !(H > 0)) throw new Error(`cannot determine pixel size: ${clips[0].id}`);
       // Reads `vcodec` at call time, so the h265→h264 fallback below can re-run it.
@@ -284,7 +306,7 @@ async function editVideo(spec, onProgress = () => {}, signal) {
           codec: actualCodec, crf, audio: audioMode,
           audioId: audioMode === "track" ? spec.audioId : undefined,
           transition: fade ? { type: "crossfade", durSec: fade } : { type: "none" },
-          fps: F,
+          fps: F, width: W, height: H,
         } },
       },
     });

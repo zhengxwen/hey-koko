@@ -514,7 +514,8 @@
                    a place to go, not just something to do to a selection. It opens on the
                    ticked clips; with none ticked it says so in the stats line instead of
                    throwing a modal. -->
-              <button id="galleryEditBtn" type="button" class="secondary archiveSortBtn" title="Trim / stitch">✂️ Trim / stitch</button>
+              <button id="galleryEditBtn" type="button" class="secondary archiveSortBtn"
+                      title="Cut the usable stretch out of a clip, or stitch several together">✂️ Video editor</button>
             </div>
           </div>
           <div class="galleryBody">
@@ -540,13 +541,40 @@
             <button id="veditCloseBtn" type="button" class="archiveBackBtn" aria-label="Back">←</button>
             <h2 id="veditTitle" class="archiveTitle">✂️ Video editor</h2>
           </div>
+          <!-- Top row: the clips being edited on the left, the preview player on the
+               right. Under BOTH of them, full width, the trim scrubber (frames of the
+               active clip). Then the picker filmstrip — every clip in the gallery, click
+               to append — which is what makes this overlay usable with nothing selected
+               when you walked in. -->
           <div class="veditBody">
-            <div class="veditPreviewWrap">
-              <video id="veditPreview" controls playsinline></video>
+            <div class="veditTop">
+              <!-- Export rides above the clip LIST, in its column — a full-width bar there
+                   would eat a strip off the top of the player for a button. Everything you
+                   set beforehand lives in the ⚙ popover that hangs off it. -->
+              <div id="veditLaneCol" class="veditLaneCol">
+                <div id="veditHeadBar" class="veditHeadBar">
+                  <div id="veditHeadCtl" class="veditHeadCtl"></div>
+                  <div id="veditExportBar" class="veditOptsPanel" hidden></div>
+                </div>
+                <div id="veditLane" class="veditLane"></div>
+              </div>
+              <!-- Drag to trade width between the list and the player. Which of the two
+                   matters more depends on the cut: many short takes, or one long one. -->
+              <div id="veditSplit" class="veditSplit" role="separator" aria-orientation="vertical"
+                   title="Drag to resize"></div>
+              <!-- The stage, not the <video>, is what goes fullscreen: the chain preview runs
+                   with the native controls off, so the button below has to stay on top of the
+                   picture to get back out. -->
+              <div id="veditStage" class="veditPreviewWrap">
+                <video id="veditPreview" controls playsinline></video>
+                <button id="veditFsBtn" class="veditFsBtn" type="button" hidden>⛶</button>
+              </div>
             </div>
-            <div id="veditLane" class="veditLane"></div>
             <div id="veditTrim" class="veditTrim"></div>
-            <div id="veditExportBar" class="veditExportBar"></div>
+            <div class="veditPickerWrap">
+              <span id="veditPickerLabel" class="hint veditPickerLabel">Click a clip to add it</span>
+              <div id="veditPicker" class="veditPicker"></div>
+            </div>
           </div>
         </div>
 

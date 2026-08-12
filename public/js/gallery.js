@@ -895,33 +895,14 @@ function stripNote(text) {
 }
 
 // Say something in the totals line and put it back afterwards. The gallery's way of
-// answering an action — a modal for "you have not ticked anything" would be worse than
-// the question deserves (and an alert() in a headless run freezes the page outright).
-//
-// It BLINKS. Swapping the text of a grey line at the bottom of the screen is technically
-// an answer and practically invisible: the user is looking at the button they just
-// pressed, three hundred pixels away. Motion is the only thing peripheral vision reliably
-// notices.
+// answering an action — a modal would be worse than most of these questions deserve (and
+// an alert() in a headless run freezes the page outright).
 function flashStats(line, ms = 5000) {
   const note = el("galleryStats");
   if (!note || !line) return;
   const was = note.textContent;
   note.textContent = line;
-  note.classList.remove("isFlash");
-  void note.offsetWidth;               // restart the animation for a repeated press
-  note.classList.add("isFlash");
-  setTimeout(() => note.classList.remove("isFlash"), 2000);
   setTimeout(() => { if (note.textContent === line) note.textContent = was; }, ms);
-}
-
-// …and a pulse on the control that was pressed, so the eye is told there IS an answer and
-// roughly where it went. The two together: something happened here, it is explained there.
-function nudge(node) {
-  if (!node) return;
-  node.classList.remove("isNudge");
-  void node.offsetWidth;
-  node.classList.add("isNudge");
-  setTimeout(() => node.classList.remove("isNudge"), 1400);
 }
 
 async function uploadFiles(files) {
@@ -1700,13 +1681,10 @@ export function initGallery() {
   });
   el("galleryCloseBtn")?.addEventListener("click", closeGallery);
   el("galleryTidyBtn")?.addEventListener("click", tidy);
-  // ✂️ opens the editor on the ticked clips. Same job as the bulk bar's button, reachable
-  // without ticking anything first — which is exactly the case that has to answer well,
-  // so an empty selection gets a line in the footer, not a modal.
-  el("galleryEditBtn")?.addEventListener("click", (ev) => {
-    const vids = [...selectedIds].filter((id) => items.find((e) => e.path === id)?.kind === "video");
-    if (!vids.length) { flashStats(t("gal_editPickClips")); nudge(ev.currentTarget); return; }
-    openVideoEditor(vids);
+  // ✂️ always opens the editor, ticked clips or not: it is a room you can walk into, and
+  // once inside its own filmstrip is how clips get added. Any ticked videos come along.
+  el("galleryEditBtn")?.addEventListener("click", () => {
+    openVideoEditor([...selectedIds].filter((id) => items.find((e) => e.path === id)?.kind === "video"));
   });
 
   // Filmstrip
