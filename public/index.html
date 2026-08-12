@@ -501,6 +501,7 @@
                   <button id="galleryFilterClear" type="button" class="secondary galleryFilterClearBtn">Clear filters</button>
                 </div>
               </div>
+              <button id="galleryTidyBtn" type="button" class="secondary archiveSortBtn" title="Find unreferenced media and stale entries">🧹</button>
               <!-- How the grid is drawn. Two tile sizes plus a list; the choice is
                    remembered and switching it only restyles what is already there. Stays
                    in the header: it is a way of looking, not a filter. -->
@@ -509,7 +510,11 @@
                 <option value="sm">Small</option>
                 <option value="list">List</option>
               </select>
-              <button id="galleryTidyBtn" type="button" class="secondary archiveSortBtn" title="Find unreferenced media and stale entries">🧹</button>
+              <!-- The video editor, on the header rather than only in the bulk bar: it is
+                   a place to go, not just something to do to a selection. It opens on the
+                   ticked clips; with none ticked it says so in the stats line instead of
+                   throwing a modal. -->
+              <button id="galleryEditBtn" type="button" class="secondary archiveSortBtn" title="Trim / stitch">✂️ Trim / stitch</button>
             </div>
           </div>
           <div class="galleryBody">

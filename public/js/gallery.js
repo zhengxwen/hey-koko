@@ -486,16 +486,9 @@ function updateBulkBar() {
     moveIds([...selectedIds], move.value === "root" ? null : move.value);
   });
 
-  // ✂️ — send the selected videos to the editor (trim + stitch). Enabled only when
-  // the selection actually contains a video; non-videos are skipped by the editor.
-  const edit = document.createElement("button");
-  edit.type = "button";
-  edit.className = "secondary";
-  edit.textContent = `✂️ ${t("vedit_open")}`;
-  const vids = [...selectedIds].filter((id) => items.find((e) => e.path === id)?.kind !== "image");
-  edit.disabled = !vids.length;
-  edit.addEventListener("click", () => openVideoEditor([...selectedIds]));
-
+  // No ✂️ here: the header carries it now, where it is reachable before anything is
+  // ticked. Two buttons for one action, one of them only visible mid-selection, was one
+  // too many.
   const clear = document.createElement("button");
   clear.type = "button";
   clear.className = "secondary";
@@ -510,7 +503,7 @@ function updateBulkBar() {
     updateBulkBar();
   });
 
-  bar.append(count, move, edit, clear);
+  bar.append(count, move, clear);
 }
 
 // ---------------------------------------------------------------------------
@@ -629,8 +622,9 @@ function stripTile(entry) {
   img.onerror = () => { img.remove(); btn.textContent = entry.kind === "video" ? "▶" : entry.kind === "audio" ? "🔊" : "3D"; };
   btn.appendChild(img);
   // Clicking a frame opens the gallery on it — the strip is a shortcut into the
-  // full view, not a second half-featured one.
-  btn.addEventListener("click", () => { openGallery().then(() => selectItem(entry.path)); });
+  // full view, not a second half-featured one. `reveal`: the grid opens wherever it
+  // opens, so the tile has to come find the eye rather than the other way round.
+  btn.addEventListener("click", () => { openGallery().then(() => selectItem(entry.path, { reveal: true })); });
 
   // The composer already accepts a dropped image URL (main.js: text/uri-list →
   // imageUrlToFile → selectFile), so dragging a frame there needs no new plumbing —
@@ -900,6 +894,36 @@ function stripNote(text) {
   setTimeout(() => pill.remove(), 5000);
 }
 
+// Say something in the totals line and put it back afterwards. The gallery's way of
+// answering an action — a modal for "you have not ticked anything" would be worse than
+// the question deserves (and an alert() in a headless run freezes the page outright).
+//
+// It BLINKS. Swapping the text of a grey line at the bottom of the screen is technically
+// an answer and practically invisible: the user is looking at the button they just
+// pressed, three hundred pixels away. Motion is the only thing peripheral vision reliably
+// notices.
+function flashStats(line, ms = 5000) {
+  const note = el("galleryStats");
+  if (!note || !line) return;
+  const was = note.textContent;
+  note.textContent = line;
+  note.classList.remove("isFlash");
+  void note.offsetWidth;               // restart the animation for a repeated press
+  note.classList.add("isFlash");
+  setTimeout(() => note.classList.remove("isFlash"), 2000);
+  setTimeout(() => { if (note.textContent === line) note.textContent = was; }, ms);
+}
+
+// …and a pulse on the control that was pressed, so the eye is told there IS an answer and
+// roughly where it went. The two together: something happened here, it is explained there.
+function nudge(node) {
+  if (!node) return;
+  node.classList.remove("isNudge");
+  void node.offsetWidth;
+  node.classList.add("isNudge");
+  setTimeout(() => node.classList.remove("isNudge"), 1400);
+}
+
 async function uploadFiles(files) {
   const all = [...files];
   if (!all.length) return;
@@ -946,12 +970,7 @@ async function uploadFiles(files) {
   if (failed.length) parts.push(t("gal_dropFailed", { n: failed.length }));
   const line = parts.join(" · ");
 
-  const note = el("galleryStats");
-  if (note) {
-    const was = note.textContent;
-    note.textContent = line;
-    setTimeout(() => { if (note.textContent === line) note.textContent = was; }, 5000);
-  }
+  flashStats(line);
   // That footer lives inside the overlay. A drop onto the filmstrip with the overlay
   // shut would report into a box nobody can see, so the strip gets the same line.
   if (!el("galleryOverlay")?.classList.contains("isOpen")) stripNote(line);
@@ -1417,11 +1436,42 @@ async function backfillSpecs(entry) {
   } catch { /* offline or no ffprobe — the item simply keeps showing what it knows */ }
 }
 
-function selectItem(id) {
+// `reveal` is for a selection the user did not make by clicking the tile — arriving from
+// the filmstrip, say. Then the grid is showing a tile they have never looked at, possibly
+// hundreds of rows down: it has to be brought into view and briefly made loud, or the
+// gallery just opens somewhere and the answer to "which one?" is a 2px border off screen.
+async function selectItem(id, { reveal = false } = {}) {
   selected = items.find((e) => e.path === id) || null;
+  // The strip pages deeper than the grid does, and can pin a frame the current filter
+  // excludes — so a frame can be real and still not be among `items`. Fetch it by id
+  // rather than opening an empty detail pane on a file that plainly exists.
+  if (!selected) {
+    try {
+      const r = await fetch(`/api/gallery/entry?id=${encodeURIComponent(id)}`);
+      if (r.ok) selected = await r.json();
+    } catch { /* leave it null; renderDetail shows the empty state */ }
+  }
   document.querySelectorAll(".galleryTile").forEach((n) => n.classList.toggle("isSelected", n.dataset.id === id));
   renderDetail();
   backfillSpecs(selected);
+  if (reveal) revealTile(id);
+}
+
+// Bring a tile into view and pulse it. Sets scrollTop on the grid itself rather than
+// calling scrollIntoView, which walks up and scrolls every scrollable ancestor — the trap
+// documented on the filmstrip.
+function revealTile(id) {
+  const grid = el("galleryGrid");
+  const tile = grid?.querySelector(`.galleryTile[data-id="${CSS.escape(id)}"]`);
+  if (!grid || !tile) return;
+  // Land it a third of the way down rather than flush at the top: a tile pinned to the
+  // very edge reads as "the list starts here", not as "this one".
+  const target = tile.offsetTop - grid.offsetTop - Math.round(grid.clientHeight / 3);
+  grid.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  tile.classList.remove("isJumpTo");
+  void tile.offsetWidth;          // restart the animation if the same tile is picked twice
+  tile.classList.add("isJumpTo");
+  setTimeout(() => tile.classList.remove("isJumpTo"), 2200);
 }
 
 async function deleteItem(entry) {
@@ -1650,6 +1700,14 @@ export function initGallery() {
   });
   el("galleryCloseBtn")?.addEventListener("click", closeGallery);
   el("galleryTidyBtn")?.addEventListener("click", tidy);
+  // ✂️ opens the editor on the ticked clips. Same job as the bulk bar's button, reachable
+  // without ticking anything first — which is exactly the case that has to answer well,
+  // so an empty selection gets a line in the footer, not a modal.
+  el("galleryEditBtn")?.addEventListener("click", (ev) => {
+    const vids = [...selectedIds].filter((id) => items.find((e) => e.path === id)?.kind === "video");
+    if (!vids.length) { flashStats(t("gal_editPickClips")); nudge(ev.currentTarget); return; }
+    openVideoEditor(vids);
+  });
 
   // Filmstrip
   setStripOpen(stripOpen());

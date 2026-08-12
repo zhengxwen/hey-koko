@@ -1393,6 +1393,7 @@ const UI = {
     gal_clearSel: "Clear",
     vedit_title: "Video editor",
     vedit_open: "Trim / stitch",
+    gal_editPickClips: "Tick one or more clips first — ✂️ opens on what you have selected.",
     vedit_openHint: "Cut the usable stretch out of this clip, or stitch several together",
     vedit_noClips: "No video clips to edit",
     vedit_removeClip: "Remove from the timeline",
@@ -2859,6 +2860,7 @@ const UI = {
     gal_clearSel: "取消选择",
     vedit_title: "视频剪辑",
     vedit_open: "剪辑",
+    gal_editPickClips: "请先勾选一段或多段视频 —— ✂️ 会打开你选中的那些。",
     vedit_openHint: "掐头去尾留下可用片段,或把几段拼成一条",
     vedit_noClips: "没有可编辑的视频",
     vedit_removeClip: "从时间线移除",
@@ -4325,6 +4327,7 @@ const UI = {
     gal_clearSel: "取消選擇",
     vedit_title: "影片剪輯",
     vedit_open: "剪輯",
+    gal_editPickClips: "請先勾選一段或多段影片 —— ✂️ 會開啟你選取的那些。",
     vedit_openHint: "掐頭去尾留下可用片段,或把幾段拼成一條",
     vedit_noClips: "沒有可編輯的影片",
     vedit_removeClip: "從時間線移除",
@@ -4676,6 +4679,7 @@ const BINDINGS = [
   { sel: "#galleryTitle", key: "gal_title" },
   { sel: "#gallerySearch", key: "gal_searchPlaceholder", attr: "placeholder" },
   { sel: "#galleryTidyBtn", key: "gal_tidyTitle", attr: "title" },
+  { sel: "#galleryEditBtn", key: "vedit_open", attr: "title" },
   { sel: "#galleryStripToggle", key: "gal_stripToggle", attr: "title" },
   { sel: "#galleryStripOpen", key: "gal_stripOpen", attr: "title" },
   { sel: "#proactiveLabelText", key: "label_proactive" },
@@ -5154,6 +5158,9 @@ export function applyUILanguage() {
   if (galFilterBtn && !galFilterBtn.classList.contains("isOn")) galFilterBtn.textContent = t("gal_filter");
   const galFilterClear = document.querySelector("#galleryFilterClear");
   if (galFilterClear) galFilterClear.textContent = t("gal_filterClear");
+  // Emoji + label, so the key stays the plain words the editor's own title uses.
+  const galEditBtn = document.querySelector("#galleryEditBtn");
+  if (galEditBtn) galEditBtn.textContent = `✂️ ${t("vedit_open")}`;
   const galSource = document.querySelector("#gallerySourceFilter");
   if (galSource) {
     for (const opt of galSource.options) {
