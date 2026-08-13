@@ -611,6 +611,10 @@ import("./gallery.js").then((g) => {
 // The video editor overlay: trim + stitch gallery clips (js/video-edit.js).
 import("./video-edit.js").then((ve) => ve.initVideoEditor());
 
+// Cmd+F find bar for the macOS app shell (WKWebView has none). Browsers keep
+// their own — this only exposes window.__hkOpenFind for the app menu to call.
+import("./find-bar.js").then((fb) => fb.initFindBar());
+
 if (dom.memoryExtractBtn) {
   let extracting = false;
   dom.memoryExtractBtn.addEventListener("click", async () => {

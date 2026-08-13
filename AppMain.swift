@@ -158,6 +158,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigationDe
         setPageZoom(webView.pageZoom - 0.1)
     }
 
+    // Cmd+F → open the in-page find bar. evaluateJavaScript rather than a native
+    // NSTextFinder: WKWebView doesn't support one, and the page already knows how to
+    // highlight and step through its own matches.
+    @objc func openFind(_ sender: Any?) {
+        webView.evaluateJavaScript("window.__hkOpenFind && window.__hkOpenFind()", completionHandler: nil)
+    }
+
     @objc func resetZoom(_ sender: Any?) {
         setPageZoom(1.0)
     }
@@ -359,6 +366,14 @@ editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquival
 editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
 editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
 editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+editMenu.addItem(NSMenuItem.separator())
+// WKWebView has no built-in find bar, so Cmd+F opens the page's own one (see
+// public/js/find-bar.js). Kept here as a real menu item rather than a JS key
+// handler so the shortcut shows up in the menu and can never be swallowed by an
+// input that has focus.
+let findItem = NSMenuItem(title: "Find…", action: #selector(AppDelegate.openFind(_:)), keyEquivalent: "f")
+findItem.keyEquivalentModifierMask = [.command]
+editMenu.addItem(findItem)
 editMenuItem.submenu = editMenu
 
 // View menu
@@ -383,7 +398,10 @@ let actualSizeItem = NSMenuItem(title: "Actual Size", action: #selector(AppDeleg
 actualSizeItem.keyEquivalentModifierMask = [.command]
 viewMenu.addItem(actualSizeItem)
 viewMenu.addItem(NSMenuItem.separator())
-viewMenu.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+// Ctrl+Cmd+F is the macOS standard for full screen; plain Cmd+F belongs to Find.
+let fullScreenItem = NSMenuItem(title: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+fullScreenItem.keyEquivalentModifierMask = [.command, .control]
+viewMenu.addItem(fullScreenItem)
 viewMenuItem.submenu = viewMenu
 
 // Window menu

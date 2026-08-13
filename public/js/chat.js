@@ -914,13 +914,23 @@ function foldActiveGuides(tab) {
   return out;
 }
 
-async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video) {
+async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video, at = -1) {
+  // at ≥ 0 = resend: the command bubble already sits at `at` mid-conversation, so
+  // nothing pushes a duplicate of it and every output splices in right after it
+  // (the stale reply/guide at at+1 was already removed by resendChatMessage).
+  const resend = at >= 0;
+  let pos = at + 1;
+  const insert = (msg) => {
+    if (resend) tab.messages.splice(pos++, 0, msg);
+    else tab.messages.push(msg);
+  };
   const say = (text) => {
-    tab.messages.push({ role: "assistant", content: text, timestamp: Date.now() });
+    insert({ role: "assistant", content: text, timestamp: Date.now() });
     saveChat();
     if (state.activeTabId === tabId) renderChat();
   };
   const pushUser = () => {
+    if (resend) return;
     tab.messages.push({ role: "user", content: rawContent, timestamp: Date.now() });
   };
 
@@ -936,7 +946,15 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video) {
     if (!installed.length) { say(t("skill_noneInstalled")); return; }
     const curId = currentComfyModelId();
     const rows = installed.map((s) => {
-      const models = s.models.join(", ") || "—";
+      // Each manifest prefix with the concrete model ids under it spelled out and
+      // LABELLED — "minimax-h3 (models: minimax-h3-t2v, minimax-h3-r2v)". Unlabelled,
+      // the parenthetical reads like a version list or an alias; these are the ids -m
+      // accepts and the dropdown names, so the row doubles as a token list to copy
+      // from instead of leaving the -t2v/-r2v suffixes to be guessed.
+      const models = s.models.map((p) => {
+        const under = (s.ids || []).filter((id) => id !== p && (id.startsWith(p + "-") || id.startsWith(p + ":")));
+        return under.length ? `${p} (${t("skill_listModels")}: ${under.join(", ")})` : p;
+      }).join(", ") || "—";
       const isCurrent = s.models.some((p) => curId === p || curId.startsWith(p + "-") || curId.startsWith(p + ":"));
       return `- **${s.name}** ← ${models}${isCurrent ? `  ✓ ${t("skill_currentModel")}` : ""}`;
     }).join("\n");
@@ -1082,7 +1100,7 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video) {
   // next plain message carries the staged pictures and gets the first draft.
   if (!cmd.prompt) {
     pushUser();
-    tab.messages.push(guideMsg);
+    insert(guideMsg);
     saveChat();
     if (state.activeTabId === tabId) renderChat();
     if (image || video) {
@@ -1093,14 +1111,19 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video) {
     return;
   }
 
-  tab.messages.push(guideMsg);
+  insert(guideMsg);
 
   // The user's idea, with the staged pictures attached so a vision model can see the
-  // reference subjects it is writing about.
-  const userMessage = { role: "user", content: cmd.prompt, timestamp: Date.now() };
-  await settleGalleryIds(image);
-  attachUploadedImages(userMessage, image);
-  tab.messages.push(userMessage);
+  // reference subjects it is writing about. On resend the idea already lives inside
+  // the command bubble at `at` (a prompt-ful /skill line survives in history only
+  // when it errored, or via edit-then-enter) — adding a second idea bubble would
+  // send the same words twice, so only the guide goes in.
+  if (!resend) {
+    const userMessage = { role: "user", content: cmd.prompt, timestamp: Date.now() };
+    await settleGalleryIds(image);
+    attachUploadedImages(userMessage, image);
+    tab.messages.push(userMessage);
+  }
   saveChat();
   if (state.activeTabId === tabId) renderChat();
 
@@ -1113,8 +1136,10 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video) {
     renderAttachments();
   }
 
-  // First draft, as a normal streamed reply.
-  await regenerateReply(tabId, -1, -1);
+  // First draft, as a normal streamed reply — in place on resend (context truncated
+  // to the freshly inserted guide, reply right after it), appended otherwise.
+  if (resend) await regenerateReply(tabId, pos, pos - 1);
+  else await regenerateReply(tabId, -1, -1);
 }
 
 function deleteMessageVideo(msgIndex, vidIndex) {
@@ -1284,6 +1309,17 @@ function resendChatMessage(index) {
       // placeholder lands right after the resent user bubble (index + 1).
       enqueueBgJob({ tabId: state.activeTabId, kind: "audio", label: voiceCmd.text.slice(0, 48), payload: { parsed: voiceCmd }, insertIndex: index + 1 });
     }
+    return;
+  }
+
+  // /skill on resend — re-run the command in place instead of leaking it to the LLM
+  // as plain text. Catalogue and load-only re-inject (a guide bubble's content is
+  // frozen at /skill time, so 🔄 on the command line is how a stale guide gets the
+  // current wrapper); a prompt-ful line drafts right here (it survives in history
+  // only when it errored, or via edit-then-enter).
+  const skillResend = parseSkillCommand(message.content);
+  if (skillResend) {
+    handleSkillCommand(skillResend, tab, state.activeTabId, message.content, null, null, index);
     return;
   }
 
