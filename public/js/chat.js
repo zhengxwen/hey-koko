@@ -1029,12 +1029,18 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video) {
   // to the wrong subjects, "I meant this as the first frame") only exist when the
   // prompt is ABOUT reference images.
   const refNote = composed.mode === "ref" ? " " + getPrompt("skillRefNote") : "";
+  // Optional dispatch-line extras. Nx batch is universal (every model renders variants);
+  // --size is manifest-gated per model because the valid tokens differ (H3 tops out at
+  // its native 1376×768 — offering "1080p" there would render nothing better, just
+  // slower). No sizes in the manifest → the note simply never mentions --size. Framed
+  // as "only when the user asked" so the assistant doesn't decorate every dispatch line.
+  const flagsNote = " " + getPrompt("skillFlagsNote", composed.sizes || []);
   // The staged note is mode-aware: under the ref guide the pictures are Ref2VA
   // reference subjects, and with nothing staged the right move is to ask for them —
   // the base wording ("assume T2VA", "image count decides I2VA/FL2VA") describes
   // modes that do not exist on the r2v weights.
   const isRef = composed.mode === "ref";
-  const stagedNote = getPrompt(cmd.prompt ? "skillStaged" : "skillStagedPending", imgCount, vidCount, isRef) + durNote + refNote;
+  const stagedNote = getPrompt(cmd.prompt ? "skillStaged" : "skillStagedPending", imgCount, vidCount, isRef) + durNote + refNote + flagsNote;
 
   // The guide bubble. Header states the off switch (fold = pause); the guide itself
   // sits inside <details> — collapsed ON SCREEN, but fully part of the outgoing

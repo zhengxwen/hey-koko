@@ -4599,6 +4599,7 @@ const PROMPTS = {
         ? "Nothing is staged yet \u2014 the user is still picking reference image(s). When their message arrives with pictures attached, those are the Ref2VA reference subjects. If they give their idea WITHOUT any picture, ask for the reference images before finalizing a draft \u2014 r2v cannot run without them."
         : "Nothing is staged in the composer right now, so assume T2VA (pure text) unless the user says otherwise. Wait for the user's idea before drafting anything."),
     skillDurationNote: (min, max) => `HARD DURATION LIMIT: this model renders clips of ${min}\u2013${max} seconds ONLY. Never draft for a longer duration \u2014 the renderer silently clamps to ${max}s, leaving the prompt's timing notation wrong for the whole clip. If the user asks for more, say the model caps at ${max}s and draft for ${max}s (or suggest splitting into shots).`,
+    skillFlagsNote: (sizes) => `The dispatch line accepts OPTIONAL extras \u2014 add one ONLY when the user explicitly asked for what it does, never as decoration: (1) \`Nx\` variants (2\u20138), written IMMEDIATELY after /imagine, before any flag \u2014 \`/imagine 4x -m \u2026\` \u2014 renders N takes of the same prompt.${sizes.length ? ` (2) \`--size <token>\`, appended after --second, sets the frame size and orientation; the ONLY tokens this model accepts are: ${sizes.map((s) => { const tok = (s && s.token) || s; if (!(s && s.max)) return tok; const m = /^(\d+)x(\d+)$/.exec(tok); return `${tok} (native max${m ? `, ${+m[1] >= +m[2] ? "landscape" : "vertical"}` : ""})`; }).join(", ")} ("-portrait" = vertical). If the prompt describes a vertical/portrait composition, the dispatch line MUST carry a portrait token \u2014 without it the render comes out landscape and the composition breaks, the same way a wrong duration breaks the timing.` : ""} NEVER invent any other flag: an unknown flag makes the whole dispatch line error out and the block cannot run.`,
     skillGuideSummary: "\u{1F4DA} Full guide (click to view)",
   },
   zh: {
@@ -4656,6 +4657,7 @@ const PROMPTS = {
         ? "当前还没有暂存任何媒体——用户还在挑参考图。等用户的消息带着图片进来，那些图就是 Ref2VA 的参考主体。如果用户只说了想法而没附图，先向用户要参考图再定稿——r2v 没有参考图跑不了。"
         : "当前 composer 没有暂存任何媒体，除非用户另有说明，按 T2VA（纯文字）处理。等用户说出想法后再动笔。"),
     skillDurationNote: (min, max) => `【时长硬上限】这个模型只能渲染 ${min}\u2013${max} 秒的片段。绝不要按更长的时长起草——渲染端会静默夹到 ${max} 秒，届时提示词里的时间标注全片错位。用户要更长时，直说模型上限是 ${max} 秒，按 ${max} 秒起草（或建议拆成多镜头分段生成）。`,
+    skillFlagsNote: (sizes) => `派发行还可以携带【可选】附加项——只在用户明确要求对应效果时才加，绝不主动堆砌：(1) \`Nx\` 多版本（2–8），必须【紧跟 /imagine】、写在所有 flag 之前——\`/imagine 4x -m …\`——同一提示词渲染 N 版。${sizes.length ? `(2) \`--size <档位>\`，接在 --second 之后，设定画幅尺寸与横竖方向；这个模型【只接受】这些档位：${sizes.map((s) => { const tok = (s && s.token) || s; if (!(s && s.max)) return tok; const m = /^(\d+)x(\d+)$/.exec(tok); return `${tok}（原生最高档${m ? `·${+m[1] >= +m[2] ? "横版" : "竖版"}` : ""}）`; }).join(", ")}（带 "-portrait" 的是竖版）。提示词里描述了竖构图，派发行就【必须】带竖版档位——否则渲染仍出横版、构图全毁，性质和时长错位一样。` : ""}【绝不要】发明其他 flag：未知 flag 会让整条派发行报错，代码块无法运行。`,
     skillGuideSummary: "\u{1F4DA} 指南全文（点开查看）",
   },
   "zh-Hant": {
@@ -4713,6 +4715,7 @@ const PROMPTS = {
         ? "目前還沒有暫存任何媒體——使用者還在挑參考圖。等使用者的訊息帶著圖片進來，那些圖就是 Ref2VA 的參考主體。如果使用者只說了想法而沒附圖，先向使用者要參考圖再定稿——r2v 沒有參考圖跑不了。"
         : "目前 composer 沒有暫存任何媒體，除非使用者另有說明，按 T2VA（純文字）處理。等使用者說出想法後再動筆。"),
     skillDurationNote: (min, max) => `【時長硬上限】這個模型只能渲染 ${min}\u2013${max} 秒的片段。絕不要按更長的時長起草——渲染端會靜默夾到 ${max} 秒，屆時提示詞裡的時間標註全片錯位。使用者要更長時，直說模型上限是 ${max} 秒，按 ${max} 秒起草（或建議拆成多鏡頭分段生成）。`,
+    skillFlagsNote: (sizes) => `派發行還可以攜帶【可選】附加項——只在使用者明確要求對應效果時才加，絕不主動堆砌：(1) \`Nx\` 多版本（2–8），必須【緊跟 /imagine】、寫在所有 flag 之前——\`/imagine 4x -m …\`——同一提示詞渲染 N 版。${sizes.length ? `(2) \`--size <檔位>\`，接在 --second 之後，設定畫幅尺寸與橫豎方向；這個模型【只接受】這些檔位：${sizes.map((s) => { const tok = (s && s.token) || s; if (!(s && s.max)) return tok; const m = /^(\d+)x(\d+)$/.exec(tok); return `${tok}（原生最高檔${m ? `·${+m[1] >= +m[2] ? "橫版" : "直版"}` : ""}）`; }).join(", ")}（帶 "-portrait" 的是直版）。提示詞裡描述了直構圖，派發行就【必須】帶直版檔位——否則渲染仍出橫版、構圖全毀，性質和時長錯位一樣。` : ""}【絕不要】發明其他 flag：未知 flag 會讓整條派發行報錯，代碼塊無法執行。`,
     skillGuideSummary: "\u{1F4DA} 指南全文（點開查看）",
   },
 };

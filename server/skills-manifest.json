@@ -13,6 +13,14 @@
       "minSec": 5.2,
       "maxSec": 15
     },
+    "sizes": [
+      "480p",
+      "480p-portrait",
+      "720p",
+      "720p-portrait",
+      { "token": "1376x768", "max": true },
+      { "token": "768x1376", "max": true }
+    ],
     "modes": {
       "base": "references/base-en.txt",
       "ref": "references/ref-en.txt"

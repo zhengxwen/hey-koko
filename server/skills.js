@@ -111,7 +111,16 @@ async function handleCompose(req, res) {
     // than a lookup in the live catalogue, because /skill has to work with ComfyUI
     // unreachable (writing prompts is what happens before the render box is up). The
     // browser uses it to suggest a separate tab when the user switches media kinds.
-    sendJson(res, 200, { name, mode: mode || "", text, duration: def.duration || null, kind: def.kind || "" });
+    // `sizes` — the --size tokens this model's dispatch line may carry (manifest fact,
+    // like duration). Explicit tokens only, no derivation: presets AND raw WxH literals
+    // are both legal (H3 lists its native max 1376×768 as a literal — there is no
+    // "768p" preset and inventing one just for the wrapper would be a second truth
+    // source). An entry is a plain string, or { token, max: true } when that size is
+    // the model's stated native maximum — a per-model fact the wrapper turns into a
+    // "(native max, landscape/vertical)" label. Explicitly declared, never inferred
+    // from the token's shape: a future model may legitimately list a WxH literal that
+    // is NOT its max. Absent from the manifest → null → --size never mentioned.
+    sendJson(res, 200, { name, mode: mode || "", text, duration: def.duration || null, kind: def.kind || "", sizes: def.sizes || null });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
