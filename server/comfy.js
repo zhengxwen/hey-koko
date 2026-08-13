@@ -7396,4 +7396,6 @@ async function comfyAutoMask(req, res) {
 module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, uploadComfyAudio, comfyAutoMask,
   // ffmpeg/ffprobe helpers shared with server/video-edit.js — probing and codec
   // policy live here so the two modules cannot drift apart.
-  hasLocalTool, videoParamsOf, videoSizeOf, videoCodecOf, audioCodecOf, probeVideo };
+  hasLocalTool, videoParamsOf, videoSizeOf, videoCodecOf, audioCodecOf, probeVideo,
+  // The video editor's AI pre-pass uploads its trimmed segments the same way /imagine does.
+  uploadVideo };

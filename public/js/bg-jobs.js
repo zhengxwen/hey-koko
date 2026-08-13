@@ -596,8 +596,15 @@ async function runLibImport(job, sink) {
 // local ffmpeg (/api/video-edit via jobs.js) and files the result into the gallery.
 // No chat bubble; on success the filmstrip flashes the new clip (hk-media-added).
 async function runVedit(job, sink) {
+  // A plain export is local ffmpeg and belongs in the local lane. One with the AI pre-pass
+  // drives ComfyUI, so it queues in THAT worker's lane instead of racing a render for
+  // VRAM — server-side laneOf() reads exactly this field.
+  const comfyUrl = job.payload?.enhance
+    ? (dom.comfyUrlDisplay?.textContent || '').replace(/\s*\(.*\)\s*$/, '').trim()
+    : '';
   const r = await veditFetch(job.payload || {}, {
     bgJob: job, conversationId: job.tabId, msgId: job.msgId, label: job.label, signal: sink.signal,
+    comfyUrl,
   });
   const d = await r.json();
   if (!r.ok || !d || !d.id) { sink.fail((d && d.error) || t('vedit_failed')); return; }

@@ -8,6 +8,12 @@
 // turns those stretches into one clip — locally, with ffmpeg, in seconds. No GPU, no
 // ComfyUI round-trip, no upload.
 //
+// One exception, opt-in: when the cut asks for a bigger frame or a higher rate than a
+// source clip has, `enhance` sends THAT clip through ComfyUI's upscale + interpolation
+// first (stage 0 below). That trades seconds for GPU-minutes, which is why it is a
+// choice and not a default, and why a failure there falls back to a plain resample
+// rather than losing the export.
+//
 // Two-stage pipeline, generalised from mergeScail2Segments (server/comfy.js):
 //   1. NORMALIZE — each clip is trimmed (-ss/-t) and re-encoded to a common signature:
 //      one pixel size (the requested one, else clip 0's — scale + pad, never distort),
@@ -34,7 +40,10 @@ const os = require("os");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
 const gallery = require("./gallery");
-const { hasLocalTool, videoParamsOf } = require("./comfy");
+const http = require("http");
+const config = require("./config");
+const comfy = require("./comfy");
+const { hasLocalTool, videoParamsOf } = comfy;
 const { sendJson, readBody } = require("./utils");
 
 const MAX_CLIPS = 20;
@@ -104,11 +113,90 @@ async function resolveClips(clips) {
   return resolved;
 }
 
+// ---------------------------------------------------------------------------
+// Optional AI pre-pass: ComfyUI upscale + frame interpolation, per clip.
+// ---------------------------------------------------------------------------
+
+// Why per clip, and BEFORE the stitch: interpolation invents in-between frames, and across
+// a hard cut that means a morph between two unrelated shots — a smear at every join. Trims
+// come first too, so no GPU time is spent on frames that were about to be thrown away.
+//
+// The heavy lifting is not reimplemented here. /api/comfy-generate's "video-enhance" path
+// already does de-artifact → interpolate → AI upscale → resize, and already splits a clip
+// into RAM-sized chunks and joins them back (the upscale node assembles its output in
+// SYSTEM RAM: a 121-frame 1280x704 clip measured 7.2 GiB at 2x and 36.5 GiB at 4x). This
+// calls that endpoint over loopback, the same way jobs.js drives the youtube and vedit
+// jobs, so there is exactly one implementation of the hard part.
+function loopbackJson(urlPath, bodyObj, signal) {
+  return new Promise((resolve, reject) => {
+    const payload = Buffer.from(JSON.stringify(bodyObj));
+    const req = http.request({
+      host: "127.0.0.1", port: config.PORT, path: urlPath, method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": payload.length },
+    }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        let json = null;
+        try { json = JSON.parse(Buffer.concat(chunks).toString()); } catch { /* not JSON */ }
+        resolve({ status: res.statusCode, json });
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(0);   // an upscale runs for minutes; there is no idle timeout to apply
+    if (signal) signal.addEventListener("abort", () => req.destroy(new Error("cancelled")), { once: true });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// One clip through the enhance pipeline. Returns the path of a new file, or throws.
+// `targetW/H` is what the cut wants; ComfyUI is asked for roughly that and the normalize
+// stage below still does the exact scale+pad, so an off-by-a-few-pixels return is not a
+// failure — trying to make the AI pass land on the exact frame is how aspect bugs start.
+async function enhanceOneClip(srcPath, src, target, opts, outPath, signal) {
+  const buf = await fsp.readFile(srcPath);
+  const name = await comfy.uploadVideo(buf.toString("base64"), signal, "video/mp4");
+  const c = src;
+  const frames = Math.max(1, Math.round(c.len * c.fps));
+  const body = {
+    model: "video-enhance",
+    // The enhance path reads its target fps from the prompt; "" = upscale only.
+    prompt: target.fps > c.fps ? String(target.fps) : "",
+    sourceVideoName: name,
+    sourceVideoWidth: c.width, sourceVideoHeight: c.height,
+    sourceVideoFps: c.fps, sourceVideoFrames: frames,
+    options: {
+      ...(opts || {}),
+      // An explicit size outranks the ⚙ "upscale to" setting inside that handler, which is
+      // what we want: the cut's own size is the instruction here.
+      ...(target.w > c.width ? { width: target.w, height: target.h } : {}),
+    },
+  };
+  // /api/generate-comfy, not /api/comfy-generate. The neighbouring routes are all
+  // comfy-<thing> (comfy-models, comfy-upload-video), so the name inverts easily — and a
+  // wrong path lands on the server's catch-all 405, which reads exactly like any other
+  // enhance failure once it is caught below.
+  const { status, json } = await loopbackJson("/api/generate-comfy", body, signal);
+  if (status !== 200 || !json) throw new Error(`generate-comfy ${status}${json?.error ? `: ${json.error}` : ""}`);
+  if (json.noop) throw new Error(json.message || "nothing to do");
+  const b64 = (json.videos || [])[0];
+  if (!b64) throw new Error("no video came back");
+  await fsp.writeFile(outPath, Buffer.from(b64, "base64"));
+  // What it actually did, not what was asked for: "auto" resolves to a model at run time,
+  // and the interpolation multiplier is derived from the rate. Without this the ledger
+  // could not answer "why does this cut look like that".
+  return { path: outPath, model: json.upscaleModel || null, scale: json.upscaleScale || null,
+           resizeOnly: !!json.upscaleResizeOnly, interpolated: json.interpolated || null };
+}
+
 // The main event. `spec`:
 //   { clips: [{id, inSec, outSec}], codec: "h264"|"h265", crf, audio: "keep"|"mute"|"track",
 //     audioId, transition: {type: "none"|"crossfade", durSec}, width, height, fps,
-//     conversationId, msgId }
-// codec defaults to h265; width/height/fps default to the first clip's.
+//     fit: "cover"|"contain", enhance, enhanceOpts, conversationId, msgId }
+// codec defaults to h265; width/height/fps default to the first clip's. `enhance` opts in
+// to the ComfyUI pre-pass and `enhanceOpts` ({upscaleModel, interpMethod, sharpen, …}) is
+// handed to it verbatim — those names belong to /api/comfy-generate, not to this file.
 // `onProgress(stage, progress)` fires between ffmpeg runs. Returns { id, entry, codec }.
 async function editVideo(spec, onProgress = () => {}, signal) {
   const clips = await resolveClips(spec.clips);
@@ -154,14 +242,42 @@ async function editVideo(spec, onProgress = () => {}, signal) {
   const W = askedW || clips[0].width;
   const H = askedH || clips[0].height;
   const F = askedFps || clips[0].fps;
+  // What to do with a clip whose shape is not the frame's. "cover" (default) fills the
+  // frame and loses the edges; "contain" keeps every pixel and adds bars. Neither ever
+  // stretches. Cover is the default because the common case is a set of takes in one
+  // shape with one odd one out, and two black pillars read as a mistake in a way a
+  // tighter crop does not.
+  const fitMode = spec.fit === "contain" ? "contain" : "cover";
+  // The rectangle of the SOURCE that survives, at source resolution. For contain that is
+  // the whole frame; for cover it is the middle of it, cut to the target's aspect.
+  const cropOf = (c) => {
+    if (fitMode !== "cover" || !(c.width > 0) || !(c.height > 0)) return { w: c.width, h: c.height };
+    return (c.width / c.height > W / H)
+      ? { w: evenSize(c.height * W / H), h: c.height }    // too wide → trim the sides
+      : { w: c.width, h: evenSize(c.width * H / W) };     // too tall → trim top and bottom
+  };
+  // How much that surviving rectangle is then scaled by. This — not the frame — is what
+  // says whether an upscaler has anything to do.
+  const fitOf = (c) => {
+    const crop = cropOf(c);
+    const k = fitMode === "cover"
+      ? W / Math.max(1, crop.w)
+      : Math.min(W / c.width, H / c.height);
+    return { k, crop,
+             w: fitMode === "cover" ? W : evenSize(c.width * k),
+             h: fitMode === "cover" ? H : evenSize(c.height * k) };
+  };
+  let enhanceNote = null;   // first AI-pass failure, reported rather than swallowed
 
   const uid = crypto.randomUUID();
   const tmp = (name) => path.join(os.tmpdir(), `hk_vedit_${uid}_${name}`);
   const segPaths = clips.map((_, i) => tmp(`${String(i).padStart(3, "0")}.mp4`));
+  const cutPaths = clips.map((_, i) => tmp(`cut${String(i).padStart(3, "0")}.mp4`));
+  const enhPaths = clips.map((_, i) => tmp(`enh${String(i).padStart(3, "0")}.mp4`));
   const listPath = tmp("list.txt");
   const mergedPath = tmp("merged.mp4");
   const outPath = tmp("out.mp4");
-  const temps = [...segPaths, listPath, mergedPath, outPath];
+  const temps = [...segPaths, ...cutPaths, ...enhPaths, listPath, mergedPath, outPath];
 
   // Segments carry their own audio only in "keep"; "mute"/"track" build a silent
   // picture (the donor is muxed at the very end).
@@ -169,6 +285,66 @@ async function editVideo(spec, onProgress = () => {}, signal) {
 
   try {
     onProgress("probe", 0.03);
+
+    // ---- Stage 0 (opt-in): hand the clips that fall short of the target to ComfyUI.
+    // Only those: a clip that already meets the size and rate has nothing for an upscaler
+    // to add, and this costs GPU-minutes where the rest of this file costs seconds.
+    const enhanced = [];
+    if (spec.enhance) {
+      // Sized off what the clip will actually BECOME, not off the frame. A 720x1280
+      // portrait clip in a 1280x720 frame is an upscale under "cover" (the middle band is
+      // blown up 1.78x) and a DOWNSCALE under "contain" (it lands at 405x720 with pillars)
+      // — the same two numbers, opposite answers. Comparing against the raw target instead
+      // called both an upscale and sent the second one to the GPU for nothing.
+      // 1.02 is the same slack the enhance path itself uses before deciding an AI pass
+      // would be pointless.
+      const short = clips.map((c, i) => ({ c, i, fit: fitOf(c) }))
+        .filter(({ c, fit }) => fit.k > 1.02 || F > c.fps);
+      for (let n = 0; n < short.length; n++) {
+        if (signal?.aborted) throw new Error("cancelled");
+        const { c, i, fit } = short[n];
+        onProgress(`enhance ${n + 1}/${short.length}`, 0.05 + 0.5 * (n / short.length));
+        try {
+          // Trim FIRST — the AI pass is priced per frame, and these are frames the cut
+          // does not use. An untrimmed clip is handed over as it lies.
+          let src = c.abs;
+          // Crop here too, for the same reason: under "cover" the edges are about to be
+          // thrown away, and an upscaler charges by the pixel.
+          const needCrop = fit.crop.w < c.width || fit.crop.h < c.height;
+          if (c.trimmed || needCrop) {
+            const args = [];
+            if (c.in > 0) args.push("-ss", c.in.toFixed(3));
+            args.push("-t", c.len.toFixed(3), "-i", c.abs);
+            if (needCrop) args.push("-vf", `crop=${fit.crop.w}:${fit.crop.h}`);
+            args.push("-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy");
+            if (!await run([...args, cutPaths[i]], signal, `cut ${i}`)) throw new Error("ffmpeg could not cut the range");
+            src = cutPaths[i];
+          }
+          // Ask for the size the clip will actually BE, not the frame it sits in: under
+          // "contain" the difference is pad, and the enhance path would otherwise pick its
+          // model for a ratio that pad throws away.
+          const used = await enhanceOneClip(src, { ...c, width: fit.crop.w, height: fit.crop.h },
+                                            { w: fit.w, h: fit.h, fps: F }, spec.enhanceOpts, enhPaths[i], signal);
+          // Re-probe rather than assume: the pipeline returns "at least the target", and
+          // everything downstream (the copy fast path, the normalize filter) reads these.
+          const spx = await gallery.probeSpecs(enhPaths[i]);
+          c.abs = enhPaths[i];
+          c.in = 0; c.out = c.len; c.trimmed = false;
+          if (spx.width > 0) c.width = spx.width;
+          if (spx.height > 0) c.height = spx.height;
+          if (spx.fps > 0) c.fps = spx.fps;
+          enhanced.push({ id: c.id, model: used.model, scale: used.scale,
+                          interpolated: used.interpolated || undefined,
+                          resizeOnly: used.resizeOnly || undefined });
+        } catch (e) {
+          // Never lose the export over this. The clip keeps its original file and the
+          // plain ffmpeg scale below handles it, exactly as it did before — the same
+          // policy as the h265 → h264 fallback, and the done line says so.
+          console.log(`[video-edit] enhance failed on ${c.id}: ${e.message} — falling back to a plain resample`);
+          enhanceNote = enhanceNote || e.message;
+        }
+      }
+    }
 
     // h265 = Apple's hardware HEVC, same policy as mergeScail2Segments: hvc1-tagged so
     // it plays in Safari, no CRF knob, and on a non-mac host it simply fails — probed
@@ -219,8 +395,12 @@ async function editVideo(spec, onProgress = () => {}, signal) {
         if (wantAudio && !hasAud) args.push("-f", "lavfi", "-t", c.len.toFixed(3),
                                             "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
         // scale-to-fit + pad: a differently-shaped clip gets bars, never a stretch.
-        args.push("-vf", `scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
-                         `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${F}`);
+        // cover = scale until BOTH axes are covered, then cut the overhang from the middle;
+        // contain = scale until both fit, then pad. Neither distorts.
+        args.push("-vf", fitMode === "cover"
+          ? `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=${F}`
+          : `scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
+            `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${F}`);
         args.push("-map", "0:v:0");
         if (wantAudio) args.push("-map", hasAud ? "0:a:0" : "1:a:0", "-c:a", "aac", "-ar", "48000", "-ac", "2");
         else args.push("-an");
@@ -306,14 +486,18 @@ async function editVideo(spec, onProgress = () => {}, signal) {
           codec: actualCodec, crf, audio: audioMode,
           audioId: audioMode === "track" ? spec.audioId : undefined,
           transition: fade ? { type: "crossfade", durSec: fade } : { type: "none" },
-          fps: F, width: W, height: H,
+          fps: F, width: W, height: H, fit: fitMode,
+          enhanced: enhanced.length ? enhanced : undefined,
+          enhanceOpts: enhanced.length ? spec.enhanceOpts : undefined,
+          enhanceFailed: enhanceNote || undefined,
         } },
       },
     });
     gallery.makeThumb(entry.path).catch(() => {});   // best-effort; the browser can too
     console.log(`[video-edit] ${clips.length} clip(s) → ${(buf.length / 1048576).toFixed(1)} MB ${actualCodec}` +
                 `${fade ? ` (crossfade ${fade}s)` : ""} → ${entry.path}`);
-    return { id: entry.path, entry, codec: actualCodec };
+    return { id: entry.path, entry, codec: actualCodec,
+             enhanced: enhanced.length || 0, enhanceFailed: enhanceNote || undefined };
   } finally {
     for (const f of temps) fsp.unlink(f).catch(() => {});
   }

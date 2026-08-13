@@ -16,6 +16,7 @@ import { galleryIdOf, galleryThumbUrl } from './utils.js';
 import { switchTab } from './tabs.js';
 import { openArchivedChat } from './archive.js';
 import { openVideoEditor } from './video-edit.js';
+import { toggleBgDrawer } from './bg-jobs.js';
 
 // ---------------------------------------------------------------------------
 // The gallery view: everything ever generated, read straight off disk.
@@ -201,6 +202,16 @@ function tileFor(entry) {
       ? (entry.length && entry.fps ? `▶ ${(entry.length / entry.fps).toFixed(1)}s` : "▶")
       : entry.kind === "mesh" ? "3D" : entry.kind === "audio" ? "🔊" : entry.kind;
     btn.appendChild(badge);
+  }
+  // Stitched here rather than generated: a cut looks like any other clip in the grid, and
+  // "which of these did I already assemble" is a question the thumbnail cannot answer.
+  // Bottom-RIGHT, so it never collides with the duration badge on the left.
+  if (entry.modelId === "video-edit") {
+    const cut = document.createElement("span");
+    cut.className = "galleryBadge galleryCutBadge";
+    cut.textContent = "✂️";
+    cut.title = t("gal_cutBadge");
+    btn.appendChild(cut);
   }
   // Built for every tile but only shown in list view (CSS). Switching views is then
   // one attribute on the grid — no re-render, no second tile builder.
@@ -655,6 +666,16 @@ function stripTile(entry) {
     const badge = document.createElement("span");
     badge.className = "galleryBadge";
     badge.textContent = entry.kind === "video" ? "▶" : entry.kind === "audio" ? "🔊" : "3D";
+    // A cut is marked here too, INSIDE the kind pill and right after ▶ — a 84px frame has
+    // no room for a second floating badge, and riding in the same pill means the mark can
+    // never drift away from the play mark it belongs beside.
+    if (entry.modelId === "video-edit") {
+      const cut = document.createElement("span");
+      cut.className = "galleryStripCutMark";
+      cut.textContent = "✂️";
+      badge.appendChild(cut);
+      badge.title = t("gal_cutBadge");
+    }
     btn.appendChild(badge);
   }
   // The score, opposite corner from the kind badge. Inside the thumb, so it rides the
@@ -676,7 +697,7 @@ function stripTile(entry) {
 // what keeps the row's scroll position (and its decoded bitmaps) through a refresh.
 function stripSig(e) {
   return [e.rating ?? "", e.displayName || "", e.width || "", e.height || "", e.fps || "",
-          e.length || "", e.bytes || "", (e.prompt || e.desc || "").length].join("|");
+          e.length || "", e.bytes || "", e.modelId || "", (e.prompt || e.desc || "").length].join("|");
 }
 
 // Drop two copies of the same picture in one go and the second one dedups against the
@@ -1620,7 +1641,10 @@ async function refresh() {
       modelSel.appendChild(any);
       for (const m of stats.models) {
         const o = document.createElement("option");
-        o.value = m.id; o.textContent = `${m.id} (${m.n})`;
+        // Model ids are the ledger's own words and stay that way — except the editor's
+        // own output, which is not a model at all and reads as noise among them.
+        o.value = m.id;
+        o.textContent = m.id === "video-edit" ? `✂️ ${t("vedit_title")} (${m.n})` : `${m.id} (${m.n})`;
         modelSel.appendChild(o);
       }
       // A model can vanish from the list (its last file deleted) while it is the active
@@ -1680,6 +1704,14 @@ export function initGallery() {
     renderDetail();
   });
   el("galleryCloseBtn")?.addEventListener("click", closeGallery);
+  // ☰ — the background-task drawer, without leaving the gallery. Reuses the library
+  // badge's string rather than adding a second translation of the same sentence.
+  const galTasks = el("galleryTasksBtn");
+  if (galTasks) {
+    galTasks.title = t("lib_taskCountHint");
+    galTasks.setAttribute("aria-label", galTasks.title);
+    galTasks.addEventListener("click", (ev) => { ev.stopPropagation(); toggleBgDrawer(); });
+  }
   el("galleryTidyBtn")?.addEventListener("click", tidy);
   // ✂️ always opens the editor, ticked clips or not: it is a room you can walk into, and
   // once inside its own filmstrip is how clips get added. Any ticked videos come along.

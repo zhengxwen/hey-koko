@@ -4364,6 +4364,15 @@ body.isResizingComposer {
   background: var(--accent-hover);
 }
 
+/* ☰ beside the title: same shape as the back arrow, quieter, and it must not be pushed
+   away by the toolbar that follows it in the gallery header. */
+.archiveTasksBtn {
+  font-size: 18px;
+  color: var(--muted, #888);
+  margin-left: -4px;
+}
+.archiveTasksBtn:hover { color: var(--accent-strong); }
+
 .archiveTagBar {
   display: flex;
   gap: 6px;
@@ -7630,6 +7639,20 @@ body.isResizingComposer {
   pointer-events: none;
 }
 
+/* The "assembled here" mark. TOP-right: the bottom-right corner is the score's, and the
+   top-left is the select checkbox's. Smaller than the badges it shares the picture with —
+   it is a note about provenance, not a fact about the clip. */
+.galleryTile .galleryCutBadge {
+  left: auto;
+  right: 5px;
+  top: 5px;
+  bottom: auto;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.galleryGrid[data-view="list"] .galleryTile .galleryCutBadge { margin-left: auto; }
+
 .galleryTile .galleryMissing {
   display: flex;
   align-items: center;
@@ -7976,6 +7999,11 @@ body.isResizingComposer {
 /* The score on a filmstrip frame. Bottom-right, opposite the kind badge, so a rated
    video shows "▶" and "★4" side by side rather than stacked on each other. Inside the
    thumb, so it rides the hover zoom with the picture. */
+.galleryStripCutMark {
+  margin-left: 3px;
+  font-size: 8px;
+}
+
 .galleryStripThumb .galleryStripRate {
   position: absolute;
   right: 3px;
@@ -8614,6 +8642,9 @@ body.isResizingComposer {
 .veditOptsPanel[hidden] { display: none; }
 
 .veditOptsName { justify-self: end; }
+/* Rows that only apply to the AI pipeline are hidden for the fast one — and `.hint` sets
+   its own display, which outranks [hidden] unless this says otherwise. */
+.veditOptsPanel [hidden] { display: none; }
 .veditOptsCell {
   display: flex;
   align-items: center;
@@ -8653,6 +8684,14 @@ body.isResizingComposer {
   line-height: 1;
 }
 .veditExportBtn { padding: 4px 18px; }
+/* A bigger glyph without a bigger button: the width is pinned to what it measured at the
+   shared size (32x30), and the horizontal padding gives way instead — otherwise 12px of
+   padding either side plus an 18px glyph would not fit and the box would grow. */
+.veditOptsBtn {
+  width: 32px;
+  padding: 0;
+  font-size: 18px;
+}
 
 .veditEstimate.isWarn { color: #e07a30; opacity: 1; }
 

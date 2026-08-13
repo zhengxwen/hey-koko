@@ -14,11 +14,11 @@
 // what ffmpeg renders is the truth, the preview is just a fast approximation. Seeking
 // works because /api/gallery/file/ serves HTTP Range requests.
 
-import { state } from './state.js';
+import { state, dom } from './state.js';
 import { t } from './i18n.js';
 import { galleryThumbUrl } from './utils.js';
 import { extractVideoFrames } from './image-gen.js';
-import { enqueueBgJob, openBgDrawer } from './bg-jobs.js';
+import { enqueueBgJob, openBgDrawer, toggleBgDrawer } from './bg-jobs.js';
 
 const el = (id) => document.querySelector(`#${id}`);
 const fileUrl = (id) => `/api/gallery/file/${id.split('/').map(encodeURIComponent).join('/')}`;
@@ -37,6 +37,15 @@ let crf = 18;
 // Output geometry. 0 = follow the first clip, which is what the cut is normalized to
 // otherwise. Kept across opens, like the codec and quality beside them.
 let outW = 0, outH = 0, outFps = 0;
+// How a clip that falls short of that geometry gets there. 'fast' = ffmpeg resample (what
+// this editor has always done, seconds); 'ai' = ComfyUI upscale + interpolation on the
+// clips that need it, which is GPU-minutes — hence a choice, and hence not the default.
+let fitMode = 'cover';       // 'cover' fills the frame and loses the edges; 'contain' pads
+let scaleMode = 'fast';
+let upModel = 'auto';        // '' / 'auto' / 'off' / a specific upscale model
+let interpMethod = 'rife';
+let sharpen = 'medium';     // the resize softens; the middle step puts that back without ringing
+let upModels = null;         // lazily fetched from ComfyUI; null = not asked yet
 let playAll = false;   // preview chains through all clips vs. stops at the active one's out
 
 const clipLen = (c) => Math.max(0, c.out - c.in);
@@ -659,9 +668,42 @@ function updateEstimate() {
 // and laid out in a row they wrapped and pushed Export around. Starts closed, like any
 // popover — it is not state, it is a drawer.
 const optsOpen = () => !el('veditExportBar')?.hidden;
+// Whether ComfyUI is there is re-decided every time the popover opens, not just when the
+// bar was built: the address is scanned in the background and a machine can come or go
+// long after the editor was opened, and the panel is the moment the answer matters.
+// Set by renderExportBar; a no-op before the first render.
+let repaintAiRows = () => {};
+
+function comfyIsReachable() {
+  // The obvious tests do NOT work, measured: with ComfyUI unreachable the catalogue still
+  // lists `video-enhance` and `image-upscale` (model-free tools, always offered), and
+  // `hostname` is the LOCAL machine's, so it is set either way. Only the GPU fields come
+  // from ComfyUI's own /system_stats.
+  return state.comfyVramGib != null
+    || [...(state.comfyVideoModels || [])].some((n) => n !== 'video-enhance');
+}
+
+function paintScaleGate() {
+  const sel = el('veditScaleMode');
+  if (!sel || sel.options.length < 2) return;
+  const ready = comfyIsReachable();
+  sel.options[1].disabled = !ready;
+  sel.title = ready ? t('vedit_scaleHint') : t('vedit_scaleAiOffline');
+  if (!ready && scaleMode === 'ai') {
+    // Never leave Export standing on a promise that cannot be kept.
+    scaleMode = 'fast';
+    sel.value = 'fast';
+    repaintAiRows();
+  }
+  // A model list fetched while ComfyUI was down is empty and would stay empty; let the
+  // next pick re-ask now that there is something to ask.
+  if (ready && Array.isArray(upModels) && !upModels.length) upModels = null;
+}
+
 function setOptsOpen(open) {
   const panel = el('veditExportBar');
   const btn = el('veditOptsBtn');
+  if (open) paintScaleGate();
   if (panel) panel.hidden = !open;
   if (btn) {
     btn.classList.toggle('isOn', open);
@@ -814,6 +856,53 @@ function renderExportBar() {
   exportBtn.disabled = !clips.length;
   exportBtn.addEventListener('click', doExport);
 
+  // What to do with a clip whose shape is not the frame's. Never a stretch either way.
+  const fitSel = sel([['cover', t('vedit_fitCover')], ['contain', t('vedit_fitContain')]], fitMode,
+    (v) => { fitMode = v; });
+  fitSel.id = 'veditFitMode';
+  fitSel.title = t('vedit_fitHint');
+
+  // How to get a short clip up to the target: plain resample, or ComfyUI.
+  if (!comfyIsReachable() && scaleMode === 'ai') scaleMode = 'fast';
+  const scaleSel = sel([['fast', t('vedit_scaleFast')], ['ai', t('vedit_scaleAi')]], scaleMode, (v) => {
+    scaleMode = v;
+    paintAiRows();
+  });
+  scaleSel.id = 'veditScaleMode';
+
+  // Upscale model. 'auto' lets the server size the model to the ratio actually needed (a
+  // 2x target should load a 2x model, not run a 4x one and throw away the pixels); 'off'
+  // is interpolate/sharpen only.
+  const upModelSel = sel([['auto', t('vedit_upAuto')], ['off', t('vedit_upOff')]], upModel, (v) => { upModel = v; });
+  upModelSel.id = 'veditUpModel';
+  const fillUpModels = async () => {
+    try {
+      const r = await fetch('/api/comfy-models').then((x) => x.json());
+      upModels = (r.upscaleModels || []).filter(Boolean);
+    } catch { upModels = []; }   // ComfyUI offline: Auto/Off still make sense
+    for (const name of upModels) {
+      const o = document.createElement('option');
+      o.value = name; o.textContent = name.replace(/\.(pth|safetensors|onnx)$/i, '');
+      upModelSel.appendChild(o);
+    }
+    upModelSel.value = upModel;
+    if (upModelSel.value !== upModel) upModelSel.value = 'auto';   // a model that went away
+  };
+
+  const interpSel = sel([['rife', t('vedit_interpRife')], ['film', 'FILM']], interpMethod, (v) => { interpMethod = v; });
+  interpSel.id = 'veditInterp';
+  interpSel.title = t('vedit_interpHint');
+
+  const sharpenSel = sel([['off', t('vedit_sharpOff')], ['light', t('vedit_sharpLight')],
+                          ['medium', t('vedit_sharpMediumDef')], ['strong', t('vedit_sharpStrong')]],
+    sharpen, (v) => { sharpen = v; });
+  sharpenSel.id = 'veditSharpen';
+  sharpenSel.title = t('vedit_sharpenHint');
+
+  const aiHint = document.createElement('span');
+  aiHint.className = 'hint veditOptsFull';
+  aiHint.textContent = t('vedit_aiHint');
+
   const optsBtn = document.createElement('button');
   optsBtn.type = 'button';
   optsBtn.id = 'veditOptsBtn';
@@ -834,13 +923,32 @@ function renderExportBar() {
     cell.className = 'veditOptsCell';
     cell.append(...controls);
     bar.append(name, cell);
+    return [name, cell];       // so a row can be hidden as a unit
   };
   row('vedit_size', sizeField, sizeList);
   row('vedit_fps', fpsField);
+  row('vedit_fitMode', fitSel);
+  row('vedit_scaleMode', scaleSel);
+  // The algorithm rows only exist for the pipeline that has algorithms. Shown for 'fast'
+  // they would be four controls that do nothing.
+  const aiRows = [
+    row('vedit_upModel', upModelSel),
+    row('vedit_interp', interpSel),
+    row('vedit_sharpen', sharpenSel),
+    (() => { bar.append(aiHint); return [aiHint]; })(),
+  ];
+  const paintAiRows = () => {
+    const on = scaleMode === 'ai';
+    for (const parts of aiRows) for (const nodeEl of parts) nodeEl.hidden = !on;
+    if (on && upModels === null) fillUpModels();
+  };
   row('vedit_audio', audioSel, trackSel);
   row('vedit_transition', transSel, fadeField);
   row('vedit_codec', codecSel);
   row('vedit_qualityLabel', crfField, crfLabel);
+  repaintAiRows = paintAiRows;   // the gate may have to hide these again later
+  paintAiRows();
+  paintScaleGate();
   hint.classList.add('veditOptsFull');
   bar.append(hint);
   // A rebuild is not a dismissal. Today every rebuild happens to follow a click outside
@@ -860,6 +968,12 @@ function doExport() {
     clips: clips.map((c) => ({ id: c.id, inSec: Number(c.in.toFixed(3)), outSec: Number(c.out.toFixed(3)) })),
     codec, crf,
     width: outW || undefined, height: outH || undefined, fps: outFps || undefined,
+    fit: fitMode,
+    enhance: scaleMode === 'ai' || undefined,
+    // These names belong to /api/comfy-generate's ⚙ options — passed through untouched.
+    enhanceOpts: scaleMode === 'ai'
+      ? { upscaleModel: upModel, interpMethod, sharpen: sharpen === 'off' ? '' : sharpen }
+      : undefined,
     audio: audioMode,
     audioId: audioMode === 'track' ? audioId : undefined,
     transition: fade > 0 && clips.length > 1 ? { type: 'crossfade', durSec: fade } : { type: 'none' },
@@ -879,6 +993,14 @@ function doExport() {
 
 export function initVideoEditor() {
   el('veditCloseBtn')?.addEventListener('click', closeVideoEditor);
+  // ☰ — the background-task drawer over the editor. An export started here runs there,
+  // so this is the shortest path from "I pressed Export" to "how is it going".
+  const tasksBtn = el('veditTasksBtn');
+  if (tasksBtn) {
+    tasksBtn.title = t('lib_taskCountHint');
+    tasksBtn.setAttribute('aria-label', tasksBtn.title);
+    tasksBtn.addEventListener('click', (ev) => { ev.stopPropagation(); toggleBgDrawer(); });
+  }
   el('veditPreview')?.addEventListener('timeupdate', onTimeUpdate);
   el('veditPreview')?.addEventListener('ended', onEnded);
   // With the native controls off for the chain the picture would otherwise be inert, so
