@@ -1,4 +1,125 @@
 {
+  "flux-prompt-writing": {
+    "repo": "https://github.com/black-forest-labs/skills",
+    "models": [
+      "flux1-dev",
+      "flux1-kontext"
+    ],
+    "kind": "image",
+    "style": "prose",
+    "caveats": [
+      "This app renders FLUX.1 LOCALLY through ComfyUI. The guide repeatedly recommends FLUX.2 and describes Black Forest Labs' cloud API — neither is available here. Never suggest switching model or calling an API; apply the guidance to the FLUX.1 model named above.",
+      "Ignore the guide's API-shaped output formats (JSON request bodies, endpoint fields). The only thing you produce is the prompt text inside the imagine block."
+    ],
+    "modeRules": [
+      { "idContains": "kontext", "mode": "edit" }
+    ],
+    "modes": {
+      "base": [
+        "rules/core-principles.md",
+        "rules/t2i-prompting.md"
+      ],
+      "edit": [
+        "rules/core-principles.md",
+        "rules/flux1-models.md",
+        "rules/i2i-prompting.md"
+      ]
+    },
+    "files": {
+      "SKILL.md": {
+        "url": "https://raw.githubusercontent.com/black-forest-labs/skills/master/skills/flux-image-best-practices/SKILL.md",
+        "sha256": "3429e0b7be3c86cec1abbea68c4f8188dbb6fd1070b46be49908ffb92147db36",
+        "bytes": 3930
+      },
+      "rules/core-principles.md": {
+        "url": "https://raw.githubusercontent.com/black-forest-labs/skills/master/skills/flux-image-best-practices/rules/core-principles.md",
+        "sha256": "1a98fd74e4e1cf64a8a0812ee063ef62046aa6587246a20b9d550965b8b2ee93",
+        "bytes": 3745
+      },
+      "rules/t2i-prompting.md": {
+        "url": "https://raw.githubusercontent.com/black-forest-labs/skills/master/skills/flux-image-best-practices/rules/t2i-prompting.md",
+        "sha256": "3fff7ad25888910fe6e01b7dd0648cd3b72e8f37dac3286865f5688be8810596",
+        "bytes": 6176
+      },
+      "rules/i2i-prompting.md": {
+        "url": "https://raw.githubusercontent.com/black-forest-labs/skills/master/skills/flux-image-best-practices/rules/i2i-prompting.md",
+        "sha256": "3c43cb97b48261866e0b4d1c250e634183d954d3837401c1a686843d8cd5e1e9",
+        "bytes": 6525
+      },
+      "rules/flux1-models.md": {
+        "url": "https://raw.githubusercontent.com/black-forest-labs/skills/master/skills/flux-image-best-practices/rules/flux1-models.md",
+        "sha256": "84af468f51581e963391594f73ea3a230f9936635e1c26cc3a2201ac28b0b46e",
+        "bytes": 4442
+      }
+    }
+  },
+  "qwen-image-edit-prompt-writing": {
+    "repo": "https://github.com/QwenLM/Qwen-Image",
+    "models": [
+      "qwen-image-edit"
+    ],
+    "kind": "image",
+    "style": "rewriter",
+    "modes": {
+      "base": { "section": "EDIT_SYSTEM_PROMPT" }
+    },
+    "files": {
+      "SKILL.md": {
+        "url": "https://raw.githubusercontent.com/QwenLM/Qwen-Image/main/src/examples/tools/prompt_utils.py",
+        "sha256": "415e96a2f1d8ddd686840ae5c5761b2b3ba6fff42ae96a2fa29263fbb9472414",
+        "bytes": 21518
+      }
+    }
+  },
+  "wan2.2-i2v-prompt-writing": {
+    "repo": "https://github.com/Wan-Video/Wan2.2",
+    "models": [
+      "wan2.2-14b",
+      "wan2.2-14b-i2v",
+      "wan2.2-5b-ti2v"
+    ],
+    "excludeModels": [
+      "wan2.2-14b-t2v"
+    ],
+    "kind": "video",
+    "style": "rewriter",
+    "modes": {
+      "base": { "section": "I2V_A14B_EN_SYS_PROMPT" }
+    },
+    "files": {
+      "SKILL.md": {
+        "url": "https://raw.githubusercontent.com/Wan-Video/Wan2.2/main/wan/utils/system_prompt.py",
+        "sha256": "6a42ee64ca850692e91a517b9d86ba649adc973370444746e5af5f3bde087612",
+        "bytes": 20134
+      }
+    }
+  },
+  "ltx-2.3-prompt-writing": {
+    "repo": "https://github.com/Zambav/comfyui-skill-public",
+    "models": [
+      "ltx2.3-22b",
+      "ltx2-sulphur"
+    ],
+    "excludeModels": [
+      "ltx2.3-22b:msr",
+      "ltx2.3-22b:union"
+    ],
+    "kind": "video",
+    "style": "prose",
+    "sizes": [
+      "1280x704",
+      "704x1280",
+      { "token": "1920x1088", "max": true },
+      { "token": "1088x1920", "max": true }
+    ],
+    "files": {
+      "SKILL.md": {
+        "url": "https://raw.githubusercontent.com/Zambav/comfyui-skill-public/main/prompting-guides/ltx-2.3-prompting-guide.md",
+        "sha256": "1bd2285358bf23e7c6ce017365bd3f7c1ee5693d01e5705bd459e869d32bd74c",
+        "bytes": 8088
+      }
+    }
+  },
   "h3-prompt-writing": {
     "repo": "https://github.com/MiniMax-AI/MiniMax-H3",
     "models": [
@@ -20,6 +141,9 @@
       "720p-portrait",
       { "token": "1376x768", "max": true },
       { "token": "768x1376", "max": true }
+    ],
+    "modeRules": [
+      { "idContains": "-r2v", "mode": "ref" }
     ],
     "modes": {
       "base": "references/base-en.txt",

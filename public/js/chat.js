@@ -810,6 +810,17 @@ function dedupeImageNames(names) {
   });
 }
 
+// What KIND of guide a skill ships, and therefore how it must be framed. Guides differ
+// in nature, not just wording: a strong-format spec is obeyed literally, prose teaches
+// an approach, and a vendor's own rewriter system prompt is authoritative about the
+// finished prompt but wrong about the output format (it expects one silent JSON-ish
+// shot, not a conversation). Framing one as another is the failure that drops the
+// dispatch line or invents sections the guide never had. Unknown/absent → strict.
+const SKILL_WRAPPERS = {
+  prose: "skillWrapperProse",
+  rewriter: "skillWrapperRewriter",
+};
+
 // ---- /skill: load a model's official prompt-writing guide into the chat ----------
 // Syntax:  /skill                     → list installed skills (no LLM call)
 //          /skill 想法…               → guide for the ComfyUI dropdown's current model
@@ -946,17 +957,18 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video, at 
     if (!installed.length) { say(t("skill_noneInstalled")); return; }
     const curId = currentComfyModelId();
     const rows = installed.map((s) => {
-      // Each manifest prefix with the concrete model ids under it spelled out and
-      // LABELLED — "minimax-h3 (models: minimax-h3-t2v, minimax-h3-r2v)". Unlabelled,
-      // the parenthetical reads like a version list or an alias; these are the ids -m
-      // accepts and the dropdown names, so the row doubles as a token list to copy
-      // from instead of leaving the -t2v/-r2v suffixes to be guessed.
-      const models = s.models.map((p) => {
-        const under = (s.ids || []).filter((id) => id !== p && (id.startsWith(p + "-") || id.startsWith(p + ":")));
-        return under.length ? `${p} (${t("skill_listModels")}: ${under.join(", ")})` : p;
-      }).join(", ") || "—";
-      const isCurrent = s.models.some((p) => curId === p || curId.startsWith(p + "-") || curId.startsWith(p + ":"));
-      return `- **${s.name}** ← ${models}${isCurrent ? `  ✓ ${t("skill_currentModel")}` : ""}`;
+      // One indented line per MODEL: the canonical id (what -m takes) plus its human
+      // name from the server's label table. The manifest prefix that groups them
+      // ("minimax-h3") is deliberately not shown — it is a matching rule, not a model,
+      // and -m would reject it as ambiguous, so printing it invites a command that
+      // cannot work. The ✓ marks the id the dropdown is actually on.
+      const ids = s.ids && s.ids.length ? s.ids : s.models;
+      const lines = ids.map((id) => {
+        const label = (s.labels && s.labels[id]) || id;
+        const named = label === id ? `\`${id}\`` : `\`${id}\` — ${label}`;
+        return `  - ${named}${curId === id ? `  ✓ ${t("skill_currentModel")}` : ""}`;
+      }).join("\n");
+      return `- **${s.name}**\n${lines || `  - ${t("skill_listModels")}: —`}`;
     }).join("\n");
     say(`${t("skill_listHeader")}\n\n${rows}\n\n${t("skill_usage")}`);
     return;
@@ -1053,12 +1065,18 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video, at 
   // slower). No sizes in the manifest → the note simply never mentions --size. Framed
   // as "only when the user asked" so the assistant doesn't decorate every dispatch line.
   const flagsNote = " " + getPrompt("skillFlagsNote", composed.sizes || []);
+  // Per-skill overrides that CONTRADICT the guide (a vendor recommending a model this
+  // app cannot run, an API this app never calls). They ride last so they are the final
+  // word the assistant reads before the guide itself.
+  const caveatNote = composed.caveats && composed.caveats.length
+    ? " " + getPrompt("skillCaveatsNote", composed.caveats.map((c, i) => `(${i + 1}) ${c}`).join(" "))
+    : "";
   // The staged note is mode-aware: under the ref guide the pictures are Ref2VA
   // reference subjects, and with nothing staged the right move is to ask for them —
   // the base wording ("assume T2VA", "image count decides I2VA/FL2VA") describes
   // modes that do not exist on the r2v weights.
   const isRef = composed.mode === "ref";
-  const stagedNote = getPrompt(cmd.prompt ? "skillStaged" : "skillStagedPending", imgCount, vidCount, isRef) + durNote + refNote + flagsNote;
+  const stagedNote = getPrompt(cmd.prompt ? "skillStaged" : "skillStagedPending", imgCount, vidCount, isRef) + durNote + refNote + flagsNote + caveatNote;
 
   // The guide bubble. Header states the off switch (fold = pause); the guide itself
   // sits inside <details> — collapsed ON SCREEN, but fully part of the outgoing
@@ -1090,7 +1108,7 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video, at 
     skillGuide: modelId,
     skillKind: composed.kind || "",
     content: `${getPrompt("skillHeader", composed.name, composed.mode)}${supersededNote}${newTabNote}\n\n` +
-      `${getPrompt("skillWrapper", modelId, stagedNote)}\n\n` +
+      `${getPrompt(SKILL_WRAPPERS[composed.style] || "skillWrapper", modelId, stagedNote)}\n\n` +
       `<details>\n<summary>${getPrompt("skillGuideSummary")}</summary>\n\n${composed.text}\n\n</details>`,
     timestamp: Date.now(),
   };
