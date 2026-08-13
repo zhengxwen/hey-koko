@@ -3586,7 +3586,7 @@ function makeReplaceImageButton(msgIndex, imgIdx) {
     input.addEventListener("change", async () => {
       const file = input.files?.[0];
       if (!file) return;
-      if (file.size > 8 * 1024 * 1024) { alert(t("msg_imageTooLarge")); return; }
+      if (file.size > 16 * 1024 * 1024) { alert(t("msg_imageTooLarge")); return; }
       const tab = getActiveTab();
       const msg = tab?.messages?.[msgIndex];
       if (!msg) return;

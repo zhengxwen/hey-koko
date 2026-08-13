@@ -2089,7 +2089,7 @@ async function selectFile(file) {
 
   // Image handling (existing logic)
   if (isImage) {
-    if (file.size > 8 * 1024 * 1024) {
+    if (file.size > 16 * 1024 * 1024) {
       const msgEl = document.createElement("div");
       msgEl.className = "message system";
       msgEl.textContent = t("msg_imageTooLarge");
@@ -2112,7 +2112,7 @@ async function selectFile(file) {
   }
 
   // Document handling
-  if (file.size > 20 * 1024 * 1024) {
+  if (file.size > 50 * 1024 * 1024) {
     const msgEl = document.createElement("div");
     msgEl.className = "message system";
     msgEl.textContent = t("msg_fileTooLarge");
@@ -2243,7 +2243,7 @@ async function selectMultipleFiles(files) {
     const images = [];
     const validFiles = [];
     for (const file of files) {
-      if (file.size > 8 * 1024 * 1024) {
+      if (file.size > 16 * 1024 * 1024) {
         const msgEl = document.createElement("div");
         msgEl.className = "message system";
         msgEl.textContent = t("msg_imageTooLargeSkip", { name: file.name });
@@ -2280,7 +2280,7 @@ async function selectMultipleFiles(files) {
         dom.messagesEl.appendChild(msgEl);
         continue;
       }
-      if (file.size > 20 * 1024 * 1024) {
+      if (file.size > 50 * 1024 * 1024) {
         const msgEl = document.createElement("div");
         msgEl.className = "message system";
         msgEl.textContent = t("msg_fileTooLargeSkip", { name: file.name });
