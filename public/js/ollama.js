@@ -1612,8 +1612,8 @@ export function updateComfyParamVisibility() {
   const mesh = !!(state.comfyMeshModels && state.comfyMeshModels.has(m));
   // Hunyuan3D and TripoSplat run real KSamplers; MoGe has none (pure estimation).
   const meshSampler = mesh && (/hunyuan[._-]?3d/i.test(m) || m === "triposplat");
-  // Hide a field by its <label> (or, for the frame-interpolation pair, the shared .comfyParamRow; the
-  // pick-person button has no label, so fall back to the element itself).
+  // Hide a field by its <label> (or by a shared wrapper when a pair lives on one
+  // .comfyParamRow; the pick-person button has no label, so fall back to the element).
   const setVis = (el, on, sel) => { if (!el) return; const box = sel ? el.closest(sel) : (el.closest("label") || el); if (box) box.hidden = !on; };
   // Wan Dancer (music → dance) — its own genre/amplitude/duration/quality knobs; the
   // generic frame-length and fps fields are hidden for it (duration is picked in
@@ -1658,7 +1658,6 @@ export function updateComfyParamVisibility() {
   // Video codec + its CRF: every video model (the tail rewrite is builder-agnostic).
   for (const el of [dom.comfyParamVideoCodec, dom.comfyParamVideoCrf]) setVis(el, video);
   if (video) syncVideoCrfPlaceholder();
-  setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // frame-interpolation + interpolation-engine row
   // torch.compile: Wan Animate (both modes) AND SCAIL-2 — both chain segments, which is
   // what makes the one-time compile pay off. Relight strength stays Wan-Animate-only
   // (SCAIL-2 has no relight LoRA).
@@ -1896,7 +1895,6 @@ function initComfyParamsModal() {
     dom.comfyParamPanoOutpaint,
     dom.comfyParamPanoLoraStrength,
     dom.comfyParamPanoRefine,
-    dom.comfyParamTargetFps,
     dom.comfyParamUpscaleDenoise,
     dom.comfyParamUpscaleTarget,
     dom.comfyParamRestoreModel,
@@ -1997,7 +1995,6 @@ function initComfyParamsModal() {
   for (const el of [dom.comfyParamDanceStyle, dom.comfyParamDanceAmplitude, dom.comfyParamDanceDuration, dom.comfyParamDanceQuality]) el?.addEventListener("change", () => saveCurrentSettings());
   // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset
   // restores that rather than an empty value.
-  dom.comfyParamInterpMethod?.addEventListener("change", () => saveCurrentSettings());
   // Video codec: keep the CRF placeholder showing the selected codec's default, and warn
   // once when H.265 is picked in a browser that can't play it back.
   dom.comfyParamVideoCodec?.addEventListener("change", () => {
@@ -2017,7 +2014,6 @@ function initComfyParamsModal() {
     if (dom.comfyParamDanceAmplitude) dom.comfyParamDanceAmplitude.value = "";
     if (dom.comfyParamDanceDuration) dom.comfyParamDanceDuration.value = "";
     if (dom.comfyParamDanceQuality) dom.comfyParamDanceQuality.checked = false;
-    if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = "rife";
     if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = "h264"; // default codec, not empty
     if (dom.comfyParamPaintQuality) dom.comfyParamPaintQuality.value = "standard";
     if (dom.comfyParamPaintMesh) dom.comfyParamPaintMesh.checked = true;   // texturing defaults ON

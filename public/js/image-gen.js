@@ -115,9 +115,6 @@ function comfyOverrides() {
   if (panoOutpaint) ov.panoOutpaint = panoOutpaint;                 // denoise over the invented region
   const panoRefine = num(dom.comfyParamPanoRefine?.value);
   if (panoRefine) ov.panoRefine = panoRefine;                       // equirect long edge after the 4x upscale pass
-  const targetFps = num(dom.comfyParamTargetFps?.value);
-  if (targetFps !== undefined) ov.targetFps = targetFps; // frame interpolation: interpolate up to this fps
-  if (dom.comfyParamInterpMethod?.value) ov.interpMethod = dom.comfyParamInterpMethod.value; // rife | film
   const upDenoise = num(dom.comfyParamUpscaleDenoise?.value);
   if (upDenoise !== undefined && upDenoise > 0) ov.upscaleDenoise = Math.min(1, upDenoise / 100); // upscale denoise % → 0–1
   if (dom.comfyParamUpscaleModel?.value) ov.upscaleModel = dom.comfyParamUpscaleModel.value; // manual upscale model (empty = auto)

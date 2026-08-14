@@ -92,8 +92,6 @@ export const dom = {
   comfyParamPanoOutpaint: document.querySelector("#comfyParamPanoOutpaint"),
   comfyParamPanoRefine: document.querySelector("#comfyParamPanoRefine"),
   comfyParamMogeSubject: document.querySelector("#comfyParamMogeSubject"),
-  comfyParamTargetFps: document.querySelector("#comfyParamTargetFps"),
-  comfyParamInterpMethod: document.querySelector("#comfyParamInterpMethod"),
   comfyParamUpscaleDenoise: document.querySelector("#comfyParamUpscaleDenoise"),
   comfyParamUpscaleModel: document.querySelector("#comfyParamUpscaleModel"),
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),

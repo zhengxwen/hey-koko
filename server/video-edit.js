@@ -161,13 +161,17 @@ async function enhanceOneClip(srcPath, src, target, opts, outPath, signal) {
   const frames = Math.max(1, Math.round(c.len * c.fps));
   const body = {
     model: "video-enhance",
-    // The enhance path reads its target fps from the prompt; "" = upscale only.
-    prompt: target.fps > c.fps ? String(target.fps) : "",
+    prompt: "",                       // the enhance pipeline takes no prompt
     sourceVideoName: name,
     sourceVideoWidth: c.width, sourceVideoHeight: c.height,
     sourceVideoFps: c.fps, sourceVideoFrames: frames,
     options: {
       ...(opts || {}),
+      // Target frame rate. This editor is the only place frame interpolation is offered
+      // now, so it is also the only caller that ever sets this — 0/absent = leave the
+      // rate alone. (It used to travel as the prompt text, which meant a number typed in
+      // chat silently became an fps; that convention is gone.)
+      ...(target.fps > c.fps ? { targetFps: target.fps } : {}),
       // An explicit size outranks the ⚙ "upscale to" setting inside that handler, which is
       // what we want: the cut's own size is the instruction here.
       ...(target.w > c.width ? { width: target.w, height: target.h } : {}),
