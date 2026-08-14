@@ -1203,10 +1203,16 @@ function attachCompareTooltip(span, dot, classify, titleKey, colsKey, rowsKey) {
   span.addEventListener("mouseleave", hide);
 }
 
+// Which of the picker's two layouts was last used. Kept in localStorage rather than in
+// the settings blob: it is a per-device view preference, not part of the conversation.
+const PICK_MODE_KEY = "hk_comfyPickMode";
+
 export function openComfyModelPicker() {
   const groups = state.comfyModelGroups || [];
   if (!groups.length) return;
   const current = dom.comfyModelSelect ? dom.comfyModelSelect.value : "";
+  let flatMode = false;
+  try { flatMode = localStorage.getItem(PICK_MODE_KEY) === "flat"; } catch { /* private mode */ }
 
   const overlay = document.createElement("div");
   overlay.className = "zoteroImportOverlay";   // reuse the modal chrome
@@ -1218,6 +1224,7 @@ export function openComfyModelPicker() {
       </div>
       <div class="modelBrowserBar">
         <input type="text" class="modelBrowserSearch comfyPickSearch" placeholder="${t("cmp_search")}" />
+        <button type="button" class="comfyPickModeBtn"></button>
         <span class="modelBrowserCount comfyPickCount"></span>
         <div class="comfyPickGpu"></div>
       </div>
@@ -1275,6 +1282,7 @@ export function openComfyModelPicker() {
   const colsEl = overlay.querySelector(".comfyPickCols");
   const countEl = overlay.querySelector(".comfyPickCount");
   const searchEl = overlay.querySelector(".comfyPickSearch");
+  const modeBtn = overlay.querySelector(".comfyPickModeBtn");
 
   const pick = (name) => {
     if (!dom.comfyModelSelect) return;
@@ -1285,15 +1293,36 @@ export function openComfyModelPicker() {
     close();
   };
 
-  const render = () => {
-    const q = searchEl.value.trim().toLowerCase();
-    colsEl.textContent = "";
+  // One model row. Identical in both layouts — only where the rows are placed differs.
+  // DOM APIs, not innerHTML: these labels come from model FILENAMES on disk.
+  const makeRow = (it) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "comfyPickRow" + (it.name === current ? " isCurrent" : "") + (it.ready ? "" : " isUnverified");
+    row.title = it.hint || "";
+    const nameEl = document.createElement("span");
+    nameEl.className = "comfyPickName";
+    nameEl.textContent = (it.ready ? "" : "⚠️ ") + it.label;
+    row.appendChild(nameEl);
+    if (it.dots) {
+      const dotsEl = document.createElement("span");
+      dotsEl.className = "comfyPickDots";
+      dotsEl.textContent = it.dots;
+      row.appendChild(dotsEl);
+    }
+    row.addEventListener("click", () => pick(it.name));
+    return row;
+  };
+
+  const matches = (it, q) => !q || it.label.toLowerCase().includes(q) || it.name.toLowerCase().includes(q);
+
+  // BY CATEGORY — one column per group, in the fixed group order (image → edit →
+  // video → video-in → 3D), each column already sorted by name.
+  const renderGrouped = (q) => {
     let shown = 0, total = 0;
     for (const g of groups) {
-      const items = g.items.filter((it) => {
-        total++;
-        return !q || it.label.toLowerCase().includes(q) || it.name.toLowerCase().includes(q);
-      });
+      total += g.items.length;
+      const items = g.items.filter((it) => matches(it, q));
       shown += items.length;
       const col = document.createElement("div");
       col.className = "comfyPickCol";
@@ -1307,31 +1336,53 @@ export function openComfyModelPicker() {
         none.textContent = q ? t("cmp_noMatch") : "—";
         col.appendChild(none);
       }
-      for (const it of items) {
-        // DOM APIs, not innerHTML: these labels come from model FILENAMES on disk.
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "comfyPickRow" + (it.name === current ? " isCurrent" : "") + (it.ready ? "" : " isUnverified");
-        row.title = it.hint || "";
-        const nameEl = document.createElement("span");
-        nameEl.className = "comfyPickName";
-        nameEl.textContent = (it.ready ? "" : "⚠️ ") + it.label;
-        row.appendChild(nameEl);
-        if (it.dots) {
-          const dotsEl = document.createElement("span");
-          dotsEl.className = "comfyPickDots";
-          dotsEl.textContent = it.dots;
-          row.appendChild(dotsEl);
-        }
-        row.addEventListener("click", () => pick(it.name));
-        col.appendChild(row);
-      }
+      for (const it of items) col.appendChild(makeRow(it));
       colsEl.appendChild(col);
     }
+    return { shown, total };
+  };
+
+  // BY NAME — every model in one A→Z list, category boundaries dropped. The groups are
+  // disjoint (each model lands in exactly one bucket in loadComfyModels), so flattening
+  // can't duplicate a row and the totals stay comparable between the two modes. The
+  // columns here are CSS multicol, so the list reads DOWN each column and continues at
+  // the top of the next — the order a phone book has, not a spreadsheet's.
+  const renderFlat = (q) => {
+    const all = groups.flatMap((g) => g.items);
+    // Same collator as the per-group sort (numeric so "Wan 2.2" precedes "Wan 10").
+    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+    const items = all.filter((it) => matches(it, q)).sort((a, b) => collator.compare(a.label, b.label));
+    const list = document.createElement("div");
+    list.className = "comfyPickFlat";
+    if (!items.length) {
+      const none = document.createElement("div");
+      none.className = "comfyPickNone";
+      none.textContent = t("cmp_noMatch");
+      list.appendChild(none);
+    }
+    for (const it of items) list.appendChild(makeRow(it));
+    colsEl.appendChild(list);
+    return { shown: items.length, total: all.length };
+  };
+
+  const render = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    colsEl.textContent = "";
+    colsEl.classList.toggle("isFlat", flatMode);
+    // The button names the layout it switches TO, so it reads as an action.
+    modeBtn.textContent = flatMode ? t("cmp_modeGroup") : t("cmp_modeFlat");
+    modeBtn.title = flatMode ? t("cmp_modeGroupTip") : t("cmp_modeFlatTip");
+    const { shown, total } = flatMode ? renderFlat(q) : renderGrouped(q);
     countEl.textContent = t("mb_count", { shown, total });
   };
   render();
   searchEl.addEventListener("input", render);
+  modeBtn.addEventListener("click", () => {
+    flatMode = !flatMode;
+    try { localStorage.setItem(PICK_MODE_KEY, flatMode ? "flat" : "group"); } catch { /* private mode */ }
+    render();
+    searchEl.focus();   // keep typing where it was; the button is a detour, not a target
+  });
   searchEl.focus();
 }
 

@@ -7518,6 +7518,26 @@ body.isResizingComposer {
   gap: 8px 12px;
   align-items: start;
 }
+/* "By name" layout: one A→Z list flowing DOWN each column, so it reads like a phone
+   book. Multicol (not the grid above) because only multicol balances a single ordered
+   list across however many columns fit; the grid's job is one column PER CATEGORY. */
+.comfyPickCols.isFlat { display: block; }
+.comfyPickFlat { columns: 230px auto; column-gap: 12px; }
+/* A row must never be split across a column break — half a model name at the bottom of
+   one column and half at the top of the next is unreadable. */
+.comfyPickFlat > * { break-inside: avoid; }
+/* Layout toggle in the search bar. Sized off the search box's own metrics so the two
+   sit on one baseline; the global `button { min-height: 42px }` would otherwise make
+   this row taller than the input next to it. */
+.comfyPickModeBtn {
+  /* stretch, not a hard-coded height: the button then always matches the search box
+     next to it, whatever the font metrics make that. */
+  flex: 0 0 auto; align-self: stretch; min-height: 0; padding: 0 10px; margin: 0;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface, transparent); color: var(--ink);
+  font-size: 12px; font-weight: 400; line-height: 1.2; white-space: nowrap; cursor: pointer;
+}
+.comfyPickModeBtn:hover { border-color: var(--muted); }
 .comfyPickColHead {
   font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
   color: var(--muted); padding: 2px 6px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px;

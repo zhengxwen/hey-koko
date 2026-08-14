@@ -432,11 +432,35 @@ dom.messageInput.addEventListener("blur", () => setTimeout(hideMentionPopup, 150
 
 // Auto-save when model selections change
 let lastPickedModel = dom.modelSelect.value;
+// Re-read the selection at the moment the user reaches for the dropdown. `change` alone
+// is not enough to keep this current: the value is also set PROGRAMMATICALLY (settings
+// load, a tab switch, loadModels rebuilding the list) and assigning .value fires no
+// event — so the variable would still hold whatever the list held at page load, which is
+// "" (the options arrive asynchronously). Restoring that emptied the dropdown entirely.
+const rememberPickedModel = () => {
+  if (dom.modelSelect.value && dom.modelSelect.value !== BROWSE_MODELS_VALUE) lastPickedModel = dom.modelSelect.value;
+};
+dom.modelSelect.addEventListener("focus", rememberPickedModel);
+dom.modelSelect.addEventListener("mousedown", rememberPickedModel);
 dom.modelSelect.addEventListener("change", () => {
   // The last dropdown entry is an ACTION, not a model: restore the previous
   // selection and open the full-catalog picker instead.
   if (dom.modelSelect.value === BROWSE_MODELS_VALUE) {
     dom.modelSelect.value = lastPickedModel;
+    // The remembered model can be gone (removed with `ollama rm`, or dropped from the
+    // provider allowlist) — assigning a value no option carries leaves selectedIndex at
+    // -1 and the dropdown blank. Fall back to the first real entry, and announce it:
+    // the visible selection is the one that will actually be used.
+    if (dom.modelSelect.selectedIndex < 0) {
+      const first = [...dom.modelSelect.options].find((o) => o.value && o.value !== BROWSE_MODELS_VALUE && !o.disabled);
+      if (first) {
+        dom.modelSelect.value = first.value;
+        lastPickedModel = first.value;
+        saveCurrentSettings();
+        refreshModelMaxContext(first.value);
+        updateCloudBadge();
+      }
+    }
     openModelBrowser();
     return;
   }
