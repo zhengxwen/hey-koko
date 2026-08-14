@@ -94,6 +94,35 @@
       }
     }
   },
+  "ltx-2.5-prompt-writing": {
+    "repo": "https://github.com/Lightricks/ComfyUI-LTXVideo",
+    "models": [
+      "ltx2.5-22b"
+    ],
+    "kind": "video",
+    "style": "rewriter",
+    "caveats": [
+      "TWO vendor system prompts follow, in order: the first is for TEXT-to-video, the second for IMAGE-to-video (a first frame supplied). Follow whichever matches what the user actually has staged — their rules differ, notably that the i2v one forbids restating what the image already shows. If nothing is staged and the user has not said which they want, ask before drafting.",
+      "LTX-2.5 adds native multishot: one generation can hold several connected shots across cuts, keeping character, environment, lighting and voice consistent. The prompts below forbid describing cuts unless the user explicitly asks for them — so when the user does want several shots, that counts as an explicit request: say so plainly and re-establish each new shot (shot scale, camera angle, who is in frame, lighting). This paragraph comes from LTX's public 2.5 material, not from the vendor files below."
+    ],
+    "modes": {
+      "base": [
+        "references/i2v-system-prompt.txt"
+      ]
+    },
+    "files": {
+      "SKILL.md": {
+        "url": "https://raw.githubusercontent.com/Lightricks/ComfyUI-LTXVideo/master/system_prompts/gemma_t2v_system_prompt.txt",
+        "sha256": "0f98f02f9fffae27ee3f576685d6d9f9ef13194a0c2068aacdd97f86ea96efd2",
+        "bytes": 4182
+      },
+      "references/i2v-system-prompt.txt": {
+        "url": "https://raw.githubusercontent.com/Lightricks/ComfyUI-LTXVideo/master/system_prompts/gemma_i2v_system_prompt.txt",
+        "sha256": "dbba877a41e60f9a3de152be953164b7611d7951c19713022e64d6c08e7c8766",
+        "bytes": 3817
+      }
+    }
+  },
   "ltx-2.3-prompt-writing": {
     "repo": "https://github.com/Zambav/comfyui-skill-public",
     "models": [
