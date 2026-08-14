@@ -50,7 +50,11 @@
 // fp8mixed (Sulphur's naming) sits BEFORE the bare fp8 alternative — alternation takes
 // the first match, so "fp8|fp8mixed" would match "fp8" and then fail the [_.-]|$
 // lookahead on the trailing "mixed", leaving the file unclassified.
-const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8mixed|fp8_mixed|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|int8_convrot|int8|fp16|bf16";
+// "comfy[-_]int8[-_]convrot" covers the LTX-2.5 spelling (hyphens, plus a "comfy-"
+// packaging prefix: ltx-2.5-…-comfy-int8-convrot). Without it only the bare "int8"
+// would match, leaving "-comfy…-convrot" glued to the base — so the int8 build would
+// not collapse with its nvfp4/bf16 siblings and would show as a second model.
+const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8mixed|fp8_mixed|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|comfy[-_]int8[-_]convrot|int8[-_]convrot|int8|fp16|bf16";
 // "pruned" is an OPTIONAL PREFIX on the quantisation token, not a token of its own.
 // MiniMax H3 ships the same tier both ways (…_pruned_int8_convrot, …_pruned_fp8_scaled,
 // and community …_pruned_nvfp4): pruning only replaces the modulation weights (~40% of
@@ -164,6 +168,7 @@ const FILE_ID_RULES = [
   [/omnigen/, "omnigen2"],
   [/pix2pix|instruct.?pix/, "instruct-pix2pix"],
   [/sulphur/, "ltx2-sulphur"],
+  [/ltx.?2[._]?5/, "ltx2.5-22b"],
   [/ltx/, "ltx2.3-22b"],
   [/minimax.?h3.*ref2va/, "minimax-h3-r2v"],
   [/minimax.?h3/, "minimax-h3-t2v"],
@@ -207,6 +212,7 @@ const ID_LABELS = {
   "minimax-h3-t2v": "MiniMax H3 (t2v / i2v)",
   "minimax-h3-r2v": "MiniMax H3 (r2v)",
   "ltx2.3-22b": "LTX-2.3 22B",
+  "ltx2.5-22b": "LTX-2.5 22B",
   "ltx2.3-22b:msr": "LTX-2.3 22B MSR",
   "ltx2.3-22b:union": "LTX-2.3 22B Union",
   "ltx2-sulphur": "LTX-2 Sulphur",

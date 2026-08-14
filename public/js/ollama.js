@@ -983,6 +983,10 @@ function videoAutoDefaults(modelName) {
   // bare "Auto". (The ⚙ steps/cfg fields are display-only for MSR — the sigma table is fixed —
   // but the value is worth showing.)
   if (m === "ltx-msr") return { fps: 30, length: 121, steps: 8, cfg: 1 };
+  // LTX-2.5 BEFORE the generic LTX test (its filenames match both): 24 fps, 5 s → 121
+  // frames, always cfg 1 (distilled transformer). Steps still flip with the unseen
+  // two-stage-vs-single-stage choice, so they stay a bare "Auto" like the 2.3 cascade.
+  if (/ltx.?2[._]5/.test(m)) return { fps: 24, length: 121, cfg: 1 };
   if (LTX_RE.test(m)) return { fps: /sulphur/.test(m) ? 24 : 25, length: 97 };
   if (/hunyuan/.test(m)) return { fps: 24, length: 49, steps: 20, cfg: 6 };
   // Phantom: fixed 50-step / cfg 7.5 (uni_pc) — no distill LoRA, so it never varies.
@@ -1345,6 +1349,7 @@ function comfyModelComponents(name) {
   if (/hunyuan/.test(n)) return "HunyuanVideo · UNETLoader · CLIP clip_l + llava · VAE hunyuan · KSampler";
   if (n === "ltx-msr") return "LTX-2.3 MSR · UNETLoader(distilled) + ckpt VAE · LTXICLoRALoader · LiconMSR · LTXAddVideoICLoRAGuide · PromptRelayEncode · LTX2_NAG (+audio)";
   if (n === "ltx-union") return "LTX-2.3 Union Control · CheckpointLoader(distilled) · LoraLoaderModelOnly(union-control IC-LoRA) → GetICLoRAParameters · LoadVideo→GetVideoComponents→MoGe depth · LTXVImgToVideoInplace(ref frame) · LTXVAddGuide(depth + iclora_parameters) · KSampler 8-step (+audio)";
+  if (/ltx.?2[._]5/.test(n)) return "LTX-2.5 · UNETLoader(distilled) · CLIP gemma4-12b(ltxv) · video+audio VAE · LTXVDualCFGGuider · two-stage: 8-step half-size → latent ×2 → 3-step refine (+audio)";
   if (LTX_RE.test(n)) return "LTX-2 · CheckpointLoader · LTXAVTextEncoder(gemma) · LTXVConditioning · KSampler (+audio)";
   // Edit
   if (/kontext/.test(n)) return "FLUX Kontext · UNETLoader · DualCLIP(t5+clip_l) · VAE ae · ReferenceLatent · FluxGuidance · KSampler";
@@ -1680,7 +1685,9 @@ export function updateComfyParamVisibility() {
   // LTX family only (incl. Sulphur) — the optional LoRA slot. It is the one builder
   // with a user-pickable LoRA; every other model mounts its LoRAs automatically.
   // Union Control is excluded: it mounts its union IC-LoRA automatically, no user slot.
-  const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union";
+  // LTX-2.5 is excluded: everything the slot lists was trained on the 2.3 architecture,
+  // and the server ignores the field for 2.5 — showing it would be a dead control.
+  const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union" && !/ltx.?2[._]5/.test(m.toLowerCase());
   for (const el of [dom.comfyParamLtxLora, dom.comfyParamLtxLoraStrength]) setVis(el, ltx);
   if (ltx) syncLtxLoraOptions(m);
   // Phantom only — the image-guidance scale (its second, subject-fidelity CFG), and the

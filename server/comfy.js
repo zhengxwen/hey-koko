@@ -502,6 +502,17 @@ const LTX_MODEL_RE = /ltx|sulphur/i;
 // supplies the VAE — never on its own.
 const LTX_COMPONENT_RE = /transformer[-_ ]?only/i;
 
+// LTX-2.5 — a different generation of the family: its transformer ships ALONE in
+// diffusion_models/ (UNETLoader) with the VAEs, text encoder and upscalers as separate
+// files, so unlike 2.3 the "transformer" file IS the selectable model. Only the
+// DISTILLED transformer is wired (the shipped two-stage recipe belongs to it); the dev
+// transformer is a component of recipes this codebase doesn't build (25-step full CFG,
+// or dev + distilled-lora-450), so it is excluded from the picker rather than offered
+// broken. Matched before the generic LTX tests everywhere — "ltx-2.5-…" also matches
+// LTX_MODEL_RE, which would misroute it into the 2.3 checkpoint paths.
+const LTX25_RE = /ltx.?2[._]5/i;
+const LTX25_DEV_RE = /dev[-_ ]?transformer/i;
+
 // Finetunes distributed BOTH as a full checkpoint and as a standalone LoRA of the
 // same training. Sulphur is one: sulphur_dev_*.safetensors already contains what
 // sulphur_lora_rank_768.safetensors applies, and upstream says not to use both —
@@ -593,6 +604,10 @@ function videoTypeOf(model) {
   // audio-driven pair, not a plain t2v/i2v UNET — buildWan14B would mis-run it.
   if (/dancer/i.test(model)) return "dancer";
   if (/wan/i.test(model)) return "wan";
+  // LTX-2.5 BEFORE the generic LTX tests: its filenames match LTX_MODEL_RE too, but it
+  // loads via UNETLoader + separate VAE/encoder files, so it must not reach the 2.3
+  // checkpoint paths. The dev transformer is a component (see LTX25_DEV_RE).
+  if (LTX25_RE.test(model)) return LTX25_DEV_RE.test(model) ? null : "ltx25";
   // MSR is an IC-LoRA over the LTX stack, so it rides the "ltx" type; the sentinel name
   // is what tells the builder + preset to take the MSR branch. Checked before the
   // generic LTX test only for clarity — the sentinel carries no "ltx" in its name.
@@ -861,7 +876,8 @@ async function ltxMsrParts(pref) {
   // disk ("…-MSR-V1" sorts before "…-V2"), silently downgrading. Fall back to any
   // Licon-MSR build so a machine with only V1 (or a renamed file) still works.
   const msrLora = find(loras, /licon.*msr.*v2|msr.*v2/i) || find(loras, /licon.*msr/i);
-  const encoder = find(clips, /gemma.*12b/i) || find(clips, /gemma_?3/i);
+  // Exclude LTX-2.5's Gemma-4 encoder — same /gemma.*12b/ shape, wrong architecture for 2.3.
+  const encoder = find(clips.filter((n) => !LTX25_RE.test(n)), /gemma.*12b/i) || find(clips, /gemma_?3/i);
   // Precision-by-TIER (not the generic pickPrecision base-swap): the mxfp8 files carry a
   // "_block32" suffix, so their precisionBase differs and the base-match would silently miss.
   const pickTier = (poolList) => (pref && pref !== "auto" && poolList.find((n) => precisionOf(n) === pref))
@@ -916,7 +932,8 @@ async function ltxUnionParts(pref) {
     ckpt,
     ckptTier: ckpt ? precisionOf(ckpt) : null,
     unionLora: find(loras, /union.?control/i),
-    encoder: find(clips, /gemma.*12b/i) || find(clips, /gemma_?3/i),
+    // Exclude LTX-2.5's Gemma-4 encoder — same /gemma.*12b/ shape, wrong architecture for 2.3.
+    encoder: find(clips.filter((n) => !LTX25_RE.test(n)), /gemma.*12b/i) || find(clips, /gemma_?3/i),
     mogeModel: find(moge, /moge/i),
   };
   const ok = nodes && parts.ckpt && parts.unionLora && parts.encoder && parts.mogeModel;
@@ -1077,6 +1094,7 @@ function capsFor(name, group, type, entry) {
     // video with sound, but that is the SOURCE clip's audio carried through — not the
     // same claim, so they don't get this tag.
     case "ltx": return ["t2v", "i2v", "audio"];
+    case "ltx25": return ["t2v", "i2v", "audio"];
     case "wan": return /fun.?vace/i.test(name) ? ["t2v", "v2v"] : ["t2v", "i2v"];
     default: return ["t2v"];
   }
@@ -1120,6 +1138,7 @@ function videoRank(n) {
   // MiniMax H3 sits with the general generators; ref2va right after its fl2va sibling.
   if (/minimax.?h3.*ref2va/i.test(n)) return 6.6;
   if (/minimax.?h3/i.test(n)) return 6.5;
+  if (LTX25_RE.test(n)) return 6.9;  // before the generic LTX test, which also matches
   if (LTX_MODEL_RE.test(n)) return 7;
   // scail BEFORE animate: the "scail2_animate" sentinel contains "animate", so the
   // generic /animate/ test would otherwise claim it (same ordering trap as videoTypeOf).
@@ -1651,7 +1670,9 @@ async function proxyComfyModels(req, res) {
     // Clean path (preferred) selects from the full distilled checkpoints; only when none are
     // present does it fall back to the transformer-only pool. Mirrors ltxMsrParts' own pick.
     if (modelMeta[LTX_MSR]) {
-      const full = all.filter((n) => /ltx.*distill/i.test(n) && !/transformer[-_ ]?only/i.test(n));
+      // !LTX25_RE: the 2.5 distilled transformer also matches /ltx.*distill/ but is a
+      // different architecture — it must not colour the 2.3 sentinels' tier lists.
+      const full = all.filter((n) => /ltx.*distill/i.test(n) && !/transformer[-_ ]?only/i.test(n) && !LTX25_RE.test(n));
       const tfs = all.filter((n) => /ltx.*transformer[-_ ]?only/i.test(n));
       const pool = full.length ? full : tfs;
       const tiers = [...new Set(pool.map(precisionOf).filter(Boolean))];
@@ -1660,7 +1681,7 @@ async function proxyComfyModels(req, res) {
     // Union Control's tiers come from the FULL distilled checkpoint pool (same reasoning:
     // the sentinel name carries no precision, and ltxUnionParts picks by TIER over that pool).
     if (modelMeta[LTX_UNION]) {
-      const cks = all.filter((n) => /ltx.*distill/i.test(n) && !/transformer[-_ ]?only/i.test(n));
+      const cks = all.filter((n) => /ltx.*distill/i.test(n) && !/transformer[-_ ]?only/i.test(n) && !LTX25_RE.test(n));
       const tiers = [...new Set(cks.map(precisionOf).filter(Boolean))];
       if (tiers.length) modelMeta[LTX_UNION].prec = tiers;
     }
@@ -2515,13 +2536,55 @@ async function videoCompanions(videoType, model, opts = {}) {
     if (!parts) throw new Error("LTX union control is missing pieces. It needs: the FULL distilled LTX-2.3 checkpoint (checkpoints/), the union-control IC-LoRA (loras/), a gemma_3_12B text encoder, a MoGe depth model (models/geometry_estimation/), and the ComfyUI-LTXVideo + MoGe + video node packs.");
     return { ...parts, union: true };
   }
+  if (videoType === "ltx25") {
+    // LTX-2.5 is fully componentised: the model dropdown names the DISTILLED transformer
+    // (UNETLoader), and everything else is a separate file — Gemma 4 12B text encoder
+    // (native CLIPLoader, type "ltxv"; NOT 2.3's LTXAVTextEncoderLoader, and NOT the
+    // pack's GemmaAPITextEncode, which the built-in ComfyUI template avoids too), a
+    // video VAE + an audio VAE, and the spatial latent upscaler. The 12B match keeps
+    // 2.3's Gemma-3 and the small gemma4_e4b (Gemma 3n) from being picked up.
+    const encoder = find(clips, /gemma4.?12b.*ltx.?2[._]5|gemma4.?12b.*with.?proj/i);
+    const videoVae = find(vaes, /ltx.?2[._]5.*video.?vae/i);
+    const audioVae = find(vaes, /ltx.?2[._]5.*audio.?vae/i);
+    const missing = [];
+    if (!encoder) missing.push("gemma4-12b-with-proj-ltx-2.5-…safetensors → text_encoders/");
+    if (!videoVae) missing.push("ltx-2.5-video-vae-bf16.safetensors → vae/");
+    if (!audioVae) missing.push("ltx-2.5-audio-vae-bf16.safetensors → vae/");
+    if (missing.length) throw new Error("Missing files required by LTX-2.5:\n- " + missing.join("\n- "));
+    // The spatial ×2 upscaler enables the official two-stage recipe (base pass at half
+    // size → latent ×2 → 3-step refine). OPTIONAL: without it the builder runs the
+    // official single-stage 8-step workflow at full size instead — both ship as
+    // ComfyUI templates, so neither shape is improvised. Matched on 2.5's own file;
+    // 2.3's upscaler is a different model and must not stand in.
+    const upscaleModels = await comfyEnum("LatentUpscaleModelLoader", "model_name").catch(() => []);
+    const upscaler = find(upscaleModels, /ltx.?2[._]5.*spatial.*upscal/i) || null;
+    // SageAttention (both boxes launch with --use-sage-attention) was A/B-tested on
+    // 2026-08-14 after briefly being suspected in the decode crash below: identical
+    // full-size graph, same seed — sage ON 11.4 s vs forced-default 19.0 s (1.67×),
+    // mid-clip frames visually identical. So NO attention patch here: sage stays on.
+    // 2.5's video VAE carries a DIFFUSION decoder (na_diffusion_decoder) that is
+    // constructed lazily at decode time. On a 32GB card the 20GB transformer is still
+    // resident then (0.33's dynamic VRAM loading does not evict it first), and the
+    // decoder's construction dies as a hard Windows access violation instead of a clean
+    // OOM — the whole process exits. Diagnosed by bisection 2026-08-14: sampling
+    // completes at 2.96 it/s, decode-only at full size succeeds on an empty GPU in
+    // 3.5 s, and the identical failing graph succeeds once KJNodes' VRAM_Debug purges
+    // models between sampling and decode (22.1 s end-to-end). So the builder splices
+    // that purge before the final decode whenever the node exists.
+    const vramPurge = await comfyHasNodes(["VRAM_Debug"]);
+    // The ⚙ "LTX LoRA" slot is deliberately NOT honoured here: everything it lists was
+    // trained on the 2.3 architecture (Sulphur etc.) and would apply few/no keys on 2.5.
+    return { encoder, videoVae, audioVae, upscaler, vramPurge };
+  }
   if (videoType === "ltx") {
     // LTX-2 uses a Gemma text encoder (loaded via LTXAVTextEncoderLoader with the
     // model's own ckpt); VAE comes from the checkpoint, so no separate VAE needed.
     // Must be the 12B Gemma-3 — the smaller gemma4_e4b (Gemma 3n) is a different
     // model and produces broken output, and it sorts first so a bare /gemma/ grabs
-    // the wrong one.
-    const encoder = find(clips, /gemma.*12b/i) || find(clips, /gemma_?3/i) || find(clips, /gemma/i) || find(clips, /t5xxl/i);
+    // the wrong one. LTX-2.5's Gemma-4 encoder (gemma4-12b-with-proj-ltx-2.5-…) also
+    // matches /gemma.*12b/ and must not stand in for 2.3's.
+    const clips23 = clips.filter((x) => !LTX25_RE.test(x));
+    const encoder = find(clips23, /gemma.*12b/i) || find(clips23, /gemma_?3/i) || find(clips23, /gemma/i) || find(clips23, /t5xxl/i);
     if (!encoder) throw new Error("Missing LTX-2 text encoder:\n- gemma_3_12B_it…safetensors (or t5xxl) → text_encoders/");
     // Optional LTX-family LoRA (⚙ "LTX LoRA"). Re-checked against the live enum so a
     // saved choice for a since-deleted file degrades to "no LoRA" instead of failing
@@ -2641,6 +2704,20 @@ function videoPreset(videoType, model, turbo) {
     // (width/32, height/32) must each be even → width & height divisible by 64, or
     // LTXVAddGuide fails ("Latent spatial size WxH must be divisible by 2").
     return { sampler: "euler_ancestral", scheduler: "linear_quadratic", cfg: 1, steps: 8, shift: 0, width: 1280, height: 704, length: 97, fps: 25, dimMult: 64, lenMult: 8 };
+  }
+  if (videoType === "ltx25") {
+    // Straight off ComfyUI's built-in video_ltx2_5_* templates (flattened + verified
+    // against the machine's own copies): euler_ancestral both stages, cfg 1 (the
+    // transformer is the DISTILLED one — its 8-step sigma table is baked-in knowledge,
+    // see buildLtx25), 24 fps, length = fps·seconds + 1 on the 8n+1 grid (default 5 s
+    // → 121). The templates size via ResolutionSelector at 0.9 MP /32 → 1280×704.
+    // `turbo` = the spatial upscaler is installed → two-stage cascade: these dims are
+    // the FINAL frame (stage 1 samples at half), so they must be /64 to keep the
+    // halved latent /32. `steps` is display-only either way (ManualSigmas fixes 8+3
+    // resp. 8); cfg IS live (LTXVDualCFGGuider), it just must stay 1 on a distill.
+    if (turbo) return { sampler: "euler_ancestral", scheduler: "simple", cfg: 1, steps: 11, shift: 0, width: 1280, height: 704, length: 121, fps: 24, dimMult: 64, lenMult: 8 };
+    // No upscaler → the official single-stage 8-step workflow at full size (dims /32).
+    return { sampler: "euler_ancestral", scheduler: "simple", cfg: 1, steps: 8, shift: 0, width: 1280, height: 704, length: 121, fps: 24, dimMult: 32, lenMult: 8 };
   }
   if (videoType === "ltx") {
     // `turbo` here = the two-stage cascade is available (distilled LoRA + spatial
@@ -3676,10 +3753,129 @@ function buildLtxSingleStage({ model, prompt, negative, comp, imageName, imageNa
   return wf;
 }
 
+// LTX-2.5's own default negative — the built-in templates ship this instead of 2.3's.
+const LTX25_DEFAULT_NEGATIVE = "pc game, console game, video game, cartoon, childish, ugly";
+// The official flf2v template pins its guide frames at strength 0.7 (2.3 used 1.0).
+const LTX25_GUIDE_STRENGTH = 0.7;
+
+// LTX-2.5 — flattened from ComfyUI 0.32's built-in video_ltx2_5_{t2v,i2v,flf2v}
+// templates (read off the live box; the t2v/i2v pair is ONE graph whose i2v nodes are
+// bypassed for t2v). Same AV-latent architecture as 2.3 — concat an empty audio latent,
+// sample once, split, decode twice, mux — but every load changes: the DISTILLED
+// transformer via UNETLoader (its 8-step sigma table is the same hand-tuned list as
+// 2.3's, kept in LTX_SIGMAS_BASE/REFINE — verified identical in the shipped templates),
+// the Gemma-4 12B encoder via a plain CLIPLoader type "ltxv", two standalone VAEs, and
+// an LTXVDualCFGGuider (separate video/audio scales; the distilled recipe runs both at
+// 1, and v.cfg feeds both so a ⚙ override moves them together).
+//
+// Three input modes, each on an officially-shipped shape:
+//   • t2v / i2v with the spatial upscaler → the two-stage cascade (half-size 8-step
+//     base pass → latent ×2 → 3-step refine on FIXED noise 42, re-pinning the i2v
+//     still at strength 1.0 — stage 1 holds it at 0.7, same split as 2.3).
+//   • t2v / i2v without it → the single-stage 8-step template at full size.
+//   • 2+ images → keyframes via an LTXVAddGuide chain at strength 0.7 + LTXVCropGuides,
+//     ALWAYS single-stage: the official flf2v template is single-stage, and no shipped
+//     2.5 workflow mixes guides with the cascade — so guides don't get an improvised
+//     two-stage graph here even when the upscaler is installed.
+// The templates also route stills through ResizeImageMaskNode before LTXVPreprocess;
+// that node's mode-dependent inputs are a DYNAMICCOMBO (API key format unknowable from
+// the JSON — same trap as ImageSharpenKJ) and 2.3 runs fine feeding LTXVPreprocess
+// directly, so it is deliberately omitted.
+function buildLtx25({ model, prompt, negative, comp, imageName, imageNames, seed, v }) {
+  const neg = negative && negative.trim() ? negative : LTX25_DEFAULT_NEGATIVE;
+  const kf = Array.isArray(imageNames) && imageNames.length >= 2 ? imageNames : null;
+  const i2v = !kf && !!imageName;
+  const twoStage = !kf && !!comp.upscaler;
+  // Two-stage: stage-1 canvas at half the final size, snapped to /32 (the preset's /64
+  // final dims make this exact). Single-stage: sample at the full size directly.
+  const half = (n) => Math.max(32, Math.round(n / 2 / 32) * 32);
+  const w1 = twoStage ? half(v.width) : v.width;
+  const h1 = twoStage ? half(v.height) : v.height;
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.encoder, type: "ltxv", device: "default" } },
+    "3": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: prompt } },
+    "4": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: neg } },
+    "5": { class_type: "LTXVConditioning", inputs: { positive: ["3", 0], negative: ["4", 0], frame_rate: v.fps } },
+    "19": { class_type: "VAELoader", inputs: { vae_name: comp.videoVae } },
+    "20": { class_type: "VAELoader", inputs: { vae_name: comp.audioVae } },
+    "21": { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: v.length, frame_rate: v.fps, batch_size: 1, audio_vae: ["20", 0] } },
+    "7": { class_type: "EmptyLTXVLatentVideo", inputs: { width: w1, height: h1, length: v.length, batch_size: 1 } },
+    "9": { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
+    "84": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
+    "85": { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_BASE } },
+  };
+  let pos = ["5", 0], negC = ["5", 1], lat1 = ["7", 0];
+  if (kf) {
+    // Keyframe chain: evenly spaced over the clip (first → 0, last → length-1), each
+    // still through its own LTXVPreprocess. Node ids 30+/50+/70+ as in buildLtx*.
+    const N = kf.length;
+    kf.forEach((nm, idx) => {
+      const load = String(30 + idx), prep = String(50 + idx), guide = String(70 + idx);
+      const frameIdx = Math.round((idx * (v.length - 1)) / (N - 1));
+      wf[load] = { class_type: "LoadImage", inputs: { image: nm } };
+      wf[prep] = { class_type: "LTXVPreprocess", inputs: { image: [load, 0], img_compression: 18 } };
+      wf[guide] = { class_type: "LTXVAddGuide", inputs: { positive: pos, negative: negC, vae: ["19", 0], latent: lat1, image: [prep, 0], frame_idx: frameIdx, strength: LTX25_GUIDE_STRENGTH } };
+      pos = [guide, 0]; negC = [guide, 1]; lat1 = [guide, 2];
+    });
+  } else if (i2v) {
+    wf["14"] = { class_type: "LoadImage", inputs: { image: imageName } };
+    wf["15"] = { class_type: "LTXVPreprocess", inputs: { image: ["14", 0], img_compression: 18 } };
+    // Inplace writes the still into the latent without adding guide frames. Two-stage
+    // holds it at 0.7 in the base pass (motion headroom) and re-pins at 1.0 after the
+    // upscale; single-stage pins it outright.
+    wf["16"] = { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["19", 0], image: ["15", 0], latent: ["7", 0], strength: twoStage ? 0.7 : 1.0, bypass: false } };
+    lat1 = ["16", 0];
+  }
+  wf["22"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: lat1, audio_latent: ["21", 0] } };
+  wf["83"] = { class_type: "LTXVDualCFGGuider", inputs: { model: ["1", 0], positive: pos, negative: negC, video_cfg: v.cfg, audio_cfg: v.cfg } };
+  wf["10"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["84", 0], guider: ["83", 0], sampler: ["9", 0], sigmas: ["85", 0], latent_image: ["22", 0] } };
+  wf["23"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["10", 0] } };
+  let decodeLatent = ["23", 0], audioLatent = ["23", 1];
+  if (kf) {
+    // Trim the guide frames back off the sampled latent (and thread the cleaned
+    // conditioning nowhere — single-stage, nothing samples again).
+    wf["25"] = { class_type: "LTXVCropGuides", inputs: { positive: pos, negative: negC, latent: ["23", 0] } };
+    decodeLatent = ["25", 2];
+  } else if (twoStage) {
+    wf["82"] = { class_type: "LatentUpscaleModelLoader", inputs: { model_name: comp.upscaler } };
+    wf["86"] = { class_type: "LTXVLatentUpsampler", inputs: { samples: ["23", 0], upscale_model: ["82", 0], vae: ["19", 0] } };
+    let lat2 = ["86", 0];
+    if (i2v) {
+      wf["87"] = { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["19", 0], image: ["15", 0], latent: ["86", 0], strength: 1.0, bypass: false } };
+      lat2 = ["87", 0];
+    }
+    // The refine continues the SAMPLED audio latent from stage 1 (the soundtrack is
+    // refined with the picture, not regenerated) on the template's fixed noise.
+    wf["88"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: lat2, audio_latent: ["23", 1] } };
+    wf["90"] = { class_type: "RandomNoise", inputs: { noise_seed: LTX_REFINE_NOISE } };
+    wf["91"] = { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_REFINE } };
+    wf["92"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["90", 0], guider: ["83", 0], sampler: ["9", 0], sigmas: ["91", 0], latent_image: ["88", 0] } };
+    wf["93"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["92", 0] } };
+    decodeLatent = ["93", 0]; audioLatent = ["93", 1];
+  }
+  // Evict the transformer BEFORE the decode constructs the VAE's diffusion decoder —
+  // without this the process dies with an access violation on a 32GB card (see
+  // videoCompanions). The latent rides VRAM_Debug's any-passthrough, which also
+  // sequences the purge between sampling and decode.
+  if (comp.vramPurge) {
+    wf["95"] = { class_type: "VRAM_Debug", inputs: { empty_cache: true, gc_collect: true, unload_all_models: true, any_input: decodeLatent } };
+    decodeLatent = ["95", 0];
+  }
+  // Tiled decode with the template's own tile numbers (2.3 used larger tiles; 2.5's
+  // template ships 512/64/64/16 and the 22B AV latent still OOMs un-tiled).
+  wf["11"] = { class_type: "VAEDecodeTiled", inputs: { samples: decodeLatent, vae: ["19", 0], tile_size: 512, overlap: 64, temporal_size: 64, temporal_overlap: 16 } };
+  wf["24"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: audioLatent, audio_vae: ["20", 0] } };
+  wf["12"] = { class_type: "CreateVideo", inputs: { images: ["11", 0], fps: v.fps, audio: ["24", 0] } };
+  wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  return wf;
+}
+
 function buildVideoWorkflow(videoType, args) {
   if (videoType === "wan") return buildWanVideo(args);
   if (videoType === "hunyuan") return buildHunyuanVideo(args);
   if (videoType === "ltx") return buildLtxVideo(args);
+  if (videoType === "ltx25") return buildLtx25(args);
   return null;
 }
 
@@ -6660,8 +6856,10 @@ async function generateComfyImage(req, res) {
         // "turbo" = this model's fast, distilled recipe is available. WAN 14B: both
         // LightX2V expert LoRAs installed → 4-step/cfg-1. LTX: the distilled LoRA +
         // spatial upscaler installed → the two-stage cascade preset (which sizes
-        // differently, so the flag has to reach resolveVideoConfig).
-        const turbo = !!(comp.loraHigh && comp.loraLow) || !!(comp.distillLora && comp.upscaler);
+        // differently, so the flag has to reach resolveVideoConfig). LTX-2.5's distill
+        // is baked into the transformer, so its two-stage only needs the upscaler.
+        const turbo = !!(comp.loraHigh && comp.loraLow) || !!(comp.distillLora && comp.upscaler)
+          || (videoType === "ltx25" && !!comp.upscaler);
         // For i2v, match the output to the input's aspect ratio so the
         // conditioning frame isn't stretched (avoids ghosted/doubled edges).
         // A specified size sets the pixel BUDGET (kept at the input ratio);
@@ -6692,7 +6890,7 @@ async function generateComfyImage(req, res) {
         // checked before the keyframe branch, which would otherwise claim the same
         // "ltx + 2 images" shape.
         const isMsr = model === LTX_MSR;
-        const isLtxKeyframes = !isMsr && wantImage && videoType === "ltx" && images.length >= 2;
+        const isLtxKeyframes = !isMsr && wantImage && (videoType === "ltx" || videoType === "ltx25") && images.length >= 2;
         const LTX_MAX_KEYFRAMES = 8;
         let imageName = null, endImageName = null, imageNames = null, backgroundName = null;
         if (isMsr) {
