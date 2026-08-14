@@ -2313,6 +2313,51 @@ button.secondary:disabled {
 .message.isFolded {
   padding: 0 12px;
 }
+/* A folded USER bubble keeps its pictures: folding is about hiding the TEXT, and the
+   thumbnails are what still make the collapsed bubble recognisable. Half a filmstrip
+   cell (84x64 -> 42x32), packed tight, wrapping onto more rows when there are many.
+   .foldShowsMedia is set in renderMessage for user bubbles that actually have images,
+   so bubbles without any are unaffected and stay fully collapsed. */
+.message.user.isFolded.foldShowsMedia > .messageMediaRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  padding: 2px 0;
+}
+
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .messageImageWrapper,
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .videoWrapper {
+  width: 42px;
+  height: 32px;
+  min-width: 0;
+  margin: 0;
+}
+
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .messageImage,
+.message.user.isFolded.foldShowsMedia > .messageMediaRow video {
+  width: 42px;
+  height: 32px;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+/* At 42px the hover controls would cover the whole thumbnail — unfold to use them. */
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .imageDeleteBtn,
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .imageDownloadBtn,
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .messageReplaceBtn,
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .messageMaskBtn,
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .videoDeleteBtn,
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .videoDownloadBtn,
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .videoFullscreenBtn,
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .videoPipBtn,
+.message.user.isFolded.foldShowsMedia > .messageMediaRow .videoVolume {
+  display: none;
+}
+
 
 .message.isFolded:hover .messageActions {
   display: none;
@@ -7949,7 +7994,7 @@ body.isResizingComposer {
   position: relative;
   flex: none;
   width: 84px;
-  height: 63px;
+  height: 64px;
 }
 
 /* Same idiom as a generated image in a bubble: it lifts under the pointer. No
@@ -8440,7 +8485,7 @@ body.isResizingComposer {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px;
+  padding: 3px 26px 3px 3px;   /* right: the ✕ that now floats in the corner */
   border: 2px solid transparent;
   border-radius: 8px;
   overflow: hidden;
@@ -8494,14 +8539,23 @@ body.isResizingComposer {
 }
 
 /* In the row it sits at the end, not floating over the picture's corner. */
+/* Top-right corner rather than vertically centred: centred, it sat level with the middle
+   line and read as if it belonged to that line. The card reserves the room on its right
+   (padding), because taking the button out of the flex flow would otherwise let the file
+   name run underneath it. */
 .veditClipRemove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
   flex: none;
   width: 18px;
   height: 18px;
   min-height: 0;
   padding: 0;
   border-radius: 50%;
-  font-size: 10px;
+  /* Glyph grows, button does not: the ✕ is the hit target's whole content, so the box
+     stays 18px and only the mark inside it gets easier to see. */
+  font-size: 14px;
   line-height: 18px;
   color: inherit;
   background: rgba(128, 128, 128, 0.25);
@@ -8664,13 +8718,6 @@ body.isResizingComposer {
   padding: 4px 6px;
 }
 
-/* Explicit widths, because the global `input { width: 100% }` would otherwise blow the
-   export bar apart. Empty means "follow the first clip" and the placeholder shows it. */
-.veditSizeField {
-  width: 96px;
-  font-size: 12px;
-  padding: 4px 6px;
-}
 
 .veditOptsPanel input[type="range"] { width: 110px; }
 

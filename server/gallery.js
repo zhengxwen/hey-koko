@@ -706,25 +706,27 @@ function ffmpeg() {
 const THUMB_EDGE = 360;
 const SCALE_FILTER = `scale='if(gt(iw,ih),${THUMB_EDGE},-2)':'if(gt(iw,ih),-2,${THUMB_EDGE})'`;
 
-// A second, much smaller rendition for the filmstrip, whose frames are 84x63 CSS px.
-// Named for its CONSUMER, not its pixel count: which box it has to cover will change if
-// that frame is ever resized, but who it is for will not — and a name that stays put is
-// a file that gets overwritten instead of orphaned. (Nothing sweeps derived files: see
-// derivedPathsOf, which is why a per-size name would leave litter forever.)
+// A second, much smaller rendition for the filmstrip, whose frames are 84x64 CSS px
+// (.galleryStripCell). Named for its CONSUMER, not its pixel count: which box it has to
+// cover will change if that frame is ever resized, but who it is for will not — and a
+// name that stays put is a file that gets overwritten instead of orphaned. (Nothing
+// sweeps derived files: see derivedPathsOf, which is why a per-size name would leave
+// litter forever.)
 //
 // A BOX, not an edge. The frames use object-fit: cover, so both axes have to be covered
 // independently — sizing by the long edge would leave a 9:16 portrait 108px wide inside
 // a frame that needs 185, i.e. visibly soft exactly where it is least expected. The box
-// below is the frame at its hover size (84x63 scaled by 1.1) on a 2x display, plus a
-// little headroom: 92.4x69.3 CSS -> 185x139 device px.
+// below is the frame at its hover size (84x64 scaled by 1.1) on a 2x display, plus a
+// little headroom: 92.4x70.4 CSS -> 185x141 device px. Kept at the frame's own 21:16
+// so neither axis carries more slack than the other.
 const THUMB_VARIANTS = {
-  strip: { w: 200, h: 150 },
+  strip: { w: 200, h: 152 },
 };
 // "Increase to fit, do not crop": scale so the picture covers the box on both axes and
 // keep the whole frame. Deliberately NOT a crop — a cropped rendition is no longer a
 // thumbnail OF the picture, and the next reader of these files would be misled once.
 //
-// The min() clamps are load-bearing: covering a 200x150 box means a 3:1 panorama needs
+// The min() clamps are load-bearing: covering a 200x152 box means a 3:1 panorama needs
 // to be 450 wide, but its source thumbnail is only 360 — without the clamp the "small"
 // rendition would be an UPSCALE, larger and blurrier than the thing it replaces. Clamped,
 // such a picture simply comes out at its source size and saves nothing, which is the

@@ -46,6 +46,50 @@ let upModel = 'auto';        // '' / 'auto' / 'off' / a specific upscale model
 let interpMethod = 'rife';
 let sharpen = 'medium';     // the resize softens; the middle step puts that back without ringing
 let upModels = null;         // lazily fetched from ComfyUI; null = not asked yet
+
+// Every ⚙ choice survives the page, in ONE key rather than ten: these are settings, and a
+// setting you have to re-make each session is a question, not a setting. Values are
+// re-validated on the way in — a stale blob (an option that no longer exists, a hand-edited
+// number) must not be able to configure a render. A value that fails validation leaves its
+// setting UNTOUCHED rather than resetting it: one bad key should not re-configure the
+// panel around it.
+const PREFS_KEY = 'heykoko-vedit-export';
+const oneOf = (v, allowed, dflt) => (allowed.includes(v) ? v : dflt);
+const posInt = (v, max) => { const n = Math.round(Number(v)); return n > 0 && n <= max ? n : 0; };
+
+function loadPrefs() {
+  let p;
+  try { p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); } catch { return; }
+  if (!p || typeof p !== 'object') return;
+  fitMode = oneOf(p.fit, ['cover', 'contain'], fitMode);
+  scaleMode = oneOf(p.scaleMode, ['fast', 'ai'], scaleMode);
+  interpMethod = oneOf(p.interpMethod, ['rife', 'film'], interpMethod);
+  sharpen = oneOf(p.sharpen, ['off', 'light', 'medium', 'strong'], sharpen);
+  codec = oneOf(p.codec, ['h264', 'h265'], codec);
+  audioMode = oneOf(p.audio, ['keep', 'mute', 'track'], audioMode);
+  // The upscale model is a free string (a filename on some machine); "auto"/"off" always
+  // exist, and a name that is no longer installed falls back to auto when the list loads.
+  if (typeof p.upModel === 'string' && p.upModel) upModel = p.upModel;
+  const c = Math.round(Number(p.crf));
+  if (c >= 14 && c <= 32) crf = c;
+  const f = Number(p.fade);
+  if (f >= 0 && f <= 2) fade = f;
+  outW = posInt(p.w, 7680); outH = posInt(p.h, 7680);
+  if (!outW || !outH) { outW = 0; outH = 0; }   // a half-written size is no size
+  outFps = posInt(p.fps, 240);
+  // Deliberately NOT restored: audioId. It is a path into the gallery, and pointing a
+  // fresh session's export at a file that may have been deleted since is worse than
+  // asking again.
+}
+function savePrefs() {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({
+      fit: fitMode, scaleMode, upModel, interpMethod, sharpen, codec, crf,
+      audio: audioMode, fade, w: outW, h: outH, fps: outFps,
+    }));
+  } catch { /* private mode: the session still works, it just forgets */ }
+}
+loadPrefs();
 let playAll = false;   // preview chains through all clips vs. stops at the active one's out
 
 const clipLen = (c) => Math.max(0, c.out - c.in);
@@ -93,6 +137,9 @@ export async function openVideoEditor(ids) {
   const title = el('veditTitle');
   if (title) title.textContent = `✂️ ${t('vedit_title')}`;
   overlay?.classList.add('isOpen');
+  // Re-read on every open, not only at import: another tab may have changed these, and
+  // re-reading is idempotent (every change was written the moment it was made).
+  loadPrefs();
   setChainChrome(false);
   setOptsOpen(false);   // a popover opens closed, however you left it last time
   applyLaneWidth(savedLaneWidth());
@@ -757,6 +804,7 @@ function renderExportBar() {
   const audioSel = sel([['keep', t('vedit_audioKeep')], ['mute', t('vedit_audioMute')], ['track', t('vedit_audioTrack')]],
     audioMode, (v) => {
       audioMode = v;
+      savePrefs();
       trackSel.hidden = v !== 'track';
       if (v === 'track' && !trackSel.options.length) fillTracks();
     });
@@ -772,12 +820,14 @@ function renderExportBar() {
   fadeField.addEventListener('change', () => {
     fade = Math.max(0.1, Math.min(2, Number(fadeField.value) || 0.5));
     fadeField.value = String(fade);
+    savePrefs();
     updateEstimate();
   });
   const transSel = sel([['none', t('vedit_transNone')], ['crossfade', t('vedit_transFade')]],
     fade ? 'crossfade' : 'none', (v) => {
       fade = v === 'crossfade' ? Math.max(0.1, Number(fadeField.value) || 0.5) : 0;
       fadeField.hidden = !fade;
+      savePrefs();
       updateEstimate();
     });
 
@@ -788,30 +838,36 @@ function renderExportBar() {
   const src = clips[0];
   const srcSize = src && src.entry.width && src.entry.height ? `${src.entry.width}×${src.entry.height}` : '—';
   const srcFps = src && src.entry.fps ? String(Math.round(src.entry.fps * 100) / 100) : '—';
-  const sizeField = document.createElement('input');
-  sizeField.type = 'text';               // a number input silently swallows "1280x720"
-  sizeField.className = 'veditSizeField';
-  sizeField.id = 'veditSizeField';
-  sizeField.placeholder = srcSize;
-  sizeField.title = t('vedit_sizeHint', { s: srcSize });
-  sizeField.setAttribute('list', 'veditSizeList');
-  sizeField.value = outW && outH ? `${outW}×${outH}` : '';
-  sizeField.addEventListener('change', () => {
-    const m = sizeField.value.trim().match(/^(\d{2,5})\s*[x×*: ]\s*(\d{2,5})$/);
-    if (!sizeField.value.trim()) { outW = outH = 0; }
-    else if (m) { outW = Number(m[1]); outH = Number(m[2]); }
-    // Anything else is a typo, not an instruction: fall back to the source rather than
-    // rendering something nobody asked for.
-    else { outW = outH = 0; }
-    sizeField.value = outW && outH ? `${outW}×${outH}` : '';
-  });
-  const sizeList = document.createElement('datalist');
-  sizeList.id = 'veditSizeList';
-  for (const s of ['1920×1080', '1280×720', '1080×1920', '720×1280', '1024×1024', '3840×2160']) {
-    const o = document.createElement('option');
-    o.value = s;
-    sizeList.appendChild(o);
+  // Named formats rather than free text: these are the frames anyone actually delivers,
+  // and a typed "1280x720" was one fat finger away from rendering something nobody wanted.
+  // The names are the industry's own (not translated) and each carries its pixels, so
+  // "2k" cannot be mistaken for the cinema 2048-wide one.
+  // The 21:9 entries keep each tier's HEIGHT and widen it, which is what the delivery
+  // standards actually are (2560x1080, 3440x1440, 5120x2160 — 2.37:1 and 2.39:1 rather
+  // than a literal 2.333, same as every ultrawide panel and scope master).
+  const SIZE_PRESETS = [
+    [1280, 720, '720p'], [720, 1280, '720p-portrait'],
+    [1920, 1080, '1080p'], [1080, 1920, '1080p-portrait'], [2560, 1080, '1080p-21:9'],
+    [2560, 1440, '2k'], [1440, 2560, '2k-portrait'], [3440, 1440, '2k-21:9'],
+    [3840, 2160, '4k'], [2160, 3840, '4k-portrait'],
+  ];
+  const sizeKey = (w, h) => `${w}x${h}`;
+  const sizeOpts = [['', t('vedit_sizeAuto', { s: srcSize })]];
+  for (const [w, h, name] of SIZE_PRESETS) sizeOpts.push([sizeKey(w, h), `${name} · ${w}×${h}`]);
+  // A size chosen before this list existed (or on another build) still has to be
+  // selectable, or reopening the editor would silently change the render.
+  if (outW && outH && !SIZE_PRESETS.some(([w, h]) => w === outW && h === outH)) {
+    sizeOpts.push([sizeKey(outW, outH), `${outW}×${outH}`]);
   }
+  const sizeField = sel(sizeOpts, outW && outH ? sizeKey(outW, outH) : '', (v) => {
+    const m = /^(\d+)x(\d+)$/.exec(v);
+    outW = m ? Number(m[1]) : 0;
+    outH = m ? Number(m[2]) : 0;
+    savePrefs();
+  });
+  sizeField.id = 'veditSizeField';
+  sizeField.title = t('vedit_sizeHint', { s: srcSize });
+  const sizeList = document.createComment('');   // the datalist the text field needed is gone
   // A short list beats a free number: these are the rates local models actually render at
   // (Wan 16, LTX/most 24) plus the broadcast ones. "" is follow-the-first-clip, and it
   // names the number so the default is never a mystery.
@@ -822,11 +878,11 @@ function renderExportBar() {
   for (const n of [...new Set([...FPS_CHOICES, ...(outFps ? [outFps] : [])])].sort((a, b) => a - b)) {
     fpsOpts.push([String(n), `${n} fps`]);
   }
-  const fpsField = sel(fpsOpts, outFps ? String(outFps) : '', (v) => { outFps = Number(v) || 0; });
+  const fpsField = sel(fpsOpts, outFps ? String(outFps) : '', (v) => { outFps = Number(v) || 0; savePrefs(); });
   fpsField.id = 'veditFpsField';
   fpsField.title = t('vedit_fpsHint', { s: srcFps });
 
-  const codecSel = sel([['h265', 'H.265'], ['h264', 'H.264']], codec, (v) => { codec = v; paintQuality(); });
+  const codecSel = sel([['h265', 'H.265'], ['h264', 'H.264']], codec, (v) => { codec = v; savePrefs(); paintQuality(); });
   const crfField = document.createElement('input');
   crfField.type = 'range';
   crfField.min = '14'; crfField.max = '32'; crfField.step = '1';
@@ -837,6 +893,7 @@ function renderExportBar() {
   const paintQuality = () => { crfField.title = t(codec === 'h265' ? 'vedit_qualityH265' : 'vedit_quality'); };
   paintQuality();
   crfField.addEventListener('input', () => { crf = Number(crfField.value); crfLabel.textContent = `CRF ${crf}`; });
+  crfField.addEventListener('change', savePrefs);   // on release, not on every drag tick
   const crfLabel = document.createElement('span');
   crfLabel.className = 'hint';
   crfLabel.textContent = `CRF ${crf}`;
@@ -858,7 +915,7 @@ function renderExportBar() {
 
   // What to do with a clip whose shape is not the frame's. Never a stretch either way.
   const fitSel = sel([['cover', t('vedit_fitCover')], ['contain', t('vedit_fitContain')]], fitMode,
-    (v) => { fitMode = v; });
+    (v) => { fitMode = v; savePrefs(); });
   fitSel.id = 'veditFitMode';
   fitSel.title = t('vedit_fitHint');
 
@@ -866,6 +923,7 @@ function renderExportBar() {
   if (!comfyIsReachable() && scaleMode === 'ai') scaleMode = 'fast';
   const scaleSel = sel([['fast', t('vedit_scaleFast')], ['ai', t('vedit_scaleAi')]], scaleMode, (v) => {
     scaleMode = v;
+    savePrefs();
     paintAiRows();
   });
   scaleSel.id = 'veditScaleMode';
@@ -873,7 +931,7 @@ function renderExportBar() {
   // Upscale model. 'auto' lets the server size the model to the ratio actually needed (a
   // 2x target should load a 2x model, not run a 4x one and throw away the pixels); 'off'
   // is interpolate/sharpen only.
-  const upModelSel = sel([['auto', t('vedit_upAuto')], ['off', t('vedit_upOff')]], upModel, (v) => { upModel = v; });
+  const upModelSel = sel([['auto', t('vedit_upAuto')], ['off', t('vedit_upOff')]], upModel, (v) => { upModel = v; savePrefs(); });
   upModelSel.id = 'veditUpModel';
   const fillUpModels = async () => {
     try {
@@ -889,13 +947,13 @@ function renderExportBar() {
     if (upModelSel.value !== upModel) upModelSel.value = 'auto';   // a model that went away
   };
 
-  const interpSel = sel([['rife', t('vedit_interpRife')], ['film', 'FILM']], interpMethod, (v) => { interpMethod = v; });
+  const interpSel = sel([['rife', t('vedit_interpRife')], ['film', 'FILM']], interpMethod, (v) => { interpMethod = v; savePrefs(); });
   interpSel.id = 'veditInterp';
   interpSel.title = t('vedit_interpHint');
 
   const sharpenSel = sel([['off', t('vedit_sharpOff')], ['light', t('vedit_sharpLight')],
                           ['medium', t('vedit_sharpMediumDef')], ['strong', t('vedit_sharpStrong')]],
-    sharpen, (v) => { sharpen = v; });
+    sharpen, (v) => { sharpen = v; savePrefs(); });
   sharpenSel.id = 'veditSharpen';
   sharpenSel.title = t('vedit_sharpenHint');
 

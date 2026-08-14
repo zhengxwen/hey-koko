@@ -793,6 +793,31 @@ function attachUploadedImages(userMessage, image) {
   if (masks.some(Boolean)) userMessage.imageMasks = masks;
 }
 
+// The four parallel image arrays, zipped into one slot per picture and back. Merging
+// pictures from several bubbles means reordering all four in lockstep, and doing that
+// four times over is exactly how one of them ends up off by one.
+function messageImageSlots(m) {
+  const ctx = Array.isArray(m?.contextImages) ? m.contextImages : [];
+  return ctx.map((src, i) => ({
+    src,
+    // Never null: the thumbnail is what the bubble actually renders (<img src>), so a
+    // slot with no preview falls back to the full picture rather than a broken image.
+    display: m.displayImages?.[i] || src,
+    name: m.imageNames?.[i] || null,
+    mask: m.imageMasks?.[i] || undefined,
+  }));
+}
+
+function setMessageImageSlots(m, slots) {
+  if (!slots.length) return;
+  m.contextImages = slots.map((s) => s.src);
+  m.displayImages = slots.map((s) => s.display);
+  const names = slots.map((s) => s.name || null);
+  if (names.some(Boolean)) m.imageNames = names;
+  const masks = slots.map((s) => s.mask || undefined);
+  if (masks.some(Boolean)) m.imageMasks = masks;
+}
+
 // Disambiguate repeated filenames by suffixing -1, -2 (before the extension) so each
 // image gets a UNIQUE label for the model; unique names are left untouched. Empty slots
 // fall back to "image-N" (e.g. pasted images carry no filename).
@@ -888,26 +913,40 @@ function activeGuides(tab) {
   return (tab.messages || []).filter((m) => isGuideBubble(m) && !m.folded);
 }
 
-// The newest turn of the CURRENT workshop that carried media. Used only when a ▶
-// dispatch finds an empty composer: staged attachments are session state (an in-memory
-// Map — a page reload wipes them) while the conversation and its draft persist, so a
-// prompt polished before a refresh would otherwise dispatch with no reference at all
-// and the r2v render fails at the GPU. Bounded to messages AFTER the active guide, so
-// this can never reach back and attach some unrelated photo from earlier in the chat.
-function workshopMediaTurn(tab) {
+// Every picture and clip the user has put into the CURRENT workshop, oldest first.
+// A ▶ dispatch sends these along with whatever is staged in the composer: the whole
+// conversation is one prompt-writing session, so a reference attached three turns ago
+// while describing the shot is as much a part of the render as the one still in the
+// composer — and staged attachments are session state (an in-memory Map, wiped by a
+// reload) while the conversation and its ▶ button persist, so a prompt polished
+// yesterday would otherwise dispatch with no reference at all and die at the GPU.
+//
+// Two bounds keep it from dragging in things that are not references:
+//   · messages AFTER the active guide only — never some unrelated photo from earlier;
+//   · UNFOLDED user bubbles only. Folded is the app's "this no longer counts" mark, and
+//     it is what every ▶-dispatched command bubble already carries — without this, each
+//     dispatch would re-collect the copies the previous one made.
+function workshopMedia(tab) {
   const msgs = tab.messages || [];
+  const out = { images: [], videos: [] };
   let start = -1;
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (isGuideBubble(msgs[i]) && !msgs[i].folded) { start = i; break; }
   }
-  if (start < 0) return null;   // no prompt mode → nothing to revive
-  for (let i = msgs.length - 1; i > start; i--) {
+  if (start < 0) return out;   // no prompt mode → nothing to gather
+  for (let i = start + 1; i < msgs.length; i++) {
     const m = msgs[i];
-    if (m.role !== "user") continue;
-    if (m.contextImages?.length || m.generatedVideos?.length) return m;
+    if (m.role !== "user" || m.folded) continue;
+    out.images.push(...messageImageSlots(m));
+    out.videos.push(...messageSourceVideos(m));
   }
-  return null;
+  return out;
 }
+
+// Key a picture/clip by the slot the bubble stores — a gallery reference once the file
+// is on disk, the bytes while it is not. Same string ⇒ same file, which is what makes
+// the composer's copy of a picture and the bubble's copy collapse into one.
+const mediaSlotKey = (v) => (v && v.galleryId ? galleryUrl(v.galleryId) : v && v.base64) || "";
 
 function activeGuideModels(tab) {
   return [...new Set(activeGuides(tab).map((m) => m.skillGuide))];
@@ -3352,28 +3391,36 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     // Several clips can be staged → each runs the workflow once (batch). They ride on
     // the user bubble for display (reusing the generatedVideos field).
     let imagineVideos = stagedVideoList(video);
-    // ▶ with an empty composer. Staged attachments are session state — a page reload
-    // wipes them — while the draft and its ▶ button persist in the conversation, so a
-    // prompt polished yesterday would dispatch with no reference and die at the GPU
-    // ("r2v needs at least one reference"). Re-use the media of the workshop's newest
-    // media turn: the references ARE what that turn attached. Copied field-for-field
-    // rather than re-derived, so gallery references, names and 🖌 masks all carry over
-    // intact. Only ▶ does this — a hand-typed /imagine keeps meaning exactly what it
-    // says, attachments and all.
-    if (foldCommandBubble && !image && !imagineVideos.length) {
-      const src = workshopMediaTurn(tab);
-      if (src) {
-        for (const k of ["contextImages", "displayImages", "imageNames", "imageMasks"]) {
-          if (src[k]) userMessage[k] = src[k].slice();
-        }
-        imagineVideos = messageSourceVideos(src);
-        attachVideosToMessage(userMessage, imagineVideos);
-      }
-    }
     // An attached image turns /imagine into image-to-image (instruction editing).
     await settleGalleryIds(image, imagineVideos, audio);
     if (image) attachUploadedImages(userMessage, image);
-    if (video) attachVideosToMessage(userMessage, imagineVideos);
+    if (imagineVideos.length) attachVideosToMessage(userMessage, imagineVideos);
+    // ▶ dispatch: the render also gets everything the WORKSHOP attached (workshopMedia),
+    // not only what is still staged in the composer. Merged rather than replaced, and
+    // keyed by the stored slot so the composer's copy of a picture and the bubble's copy
+    // are one picture, not two — a model handed the same reference twice reads it as two
+    // subjects. Conversation order decides position (that order IS the identity mapping
+    // for multi-reference models); a duplicate keeps its earlier place but takes the
+    // composer's 🖌 mask, which is the freshly painted one. Only ▶ does this — a
+    // hand-typed /imagine keeps meaning exactly what it says, attachments and all.
+    if (foldCommandBubble) {
+      const past = workshopMedia(tab);
+      const byKey = new Map();
+      for (const s of past.images) if (s.src) byKey.set(s.src, s);
+      for (const s of messageImageSlots(userMessage)) {
+        const seen = byKey.get(s.src);
+        if (!seen) { byKey.set(s.src, s); continue; }
+        seen.mask = s.mask || seen.mask;
+        seen.name = s.name || seen.name;
+      }
+      setMessageImageSlots(userMessage, [...byKey.values()]);
+      const staged = new Set(imagineVideos.map(mediaSlotKey));
+      const extra = past.videos.filter((v) => !staged.has(mediaSlotKey(v)));
+      if (extra.length) {
+        imagineVideos = [...extra, ...imagineVideos];
+        attachVideosToMessage(userMessage, imagineVideos);
+      }
+    }
     // Speech audio (InfiniteTalk dubbing) rides the user bubble + the gen payload.
     attachAudioToMessage(userMessage, audio);
     tab.messages.push(userMessage);
@@ -4139,6 +4186,11 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     const fullImages = msg?.contextImages;
     // User bubbles: one shared media row (images + video on the same line).
     // Otherwise multiple images render in a compact grid; a single image stays inline.
+    // A folded USER bubble still shows its pictures (see .foldShowsMedia in the CSS):
+    // the text is what folding is meant to hide, while the images are what makes the
+    // collapsed bubble recognisable. Marked here because "user bubble with images" is
+    // fixed at render time, unlike .isFolded which toggles on click.
+    if (mediaRowEnabled && previews.length) item.classList.add("foldShowsMedia");
     const container = mediaRowEnabled
       ? (mediaRow = Object.assign(document.createElement("div"), { className: "messageMediaRow" }))
       : (previews.length > 1
