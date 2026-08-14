@@ -513,6 +513,20 @@ const LTX_COMPONENT_RE = /transformer[-_ ]?only/i;
 const LTX25_RE = /ltx.?2[._]5/i;
 const LTX25_DEV_RE = /dev[-_ ]?transformer/i;
 
+// LTX-2.5 IC-LoRA lines, flattened from the official ComfyUI-LTXVideo 2.5 example
+// workflows. Lightricks' own 2.5 workflows mount the 2.3 IC-LoRA WEIGHT FILES —
+// cross-version reuse is official practice, not a hack — so these lines gate on the
+// 2.3-named LoRAs plus the 2.5 stack.
+//   • Union Control: depth of a source video drives a new clip (VideoDepthAnything in
+//     the official graph; MoGe here — same union-control LoRA consumed gray depth maps
+//     from MoGe throughout the verified 2.3 line).
+//   • Ingredients: reference stills stitched into ONE sheet; LTXAddVideoICLoRAGuide
+//     shows that sheet to every frame (RepeatImageBatch) — multi-subject identity
+//     without the Licon/PromptRelay stack MSR needs.
+const LTX25_UNION = "ltx25-union";
+const LTX25_INGREDIENTS = "ltx25-ingredients";
+const LTX25_ING_MAX_REFS = 4;
+
 // Finetunes distributed BOTH as a full checkpoint and as a standalone LoRA of the
 // same training. Sulphur is one: sulphur_dev_*.safetensors already contains what
 // sulphur_lora_rank_768.safetensors applies, and upstream says not to use both —
@@ -604,6 +618,10 @@ function videoTypeOf(model) {
   // audio-driven pair, not a plain t2v/i2v UNET — buildWan14B would mis-run it.
   if (/dancer/i.test(model)) return "dancer";
   if (/wan/i.test(model)) return "wan";
+  // LTX-2.5 sentinels first — their names ("ltx25-…") don't match LTX25_RE, which
+  // needs a separator between the 2 and the 5.
+  if (model === LTX25_UNION) return "ltx25-union";
+  if (model === LTX25_INGREDIENTS) return "ltx25-ingredients";
   // LTX-2.5 BEFORE the generic LTX tests: its filenames match LTX_MODEL_RE too, but it
   // loads via UNETLoader + separate VAE/encoder files, so it must not reach the 2.3
   // checkpoint paths. The dev transformer is a component (see LTX25_DEV_RE).
@@ -940,6 +958,76 @@ async function ltxUnionParts(pref) {
   return ok ? parts : null;
 }
 
+// The shared LTX-2.5 stack the IC-LoRA lines sit on: distilled transformer (UNET),
+// Gemma-4 12B encoder, both VAEs, plus the two KJNodes helpers the plain 2.5 builder
+// also leans on. `pref` picks the transformer tier (int8 today; nvfp4/bf16 if added).
+async function ltx25CoreParts(pref) {
+  const [unets, clips, vaes] = await Promise.all([
+    comfyEnum("UNETLoader", "unet_name").catch(() => []),
+    comfyEnum("CLIPLoader", "clip_name").catch(() => []),
+    comfyEnum("VAELoader", "vae_name").catch(() => []),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  const pool = (unets || []).filter((n) => LTX25_RE.test(n) && /distill/i.test(n) && !LTX25_DEV_RE.test(n));
+  const transformer = (pref && pref !== "auto" && pool.find((n) => precisionOf(n) === pref)) || bestTier(pool);
+  const parts = {
+    transformer,
+    transformerTier: transformer ? precisionOf(transformer) : null,
+    encoder: find(clips, /gemma4.?12b.*ltx.?2[._]5|gemma4.?12b.*with.?proj/i),
+    videoVae: find(vaes, /ltx.?2[._]5.*video.?vae/i),
+    audioVae: find(vaes, /ltx.?2[._]5.*audio.?vae/i),
+    vramPurge: await comfyHasNodes(["VRAM_Debug"]),
+  };
+  return parts.transformer && parts.encoder && parts.videoVae && parts.audioVae ? parts : null;
+}
+
+// LTX-2.5 Union Control — the official 2.5 workflow mounts the 2.3 union-control
+// IC-LoRA (ref0.5) via LTXICLoRALoaderModelOnly on the 2.5 transformer. Depth comes
+// from MoGe (official uses VideoDepthAnything, not installed here — the same LoRA
+// consumed MoGe's gray depth maps across the whole verified 2.3 line). Two-stage:
+// the spatial upscaler is REQUIRED (that is the shipped shape; no single-stage union
+// workflow exists for 2.5).
+async function ltx25UnionParts(pref) {
+  const core = await ltx25CoreParts(pref);
+  if (!core) return null;
+  const [loras, moge, upscaleModels, nodes] = await Promise.all([
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyEnum("LoadMoGeModel", "model_name").catch(() => []),
+    comfyEnum("LatentUpscaleModelLoader", "model_name").catch(() => []),
+    comfyHasNodes([
+      "LTXICLoRALoaderModelOnly", "LTXAddVideoICLoRAGuide", "LTXVCropGuides",
+      "LTXVLatentUpsampler", "LTXVImgToVideoInplace", "LoadMoGeModel", "MoGeInference",
+      "MoGeRender", "GetVideoComponents", "Video Slice", "GetImageSize", "ImageScale",
+    ]),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  const parts = {
+    ...core,
+    unionLora: find(loras, /union.?control/i),
+    mogeModel: find(moge, /moge/i),
+    upscaler: find(upscaleModels, /ltx.?2[._]5.*spatial.*upscal/i),
+  };
+  return nodes && parts.unionLora && parts.mogeModel && parts.upscaler ? parts : null;
+}
+
+// LTX-2.5 Ingredients — multi-subject identity from reference stills, single-stage.
+// The official workflow feeds ONE "reference sheet" image; buildLtx25Ingredients
+// stitches multiple attachments into that sheet (ImageStitch, heights matched).
+async function ltx25IngredientsParts(pref) {
+  const core = await ltx25CoreParts(pref);
+  if (!core) return null;
+  const [loras, nodes] = await Promise.all([
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyHasNodes([
+      "LTXICLoRALoaderModelOnly", "LTXAddVideoICLoRAGuide", "LTXVCropGuides",
+      "RepeatImageBatch", "ImageStitch", "ImageScale", "GetImageSize",
+    ]),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  const parts = { ...core, ingredientsLora: find(loras, /ic.?lora.?ingredients|ingredients/i) };
+  return nodes && parts.ingredientsLora ? parts : null;
+}
+
 // Everything InfiniteTalk V2V needs. Wrapper-based (WanVideoWrapper node family), so the
 // loaders are the wrapper's own: WanVideoModelLoader scans diffusion_models/,
 // MultiTalkModelLoader too (hence the patch copies there), Wav2VecModelLoader scans
@@ -1075,6 +1163,8 @@ function capsFor(name, group, type, entry) {
   if (group === "edit") return ["edit"];
   // video: a source-video model is v2v; bernini also accepts a plain image (i2v).
   if (name === LTX_UNION) return ["v2v", "audio"]; // depth-driven; LTX decodes a soundtrack
+  if (name === LTX25_UNION) return ["v2v", "audio"];       // same claim, 2.5 stack
+  if (name === LTX25_INGREDIENTS) return ["i2v", "audio"]; // reference-sheet driven, generates sound
   if (name === INFINITETALK) return ["v2v", "audio"]; // audio-DRIVEN dubbing (lip re-sync to a speech file)
   if (name === INFINITETALK_SPEAK) return ["i2v", "audio"]; // photo + speech/TTS → talking video
   if (type === "dancer") return ["i2v", "audio"]; // reference photo + MUSIC → dance video synced to it
@@ -1138,6 +1228,8 @@ function videoRank(n) {
   // MiniMax H3 sits with the general generators; ref2va right after its fl2va sibling.
   if (/minimax.?h3.*ref2va/i.test(n)) return 6.6;
   if (/minimax.?h3/i.test(n)) return 6.5;
+  if (n === LTX25_INGREDIENTS) return 6.91;
+  if (n === LTX25_UNION) return 6.92;
   if (LTX25_RE.test(n)) return 6.9;  // before the generic LTX test, which also matches
   if (LTX_MODEL_RE.test(n)) return 7;
   // scail BEFORE animate: the "scail2_animate" sentinel contains "animate", so the
@@ -1177,6 +1269,8 @@ function isModelReady(name, group, type) {
   if (name === SCAIL2_ANIMATE) return true; // SCAIL-2 animate — verified
   if (name === LTX_MSR) return true;        // MSR V2 — verified (sharp, identity preserved)
   if (name === LTX_UNION) return true;      // Union Control — verified end-to-end (depth transfer, sharp)
+  if (name === LTX25_UNION) return true;    // 2.5 Union — verified live 2026-08-14 (two-stage, MoGe depth)
+  if (name === LTX25_INGREDIENTS) return false; // wired from the official workflow; flip after a live smoke
   if (name === ANIMATE_REPLACE) return true; // Replace verified end-to-end (scene kept, person swapped)
   if (name === INFINITETALK) return true;    // V2V dub recipe verified live (92-frame lip re-sync, trim tail exact)
   if (name === INFINITETALK_SPEAK) return true; // I2V talking-photo recipe verified live (see buildInfiniteTalk)
@@ -1243,6 +1337,7 @@ function isModelReady(name, group, type) {
 // clip is staged, so it is listed here and gated there.
 function refMaskModel(name, type) {
   if (name === LTX_MSR) return true;              // subjects + background are all references
+  if (name === LTX25_INGREDIENTS) return true;    // every attachment is a reference on the sheet
   if (type === "minimax-h3") return /ref2va/i.test(name); // only the r2v weight takes references
   return ["phantom", "animate", "scail2", "dancer", "bernini"].includes(type);
 }
@@ -1406,6 +1501,10 @@ async function proxyComfyModels(req, res) {
     // motion) + a reference image (the appearance), so it joins the "needs source video"
     // group. Gated on every weight + node being present, same as MSR.
     if (await ltxUnionParts()) videoModels.push({ name: LTX_UNION, type: "ltx-union", label: "LTX-2.3 Union", needsVideo: true, needsImages: 1 });
+    // LTX-2.5 IC-LoRA lines — gated on every piece (2.5 stack + the LoRA + node packs),
+    // same policy as MSR/Union: an entry that always errors is worse than no entry.
+    if (await ltx25UnionParts()) videoModels.push({ name: LTX25_UNION, type: "ltx25-union", label: "LTX-2.5 Union", needsVideo: true, needsImages: 1 });
+    if (await ltx25IngredientsParts()) videoModels.push({ name: LTX25_INGREDIENTS, type: "ltx25-ingredients", label: "LTX-2.5 Ingredients", needsImages: 1 });
     // InfiniteTalk V2V (audio-driven dubbing / lip re-sync): needs a SOURCE VIDEO plus a
     // SPEECH AUDIO file (needsAudio — the frontend gates on it). Wrapper-based; only
     // offered when the whole node+weight set is installed, same policy as MSR/Union.
@@ -1683,6 +1782,14 @@ async function proxyComfyModels(req, res) {
       const cks = all.filter((n) => /ltx.*distill/i.test(n) && !/transformer[-_ ]?only/i.test(n) && !LTX25_RE.test(n));
       const tiers = [...new Set(cks.map(precisionOf).filter(Boolean))];
       if (tiers.length) modelMeta[LTX_UNION].prec = tiers;
+    }
+    // The 2.5 sentinels' tiers come from the 2.5 distilled transformer pool (the piece
+    // the ⚙ preference actually swaps; the IC-LoRA itself has no precision variants).
+    const p25 = all.filter((n) => LTX25_RE.test(n) && /distill/i.test(n) && !LTX25_DEV_RE.test(n));
+    for (const s of [LTX25_UNION, LTX25_INGREDIENTS]) {
+      if (!modelMeta[s]) continue;
+      const tiers = [...new Set(p25.map(precisionOf).filter(Boolean))];
+      if (tiers.length) modelMeta[s].prec = tiers;
     }
     // GPU of THIS endpoint: VRAM (GiB) → the client mirrors animateSegmentCap with it so
     // the progress estimate matches the graph the server builds; gpuName → shown in the
@@ -2703,6 +2810,23 @@ function videoPreset(videoType, model, turbo) {
     // (width/32, height/32) must each be even → width & height divisible by 64, or
     // LTXVAddGuide fails ("Latent spatial size WxH must be divisible by 2").
     return { sampler: "euler_ancestral", scheduler: "linear_quadratic", cfg: 1, steps: 8, shift: 0, width: 1280, height: 704, length: 97, fps: 25, dimMult: 64, lenMult: 8 };
+  }
+  if (videoType === "ltx25-union") {
+    // Official 2.5 union workflow: TWO-stage (stage-1 at the depth sequence's size,
+    // ×2 upscale, 3-step refine). width/height here are the STAGE-1 canvas — /64 so
+    // the ref0.5 IC-LoRA's downscale-by-2 keeps the latent dims even (the same
+    // constraint the 2.3 line hit). 640×352 halves the verified t2v envelope, so the
+    // refine runs at exactly the proven 1280×704. `length` is only the slice fallback
+    // (the graph derives the real count from the depth sequence). Stage-2 sampler is
+    // "euler" per the official workflow; the builder pins that itself.
+    return { sampler: "euler_ancestral", scheduler: "simple", cfg: 1, steps: 11, shift: 0, width: 640, height: 352, length: 97, fps: 24, dimMult: 64, lenMult: 8 };
+  }
+  if (videoType === "ltx25-ingredients") {
+    // Official ingredients workflow: SINGLE stage, euler_ancestral_cfg_pp, 8-step
+    // distilled table, cfg 1. The canvas follows the stitched reference sheet's
+    // aspect at this budget (official ties canvas to sheet size; the dispatch
+    // recomputes width/height from the sheet, these are the fallback/budget).
+    return { sampler: "euler_ancestral_cfg_pp", scheduler: "simple", cfg: 1, steps: 8, shift: 0, width: 960, height: 544, length: 121, fps: 24, dimMult: 32, lenMult: 8 };
   }
   if (videoType === "ltx25") {
     // Straight off ComfyUI's built-in video_ltx2_5_* templates (flattened + verified
@@ -3846,6 +3970,132 @@ function buildLtx25({ model, prompt, negative, comp, imageName, imageNames, seed
   wf["24"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: audioLatent, audio_vae: ["20", 0] } };
   wf["12"] = { class_type: "CreateVideo", inputs: { images: ["11", 0], fps: v.fps, audio: ["24", 0] } };
   wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  return wf;
+}
+
+// LTX-2.5 Union Control — flattened from the official LTX-2.5_ICLoRA_Union_Control
+// workflow, with two deliberate substitutions:
+//   • depth via MoGe instead of VideoDepthAnything (not installed; the identical
+//     union LoRA ate MoGe depth across the verified 2.3 line), and
+//   • the ⚙ duration slice via "Video Slice", the 2.3 line's verified pattern.
+// Shape: the depth sequence (scaled to the STAGE-1 canvas, v.width×v.height, /64) is
+// injected by LTXAddVideoICLoRAGuide with the downscale factor read off the IC-LoRA
+// loader's second output; stage 1 samples 8 steps at depth size; LTXVCropGuides strips
+// the guide BETWEEN the stages; the ×2-upscaled latent gets the reference still
+// re-pinned (strength 1) and a 3-step refine on fixed noise — with "euler", not
+// euler_ancestral: the official workflow really does switch samplers for stage 2.
+function buildLtx25Union({ prompt, negative, comp, imageName, videoName, durationSec, v, seed }) {
+  const neg = negative && negative.trim() ? negative : LTX25_DEFAULT_NEGATIVE;
+  const wf = {
+    "un": { class_type: "UNETLoader", inputs: { unet_name: comp.transformer, weight_dtype: "default" } },
+    "lo": { class_type: "LTXICLoRALoaderModelOnly", inputs: { model: ["un", 0], lora_name: comp.unionLora, strength_model: 1.0 } },
+    "te": { class_type: "CLIPLoader", inputs: { clip_name: comp.encoder, type: "ltxv", device: "default" } },
+    "pos": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: prompt || "" } },
+    "neg": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: neg } },
+    "cond": { class_type: "LTXVConditioning", inputs: { positive: ["pos", 0], negative: ["neg", 0], frame_rate: v.fps } },
+    "vv": { class_type: "VAELoader", inputs: { vae_name: comp.videoVae } },
+    "av": { class_type: "VAELoader", inputs: { vae_name: comp.audioVae } },
+    "lv": { class_type: "LoadVideo", inputs: { file: videoName } },
+    "vsl": { class_type: "Video Slice", inputs: { video: ["lv", 0], start_time: 0.0, duration: durationSec, strict_duration: false } },
+    "gvc": { class_type: "GetVideoComponents", inputs: { video: ["vsl", 0] } },
+    "mogeload": { class_type: "LoadMoGeModel", inputs: { model_name: comp.mogeModel } },
+    "mogeinf": { class_type: "MoGeInference", inputs: { moge_model: ["mogeload", 0], image: ["gvc", 0], resolution_level: 9, fov_x_degrees: 0.0, batch_size: 4, force_projection: true, apply_mask: true } },
+    "depth": { class_type: "MoGeRender", inputs: { moge_geometry: ["mogeinf", 0], output: "depth" } },
+    // The guide must sit exactly on the stage-1 canvas: the official workflow snaps the
+    // depth frames to /(32·downscale) before reading their size back. Dims are computed
+    // by the dispatch (/64 already), so a plain scale-to-canvas does the same job.
+    "dscale": { class_type: "ImageScale", inputs: { image: ["depth", 0], upscale_method: "lanczos", width: v.width, height: v.height, crop: "disabled" } },
+    "gis": { class_type: "GetImageSize", inputs: { image: ["dscale", 0] } },
+    "empty": { class_type: "EmptyLTXVLatentVideo", inputs: { width: v.width, height: v.height, length: ["gis", 2], batch_size: 1 } },
+    "li": { class_type: "LoadImage", inputs: { image: imageName } },
+    "inpl": { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["vv", 0], image: ["li", 0], latent: ["empty", 0], strength: 1.0, bypass: false } },
+    "guide": { class_type: "LTXAddVideoICLoRAGuide", inputs: { positive: ["cond", 0], negative: ["cond", 1], vae: ["vv", 0], latent: ["inpl", 0], image: ["dscale", 0], frame_idx: 0, strength: 1.0, latent_downscale_factor: ["lo", 1], crop: "disabled", use_tiled_encode: false, tile_size: 256, tile_overlap: 64 } },
+    "aud": { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: ["gis", 2], frame_rate: v.fps, batch_size: 1, audio_vae: ["av", 0] } },
+    "cat1": { class_type: "LTXVConcatAVLatent", inputs: { video_latent: ["guide", 2], audio_latent: ["aud", 0] } },
+    "s1sel": { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
+    "sig1": { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_BASE } },
+    "n1": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
+    "g1": { class_type: "CFGGuider", inputs: { model: ["lo", 0], positive: ["guide", 0], negative: ["guide", 1], cfg: v.cfg } },
+    "s1": { class_type: "SamplerCustomAdvanced", inputs: { noise: ["n1", 0], guider: ["g1", 0], sampler: ["s1sel", 0], sigmas: ["sig1", 0], latent_image: ["cat1", 0] } },
+    "sep1": { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["s1", 0] } },
+    "crop": { class_type: "LTXVCropGuides", inputs: { positive: ["guide", 0], negative: ["guide", 1], latent: ["sep1", 0] } },
+    "upl": { class_type: "LatentUpscaleModelLoader", inputs: { model_name: comp.upscaler } },
+    "up": { class_type: "LTXVLatentUpsampler", inputs: { samples: ["crop", 2], upscale_model: ["upl", 0], vae: ["vv", 0] } },
+    "inpl2": { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["vv", 0], image: ["li", 0], latent: ["up", 0], strength: 1.0, bypass: false } },
+    "cat2": { class_type: "LTXVConcatAVLatent", inputs: { video_latent: ["inpl2", 0], audio_latent: ["sep1", 1] } },
+    "s2sel": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
+    "sig2": { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_REFINE } },
+    "n2": { class_type: "RandomNoise", inputs: { noise_seed: LTX_REFINE_NOISE } },
+    "g2": { class_type: "CFGGuider", inputs: { model: ["lo", 0], positive: ["crop", 0], negative: ["crop", 1], cfg: v.cfg } },
+    "s2": { class_type: "SamplerCustomAdvanced", inputs: { noise: ["n2", 0], guider: ["g2", 0], sampler: ["s2sel", 0], sigmas: ["sig2", 0], latent_image: ["cat2", 0] } },
+    "sep2": { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["s2", 0] } },
+  };
+  let decodeLatent = ["sep2", 0];
+  if (comp.vramPurge) {
+    wf["purge"] = { class_type: "VRAM_Debug", inputs: { empty_cache: true, gc_collect: true, unload_all_models: true, any_input: decodeLatent } };
+    decodeLatent = ["purge", 0];
+  }
+  // The union workflow's own decode tiling (512/64/128/32 — deeper temporal tiles than
+  // the t2v template, which fits: the final frame here is 2× the stage-1 canvas).
+  wf["dec"] = { class_type: "VAEDecodeTiled", inputs: { samples: decodeLatent, vae: ["vv", 0], tile_size: 512, overlap: 64, temporal_size: 128, temporal_overlap: 32 } };
+  wf["adec"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep2", 1], audio_vae: ["av", 0] } };
+  wf["cv"] = { class_type: "CreateVideo", inputs: { images: ["dec", 0], fps: v.fps, audio: ["adec", 0] } };
+  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  return wf;
+}
+
+// LTX-2.5 Ingredients — multi-subject identity from a reference SHEET. The official
+// workflow takes one pre-made sheet image and (a) sizes the canvas from it, (b) repeats
+// it length× so LTXAddVideoICLoRAGuide shows it to every frame. Here the sheet is
+// assembled from the attachments: one image is the sheet as-is, several are stitched
+// side by side with heights matched (ImageStitch), then scaled onto the canvas the
+// dispatch derived from the stitched aspect. Single-stage — the official ingredients
+// workflow has no upscale pass — and euler_ancestral_cfg_pp, its own sampler choice.
+function buildLtx25Ingredients({ prompt, negative, comp, imageNames, seed, v }) {
+  const neg = negative && negative.trim() ? negative : LTX25_DEFAULT_NEGATIVE;
+  const refs = (imageNames || []).slice(0, LTX25_ING_MAX_REFS);
+  const wf = {
+    "un": { class_type: "UNETLoader", inputs: { unet_name: comp.transformer, weight_dtype: "default" } },
+    "lo": { class_type: "LTXICLoRALoaderModelOnly", inputs: { model: ["un", 0], lora_name: comp.ingredientsLora, strength_model: 1.0 } },
+    "te": { class_type: "CLIPLoader", inputs: { clip_name: comp.encoder, type: "ltxv", device: "default" } },
+    "pos": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: prompt || "" } },
+    "neg": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: neg } },
+    "cond": { class_type: "LTXVConditioning", inputs: { positive: ["pos", 0], negative: ["neg", 0], frame_rate: v.fps } },
+    "vv": { class_type: "VAELoader", inputs: { vae_name: comp.videoVae } },
+    "av": { class_type: "VAELoader", inputs: { vae_name: comp.audioVae } },
+  };
+  // The sheet: load every reference, stitch left-to-right with matched heights.
+  let sheet = null;
+  refs.forEach((nm, i) => {
+    const id = `li${i}`;
+    wf[id] = { class_type: "LoadImage", inputs: { image: nm } };
+    if (!sheet) { sheet = [id, 0]; return; }
+    const st = `st${i}`;
+    wf[st] = { class_type: "ImageStitch", inputs: { image1: sheet, image2: [id, 0], direction: "right", match_image_size: true, spacing_width: 0, spacing_color: "white" } };
+    sheet = [st, 0];
+  });
+  wf["sheet"] = { class_type: "ImageScale", inputs: { image: sheet, upscale_method: "lanczos", width: v.width, height: v.height, crop: "disabled" } };
+  wf["empty"] = { class_type: "EmptyLTXVLatentVideo", inputs: { width: v.width, height: v.height, length: v.length, batch_size: 1 } };
+  wf["rep"] = { class_type: "RepeatImageBatch", inputs: { image: ["sheet", 0], amount: v.length } };
+  wf["guide"] = { class_type: "LTXAddVideoICLoRAGuide", inputs: { positive: ["cond", 0], negative: ["cond", 1], vae: ["vv", 0], latent: ["empty", 0], image: ["rep", 0], frame_idx: 0, strength: 1.0, latent_downscale_factor: ["lo", 1], crop: "disabled", use_tiled_encode: false, tile_size: 256, tile_overlap: 64 } };
+  wf["aud"] = { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: v.length, frame_rate: v.fps, batch_size: 1, audio_vae: ["av", 0] } };
+  wf["cat"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: ["guide", 2], audio_latent: ["aud", 0] } };
+  wf["ssel"] = { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } };
+  wf["sig"] = { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_BASE } };
+  wf["n1"] = { class_type: "RandomNoise", inputs: { noise_seed: seed } };
+  wf["g1"] = { class_type: "CFGGuider", inputs: { model: ["lo", 0], positive: ["guide", 0], negative: ["guide", 1], cfg: v.cfg } };
+  wf["s1"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["n1", 0], guider: ["g1", 0], sampler: ["ssel", 0], sigmas: ["sig", 0], latent_image: ["cat", 0] } };
+  wf["sep"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["s1", 0] } };
+  wf["crop"] = { class_type: "LTXVCropGuides", inputs: { positive: ["guide", 0], negative: ["guide", 1], latent: ["sep", 0] } };
+  let decodeLatent = ["crop", 2];
+  if (comp.vramPurge) {
+    wf["purge"] = { class_type: "VRAM_Debug", inputs: { empty_cache: true, gc_collect: true, unload_all_models: true, any_input: decodeLatent } };
+    decodeLatent = ["purge", 0];
+  }
+  wf["dec"] = { class_type: "VAEDecodeTiled", inputs: { samples: decodeLatent, vae: ["vv", 0], tile_size: 512, overlap: 64, temporal_size: 128, temporal_overlap: 32 } };
+  wf["adec"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep", 1], audio_vae: ["av", 0] } };
+  wf["cv"] = { class_type: "CreateVideo", inputs: { images: ["dec", 0], fps: v.fps, audio: ["adec", 0] } };
+  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
   return wf;
 }
 
@@ -6536,6 +6786,67 @@ async function generateComfyImage(req, res) {
         const outFrames = srcFrames ? Math.min(wantFrames, srcFrames) : wantFrames;
         videoDims = { width: v.width, height: v.height, length: outFrames, fps: v.fps };
         if (srcFrames > wantFrames) videoDims.truncatedFrom = srcFrames; // pinned/preset length cut the clip
+      } else if (videoType === "ltx25-union") {
+        // LTX-2.5 Union Control — same contract as the 2.3 line (source video = the
+        // structure, one reference image = the appearance), but the graph is the
+        // official two-stage 2.5 workflow: v.width/height are the STAGE-1 canvas and
+        // the delivered frame is exactly 2× that.
+        if (!sourceVideo && !sourceVideoName) { sendJson(res, 400, { error: "LTX-2.5 union control needs a source video (the motion/structure to follow) plus a reference image (the appearance). Attach a video, then /imagine <description> with a reference image." }); return; }
+        if (!(Array.isArray(images) && images.length)) { sendJson(res, 400, { error: "LTX-2.5 union control needs a reference image for the appearance (attach one image alongside the source video)." }); return; }
+        const comp = await ltx25UnionParts(opts.precision);
+        if (!comp) throw new Error("LTX-2.5 union control is missing pieces. It needs: the LTX-2.5 distilled transformer (diffusion_models/), the Gemma-4 12B text encoder (text_encoders/), both 2.5 VAEs (vae/), the 2.5 spatial latent upscaler (latent_upscale_models/), the union-control IC-LoRA (loras/), a MoGe depth model, and the ComfyUI-LTXVideo + MoGe node packs.");
+        const v = resolveVideoConfig("ltx25-union", opts, model, false);
+        // Stage-1 canvas follows the SOURCE aspect, /64 (ref0.5 downscale needs even
+        // latent dims). An explicit --size names the FINAL frame, so its budget is
+        // quartered to become the stage-1 budget.
+        let aw = snapDim(v.width, 64), ah = snapDim(v.height, 64);
+        const sw = Number(sourceVideoWidth), sh = Number(sourceVideoHeight);
+        const budget = (opts.width && opts.height) ? (opts.width * opts.height) / 4 : v.width * v.height;
+        if (sw > 0 && sh > 0) {
+          const aspect = sw / sh;
+          aw = snapDim(Math.sqrt(budget * aspect), 64);
+          ah = snapDim(Math.sqrt(budget / aspect), 64);
+        } else if (opts.width && opts.height) { aw = snapDim(opts.width / 2, 64); ah = snapDim(opts.height / 2, 64); }
+        v.width = aw; v.height = ah;
+        // Rate follows the SOURCE clip (the official workflow threads the video's own
+        // fps through conditioning + audio + mux); length = slice cap, same as 2.3.
+        const uFps = Number(sourceVideoFps) || v.fps || 24;
+        v.fps = Math.min(60, Math.max(8, uFps));
+        const srcFrames = Number(sourceVideoFrames) || 0;
+        const UNION25_HARD_CAP = 241;
+        const wantFrames = opts.length ? Math.min(opts.length, UNION25_HARD_CAP) : (srcFrames ? Math.min(srcFrames, UNION25_HARD_CAP) : v.length);
+        const durationSec = wantFrames / uFps;
+        const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+        const refImageName = await uploadImage(images[0], controller.signal, "heykoko_unionref.png");
+        imagesUsed = 1;
+        workflow = buildLtx25Union({ prompt, negative: negative_prompt || "", comp, imageName: refImageName, videoName, durationSec, v, seed });
+        precisionUsed = comp.transformerTier;
+        const outFrames = srcFrames ? Math.min(wantFrames, srcFrames) : wantFrames;
+        videoDims = { width: v.width * 2, height: v.height * 2, length: outFrames, fps: v.fps };
+        if (srcFrames > wantFrames) videoDims.truncatedFrom = srcFrames;
+      } else if (videoType === "ltx25-ingredients") {
+        // LTX-2.5 Ingredients — reference stills (up to 4) become one identity sheet;
+        // the prompt writes the scene. No source video.
+        if (!(Array.isArray(images) && images.length)) { sendJson(res, 400, { error: "LTX-2.5 Ingredients needs at least one reference image (the subjects/objects to keep). Attach 1-4 images, then /imagine <description of the scene>." }); return; }
+        const comp = await ltx25IngredientsParts(opts.precision);
+        if (!comp) throw new Error("LTX-2.5 Ingredients is missing pieces. It needs: the LTX-2.5 distilled transformer (diffusion_models/), the Gemma-4 12B text encoder (text_encoders/), both 2.5 VAEs (vae/), and the ingredients IC-LoRA — loras/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors (the official 2.5 workflow mounts the 2.3 file).");
+        const v = resolveVideoConfig("ltx25-ingredients", opts, model, false);
+        // Canvas follows the stitched sheet's aspect (heights matched, widths add — so
+        // the aspect is the SUM of the references' aspects) at the preset/--size budget,
+        // /32. This mirrors the official workflow, whose canvas is the sheet's own size.
+        const refs = images.slice(0, LTX25_ING_MAX_REFS);
+        let aspectSum = 0;
+        for (const im of refs) { const d = imageDims(im); if (d && d.width && d.height) aspectSum += d.width / d.height; }
+        if (!(aspectSum > 0)) aspectSum = 16 / 9;
+        const budget = (opts.width && opts.height) ? opts.width * opts.height : v.width * v.height;
+        v.width = snapDim(Math.sqrt(budget * aspectSum), 32);
+        v.height = snapDim(Math.sqrt(budget / aspectSum), 32);
+        const ingNames = [];
+        for (let i = 0; i < refs.length; i++) ingNames.push(await uploadImage(refs[i], controller.signal, `heykoko_ing${i}.png`));
+        imagesUsed = ingNames.length;
+        workflow = buildLtx25Ingredients({ prompt, negative: negative_prompt || "", comp, imageNames: ingNames, seed, v });
+        precisionUsed = comp.transformerTier;
+        videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
       } else if (videoType === "minimax-h3") {
         // MiniMax H3. Two weight files with different input contracts, one branch:
         //   fl2va  — 0-2 attached images become first_frame / last_frame (none = t2v)

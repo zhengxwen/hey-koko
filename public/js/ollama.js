@@ -983,6 +983,9 @@ function videoAutoDefaults(modelName) {
   // bare "Auto". (The ⚙ steps/cfg fields are display-only for MSR — the sigma table is fixed —
   // but the value is worth showing.)
   if (m === "ltx-msr") return { fps: 30, length: 121, steps: 8, cfg: 1 };
+  // LTX-2.5 sentinels (their names don't match the dotted regex below).
+  if (m === "ltx25-union") return { fps: 24, length: 97, cfg: 1 };
+  if (m === "ltx25-ingredients") return { fps: 24, length: 121, steps: 8, cfg: 1 };
   // LTX-2.5 BEFORE the generic LTX test (its filenames match both): 24 fps, 5 s → 121
   // frames, always cfg 1 (distilled transformer). Steps still flip with the unseen
   // two-stage-vs-single-stage choice, so they stay a bare "Auto" like the 2.3 cascade.
@@ -1039,7 +1042,10 @@ function comfyModelHint(name) {
   if (/minimax.?h3/.test(n)) return /ref2va/.test(n) ? t("oll_hint_minimaxH3Ref") : t("oll_hint_minimaxH3");
   // MSR + Union Control before the generic LTX test — both are distinct LTX modes.
   if (n === "ltx-msr") return t("oll_hint_ltxMsr");
-  if (n === "ltx-union") return t("oll_hint_ltxUnion");
+  // The 2.5 union has the same contract and behavior as the 2.3 line (only the stack
+  // underneath changed), so it shares the hint; ingredients gets its own.
+  if (n === "ltx-union" || n === "ltx25-union") return t("oll_hint_ltxUnion");
+  if (n === "ltx25-ingredients") return t("oll_hint_ltx25Ingredients");
   if (LTX_RE.test(n)) return t("oll_hint_ltx");
   // Image edit (needs a reference image + an instruction).
   if (/kontext/.test(n)) return t("oll_hint_kontext");
@@ -1349,6 +1355,8 @@ function comfyModelComponents(name) {
   if (/hunyuan/.test(n)) return "HunyuanVideo · UNETLoader · CLIP clip_l + llava · VAE hunyuan · KSampler";
   if (n === "ltx-msr") return "LTX-2.3 MSR · UNETLoader(distilled) + ckpt VAE · LTXICLoRALoader · LiconMSR · LTXAddVideoICLoRAGuide · PromptRelayEncode · LTX2_NAG (+audio)";
   if (n === "ltx-union") return "LTX-2.3 Union Control · CheckpointLoader(distilled) · LoraLoaderModelOnly(union-control IC-LoRA) → GetICLoRAParameters · LoadVideo→GetVideoComponents→MoGe depth · LTXVImgToVideoInplace(ref frame) · LTXVAddGuide(depth + iclora_parameters) · KSampler 8-step (+audio)";
+  if (n === "ltx25-union") return "LTX-2.5 Union Control · UNETLoader(distilled) + LTXICLoRALoader(union-control) · LoadVideo→MoGe depth · LTXAddVideoICLoRAGuide · two-stage: 8-step at depth size → latent ×2 → 3-step refine (+audio)";
+  if (n === "ltx25-ingredients") return "LTX-2.5 Ingredients · UNETLoader(distilled) + LTXICLoRALoader(ingredients) · references stitched into one sheet → LTXAddVideoICLoRAGuide (sheet on every frame) · 8-step single-stage (+audio)";
   if (/ltx.?2[._]5/.test(n)) return "LTX-2.5 · UNETLoader(distilled) · CLIP gemma4-12b(ltxv) · video+audio VAE · LTXVDualCFGGuider · two-stage: 8-step half-size → latent ×2 → 3-step refine (+audio)";
   if (LTX_RE.test(n)) return "LTX-2 · CheckpointLoader · LTXAVTextEncoder(gemma) · LTXVConditioning · KSampler (+audio)";
   // Edit
@@ -1684,9 +1692,11 @@ export function updateComfyParamVisibility() {
   // LTX family only (incl. Sulphur) — the optional LoRA slot. It is the one builder
   // with a user-pickable LoRA; every other model mounts its LoRAs automatically.
   // Union Control is excluded: it mounts its union IC-LoRA automatically, no user slot.
-  // LTX-2.5 is excluded: everything the slot lists was trained on the 2.3 architecture,
-  // and the server ignores the field for 2.5 — showing it would be a dead control.
-  const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union" && !/ltx.?2[._]5/.test(m.toLowerCase());
+  // LTX-2.5 (incl. its ltx25-* sentinels) is excluded: everything the slot lists was
+  // trained on the 2.3 architecture, and the server ignores the field for 2.5 —
+  // showing it would be a dead control. The union/ingredients IC-LoRAs mount
+  // automatically server-side, same policy as 2.3's MSR/union.
+  const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union" && !/ltx.?2[._]5|ltx25/.test(m.toLowerCase());
   for (const el of [dom.comfyParamLtxLora, dom.comfyParamLtxLoraStrength]) setVis(el, ltx);
   if (ltx) syncLtxLoraOptions(m);
   // Phantom only — the image-guidance scale (its second, subject-fidelity CFG), and the
