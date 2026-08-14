@@ -31,6 +31,19 @@ export function getNumCtx() {
   return Number.isFinite(v) && v > 0 ? v : DEFAULT_NUM_CTX;
 }
 
+// Seconds to wait for the CHAT model — replies, translation, page summaries, library
+// distillation. Deliberately not the render timeout: a picture and a paragraph fail
+// for unrelated reasons and are worth waiting out for very different lengths of time
+// (images: the Models tab slider; video: the ComfyUI ⚙, in minutes).
+//
+// 240, not the 120 these call sites used to carry inline: a local 30B on a cold model
+// load spends most of that budget before the first token, and a giving-up client is
+// indistinguishable from a broken one.
+export function getLlmTimeout() {
+  const v = parseInt(dom.llmTimeout?.value, 10);
+  return Number.isFinite(v) && v > 0 ? v : 240;
+}
+
 /** Format a token count compactly: 1234 -> "1.2k". */
 function fmt(n) {
   if (n >= 1000) {

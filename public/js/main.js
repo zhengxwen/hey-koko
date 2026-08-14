@@ -25,9 +25,10 @@ import { initLightbox, initVideoLightbox } from './lightbox.js';
 import { initArchive } from './archive.js';
 import { initLibrary, runLibraryImport, notifyLibraryJobsChanged, openLibraryPanel, openLibraryDoc } from './library.js';
 import { initAsk } from './ask.js';
-import { renderPersonalityOptions, saveCurrentPersonaAsPreset, renameCurrentPreset, deleteCurrentPreset, writeBackPersonaToPreset, isBuiltinKey, getCustomPreset, resolveImportedPersonality, resolvePersonaText } from './presets.js';
-import { applyUILanguage, t, getPrompt } from './i18n.js';
-import { refreshModelMaxContext, renderContextMeter } from './context-meter.js';
+import { renderPersonalityOptions, saveCurrentPersonaAsPreset, renameCurrentPreset, deleteCurrentPreset, writeBackPersonaToPreset, isBuiltinKey, getCustomPreset, resolveImportedPersonality, resolvePersonaText, renderPersonaSummary } from './presets.js';
+import { DEFAULT_AI_NAME } from './constants.js';
+import { applyUILanguage, t, getPrompt, composerAiName } from './i18n.js';
+import { refreshModelMaxContext, renderContextMeter, getLlmTimeout } from './context-meter.js';
 import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
 import { loadReminders, getReminders, removeReminder, describeReminder, setReminderChangeHandler, setDeliverHandler, startScheduler } from './proactive.js';
 import { initPanelResize } from './panel-resize.js';
@@ -106,7 +107,7 @@ initAvatar();
     input.focus();
     input.select();
     const commit = () => {
-      const newName = input.value.trim() || "Bella";
+      const newName = input.value.trim() || DEFAULT_AI_NAME;
       dom.aiName.textContent = newName;
       localStorage.setItem("aiName", newName);
       // Built-in persona texts embed the AI name — re-resolve the current one so
@@ -116,6 +117,8 @@ initAvatar();
         dom.persona.value = resolvePersonaText(sel, newName);
         saveCurrentSettings();
       }
+      // "Say something to <name>…" carries the name, so it has to follow the rename too.
+      applyInputPlaceholder();
     };
     input.addEventListener("blur", commit);
     input.addEventListener("keydown", (e) => {
@@ -149,6 +152,7 @@ loadSavedSettings();
     dom.persona.value = initialTab.persona || resolvePersonaText(initialTab.personality);
   }
   syncPersonaEditable();
+  renderPersonaSummary();
 }
 
 // Personality select handler
@@ -157,6 +161,7 @@ dom.personalitySelect.addEventListener("change", () => {
   dom.persona.value = resolvePersonaText(val);
   if (!isBuiltinKey(val)) dom.persona.focus();   // temp/custom are editable — jump in
   syncPersonaEditable();
+  renderPersonaSummary();
   const currentTab = getActiveTab();
   if (currentTab) {
     currentTab.personality = val;
@@ -477,6 +482,24 @@ if (dom.numCtxSelect) {
       renderContextMeter();
     });
   }
+  // The timeout changes nothing about what gets sent, so no meter refresh.
+  dom.llmTimeout?.addEventListener("change", saveCurrentSettings);
+}
+// ⚙ next to the Basic tab's one-line personality summary — same modal pattern again.
+{
+  const modal = dom.personaModal;
+  const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); close(); } };
+  const close = () => {
+    if (modal) modal.hidden = true;
+    document.removeEventListener("keydown", onKey);
+  };
+  dom.personaBtn?.addEventListener("click", () => {
+    if (!modal) return;
+    modal.hidden = false;
+    document.addEventListener("keydown", onKey);
+  });
+  dom.personaModalClose?.addEventListener("click", close);
+  modal?.addEventListener("mousedown", (e) => { if (e.target === modal) close(); });
 }
 // Marks that the user EXPLICITLY picked a PDF engine (vs. the app-chosen default).
 // Needed because in WKWebView a `selected hidden` <option> silently falls through to
@@ -656,7 +679,7 @@ if (dom.memoryExtractBtn) {
             { role: "user", content: getPrompt("memoryExtractUser", existing, transcript) },
           ],
           options: { temperature: 0.3 },
-          timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
+          timeout: getLlmTimeout(),
         }),
       });
       if (!response.ok) throw new Error("request failed");
@@ -1373,7 +1396,7 @@ async function materializeTab(tab) {
 
 function exportNames() {
   const you = (dom.userName.value || "").split(/[,，、\s]+/).filter(Boolean)[0] || "You";
-  const ai = dom.aiName?.textContent?.trim() || "Bella";
+  const ai = dom.aiName?.textContent?.trim() || DEFAULT_AI_NAME;
   return { you, ai };
 }
 
@@ -1710,7 +1733,7 @@ export function applyInputPlaceholder() {
   } else if (getStagedImages().length > 0) {
     dom.messageInput.placeholder = t("input_imageEditHint");
   } else {
-    dom.messageInput.placeholder = t("input_placeholder");
+    dom.messageInput.placeholder = t("input_placeholder", { name: composerAiName() });
   }
 }
 

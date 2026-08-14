@@ -3,6 +3,7 @@
 
 // Internationalization module - multilingual support (en, zh, zh-Hant)
 import { dom } from './state.js';
+import { DEFAULT_AI_NAME } from './constants.js';
 
 // --- UI String Catalog ---
 const UI = {
@@ -13,9 +14,13 @@ const UI = {
     panelTab_extra: "More Options",
     // Basic tab
     label_callName: "Call me",
-    label_callNameHint: "(separate multiple with spaces or commas)",
-    input_callNamePlaceholder: "e.g.: honey, babe, sweetie",
+    label_callNameHint: "Separate multiple with spaces or commas",
+    input_callNamePlaceholder: "e.g. Sam, Sammy",
     label_personality: "Personality Type",
+    personality_creator: "Creative assistant",
+    persona_settings: "Personality settings",
+    persona_title: "Personality",
+    persona_sep: ": ",
     personality_sweet: "Sweet & Gentle",
     personality_genki: "Energetic Girl",
     personality_mature: "Cool Big Sister",
@@ -38,7 +43,7 @@ const UI = {
     preset_selectFirst: "Select one of your custom presets first.",
     preset_confirmDelete: "Delete the preset \"${name}\"?",
     tabGuard_warning: "⚠️ hey-koko is already open in another tab. Please keep only ONE tab — multiple tabs overwrite each other's chat data.",
-    label_persona: "Personality",
+    label_persona: "Prompt",
     btn_save: "Save Settings",
     btn_clearChat: "Clear Chat",
     btn_export: "Export Chat",
@@ -406,7 +411,7 @@ const UI = {
     scan_empty: "None found",
     hint_ollama: "Ollama must be running",
     label_comfyModel: "ComfyUI Model",
-    hint_comfy: "ComfyUI must be running (used when no image model is selected)",
+    hint_comfy: "ComfyUI must be running",
     btn_scanComfyTooltip: "Scan local network for running ComfyUI instances",
     image_model_none: "No image model detected",
     model_none: "No model detected (check the LLM server address)",
@@ -425,7 +430,7 @@ const UI = {
     mb_use: "Use",
     mb_close: "Close",
     mb_failed: "Could not load the model list: ${error}",
-    image_model_empty: "Leave empty (use ComfyUI)",
+    image_model_empty: "Off (ComfyUI generates)",
     comfy_model_none: "No ComfyUI model detected",
     cmp_title: "Choose a ComfyUI model",
     cmp_search: "Filter by name…",
@@ -698,8 +703,9 @@ const UI = {
     opt_size_1080p_portrait: "1080×1920 (1080p Portrait)",
     opt_size_ultrawide_small: "896×384 (21:9 Ultrawide, Small)",
     opt_size_ultrawide: "1792×768 (21:9 Ultrawide)",
-    label_timeout: "Timeout",
+    label_timeout: "Image timeout",
     label_timeoutUnit: "s",
+    tip_imageTimeout: "How long to wait for an image render. Video renders (ComfyUI ⚙) and chat replies (LLM ⚙) have their own timeouts.",
     llm_paramsBtn: "LLM parameters",
     find_placeholder: "Find in conversation",
     find_prev: "Previous match",
@@ -707,13 +713,17 @@ const UI = {
     find_close: "Close",
     find_noMatch: "Not found",
     find_count: "${i} / ${n}",
-    llm_paramsHint: "Leave empty = no limit",
+    llm_paramsHint: "Leave a cap empty = no limit",
     llm_noLimit: "no limit",
     llm_maxImages: "Images sent to the model (max)",
     llm_maxImagesTip: "Recommended 2-4. Each image costs roughly 768 tokens, and most vision models reliably attend to only a few at a time.",
     llm_maxMessages: "Conversation turns sent (max)",
     llm_maxMessagesTip: "Recommended 20-40. Counts single messages, so one question plus its reply is 2. The context window already drops older ones on its own.",
+    llm_timeout: "Reply timeout (seconds)",
+    llm_timeoutTip: "How long to wait for the chat model before giving up. Covers replies, translation, page summaries and library distillation. Empty = 240 seconds. Media renders have their own timeouts (Models tab).",
     llm_paramsTitle: "LLM parameters",
+    image_model_hint: "Ollama image generation — available only in the macOS build of Ollama for now, so this list stays empty elsewhere. When set, it is used instead of the ComfyUI model.",
+    comfy_overriddenByOllama: "⚠️ The Ollama image model \"${model}\" is generating images instead of this one. Clear it in the LLM ⚙ to use ComfyUI.",
     label_numCtx: "Context window",
     label_pdfEngine: "PDF import",
     pdfEngine_pdfjs: "Fast (text only)",
@@ -758,7 +768,7 @@ const UI = {
     theme_mint: "Mint Green",
     theme_slate: "Graphite",
     // Chat area
-    input_placeholder: "Say something to Bella...",
+    input_placeholder: "Say something to ${name}...",
     input_lockedPlaceholder: "Chat is locked",
     input_imageEditHint: "Chat about the image, or edit it: /imagine <your edit> (needs image model)",
     yt_channel: "Channel: ${x}",
@@ -1539,9 +1549,13 @@ const UI = {
     panelTab_more: "模型设定",
     panelTab_extra: "更多选项",
     label_callName: "称呼你",
-    label_callNameHint: "(多个用空格或逗号分隔)",
-    input_callNamePlaceholder: "如：亲爱的, 宝贝, 小傻瓜",
+    label_callNameHint: "多个用空格或逗号分隔",
+    input_callNamePlaceholder: "如：小明, 明明",
     label_personality: "性格类型",
+    personality_creator: "创作助理",
+    persona_settings: "人设设置",
+    persona_title: "人设",
+    persona_sep: "：",
     personality_sweet: "温柔甜妹",
     personality_genki: "元气少女",
     personality_mature: "御姐",
@@ -1564,7 +1578,7 @@ const UI = {
     preset_selectFirst: "请先选中一个你的自定义预设。",
     preset_confirmDelete: "删除预设「${name}」？",
     tabGuard_warning: "⚠️ hey-koko 已在另一个标签页打开。请只保留一个标签页——多个标签页会相互覆盖聊天数据！",
-    label_persona: "性格",
+    label_persona: "提示词",
     btn_save: "保存设定",
     btn_clearChat: "清空当前聊天",
     btn_export: "导出对话",
@@ -1931,7 +1945,7 @@ const UI = {
     scan_empty: "未找到",
     hint_ollama: "需要先运行 Ollama",
     label_comfyModel: "ComfyUI 模型",
-    hint_comfy: "需要先运行 ComfyUI（图片模型留空时使用）",
+    hint_comfy: "需要先运行 ComfyUI",
     btn_scanComfyTooltip: "扫描局域网内正在运行的 ComfyUI 实例",
     image_model_none: "未检测到图片模型",
     model_none: "未检测到模型（请检查 LLM 服务地址）",
@@ -1950,7 +1964,7 @@ const UI = {
     mb_use: "使用",
     mb_close: "关闭",
     mb_failed: "无法加载模型列表：${error}",
-    image_model_empty: "留空（改用 ComfyUI）",
+    image_model_empty: "不启用（由 ComfyUI 出图）",
     comfy_model_none: "未检测到 ComfyUI 模型",
     cmp_title: "选择 ComfyUI 模型",
     cmp_search: "按名称筛选…",
@@ -2223,8 +2237,9 @@ const UI = {
     opt_size_1080p_portrait: "1080×1920 (1080p 竖版)",
     opt_size_ultrawide_small: "896×384 (21:9 超宽 小图)",
     opt_size_ultrawide: "1792×768 (21:9 超宽)",
-    label_timeout: "超时",
+    label_timeout: "图片超时",
     label_timeoutUnit: "秒",
+    tip_imageTimeout: "等待一次图片渲染的时长。视频渲染（ComfyUI ⚙）和聊天回复（LLM ⚙）各有自己的超时。",
     llm_paramsBtn: "LLM 参数",
     find_placeholder: "在对话中查找",
     find_prev: "上一个",
@@ -2232,13 +2247,17 @@ const UI = {
     find_close: "关闭",
     find_noMatch: "未找到",
     find_count: "${i} / ${n}",
-    llm_paramsHint: "留空 = 不限制",
+    llm_paramsHint: "上限留空 = 不限制",
     llm_noLimit: "不限制",
     llm_maxImages: "发给模型的图片数量上限",
     llm_maxImagesTip: "建议 2-4 张。每张图约占 768 tokens，多数视觉模型也只能可靠关注其中少数几张。",
     llm_maxMessages: "发送的对话条数上限",
     llm_maxMessagesTip: "建议 20-40 条。按单条消息计，一问一答算 2 条。上下文长度本身已会自动裁掉更早的内容。",
+    llm_timeout: "回复超时（秒）",
+    llm_timeoutTip: "等待聊天模型回复的时长，超时即放弃。回复、翻译、网页摘要、知识库蒸馏都用它。留空 = 240 秒。媒体渲染有各自的超时（「Models」页）。",
     llm_paramsTitle: "LLM 参数",
+    image_model_hint: "Ollama 出图 —— 目前仅 macOS 版 Ollama 支持，其他平台这个列表会一直是空的。一旦选中，就用它代替 ComfyUI 模型。",
+    comfy_overriddenByOllama: "⚠️ 正在用 Ollama 图片模型「${model}」出图，而不是这里选的。要走 ComfyUI，请在 LLM ⚙ 中清空它。",
     label_numCtx: "上下文长度",
     label_pdfEngine: "PDF 导入",
     pdfEngine_pdfjs: "快速（仅文本）",
@@ -2280,7 +2299,7 @@ const UI = {
     theme_amber: "琥珀温暖",
     theme_mint: "青草绿",
     theme_slate: "石墨",
-    input_placeholder: "和 Bella 说点什么...",
+    input_placeholder: "和 ${name} 说点什么...",
     input_lockedPlaceholder: "对话已锁定",
     input_imageEditHint: "可直接对话，或编辑图片：/imagine 你想怎么改（需图像模型）",
     yt_channel: "频道：${x}",
@@ -3054,9 +3073,13 @@ const UI = {
     panelTab_more: "模型設定",
     panelTab_extra: "更多選項",
     label_callName: "稱呼你",
-    label_callNameHint: "(多個用空格或逗號分隔)",
-    input_callNamePlaceholder: "如：親愛的, 寶貝, 小傻瓜",
+    label_callNameHint: "多個用空格或逗號分隔",
+    input_callNamePlaceholder: "如：小明, 明明",
     label_personality: "性格類型",
+    personality_creator: "創作助理",
+    persona_settings: "人設設定",
+    persona_title: "人設",
+    persona_sep: "：",
     personality_sweet: "溫柔甜妹",
     personality_genki: "元氣少女",
     personality_mature: "御姐",
@@ -3079,7 +3102,7 @@ const UI = {
     preset_selectFirst: "請先選取一個你的自訂預設。",
     preset_confirmDelete: "刪除預設「${name}」？",
     tabGuard_warning: "⚠️ hey-koko 已在另一個分頁開啟。請只保留一個分頁——多個分頁會相互覆蓋聊天資料！",
-    label_persona: "性格",
+    label_persona: "提示詞",
     btn_save: "儲存設定",
     btn_clearChat: "清空目前聊天",
     btn_export: "匯出對話",
@@ -3445,7 +3468,7 @@ const UI = {
     scan_scanning: "掃描中…",
     scan_empty: "未找到",
     label_comfyModel: "ComfyUI 模型",
-    hint_comfy: "需要先執行 ComfyUI（圖片模型留空時使用）",
+    hint_comfy: "需要先執行 ComfyUI",
     btn_scanComfyTooltip: "掃描區域網路內正在執行的 ComfyUI 實例",
     image_model_none: "未偵測到圖片模型",
     model_none: "未偵測到模型（請檢查 LLM 服務地址）",
@@ -3464,7 +3487,7 @@ const UI = {
     mb_use: "使用",
     mb_close: "關閉",
     mb_failed: "無法載入模型清單：${error}",
-    image_model_empty: "留空（改用 ComfyUI）",
+    image_model_empty: "不啟用（由 ComfyUI 出圖）",
     comfy_model_none: "未偵測到 ComfyUI 模型",
     cmp_title: "選擇 ComfyUI 模型",
     cmp_search: "依名稱篩選…",
@@ -3738,8 +3761,9 @@ const UI = {
     opt_size_1080p_portrait: "1080×1920 (1080p 直版)",
     opt_size_ultrawide_small: "896×384 (21:9 超寬 小圖)",
     opt_size_ultrawide: "1792×768 (21:9 超寬)",
-    label_timeout: "逾時",
+    label_timeout: "圖片逾時",
     label_timeoutUnit: "秒",
+    tip_imageTimeout: "等待一次圖片算圖的時長。影片算圖（ComfyUI ⚙）和聊天回覆（LLM ⚙）各有自己的逾時。",
     llm_paramsBtn: "LLM 參數",
     find_placeholder: "在對話中尋找",
     find_prev: "上一個",
@@ -3747,13 +3771,17 @@ const UI = {
     find_close: "關閉",
     find_noMatch: "未找到",
     find_count: "${i} / ${n}",
-    llm_paramsHint: "留空 = 不限制",
+    llm_paramsHint: "上限留空 = 不限制",
     llm_noLimit: "不限制",
     llm_maxImages: "發給模型的圖片數量上限",
     llm_maxImagesTip: "建議 2-4 張。每張圖約佔 768 tokens，多數視覺模型也只能可靠關注其中少數幾張。",
     llm_maxMessages: "發送的對話條數上限",
     llm_maxMessagesTip: "建議 20-40 條。按單條訊息計，一問一答算 2 條。上下文長度本身已會自動裁掉更早的內容。",
+    llm_timeout: "回覆逾時（秒）",
+    llm_timeoutTip: "等待聊天模型回覆的時長，逾時即放棄。回覆、翻譯、網頁摘要、知識庫蒸餾都用它。留空 = 240 秒。媒體算圖有各自的逾時（「Models」頁）。",
     llm_paramsTitle: "LLM 參數",
+    image_model_hint: "Ollama 出圖 —— 目前僅 macOS 版 Ollama 支援，其他平台這個列表會一直是空的。一旦選中，就用它代替 ComfyUI 模型。",
+    comfy_overriddenByOllama: "⚠️ 正在用 Ollama 圖片模型「${model}」出圖，而不是這裡選的。要走 ComfyUI，請在 LLM ⚙ 中清空它。",
     label_numCtx: "上下文長度",
     label_pdfEngine: "PDF 匯入",
     pdfEngine_pdfjs: "快速（僅文字）",
@@ -3795,7 +3823,7 @@ const UI = {
     theme_amber: "琥珀溫暖",
     theme_mint: "青草綠",
     theme_slate: "石墨",
-    input_placeholder: "和 Bella 說點什麼...",
+    input_placeholder: "和 ${name} 說點什麼...",
     input_lockedPlaceholder: "對話已鎖定",
     input_imageEditHint: "可直接對話，或編輯圖片：/imagine 你想怎麼改（需圖像模型）",
     yt_channel: "頻道：${x}",
@@ -4769,6 +4797,10 @@ export function getPromptLanguage() {
  * Translate a UI key with optional interpolation variables.
  * Fallback chain: requested → zh (if zh-Hant) → en → key
  */
+// The AI's display name for interpolation. Duplicated from presets.currentAiName()
+// rather than imported: presets.js imports i18n.js, and this is one property read.
+export const composerAiName = () => dom.aiName?.textContent?.trim() || DEFAULT_AI_NAME;
+
 export function t(key, vars, langOverride) {
   const lang = langOverride || getUILanguage();
   let str = UI[lang]?.[key];
@@ -4817,9 +4849,11 @@ const BINDINGS = [
   { sel: '.panelTab[data-panel-tab="extra"]', key: "panelTab_extra" },
   // Basic tab labels & buttons
   { sel: "#callNameLabel", key: "label_callName" },
-  { sel: "#callNameHint", key: "label_callNameHint" },
+  { sel: "#callNameLabel", key: "label_callNameHint", attr: "title" },
   { sel: "#userName", key: "input_callNamePlaceholder", attr: "placeholder" },
   { sel: "#personalityLabelText", key: "label_personality" },
+  { sel: "#personaSummaryLabelText", key: "persona_title" },
+  { sel: "#personaModalTitle", key: "persona_title" },
   // #personalitySelect options are rebuilt dynamically (built-ins + custom presets)
   // by presets.js renderPersonalityOptions(), which self-labels via t() — so they are
   // NOT relabeled here. renderPersonalityOptions() is re-run on UI-language change.
@@ -4907,6 +4941,10 @@ const BINDINGS = [
   { sel: "#llmMaxImages", key: "llm_maxImagesTip", attr: "title" },
   { sel: "#llmMaxMessagesLabel", key: "llm_maxMessagesTip", attr: "title" },
   { sel: "#llmMaxMessages", key: "llm_maxMessagesTip", attr: "title" },
+  { sel: "#llmTimeoutLabel", key: "llm_timeout" },
+  { sel: "#llmTimeoutLabel", key: "llm_timeoutTip", attr: "title" },
+  { sel: "#llmTimeout", key: "llm_timeoutTip", attr: "title" },
+  { sel: "#imageModelHint", key: "image_model_hint" },
   { sel: "#pdfEngineLabelText", key: "label_pdfEngine" },
   { sel: "#pdfEngineOptPdfjs", key: "pdfEngine_pdfjs" },
   { sel: "#embedModelLabelText", key: "label_embedModel" },
@@ -5159,6 +5197,7 @@ const BINDINGS = [
   { sel: '#defaultImageSize option[value="896x384"]', key: "opt_size_ultrawide_small" },
   { sel: '#defaultImageSize option[value="1792x768"]', key: "opt_size_ultrawide" },
   { sel: "#timeoutLabelText", key: "label_timeout" },
+  { sel: ".imageGenOptions .voiceRateLabel", key: "tip_imageTimeout", attr: "title" },
   { sel: "#timeoutUnitText", key: "label_timeoutUnit" },
   { sel: "#voiceLabelText", key: "label_voice" },
   { sel: "#speechRateLabelText", key: "label_speechRate" },
@@ -5190,7 +5229,6 @@ const BINDINGS = [
   // Chat area
   // Drag-drop hint lives in CSS as content: attr(data-drop-hint) on .composer::after
   { sel: ".composer", key: "hint_dropFiles", attr: "data-drop-hint" },
-  { sel: "#messageInput", key: "input_placeholder", attr: "placeholder" },
   { sel: "#quickPromptBtn", key: "tooltip_quickPrompt", attr: "title" },
   { sel: "#askSuggestBtn", key: "tooltip_askSuggest", attr: "title" },
   { sel: ".uploadButton", key: "tooltip_file", attr: "title" },
@@ -5349,6 +5387,13 @@ export function applyUILanguage() {
   }
   // AI name title
   if (dom.aiName) dom.aiName.title = t("msg_aiNameTitle");
+  // "Say something to <name>…" — the name is the user's, not a translatable literal,
+  // so this one is resolved here rather than through the BINDINGS table. (main.js's
+  // applyInputPlaceholder owns it the rest of the time; this covers a language switch
+  // that happens while nothing is staged.)
+  if (dom.messageInput && !dom.messageInput.dataset.phOverride) {
+    dom.messageInput.placeholder = t("input_placeholder", { name: composerAiName() });
+  }
   // Image-model dropdown: the always-present empty option is built by ollama.js
   // (loadImageModels) and not otherwise re-labeled on a language switch.
   if (dom.imageModelSelect) {

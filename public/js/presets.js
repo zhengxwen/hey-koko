@@ -12,22 +12,30 @@
 // holds the resolved text. The list lives in state.customPresets and is persisted
 // inside SETTINGS_KEY by settings.js.
 import { dom, state } from './state.js';
-import { getPersonalityPreset } from './constants.js';
+import { getPersonalityPreset, DEFAULT_AI_NAME } from './constants.js';
 import { saveCurrentSettings, syncPersonaEditable } from './settings.js';
 import { t, getUILanguage } from './i18n.js';
 import { genId } from './utils.js';
 
-// Built-ins grouped for the dropdown: female / male / profession-flavored.
+// Built-ins grouped for the dropdown. Profession-flavored leads, and "creator" leads
+// that group, because it is the factory default — a default sitting at the bottom of
+// the list is a default nobody sees. The companion personas stay exactly as they were,
+// one group down: the point was never to remove them, only to stop imposing one.
 const BUILTIN_GROUPS = [
+  { labelKey: "preset_groupPro", keys: ["creator", "counselor", "scholar", "editor"] },
   { labelKey: "preset_groupFemale", keys: ["sweet", "genki", "mature"] },
   { labelKey: "preset_groupMale", keys: ["warm", "sunny", "steady"] },
-  { labelKey: "preset_groupPro", keys: ["counselor", "scholar", "editor"] },
 ];
 const BUILTINS = BUILTIN_GROUPS.flatMap((g) => g.keys);
 
+// The factory personality. Exported because three other modules used to spell "sweet"
+// inline — a new tab, a serialized tab and the delete-preset fallback all have to land
+// on the same one, and they drifted apart the moment the default changed.
+export const DEFAULT_PERSONALITY = "creator";
+
 // The AI's display name (header, dblclick-editable) — substituted into the
-// built-in persona texts in place of the default "Bella".
-export const currentAiName = () => dom.aiName?.textContent?.trim() || "Bella";
+// built-in persona texts in place of DEFAULT_AI_NAME.
+export const currentAiName = () => dom.aiName?.textContent?.trim() || DEFAULT_AI_NAME;
 
 export const isBuiltinKey = (v) => BUILTINS.includes(v);
 export const isCustomPresetId = (v) => typeof v === "string" && v.startsWith("cp_");
@@ -83,6 +91,20 @@ export function renderPersonalityOptions() {
   sel.appendChild(oNew);
 
   if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  renderPersonaSummary();
+}
+
+// The one line the Basic tab shows for a setting that otherwise lives behind the ⚙.
+// It reads the SELECTED OPTION's own label rather than re-deriving one, so a built-in,
+// a custom preset and the unsaved-custom sentinel all name themselves the same way the
+// dropdown does — including after a UI-language switch rebuilds the labels.
+export function renderPersonaSummary() {
+  if (!dom.personaSummary) return;
+  const sel = dom.personalitySelect;
+  const opt = sel?.selectedOptions?.[0];
+  dom.personaSummary.textContent = opt ? `${t("persona_sep")}${opt.textContent}` : "";
+  // The ⚙ names it too: the summary is easy to overlook, the button is what gets clicked.
+  if (dom.personaBtn) dom.personaBtn.title = `${t("persona_settings")} — ${opt ? opt.textContent : ""}`;
 }
 
 // Save the current persona textarea as a brand-new named preset and select it.
@@ -109,7 +131,7 @@ export function renameCurrentPreset() {
   saveCurrentSettings();
 }
 
-// Delete the currently-selected custom preset and fall back to the Sweet built-in.
+// Delete the currently-selected custom preset and fall back to the factory default.
 export function deleteCurrentPreset() {
   const p = getCustomPreset(dom.personalitySelect.value);
   if (!p) { alert(t("preset_selectFirst")); return; }
@@ -125,8 +147,8 @@ export function deleteCurrentPreset() {
     }
   }
   renderPersonalityOptions();
-  dom.personalitySelect.value = "sweet";
-  dom.persona.value = resolvePersonaText("sweet");
+  dom.personalitySelect.value = DEFAULT_PERSONALITY;
+  dom.persona.value = resolvePersonaText(DEFAULT_PERSONALITY);
   syncPersonaEditable();
   saveCurrentSettings();
 }

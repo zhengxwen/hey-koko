@@ -63,7 +63,7 @@
           <div class="profile-side">
             <div class="profile-text">
               <p><button type="button" id="aboutBtn" class="aboutBtn">Hey-Koko</button></p>
-              <h1 id="aiName">Bella</h1>
+              <h1 id="aiName">Koko</h1>
             </div>
             <div class="avatar-picker" id="avatarPicker"></div>
           </div>
@@ -76,31 +76,58 @@
         </div>
 
         <div class="panelTabContent isActive" data-panel-content="basic">
+          <!-- The chat model leads the first screen. It is the setting people actually
+               change, and putting it ahead of "what should I call you" is also what
+               keeps the first screen from reading as a companion app. Its ⚙, its
+               address and the Ollama Scan travel with it — Scan is what you press to
+               get this list populated in the first place. -->
+          <div class="modelGroup">
+            <div class="comfyModelRow">
+              <label id="modelLabel">
+                <span id="modelLabelText">LLM model</span>
+                <select id="modelSelect">
+                  <option value="llama3.1:8b">llama3.1:8b</option>
+                  <option value="qwen2.5:7b">qwen2.5:7b</option>
+                  <option value="mistral:7b">mistral:7b</option>
+                </select>
+              </label>
+              <button id="llmParamsBtn" type="button" class="secondary comfyParamsBtn" title="LLM parameters">⚙</button>
+            </div>
+          </div>
+          <div class="urlRow"><button id="editLlmUrl" type="button" class="urlEditBtn" title="Edit address">✎</button><span id="llmUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
+          <div class="hintRow">
+            <button id="scanOllama" type="button" class="secondary scanBtn" title="Scan local network for Ollama instances">Scan</button>
+            <p class="hint">Run Ollama first</p>
+          </div>
+
+          <hr class="settingsDivider" />
+
+          <!-- The multi-nickname hint used to sit beside the label with
+               justify-content:space-between, which squeezed "Call me" onto two lines.
+               It is a tooltip now; the label is one word wide. -->
           <label>
-            <span style="display:flex;justify-content:space-between;align-items:baseline"><span id="callNameLabel">Call you</span><small id="callNameHint">(separate multiple with spaces or commas)</small></span>
+            <span id="callNameLabel" title="Separate multiple with spaces or commas">Call me</span>
             <div class="userNameWrapper">
-              <input id="userName" value="" placeholder="e.g. dear, honey, sweetie" autocomplete="off" />
+              <input id="userName" value="" placeholder="e.g. Sam, Sammy" autocomplete="off" />
               <button type="button" id="userNameDropdownBtn" class="userNameDropdownBtn" title="History">▾</button>
               <div id="userNameDropdown" class="userNameDropdown" hidden></div>
             </div>
           </label>
 
-          <label id="personalityLabel">
-            <span id="personalityLabelText">Personality</span>
-            <!-- Options are built dynamically by presets.js renderPersonalityOptions()
-                 (built-ins + the user's custom presets) — keep this empty. -->
-            <select id="personalitySelect"></select>
-          </label>
-
-          <label id="personaLabel">
-            <span id="personaLabelText">Her personality</span>
-            <textarea id="persona" rows="4">Your name is Bella, the user's local AI companion. You are gentle, smart, and a little playful, but you never pretend to be human. You chat naturally in English, care about the user's mood, and actively continue conversations. Your replies are concise, warm, encouraging — never preachy or robotic.</textarea>
-          </label>
-
-          <div class="presetActions">
-            <button id="presetSaveAs" type="button" class="presetBtn">Save as preset…</button>
-            <button id="presetRename" type="button" class="presetBtn">Rename</button>
-            <button id="presetDelete" type="button" class="presetBtn">Delete</button>
+          <!-- Personality is one read-only line plus a ⚙: it changes the system prompt,
+               so it must not be invisible, but a persona editor is not what the first
+               screen of a local AI studio should be selling. The picker, the text and
+               the preset buttons all live in the popover the ⚙ opens. -->
+          <!-- Deliberately NOT a <label> wrapping a field: there is no form control here,
+               and a boxed read-only input reads as a disabled one, i.e. broken. One line,
+               the way the ✎ address rows above already state a fact. -->
+          <div class="personaRow">
+            <button id="personaBtn" type="button" class="secondary comfyParamsBtn" title="Personality settings">⚙</button>
+            <span id="personaSummaryLabelText" class="personaRowLabel">Personality</span>
+            <!-- The separator is written by renderPersonaSummary, not baked into the
+                 label: the label span is i18n-bound to the same key as the popover's
+                 title, and CJK wants a full-width ：where English wants ": ". -->
+            <span class="personaSummary" id="personaSummary"></span>
           </div>
 
           <hr class="settingsDivider" />
@@ -135,34 +162,6 @@
         </div>
 
         <div class="panelTabContent" data-panel-content="more">
-          <div class="modelGroup">
-            <div class="comfyModelRow">
-              <label id="modelLabel">
-                <span id="modelLabelText">LLM model</span>
-                <select id="modelSelect">
-                  <option value="llama3.1:8b">llama3.1:8b</option>
-                  <option value="qwen2.5:7b">qwen2.5:7b</option>
-                  <option value="mistral:7b">mistral:7b</option>
-                </select>
-              </label>
-              <button id="llmParamsBtn" type="button" class="secondary comfyParamsBtn" title="LLM parameters">⚙</button>
-            </div>
-          </div>
-          <div class="urlRow"><button id="editLlmUrl" type="button" class="urlEditBtn" title="Edit address">✎</button><span id="llmUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
-
-          <label id="imageModelLabel">
-            <span id="imageModelLabelText">Image model</span>
-            <select id="imageModelSelect">
-              <option value="">No image model detected</option>
-            </select>
-          </label>
-          <div class="urlRow"><button id="editImageUrl" type="button" class="urlEditBtn" title="Edit address">✎</button><span id="imageUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
-
-          <div class="hintRow">
-            <button id="scanOllama" type="button" class="secondary scanBtn" title="Scan local network for Ollama instances">Scan</button>
-            <p class="hint">Run Ollama first</p>
-          </div>
-
           <div class="comfySection">
             <div class="comfyModelRow">
               <label id="comfyModelLabel">
@@ -184,10 +183,16 @@
             </div>
             <div class="urlRow"><button id="editComfyUrl" type="button" class="urlEditBtn" title="Edit address">✎</button><span id="comfyUrlDisplay" class="urlDisplay">127.0.0.1:8188</span></div>
             <div class="comfyModelWarn" id="comfyModelWarn" hidden></div>
+            <!-- An Ollama image model BEATS this picker (see shouldUseComfy). That used
+                 to be self-evident, with the two selects one above the other; now that
+                 the Ollama one lives in the LLM ⚙, the override has to announce itself
+                 here or the picker silently means nothing. Shown only when one is
+                 actually set, which for most installs is never. -->
+            <div class="comfyModelWarn" id="comfyOverriddenWarn" hidden></div>
             <div class="comfyModelHint" id="comfyModelHint" hidden></div>
             <div class="hintRow">
               <button id="scanComfy" type="button" class="secondary scanBtn" title="Scan local network for ComfyUI instances">Scan</button>
-              <p class="hint" id="comfyHint">Run ComfyUI first (used when the image model is empty)</p>
+              <p class="hint" id="comfyHint">Run ComfyUI first</p>
             </div>
             <p class="hint comfyMultiHint" id="comfyMultiHint" hidden>✨ This model supports multi-image composition — attach 2-3 reference images</p>
           </div>
@@ -213,8 +218,10 @@
                 <option value="1792x768">1792×768 (21:9 Ultrawide)</option>
               </select>
             </label>
-            <label class="voiceRateLabel">
-              <span class="rateLabelText"><span id="timeoutLabelText">Timeout</span> <span id="requestTimeoutValue">120</span><span id="timeoutUnitText">s</span></span>
+            <!-- Images only. Video has its own (ComfyUI ⚙ → Video timeout, in minutes)
+                 and the chat model has its own (LLM ⚙ → Reply timeout). -->
+            <label class="voiceRateLabel" title="How long to wait for an image render. Video renders and chat replies have their own timeouts.">
+              <span class="rateLabelText"><span id="timeoutLabelText">Image timeout</span> <span id="requestTimeoutValue">120</span><span id="timeoutUnitText">s</span></span>
               <input id="requestTimeout" type="range" min="60" max="600" step="30" value="120" />
             </label>
           </div>
@@ -761,7 +768,7 @@
               <span id="audioPreviewName" class="filePreviewName"></span>
               <button id="removeAudio" type="button" class="iconButton" aria-label="Remove audio">×</button>
             </div>
-            <textarea id="messageInput" rows="2" placeholder="Say something to Bella..." autofocus></textarea>
+            <textarea id="messageInput" rows="2" placeholder="Say something to Koko..." autofocus></textarea>
           </div>
           <!-- One grid cell, two stacked buttons: the filmstrip toggle sits directly
                above « rather than inside the strip it hides (nothing to click on a
@@ -1319,14 +1326,76 @@
               <option value="32768" selected>32768</option>
             </select>
           </label>
+          <!-- The two caps are one idea — how much of the conversation goes up — and both
+               take a short number, so they share a row (.comfyParamRow bottom-aligns them
+               so the inputs stay level when the longer label wraps). -->
+          <div class="comfyParamRow">
+            <label>
+              <span id="llmMaxImagesLabel" title="Recommended 2-4. Each image costs roughly 768 tokens, and most vision models reliably attend to only a few at a time.">Images sent to the model (max)</span>
+              <input id="llmMaxImages" type="number" min="0" max="200" step="1" placeholder="no limit" title="Recommended 2-4. Each image costs roughly 768 tokens, and most vision models reliably attend to only a few at a time." />
+            </label>
+            <label>
+              <span id="llmMaxMessagesLabel" title="Recommended 20-40. Counts single messages, so one question plus its reply is 2. The context window already drops older ones on its own.">Conversation turns sent (max)</span>
+              <input id="llmMaxMessages" type="number" min="1" max="500" step="1" placeholder="no limit" title="Recommended 20-40. Counts single messages, so one question plus its reply is 2. The context window already drops older ones on its own." />
+            </label>
+          </div>
+          <!-- The chat model's own deadline, separate from the render timeouts: a slow
+               reply and a slow render fail for unrelated reasons and are worth waiting
+               out for very different lengths of time. Empty = 240s — the 120 these call
+               sites used to carry inline was short enough that a cold model load could
+               eat it before the first token. -->
           <label>
-            <span id="llmMaxImagesLabel" title="Recommended 2-4. Each image costs roughly 768 tokens, and most vision models reliably attend to only a few at a time.">Images sent to the model (max)</span>
-            <input id="llmMaxImages" type="number" min="0" max="200" step="1" placeholder="no limit" title="Recommended 2-4. Each image costs roughly 768 tokens, and most vision models reliably attend to only a few at a time." />
+            <span id="llmTimeoutLabel" title="How long to wait for the chat model before giving up. Covers replies, translation, page summaries and library distillation. Empty = 240 seconds. Media renders have their own timeouts (Models tab).">Reply timeout (seconds)</span>
+            <input id="llmTimeout" type="number" min="10" max="3600" step="10" placeholder="240" title="How long to wait for the chat model before giving up. Covers replies, translation, page summaries and library distillation. Empty = 240 seconds. Media renders have their own timeouts (Models tab)." />
           </label>
-          <label>
-            <span id="llmMaxMessagesLabel" title="Recommended 20-40. Counts single messages, so one question plus its reply is 2. The context window already drops older ones on its own.">Conversation turns sent (max)</span>
-            <input id="llmMaxMessages" type="number" min="1" max="500" step="1" placeholder="no limit" title="Recommended 20-40. Counts single messages, so one question plus its reply is 2. The context window already drops older ones on its own." />
+
+          <hr class="settingsDivider" />
+          <!-- Ollama can also GENERATE images (flux / sdxl / z-image pulled as Ollama
+               models). It is a second, rarely-populated path that takes precedence over
+               ComfyUI, so it lives down here with the other Ollama plumbing instead of
+               occupying the spot above the ComfyUI picker it silently disables. -->
+          <label id="imageModelLabel">
+            <span id="imageModelLabelText">Image model</span>
+            <select id="imageModelSelect">
+              <option value="">No image model detected</option>
+            </select>
           </label>
+          <div class="urlRow"><button id="editImageUrl" type="button" class="urlEditBtn" title="Edit address">✎</button><span id="imageUrlDisplay" class="urlDisplay">127.0.0.1:11434</span></div>
+          <p class="hint" id="imageModelHint">Ollama image generation — available only in the macOS build of Ollama for now, so this list stays empty elsewhere. When set, it is used instead of the ComfyUI model.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Personality: the picker, the text and the preset library, behind the ⚙ on the
+         Basic tab's one-line summary. Wider than the other param popovers because the
+         persona box is where a user pastes a whole system prompt. -->
+    <div id="personaModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal comfyParamsModal" role="dialog" aria-modal="true" aria-labelledby="personaModalTitle">
+        <div class="scanModalHeader">
+          <h3 id="personaModalTitle" class="scanModalTitle">Personality</h3>
+          <button id="personaModalClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
+        </div>
+        <div class="comfyParamsBody">
+          <label id="personalityLabel">
+            <span id="personalityLabelText">Personality</span>
+            <!-- Options are built dynamically by presets.js renderPersonalityOptions()
+                 (built-ins + the user's custom presets) — keep this empty. -->
+            <select id="personalitySelect"></select>
+          </label>
+
+          <label id="personaLabel">
+            <!-- Empty on purpose: the factory text is resolved from the presets at boot
+                 (loadSavedSettings), so there is exactly one copy of it and it comes out
+                 in the UI language. A hardcoded default here was English-only. -->
+            <span id="personaLabelText">Prompt</span>
+            <textarea id="persona" rows="9"></textarea>
+          </label>
+
+          <div class="presetActions">
+            <button id="presetSaveAs" type="button" class="presetBtn">Save as preset…</button>
+            <button id="presetRename" type="button" class="presetBtn">Rename</button>
+            <button id="presetDelete" type="button" class="presetBtn">Delete</button>
+          </div>
         </div>
       </div>
     </div>

@@ -5,11 +5,11 @@
 import { dom, state } from './state.js';
 import { TAG_COLORS } from './constants.js';
 import { saveTabs, saveChat, syncPersonaEditable } from './settings.js';
-import { resolvePersonaText } from './presets.js';
+import { resolvePersonaText, DEFAULT_PERSONALITY } from './presets.js';
 import { stopSpeech } from './speech.js';
 import { dbLoadTabs, dbLoadActiveTabId, migrateFromLocalStorage, dbDeleteDatabase } from './db.js';
 import { genId, isMediaRef, galleryUrl, galleryThumbUrl } from './utils.js';
-import { t } from './i18n.js';
+import { t, composerAiName } from './i18n.js';
 import { tabActiveJobCount, cancelTabJobs } from './bg-jobs.js';   // Option B: warn + cancel jobs on delete
 
 // Give every persisted message a stable `id` so the background-jobs queue can
@@ -113,7 +113,7 @@ export function createTab(title, messages = [], personality = null) {
     title,
     messages,
     tags: [],
-    personality: personality || dom.personalitySelect.value || "sweet",
+    personality: personality || dom.personalitySelect.value || DEFAULT_PERSONALITY,
     persona: personality ? (resolvePersonaText(personality) || dom.persona.value) : dom.persona.value,
   };
 }
@@ -247,7 +247,7 @@ function updateLockedState() {
   const tab = getActiveTab();
   const locked = !!(tab && tab.locked);
   dom.messageInput.disabled = locked;
-  dom.messageInput.placeholder = locked ? t("input_lockedPlaceholder") : t("input_placeholder");
+  dom.messageInput.placeholder = locked ? t("input_lockedPlaceholder") : t("input_placeholder", { name: composerAiName() });
   dom.sendButton.disabled = locked;
   dom.fileInput.disabled = locked;
   dom.chatForm.classList.toggle("isLocked", locked);
@@ -265,7 +265,7 @@ export function clearSelectedImage() {
   dom.imagePreview.hidden = true;
   // Drop the image-editing hint placeholder once no image is staged.
   const tab = getActiveTab();
-  dom.messageInput.placeholder = tab && tab.locked ? t("input_lockedPlaceholder") : t("input_placeholder");
+  dom.messageInput.placeholder = tab && tab.locked ? t("input_lockedPlaceholder") : t("input_placeholder", { name: composerAiName() });
 }
 
 export function clearSelectedFile() {

@@ -846,7 +846,12 @@ p {
   gap: 8px;
 }
 
-.comfyModelRow #comfyModelLabel {
+/* Every field in one of these rows takes the width the ⚙ leaves, rather than sizing to
+   its own content. This used to be scoped to #comfyModelLabel, which let the other rows
+   look right only by accident — a <select> is width:100% of a content-sized label, so
+   the LLM row filled because its model names are long. The personality row, whose
+   control is a short read-only div, made that visible. */
+.comfyModelRow > label {
   flex: 1;
   min-width: 0;
 }
@@ -1005,6 +1010,70 @@ p {
   font-size: 13px;
   /* The global 10px/12px padding was sized for 16px text; keep the box proportional. */
   padding: 7px 10px;
+}
+
+/* Same treatment for the LLM ⚙ form — single column, but it now carries the context
+   window, two caps, the reply timeout and the Ollama image-model row, and at the
+   global 16px that reads as oversized for a settings popover. Controls are restated
+   for the reason given above, and ID-scoped so the other .comfyParamsBody wearers
+   (mask-point / URL-import / YouTube) are untouched. */
+#llmParamsModal .comfyParamsBody {
+  font-size: 13px;
+}
+
+#llmParamsModal .comfyParamsBody input,
+#llmParamsModal .comfyParamsBody select {
+  font-size: 13px;
+  padding: 7px 10px;
+}
+
+/* .hint is a fixed 14px, which would leave the explanatory lines LARGER than the
+   labels they explain once the form drops to 13px. em-relative, matching
+   .comfyParamWarn / .comfyParamHint. */
+#llmParamsModal .comfyParamsBody .hint {
+  font-size: 0.92em;
+  line-height: 1.4;
+}
+
+/* Personality popover. Wider than the other param modals because the persona box is
+   where a whole system prompt gets pasted — at the shared 360px it is a slot, not an
+   editor. Still narrow enough to read as a popover rather than a page. */
+#personaModal .comfyParamsModal {
+  width: min(560px, 94vw);
+}
+
+#personaModal .comfyParamsBody textarea {
+  resize: vertical;
+  min-height: 160px;
+  line-height: 1.5;
+}
+
+/* The Basic tab's one-line personality summary. It states a fact and is not editable,
+   so it gets no box: an inert input-shaped field reads as a DISABLED field, and a
+   full-width one holding two words reads as broken. Label, value and ⚙ on one line,
+   same idiom as the ✎ address rows. */
+.personaRow {
+  display: flex;
+  align-items: center;
+  /* No gap: the label and its value are one phrase ("Personality: Creative assistant"),
+     joined by a separator, so only the ⚙ gets space of its own. */
+  gap: 0;
+}
+
+.personaRowLabel {
+  flex: none;
+  margin-left: 8px;
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.personaSummary {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted, #6b7280);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* Full-width items: the hint/reset header and the model-info banner. The

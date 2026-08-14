@@ -10,6 +10,7 @@
 
 import { dom, state, openPanelOverlay, closePanelOverlay, isPanelOverlayOpen } from './state.js';
 import { escapeHtml, postJson, stripHeadingEmphasis, isMediaRef, mediaBase64 } from './utils.js';
+import { getLlmTimeout } from './context-meter.js';
 import { markdownToHtml, renderMermaidDiagrams, highlightCodeBlocks, addBlockCopyButtons } from './markdown.js';
 import { renderRelationGraph, openEntityGraphModal } from './relation-graph.js';
 import { applyHighlights, registerHighlightHost } from './highlight.js';
@@ -174,7 +175,7 @@ function importJobCommon() {
     language: getPromptLanguage(),
     distill: dom.libraryDistillToggle ? !!dom.libraryDistillToggle.checked : true,
     // distill LLM budget = the chat "timeout (s)" slider, snapshotted at enqueue
-    llmTimeoutS: parseInt(dom.requestTimeoutInput.value, 10) || 300,
+    llmTimeoutS: getLlmTimeout(),
   };
 }
 
@@ -577,7 +578,7 @@ export function initLibrary() {
     for (const d of missing) {
       enqueueBgJob({
         tabId: state.activeTabId, kind: "libimport", label: "📇 " + (d.title || d.docId),
-        payload: { type: "distill", docId: d.docId, chatModel: dom.modelSelect.value, language: getPromptLanguage(), llmTimeoutS: parseInt(dom.requestTimeoutInput.value, 10) || 300 },
+        payload: { type: "distill", docId: d.docId, chatModel: dom.modelSelect.value, language: getPromptLanguage(), llmTimeoutS: getLlmTimeout() },
         noPlaceholder: true,
       });
     }
@@ -2116,7 +2117,7 @@ export function initLibrary() {
     _cardRegenBusy = true;
     setStatus(t("lib_regeneratingCard", { name: doc.title }));
     try {
-      const r = await postJson("/api/library/distill", { docId: doc.docId, metadata: false, model: dom.modelSelect.value, language: getPromptLanguage(), timeoutS: parseInt(dom.requestTimeoutInput.value, 10) || 300 });
+      const r = await postJson("/api/library/distill", { docId: doc.docId, metadata: false, model: dom.modelSelect.value, language: getPromptLanguage(), timeoutS: getLlmTimeout() });
       if (r && r.error) throw new Error(r.error);
       setStatus("");
       await refreshList();
@@ -2196,7 +2197,7 @@ export function initLibrary() {
       reBtn.disabled = true;
       setStatus(t("lib_enriching", { name: doc.title }));
       try {
-        const r = await postJson("/api/library/distill", { docId: doc.docId, model: dom.modelSelect.value, language: getPromptLanguage(), timeoutS: parseInt(dom.requestTimeoutInput.value, 10) || 300 });
+        const r = await postJson("/api/library/distill", { docId: doc.docId, model: dom.modelSelect.value, language: getPromptLanguage(), timeoutS: getLlmTimeout() });
         if (r.error) { setStatus(t("lib_distillFailed", { error: r.error })); reBtn.disabled = false; return; }
       } catch (e) { setStatus(t("lib_distillFailed", { error: e.message })); reBtn.disabled = false; return; }
       setStatus("");

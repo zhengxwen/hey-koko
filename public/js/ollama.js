@@ -306,8 +306,18 @@ export async function openModelBrowser() {
 // Show the image generation options (size/timeout) whenever EITHER an Ollama
 // image model or a ComfyUI model is available to generate with.
 export function updateImageGenOptions() {
-  const hasModel = !!(dom.imageModelSelect.value || (dom.comfyModelSelect && dom.comfyModelSelect.value));
+  const ollamaImage = dom.imageModelSelect.value;
+  const hasModel = !!(ollamaImage || (dom.comfyModelSelect && dom.comfyModelSelect.value));
   dom.imageGenOptions.style.display = hasModel ? "" : "none";
+  // An Ollama image model wins over the ComfyUI picker (shouldUseComfy). The two used
+  // to sit one above the other, which made that obvious; the Ollama one now lives in
+  // the LLM ⚙, so say it where the picker is — otherwise picking a ComfyUI model just
+  // quietly does nothing. Note loadImageModels AUTO-SELECTS one on a fresh install, so
+  // this can be true without the user ever having chosen it.
+  if (dom.comfyOverriddenWarn) {
+    dom.comfyOverriddenWarn.hidden = !ollamaImage;
+    dom.comfyOverriddenWarn.textContent = ollamaImage ? t("comfy_overriddenByOllama", { model: ollamaImage }) : "";
+  }
 }
 
 export async function loadImageModels() {
@@ -316,14 +326,15 @@ export async function loadImageModels() {
     const data = await response.json();
     const models = data.models || [];
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
-    // Distinguish "deliberately saved empty" (use ComfyUI) from "never saved"
-    // (fresh install → auto-select an Ollama image model if one exists).
     const hasSaved = Object.prototype.hasOwnProperty.call(saved, "imageModel");
-    const current = hasSaved ? saved.imageModel : dom.imageModelSelect.value;
+    const current = hasSaved ? saved.imageModel : "";
     dom.imageModelSelect.innerHTML = "";
 
-    // An empty selection is always available — it means "generate via ComfyUI
-    // instead of an Ollama image model".
+    // Off is the FIRST option and therefore the default. This used to auto-select an
+    // Ollama image model on a machine that had one pulled — and since an Ollama image
+    // model beats the ComfyUI picker (shouldUseComfy), a fresh profile silently
+    // generated through Ollama while the ComfyUI model the user picked did nothing.
+    // Nothing chooses this path now except the user.
     const emptyOpt = document.createElement("option");
     emptyOpt.value = "";
     emptyOpt.textContent = models.length === 0 ? t("image_model_none") : t("image_model_empty");
@@ -336,11 +347,11 @@ export async function loadImageModels() {
       dom.imageModelSelect.appendChild(option);
     }
 
+    // A saved model that is no longer installed also lands on Off rather than on some
+    // OTHER Ollama model: quietly generating through a checkpoint the user never chose
+    // is the same surprise, one step further removed.
     if (hasSaved && (current === "" || models.includes(current))) {
       dom.imageModelSelect.value = current;
-    } else if (models.length) {
-      const preferred = models.find((m) => /z-image|flux2/i.test(m));
-      dom.imageModelSelect.value = preferred || models[0];
     }
   } catch {
     /* leave placeholder */

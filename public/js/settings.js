@@ -9,7 +9,7 @@ import { dbSaveTabs } from './db.js';
 import { t } from './i18n.js';
 // Circular at module level (presets.js imports back from here) — fine, both sides
 // only call the other's functions at runtime, same as the settings↔tabs pair.
-import { isCustomPresetId, resolvePersonaText, renderPersonalityOptions } from './presets.js';
+import { isCustomPresetId, resolvePersonaText, renderPersonalityOptions, DEFAULT_PERSONALITY } from './presets.js';
 
 // "Her personality" is only editable for a custom personality — the "new custom"
 // sentinel ("temp") or a saved custom preset ("cp_…"). Built-ins are read-only.
@@ -130,6 +130,7 @@ export function saveCurrentSettings() {
       numCtx: dom.numCtxSelect?.value || "32768",
       llmMaxImages: dom.llmMaxImages?.value || "",
       llmMaxMessages: dom.llmMaxMessages?.value || "",
+      llmTimeout: dom.llmTimeout?.value || "",
       pdfEngine: dom.pdfEngineSelect?.value || "mineru",
       embedModel: dom.embedModelSelect?.value || "qwen3-embedding:8b",
       libraryDistill: dom.libraryDistillToggle?.checked ?? true,
@@ -238,7 +239,7 @@ function _serializeTabs() {
     ...tab,
     messages: tab.messages.map(saveChatMessage),
     tags: tab.tags || [],
-    personality: tab.personality || "sweet",
+    personality: tab.personality || DEFAULT_PERSONALITY,
     persona: tab.persona || resolvePersonaText(tab.personality),
   }));
 }
@@ -396,6 +397,8 @@ export function loadSavedSettings() {
   // Optional LLM caps — empty string means "no limit" and is the default.
   if (dom.llmMaxImages) dom.llmMaxImages.value = savedSettings.llmMaxImages ?? "";
   if (dom.llmMaxMessages) dom.llmMaxMessages.value = savedSettings.llmMaxMessages ?? "";
+  // Empty means the built-in 120s, not "no limit" like the two caps above.
+  if (dom.llmTimeout) dom.llmTimeout.value = savedSettings.llmTimeout ?? "";
   if (savedSettings.pdfEngine && dom.pdfEngineSelect) dom.pdfEngineSelect.value = savedSettings.pdfEngine;
   // Embedding model selection is applied by loadEmbedModels (after options load).
   // Library distill card defaults to ON; respect an explicit saved off-choice.
@@ -416,6 +419,10 @@ export function loadSavedSettings() {
   // restored, then apply the saved selection so its option actually exists.
   renderPersonalityOptions();
   if (savedSettings.personality) dom.personalitySelect.value = savedSettings.personality;
+  // Fresh install: resolve the factory persona from the presets instead of shipping a
+  // copy of it in the HTML. One source of truth, and it comes out in the UI language —
+  // the hardcoded textarea default was English even for a Chinese install.
+  if (!savedSettings.persona) dom.persona.value = resolvePersonaText(dom.personalitySelect.value);
 }
 
 // --- userName history ---

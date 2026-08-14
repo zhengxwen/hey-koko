@@ -3,6 +3,7 @@
 
 // URL fetching and content parsing (/url command)
 import { dom, state, scrollChatToEnd } from './state.js';
+import { getLlmTimeout } from './context-meter.js';
 import { setAvatarState } from './avatar.js';
 import { markdownToHtml } from './markdown.js';
 import { saveChat } from './settings.js';
@@ -537,7 +538,7 @@ async function formatTranscriptChunked(title, transcript, tab, tabId, source, cu
         // num_ctx mirrors server config.llmTaskCtx — Ollama's tiny default would silently
         // truncate a 6k-char chunk plus its equal-length rewrite.
         options: { temperature: 0.3, num_ctx: 24576 },
-        timeout: parseInt(dom.requestTimeoutInput?.value, 10) || 120,
+        timeout: getLlmTimeout(),
       }),
     });
 

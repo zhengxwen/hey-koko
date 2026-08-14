@@ -3,6 +3,7 @@
 
 // Translation functionality
 import { dom, state } from './state.js';
+import { getLlmTimeout } from './context-meter.js';
 import { saveChat } from './settings.js';
 import { getActiveTab } from './tabs.js';
 import { t, getPrompt } from './i18n.js';
@@ -40,7 +41,7 @@ export async function translateMessage(index, lang = "en") {
           { role: "user", content: message.content },
         ],
         options: { temperature: 0.3 },
-        timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
+        timeout: getLlmTimeout(),
       }),
       signal: abortController.signal,
     });

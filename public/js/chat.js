@@ -29,7 +29,7 @@ import { buildPendingGenBubble } from './pending-gen.js';
 import { enqueueBgJob, releaseEnhancingJob, cancelBgJob, retryBgJob, resumeBgJob, openBgDrawer } from './bg-jobs.js';
 import { chatFetch } from './server-queue.js';
 import { t, getPrompt, getPromptLanguage } from './i18n.js';
-import { getNumCtx, recordContextUsage, renderContextMeter } from './context-meter.js';
+import { getNumCtx, getLlmTimeout, recordContextUsage, renderContextMeter } from './context-meter.js';
 import { addMemory, getMemoryPromptBlock } from './memory.js';
 import { parseRemind, addReminder, describeReminder, markActivity } from './proactive.js';
 import { activeToolSchemas, executeTool, getToolLabel } from './tools.js';
@@ -1492,7 +1492,7 @@ async function handleCompactCommand(tab, tabId, insertIndex = -1, contextEndInde
         model: dom.modelSelect.value,
         messages: compactPrompt,
         options: { temperature: 0.3, num_ctx: getNumCtx() },
-        timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
+        timeout: getLlmTimeout(),
       }),
     });
 
@@ -1889,7 +1889,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
       model: dom.modelSelect.value,
       messages,
       options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
-      timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
+      timeout: getLlmTimeout(),
     };
     if (showThinking) fetchBody.think = true;
 
@@ -2115,7 +2115,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       model: dom.modelSelect.value,
       messages,
       options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
-      timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
+      timeout: getLlmTimeout(),
     };
     if (showThinking) fetchBody.think = true;
 
@@ -2366,7 +2366,7 @@ export async function generateProactiveReply(instruction, tabId = state.activeTa
         model: dom.modelSelect.value,
         messages,
         options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
-        timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
+        timeout: getLlmTimeout(),
       }),
     });
     if (!response.ok) {
@@ -2654,7 +2654,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
         ...(showThinking ? { think: true } : {}),
         stream: !isCloud,
         options: { temperature: 0.7, num_ctx: getNumCtx() },
-        timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
+        timeout: getLlmTimeout(),
       }),
     });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(cleanErrorMessage(d.error) || t("chat_requestFailed")); }
@@ -3015,7 +3015,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: abortController.signal,
-        body: JSON.stringify({ model: dom.modelSelect.value, messages: msgs, options: { temperature: 0.5, num_ctx: getNumCtx() }, timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120 }),
+        body: JSON.stringify({ model: dom.modelSelect.value, messages: msgs, options: { temperature: 0.5, num_ctx: getNumCtx() }, timeout: getLlmTimeout() }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -3113,7 +3113,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
     let content = "";
     if (bg && bg.server && !mapReduce) {
       const resp = await chatFetch(
-        { model: dom.modelSelect.value, messages, options: { temperature: 0.5, num_ctx: getNumCtx() }, timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120 },
+        { model: dom.modelSelect.value, messages, options: { temperature: 0.5, num_ctx: getNumCtx() }, timeout: getLlmTimeout() },
         { bgJob: bg.server.bgJob, conversationId: bg.server.conversationId, msgId: bg.server.msgId, label: bg.server.label, signal: abortController.signal });
       if (!resp.ok) throw new Error(cleanErrorMessage((await resp.json()).error) || t("chat_requestFailed"));
       content = ((await resp.json()).content || "");
@@ -3126,7 +3126,7 @@ export async function analyzeMedia(parsed, tabId, image, video, insertIndex = -1
           model: dom.modelSelect.value,
           messages,
           options: { temperature: 0.5, num_ctx: getNumCtx() },
-          timeout: parseInt(dom.requestTimeoutInput.value, 10) || 120,
+          timeout: getLlmTimeout(),
         }),
       });
       if (!response.ok) {
