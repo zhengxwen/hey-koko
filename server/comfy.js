@@ -1270,7 +1270,7 @@ function isModelReady(name, group, type) {
   if (name === LTX_MSR) return true;        // MSR V2 — verified (sharp, identity preserved)
   if (name === LTX_UNION) return true;      // Union Control — verified end-to-end (depth transfer, sharp)
   if (name === LTX25_UNION) return true;    // 2.5 Union — verified live 2026-08-14 (two-stage, MoGe depth)
-  if (name === LTX25_INGREDIENTS) return false; // wired from the official workflow; flip after a live smoke
+  if (name === LTX25_INGREDIENTS) return true; // verified live 2026-08-14 (2-ref sheet, both identities held)
   if (name === ANIMATE_REPLACE) return true; // Replace verified end-to-end (scene kept, person swapped)
   if (name === INFINITETALK) return true;    // V2V dub recipe verified live (92-frame lip re-sync, trim tail exact)
   if (name === INFINITETALK_SPEAK) return true; // I2V talking-photo recipe verified live (see buildInfiniteTalk)

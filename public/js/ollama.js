@@ -1203,16 +1203,14 @@ function attachCompareTooltip(span, dot, classify, titleKey, colsKey, rowsKey) {
   span.addEventListener("mouseleave", hide);
 }
 
-// Which of the picker's two layouts was last used. Kept in localStorage rather than in
-// the settings blob: it is a per-device view preference, not part of the conversation.
-const PICK_MODE_KEY = "hk_comfyPickMode";
-
 export function openComfyModelPicker() {
   const groups = state.comfyModelGroups || [];
   if (!groups.length) return;
   const current = dom.comfyModelSelect ? dom.comfyModelSelect.value : "";
+  // Layout for THIS opening only — by category, always. Deliberately not remembered:
+  // the categories are how the models are meant to be read, and "by name" is a lookup
+  // aid you reach for on the spot, not a mode to get stuck in.
   let flatMode = false;
-  try { flatMode = localStorage.getItem(PICK_MODE_KEY) === "flat"; } catch { /* private mode */ }
 
   const overlay = document.createElement("div");
   overlay.className = "zoteroImportOverlay";   // reuse the modal chrome
@@ -1379,7 +1377,6 @@ export function openComfyModelPicker() {
   searchEl.addEventListener("input", render);
   modeBtn.addEventListener("click", () => {
     flatMode = !flatMode;
-    try { localStorage.setItem(PICK_MODE_KEY, flatMode ? "flat" : "group"); } catch { /* private mode */ }
     render();
     searchEl.focus();   // keep typing where it was; the button is a detour, not a target
   });
