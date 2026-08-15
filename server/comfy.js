@@ -33,6 +33,11 @@ function sniffImageMime(b64) {
 // that already succeeded, so everything here is best-effort.
 function toGallery(kind, arr, mime, meta) {
   if (!Array.isArray(arr) || !arr.length) return undefined;
+  // Opt-out (request body `noGallery`): a throwaway render — the CLI iterating on a
+  // prompt, say — should not leave a trail in the library. Read off the per-request
+  // store so every tee site is covered by one guard, including the salvage path.
+  // The artifact still comes back in the response; it just isn't filed.
+  if (comfyCtx.getStore()?.noGallery) return undefined;
   try {
     const ids = gallery.recordMany(arr.map((b64, i) => ({
       kind, b64, mime: mime || sniffImageMime(b64),
@@ -5968,7 +5973,8 @@ async function generateComfyImage(req, res) {
   try {
     const body = await readBody(req);
     // Target the ComfyUI endpoint this job was routed to (parallel lanes); default global.
-    comfyCtx.enterWith({ comfyUrl: normComfyUrl(body.comfyUrl) || config.comfyUrl });
+    // `noGallery` rides along in the same per-request store — see toGallery.
+    comfyCtx.enterWith({ comfyUrl: normComfyUrl(body.comfyUrl) || config.comfyUrl, noGallery: !!body.noGallery });
     const { prompt, negative_prompt, options, images, mask, sourceVideo, sourceVideoName, sourceVideoMime, sourceVideoWidth, sourceVideoHeight, sourceVideoFrames, sourceVideoFps, sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, continueVideoName, refImageWidth, refImageHeight, timeout: reqTimeout, clientId: bodyClientId } = body;
     let model = body.model;
 
