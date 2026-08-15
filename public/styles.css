@@ -2393,7 +2393,10 @@ button.secondary:disabled {
   align-items: center;
   gap: 3px;
   margin: 0;
-  padding: 2px 0;
+  /* Top gap in the same ballpark as the bubble's own 12px side padding — at 2px the
+     thumbnails read as spilling out of the top edge. The bottom is left to the fold
+     chevron underneath, which brings its own room. */
+  padding: 8px 0 2px;
 }
 
 .message.user.isFolded.foldShowsMedia > .messageMediaRow .messageImageWrapper,
