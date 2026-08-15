@@ -621,7 +621,7 @@ function stripTile(entry) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "galleryStripThumb";
-  btn.title = tooltipFor(entry);
+  btn.title = `${t("gal_useAsRef")}\n${tooltipFor(entry)}`;
   const img = document.createElement("img");
   img.loading = "lazy";
   // alt is read aloud and shown when the thumbnail fails — the subject, not the specs.
@@ -632,10 +632,16 @@ function stripTile(entry) {
   img.src = galleryThumbUrl(entry.path, "strip");
   img.onerror = () => { img.remove(); btn.textContent = entry.kind === "video" ? "▶" : entry.kind === "audio" ? "🔊" : "3D"; };
   btn.appendChild(img);
-  // Clicking a frame opens the gallery on it — the strip is a shortcut into the
-  // full view, not a second half-featured one. `reveal`: the grid opens wherever it
-  // opens, so the tile has to come find the eye rather than the other way round.
-  btn.addEventListener("click", () => { openGallery().then(() => selectItem(entry.path, { reveal: true })); });
+  // Clicking a frame ATTACHES it to the next message. The strip sits under the composer
+  // and the overwhelmingly common thing to want from a picture there is to use it, so
+  // that is what the big target does; opening the gallery moved to the 🔍 corner button.
+  btn.addEventListener("click", () => {
+    deps.attachMedia(url, entry.path.split("/").pop());
+    // The confirmation has to land on the FRAME now — the corner button that used to
+    // flash ✓ is a 🔍 that does something else entirely.
+    cell.classList.add("isAttached");
+    setTimeout(() => cell.classList.remove("isAttached"), 1200);
+  });
 
   // The composer already accepts a dropped image URL (main.js: text/uri-list →
   // imageUrlToFile → selectFile), so dragging a frame there needs no new plumbing —
@@ -649,19 +655,20 @@ function stripTile(entry) {
     } catch { /* browser said no */ }
   });
 
-  const add = document.createElement("button");
-  add.type = "button";
-  add.className = "galleryStripAdd";
-  add.textContent = "＋";
-  add.title = t("gal_useAsRef");
-  add.addEventListener("click", (ev) => {
+  // The corner button is now the way INTO the gallery, on this item. `reveal`: the grid
+  // opens wherever it opens, so the tile has to come find the eye rather than the other
+  // way round.
+  const peek = document.createElement("button");
+  peek.type = "button";
+  peek.className = "galleryStripAdd";
+  peek.textContent = "🔍";
+  peek.title = t("gal_stripPeek");
+  peek.addEventListener("click", (ev) => {
     ev.stopPropagation();
-    deps.attachMedia(url, entry.path.split("/").pop());
-    add.textContent = "✓";
-    setTimeout(() => { add.textContent = "＋"; }, 1200);
+    openGallery().then(() => selectItem(entry.path, { reveal: true }));
   });
 
-  cell.append(btn, add);
+  cell.append(btn, peek);
   if (entry.kind !== "image") {
     const badge = document.createElement("span");
     badge.className = "galleryBadge";

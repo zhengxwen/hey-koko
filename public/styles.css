@@ -8156,16 +8156,18 @@ body.isResizingComposer {
 }
 .galleryStripThumb .galleryStripRate[hidden] { display: none; }
 
-/* "Attach to the next message". Hidden until the frame is hovered so the strip
-   stays a strip of pictures. */
+/* 🔍 "open this in the gallery". Hidden until the frame is hovered so the strip stays a
+   strip of pictures. (Attaching is the frame itself now — this corner used to be the ＋.) */
 .galleryStripAdd {
   position: absolute;
   top: -3px;
   right: -3px;
   min-height: 0;
   padding: 0;
-  width: 17px;
-  height: 17px;
+  /* Bigger target, same glyph: the 🔍 stays 11px and the grey disc grows around it, so
+     the button is easier to hit on an 84px frame without the icon crowding the picture. */
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   font-size: 11px;
   line-height: 1;
@@ -8175,6 +8177,36 @@ body.isResizingComposer {
 }
 
 .galleryStripCell:hover .galleryStripAdd { display: flex; }
+
+/* Quiet until it is the thing under the pointer. The frame is the primary action here,
+   so a permanently accent-blue dot on every hovered frame reads as the main button and
+   competes with the picture; grey states "there is something here", blue confirms the
+   click is going HERE and not to the frame underneath. Own hover rule because the base
+   `button:hover` would take it to accent-strong from an accent it no longer has. */
+.galleryStripAdd {
+  background: rgba(90, 96, 106, 0.82);
+  color: #fff;
+}
+
+.galleryStripAdd:hover {
+  background: var(--accent);
+}
+
+/* Attached. The frame is the button now, so the acknowledgement covers the frame —
+   a ✓ on the corner button would point at the wrong control. */
+.galleryStripCell.isAttached .galleryStripThumb::after {
+  content: "✓";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  color: #fff;
+  background: rgba(32, 132, 72, 0.62);
+  border-radius: inherit;
+  pointer-events: none;
+}
 
 /* A render that just finished. A glow rather than a border: a border would resize
    the frame, and the hover zoom is meant to be the only thing that moves. */
