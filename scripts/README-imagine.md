@@ -112,6 +112,34 @@ Pass **`-g/--gallery`** when a result is a keeper: it is then filed exactly as a
 render is, and `mediaId` comes back as its gallery id
 (`~/.hey-koko/gallery/<year-month>/…`).
 
+### `-g` at render time vs `--add` afterwards
+
+Both put the file in the gallery, but they file it as different things — and only one of
+them records where it came from:
+
+| ledger field | `-g` (filed as it renders) | `--add` (filed afterwards) |
+| --- | --- | --- |
+| `source` | `generated` | `upload` |
+| `model`, `modelId`, `precisionUsed` | ✅ | ✗ |
+| `prompt`, `negative`, `seed`, `params` | ✅ | ✗ |
+| `width`, `height`, `fps`, `length` | ✅ | ✅ (probed from the file) |
+| `contentHash` (dedup) | — | ✅ |
+
+```jsonc
+// -g
+{"path":"…_zimage-turbo_s99.png","source":"generated","model":"z_image_turbo_nvfp4.safetensors",
+ "modelId":"zimage-turbo","prompt":"a paper boat","seed":99,"precisionUsed":"nvfp4","params":{…}}
+// --add
+{"path":"…_upload_….mp4","source":"upload","originalName":"…","contentHash":"…","fps":24,"length":124}
+```
+
+`--add` goes through the endpoint the browser uses for dragged-in attachments, which only
+ever sees bytes — it cannot know a file was generated, let alone with which model or
+seed. So **decide before the render**: if a run might be worth keeping, use `-g` and the
+entry stays reproducible (model, seed and prompt visible in the app); `--add` is for
+footage that has no provenance to record anyway, or for promoting a draft when losing
+that provenance is acceptable.
+
 ## Machine-readable output — `--json`
 
 `--json` is the mode to use when a program (or an agent) drives this CLI. The contract:
@@ -148,6 +176,9 @@ node scripts/imagine.js -m <id> -i ref.png -s 6 -O out/ --json "…" 2>/dev/null
 ```json
 {"ok":true,"file":"/…/20260815-144527_zimage-turbo_6.png","model":"zimage-turbo","modelFile":"z_image_turbo_nvfp4.safetensors","seed":6,"width":848,"height":480,"precision":"nvfp4","mediaId":null,"prompt":"a paper boat","elapsedSec":1}
 ```
+
+A third kind, **`noop: true`**, means the server deliberately did no work (see the
+upscale tools below) — `ok` is `true` but `file` is `null`.
 
 **A failed task** — same stream, `ok: false`. In a batch with `--continue-on-error` the
 run keeps going, so a stream can mix both kinds:
@@ -196,6 +227,60 @@ If every model row comes back with `caps: ["tool"]` (only `image-upscale` and
 `video-enhance`), the server cannot see ComfyUI — the box is off or the address is wrong.
 `-m` reports that in those words rather than calling your model id a typo.
 
+## Upscale and sharpen — the two model-free tools
+
+Two entries in `--list-models` are tools rather than generators (`caps: ["tool"]`). They
+need no diffusion weights, so they are offered even when nothing else is installed:
+
+| id | takes | does |
+| --- | --- | --- |
+| `video-enhance` | `--video clip.mp4` | AI-upscale and/or sharpen a clip |
+| `image-upscale` | `-i photo.jpg` | the same for a single image |
+
+```bash
+# 2x upscale (the default) — writes the enlarged clip next to nothing else
+node scripts/imagine.js -m video-enhance --video clip.mp4 -O out/
+
+# to a specific long side, with a clean-up pass first
+node scripts/imagine.js -m video-enhance --video clip.mp4 --upscale-to 1920 --upscale-denoise 0.2 -O out/
+
+# sharpen ONLY, at the original resolution (no resampling at all)
+node scripts/imagine.js -m video-enhance --video clip.mp4 --upscale off --sharpen medium -O out/
+
+# a still
+node scripts/imagine.js -m image-upscale -i photo.jpg --upscale 4x-UltraSharp.pth -O out/
+```
+
+| flag | values |
+| --- | --- |
+| `--upscale` | `auto` (default) · `off` · a filename from `--list-models` |
+| `--upscale-to` | target **long side** in pixels (1920 / 2560 / 3840). Default is 2× the source, capped at a 2160 long side. A portrait clip gets in height what a landscape one gets in width. |
+| `--sharpen` | `off` (default) · `light` · `medium` · `strong` |
+| `--upscale-denoise` | `0`–`1` (a value above 1 is read as a percentage) — clean up before upscaling |
+| `--restore` | `auto` · `off` · a filename — the denoise model, only used when `--upscale-denoise > 0` |
+
+`--list-models` also prints the installed upscale/restore weights, so those filenames can
+be discovered rather than guessed. In `--json` they are rows carrying `file` instead of
+`id`:
+
+```json
+{"group":"upscaler","file":"4x-UltraSharp.pth"}
+```
+
+`--size` works here too and overrides `--upscale-to` with an explicit pixel budget at the
+source's aspect ratio.
+
+**A run with nothing to do** — `--upscale off` and no sharpen, denoise or resize — is not
+an error: the server declines to call ComfyUI and returns a **noop record**, which a
+caller must handle or it will wait for a file that never arrives:
+
+```json
+{"ok":true,"noop":true,"model":"video-enhance","message":"ℹ️ Nothing to do: …","file":null}
+```
+
+Frame interpolation is deliberately not here: it belongs to the ✂️ video editor in the
+app, which owns the output-fps setting.
+
 ## Importing existing media
 
 `--add` files media in the gallery **as-is** — no model, no render, no re-encode. It is
@@ -212,6 +297,10 @@ entry that is already there (`"deduped": true`, same id, no second copy). Pixel 
 read from PNG/JPEG headers, and from `ffprobe` for video when it is installed — without
 it the entry is still filed, just with no dimensions on the ledger.
 
+Everything filed this way is recorded as an **upload**, with no model / seed / prompt —
+see [`-g` at render time vs `--add` afterwards](#-g-at-render-time-vs---add-afterwards)
+before using it to keep a generated clip.
+
 This mode needs no ComfyUI at all, only the hey-koko server.
 
 Exit codes: **0** all good, **1** usage or connection problem, **2** one or more renders failed.
@@ -223,6 +312,7 @@ Exit codes: **0** all good, **1** usage or connection problem, **2** one or more
 | Model | `-m/--model <id[@tier]>`, `--precision <tier>` |
 | Inputs | `-i/--image <path>` (repeatable), `--video <path>`, `--audio <path>` |
 | Generation | `-s/--second <n>`, `--length <frames>`, `--size <WxH\|preset>`, `--seed <n>`, `--steps <n>`, `--no <text>`, `-n/--count <1-8>`, `-e/--enhance`, `--enhance-model <llm>` |
+| Upscale tools | `--upscale <auto\|off\|file>`, `--upscale-to <px>`, `--sharpen <off\|light\|medium\|strong>`, `--upscale-denoise <0-1>`, `--restore <auto\|off\|file>` |
 | ⚙ escape hatch | `--opt key=value` (repeatable) |
 | Output | `-o/--out <path>`, `-O/--out-dir <dir>`, `-g/--gallery`, `--json`, `-q/--quiet`, `--dry-run` |
 | Import | `--add <file...>` — file existing media in the gallery, no generation |

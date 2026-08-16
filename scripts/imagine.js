@@ -169,6 +169,13 @@ Generation
       --no <text>          negative prompt (ignored by models without a negative branch)
   -n, --count <n>          render N variations of this prompt (1-8)
   -e, --enhance            rewrite the prompt with an LLM first (--enhance-model to pick it)
+
+Upscale / sharpen tools (-m video-enhance --video clip.mp4, or -m image-upscale -i pic.png)
+      --upscale <m>        upscale model: auto (default) | off | a filename from --list-models
+      --upscale-to <px>    target LONG side (1920 / 2560 / 3840); default is 2x, capped at 2160
+      --sharpen <level>    off | light | medium | strong  (works with --upscale off: filter only)
+      --upscale-denoise <n>  0-1 (or a percentage) — clean up before upscaling
+      --restore <m>        denoise/restore model: auto | off | a filename
       --opt k=v            any ⚙ option verbatim, repeatable. e.g. --opt noAudio=true
                            --opt videoCodec=h265 --opt easyCache=true --opt h3RefSize=512
 
@@ -225,6 +232,14 @@ function parseArgv(argv) {
       case "-n": case "--count": o.count = parseInt(need(i, a), 10); i++; break;
       case "-e": case "--enhance": o.enhance = true; break;
       case "--enhance-model": o.enhanceModel = need(i, a); i++; break;
+      // The upscale/sharpen tools' knobs. They are ordinary ⚙ options underneath, but
+      // reaching them through --opt means knowing the key names, and these two models
+      // are useless without them.
+      case "--upscale": o.options.upscaleModel = need(i, a); i++; break;
+      case "--upscale-to": o.options.upscaleTarget = parseInt(need(i, a), 10); i++; break;
+      case "--sharpen": o.options.sharpen = need(i, a); i++; break;
+      case "--upscale-denoise": o.options.upscaleDenoise = parseFloat(need(i, a)); i++; break;
+      case "--restore": o.options.restoreModel = need(i, a); i++; break;
       case "--opt": {
         const kv = need(i, a); i++;
         const eq = kv.indexOf("=");
@@ -280,7 +295,14 @@ async function loadCatalogue(server, comfyUrl) {
   for (const m of d.editModels || []) add(m.name, "edit", m);
   for (const m of d.videoModels || []) add(m.name, m.needsVideo ? "video-in" : "video", m);
   for (const m of d.meshModels || []) add(m.name, "3d", m);
-  return { rows, raw: d };
+  // The upscale / restore weights are not models you generate with — they are the
+  // choices for --upscale / --restore on the two enhance tools. Listed all the same:
+  // without them those flags can only be filled by guessing a filename.
+  const files = [
+    ...(d.upscaleModels || []).map((f) => ({ group: "upscaler", file: f })),
+    ...(d.restoreModels || []).map((f) => ({ group: "restore", file: f })),
+  ];
+  return { rows, files, raw: d };
 }
 
 function splitToken(token) {
@@ -600,7 +622,16 @@ async function runTask(task, cli, ctx) {
     finally { stop(); }
     const data = r.json;
     if (!data) throw new Error(`server returned non-JSON (${r.status}): ${r.text.slice(0, 300)}`);
-    if (data.noop) { results.push({ ok: true, noop: true, message: data.message }); continue; }
+    // The server did no ComfyUI work ON PURPOSE (an enhance run that would neither
+    // upscale nor sharpen). Not a failure — but a caller must hear about it, or it
+    // waits for a file that is never coming.
+    if (data.noop) {
+      const rec = { ok: true, noop: true, model: model.id, message: data.message, file: null };
+      results.push(rec);
+      if (cli.json) process.stdout.write(JSON.stringify(rec) + "\n");
+      else if (!cli.quiet) process.stderr.write(`ℹ ${data.message || "nothing to do"}\n`);
+      continue;
+    }
     if (r.status !== 200 || !(data.videos || data.images || data.meshes)) {
       throw new Error(data.error || data.detail || `generation failed (${r.status})`);
     }
@@ -757,6 +788,12 @@ async function main() {
           videoOptional: !!m.spec.videoOptional,
         }) + "\n");
       }
+      // Upscale / restore weights ride the same stream, distinguished by carrying
+      // `file` instead of `id` — they are values for --upscale / --restore, not models.
+      for (const f of cat.files) {
+        if (filter && !f.file.toLowerCase().includes(filter)) continue;
+        process.stdout.write(JSON.stringify(f) + "\n");
+      }
       return 0;
     }
     const w = Math.max(4, ...rows.map((m) => m.id.length));
@@ -769,6 +806,12 @@ async function main() {
         const caps = m.caps.length ? `  ${m.caps.join(",")}` : "";
         process.stdout.write(`  ${m.id.padEnd(w)}  ${m.label}${caps}${tiers}${m.ready ? "" : "  ⚠ unverified"}\n`);
       }
+    }
+    for (const g of ["upscaler", "restore"]) {
+      const files = cat.files.filter((f) => f.group === g && (!filter || f.file.toLowerCase().includes(filter)));
+      if (!files.length) continue;
+      process.stdout.write(`\n${g}  (values for ${g === "upscaler" ? "--upscale" : "--restore"}; "auto" and "off" also accepted)\n`);
+      for (const f of files.sort((a, b) => a.file.localeCompare(b.file))) process.stdout.write(`  ${f.file}\n`);
     }
     process.stdout.write("\n");
     return 0;
