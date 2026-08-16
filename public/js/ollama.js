@@ -1737,6 +1737,14 @@ export function updateComfyParamVisibility() {
   // The H3 text-encoder picker applies to BOTH weights (they share the encoder). Hidden
   // when only one build is installed — a menu whose sole entry equals Auto is noise.
   setVis(dom.comfyParamH3Clip, /minimax.?h3/i.test(m) && (state.comfyH3Encoders || 0) > 1);
+  // Sol-Attn: only the H3 builder wires it, same gate as EasyCache. Whether the node pack
+  // is actually installed is NOT checked here — with several workers it can be present on
+  // one and missing on another, and only the server knows which box a job lands on. It
+  // drops the request there and the done-line says it did.
+  const h3 = /minimax.?h3/i.test(m);
+  setVis(dom.comfyParamSolAttn, h3);
+  setVis(dom.comfyParamSolTau, h3 && !!dom.comfyParamSolAttn?.value); // tau is meaningless with Sol off
+  setVis(dom.comfyParamSolChunkFF, h3, ".comfyParamCheck");
   // LTX family only (incl. Sulphur) — the optional LoRA slot. It is the one builder
   // with a user-pickable LoRA; every other model mounts its LoRAs automatically.
   // Union Control is excluded: it mounts its union IC-LoRA automatically, no user slot.
@@ -2039,6 +2047,8 @@ function initComfyParamsModal() {
   dom.comfyParamPanoLora?.addEventListener("change", () => saveCurrentSettings());
   // Texturing toggle gates the quality row, so it re-runs visibility too.
   dom.comfyParamPaintMesh?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
+  // Sol-Attn on/off gates its own tau row — same reason.
+  dom.comfyParamSolAttn?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
   // Ultra makes a ~17 MB GLB (measured) that then rides base64 through the response
   // and the conversation store — worth a heads-up before the first slow run, not a
   // surprise afterwards.

@@ -142,6 +142,10 @@ function comfyOverrides() {
   // deliberate "max" pick travels (the slow, high-fidelity reference pipeline).
   if (dom.comfyParamH3RefSize?.value) ov.h3RefSize = dom.comfyParamH3RefSize.value;
   if (dom.comfyParamH3Clip?.value) ov.h3TextEncoder = dom.comfyParamH3Clip.value; // "" = auto (best installed tier)
+  if (dom.comfyParamSolAttn?.value) ov.solAttn = dom.comfyParamSolAttn.value;     // "" = off
+  const solTau = num(dom.comfyParamSolTau?.value);
+  if (solTau !== undefined) ov.solTau = solTau;                                   // empty = the node's 1.3
+  if (dom.comfyParamSolChunkFF?.checked) ov.solChunkFF = true;
   // Wan Dancer: dance genre / motion amplitude / duration (seconds) / keyframe-quality.
   if (dom.comfyParamDanceStyle?.value) ov.danceStyle = dom.comfyParamDanceStyle.value;
   if (dom.comfyParamDanceAmplitude?.value) ov.danceAmplitude = dom.comfyParamDanceAmplitude.value;
@@ -1413,6 +1417,14 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     if (lastData.scailStreamNote === "vhs-missing") {
       doneLine += `\n${t("msg_scailStreamFallback", {}, plang)}`;
     }
+    // Sol-Attn: name it when it ran, and say so when it was asked for and dropped. The
+    // whole point of the setting is speed, and a run that quietly ignored it looks exactly
+    // like one where it did nothing — the difference has to be on the line.
+    if (lastData.solAttnSkipped) doneLine += `\n${t("msg_solAttnSkipped", {}, plang)}`;
+    else if (lastData.solAttn) {
+      doneLine += `\n${t("msg_solAttnUsed", { mode: lastData.solAttn }, plang)}`
+        + (lastData.solChunkFF ? ` · ${t("msg_solChunkFF", {}, plang)}` : "");
+    } else if (lastData.solChunkFF) doneLine += `\n${t("msg_solChunkFF", {}, plang)}`;
     if (lastData.ltxLora && lastData.ltxLora.name) {
       doneLine += `\n${t("msg_ltxLoraUsed", { lora: stripModelExt(lastData.ltxLora.name), strength: lastData.ltxLora.strength }, plang)}`;
     }

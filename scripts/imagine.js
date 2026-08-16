@@ -147,6 +147,7 @@ Usage
   imagine.js [options] <prompt words...>
   imagine.js --cmd "/imagine -m minimax-h3-r2v -s 6 a cat dances"
   imagine.js --batch shots.jsonl [options]
+  imagine.js --add clip.mp4 photo.jpg          file existing media, no generation
   imagine.js --list-models [filter]
 
 Model
@@ -175,9 +176,14 @@ Output
   -o, --out <path>         write here (single result); {i}/{seed}/{model} are substituted
   -O, --out-dir <dir>      directory for generated names (default: .)
   -g, --gallery            also file the result in ~/.hey-koko/gallery (off by default)
-      --json               one JSON line per result on stdout (for calling programs)
+      --json               machine-readable: one JSON object per line on stdout (results,
+                           --add records, --list-models rows); logs stay on stderr
   -q, --quiet              no progress output
       --dry-run            print the request that would be sent, generate nothing
+
+Import
+      --add <file...>      put existing media in the gallery AS-IS — no model, no render,
+                           no re-encode. Images/video/audio/glb; duplicates are detected.
 
 Batch
       --batch <file|->     one task per line: an "/imagine …" line, or a JSON object
@@ -194,7 +200,7 @@ Server
 Exit: 0 all good, 1 usage/setup error, 2 one or more renders failed.`;
 
 function parseArgv(argv) {
-  const o = { images: [], opts: {}, options: {} };
+  const o = { images: [], addFiles: [], opts: {}, options: {} };
   const need = (i, flag) => {
     if (i + 1 >= argv.length) { throw new Error(`${flag} needs a value`); }
     return argv[i + 1];
@@ -232,6 +238,9 @@ function parseArgv(argv) {
       case "-o": case "--out": o.out = need(i, a); i++; break;
       case "-O": case "--out-dir": o.outDir = need(i, a); i++; break;
       case "-g": case "--gallery": o.gallery = true; break;
+      // Import mode. The flag's own value plus every remaining bare word are treated as
+      // paths, so "--add *.mp4" works after the shell has expanded the glob.
+      case "--add": o.add = true; o.addFiles.push(need(i, a)); i++; break;
       case "--json": o.json = true; break;
       case "-q": case "--quiet": o.quiet = true; break;
       case "--dry-run": o.dryRun = true; break;
@@ -246,7 +255,9 @@ function parseArgv(argv) {
         words.push(a);
     }
   }
-  o.prompt = words.join(" ").trim();
+  if (o.add) o.addFiles.push(...words);   // in import mode a bare word is a path, not prompt text
+  else o.prompt = words.join(" ").trim();
+  o.prompt = o.prompt || "";
   return o;
 }
 
@@ -288,6 +299,13 @@ function matchModels(rows, partial) {
   return [...pre, ...sub];
 }
 
+// image-upscale / video-enhance need no diffusion weights, so the server offers them
+// even when the checkpoint scan came back empty. A catalogue made of NOTHING but those
+// means no model files were seen — nearly always an unreachable ComfyUI, not a typo.
+function catalogueToolsOnly(rows) {
+  return rows.length > 0 && rows.every((m) => m.caps.length > 0 && m.caps.every((c) => c === "tool"));
+}
+
 // An ambiguous prefix is never narrowed silently — picking for the caller is how a
 // batch renders the wrong model for an hour.
 function resolveModel(rows, token) {
@@ -296,6 +314,12 @@ function resolveModel(rows, token) {
   if (!rows.length) throw new Error("the server returned no models — is ComfyUI reachable from it?");
   const hits = matchModels(rows, id);
   if (!hits.length) {
+    // Suggesting "did you mean image-upscale?" for a video model would send the caller
+    // hunting for a typo that isn't there — name the real cause instead.
+    if (catalogueToolsOnly(rows)) {
+      throw new Error(`no models are installed as far as the server can see — only the model-free tools `
+        + `(${rows.map((m) => m.id).join(", ")}) came back. Is ComfyUI running and reachable from the hey-koko server?`);
+    }
     const near = rows.map((m) => m.id).filter((x) => x[0] === id[0]).slice(0, 6);
     throw new Error(`unknown model "${id}"${near.length ? ` — closest: ${near.join(", ")}` : ""}\n`
       + "run with --list-models to see them all");
@@ -313,6 +337,16 @@ function resolveModel(rows, token) {
 // ── task assembly ────────────────────────────────────────────────────────────
 
 const IMAGE_EXT = { png: "png", jpg: "jpg", jpeg: "jpg", webp: "webp" };
+
+// Extension → mime for --add. The gallery routes on the top-level type (image / video /
+// audio / mesh), so only the family has to be right.
+const ADD_MIME = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp",
+  gif: "image/gif", bmp: "image/bmp", tif: "image/tiff", tiff: "image/tiff", heic: "image/heic",
+  mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm", mkv: "video/x-matroska", avi: "video/x-msvideo",
+  wav: "audio/wav", mp3: "audio/mpeg", m4a: "audio/mp4", flac: "audio/flac", ogg: "audio/ogg",
+  glb: "model/gltf-binary", gltf: "model/gltf-binary", spz: "application/octet-stream",
+};
 
 function readB64(p) {
   const abs = path.resolve(p);
@@ -550,7 +584,9 @@ async function runTask(task, cli, ctx) {
 
     if (cli.dryRun) {
       const shown = { ...body, images: images.length ? [`<${images.length} image(s)>`] : undefined };
-      process.stdout.write(JSON.stringify(shown, null, 2) + "\n");
+      // Indented for a human, but ONE LINE under --json: a caller parsing the stream
+      // line by line must not have to special-case this mode.
+      process.stdout.write((cli.json ? JSON.stringify(shown) : JSON.stringify(shown, null, 2)) + "\n");
       results.push({ ok: true, dryRun: true, model: model.id, file: null });
       continue;
     }
@@ -602,6 +638,63 @@ async function runTask(task, cli, ctx) {
   return results;
 }
 
+// ── --add: file the media as-is, no generation ───────────────────────────────
+
+// Pixel size for the ledger. The browser's uploader measures it because it has already
+// decoded the picture; here PNG/JPEG headers are read directly and video is left to
+// ffprobe when that happens to be installed. Absent size is fine — the entry still files.
+function probeDims(file, buf) {
+  const d = sniffDims(buf);
+  if (d) return d;
+  if (!/^video\//.test(ADD_MIME[path.extname(file).slice(1).toLowerCase()] || "")) return null;
+  try {
+    const { execFileSync } = require("node:child_process");
+    const out = execFileSync("ffprobe", ["-v", "error", "-select_streams", "v:0",
+      "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", path.resolve(file)],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const m = out.match(/(\d+)x(\d+)/);
+    return m ? { width: +m[1], height: +m[2] } : null;
+  } catch { return null; }   // no ffprobe, or it couldn't read the file
+}
+
+// Put existing files in the gallery untouched — no model, no render, no re-encode.
+// Same endpoint (and same dedup) the browser uses when media is dragged into a chat.
+async function addToGallery(files, cli) {
+  let failed = 0;
+  for (const file of files) {
+    const abs = path.resolve(file);
+    try {
+      if (!fs.existsSync(abs)) throw new Error("no such file");
+      const ext = path.extname(abs).slice(1).toLowerCase();
+      const mime = ADD_MIME[ext];
+      if (!mime) throw new Error(`unsupported file type ".${ext}"`);
+      const buf = fs.readFileSync(abs);
+      const dims = probeDims(abs, buf) || {};
+      const r = await request("POST", "/api/gallery/upload", {
+        body: buf, server: cli.server,
+        headers: {
+          "Content-Type": mime,
+          "X-Gallery-Name": encodeURIComponent(path.basename(abs)),
+          ...(dims.width ? { "X-Gallery-Width": String(dims.width), "X-Gallery-Height": String(dims.height) } : {}),
+        },
+      });
+      if (!r.json || !r.json.id) throw new Error((r.json && r.json.error) || `upload failed (${r.status})`);
+      const rec = { ok: true, file: abs, mediaId: r.json.id, kind: r.json.kind,
+        deduped: !!r.json.deduped, width: dims.width, height: dims.height };
+      if (cli.json) process.stdout.write(JSON.stringify(rec) + "\n");
+      else if (!cli.quiet) {
+        process.stderr.write(`${rec.deduped ? "=" : "✓"} ${path.basename(abs)} → ${rec.mediaId}${rec.deduped ? "  (already there)" : ""}\n`);
+      }
+    } catch (e) {
+      failed++;
+      if (cli.json) process.stdout.write(JSON.stringify({ ok: false, file: abs, error: e.message }) + "\n");
+      else process.stderr.write(`✗ ${file}: ${e.message}\n`);
+      if (!cli.keepGoing) return 2;
+    }
+  }
+  return failed ? 2 : 0;
+}
+
 // ── batch input ──────────────────────────────────────────────────────────────
 
 function readBatch(spec) {
@@ -635,9 +728,16 @@ async function main() {
   try { cli = parseArgv(process.argv.slice(2)); }
   catch (e) { process.stderr.write(`${e.message}\n\n${USAGE}\n`); return 1; }
 
-  if (cli.help || (!cli.listModels && !cli.batch && !cli.cmd && !cli.prompt && !cli.images.length && !cli.video)) {
+  if (cli.help || (!cli.listModels && !cli.add && !cli.batch && !cli.cmd && !cli.prompt && !cli.images.length && !cli.video)) {
     process.stdout.write(`${USAGE}\n`);
     return cli.help ? 0 : 1;
+  }
+
+  // Import mode generates nothing, so it needs neither a model list nor ComfyUI —
+  // a box with the GPU switched off can still file its media.
+  if (cli.add) {
+    if (!cli.addFiles.length) { process.stderr.write("--add needs at least one file\n"); return 1; }
+    return await addToGallery(cli.addFiles, cli);
   }
 
   let cat;
@@ -647,6 +747,18 @@ async function main() {
   if (cli.listModels) {
     const filter = cli.prompt.toLowerCase();
     const rows = cat.rows.filter((m) => !filter || m.id.includes(filter) || m.label.toLowerCase().includes(filter));
+    // One JSON object per line here too, so a program can pick a model with the same
+    // line-by-line reader it uses for results.
+    if (cli.json) {
+      for (const m of rows) {
+        process.stdout.write(JSON.stringify({
+          id: m.id, label: m.label, group: m.group, caps: m.caps, tiers: m.tiers, ready: m.ready,
+          needsImages: !!m.spec.needsImages, needsVideo: !!m.spec.needsVideo,
+          videoOptional: !!m.spec.videoOptional,
+        }) + "\n");
+      }
+      return 0;
+    }
     const w = Math.max(4, ...rows.map((m) => m.id.length));
     for (const g of ["image", "edit", "video", "video-in", "3d"]) {
       const inGroup = rows.filter((m) => m.group === g);

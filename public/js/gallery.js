@@ -467,6 +467,18 @@ async function deleteSelected() {
   await refreshStrip();
 }
 
+// Repaint every tile's tick from selectedIds. The clear button could get away with only
+// REMOVING marks; inverting has to add them too, and doing it in place beats a refresh()
+// round trip that would also lose the grid's scroll position.
+function paintTicks() {
+  for (const tile of document.querySelectorAll(".galleryTile")) {
+    const on = selectedIds.has(tile.dataset.id);
+    tile.classList.toggle("isChecked", on);
+    const c = tile.querySelector(".galleryTileCheck");
+    if (c) { c.textContent = on ? "✓" : ""; c.setAttribute("aria-checked", on ? "true" : "false"); }
+  }
+}
+
 // The bulk bar under the chips: visible only while something is ticked.
 function updateBulkBar() {
   const bar = el("galleryBulkBar");
@@ -506,15 +518,29 @@ function updateBulkBar() {
   clear.textContent = t("gal_clearSel");
   clear.addEventListener("click", () => {
     selectedIds.clear();
-    document.querySelectorAll(".galleryTile.isChecked").forEach((n) => {
-      n.classList.remove("isChecked");
-      const c = n.querySelector(".galleryTileCheck");
-      if (c) { c.textContent = ""; c.setAttribute("aria-checked", "false"); }
-    });
+    paintTicks();
     updateBulkBar();
   });
 
-  bar.append(count, move, clear);
+  // "Everything except these" — the shape of a lot of real jobs (keep the four good
+  // takes, bin the rest). Scoped to what the grid is SHOWING: inverting against files
+  // that are not on screen would hand 🗑 a set the user never saw. That also means a
+  // selection reaching past this page (🧹 can make one) is narrowed to this page by an
+  // invert, which is the only reading of "invert" that the screen can back up.
+  const invert = document.createElement("button");
+  invert.type = "button";
+  invert.className = "secondary";
+  invert.textContent = t("gal_invertSel");
+  invert.title = t("gal_invertSelHint");
+  invert.addEventListener("click", () => {
+    const flipped = items.filter((e) => !selectedIds.has(e.path)).map((e) => e.path);
+    selectedIds.clear();
+    for (const id of flipped) selectedIds.add(id);
+    paintTicks();
+    updateBulkBar();
+  });
+
+  bar.append(count, move, clear, invert);
 }
 
 // ---------------------------------------------------------------------------
@@ -1496,24 +1522,35 @@ async function deleteItem(entry) {
 }
 
 // 🧹 — the outlet for media kept when a conversation was deleted. Everything the
-// reference graph cannot account for is offered up in one place.
+// reference graph cannot account for gets TICKED, not deleted: the ordinary 🗑 then does
+// the deleting, with its own confirmation and its own "N of these are still referenced"
+// warning, and with the chance to untick the two you actually wanted. Deleting dozens of
+// files on one click, chosen by a graph the user cannot see, was too much to ask on trust.
 async function tidy() {
+  setFilterMenuOpen(false);
   await loadArchiveRefs();
-  const all = await fetch("/api/gallery/list?limit=500").then((r) => r.json());
+  const all = await fetch("/api/gallery/list?limit=500").then((r) => r.json()).catch(() => ({ items: [] }));
   const orphans = (all.items || []).filter((e) => {
     const r = refsFor(e.path);
     return !r.live.length && !r.archived.length;
   });
-  if (!orphans.length) { alert(t("gal_tidyNone")); return; }
-  const bytes = orphans.reduce((n, e) => n + (e.bytes || 0), 0);
-  if (!confirm(t("gal_tidyConfirm", { n: orphans.length, size: fmtSize(bytes) }))) return;
-  await fetch("/api/gallery/delete", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: orphans.map((e) => e.path) }) });
-  await fetch("/api/gallery/compact", { method: "POST" });
-  selected = null;
+  // Not alert(): it freezes a headless run outright, and this is a status, not a question.
+  if (!orphans.length) { flashStats(t("gal_tidyNone")); return; }
+  // Clear the facets first. Ticking files the filter is hiding would show a count with
+  // nothing under it, and 🗑 would then delete what was never on screen.
+  for (const id of MENU_FACETS) { const node = el(id); if (node) node.value = ""; }
+  const search = el("gallerySearch");
+  if (search) search.value = "";
+  activeFolder = null;
   selectedIds.clear();
+  for (const e of orphans) selectedIds.add(e.path);
   await refresh();
-  await refreshStrip();
+  const bytes = orphans.reduce((n, e) => n + (e.bytes || 0), 0);
+  // The scan reaches 500 entries; the grid draws 200. Say so rather than let a count of
+  // 240 sit above 200 visible ticks and look like a bug.
+  const offPage = orphans.length - orphans.filter((e) => items.some((x) => x.path === e.path)).length;
+  flashStats(t("gal_tidyPicked", { n: orphans.length, size: fmtSize(bytes) })
+    + (offPage > 0 ? ` ${t("gal_tidyOffPage", { n: offPage })}` : ""), 9000);
 }
 
 async function loadArchiveRefs() {

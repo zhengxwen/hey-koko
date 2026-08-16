@@ -3441,7 +3441,7 @@ const H3_CLIP_RE = /qwen3vl.*minimax|minimax.*qwen3vl/i;
 // itself proof the keys landed — which is how the current names were confirmed (both
 // weight files verified end-to-end, Aug 2026). "It validated" still proves nothing.
 function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
-  refImageNames, refVideoName, refAudioName, refImageSize, easyCache }) {
+  refImageNames, refVideoName, refAudioName, refImageSize, easyCache, solAttn, solTau, solChunkFF }) {
   const isRef = /ref2va/i.test(model || "");
   const refs = (Array.isArray(refImageNames) ? refImageNames : []).filter(Boolean).slice(0, H3_MAX_REF_IMAGES);
   const wf = {
@@ -3454,20 +3454,9 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     "noise": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
     "samp":  { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
     "sig":   { class_type: "BasicScheduler", inputs: { model: ["unet", 0], scheduler: v.scheduler, steps: v.steps, denoise: 1.0 } },
-    // EasyCache (⚙, off by default) — a core MODEL→MODEL patch that reuses the previous
-    // step's result whenever the step-to-step change falls under reuse_threshold, at the
-    // cost of some fidelity. The defaults are the node's own. It is spliced in ONLY
-    // between the UNET and the guider: BasicScheduler keeps the RAW model, because sigmas
-    // must not depend on whether caching is on.
-    //
-    // Expectations, so this isn't mistaken for a fix: it removes sampling COMPUTE, not
-    // weights, and it holds an extra cached tensor — no help at all on a box that is
-    // memory-bound, and on a 32GB card it can push a tight run over. It also has less to
-    // work with here than the "~25%" the community quotes: 20 steps leave less
-    // step-to-step redundancy than the 40-50-step runs those figures come from, and H3
-    // already runs CFG-free (BasicGuider), so the single biggest saving is spent.
-    ...(easyCache ? { "ec": { class_type: "EasyCache", inputs: { model: ["unet", 0], reuse_threshold: 0.2, start_percent: 0.15, end_percent: 0.95, verbose: false } } } : {}),
-    "guide": { class_type: "BasicGuider", inputs: { model: [easyCache ? "ec" : "unet", 0], conditioning: ["h3", 0] } },
+    // The guider's model input is rewritten at the end of this function when any of the
+    // optional MODEL→MODEL patches are spliced in; "unet" is the no-patches case.
+    "guide": { class_type: "BasicGuider", inputs: { model: ["unet", 0], conditioning: ["h3", 0] } },
     "ks":    { class_type: "SamplerCustomAdvanced", inputs: { noise: ["noise", 0], guider: ["guide", 0], sampler: ["samp", 0], sigmas: ["sig", 0], latent_image: ["h3", 1] } },
     "vdec":  { class_type: "VAEDecode", inputs: { samples: ["ks", 0], vae: ["vae", 0] } },
     "adec":  { class_type: "VAEDecodeAudio", inputs: { samples: ["ks", 0], vae: ["avae", 0] } },
@@ -3508,6 +3497,61 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     if (lastFrameName) { wf["lf"] = { class_type: "LoadImage", inputs: { image: lastFrameName } }; h3.last_frame = ["lf", 0]; }
     wf["h3"] = { class_type: "MiniMaxH3ImageToVideo", inputs: h3 };
   }
+
+  // Optional MODEL→MODEL patches, chained between the UNET and the guider in the order
+  // ComfyUI-sol-attn documents as MANDATORY: attention → MLP chunking → EasyCache.
+  // BasicScheduler deliberately keeps the RAW unet (sigmas must not depend on any of
+  // this), so only the guider's model input moves.
+  let head = "unet";
+  if (solAttn) {
+    // Sol-Attn (NVIDIA Labs, arXiv 2607.24027) — training-free sparse attention. VERIFIED
+    // live on the RTX 5090: 50/50 blocks patched, no dense fallback, 50.58s → 45.83s
+    // (1.10×) at 864×480×124 = 15,428 tokens, three runs each, seed and prompt fixed.
+    // That ratio is small because attention is only ~34% of the run at that token count;
+    // the kernel itself is 1.38-1.65× over SageAttention and attention is O(n²) while the
+    // rest is roughly O(n), so the end-to-end gain grows with resolution and duration.
+    //
+    // strict is FALSE here, unlike the validation run: in production an unsupported shape
+    // should quietly fall back to the normal backend, not kill a 25-minute render. The
+    // trade is that a silent fallback looks like "no speedup" rather than an error —
+    // ComfyUI's log names the reason once per cause.
+    const q8 = solAttn === "int8_qk" || solAttn === "int8_qk_pv";
+    wf["sol"] = { class_type: "MiniMaxH3MemoryEfficientSolAttentionPatch", inputs: {
+      model: [head, 0], enabled: true,
+      tau: solTau > 0 ? solTau : 1.3,
+      min_tokens: 4096, strict: false, thresh_type: "diag",
+      int8_qk: q8,
+      int8_pv: solAttn === "int8_qk_pv",   // needs int8_qk; ~1.4% rel L2 vs 0.8% for qk alone
+      sink_conditioning: "exact_kv",       // the paper's exact-KV handling for H3's packed sequence
+      dense_blocks: "",
+    } };
+    head = "sol";
+  }
+  if (solChunkFF) {
+    // Splits each MLP over the SEQUENCE dimension. Tokens are independent through an MLP,
+    // so this is arithmetically the same result in smaller pieces — a memory win with no
+    // quality term, which is why it is a separate control from the approximation above.
+    wf["cff"] = { class_type: "MiniMaxH3ChunkFeedForward", inputs: {
+      model: [head, 0], enabled: true, chunks: 2, min_tokens: 8192 } };
+    head = "cff";
+  }
+  if (easyCache) {
+    // A core node that reuses the previous step's result whenever the step-to-step change
+    // falls under reuse_threshold, at some cost in fidelity. Defaults are the node's own.
+    //
+    // Expectations, so this isn't mistaken for a fix: it removes sampling COMPUTE, not
+    // weights, and it holds an extra cached tensor — no help at all on a box that is
+    // memory-bound, and on a 32GB card it can push a tight run over. It also has less to
+    // work with here than the "~25%" the community quotes: 20 steps leave less
+    // step-to-step redundancy than the 40-50-step runs those figures come from, and H3
+    // already runs CFG-free (BasicGuider), so the single biggest saving is spent.
+    // Sol-Attn composes with it, but don't push both hard at once — an aggressive
+    // reuse_threshold on top of a high tau is two approximations stacked.
+    wf["ec"] = { class_type: "EasyCache", inputs: {
+      model: [head, 0], reuse_threshold: 0.2, start_percent: 0.15, end_percent: 0.95, verbose: false } };
+    head = "ec";
+  }
+  wf["guide"].inputs.model = [head, 0];
   return wf;
 }
 
@@ -6152,6 +6196,9 @@ async function generateComfyImage(req, res) {
       let panoOutpaintUsed = 0; // set only when a photo was grown into the panorama
       let panoLoraUsed = null;  // { name, strength } when an equirect LoRA was mounted
       let panoLoraSkipped = null; // asked for, but the chosen base is the wrong family
+      let solAttnUsed = null;     // Sol-Attn mode actually applied ("bf16"/"int8_qk"/"int8_qk_pv")
+      let solChunkUsed;           // MLP chunking actually applied
+      let solAttnSkipped = false; // asked for, but ComfyUI-sol-attn is not on this worker
       let panoCfg = null;      // …and its own sampler settings, taken from the chosen checkpoint
       let panoBase = "";       // which checkpoint that was, for the log
       let interpWarning = null; // interpolation skipped (source fps already ≥ target) → tell the client
@@ -6908,9 +6955,30 @@ async function generateComfyImage(req, res) {
           if (sourceVideoName || sourceVideo) refVideoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
           if (sourceAudioName || sourceAudio) refAudioName = sourceAudioName || await uploadAudio(sourceAudio, controller.signal, sourceAudioMime);
         }
+        // Sol-Attn lives in a custom node pack (ComfyUI-sol-attn) that this box may not
+        // have — and with several workers, "installed" is per-box. Asking for a class the
+        // target doesn't know would fail the whole /prompt, so the request is checked
+        // against the LIVE node list and dropped when absent. Dropping it is reported
+        // (solAttnSkipped) rather than done quietly: a silently ignored speed setting is
+        // indistinguishable from one that ran and did nothing.
+        let solAttn = String(opts.solAttn || "").trim();
+        let solChunkFF = !!opts.solChunkFF;
+        if (solAttn || solChunkFF) {
+          const need = [];
+          if (solAttn) need.push("MiniMaxH3MemoryEfficientSolAttentionPatch");
+          if (solChunkFF) need.push("MiniMaxH3ChunkFeedForward");
+          if (!(await comfyHasNodes(need))) {
+            solAttnSkipped = true;
+            solAttn = "";
+            solChunkFF = false;
+          }
+        }
+        solAttnUsed = solAttn || null;
+        solChunkUsed = solChunkFF || undefined;
         workflow = buildMiniMaxH3({ model, prompt, comp, v, seed,
           firstFrameName, lastFrameName, refImageNames, refVideoName, refAudioName,
-          refImageSize: opts.h3RefSize, easyCache: !!opts.easyCache });
+          refImageSize: opts.h3RefSize, easyCache: !!opts.easyCache,
+          solAttn, solTau: Number(opts.solTau) || 0, solChunkFF });
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
       } else if (model === PANO_T2I) {
         // A recipe, not a checkpoint: it picks its own weights and forces 2:1, since
@@ -7673,7 +7741,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
-        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, imagesUsed });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own
