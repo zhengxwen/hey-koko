@@ -174,6 +174,8 @@ Upscale / sharpen tools (-m video-enhance --video clip.mp4, or -m image-upscale 
       --upscale <m>        upscale model: auto (default) | off | a filename from --list-models
       --upscale-to <px>    target LONG side (1920 / 2560 / 3840); default is 2x, capped at 2160
       --sharpen <level>    off | light | medium | strong  (works with --upscale off: filter only)
+      --fps <n>            exact output frame rate, e.g. 30 (interpolates, then re-times;
+                           on a generator it sets the mux rate instead)
       --upscale-denoise <n>  0-1 (or a percentage) — clean up before upscaling
       --restore <m>        denoise/restore model: auto | off | a filename
       --opt k=v            any ⚙ option verbatim, repeatable. e.g. --opt noAudio=true
@@ -237,6 +239,7 @@ function parseArgv(argv) {
       // The upscale/sharpen tools' knobs. They are ordinary ⚙ options underneath, but
       // reaching them through --opt means knowing the key names, and these two models
       // are useless without them.
+      case "--fps": o.fps = parseFloat(need(i, a)); i++; break;
       case "--upscale": o.options.upscaleModel = need(i, a); i++; break;
       case "--upscale-to": o.options.upscaleTarget = parseInt(need(i, a), 10); i++; break;
       case "--sharpen": o.options.sharpen = need(i, a); i++; break;
@@ -361,6 +364,9 @@ function resolveModel(rows, token) {
 
 // ── task assembly ────────────────────────────────────────────────────────────
 
+// The enhance tool's sentinel name (server: VIDEO_ENHANCE) — --fps routes on it.
+const VIDEO_ENHANCE = "video-enhance";
+
 const IMAGE_EXT = { png: "png", jpg: "jpg", jpeg: "jpg", webp: "webp" };
 
 // Extension → mime for --add. The gallery routes on the top-level type (image / video /
@@ -401,6 +407,7 @@ function taskFromArgs(a) {
   if (a.size) t.size = a.size;
   if (Number.isFinite(a.seed)) t.seed = a.seed;
   if (a.steps > 0) t.steps = a.steps;
+  if (a.fps > 0) t.fps = a.fps;
   if (a.count > 0) t.count = a.count;
   if (a.precision) t.precision = a.precision;
   if (a.enhance) t.enhance = true;
@@ -591,6 +598,23 @@ async function runTask(task, cli, ctx) {
     sourceAudioDuration = r.json.duration;
   }
 
+  // --fps means "the rate the result plays at", which two different mechanisms deliver:
+  // on the enhance tool it is frame INTERPOLATION (new frames invented, duration kept);
+  // on a generator it is the rate the model muxes at. Models with a fixed rate (MiniMax
+  // H3 at 24) ignore it server-side — the length is defined at that rate.
+  let fpsPlan = null;
+  if (task.fps > 0) {
+    if (model.value === VIDEO_ENHANCE) {
+      fpsPlan = planFps(Number(sourceVideoFps) || 0, task.fps);
+      if (fpsPlan) options.targetFps = fpsPlan.interFps;
+      else if (!cli.quiet && !cli.json) {
+        process.stderr.write(`ℹ --fps ${task.fps} skipped: the source is already ${sourceVideoFps || "?"} fps\n`);
+      }
+    } else {
+      options.fps = task.fps;
+    }
+  }
+
   // Empty → the UI's 4 h default; explicit 0 → unlimited (no server deadline).
   const timeout = cli.timeoutMin === undefined ? 14400
     : (cli.timeoutMin > 0 ? Math.round(cli.timeoutMin * 60) : 0);
@@ -665,13 +689,37 @@ async function runTask(task, cli, ctx) {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const bytes = Buffer.from(arr[k], "base64");
       fs.writeFileSync(file, bytes);
+      // Interpolation landed on a multiple of the source rate; bring it to the exact
+      // rate that was asked for. Best-effort: without ffmpeg the clip is still perfectly
+      // good, it just plays at the multiple, and the record says so.
+      let finalFps = data.fps;
+      let fpsNote = null;
+      if (fpsPlan && data.videos) {
+        if (fpsPlan.exact) finalFps = fpsPlan.target;
+        else {
+          try {
+            resampleFile(file, fpsPlan.target);
+            finalFps = fpsPlan.target;
+            if (!fpsPlan.clean) fpsNote = "nearest-frame";   // cadence isn't perfectly even
+          } catch {
+            fpsNote = "no-ffmpeg";
+            if (!cli.quiet && !cli.json) {
+              process.stderr.write(`⚠ kept ${data.fps} fps — ffmpeg is needed to re-time to ${fpsPlan.target}\n`);
+            }
+          }
+        }
+      }
       const dims = (data.width ? { width: data.width, height: data.height } : null)
         || (data.images ? sniffDims(bytes) : null) || {};
       const rec = {
         ok: true, file, model: model.id, modelFile: data.model, seed: data.seed,
-        width: dims.width, height: dims.height, fps: data.fps, frames: data.length,
+        width: dims.width, height: dims.height, fps: finalFps, frames: data.length,
         precision: data.precisionUsed, mediaId: (data.mediaIds || [])[k] || null,
-        prompt, seconds: (data.length && data.fps) ? Math.round((data.length / data.fps) * 10) / 10 : undefined,
+        prompt,
+        // Duration is invariant under re-timing, so it is computed from the frames and
+        // the rate the MODEL produced, not from the rate the file ended up at.
+        seconds: (data.length && data.fps) ? Math.round((data.length / data.fps) * 10) / 10 : undefined,
+        ...(fpsNote ? { fpsNote } : {}),
         elapsedSec: elapsed,
       };
       results.push(rec);
@@ -687,6 +735,41 @@ async function runTask(task, cli, ctx) {
     }
   }
   return results;
+}
+
+// ── --fps: an exact output frame rate ────────────────────────────────────────
+
+// ComfyUI's frame interpolation multiplies the frame count by an INTEGER, so a 24 fps
+// clip can only become 48, 72, … — asking it for 30 gets you 48. To deliver the rate that
+// was actually requested, interpolate to a multiple and resample down to the target.
+//
+// The multiple is chosen so the target divides it exactly when that is affordable
+// (24→120→30 keeps every 4th interpolated frame: evenly spaced, no judder). The cap is 5
+// rather than a smaller number precisely BECAUSE 24→30 needs ×5: it is the commonest
+// conversion there is, and at ×4 it fell back to 48→30 nearest-frame judder. Past the cap
+// (25→30 would want ×6) we take the cheap multiple and let ffmpeg pick nearest frames.
+const FPS_MULT_CAP = 5;
+function planFps(srcFps, target) {
+  if (!(srcFps > 0) || !(target > 0) || target <= srcFps) return null;  // nothing to do
+  let mult = 0;
+  for (let m = Math.ceil(target / srcFps); m <= FPS_MULT_CAP; m++) {
+    if ((m * srcFps) % target === 0) { mult = m; break; }
+  }
+  mult = mult || Math.ceil(target / srcFps);
+  const interFps = mult * srcFps;
+  return { mult, interFps, target, exact: interFps === target, clean: interFps % target === 0 };
+}
+
+// Re-time a finished clip to an exact rate, in place. Duration and audio are preserved
+// (ffmpeg's fps filter drops/repeats frames rather than changing playback speed).
+function resampleFile(file, fps) {
+  const { execFileSync } = require("node:child_process");
+  const tmp = `${file}.retime.mp4`;
+  execFileSync("ffmpeg", ["-y", "-v", "error", "-i", file, "-vf", `fps=${fps}`,
+    // crf 16: this is a second encode of an already-encoded clip, so keep it near-visually-lossless.
+    "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy", tmp],
+    { stdio: ["ignore", "ignore", "pipe"] });
+  fs.renameSync(tmp, file);
 }
 
 // ── --add: file the media as-is, no generation ───────────────────────────────

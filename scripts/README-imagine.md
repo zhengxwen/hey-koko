@@ -206,6 +206,7 @@ node scripts/imagine.js -m <id> -i ref.png -s 6 -O out/ --json "…" 2>/dev/null
 | `width`, `height` | pixel size of the result |
 | `fps`, `frames`, `seconds` | video only; `seconds` = `frames / fps` |
 | `precision` | quantisation tier that loaded (`fp8`, `int8`, …), when known |
+| `fpsNote` | only when `--fps` could not be hit exactly: `nearest-frame` or `no-ffmpeg` |
 | `mediaId` | gallery id, or `null` when not filed (the default — see above) |
 | `prompt` | prompt actually sent (after `--enhance`, if used) |
 | `elapsedSec` | wall-clock seconds for the render |
@@ -309,6 +310,7 @@ node scripts/imagine.js -m image-upscale -i photo.jpg --upscale 4x-UltraSharp.pt
 
 | flag | values |
 | --- | --- |
+| `--fps` | exact output frame rate, e.g. `30` (see below) |
 | `--upscale` | `auto` (default) · `off` · a filename from `--list-models` |
 | `--upscale-to` | target **long side** in pixels (1920 / 2560 / 3840). Default is 2× the source, capped at a 2160 long side. A portrait clip gets in height what a landscape one gets in width. |
 | `--sharpen` | `off` (default) · `light` · `medium` · `strong` |
@@ -334,8 +336,45 @@ caller must handle or it will wait for a file that never arrives:
 {"ok":true,"noop":true,"model":"video-enhance","message":"ℹ️ Nothing to do: …","file":null}
 ```
 
-Frame interpolation is deliberately not here: it belongs to the ✂️ video editor in the
-app, which owns the output-fps setting.
+### `--fps` — an exact output rate
+
+```bash
+node scripts/imagine.js -m video-enhance --video clip.mp4 --fps 30 -O out/
+```
+
+`--fps` gives you **the number you asked for**, not the nearest multiple. That takes two
+steps, because ComfyUI's interpolator only multiplies the frame count by an integer:
+
+1. interpolate to a multiple of the source rate, and
+2. re-time the finished clip to the exact target with ffmpeg (duration and audio are
+   unchanged — frames are re-timed, the clip is not sped up or slowed down).
+
+The multiple is picked so the target divides it exactly whenever that is affordable, which
+keeps the cadence perfectly even:
+
+| source → target | interpolates to | then |
+| --- | --- | --- |
+| 24 → 30 | 120 (×5) | keeps every 4th frame — evenly spaced |
+| 24 → 48 | 48 (×2) | nothing to do, already exact |
+| 24 → 60 | 120 (×5) | keeps every other frame |
+| 25 → 30 | 50 (×2) | nearest frame — slight judder, `"fpsNote":"nearest-frame"` |
+
+The multiplier is capped at ×5, so a target needing more than that (25 → 30 wants ×6)
+falls back to the cheap multiple and nearest-frame re-timing. **Mind the cost**: ×5 means
+five times as many frames go through the interpolator, so 24 → 30 is a much bigger job
+than 24 → 48.
+
+A target at or below the source rate is skipped — there is nothing to interpolate. Without
+`ffmpeg` on the calling machine the clip is still delivered, at the multiple rather than
+the target, and the record says `"fpsNote":"no-ffmpeg"`.
+
+On a **generator** rather than the enhance tool, `--fps` means the rate the model muxes
+at, which is what "output fps" means there. Models with a fixed rate ignore it — MiniMax
+H3 is defined at 24 fps, and re-timing its picture would desync the soundtrack it
+generates in the same latent.
+
+Frame interpolation is otherwise not part of the chat surface: in the app it belongs to
+the ✂️ video editor, which owns the output-fps setting there.
 
 ## Importing existing media
 
@@ -368,7 +407,7 @@ Exit codes: **0** all good, **1** usage or connection problem, **2** one or more
 | Model | `-m/--model <id[@tier]>`, `--precision <tier>` |
 | Inputs | `-i/--image <path>` (repeatable), `--video <path>`, `--audio <path>` |
 | Generation | `-s/--second <n>`, `--length <frames>`, `--size <WxH\|preset>`, `--seed <n>`, `--steps <n>`, `--no <text>`, `-n/--count <1-8>`, `-e/--enhance`, `--enhance-model <llm>` |
-| Upscale tools | `--upscale <auto\|off\|file>`, `--upscale-to <px>`, `--sharpen <off\|light\|medium\|strong>`, `--upscale-denoise <0-1>`, `--restore <auto\|off\|file>` |
+| Upscale tools | `--fps <n>`, `--upscale <auto\|off\|file>`, `--upscale-to <px>`, `--sharpen <off\|light\|medium\|strong>`, `--upscale-denoise <0-1>`, `--restore <auto\|off\|file>` |
 | ⚙ escape hatch | `--opt key=value` (repeatable) |
 | Output | `-o/--out <path>`, `-O/--out-dir <dir>`, `-g/--gallery`, `--json`, `--progress`, `-q/--quiet`, `--dry-run` |
 | Import | `--add <file...>` — file existing media in the gallery, no generation |
