@@ -246,6 +246,25 @@ that model accepts; `needsImages` / `needsVideo` say what it refuses to run with
 `--dry-run` under `--json` prints the request body as a **single line** on the same
 stream, so a caller can validate a batch without special-casing the format.
 
+### Progress
+
+By default a live bar is drawn on stderr, but only in a real terminal — it redraws with
+`\r`, which in a pipe or a log file would be unreadable. So a program driving this CLI
+normally sees nothing until each result lands.
+
+**`--progress`** gives it progress it can actually read: one self-contained line per
+update on stderr, no redraws, and it works alongside `--json` (stdout stays pure data).
+
+```
+[progress] minimax-h3-r2v 45% (9/20) 37s
+```
+
+Throttled to one line per 5 % or 5 seconds, plus the final one at 100 % — a 1000-step
+render will not write 1000 lines. The numbers come from ComfyUI's sampler, so expect the
+line to **reach 100 % and then go quiet for a while**: VAE decode, encode and file writing
+report no progress, and on a long video that tail is a real part of the wall clock.
+`--quiet` overrides `--progress`.
+
 ### Recipe for a calling program
 
 ```bash
@@ -351,7 +370,7 @@ Exit codes: **0** all good, **1** usage or connection problem, **2** one or more
 | Generation | `-s/--second <n>`, `--length <frames>`, `--size <WxH\|preset>`, `--seed <n>`, `--steps <n>`, `--no <text>`, `-n/--count <1-8>`, `-e/--enhance`, `--enhance-model <llm>` |
 | Upscale tools | `--upscale <auto\|off\|file>`, `--upscale-to <px>`, `--sharpen <off\|light\|medium\|strong>`, `--upscale-denoise <0-1>`, `--restore <auto\|off\|file>` |
 | ⚙ escape hatch | `--opt key=value` (repeatable) |
-| Output | `-o/--out <path>`, `-O/--out-dir <dir>`, `-g/--gallery`, `--json`, `-q/--quiet`, `--dry-run` |
+| Output | `-o/--out <path>`, `-O/--out-dir <dir>`, `-g/--gallery`, `--json`, `--progress`, `-q/--quiet`, `--dry-run` |
 | Import | `--add <file...>` — file existing media in the gallery, no generation |
 | Batch | `--batch <file\|->`, `--continue-on-error` |
 | Server | `--server <url>`, `--comfy-url <url>`, `--timeout <minutes>` |

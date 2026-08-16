@@ -185,6 +185,8 @@ Output
   -g, --gallery            also file the result in ~/.hey-koko/gallery (off by default)
       --json               machine-readable: one JSON object per line on stdout (results,
                            --add records, --list-models rows); logs stay on stderr
+      --progress           progress as plain lines on stderr (works in a pipe / log, and
+                           alongside --json): "[progress] <model> 45% (9/20) 37s"
   -q, --quiet              no progress output
       --dry-run            print the request that would be sent, generate nothing
 
@@ -257,6 +259,7 @@ function parseArgv(argv) {
       // paths, so "--add *.mp4" works after the shell has expanded the glob.
       case "--add": o.add = true; o.addFiles.push(need(i, a)); i++; break;
       case "--json": o.json = true; break;
+      case "--progress": o.progress = true; break;
       case "-q": case "--quiet": o.quiet = true; break;
       case "--dry-run": o.dryRun = true; break;
       case "--cmd": o.cmd = need(i, a); i++; break;
@@ -423,16 +426,28 @@ function taskToOptions(task) {
 
 // ── progress (ComfyUI's own websocket, same clientId the render is queued with) ─
 
-function attachProgress(comfyUrl, clientId, label) {
-  // Only on a real terminal: the bar redraws with \r, which in a log file or a pipe
-  // becomes one unreadable line per sampler step.
-  if (!comfyUrl || typeof WebSocket === "undefined" || !process.stderr.isTTY) return () => {};
+// `plain` = one self-contained line per update instead of a \r-redrawn bar, so progress
+// survives a pipe or a log file. That is what --progress asks for; the bar itself needs
+// a real terminal, since in a log it would become one unreadable line per sampler step.
+function attachProgress(comfyUrl, clientId, label, { plain = false } = {}) {
+  if (!comfyUrl || typeof WebSocket === "undefined") return () => {};
+  if (!plain && !process.stderr.isTTY) return () => {};
   const host = String(comfyUrl).replace(/^https?:\/\//, "").replace(/\/$/, "");
   let ws = null, closed = false, retry = null, last = "";
+  let lastPct = -1, lastAt = 0;
   const started = Date.now();
   const draw = (value, max) => {
     const pct = max ? Math.round((value / max) * 100) : 0;
     const secs = Math.round((Date.now() - started) / 1000);
+    if (plain) {
+      // Throttled: a 1000-step render must not write 1000 lines. Every 5% or 5 s,
+      // and always the last step — a consumer polling this should see it finish.
+      const now = Date.now();
+      if (pct !== 100 && pct - lastPct < 5 && now - lastAt < 5000) return;
+      lastPct = pct; lastAt = now;
+      process.stderr.write(`[progress] ${label} ${pct}% (${value}/${max}) ${secs}s\n`);
+      return;
+    }
     const line = `  ${label} ${String(pct).padStart(3)}%  ${value}/${max}  ${secs}s`;
     if (line === last) return;
     last = line;
@@ -615,7 +630,12 @@ async function runTask(task, cli, ctx) {
 
     const label = count > 1 ? `${model.id} (${i + 1}/${count})` : model.id;
     if (!cli.quiet && !cli.json) process.stderr.write(`▶ ${label}${prompt ? `  "${prompt.slice(0, 60)}${prompt.length > 60 ? "…" : ""}"` : ""}\n`);
-    const stop = (cli.quiet || cli.json) ? () => {} : attachProgress(ctx.comfyUrl, clientId, label);
+    // --progress asks for it explicitly (pipes, logs, --json runs); otherwise the bar
+    // appears in an interactive terminal. --quiet always wins.
+    const stop = cli.quiet ? () => {}
+      : cli.progress ? attachProgress(ctx.comfyUrl, clientId, label, { plain: true })
+      : cli.json ? () => {}
+      : attachProgress(ctx.comfyUrl, clientId, label);
     const started = Date.now();
     let r;
     try { r = await postJson("/api/generate-comfy", body, cli.server); }
