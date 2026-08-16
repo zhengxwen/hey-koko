@@ -7822,6 +7822,22 @@ body.isResizingComposer {
   background: rgba(128, 128, 128, 0.1);
 }
 
+/* The ⛶ floats over the media, so it needs a positioned box of its own — the chat
+   bubble solves this the same way (.videoWrapper). The margin moves from the media to
+   the wrapper, or the gap ends up INSIDE the positioning context and the button sits
+   10px too high. Stills and clips share the wrapper: one control, one place. */
+.galleryDetailMedia {
+  position: relative;
+  line-height: 0;
+  margin-bottom: 10px;
+}
+
+.galleryDetailMedia img,
+.galleryDetailMedia video { margin-bottom: 0; }
+
+/* Same reveal-on-hover as the chat's copy of this button. */
+.galleryDetailMedia:hover .videoFullscreenBtn { opacity: 1; }
+
 .galleryDetail dl {
   display: grid;
   grid-template-columns: auto 1fr;

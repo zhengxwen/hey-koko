@@ -1182,12 +1182,17 @@ function rateWidget(e) {
   return row;
 }
 
+// The served path of a ledger entry, and the name the viewers caption it with. Inlined
+// in three places before the detail pane needed to build a whole list of them.
+const fileUrl = (id) => `/api/gallery/file/${id.split("/").map(encodeURIComponent).join("/")}`;
+const fileLabel = (entry) => entry.displayName || entry.originalName || entry.path.split("/").pop();
+
 function renderDetail() {
   const pane = el("galleryDetail");
   if (!pane) return;
   if (!selected) { pane.hidden = true; pane.innerHTML = ""; return; }
   const e = selected;
-  const url = `/api/gallery/file/${e.path.split("/").map(encodeURIComponent).join("/")}`;
+  const url = fileUrl(e.path);
   pane.hidden = false;
   pane.innerHTML = "";
 
@@ -1202,7 +1207,35 @@ function renderDetail() {
     if (tag === "video") {
       media.poster = galleryThumbUrl(e.path);
     }
-    pane.appendChild(media);
+    // The pane is a narrow column; anything worth keeping is worth seeing full size.
+    // Stills and clips get the SAME ⛶ in the same corner — a magnifier cursor on one and
+    // a button on the other is two things to learn for one idea — and it opens ONE run
+    // over both kinds, in grid order, so ‹ › does not stop dead at the first video.
+    if (tag === "img" || tag === "video") {
+      const wrap = document.createElement("div");
+      wrap.className = "galleryDetailMedia";
+      wrap.appendChild(media);
+      const fs = document.createElement("button");
+      fs.type = "button";
+      fs.className = "videoFullscreenBtn";
+      fs.textContent = "⛶";
+      fs.title = t("btn_fullscreenVideo");
+      fs.setAttribute("aria-label", t("btn_fullscreenVideo"));
+      fs.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (!state.openMediaViewer) return;
+        const run = items
+          .filter((x) => x.kind === "image" || x.kind === "video")
+          .map((x) => ({ kind: x.kind, src: fileUrl(x.path), poster: galleryThumbUrl(x.path), name: fileLabel(x) }));
+        const at = run.findIndex((m) => m.src === url);
+        state.openMediaViewer(run.length ? run : [{ kind: e.kind, src: url, name: fileLabel(e) }],
+                              at >= 0 ? at : 0);
+      });
+      wrap.appendChild(fs);
+      pane.appendChild(wrap);
+    } else {
+      pane.appendChild(media);
+    }
   }
 
   pane.appendChild(rateWidget(e));

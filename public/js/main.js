@@ -21,7 +21,7 @@ import { setDeps as urlFetchSetDeps, handleUrlCommand, handleMultiUrlCommand } f
 import { setToolCmdDeps } from './tool-cmd.js';
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
 import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup, hideMentionPopup, moveMentionSelection, selectActiveMention, isMentionPopupOpen } from './mentions.js';
-import { initLightbox, initVideoLightbox } from './lightbox.js';
+import { initLightbox, initVideoLightbox, openMediaViewer } from './lightbox.js';
 import { initArchive } from './archive.js';
 import { initLibrary, runLibraryImport, notifyLibraryJobsChanged, openLibraryPanel, openLibraryDoc } from './library.js';
 import { initAsk } from './ask.js';
@@ -3113,6 +3113,10 @@ const lightboxApi = initLightbox();
 state.openLightbox = lightboxApi.openLightbox;
 const videoLightboxApi = initVideoLightbox();
 state.openVideoLightbox = videoLightboxApi.openVideoLightbox;
+// Mixed image+video runs (the gallery's detail pane). Registered after BOTH viewers
+// exist — the coordinator hands over between them, so half of it wired up is worse than
+// none of it.
+state.openMediaViewer = openMediaViewer;
 
 // Initialize archive
 initArchive();

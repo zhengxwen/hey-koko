@@ -39,6 +39,43 @@ imagine.js  ──HTTP──▶  hey-koko server  ──▶  ComfyUI
 If ComfyUI is unreachable, the model list comes back nearly empty and `-m` will say so
 rather than guessing.
 
+## Nothing is inherited from the app — except the ComfyUI address
+
+**The ⚙ settings panel in the browser has no effect on this CLI.** Those values live in
+the browser's localStorage; the server only ever sees them because the page puts them in
+its request. A CLI cannot read them and does not try.
+
+So an option you don't pass is **not** "whatever the app is set to" — it falls back to
+the **server-side preset for that model** (`videoPreset` / `familyPreset` /
+`resolveConfig` in `server/comfy.js`), which is the same value the app itself uses when
+its ⚙ field is empty or on "auto". For MiniMax H3 that is 864×480, 124 frames, 24 fps,
+20 steps, `res_multistep` + `simple`, precision auto.
+
+| | lives in | inherited? |
+| --- | --- | --- |
+| ⚙ size / duration / frames / precision / sharpen / timeout / LoRA … | browser localStorage | ✗ — falls back to the model preset |
+| ⚙ prompt decoration (prefix/suffix) | browser localStorage | ✗ — the prompt is sent verbatim |
+| the app's default image size | browser localStorage | ✗ — width/height are left unset for the model to choose |
+| **the ComfyUI address** | the server process | ✅ **shared** |
+
+That last row is the one exception: the address the app is pointed at is pushed to the
+server and held there, so the CLI renders on whichever box the app is currently using.
+It is **not** written to disk — a server restart resets it to `COMFYUI_URL` (or the
+default) until a browser connects and pushes the setting again. Use `--comfy-url` when a
+run must go to a specific machine regardless.
+
+Two CLI defaults differ from the app's on purpose: the render timeout is 4 h (what the
+app's empty timeout field means), and results are **not** filed in the gallery (the app
+always files them) — see [Output](#output).
+
+`--dry-run` shows exactly what is sent; anything missing from its `options` is filled in
+by the server from the model preset:
+
+```bash
+node scripts/imagine.js -m minimax-h3-r2v -i ref.png --dry-run "…"
+# "options": {}   ← nothing specified, so the model's own defaults apply
+```
+
 ## Basic use
 
 ```bash
@@ -350,8 +387,8 @@ forward-compatible way to reach a knob the CLI has no flag for.
 
 - **`--dry-run` prints the exact request and generates nothing.** Use it to check a batch
   file before it reaches the GPU.
-- **The browser's ⚙ prompt decoration is not applied.** Those settings live in the
-  browser's localStorage, which a CLI cannot read, so the prompt is sent verbatim.
+- **The app's ⚙ settings never apply here** — see
+  [Nothing is inherited from the app](#nothing-is-inherited-from-the-app--except-the-comfyui-address).
 
 ## Model-specific notes (MiniMax H3 r2v)
 
