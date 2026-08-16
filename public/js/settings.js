@@ -96,6 +96,8 @@ export function saveCurrentSettings() {
         refMaxSize: dom.comfyParamRefMaxSize?.value || "",
         ltxLora: dom.comfyParamLtxLora?.value || "",
         ltxLoraStrength: dom.comfyParamLtxLoraStrength?.value || "",
+        krea2Lora: dom.comfyParamKrea2Lora?.value || "",
+        krea2LoraStrength: dom.comfyParamKrea2LoraStrength?.value || "",
         phantomImgCfg: dom.comfyParamPhantomImgCfg?.value || "",
         phantomTurbo: dom.comfyParamPhantomTurbo?.checked || false,
         relight: dom.comfyParamRelight?.value || "",
@@ -336,6 +338,10 @@ export function loadSavedSettings() {
     // ltxLora is best-effort too — applyComfyModels re-applies it once loras have loaded.
     if (dom.comfyParamLtxLora && cp.ltxLora) dom.comfyParamLtxLora.value = cp.ltxLora;
     if (dom.comfyParamLtxLoraStrength) dom.comfyParamLtxLoraStrength.value = cp.ltxLoraStrength || "";
+    // Same guard as the LTX slot: only assign a saved LoRA when there IS one, so this
+    // doesn't blank a selection the model list has already restored.
+    if (dom.comfyParamKrea2Lora && cp.krea2Lora) dom.comfyParamKrea2Lora.value = cp.krea2Lora;
+    if (dom.comfyParamKrea2LoraStrength) dom.comfyParamKrea2LoraStrength.value = cp.krea2LoraStrength || "";
     if (dom.comfyParamPhantomImgCfg) dom.comfyParamPhantomImgCfg.value = cp.phantomImgCfg || "";
     if (dom.comfyParamPhantomTurbo) dom.comfyParamPhantomTurbo.checked = !!cp.phantomTurbo;
     if (dom.comfyParamRelight) dom.comfyParamRelight.value = cp.relight || "";

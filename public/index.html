@@ -1110,6 +1110,16 @@
             <span id="comfyParamLtxLoraStrengthLabel">LTX LoRA strength</span>
             <input id="comfyParamLtxLoraStrength" type="number" min="0" max="3" step="0.05" placeholder="1.0" />
           </label>
+          <label title="Krea-2 only: one of the nine official style LoRAs. Each was trained with a TRIGGER WORD that has to appear in the prompt to take effect — the app appends it for you, so write your prompt normally and pick the look here. The trigger word is shown next to each option and is reported on the done line. None = the model's own look. Options are the krea2_* files in ComfyUI/models/loras/; the style-REFERENCE LoRA is deliberately absent, since that one is driven by the separate 'style reference' model entry, which reads an attached image instead of a fixed style.">
+            <span id="comfyParamKrea2LoraLabel">Krea-2 style LoRA</span>
+            <select id="comfyParamKrea2Lora">
+              <option value="">None</option>
+            </select>
+          </label>
+          <label title="Krea-2 only: how strongly the style is applied — both the style LoRA above and the style-reference route use this. Empty = 1.0, which is what Krea publishes as the recommended strength for all nine style LoRAs, so treat it as the default rather than a starting point to tune. Lower it when the style overwhelms the subject; raise it when the look barely shows. 0 is treated as 1.0 (a LoRA at zero strength changes nothing, which would make the done line claim a style that was never applied).">
+            <span id="comfyParamKrea2LoraStrengthLabel">Krea-2 style strength</span>
+            <input id="comfyParamKrea2LoraStrength" type="number" min="0" max="3" step="0.05" placeholder="1.0" />
+          </label>
           <label class="checkboxLabel isMultiline comfyParamCheck" title="Phantom 14B only: mount the Wan2.1 step-distill LoRA and sample in 8 steps instead of 50 — roughly an order of magnitude faster. THE TRADE: that LoRA was trained with CFG distilled away, so both of Phantom's guidance scales drop to 1, and its dual-CFG subject guidance then cancels out of the formula entirely (not merely weakened). Identity/likeness will hold less well, and the g_img knob above stops doing anything. Use it to iterate on framing and motion quickly, then turn it off for the final take. Ignored on the 1.3B model — the LoRA is 14B-only, and the run proceeds at the normal 50-step recipe.">
             <input id="comfyParamPhantomTurbo" type="checkbox" />
             <span id="comfyParamPhantomTurboLabel">Phantom turbo (8 steps, drops dual-CFG subject guidance)</span>

@@ -475,6 +475,9 @@ function editTypeOf(model) {
   // a sentinel, so this can't shadow a model on disk.
   if (model === BERNINI_IMG_EDIT) return "bernini-i2i";
   if (model === BERNINI_IMG_SUBJECT) return "bernini-r2i";
+  // Same reasoning as the Bernini sentinels: an exact-id match, so the plain krea2
+  // txt2img files (which contain no "style_ref") keep falling through to the image list.
+  if (model === KREA2_STYLE_REF) return "krea2-style";
   if (/kontext/i.test(model)) return "kontext";
   if (/qwen.*edit|qwen[-_]?image[-_]?edit/i.test(model)) return "qwen";
   if (/omnigen/i.test(model)) return "omnigen";
@@ -805,6 +808,43 @@ function stampOutputPrefix(wf, folder, model) {
 const PANO_T2I = "panorama_360_text";
 // The image sentinels resolve to the same weights as the video ones.
 const BERNINI_IMAGE_SENTINELS = new Set([BERNINI_IMG_EDIT, BERNINI_IMG_SUBJECT, BERNINI_T2I]);
+
+// Krea-2 Turbo "image style reference": the same turbo weights driven by a DIFFERENT
+// graph (the ostris style-reference LoRA + TextEncodeQwenImageEditPlus, sampled through
+// SamplerCustomAdvanced instead of KSampler), taking 1–3 images whose STYLE — not whose
+// subject — is transferred onto the prompt. A sentinel because it shares its file with
+// the plain txt2img entry and only the graph tells them apart.
+const KREA2_STYLE_REF = "krea2_style_ref";
+// Any krea2 diffusion model. `raw` is the un-distilled base: it loads and samples
+// through the same graph, just without the 8-step schedule being right for it (the
+// ⚙ steps/cfg fields are the escape hatch), so it is NOT excluded here.
+const KREA2_RE = /krea2/i;
+// The style LoRA a Krea-2 run may mount, and the TRIGGER WORD each one needs appended
+// to the prompt. Upstream ships the pairing as a table in the template's note, and the
+// official graph wires a StringConcatenate that appends it for the user — so the app
+// does the same rather than making the trigger word something to remember and type.
+// Keyed by the distinctive part of the filename (krea2_darkbrush.safetensors → darkbrush).
+const KREA2_LORA_TRIGGERS = {
+  darkbrush: "monochrome ink wash style",
+  dotmatrix: "monochrome stippling style",
+  kidsdrawing: "naive expressive sketch style",
+  neondrip: "textured abstract style",
+  rainywindow: "rainy window style",
+  retroanime: "purple retro anime style",
+  softwatercolor: "art deco watercolor style",
+  sunsetblur: "ethereal motion blur style",
+  vintagetarot: "vintage tarot style",
+};
+// The style-REFERENCE LoRA is mounted by its own graph, never offered in the style-LoRA
+// slot: picking it there would load it without the reference-image wiring it exists for.
+const KREA2_STYLE_REF_LORA_RE = /krea2.*style.?ref/i;
+function krea2TriggerFor(loraName) {
+  const b = String(loraName || "").toLowerCase();
+  for (const [key, trigger] of Object.entries(KREA2_LORA_TRIGGERS)) {
+    if (b.includes(key)) return trigger;
+  }
+  return null;
+}
 
 async function resolveBerniniAuto() {
   const unets = await comfyEnum("UNETLoader", "unet_name");
@@ -1209,9 +1249,11 @@ function imageRank(n) {
   if (/boogu.*base/i.test(n)) return 6;
   if (/boogu.*turbo/i.test(n)) return 7;
   if (/qwen/i.test(n)) return 8;
+  if (KREA2_RE.test(n)) return 8.5;
   return 50;
 }
 function editRank(n) {
+  if (n === KREA2_STYLE_REF) return 6.5;
   // Bernini's image tasks group together at the end of the edit list.
   if (n === BERNINI_IMG_EDIT) return 7;
   if (n === BERNINI_IMG_SUBJECT) return 8;
@@ -1312,6 +1354,12 @@ function isModelReady(name, group, type) {
   const READY = [
     /flux1?.?dev/, /flux.*kontext/, /pony/,          // classic txt2img + kontext edit
     /z.?image/, /boogu/, /hidream/, /qwen.?image/,   // image gen + edit families
+    // Krea-2 — all three routes verified end-to-end on the Spark (fp8, 1024², 8 steps):
+    // plain txt2img 22s cold / ~13s warm, a style LoRA with its trigger word appended
+    // (retroanime came back unmistakably in that style), and the style-reference graph
+    // transferring a reference's palette and shading onto a different subject. The
+    // style-reference sentinel is covered by this same pattern.
+    /krea2/,
     /omnigen/, /pix2pix|instruct.?pix/,              // instruction edit
     /animate/,                                        // animate MOVE (base unet)
     /scail/,                                          // scail replace (base unet)
@@ -1396,7 +1444,14 @@ async function proxyComfyModels(req, res) {
     // this is an exclusion rather than a match — a new image LoRA should show up
     // without anyone having to add a pattern for it.
     const VIDEO_LORA_RE = /ltx|sulphur|wan|bernini|animate|lightx2v|scail|phantom|hunyuan.?video|infinitetalk|dancer|vace/i;
-    const panoLoras = allLoras.filter((n) => !VIDEO_LORA_RE.test(n));
+    // krea2's LoRAs are image LoRAs, so the exclusion above lets them through — but they
+    // were trained on Krea-2's own 12B DiT and match almost no keys on the Flux checkpoint
+    // the panorama recipe generates with. They'd be ten entries that quietly do nothing.
+    const panoLoras = allLoras.filter((n) => !VIDEO_LORA_RE.test(n) && !KREA2_RE.test(n));
+    // Krea-2's own style LoRA slot: the nine official style LoRAs. The style-REFERENCE
+    // LoRA is excluded — it is mounted by the style-reference graph, which also wires the
+    // reference images it exists to read; offered here it would load without them.
+    const krea2Loras = allLoras.filter((n) => KREA2_RE.test(n) && !KREA2_STYLE_REF_LORA_RE.test(n));
     // Edit/video models can be either diffusion models (UNETLoader) or full
     // checkpoints (instruct-pix2pix, ltx). Plain checkpoints stay in `models`.
     const all = [...ckpts, ...unets];
@@ -1624,6 +1679,23 @@ async function proxyComfyModels(req, res) {
     // z-image/boogu. `!editTypeOf` is what separates it from Qwen-Image-EDIT, which is a
     // different model that lands in editModels.
     const qwenImage = all.filter((n) => /qwen.?image/i.test(n) && !editTypeOf(n));
+    // Krea-2 (turbo and, if installed, raw) — a UNETLoader model like z-image/boogu/qwen.
+    // `!editTypeOf` is belt-and-braces: no krea2 FILENAME matches an edit pattern (the
+    // style-reference route is a sentinel, added to editModels below), but the same guard
+    // on every sibling list is what keeps that true when a new edit pattern is added.
+    const krea2 = all.filter((n) => KREA2_RE.test(n) && !editTypeOf(n));
+    // Krea-2 style reference: the same weights as the txt2img entry, so it is offered only
+    // when BOTH the checkpoint and the ostris style-reference LoRA are installed — that
+    // LoRA is what the route IS (without it this would be a plain generation that ignores
+    // the attached image). Pushed here rather than beside the Bernini image sentinels
+    // because it reads `krea2`, which is declared just above; the list is still assembled
+    // before dedupePrecision runs over it. `precFrom` points the ⚙ precision menu at the
+    // real checkpoint — the sentinel name carries no quantisation token of its own.
+    const krea2StyleRefLora = allLoras.find((n) => KREA2_STYLE_REF_LORA_RE.test(n));
+    if (krea2.length && krea2StyleRefLora
+      && await comfyHasNodes(["TextEncodeQwenImageEditPlus", "FluxKontextMultiReferenceLatentMethod", "ModelSamplingFlux", "CFGGuider", "SamplerCustomAdvanced"])) {
+      editModels.push({ name: KREA2_STYLE_REF, type: "krea2-style", needsImages: 1, precFrom: bestTier(krea2) });
+    }
     // Bernini text→image (length 1, nothing connected). A sentinel, not a filename —
     // it must stay OUT of dedupePrecision (no precision siblings to collapse) and is
     // appended after it, next to the other image sentinel (IMAGE_UPSCALE).
@@ -1690,7 +1762,7 @@ async function proxyComfyModels(req, res) {
     // REAL file — a saved choice must keep resolving, and generateComfyImage re-applies
     // the ⚙ preference to whatever name it receives — so the fix is to hide the token in
     // the frontend's OPTION TEXT, not to invent a fake value here.
-    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage], (n) => n, null);
+    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage, ...krea2], (n) => n, null);
     // The image entries that stand for a COLLAPSED group, so the frontend can drop the
     // precision token from their option text. It can't work this out for itself — it
     // only ever sees the surviving representative, never the siblings it stands for.
@@ -1806,9 +1878,9 @@ async function proxyComfyModels(req, res) {
     // the progress estimate matches the graph the server builds; gpuName → shown in the
     // model picker. Both null when unknown.
     const { gib: vramGib, gpuName } = await comfyGpuInfo();
-    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels: upscaleModels.filter((n) => !isRestoreModel(n)), restoreModels: upscaleModels.filter(isRestoreModel), panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, h3TextEncoders, hostname, vramGib, gpuName });
+    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels: upscaleModels.filter((n) => !isRestoreModel(n)), restoreModels: upscaleModels.filter(isRestoreModel), panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, krea2Loras: krea2.length ? krea2Loras : [], h3TextEncoders, hostname, vramGib, gpuName });
   } catch {
-    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [], h3TextEncoders: [] });
+    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [], krea2Loras: [], h3TextEncoders: [] });
   }
 }
 
@@ -1853,6 +1925,10 @@ async function editCompanions(editType) {
     if (!vae) missing.push("ae.safetensors → vae/");
     if (missing.length) throw new Error("Missing files required by OmniGen2:\n- " + missing.join("\n- "));
     return { clip, vae };
+  }
+  if (editType === "krea2-style") {
+    // Delegated so the "which qwen3vl size" rule lives in exactly one place.
+    return krea2Companions();
   }
   if (editType === "boogu-edit") {
     // Same companions as boogu txt2img: qwen3vl encoder (CLIPLoader type "boogu")
@@ -1911,6 +1987,15 @@ function familyPreset(model) {
     // Z-Image-Turbo: distilled few-step model — cfg=1 with the negative zeroed,
     // ~8 steps, res_multistep/simple (per the official ComfyUI template).
     return { sampler: "res_multistep", scheduler: "simple", cfg: 1, guidance: null, steps: 8, sd3Latent: true };
+  }
+  // Krea-2 Turbo — 8 steps / cfg 1 / euler / simple, exact from the official
+  // image_krea2_turbo_t2i template (its KSampler widgets, read out of the subgraph).
+  // Covers the style-reference sentinel too (same schedule, via BasicScheduler there).
+  // sd3Latent stays FALSE because the template's canvas is a plain EmptyLatentImage:
+  // ComfyUI's fix_empty_latent_channels reshapes an all-zero latent to whatever the
+  // model wants, so the 4-vs-16 channel question never reaches the sampler.
+  if (KREA2_RE.test(model)) {
+    return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: null, steps: 8, sd3Latent: false };
   }
   if (/boogu.*edit|boogu[-_]?image[-_]?edit/i.test(model)) {
     // boogu instruction-edit (boogu_image_edit): res_multistep/simple, cfg 2.5,
@@ -2123,6 +2208,138 @@ function buildZImage({ model, prompt, width, height, seed, cfg, comp }) {
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
+}
+
+// Krea-2 companions: the Qwen3-VL 4B text encoder (CLIPLoader type "krea2") + the
+// Qwen-Image VAE — the same VAE file Qwen-Image and Qwen-Image-Edit already use, which
+// is why installing Krea-2 needs no new VAE.
+//
+// The 4B SIZE is load-bearing and there is deliberately NO fallback to another qwen3vl:
+// this box also carries qwen3vl_8b (boogu) and qwen3vl_32b (MiniMax H3), both of which
+// match a loose /qwen3vl/ and would load into a model that was not trained on them —
+// producing garbage rather than an error. A missing 4B encoder is reported instead.
+async function krea2Companions() {
+  const [clips, vaes, loras] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+  ]);
+  const find = (list, re) => list.find((x) => re.test(x));
+  const clip = clips.find((x) => /qwen3vl/i.test(x) && /(^|[_-])4b([_-]|$)/i.test(x));
+  const vae = find(vaes, /qwen.*image.*vae|qwen[-_]?image|qwen.*vae/i);
+  const styleRefLora = find(loras, KREA2_STYLE_REF_LORA_RE);
+  const missing = [];
+  if (!clip) missing.push("qwen3vl_4b_fp8_scaled.safetensors → text_encoders/");
+  if (!vae) missing.push("qwen_image_vae.safetensors → vae/");
+  if (missing.length) throw new Error("Missing files required by Krea-2:\n- " + missing.join("\n- "));
+  return { clip, vae, styleRefLora };
+}
+
+// Resolve the ⚙ style-LoRA choice against what is REALLY installed on the worker this
+// job landed on. Exact match only (the field is populated from this same list), and the
+// style-reference LoRA is refused: it belongs to its own graph, and mounted here it would
+// load without the reference images it exists to read. A name that no longer resolves
+// returns null — the run proceeds without a LoRA rather than failing, and the done-line
+// simply won't claim one.
+// The checkpoint the style-reference sentinel stands for. Turbo is preferred over raw:
+// the recipe's 8-step schedule and its LoRA were both trained against the distilled
+// weights, and raw would need a different step count to produce anything usable.
+// ⚙ LoRA strength → a number the loader will accept. Empty / unparseable falls back to
+// the 1.0 upstream recommends for every one of the nine style LoRAs; 0 is REJECTED as a
+// strength (it would mount a LoRA that changes nothing while the done-line claims a style).
+function krea2Strength(v) {
+  const s = Number(v);
+  return isFinite(s) && s > 0 ? Math.min(3, s) : 1;
+}
+
+async function resolveKrea2Unet() {
+  const unets = await comfyEnum("UNETLoader", "unet_name");
+  const krea2 = unets.filter((n) => KREA2_RE.test(n));
+  return bestTier(krea2.filter((n) => /turbo/i.test(n))) || bestTier(krea2) || null;
+}
+
+async function resolveKrea2Lora(want) {
+  const name = String(want || "").trim();
+  if (!name || KREA2_STYLE_REF_LORA_RE.test(name)) return null;
+  const loras = await comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []);
+  return loras.find((x) => x === name) || null;
+}
+
+// Krea-2 Turbo (txt2img), flattened from the official image_krea2_turbo_t2i template.
+// UNETLoader → optional style LoRA (model-only) → KSampler, with CLIPLoader type
+// "krea2" and the Qwen-Image VAE. cfg is 1 (distilled), so the negative is a
+// ConditioningZeroOut of the positive rather than a second encode.
+//
+// NOTE there is no ModelSampling* node anywhere in this graph — unlike z-image
+// (AuraFlow shift 3) and Qwen-Image (AuraFlow 3.1), Krea-2's shift is baked into the
+// checkpoint. Adding one "for consistency" would change the sampling schedule.
+//
+// The template's own prompt-enhancement branch (a local LLM expanding the prompt via
+// TextGenerate) is deliberately dropped: this app has its own chat models for that, and
+// running a second, hidden LLM pass would silently rewrite what the user typed.
+function buildKrea2({ model, prompt, width, height, seed, cfg, comp, lora, loraStrength }) {
+  // The official graph appends the LoRA's trigger word to the prompt with a
+  // StringConcatenate (delimiter ", "). Doing it here means the trigger word is never
+  // something the user has to remember, and it lands in the same place upstream puts it.
+  const trigger = lora ? krea2TriggerFor(lora) : null;
+  const text = trigger ? `${prompt}, ${trigger}` : prompt;
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "krea2", device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "4": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text } },
+    "5": { class_type: "ConditioningZeroOut", inputs: { conditioning: ["4", 0] } },
+    "6": { class_type: "EmptyLatentImage", inputs: { width, height, batch_size: 1 } },
+    "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+  };
+  if (lora) wf["11"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: lora, strength_model: loraStrength != null ? loraStrength : 1 } };
+  wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: [lora ? "11" : "1", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } };
+  return wf;
+}
+
+// Krea-2 Turbo "image style reference", flattened from
+// image_krea2_turbo_int8_image_style_reference. Same weights as the txt2img entry, but:
+//   • the ostris krea2_style_reference LoRA is mounted (strength 1.0),
+//   • the reference images enter through TextEncodeQwenImageEditPlus (up to 3) and then
+//     FluxKontextMultiReferenceLatentMethod("index_timestep_zero"), so they arrive as
+//     CONDITIONING — the latent stays an EMPTY canvas, which is what makes this a style
+//     transfer onto a fresh image rather than an edit of the reference,
+//   • ModelSamplingFlux(1.15 / 0.5) sets the shift from the output size, and sampling
+//     runs through CFGGuider + SamplerCustomAdvanced instead of KSampler.
+// The negative is a ConditioningZeroOut of the conditioning AFTER the multi-reference
+// node (node 53 in the template), not of the bare text encode — zeroing the wrong one
+// drops the reference latents from the negative branch.
+function buildKrea2StyleRef({ model, prompt, imageNames, width, height, seed, cfg, comp, loraStrength }) {
+  const enc = { class_type: "TextEncodeQwenImageEditPlus", inputs: { clip: ["2", 0], prompt, vae: ["3", 0] } };
+  // 1–3 references; the node exposes them as separate optional sockets, not a list.
+  (imageNames || []).slice(0, 3).forEach((nm, i) => {
+    const id = String(40 + i);
+    enc.inputs["image" + (i + 1)] = [id, 0];
+  });
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "krea2", device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "15": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.styleRefLora, strength_model: loraStrength != null ? loraStrength : 1 } },
+    "64": { class_type: "ModelSamplingFlux", inputs: { model: ["15", 0], max_shift: 1.15, base_shift: 0.5, width, height } },
+    "52": enc,
+    "53": { class_type: "FluxKontextMultiReferenceLatentMethod", inputs: { conditioning: ["52", 0], reference_latents_method: "index_timestep_zero" } },
+    "13": { class_type: "ConditioningZeroOut", inputs: { conditioning: ["53", 0] } },
+    "57": { class_type: "CFGGuider", inputs: { model: ["64", 0], positive: ["53", 0], negative: ["13", 0], cfg: cfg.cfg } },
+    "59": { class_type: "KSamplerSelect", inputs: { sampler_name: cfg.sampler } },
+    "60": { class_type: "BasicScheduler", inputs: { model: ["64", 0], scheduler: cfg.scheduler, steps: cfg.steps, denoise: 1 } },
+    "61": { class_type: "EmptyLatentImage", inputs: { width, height, batch_size: 1 } },
+    "63": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
+    // Slot 0 is `output`; slot 1 is `denoised_output`. The template decodes slot 0.
+    "58": { class_type: "SamplerCustomAdvanced", inputs: { noise: ["63", 0], guider: ["57", 0], sampler: ["59", 0], sigmas: ["60", 0], latent_image: ["61", 0] } },
+    "62": { class_type: "VAEDecode", inputs: { samples: ["58", 0], vae: ["3", 0] } },
+    "65": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["62", 0] } },
+  };
+  (imageNames || []).slice(0, 3).forEach((nm, i) => {
+    wf[String(40 + i)] = { class_type: "LoadImage", inputs: { image: nm } };
+  });
+  return wf;
 }
 
 // boogu needs its own text encoder (qwen3vl, loaded with CLIPLoader type "boogu")
@@ -2552,6 +2769,7 @@ function buildEditWorkflow(editType, args) {
   if (editType === "hidream-e1") return buildHiDreamEdit(args);
   if (editType === "omnigen") return buildOmniGen2Edit(args);
   if (editType === "boogu-edit") return buildBooguEdit(args);
+  if (editType === "krea2-style") return buildKrea2StyleRef(args);
   return null;
 }
 
@@ -6107,6 +6325,19 @@ async function generateComfyImage(req, res) {
         return;
       }
     }
+    // Krea-2 style reference — the same resolve-before-precision dance as Bernini: the
+    // sentinel names no file, so remember the ROUTE and swap in a real checkpoint here,
+    // while the ⚙ tier below still gets a filename it can find siblings for. After this
+    // line `model` is an ordinary krea2 file, which is why the route travels in its own
+    // flag rather than being re-derived from the name further down.
+    const krea2StyleRef = model === KREA2_STYLE_REF;
+    if (krea2StyleRef) {
+      model = await resolveKrea2Unet();
+      if (!model) {
+        sendJson(res, 400, { error: "Krea-2 model file not found (diffusion_models/ needs a krea2_turbo… checkpoint)." });
+        return;
+      }
+    }
     // SCAIL-2 ANIMATE shares the Replace UNET — only the replacement_mode flag differs.
     let scail2Replace = videoTypeOf(model) === "scail2"; // the base entry IS Replacement
     if (model === SCAIL2_ANIMATE) {
@@ -6180,7 +6411,15 @@ async function generateComfyImage(req, res) {
       opts.length = Math.max(1, Math.round(opts.lengthSec * videoRateFor(videoType, model, opts, sourceVideoFps)));
     }
 
-    // Instruction-edit models require a reference image to edit.
+    // Instruction-edit models require a reference image to edit. The style-reference
+    // route is checked alongside them: by here its sentinel has become a plain krea2
+    // filename, so editTypeOf no longer recognises it, and without this it would fall
+    // through to the txt2img branch and quietly generate an image that ignores the
+    // reference the user attached it for.
+    if (krea2StyleRef && !isImg2Img) {
+      sendJson(res, 400, { error: "Krea-2 style reference needs a style image. Attach 1–3 images whose style you want, then use /imagine <what to draw>." });
+      return;
+    }
     if (editType && !isImg2Img) {
       sendJson(res, 400, { error: "This model is for instruction-based editing. Attach a reference image first, then use /imagine <edit instruction>." });
       return;
@@ -6223,6 +6462,10 @@ async function generateComfyImage(req, res) {
       let panoOutpaintUsed = 0; // set only when a photo was grown into the panorama
       let panoLoraUsed = null;  // { name, strength } when an equirect LoRA was mounted
       let panoLoraSkipped = null; // asked for, but the chosen base is the wrong family
+      // { name, strength, trigger } when a Krea-2 style LoRA was mounted. `trigger` is
+      // reported because the builder APPENDS it to the prompt — a silent rewrite of what
+      // the user typed has to be visible on the done-line.
+      let krea2LoraInfo = null;
       let solAttnUsed = null;     // Sol-Attn mode actually applied ("bf16"/"int8_qk"/"int8_qk_pv")
       let solChunkUsed;           // MLP chunking actually applied
       let solAttnSkipped = false; // asked for, but ComfyUI-sol-attn is not on this worker
@@ -7350,6 +7593,18 @@ async function generateComfyImage(req, res) {
           refMaxSize: opts.refMaxSize > 0 ? snapDim(Math.min(8192, Math.max(16, opts.refMaxSize)), 16) : 848,
           experts: expertPair,
         });
+      } else if (krea2StyleRef) {
+        // Krea-2 style reference: 1–3 style images → TextEncodeQwenImageEditPlus. Distinct
+        // upload names per reference — uploadImage's default name + overwrite would clobber
+        // them down to the last image, silently turning a 3-reference run into a 1-image one.
+        const comp = await krea2Companions();
+        const imageNames = [];
+        const refs = images.slice(0, 3);
+        for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `heykoko_krea2ref${ri}.png`));
+        // The style-reference LoRA rides the same ⚙ strength field as the style LoRAs —
+        // one "how hard should the style push" knob rather than two that look alike.
+        workflow = buildKrea2StyleRef({ model, prompt, imageNames, width, height, seed, cfg, comp, loraStrength: krea2Strength(opts.krea2LoraStrength) });
+        imagesUsed = imageNames.length;
       } else if (editType) {
         // Instruction-edit. Checkpoint-based models (ip2p) bundle CLIP+VAE;
         // HiDream-E1 needs the 4 HiDream encoders; the rest (Kontext/Qwen) pick
@@ -7467,6 +7722,17 @@ async function generateComfyImage(req, res) {
         // anything matching /qwen.*edit/ down the edit path long before this.
         const comp = await qwenImageCompanions();
         workflow = buildQwenImage({ model, prompt, negative: negative_prompt || "", width, height, seed, cfg, comp });
+      } else if (KREA2_RE.test(model)) {
+        // Krea-2 txt2img (UNET + CLIPLoader "krea2" + Qwen-Image VAE). The style-reference
+        // route never reaches here — its sentinel is an edit model, dispatched above.
+        // An attached image is IGNORED rather than silently turned into an img2img: this
+        // graph has no VAEEncode path, and the model's way of reading an image is the
+        // style-reference route, which is a separate entry the user picks on purpose.
+        const comp = await krea2Companions();
+        const lora = opts.krea2Lora ? await resolveKrea2Lora(opts.krea2Lora) : null;
+        const loraStrength = krea2Strength(opts.krea2LoraStrength);
+        workflow = buildKrea2({ model, prompt, width, height, seed, cfg, comp, lora, loraStrength });
+        if (lora) krea2LoraInfo = { name: lora, strength: loraStrength, trigger: krea2TriggerFor(lora) };
       } else if (/boogu/i.test(model)) {
         // boogu txt2img / img2img (UNET + CLIPLoader "boogu" + flux VAE).
         const comp = await boogiCompanions();
@@ -7809,7 +8075,7 @@ async function generateComfyImage(req, res) {
         const c = panoCfg || cfg;
         console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${mode}, sampler=${c.sampler}/${c.scheduler}, cfg=${c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${c.steps}, images=${outImages.length}`);
         const mediaIds = toGallery("image", outImages, null, { ...galleryMeta, width: panoDims?.w || width, height: panoDims?.h || height });
-        sendJson(res, 200, { images: outImages, mediaIds, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined });
+        sendJson(res, 200, { images: outImages, mediaIds, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined, krea2Lora: krea2LoraInfo || undefined, imagesUsed: imagesUsed || undefined });
       }
     } finally {
       clearTimeout(timeout);

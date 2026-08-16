@@ -384,7 +384,7 @@ export async function refreshBgWorkers() {
   // uMesh belongs here for the same reason as the rest: leave a list out of the union and
   // its whole group silently vanishes from the dropdown on the multi-worker path while the
   // single-endpoint path still shows it.
-  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uMesh = new Map(), uUpscale = new Map(), uPano = new Map(), uPanoLora = new Map(), uLtxLora = new Map(), uH3Clip = new Map();
+  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uMesh = new Map(), uUpscale = new Map(), uPano = new Map(), uPanoLora = new Map(), uLtxLora = new Map(), uKrea2Lora = new Map(), uH3Clip = new Map();
   // Union of the collapsed-group representatives across lanes — without carrying this
   // through, a multi-precision image model would keep its token in the label on the
   // multi-endpoint path while the single-endpoint path hides it.
@@ -406,6 +406,7 @@ export async function refreshBgWorkers() {
       for (const n of (d.panoBases || [])) if (!uPano.has(n)) uPano.set(n, n);
       for (const n of (d.panoLoras || [])) if (!uPanoLora.has(n)) uPanoLora.set(n, n);
       for (const n of (d.ltxLoras || [])) if (!uLtxLora.has(n)) uLtxLora.set(n, n);
+      for (const n of (d.krea2Loras || [])) if (!uKrea2Lora.has(n)) uKrea2Lora.set(n, n);
       for (const n of (d.h3TextEncoders || [])) if (!uH3Clip.has(n)) uH3Clip.set(n, n);
       const sets = {
         image: new Set(models),
@@ -437,7 +438,7 @@ export async function refreshBgWorkers() {
       for (const m of meshModels) if (!uMesh.has(m.name)) uMesh.set(m.name, m);
     } catch { setBgWorkerStatus(url, { online: false }); }
   }));
-  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], meshModels: [...uMesh.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()], h3TextEncoders: [...uH3Clip.values()], vramGib: vrams.length ? Math.min(...vrams) : null, devices });
+  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], meshModels: [...uMesh.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()], krea2Loras: [...uKrea2Lora.values()], h3TextEncoders: [...uH3Clip.values()], vramGib: vrams.length ? Math.min(...vrams) : null, devices });
 }
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
@@ -634,6 +635,25 @@ function applyComfyModels(data) {
         dom.comfyParamLtxLora.appendChild(o);
       }
       dom.comfyParamLtxLora.value = state.comfyLtxLoras.includes(savedLora) ? savedLora : "";
+    }
+    // ⚙ "Krea-2 style LoRA": None + the nine official style LoRAs. Each option carries its
+    // TRIGGER WORD, because that word is the whole mechanism — the server appends it to the
+    // prompt, and seeing it here is what makes that appending predictable rather than magic.
+    if (dom.comfyParamKrea2Lora) {
+      state.comfyKrea2Loras = data.krea2Loras || [];
+      const savedKrea2 = (saved.comfyParams && saved.comfyParams.krea2Lora) || "";
+      dom.comfyParamKrea2Lora.innerHTML = "";
+      const noneOpt = document.createElement("option");
+      noneOpt.value = ""; noneOpt.textContent = t("comfy_krea2Lora_none");
+      dom.comfyParamKrea2Lora.appendChild(noneOpt);
+      for (const n of state.comfyKrea2Loras) {
+        const o = document.createElement("option");
+        const base = n.replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
+        const trigger = krea2LoraTrigger(n);
+        o.value = n; o.textContent = trigger ? `${base} — ${trigger}` : base;
+        dom.comfyParamKrea2Lora.appendChild(o);
+      }
+      dom.comfyParamKrea2Lora.value = state.comfyKrea2Loras.includes(savedKrea2) ? savedKrea2 : "";
     }
     const allNames = [...models, ...editModels.map((m) => m.name), ...videoModels.map((m) => m.name), ...meshModels.map((m) => m.name)];
     dom.comfyModelSelect.innerHTML = "";
@@ -912,6 +932,28 @@ const LORA_BAKED_IN_RE = [/sulphur/i];
 // unreliable across browsers — and the choice has to be makeable inside the picker.
 // Only families we have real evidence for get a hint; anything else stays bare
 // rather than inventing guidance for a LoRA we know nothing about.
+// The trigger word each Krea-2 style LoRA needs in the prompt. MIRRORS
+// KREA2_LORA_TRIGGERS in server/comfy.js — the server is what actually appends it; this
+// copy exists only so the dropdown can show what each option will do. Keyed on the
+// distinctive part of the filename, so it survives the precision/date suffixes upstream
+// may add later. An unknown krea2 LoRA simply shows its bare filename.
+const KREA2_TRIGGERS = {
+  darkbrush: "monochrome ink wash style",
+  dotmatrix: "monochrome stippling style",
+  kidsdrawing: "naive expressive sketch style",
+  neondrip: "textured abstract style",
+  rainywindow: "rainy window style",
+  retroanime: "purple retro anime style",
+  softwatercolor: "art deco watercolor style",
+  sunsetblur: "ethereal motion blur style",
+  vintagetarot: "vintage tarot style",
+};
+function krea2LoraTrigger(name) {
+  const b = String(name || "").toLowerCase();
+  for (const [key, trigger] of Object.entries(KREA2_TRIGGERS)) if (b.includes(key)) return trigger;
+  return null;
+}
+
 function ltxLoraHint(name) {
   if (/sulphur/i.test(name)) return t("comfy_ltxLora_hint_sulphur");
   if (/distill/i.test(name)) return t("comfy_ltxLora_hint_distill");
@@ -1416,6 +1458,12 @@ function comfyModelComponents(name) {
   if (/hidream.?e1/.test(n)) return "HiDream-E1 · UNETLoader · QuadrupleCLIPLoader · VAE ae · ModelSamplingSD3 · VAEEncode · KSampler";
   // txt2img
   if (/hidream.?i1/.test(n)) return "HiDream-I1 · UNETLoader · QuadrupleCLIPLoader · VAE ae · ModelSamplingSD3 · KSampler";
+  // Qwen-Image BASE. Must stay in the txt2img block, AFTER the /qwen.*edit/ line above —
+  // the edit variant matches this pattern too, and describing it as a plain txt2img chain
+  // would drop the whole TextEncodeQwenImageEdit half of what it runs.
+  if (/qwen.?image/.test(n)) return "Qwen-Image · UNETLoader · CLIP qwen2.5-vl(qwen_image) · VAE qwen_image · ModelSamplingAuraFlow · KSampler · turbo: Lightning LoRA (8-step / cfg 1) when installed, else 20-step / cfg 4";
+  if (n === "krea2_style_ref") return "Krea-2 style reference · UNETLoader · LoraLoaderModelOnly(krea2_style_reference) · CLIP qwen3vl_4b(krea2) · VAE qwen_image · TextEncodeQwenImageEditPlus (1-3 style images) · FluxKontextMultiReferenceLatentMethod · ModelSamplingFlux · CFGGuider · SamplerCustomAdvanced (8-step)";
+  if (/krea2/.test(n)) return "Krea-2 Turbo · UNETLoader · CLIP qwen3vl_4b(krea2) · VAE qwen_image · optional style LoRA (trigger word auto-appended) · KSampler (8-step, cfg 1)";
   if (/z.?image/.test(n)) return "Z-Image-Turbo · UNETLoader · CLIP qwen_3_4b(lumina2) · VAE ae · ModelSamplingAuraFlow · KSampler (8-step)";
   if (/boogu/.test(n)) return "boogu · UNETLoader · CLIP qwen3vl(boogu) · VAE flux1 · ModelSamplingAuraFlow · KSampler";
   if (!n) return "";
@@ -1762,6 +1810,14 @@ export function updateComfyParamVisibility() {
   const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union" && !/ltx.?2[._]5|ltx25/.test(m.toLowerCase());
   for (const el of [dom.comfyParamLtxLora, dom.comfyParamLtxLoraStrength]) setVis(el, ltx);
   if (ltx) syncLtxLoraOptions(m);
+  // Krea-2 — the style LoRA slot and its strength. The LoRA picker is hidden on the
+  // style-reference entry: that route mounts the style-REFERENCE LoRA itself, and two
+  // LoRAs on one model would fight over the same style. Its strength field stays, since
+  // that route reads it too (it is the one "how hard to push the style" knob).
+  const krea2 = /krea2/i.test(m);
+  setVis(dom.comfyParamKrea2Lora, krea2 && m !== "krea2_style_ref"
+    && !!(dom.comfyParamKrea2Lora && dom.comfyParamKrea2Lora.options.length > 1));
+  setVis(dom.comfyParamKrea2LoraStrength, krea2);
   // Phantom only — the image-guidance scale (its second, subject-fidelity CFG), and the
   // step-distill turbo switch. The
   // switch is 14B-only: no 1.3B step-distill LoRA is published, so on 1.3B it would be
@@ -1989,6 +2045,8 @@ function initComfyParamsModal() {
     dom.comfyParamPoseStrength,
     dom.comfyParamPoseStart,
     dom.comfyParamPoseEnd,
+    dom.comfyParamKrea2Lora,
+    dom.comfyParamKrea2LoraStrength,
   ];
 
   // Reflect the current Wan Animate Replace target point on the picker button.

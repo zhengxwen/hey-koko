@@ -122,6 +122,8 @@ export const dom = {
   comfyParamPhantomTurbo: document.querySelector("#comfyParamPhantomTurbo"),
   comfyParamLtxLora: document.querySelector("#comfyParamLtxLora"),
   comfyParamLtxLoraStrength: document.querySelector("#comfyParamLtxLoraStrength"),
+  comfyParamKrea2Lora: document.querySelector("#comfyParamKrea2Lora"),
+  comfyParamKrea2LoraStrength: document.querySelector("#comfyParamKrea2LoraStrength"),
   comfyParamRelight: document.querySelector("#comfyParamRelight"),
   comfyParamScailSubject: document.querySelector("#comfyParamScailSubject"),
   comfyParamScailRefSubject: document.querySelector("#comfyParamScailRefSubject"),

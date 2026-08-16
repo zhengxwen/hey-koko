@@ -162,6 +162,11 @@ function comfyOverrides() {
   if (dom.comfyParamLtxLora?.value) ov.ltxLora = dom.comfyParamLtxLora.value;
   const ltxLoraStrength = num(dom.comfyParamLtxLoraStrength?.value);
   if (ltxLoraStrength !== undefined) ov.ltxLoraStrength = ltxLoraStrength;
+  // Krea-2 style LoRA + its strength. The strength is also what the style-REFERENCE
+  // route reads, so it is sent whether or not a LoRA is picked here.
+  if (dom.comfyParamKrea2Lora?.value) ov.krea2Lora = dom.comfyParamKrea2Lora.value;
+  const krea2LoraStrength = num(dom.comfyParamKrea2LoraStrength?.value);
+  if (krea2LoraStrength !== undefined) ov.krea2LoraStrength = krea2LoraStrength;
   if (dom.comfyParamPhantomTurbo?.checked) ov.phantomTurbo = true; // Phantom: step-distill LoRA (dual-CFG collapses)
   const phantomImgCfg = num(dom.comfyParamPhantomImgCfg?.value);
   if (phantomImgCfg !== undefined) ov.phantomImgCfg = phantomImgCfg; // Phantom: image-guidance scale (g_img)
@@ -1430,6 +1435,12 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     } else if (lastData.solChunkFF) doneLine += `\n${t("msg_solChunkFF", {}, plang)}`;
     if (lastData.ltxLora && lastData.ltxLora.name) {
       doneLine += `\n${t("msg_ltxLoraUsed", { lora: stripModelExt(lastData.ltxLora.name), strength: lastData.ltxLora.strength }, plang)}`;
+    }
+    // Krea-2 style LoRA. The trigger word is named because the server APPENDED it to the
+    // prompt — a silent edit of what the user typed has to be visible somewhere.
+    if (lastData.krea2Lora && lastData.krea2Lora.name) {
+      doneLine += `\n${t("msg_krea2LoraUsed", { lora: stripModelExt(lastData.krea2Lora.name), strength: lastData.krea2Lora.strength }, plang)}`
+        + (lastData.krea2Lora.trigger ? ` · ${t("msg_krea2Trigger", { trigger: lastData.krea2Lora.trigger }, plang)}` : "");
     }
     // If more images were attached than the model can use, tell the user how many
     // were actually consumed (2 = first-last-frame, 1 = plain image-to-video).

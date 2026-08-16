@@ -145,6 +145,10 @@ const SENTINEL_IDS = {
   triposplat: "triposplat",
   "moge-mesh": "moge2:mesh",
   "moge-panorama": "moge2:panorama",
+  // Krea-2's style-reference route is the SAME turbo weights plus the ostris
+  // style-reference LoRA and a different graph (TextEncodeQwenImageEditPlus +
+  // SamplerCustomAdvanced), so it is a MODE — ":" — not a separate model.
+  krea2_style_ref: "krea2-turbo:style-ref",
 };
 
 // Filename → id, matched against the PRECISION-STRIPPED base. Stripping first is what
@@ -162,6 +166,12 @@ const FILE_ID_RULES = [
   [/hidream.?o1/, "hidream-o1"],
   [/hidream.?e1/, "hidream-e1.1"],
   [/z.?image.?turbo/, "zimage-turbo"],
+  // Krea-2 ships two open checkpoints of the same 12B DiT: `raw` (the pretrained
+  // base, for finetuning / LoRA training) and `turbo` (8-step distilled). Different
+  // weights, so different ids — and `raw` must be tested first or the bare /krea2/
+  // rule below would claim it for the turbo id.
+  [/krea2.*raw/, "krea2-raw"],
+  [/krea2/, "krea2-turbo"],
   [/boogu.*edit/, "boogu-edit"],
   [/boogu.*base/, "boogu-base"],
   [/boogu.*turbo/, "boogu-turbo"],
@@ -231,6 +241,9 @@ const ID_LABELS = {
   "hidream-o1": "HiDream-O1",
   "hidream-e1.1": "HiDream-E1.1",
   "zimage-turbo": "Z-Image Turbo",
+  "krea2-turbo": "Krea-2 Turbo",
+  "krea2-raw": "Krea-2 Raw",
+  "krea2-turbo:style-ref": "Krea-2 Turbo (style reference)",
   "boogu-base": "Boogu (base)",
   "boogu-turbo": "Boogu (turbo)",
   "boogu-edit": "Boogu Edit",

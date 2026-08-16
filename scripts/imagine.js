@@ -663,18 +663,37 @@ async function runTask(task, cli, ctx) {
 
     const label = count > 1 ? `${model.id} (${i + 1}/${count})` : model.id;
     if (!cli.quiet && !cli.json) process.stderr.write(`▶ ${label}${prompt ? `  "${prompt.slice(0, 60)}${prompt.length > 60 ? "…" : ""}"` : ""}\n`);
-    // --progress asks for it explicitly (pipes, logs, --json runs); otherwise the bar
-    // appears in an interactive terminal. --quiet always wins.
-    const stop = cli.quiet ? () => {}
-      : cli.progress ? attachProgress(ctx.comfyUrl, clientId, label, { plain: true })
-      : cli.json ? () => {}
-      : attachProgress(ctx.comfyUrl, clientId, label);
     const started = Date.now();
-    let r;
-    try { r = await postJson("/api/generate-comfy", body, cli.server); }
-    finally { stop(); }
-    const data = r.json;
-    if (!data) throw new Error(`server returned non-JSON (${r.status}): ${r.text.slice(0, 300)}`);
+    let r, data;
+    for (let attempt = 0; ; attempt++) {
+      // --progress asks for it explicitly (pipes, logs, --json runs); otherwise the bar
+      // appears in an interactive terminal. --quiet always wins.
+      const stop = cli.quiet ? () => {}
+        : cli.progress ? attachProgress(ctx.comfyUrl, clientId, label, { plain: true })
+        : cli.json ? () => {}
+        : attachProgress(ctx.comfyUrl, clientId, label);
+      try { r = await postJson("/api/generate-comfy", body, cli.server); }
+      finally { stop(); }
+      data = r.json;
+      if (!data) throw new Error(`server returned non-JSON (${r.status}): ${r.text.slice(0, 300)}`);
+      if (data.noop || (r.status === 200 && (data.videos || data.images || data.meshes))) break;
+      const msg = data.error || data.detail || `generation failed (${r.status})`;
+      // VRAM exhaustion often outlives the failed job (back-to-back renders leave the
+      // card fragmented), so ONE automatic ComfyUI /free + retry heals it — and costs
+      // the healthy path nothing. "Fault failed: 2" is DynamicVRAM's weight pager
+      // giving up: an OOM whose message never says "memory".
+      const comfy = cli.comfyUrl || ctx.comfyUrl;
+      if (attempt === 0 && comfy && /out of vram|not enough memory|fault failed: 2|allocat.* on device/i.test(msg)) {
+        if (!cli.quiet && !cli.json) process.stderr.write(`⚠ OOM — freeing ComfyUI VRAM (${comfy}/free), retrying once\n`);
+        try {
+          await fetch(`${comfy}/free`, { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ unload_models: true, free_memory: true }) });
+        } catch { /* worker unreachable — let the retry surface the real error */ }
+        await new Promise((res) => setTimeout(res, 5000));
+        continue;
+      }
+      throw new Error(msg);
+    }
     // The server did no ComfyUI work ON PURPOSE (an enhance run that would neither
     // upscale nor sharpen). Not a failure — but a caller must hear about it, or it
     // waits for a file that is never coming.
@@ -685,10 +704,6 @@ async function runTask(task, cli, ctx) {
       else if (!cli.quiet) process.stderr.write(`ℹ ${data.message || "nothing to do"}\n`);
       continue;
     }
-    if (r.status !== 200 || !(data.videos || data.images || data.meshes)) {
-      throw new Error(data.error || data.detail || `generation failed (${r.status})`);
-    }
-
     const arr = data.videos || data.images || data.meshes;
     const ext = extFor(data);
     const elapsed = Math.round((Date.now() - started) / 1000);
