@@ -73,6 +73,8 @@ export const dom = {
   comfyParamSharpen: document.querySelector("#comfyParamSharpen"),
   comfyParamSharpenLabel: document.querySelector("#comfyParamSharpenLabel"),
   comfyParamFps: document.querySelector("#comfyParamFps"),
+  comfyParamTargetFps: document.querySelector("#comfyParamTargetFps"),
+  comfyParamInterpMethod: document.querySelector("#comfyParamInterpMethod"),
   comfyParamTimeout: document.querySelector("#comfyParamTimeout"),
   comfyParamMeshDetail: document.querySelector("#comfyParamMeshDetail"),
   comfyParamShapeTokens: document.querySelector("#comfyParamShapeTokens"),

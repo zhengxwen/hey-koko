@@ -242,7 +242,7 @@ const ID_LABELS = {
   "moge2:mesh": "MoGe-2 (photo → 3D scene)",
   "moge2:panorama": "MoGe-2 (360° panorama → 3D scene)",
   "panorama-360": "360° panorama (text or photo → equirect)",
-  "video-enhance": "Video upscale + sharpen",
+  "video-enhance": "Video interpolate + upscale",
   "image-upscale": "Image upscale",
 };
 

@@ -1682,7 +1682,14 @@ export function updateComfyParamVisibility() {
   // A model absent from comfyFpsTunable has a fixed rate (older server sends no such
   // flag, so an EMPTY set must not hide the field for everyone — hence the size check).
   const fpsTunable = !state.comfyFpsTunable?.size || state.comfyFpsTunable.has(m);
-  setVis(dom.comfyParamFps, video && !dancer && fpsTunable);
+  // The enhance pipeline is excluded by name as well as by the flag: its ⚙ fps field
+  // resamples the SOURCE (duplicated/dropped frames, no interpolation), and the empty-set
+  // fallback above — meant for older servers — would otherwise put it back on the one
+  // entry where a frame-rate control is most misleading. That set is empty exactly when
+  // ComfyUI is unreachable, which is also when the two model-free tools are all that is
+  // listed, so this is not a rare path.
+  setVis(dom.comfyParamFps, video && !dancer && fpsTunable && !/video-enhance/i.test(m));
+  setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // frame-interpolation + interpolation-engine row
   // Timeout: mesh renders ride the video timeout policy (Hunyuan3D can take minutes).
   setVis(dom.comfyParamTimeout, video || mesh);
   // 3D knobs. meshDetail drives BOTH meshers — Hunyuan3D's voxel octree and
@@ -1961,6 +1968,7 @@ function initComfyParamsModal() {
     dom.comfyParamPanoOutpaint,
     dom.comfyParamPanoLoraStrength,
     dom.comfyParamPanoRefine,
+    dom.comfyParamTargetFps,
     dom.comfyParamUpscaleDenoise,
     dom.comfyParamUpscaleTarget,
     dom.comfyParamRestoreModel,
@@ -2063,6 +2071,9 @@ function initComfyParamsModal() {
   for (const el of [dom.comfyParamDanceStyle, dom.comfyParamDanceAmplitude, dom.comfyParamDanceDuration, dom.comfyParamDanceQuality]) el?.addEventListener("change", () => saveCurrentSettings());
   // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset
   // restores that rather than an empty value.
+  // Interpolation engine is a <select> (not in `fields`) — default is "rife", so reset
+  // restores that rather than an empty value.
+  dom.comfyParamInterpMethod?.addEventListener("change", () => saveCurrentSettings());
   // Video codec: keep the CRF placeholder showing the selected codec's default, and warn
   // once when H.265 is picked in a browser that can't play it back.
   dom.comfyParamVideoCodec?.addEventListener("change", () => {
@@ -2082,6 +2093,7 @@ function initComfyParamsModal() {
     if (dom.comfyParamDanceAmplitude) dom.comfyParamDanceAmplitude.value = "";
     if (dom.comfyParamDanceDuration) dom.comfyParamDanceDuration.value = "";
     if (dom.comfyParamDanceQuality) dom.comfyParamDanceQuality.checked = false;
+    if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = "rife";
     if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = "h264"; // default codec, not empty
     if (dom.comfyParamPaintQuality) dom.comfyParamPaintQuality.value = "standard";
     if (dom.comfyParamPaintMesh) dom.comfyParamPaintMesh.checked = true;   // texturing defaults ON

@@ -54,6 +54,8 @@ export function saveCurrentSettings() {
         restoreModel: dom.comfyParamRestoreModel?.value || "",
         sharpen: dom.comfyParamSharpen?.value || "",
         fps: dom.comfyParamFps?.value || "",
+        targetFps: dom.comfyParamTargetFps?.value || "",
+        interpMethod: dom.comfyParamInterpMethod?.value || "rife",
         timeout: dom.comfyParamTimeout?.value || "",
         upscaleDenoise: dom.comfyParamUpscaleDenoise?.value || "",
         upscaleModel: dom.comfyParamUpscaleModel?.value || "",
@@ -290,6 +292,8 @@ export function loadSavedSettings() {
     if (dom.comfyParamFps) dom.comfyParamFps.value = cp.fps || "";
     if (dom.comfyParamTimeout) dom.comfyParamTimeout.value = cp.timeout || "";
     if (dom.comfyParamUpscaleDenoise) dom.comfyParamUpscaleDenoise.value = cp.upscaleDenoise || "";
+    if (dom.comfyParamTargetFps) dom.comfyParamTargetFps.value = cp.targetFps || "";
+    if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = cp.interpMethod || "rife";
     if (dom.comfyParamSharpen) dom.comfyParamSharpen.value = cp.sharpen || "";
     // Best-effort — applyComfyModels re-applies this once the option list has loaded.
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;

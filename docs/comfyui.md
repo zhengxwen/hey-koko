@@ -33,7 +33,7 @@ Each model family ships with sane sampling defaults (Flux guidance distillation,
 - **WAN 2.2 14B** is a two-expert (high-noise + low-noise) model — Hey-Koko chains both experts automatically and collapses the pair into a single dropdown entry. With the **LightX2V 4-step LoRAs** installed it auto-switches to the fast 4-step / cfg-1 path (~6–10× faster).
 - **LTX-2.3** generates synchronized **audio**, muxed into the output MP4.
 
-**Upscaling a finished clip.** Generation and upscaling are deliberately separate steps: generate at 720p, then attach the result to the **Video upscale + sharpen** entry and run it again. ⚙ *Upscale to* names the **long side** (1920 / 2560 / 3840), so a portrait clip gets in height what a landscape one gets in width, and Auto simply doubles the source with the long side capped at 2160.
+**Upscaling a finished clip.** Generation and upscaling are deliberately separate steps: generate at 720p, then attach the result to the **Video interpolate + upscale** entry and run it again. ⚙ *Upscale to* names the **long side** (1920 / 2560 / 3840), so a portrait clip gets in height what a landscape one gets in width, and Auto simply doubles the source with the long side capped at 2160.
 
 The cost is *not* smooth across that list, which is the one thing worth knowing before you pick. The upscaler used is the smallest installed model that **reaches** the target, so:
 

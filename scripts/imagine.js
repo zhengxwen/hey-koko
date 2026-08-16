@@ -575,7 +575,8 @@ async function runTask(task, cli, ctx) {
   // Big media goes up as a raw body (its own request), not as base64 inside the JSON:
   // the server's own request-receive deadline applies to that JSON, and a long clip
   // would be megabytes of it.
-  let sourceVideoName, sourceVideoFrames, sourceVideoFps, sourceAudioName, sourceAudioDuration;
+  let sourceVideoName, sourceVideoFrames, sourceVideoFps, sourceVideoWidth, sourceVideoHeight,
+    sourceAudioName, sourceAudioDuration;
   if (task.video) {
     const buf = fs.readFileSync(path.resolve(task.video));
     const r = await request("POST", "/api/comfy-upload-video", {
@@ -586,6 +587,14 @@ async function runTask(task, cli, ctx) {
     sourceVideoName = r.json.name;
     sourceVideoFrames = r.json.frames;
     sourceVideoFps = r.json.fps;
+    // The browser sends the source dimensions; without them the server cannot size the
+    // upscale chunk plan and video-enhance feeds the WHOLE clip to the upscaler in one
+    // batch (a 30s 720p clip = a >100GB CPU allocation). Probe locally like it does.
+    const probe = require("node:child_process").spawnSync("ffprobe",
+      ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+       "-of", "csv=p=0", path.resolve(task.video)], { encoding: "utf8" });
+    const dims = /(\d+),(\d+)/.exec((probe.stdout || "").trim());
+    if (dims) { sourceVideoWidth = Number(dims[1]); sourceVideoHeight = Number(dims[2]); }
   }
   if (task.audio) {
     const buf = fs.readFileSync(path.resolve(task.audio));
@@ -632,7 +641,7 @@ async function runTask(task, cli, ctx) {
       negative_prompt: task.negative || "",
       options: perOptions,
       images: images.length ? images : undefined,
-      sourceVideoName, sourceVideoFrames, sourceVideoFps,
+      sourceVideoName, sourceVideoFrames, sourceVideoFps, sourceVideoWidth, sourceVideoHeight,
       sourceAudioName, sourceAudioDuration,
       timeout,
       clientId,

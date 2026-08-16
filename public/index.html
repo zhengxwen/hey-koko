@@ -1043,6 +1043,27 @@
               <option id="optPanoRefine4096" value="4096">4096 px · ~2.7× file</option>
             </select>
           </label>
+          <div class="comfyParamRow">
+            <label title="升格 / frame interpolation: smoothly resample the generated video up to this frame rate (same duration, more frames). Pick a common value (30/60/…) or type your own. The multiplier is chosen automatically from the model's / source's fps. If the source is already at/above this, it's skipped. Applies to all video models.">
+              <span id="comfyParamTargetFpsLabel">Smooth to FPS (升格)</span>
+              <input id="comfyParamTargetFps" type="number" min="24" max="240" step="1" placeholder="Off" list="comfyTargetFpsOptions" />
+              <datalist id="comfyTargetFpsOptions">
+                <option value="30"></option>
+                <option value="48"></option>
+                <option value="50"></option>
+                <option value="60"></option>
+                <option value="90"></option>
+                <option value="120"></option>
+              </datalist>
+            </label>
+            <label title="Which frame-interpolation model to use. RIFE is fast and the default; FILM is slower but can look smoother on large motion. Requires ComfyUI-Frame-Interpolation.">
+              <span id="comfyParamInterpMethodLabel">Interpolation engine</span>
+              <select id="comfyParamInterpMethod">
+                <option value="rife">RIFE (fast)</option>
+                <option value="film">FILM (smooth)</option>
+              </select>
+            </label>
+          </div>
           <label>
             <span id="comfyParamUpscaleDenoiseLabel" title="Upscale models only (图片高清 / 视频升格+高清) — pre-clean the input so compression noise / grain / JPEG artifacts aren't amplified by the upscaler. 0% = off, sharpest (default). 30–50% = removes fine noise while keeping most detail (good for compressed video / old photos). 100% = cleanest but softest. A trade-off between noise and detail. Ignored by all other models.">Denoise / de-artifact (放大抗噪 %)</span>
             <input id="comfyParamUpscaleDenoise" type="number" min="0" max="100" step="5" placeholder="Off (0)" title="Upscale models only (图片高清 / 视频升格+高清) — pre-clean the input so compression noise / grain / JPEG artifacts aren't amplified by the upscaler. 0% = off, sharpest (default). 30–50% = removes fine noise while keeping most detail (good for compressed video / old photos). 100% = cleanest but softest. A trade-off between noise and detail. Ignored by all other models." />

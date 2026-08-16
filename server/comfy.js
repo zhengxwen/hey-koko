@@ -1132,8 +1132,8 @@ async function comfyHasNodes(names) {
   return found.every(Boolean);
 }
 
-// Sentinel for the "video enhance" dropdown entry — a source video is AI-upscaled (and,
-// when the ✂️ editor drives it, frame-interpolated). Has no diffusion model, so it
+// Sentinel for the "video enhance" (interpolate + upscale) dropdown entry — a source video
+// is AI-upscaled and frame-interpolated to a target fps. Has no diffusion model, so it
 // resolves to nothing on disk; the pipeline is built directly at generation time.
 const VIDEO_ENHANCE = "video-enhance";
 
@@ -1496,9 +1496,9 @@ async function proxyComfyModels(req, res) {
         videoModels.push({ name: n, type: vt });
       }
     }
-    // Video enhance: always offered — it needs no diffusion model, just an upscale model
-    // (plus the Frame-Interpolation nodes, when the ✂️ editor asks for a higher fps).
-    videoModels.push({ name: VIDEO_ENHANCE, type: "enhance", label: "Video upscale + sharpen", needsVideo: true });
+    // Video enhance (interpolate + upscale): always offered — it needs no diffusion model,
+    // just an upscale model + the Frame-Interpolation nodes (both checked at gen time).
+    videoModels.push({ name: VIDEO_ENHANCE, type: "enhance", label: "Video interpolate + upscale", needsVideo: true });
     // LTX MSR: only offered when every piece (weights AND the three node packs) is
     // installed — an entry that always errors is worse than no entry.
     if (await ltxMsrParts()) videoModels.push({ name: LTX_MSR, type: "ltx", label: "LTX-2.3 MSR", needsImages: 1 });
@@ -1567,7 +1567,13 @@ async function proxyComfyModels(req, res) {
       const preset = videoPreset(m.type, m.name, true);
       m.samplerTunable = !!preset;
       m.cfgTunable = m.samplerTunable && m.type !== "minimax-h3";
-      m.fpsTunable = !(preset && preset.fpsFixed);
+      // …except the enhance pipeline. It has no preset, so the rule above would keep its
+      // fps field — but on this entry that field resamples the SOURCE clip (X-Target-Fps →
+      // ffmpeg -r: duplicated/dropped frames, no interpolation), and it sits right beside
+      // ⚙ "Smooth to FPS", which DOES interpolate. Two frame-rate boxes that mean opposite
+      // things is how "where is the interpolation setting?" happens; the resampling one is
+      // the one nobody wants here.
+      m.fpsTunable = !(preset && preset.fpsFixed) && m.name !== VIDEO_ENHANCE;
       // Whether a negative prompt reaches the graph at all. MiniMax H3 guides with a
       // BasicGuider — ONE conditioning branch — so there is nowhere to put it: both the
       // ⚙ field and /imagine's `--no …` are discarded. Everything the user wants
@@ -2790,8 +2796,8 @@ function videoPreset(videoType, model, turbo) {
     // changing it cannot make the model generate more frames — it only re-times the same
     // ones. Worse, it desyncs the sound: the audio VAE decodes a track whose length the
     // latent fixes (124 frames = 5.17 s), while the picture would become 124/fps seconds.
-    // Frame interpolation is unaffected and stays available (in the ✂️ editor) — it
-    // multiplies frames and rate together, so the duration, and with it the audio, is kept.
+    // Frame interpolation is unaffected and stays available — applyVfi multiplies frames
+    // and rate together, so the duration, and with it the audio, is preserved.
     return { sampler: "res_multistep", scheduler: "simple", cfg: 1, steps: 20, shift: 0,
       width: 864, height: 480, length: 124, fps: 24, fpsFixed: true,
       dimMult: 32, lenMult: 17, lenOffset: 5, lenMin: 124, lenMax: 362 };
@@ -2960,9 +2966,9 @@ const VIDEO_CRF_DEFAULT = { h264: 23, h265: 28 };
 // literal OR a FLOAT link (the edit builders' source fps), audio yields a single
 // "<prefix>_NNNNN-audio.mp4".
 //
-// MUST run AFTER the VFI node is placed (buildVideoEnhance wires CreateVideo.images to
-// it and sets the interpolated fps): reading CreateVideo's inputs here then picks up the
-// interpolated frames and rate. No-op returning false when there is no CreateVideo, so it is safe on any
+// MUST run AFTER applyVfi (which rewrites CreateVideo.images → the VFI node and bumps
+// its fps): reading CreateVideo's inputs here then picks up the interpolated frames and
+// rate. No-op returning false when there is no CreateVideo, so it is safe on any
 // workflow (image graphs, upscale-only) without a guard at the call site.
 // Deliver a silent clip: unhook the audio from the muxer, then drop whatever only
 // existed to produce it. Builder-agnostic, and deliberately done in the GRAPH rather
@@ -3033,12 +3039,32 @@ function applyVideoCodec(wf, codec, crf) {
 
 // One RIFE/FILM interpolation node. clear_cache_after_n_frames keeps VRAM bounded on long
 // clips; multiplier inserts (m−1) frames between each pair → (N−1)·m + 1 frames out.
-// Placed by buildVideoEnhance, the only builder that interpolates — before the chunk
-// split, so a chunk boundary never lands between a frame and its invented in-betweens.
+// Shared by applyVfi (post-hoc splice, every other builder) and buildVideoEnhance, which
+// places its own so interpolation can sit BEFORE the chunk split.
 function vfiNodeSpec(method, m, framesRef) {
   return /film/i.test(method || "")
     ? { class_type: "FILM VFI", inputs: { ckpt_name: "film_net_fp32.pt", frames: framesRef, clear_cache_after_n_frames: 10, multiplier: m } }
     : { class_type: "RIFE VFI", inputs: { ckpt_name: "rife47.pth", frames: framesRef, clear_cache_after_n_frames: 10, multiplier: m, fast_mode: true, ensemble: true, scale_factor: 1, dtype: "float32", torch_compile: false, batch_size: 1 } };
+}
+
+function applyVfi(wf, mult, baseFps, method) {
+  const m = Math.round(Number(mult) || 0);
+  if (!wf || m < 2) return baseFps;
+  // EVERY CreateVideo, not just the first. Almost every builder ends in exactly one,
+  // but SCAIL-2's incremental-save graph writes ONE PER SEGMENT (see buildScail2), and
+  // interpolating only segment 0 would hand the merge step clips at two different frame
+  // rates — the concat would then either fail or silently retime the rest of the clip.
+  const cvIds = Object.keys(wf).filter((id) => wf[id].class_type === "CreateVideo");
+  if (!cvIds.length) return baseFps;
+  const newFps = Math.round((Number(baseFps) || 0) * m);
+  cvIds.forEach((cvId, i) => {
+    const cv = wf[cvId];
+    const vid = i === 0 ? "vfi" : `vfi${i}`;
+    wf[vid] = vfiNodeSpec(method, m, cv.inputs.images);
+    cv.inputs.images = [vid, 0];
+    if (newFps > 0) cv.inputs.fps = newFps;
+  });
+  return newFps > 0 ? newFps : baseFps;
 }
 
 // models/upscale_models/ holds two different KINDS of model and ComfyUI lists them
@@ -3122,8 +3148,9 @@ async function restoreCompanion(preferred) {
 // Video enhance (interpolate + upscale). Source video → GetVideoComponents → AI-upscale every
 // frame (UpscaleModelLoader + ImageUpscaleWithModel) → optionally downscale to a
 // bounded HD target (outW/outH, already even; 0 = keep the model's native output) →
-// CreateVideo, keeping the SOURCE audio + fps. Frame interpolation to the target fps is
-// placed by this builder itself (`vfi`), ahead of the chunk split. Single pass over the whole
+// CreateVideo, keeping the SOURCE audio + fps. Frame interpolation to the target fps
+// is layered ON TOP by applyVfi (called from the dispatch) — it splices a RIFE/FILM
+// node before CreateVideo and rewrites the (numeric) fps. Single pass over the whole
 // clip (no diffusion); keep clips modest so the upscaled frame batch fits VRAM.
 // How many frames may be upscaled in ONE ImageUpscaleWithModel call. The node moves the
 // input batch to the GPU but assembles its OUTPUT on the CPU (tiled_scale's default
@@ -6310,17 +6337,17 @@ async function generateComfyImage(req, res) {
         // has no offset/continue input at all, so that advice would be a lie here.
         if (truncatedFrames) { videoDims.truncatedFrom = truncatedFrames; videoDims.truncatedNoChain = true; }
       } else if (videoType === "enhance") {
-        // Video enhance: source video → AI-upscaled / sharpened, and — when the ✂️ editor
-        // asks for it via opts.targetFps — frame-interpolated. Takes no prompt at all.
-        if (!(sourceVideo || sourceVideoName)) { sendJson(res, 400, { error: "Video upscale needs a source video — attach one first. (Frame interpolation lives in the ✂️ video editor: open a clip there and set its output fps.)" }); return; }
+        // Video enhance: source video → AI-upscaled / sharpened / frame-interpolated
+        // (⚙ "Smooth to FPS"). Takes no prompt of its own.
+        if (!(sourceVideo || sourceVideoName)) { sendJson(res, 400, { error: "Video interpolate + upscale needs a source video — attach one first, then run /imagine. Set the target frame rate in ⚙ \"Smooth to FPS\" (or in the ✂️ video editor)." }); return; }
         // ⚙ "upscale model" = Off → skip upscaling: interpolate-only (frames stay at source resolution).
         const noUpscale = opts.upscaleModel === "off";
         const srcFps = Number(sourceVideoFps) || 16;
         const srcFrames = Number(sourceVideoFrames) || 0;
-        // Target fps for interpolation. Set ONLY by the ✂️ video editor, which owns this
-        // feature now: the chat side has neither a ⚙ knob for it any more nor the old
-        // "/imagine <number> means fps" convention (a prompt that silently changed meaning
-        // depending on the selected model). An enhance run from chat upscales/sharpens.
+        // Target fps for interpolation: the ⚙ "Smooth to FPS" field (chat), or options
+        // .targetFps sent directly (the ✂️ editor, scripts/imagine.js --fps). What is gone
+        // is the old "/imagine <number> means fps" convention — a prompt that silently
+        // changed meaning depending on the selected model.
         const tf = Math.round(Number(opts.targetFps) || 0);
         const willInterp = tf > 0 && tf > srcFps;       // interpolate only when target fps > source
         const willResize = opts.width > 0 && opts.height > 0; // explicit --size
@@ -6333,7 +6360,7 @@ async function generateComfyImage(req, res) {
         // Neither interpolation nor upscale (nor denoise / explicit resize) → ComfyUI has nothing to do.
         // Tell the user in the bubble instead of running a pointless re-encode.
         if (noUpscale && !willInterp && !willResize && !willDenoise && !willSharpen) {
-          sendJson(res, 200, { noop: true, message: `ℹ️ Nothing to do: this run would neither upscale nor sharpen — ⚙ "upscale model" is set to "Off", ⚙ "Sharpen" is Off, and no interpolation was requested. ComfyUI was not called this time.\n\n· To upscale: change ⚙ "upscale model" from "Off" back to "Auto" or a specific model\n· To sharpen at the original size: set ⚙ "Sharpen" to Light/Medium/Strong and leave the upscale model Off\n· To raise the frame rate: open the clip in the ✂️ video editor and set its output fps` });
+          sendJson(res, 200, { noop: true, message: `ℹ️ Nothing to do: neither interpolation nor upscale is enabled — ⚙ "upscale model" is set to "Off", ⚙ "Sharpen" is Off, and the target fps (${tf > 0 ? tf : "not set"}) is not higher than the source video fps (${srcFps}). ComfyUI was not called this time.\n\n· To interpolate: set ⚙ "Smooth to FPS" above the source rate (this clip is ${srcFps} fps)\n· To upscale: change ⚙ "upscale model" from "Off" back to "Auto" or a specific model\n· To sharpen at the original size: set ⚙ "Sharpen" to Light/Medium/Strong and leave the upscale model Off` });
           return;
         }
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
@@ -6377,8 +6404,8 @@ async function generateComfyImage(req, res) {
         const restoreModel = (upscaleDenoise > 0 && opts.restoreModel !== "off")
           ? await restoreCompanion(opts.restoreModel) : null;
         // Interpolation is decided HERE and handed to the builder, which places it before
-        // the chunk split. This is the only pipeline that interpolates at all.
-        // CEIL → interpolated fps ≥ target; a post-pass drops to EXACTLY tf.
+        // the chunk split — unlike every other video model, where applyVfi splices it in
+        // afterwards. CEIL → interpolated fps ≥ target; a post-pass drops to EXACTLY tf.
         const mult = willInterp ? Math.max(2, Math.ceil(tf / srcFps)) : 1;
         const method = /film/i.test(opts.interpMethod || "") ? "film" : "rife";
         const outFps = mult > 1 ? Math.round(srcFps * mult) : srcFps;
@@ -7496,9 +7523,38 @@ async function generateComfyImage(req, res) {
       // onto the VHS node, which would put the track straight back.
       if (opts.noAudio && workflow) applyMuteAudio(workflow);
 
+      // Frame interpolation: resample the decoded frames up to a TARGET fps via
+      // RIFE (default) or FILM VFI, keeping the same duration. Applies to every real
+      // video model (not stills/images). ⚙ `targetFps` is the desired output fps; the
+      // integer multiplier is derived from the model's own (or source) fps. If the base
+      // fps already meets/exceeds the target, interpolation is skipped and the client is
+      // told (interpWarning) so the user knows nothing was up-converted.
+      const targetFps = Math.round(Number(opts.targetFps) || 0);
+      if (videoType && videoType !== "enhance" && !stillMode && workflow && targetFps > 0) {
+        // Base fps. Source-fps models (Bernini v2v/rv2v, Wan Animate) leave
+        // videoDims.fps unset → fall back to the probed source fps, then 16.
+        const baseFps = (videoDims && videoDims.fps) || Number(sourceVideoFps) || 16;
+        if (baseFps >= targetFps) {
+          interpWarning = { baseFps, targetFps }; // already at/above target → skipped
+        } else {
+          // CEIL so the interpolated fps is ≥ the target (RIFE/FILM only do integer
+          // multiples); a post-pass then drops frames down to EXACTLY targetFps.
+          const mult = Math.max(2, Math.ceil(targetFps / baseFps));
+          const method = /film/i.test(opts.interpMethod || "") ? "film" : "rife";
+          const newFps = applyVfi(workflow, mult, baseFps, method);
+          if (videoDims) {
+            if (videoDims.length) videoDims.length = (videoDims.length - 1) * mult + 1;
+            videoDims.fps = newFps;
+            videoDims.interpolated = mult;
+            videoDims.interpMethod = method;
+          }
+          exactTargetFps = targetFps; // resample the output down to this exact fps
+        }
+      }
+
       // Video codec: route the tail through VHS_VideoCombine so BOTH h264 and h265 get
       // one CRF quality knob. Only for video workflows (they have a CreateVideo node);
-      // requires VideoHelperSuite. After the VFI node so the tail it reads is interpolated.
+      // requires VideoHelperSuite. After applyVfi so the tail it reads is interpolated.
       //   • VHS present → rewrite for the requested codec (default h264)
       //   • VHS absent  → leave native SaveVideo (h264); a h265 request degrades to
       //                   h264 and says so, rather than failing the whole render.
