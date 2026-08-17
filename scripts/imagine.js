@@ -149,6 +149,7 @@ Usage
   imagine.js --batch shots.jsonl [options]
   imagine.js --add clip.mp4 photo.jpg          file existing media, no generation
   imagine.js --list-models [filter]
+  imagine.js --scan                            find ComfyUI machines on the network
 
 Model
   -m, --model <id[@tier]>  canonical model id, e.g. minimax-h3-r2v, minimax-h3-r2v@int8
@@ -205,7 +206,9 @@ Batch
 
 Server
       --server <url>       hey-koko base URL (default $HEYKOKO_URL or 127.0.0.1:$HEYKOKO_PORT)
-      --comfy-url <url>    target a specific ComfyUI worker
+      --comfy-url <url>    target a specific ComfyUI worker (--scan lists them)
+      --scan               sweep the network for ComfyUI (port 8188), reporting each
+                           machine's GPU; run it from the server's network position
       --timeout <min>      render deadline; 0 = unlimited (default 240)
 
 Exit: 0 all good, 1 usage/setup error, 2 one or more renders failed.`;
@@ -222,6 +225,7 @@ function parseArgv(argv) {
     switch (a) {
       case "-h": case "--help": o.help = true; break;
       case "--list-models": o.listModels = true; break;
+      case "--scan": o.scan = true; break;
       case "-m": case "--model": o.model = need(i, a).toLowerCase(); i++; break;
       case "--precision": o.precision = need(i, a); i++; break;
       case "-i": case "--image": o.images.push(need(i, a)); i++; break;
@@ -761,6 +765,80 @@ async function runTask(task, cli, ctx) {
   return results;
 }
 
+// ── --scan: find ComfyUI instances on the LAN ────────────────────────────────
+
+// The server already knows how to sweep every /24 it sits on for port 8188 (it is what
+// the app's settings panel uses); this streams that SSE and prints hits as they land.
+// NOTE the scan runs from the SERVER's network position, not this machine's.
+function scanComfy(server, onFound) {
+  const base = new URL(server || SERVER);
+  const lib = base.protocol === "https:" ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = lib.request({
+      method: "GET", hostname: base.hostname,
+      port: base.port || (base.protocol === "https:" ? 443 : 80),
+      path: "/api/scan-comfy-stream",
+      headers: { Accept: "text/event-stream" },
+    }, (res) => {
+      let buf = "";
+      const found = [];
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        buf += chunk;
+        // SSE frames are separated by a blank line; each carries one "data:" payload.
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const frame = buf.slice(0, i); buf = buf.slice(i + 2);
+          const line = frame.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          let msg = null;
+          try { msg = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (msg.type === "found" && msg.url) { found.push(msg.url); onFound(msg.url); }
+        }
+      });
+      res.on("end", () => resolve(found));
+    });
+    req.setTimeout(0);   // a full /24 sweep takes a while
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+// Ask a ComfyUI directly what GPU it has, so a scan result can be told apart from its
+// neighbours. Probed from THIS machine, which may not be where the server is — a box the
+// server can reach but we cannot simply reports no GPU rather than failing the scan.
+function probeComfyGpu(url) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const u = new URL(url);
+      const req = (u.protocol === "https:" ? https : http).request({
+        method: "GET", hostname: u.hostname, port: u.port || 8188, path: "/system_stats",
+      }, (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          try {
+            const data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            const cuda = (data.devices || []).filter((d) => d.type === "cuda" && d.vram_total > 0);
+            if (!cuda.length) return finish(null);
+            const dev = cuda.reduce((a, b) => (b.vram_total > a.vram_total ? b : a));
+            finish({
+              // "cuda:0 NVIDIA GeForce RTX 5090 : cudaMallocAsync" → "NVIDIA GeForce RTX 5090"
+              gpu: String(dev.name || "").replace(/^cuda:\d+\s*/i, "").replace(/\s*:\s*\w+Async\s*$/i, "").trim() || null,
+              vramGib: Math.round((dev.vram_total / (1024 ** 3)) * 10) / 10,
+            });
+          } catch { finish(null); }
+        });
+      });
+      req.setTimeout(4000, () => { req.destroy(); finish(null); });
+      req.on("error", () => finish(null));
+      req.end();
+    } catch { finish(null); }
+  });
+}
+
 // ── --fps: an exact output frame rate ────────────────────────────────────────
 
 // ComfyUI's frame interpolation multiplies the frame count by an INTEGER, so a 24 fps
@@ -886,9 +964,32 @@ async function main() {
   try { cli = parseArgv(process.argv.slice(2)); }
   catch (e) { process.stderr.write(`${e.message}\n\n${USAGE}\n`); return 1; }
 
-  if (cli.help || (!cli.listModels && !cli.add && !cli.batch && !cli.cmd && !cli.prompt && !cli.images.length && !cli.video)) {
+  if (cli.help || (!cli.listModels && !cli.scan && !cli.add && !cli.batch && !cli.cmd && !cli.prompt && !cli.images.length && !cli.video)) {
     process.stdout.write(`${USAGE}\n`);
     return cli.help ? 0 : 1;
+  }
+
+  // Discovery: which machines on this network are running ComfyUI. Needs no model list
+  // (that is per-endpoint, and the point here is to find out what the endpoints ARE).
+  if (cli.scan) {
+    const seen = [];
+    if (!cli.json && !cli.quiet) process.stderr.write(`scanning for ComfyUI (port 8188) from ${cli.server || SERVER}…\n`);
+    const report = async (url) => {
+      const info = await probeComfyGpu(url);
+      const rec = { kind: "comfy", url, ...(info || {}) };
+      seen.push(rec);
+      if (cli.json) process.stdout.write(JSON.stringify(rec) + "\n");
+      else process.stdout.write(`  ${url.padEnd(28)}${info ? `${info.gpu}, ${info.vramGib} GiB` : ""}\n`);
+    };
+    const pending = [];
+    await scanComfy(cli.server, (url) => pending.push(report(url)));
+    await Promise.all(pending);
+    if (!seen.length) {
+      process.stderr.write("no ComfyUI found on this network\n");
+      return 1;
+    }
+    if (!cli.json && !cli.quiet) process.stderr.write(`\nuse one with:  --comfy-url <url>\n`);
+    return 0;
   }
 
   // Import mode generates nothing, so it needs neither a model list nor ComfyUI —

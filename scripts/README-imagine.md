@@ -39,6 +39,32 @@ imagine.js  ──HTTP──▶  hey-koko server  ──▶  ComfyUI
 If ComfyUI is unreachable, the model list comes back nearly empty and `-m` will say so
 rather than guessing.
 
+### Finding the machines — `--scan`
+
+`--scan` sweeps the network for ComfyUI (port 8188) and reports what GPU each one has, so
+`--comfy-url` can be filled in from fact rather than memory:
+
+```
+$ node scripts/imagine.js --scan
+scanning for ComfyUI (port 8188) from http://127.0.0.1:1314…
+  http://192.168.1.15:8188    NVIDIA GeForce RTX 5090, 31.8 GiB
+  http://192.168.1.25:8188    NVIDIA GB10, 121.7 GiB
+
+use one with:  --comfy-url <url>
+```
+
+The sweep runs **from the server's network position** (it is the same scan the app's
+settings panel uses — every /24 the server sits on, plus its own localhost), while the
+GPU name is probed from wherever the CLI is running. A machine the server can reach but
+the CLI cannot is still listed, just without its GPU. Under `--json`:
+
+```json
+{"kind":"comfy","url":"http://192.168.1.15:8188","gpu":"NVIDIA GeForce RTX 5090","vramGib":31.8}
+```
+
+Exit code is `1` when nothing was found. Which box matters: the same job can be several
+times faster on one than the other, and VRAM decides what fits at all.
+
 ## Nothing is inherited from the app — except the ComfyUI address
 
 **The ⚙ settings panel in the browser has no effect on this CLI.** Those values live in
@@ -412,8 +438,8 @@ Exit codes: **0** all good, **1** usage or connection problem, **2** one or more
 | Output | `-o/--out <path>`, `-O/--out-dir <dir>`, `-g/--gallery`, `--json`, `--progress`, `-q/--quiet`, `--dry-run` |
 | Import | `--add <file...>` — file existing media in the gallery, no generation |
 | Batch | `--batch <file\|->`, `--continue-on-error` |
-| Server | `--server <url>`, `--comfy-url <url>`, `--timeout <minutes>` |
-| Info | `--list-models [filter]`, `-h/--help` |
+| Server | `--server <url>`, `--comfy-url <url>`, `--scan`, `--timeout <minutes>` |
+| Info | `--list-models [filter]`, `--scan`, `-h/--help` |
 
 Size presets: `480p`, `720p`, `1080p`, `2k`, `4k` (each with a `-portrait` twin),
 `ultrawide`, `ultrawide-small` — or any `WxH` between 256 and 4096.
