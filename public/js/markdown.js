@@ -604,6 +604,56 @@ function attachImagineButton(pre) {
   wrap.appendChild(btn);
 }
 
+// An ```officecli block: an officecli batch script for the document /doc has open —
+// the fence is named for the tool whose schema the JSON is, not for the command. Same deal as
+// ```imagine — the block is a proposal until ▶ is pressed — but the dispatch differs.
+// /imagine goes back through the composer so staged attachments behave identically;
+// an ```officecli block has nothing to stage, and pushing raw JSON into the message input
+// would leave the user staring at a blob. So ▶ calls the applier directly.
+function isOfficeBlock(pre) {
+  const code = pre.querySelector("code");
+  if (!code) return false;
+  if (/\blanguage-officecli\b/.test(code.className)) return true;
+  // Fallback for a model that wrote the script but tagged the fence ```json (or not at
+  // all) — the same discipline as isImagineBlock: a block that IS a dispatchable command
+  // gets a real button whatever the model did with its instructions. Cheap to check: it
+  // has to parse AND carry a non-empty commands array.
+  const text = (code.textContent || "").trim();
+  if (!text.startsWith("{") || !text.includes('"commands"')) return false;
+  try {
+    const obj = JSON.parse(text);
+    return !!obj && Array.isArray(obj.commands) && obj.commands.length > 0;
+  } catch { return false; }
+}
+
+function attachOfficeButton(pre) {
+  const wrap = pre.parentElement?.classList.contains("mdBlockWrap") ? pre.parentElement : null;
+  if (!wrap || wrap.querySelector(".mdImagineBtn")) return;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "mdImagineBtn";
+  btn.title = t("md_toOffice");
+  btn.setAttribute("aria-label", t("md_toOffice"));
+  btn.textContent = "▶";
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    // While a stream or a render is running, applying would race the reply that is still
+    // writing this very block — same guard the ```imagine button uses.
+    if (state.currentAbortController || state.imageGenAbortController) return;
+    const code = pre.querySelector("code");
+    const raw = ((code ? code.textContent : pre.textContent) || "").trim();
+    if (!raw) return;
+    btn.disabled = true;
+    try {
+      const { runOfficeBlock } = await import('./office-doc.js');
+      await runOfficeBlock(raw);
+      btn.textContent = "✓";
+      setTimeout(() => { btn.textContent = "▶"; }, 1200);
+    } finally { btn.disabled = false; }
+  });
+  wrap.appendChild(btn);
+}
+
 export function addBlockCopyButtons(container) {
   const root = container || document.querySelector("#messages");
   if (!root) return;
@@ -622,6 +672,7 @@ export function addBlockCopyButtons(container) {
     // Dispatchable render commands additionally get the ▶ fill-the-composer button —
     // after attachCopyButton, which builds the .mdBlockWrap the button hangs off.
     if (isImagineBlock(el)) attachImagineButton(el);
+    else if (isOfficeBlock(el)) attachOfficeButton(el);
   });
   // Blockquotes — copy the quoted text (as rendered, without the > markers).
   // Only the outermost quote gets a button; nested quotes are covered by it.

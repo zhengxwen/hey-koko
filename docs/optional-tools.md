@@ -73,11 +73,35 @@ sudo apt install -y libreoffice          # Linux (Debian/Ubuntu)
 winget install TheDocumentFoundation.LibreOffice   # Windows
 ```
 
-**How it works & requirements.** `.pptx` decks are converted to PDF headlessly (`soffice --convert-to pdf`), then each page is rasterized with `pypdfium2` — which ships in [MinerU](#mineru)'s virtual environment, so **MinerU must also be installed** (Hey-Koko auto-derives its Python from the `mineru` launcher; override with `SLIDES_PYTHON=/path/to/python`). Slide-style **PDFs render without LibreOffice** — they go straight through `pypdfium2`. If neither LibreOffice nor MinerU is present, decks still import with their text and figure crops; only the whole-page images are skipped.
+**How it works & requirements.** `.pptx` decks are converted to PDF headlessly (`soffice --convert-to pdf`), then each page is rasterized with `pypdfium2` — which ships in [MinerU](#mineru)'s virtual environment, so **MinerU must also be installed** (Hey-Koko auto-derives its Python from the `mineru` launcher; override with `SLIDES_PYTHON=/path/to/python`). Slide-style **PDFs render without LibreOffice** — they go straight through `pypdfium2`. If neither LibreOffice nor MinerU is present, [officecli](#officecli) renders the deck instead (a much smaller install, slightly rougher layout); with none of them, decks still import with their text and figure crops and only the whole-page images are skipped.
 
 Optional tuning: `HEYKOKO_SLIDES_RENDER_SCALE` (default `2.0` — raise for sharper small text at the cost of file size) and `HEYKOKO_SLIDES_RENDER_MAXPAGES` (default `80`).
 
 > **macOS note.** Hey-Koko also has a PowerPoint fallback (driven via AppleScript), but recent PowerPoint builds silently drop the export under the app sandbox, so it usually produces nothing. LibreOffice is the reliable path — install it rather than relying on PowerPoint.
+
+**Why LibreOffice is still preferred over [officecli](#officecli)** (measured on one real 4-slide deck, Apple silicon): LibreOffice reproduces PowerPoint's own layout — autofit titles stay on one line, nested bullets keep their indent levels — and converts a whole deck in a single ~3.7 s call. officecli re-implements layout in its own HTML engine: good enough to feed a vision model, but it drops autofit and list indentation, and costs ~2.6 s **per page**, so a 60-slide deck is minutes rather than seconds. Install LibreOffice when you render decks often; install officecli when 800 MB is too much to pay.
+
+## officecli
+
+Office documents **without Microsoft Office or LibreOffice** — a single ~19 MB binary ([iOfficeAI/OfficeCLI](https://github.com/iOfficeAI/OfficeCLI), Apache-2.0). Hey-Koko uses it for three things:
+
+- **Word page images** — `.docx` pages rendered to whole-page PNGs. There is no other backend for this; without officecli, Word documents have no visual layer at all.
+- **Deck page images without the 800 MB download** — the `.pptx` fallback when [LibreOffice](#libreoffice) is not installed.
+- **`/doc`** — generating and editing `.docx` / `.xlsx` / `.pptx` from the chat. Generation is the common case: paste or produce a summary, then `/doc new pptx make slides from that` — the guide teaches one operation per slide, using the template's own layouts and placeholders rather than hand-placed text boxes, so the deck comes out looking like a deck. Editing covers text, tables, pictures, charts, comments, and Word headers/footers. `/doc` opens a document (attached, or by path), posts its structure and an authoring guide into the conversation, and from then on plain instructions produce `officecli` blocks you apply with ▶ (the fence is tagged for the tool whose batch schema the JSON is). It always works on a **copy** in `~/.hey-koko/office/`, so the file you pointed at is never modified — and a document open in Word can't clobber the edit.
+
+```bash
+brew install officecli                                  # macOS
+curl -fsSL https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.sh | bash   # macOS/Linux
+scoop install officecli                                 # Windows
+```
+
+Auto-detected on `PATH` and in the usual install locations; override with `OFFICECLI_BIN=/path/to/officecli`. Absent, every officecli-backed feature simply reports itself unavailable — nothing else changes.
+
+**Generated documents** land in `~/.hey-koko/office/`. The HTTP surface is `/api/officecli/status`, `/read`, `/preview`, `/build`, `/merge`, `/open`, `/edit`, `/file/<id>` and `/guide`; `build` takes an officecli batch script, `merge` fills `{{placeholder}}` keys in a template you supply, and `open`/`edit` are what `/doc` drives.
+
+> **Writes are verified, not trusted.** officecli can report `success: true` for a command that changed nothing (its CSV `import` does exactly this — "Imported 3 rows x 3 cols" onto a workbook that ends up with zero cells). Hey-Koko re-reads every document it writes and fails the request with `write_unverified` if it came out empty, deleting the file rather than leaving an empty artifact behind.
+
+> **This is not `/tool @word`.** The `@word` / `@excel` / `@ppt` tools read the **live** state of the running app — the open, possibly unsaved document. officecli only sees files on disk. Keep in mind that if a document is open in Word while officecli edits the same file, Word will overwrite those edits the next time you save.
 
 ## yt-dlp & ffmpeg
 

@@ -48,6 +48,7 @@ const { fetchUrlContent, transcribeYouTubeAudio, youtubeJob, expandYoutubeUrls }
 const { searchWeb } = require("./server/search");
 const { browserTabs, browserRead, browserLaunch } = require("./server/cdp");   // co-browsing CDP bridge
 const { officeRead } = require("./server/office");   // Word/PowerPoint/Outlook readers (/tool)
+const officecli = require("./server/officecli");     // read/write/render .docx/.xlsx/.pptx without Office
 const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
 const { listSystemVoices, speakAudio } = require("./server/speech");
 const { listTtsVoices, synthesize } = require("./server/tts");
@@ -217,6 +218,55 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/office/read") {
     officeRead(req, res);
+    return;
+  }
+
+  // officecli bridge. /api/office/read (above) reads the LIVE app state via AppleScript;
+  // these read, render and WRITE files on disk — different sources, deliberately separate.
+  if (req.method === "GET" && req.url === "/api/officecli/status") {
+    officecli.handleStatus(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/officecli/read") {
+    officecli.handleRead(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/officecli/preview") {
+    officecli.handlePreview(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/officecli/build") {
+    officecli.handleBuild(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/officecli/merge") {
+    officecli.handleMerge(req, res);
+    return;
+  }
+
+  // /doc's own surface: open takes a WORKING COPY of the user's file (never edits the
+  // original), edit applies one ```office block to it, file hands the result back.
+  if (req.method === "POST" && req.url === "/api/officecli/open") {
+    officecli.handleOpen(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/officecli/edit") {
+    officecli.handleEdit(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && req.url.startsWith("/api/officecli/file/")) {
+    officecli.handleFile(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && req.url.startsWith("/api/officecli/guide")) {
+    officecli.handleGuide(req, res);
     return;
   }
 

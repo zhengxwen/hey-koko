@@ -11,6 +11,7 @@ import { initTheme } from './theme.js';
 import { initAvatar, updateCloudBadge, relocalizeAvatarPicker } from './avatar.js';
 import { pauseOrStopSpeech, populateVoiceList } from './speech.js';
 import { saveCurrentSettings, saveTabs, saveTabsNow, saveChat, loadSavedSettings, addUserNameToHistory, renderUserNameDropdown, syncPersonaEditable } from './settings.js';
+import { parseDocCommand, handleDocCommand, setOfficeDocDeps, isOfficeFile } from './office-doc.js';
 import { loadTabs, getActiveTab, renderTabs, addChatTab, switchTab, clearSelectedImage, clearSelectedFile, clearSelectedVideo, clearSelectedAudio, createTab, migrateImageFields, setRenderChat as tabsSetRenderChat, setRenderAttachments as tabsSetRenderAttachments, updateLockedState } from './tabs.js';
 import { initOllama, loadModels, loadImageModels, loadComfyModels, refreshBgWorkers, loadEmbedModels, updateImageGenOptions, updateComfyMultiHint, openModelBrowser, openComfyModelPicker, syncComfyModelPickLabel, relocalizeComfyModels, relocalizeBrowseOption, BROWSE_MODELS_VALUE } from './ollama.js';
 import { setDeps as imageGenSetDeps, videoThumbnail, videoNaturalSize, comfyModelSupportsRefMask } from './image-gen.js';
@@ -57,6 +58,7 @@ imageGenSetDeps({ setGenerating, renderChat });
 voiceGenSetDeps({ setGenerating, renderChat });
 urlFetchSetDeps({ setGenerating, renderChat, regenerateReply, showSendError });
 setToolCmdDeps({ setGenerating, renderChat, regenerateReply, showSendError });
+setOfficeDocDeps({ setGenerating, renderChat, regenerateReply, showSendError });
 setBgDeps({ renderChat, analyzeMedia, regenerateReply, parseDocumentHeadless, handleUrlCommand, handleMultiUrlCommand, refreshWorkers: refreshBgWorkers, libraryImport: runLibraryImport, onJobsChanged: notifyLibraryJobsChanged, openLibrary: openLibraryPanel });
 
 // Background Jobs drawer toggle + close.
@@ -318,7 +320,18 @@ dom.chatForm.addEventListener("submit", async (event) => {
   clearSelectedVideo();
   clearSelectedAudio();
 
-  if (file && file.multi) {
+  // "/doc" with an Office file staged in the composer. This has to be intercepted HERE:
+  // a staged .docx/.pptx is otherwise handed to enqueueDocParse below, which parses it
+  // into conversation text — the opposite of what /doc wants, which is the file itself.
+  const docCmd = content ? parseDocCommand(content) : null;
+  const stagedDoc = docCmd ? firstOfficeFile(file) : null;
+  if (docCmd && stagedDoc && !docCmd.path && docCmd.mode !== "new" && !docCmd.error) {
+    const tab = getActiveTab();
+    await handleDocCommand(
+      { mode: "open", prompt: docCmd.mode === "continue" ? docCmd.prompt : "" },
+      tab, state.activeTabId, content, stagedDoc,
+    );
+  } else if (file && file.multi) {
     // Multiple documents: each becomes its own background job (the queue runs them
     // serially, so parsing/summary never blocks the page).
     for (const f of file.multi) {
@@ -848,6 +861,14 @@ document.addEventListener("click", (e) => {
 });
 
 // File input
+// The first staged .docx/.xlsx/.pptx, whether one file or several were attached — /doc
+// works on one document at a time.
+function firstOfficeFile(file) {
+  if (!file) return null;
+  const list = file.multi ? file.multi : [file];
+  return list.find((f) => f && f.rawFile && isOfficeFile(f.name)) || null;
+}
+
 dom.fileInput.addEventListener("change", async () => {
   const files = [...(dom.fileInput.files || [])];
   dom.fileInput.value = "";

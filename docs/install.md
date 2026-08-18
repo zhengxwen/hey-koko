@@ -146,6 +146,7 @@ $env:OLLAMA_URL = "http://127.0.0.1:11434"; $env:HEYKOKO_PORT = "1314"; node ser
 | `WHISPER_MODEL` | auto-detect | Path to whisper.cpp model file |
 | `TTS_PYTHON` | auto-detect | Python with kokoro for `/voice` (default: `~/venv/tts` venv if present, else `python3`/`python`) |
 | `SLIDES_PYTHON` | auto-detect | Python with `pypdfium2` + `Pillow` for slide [page rendering](optional-tools.md#libreoffice) (default: derived from the `mineru` launcher). Rendering runs automatically for slide imports when a backend is present |
+| `OFFICECLI_BIN` | auto-detect | [officecli](optional-tools.md#officecli) binary — Office document writing, Word page images, and the deck-rendering fallback when LibreOffice is absent |
 | `HEYKOKO_SLIDES_RENDER_SCALE` | `2.0` | Slide render resolution multiplier — raise for sharper small text (larger files) |
 | `HEYKOKO_SLIDES_RENDER_MAXPAGES` | `80` | Max slides page-rendered per deck |
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Claude API origin (overrides `claude.json`) |

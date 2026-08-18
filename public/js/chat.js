@@ -19,6 +19,7 @@ import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
 import { parseToolCommand, handleToolCommand } from './tool-cmd.js';
+import { parseDocCommand, handleDocCommand } from './office-doc.js';
 import { isTranscriptSection, transcriptMark, cardMark } from './library.js';
 import { parseAskCommand, handleAskCommand, handleAutoAsk } from './ask.js';
 import { kindIcon } from './mentions.js';
@@ -3387,6 +3388,17 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   const skillCmd = content ? parseSkillCommand(content) : null;
   if (skillCmd) {
     await handleSkillCommand(skillCmd, tab, tabId, content, image, video);
+    return;
+  }
+
+  // Handle /doc — open a Word/PowerPoint/Excel file (as a working copy) and load its
+  // map + the officecli authoring guide, then edit it by conversation. A /doc that
+  // arrives with a document STAGED in the composer never reaches here: main.js routes
+  // that case directly, because a staged .docx/.pptx is otherwise consumed by the
+  // parse-into-text pipeline before sendMessage sees it.
+  const docCmd = content ? parseDocCommand(content) : null;
+  if (docCmd) {
+    await handleDocCommand(docCmd, tab, tabId, content, null);
     return;
   }
 

@@ -132,7 +132,8 @@ const config = {
   // the page block, so /ask can feed a vision model the actual page (charts/layout), not
   // just the terse text. Always attempted for slide imports; it's best-effort, so it just
   // no-ops when no backend is present. slidesPython renders PDFs (pypdfium2); pptx goes
-  // via LibreOffice → PDF → pypdfium2 (PowerPoint AppleScript as a macOS fallback).
+  // via LibreOffice → PDF → pypdfium2, then officecli, then PowerPoint AppleScript; docx
+  // pages are officecli-only (OFFICECLI_BIN overrides its discovery — server/officecli.js).
   // slidesRenderScale bumps resolution for small text (higher = clearer + bigger file);
   // slidesRenderMaxPages caps cost.
   slidesPython: resolveSlidesPython(),
