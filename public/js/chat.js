@@ -1407,26 +1407,69 @@ function resendChatMessage(index) {
   }
 }
 
-// Copy a message bubble's text to the clipboard, flashing the button label to
-// confirm. Falls back to a hidden textarea + execCommand when the async
-// Clipboard API is unavailable (insecure origin / older browser).
-async function copyMessageText(text, btn) {
+// The bubble's rendered HTML, cleaned of app chrome, for the clipboard's rich flavour.
+// Rendering it from the DOM rather than re-running the markdown pipeline is deliberate:
+// what gets copied is then exactly what is on screen, KaTeX formulas and mermaid SVGs
+// included. Returns "" when there is nothing to copy — the caller then goes plain-text.
+function bubbleRichHtml(bubbleEl) {
+  if (!bubbleEl) return "";
+  // `:scope >` on purpose: a collapsed <details> "thinking" block is a separate child,
+  // and the copy button copies the ANSWER, not the reasoning that led to it.
+  const body = bubbleEl.querySelector(":scope > .markdownBody, :scope > .plainBody");
+  if (!body) return "";
+  const clone = body.cloneNode(true);
+  // Ours, not the message's: the floating 📋 on code/svg/mermaid blocks (markdown.js).
+  clone.querySelectorAll("button, .mdCopyBtn").forEach((el) => el.remove());
+  // KaTeX emits every formula TWICE — MathML for screen readers plus the visual HTML —
+  // and hides the MathML with its stylesheet. The stylesheet doesn't travel with the
+  // clipboard, so leaving it in pastes every formula doubled.
+  clone.querySelectorAll(".katex-mathml").forEach((el) => el.remove());
+  return clone.innerHTML.trim();
+}
+
+// Copy a message bubble to the clipboard. Two flavours go on at once: text/html so a
+// rich-text target (Word, Mail, Notes, Docs) keeps the headings, tables, lists and
+// emphasis, and text/plain — the markdown source — so a code editor or terminal still
+// receives something sensible. Falls back to a hidden contenteditable + execCommand
+// where the async Clipboard API is unavailable (an insecure origin: hey-koko is often
+// opened over a plain-http LAN address), which keeps the formatting there too.
+async function copyMessageText(text, btn, bubbleEl) {
   const value = typeof text === "string" ? text : "";
+  const html = bubbleRichHtml(bubbleEl);
+  const legacyCopy = () => {
+    const holder = document.createElement("div");
+    if (html) holder.innerHTML = html; else holder.textContent = value;
+    holder.contentEditable = "true";
+    holder.style.position = "fixed";
+    holder.style.left = "-9999px";
+    holder.style.opacity = "0";
+    document.body.appendChild(holder);
+    const sel = window.getSelection();
+    const saved = sel && sel.rangeCount ? [...Array(sel.rangeCount).keys()].map((i) => sel.getRangeAt(i)) : [];
+    const range = document.createRange();
+    range.selectNodeContents(holder);
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    // execCommand copies the SELECTION, which is what carries the formatting along.
+    document.execCommand("copy");
+    sel?.removeAllRanges();
+    for (const r of saved) sel?.addRange(r);   // put the user's own selection back
+    document.body.removeChild(holder);
+  };
   try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(value);
+    if (navigator.clipboard && window.isSecureContext && html && typeof ClipboardItem === "function") {
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }),
+        "text/plain": new Blob([value], { type: "text/plain" }),
+      })]);
+    } else if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);   // nothing rendered to copy
     } else {
-      const ta = document.createElement("textarea");
-      ta.value = value;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
+      legacyCopy();
     }
   } catch {
-    return;
+    // A refused rich write (unsupported flavour, permissions) must still copy something.
+    try { legacyCopy(); } catch { return; }
   }
   if (btn) {
     const original = btn.textContent;
@@ -4139,7 +4182,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       copyButton.title = t("btn_copy");
       copyButton.setAttribute("aria-label", t("btn_copy"));
       copyButton.textContent = "📋";
-      copyButton.addEventListener("click", () => copyMessageText(content, copyButton));
+      copyButton.addEventListener("click", () => copyMessageText(content, copyButton, item));
       leftActions.appendChild(copyButton);
     }
 
@@ -4968,7 +5011,7 @@ export function renderChat() {
       copyBtn.title = t("btn_copy");
       copyBtn.setAttribute("aria-label", t("btn_copy"));
       copyBtn.textContent = "📋";
-      copyBtn.addEventListener("click", () => copyMessageText(message.translation, copyBtn));
+      copyBtn.addEventListener("click", () => copyMessageText(message.translation, copyBtn, transEl));
       transActions.appendChild(copyBtn);
 
       transEl.appendChild(transActions);

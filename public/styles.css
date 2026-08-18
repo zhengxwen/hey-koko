@@ -3884,6 +3884,22 @@ body.isResizingComposer {
   font-size: 0.88em;
 }
 
+/* Slash-command popup only (the @mention popup reuses .commandItem and keeps its own
+   behaviour): one command per row. The name never shrinks; the description takes what
+   is left and is clipped with an ellipsis rather than wrapping, so every row is the
+   same height and the list reads as a list. */
+#commandPopup .commandItem { flex-wrap: nowrap; }
+#commandPopup .commandItem-name { flex: 0 0 auto; }
+#commandPopup .commandItem-desc {
+  min-width: 0;               /* without this a flex item refuses to shrink → no ellipsis */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Exactly one match: there is no list to scan any more, so show the whole description. */
+#commandPopup.isSingle .commandItem { align-items: baseline; }
+#commandPopup.isSingle .commandItem-desc { white-space: normal; overflow: visible; }
+
 /* /ask @mention popup: smaller + tighter than the slash-command popup */
 .mentionPopup { padding: 3px; }
 .mentionPopup .commandItem { padding: 2px 8px; gap: 6px; font-size: 14px; line-height: 1.2; border-radius: 5px; }

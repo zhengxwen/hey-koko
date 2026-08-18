@@ -9,6 +9,10 @@ export function showCommandPopup(filter) {
   const filtered = getLocalizedCommands().filter(c => c.name.startsWith(filter));
   if (filtered.length === 0) { hideCommandPopup(); return; }
   dom.commandPopup.innerHTML = "";
+  // One match = nothing left to choose between, so it is shown in full (the CSS lets
+  // the description wrap). Several matches = a list to scan, and a wrapped description
+  // would give the rows uneven heights — one line each, clipped with an ellipsis.
+  dom.commandPopup.classList.toggle("isSingle", filtered.length === 1);
   state.commandActiveIndex = 0;
   filtered.forEach((cmd, i) => {
     const item = document.createElement("div");
