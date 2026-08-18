@@ -8052,22 +8052,25 @@ body.isResizingComposer {
 /* Its switch lives in the composer now, so it can hide completely. */
 .galleryStrip.isCollapsed { display: none; }
 
-/* 🎨 floats above «, out of flow. In flow it would widen this grid cell to its own
-   width and open a gap in the « ? File Send row — that row has to keep exactly the
-   spacing it had before the button existed. */
+/* 🎨 ✏️ float above «, out of flow. In flow they would widen this grid cell to their
+   own width and open a gap in the « ? File Send row — that row has to keep exactly the
+   spacing it had before the buttons existed. */
 .composerStackCol {
   position: relative;
   align-self: end;
   line-height: 0;      /* no stray text-node height around the button */
 }
 
-.composerStackCol > .galleryStripToggle {
+.composerStackCol > .composerFloatBtns {
   position: absolute;
   left: 0;
   bottom: calc(100% + 4px);
+  display: flex;
+  gap: 4px;
+  line-height: 0;
 }
 
-.galleryStripToggle {
+.composerFloatBtn {
   min-width: 22px;
   min-height: 24px;
   padding: 0 6px;
@@ -8081,10 +8084,14 @@ body.isResizingComposer {
   transition: background 0.12s, opacity 0.12s;
 }
 
-.galleryStripToggle:hover { background: var(--surface-hover); opacity: 1; }
+.composerFloatBtn:hover { background: var(--surface-hover); opacity: 1; }
 
-/* Pressed-in look while the strip is showing, so the button says which state it is in. */
-.galleryStripToggle.isOn { background: var(--surface-hover); opacity: 1; }
+/* Pressed-in look while the mode is engaged, so the button says which state it is in. */
+.composerFloatBtn.isOn {
+  background: var(--surface-hover);
+  opacity: 1;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.22);
+}
 
 .galleryStripOpen {
   flex: none;

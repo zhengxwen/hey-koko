@@ -775,12 +775,16 @@
             </div>
             <textarea id="messageInput" rows="2" placeholder="Say something to Koko..." autofocus></textarea>
           </div>
-          <!-- One grid cell, two stacked buttons: the filmstrip toggle sits directly
-               above « rather than inside the strip it hides (nothing to click on a
-               hidden strip). -->
+          <!-- One grid cell, two rows: the small toggles float directly above «
+               rather than inside the things they control (nothing to click on a
+               hidden filmstrip). -->
           <div class="composerStackCol">
-            <button id="galleryStripToggle" type="button" class="galleryStripToggle"
-                    title="Show/hide the gallery filmstrip">🎨</button>
+            <div class="composerFloatBtns">
+              <button id="galleryStripToggle" type="button" class="composerFloatBtn galleryStripToggle"
+                      title="Show/hide the gallery filmstrip" aria-pressed="false">🎨</button>
+              <button id="composerEditModeToggle" type="button" class="composerFloatBtn editModeToggle"
+                      title="Editor mode: Enter makes a new line" aria-pressed="false">✏️</button>
+            </div>
             <button id="quickPromptBtn" type="button" class="quickPromptBtn" title="Quick prompts (type / or ? to trigger)">«</button>
           </div>
           <button id="askSuggestBtn" type="button" class="askSuggestBtn" title="Let AI suggest a question">?</button>

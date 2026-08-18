@@ -232,6 +232,9 @@ export const state = {
   expressionTimer: null,
   currentThemeMode: "system",
   currentThemeAccent: "ocean",
+  // Composer editor mode (the ✏️ toggle beside 🎨): Enter makes a new line instead of
+  // sending, and the input box opens to half the chat window. Session-only.
+  composerEditMode: false,
   commandActiveIndex: 0,
   streamingInfo: null,
   pendingGen: null,                  // in-progress image/video/audio gen: { tabId, label, insertIndex }

@@ -367,6 +367,9 @@ dom.messageInput.addEventListener("keydown", (event) => {
       selectActiveQuickPrompt();
       return;
     }
+    // Editor mode: Enter is a plain new line and the Send button is how you send. The
+    // popups above still claim Enter first — picking a completion is not typing.
+    if (state.composerEditMode) return;
     event.preventDefault();
     dom.chatForm.requestSubmit();
   }
@@ -1002,6 +1005,35 @@ dom.scrollToBottomBtn?.addEventListener("click", () => {
       input.style.height = "";
       input.style.maxHeight = "";
     });
+  }
+
+  // ✏️ editor mode, beside 🎨. Pressed: Enter makes a new line (see the keydown
+  // handler) and the box opens to half the chat window, for composing something long.
+  // Unpressed: chat mode again — Enter sends, and the box goes back to the height it
+  // had before, whether that was the CSS default or one the user had dragged to.
+  // It lives inside this block to reuse applyHeight, so the editor height obeys the
+  // same floor (the 🎨/« controls) and ceiling as a drag.
+  const editBtn = document.querySelector("#composerEditModeToggle");
+  if (editBtn && input) {
+    let heightBefore = null;
+    const setComposerEditMode = (on) => {
+      state.composerEditMode = !!on;
+      editBtn.classList.toggle("isOn", !!on);
+      editBtn.setAttribute("aria-pressed", on ? "true" : "false");
+      editBtn.title = t(on ? "composer_editModeOn" : "composer_editModeOff");
+      if (on) {
+        heightBefore = { h: input.style.height, max: input.style.maxHeight };
+        applyHeight((dom.chatArea?.clientHeight || window.innerHeight) * 0.5);
+      } else if (heightBefore) {
+        input.style.height = heightBefore.h;
+        input.style.maxHeight = heightBefore.max;
+        heightBefore = null;
+      }
+      input.focus();
+    };
+    editBtn.addEventListener("click", () => setComposerEditMode(!state.composerEditMode));
+    // A language switch repaints static titles from the BINDINGS table; this one is
+    // state-dependent, so i18n.js re-derives it from the button's own .isOn class.
   }
 }
 
