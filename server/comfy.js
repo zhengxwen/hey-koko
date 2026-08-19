@@ -7339,24 +7339,24 @@ async function generateComfyImage(req, res) {
           if (sourceVideoName || sourceVideo) refVideoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
           if (sourceAudioName || sourceAudio) refAudioName = sourceAudioName || await uploadAudio(sourceAudio, controller.signal, sourceAudioMime);
         }
-        // Sol-Attn lives in a custom node pack (ComfyUI-sol-attn) that this box may not
-        // have — and with several workers, "installed" is per-box. Asking for a class the
-        // target doesn't know would fail the whole /prompt, so the request is checked
-        // against the LIVE node list and dropped when absent. Dropping it is reported
-        // (solAttnSkipped) rather than done quietly: a silently ignored speed setting is
-        // indistinguishable from one that ran and did nothing.
+        // Both live in a custom node pack (ComfyUI-sol-attn) that this box may not have —
+        // and with several workers, "installed" is per-box. Asking for a class the target
+        // doesn't know would fail the whole /prompt, so each is checked against the LIVE
+        // node list and dropped when absent.
+        //
+        // Only the Sol-Attn drop is WARNED about. It is an explicit choice that changes
+        // the output, so ignoring it silently would be indistinguishable from it running
+        // and doing nothing. MLP chunking is the opposite: it defaults ON, the user did
+        // not ask for it, and it is bit-exact — measured SSIM 1.0 / PSNR inf against the
+        // unchunked run — so its absence cannot show up in the result. The done-line
+        // already names it when it DID run, which is signal enough.
         let solAttn = String(opts.solAttn || "").trim();
-        let solChunkFF = !!opts.solChunkFF;
-        if (solAttn || solChunkFF) {
-          const need = [];
-          if (solAttn) need.push("MiniMaxH3MemoryEfficientSolAttentionPatch");
-          if (solChunkFF) need.push("MiniMaxH3ChunkFeedForward");
-          if (!(await comfyHasNodes(need))) {
-            solAttnSkipped = true;
-            solAttn = "";
-            solChunkFF = false;
-          }
+        let solChunkFF = opts.solChunkFF !== false;   // default ON
+        if (solAttn && !(await comfyHasNodes(["MiniMaxH3MemoryEfficientSolAttentionPatch"]))) {
+          solAttnSkipped = true;
+          solAttn = "";
         }
+        if (solChunkFF && !(await comfyHasNodes(["MiniMaxH3ChunkFeedForward"]))) solChunkFF = false;
         solAttnUsed = solAttn || null;
         solChunkUsed = solChunkFF || undefined;
         workflow = buildMiniMaxH3({ model, prompt, comp, v, seed,

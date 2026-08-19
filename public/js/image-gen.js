@@ -157,7 +157,9 @@ function comfyOverrides() {
   if (dom.comfyParamSolAttn?.value) ov.solAttn = dom.comfyParamSolAttn.value;     // "" = off
   const solTau = num(dom.comfyParamSolTau?.value);
   if (solTau !== undefined) ov.solTau = solTau;                                   // empty = the node's 1.3
-  if (dom.comfyParamSolChunkFF?.checked) ov.solChunkFF = true;
+  // Chunking is the server's default, so only the OPT-OUT travels — sending nothing
+  // when unticked would let the server default turn it straight back on.
+  if (dom.comfyParamSolChunkFF && !dom.comfyParamSolChunkFF.checked) ov.solChunkFF = false;
   // Wan Dancer: dance genre / motion amplitude / duration (seconds) / keyframe-quality.
   if (dom.comfyParamDanceStyle?.value) ov.danceStyle = dom.comfyParamDanceStyle.value;
   if (dom.comfyParamDanceAmplitude?.value) ov.danceAmplitude = dom.comfyParamDanceAmplitude.value;

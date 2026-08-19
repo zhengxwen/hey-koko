@@ -1018,7 +1018,7 @@
             <input id="comfyParamSolTau" type="number" min="0" max="4" step="0.05" placeholder="Auto (1.3)">
           </label>
           <label class="checkboxLabel isMultiline comfyParamCheck">
-            <input type="checkbox" id="comfyParamSolChunkFF">
+            <input type="checkbox" id="comfyParamSolChunkFF" checked>
             <span id="comfyParamSolChunkFFLabel" title="MiniMax H3 only. Splits each MLP over the sequence dimension so the whole activation never exists at once. Tokens pass through an MLP independently, so this is the same arithmetic in smaller pieces — a memory saving with no effect on the result (the node pack measures -37% peak on INT8 ConvRot weights). Separate from Sol-Attn above because it costs no accuracy. Needs the same ComfyUI-sol-attn node pack.">MLP chunking (H3)</span>
           </label>
           <label>

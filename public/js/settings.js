@@ -90,7 +90,9 @@ export function saveCurrentSettings() {
         easyCache: dom.comfyParamEasyCache?.checked || false,
         solAttn: dom.comfyParamSolAttn?.value || "",
         solTau: dom.comfyParamSolTau?.value || "",
-        solChunkFF: dom.comfyParamSolChunkFF?.checked || false,
+        // Defaults ON (bit-exact + faster + lower peak), so store the raw state —
+        // the restore side has to read absent as ticked, like paintMesh above.
+        solChunkFF: dom.comfyParamSolChunkFF ? dom.comfyParamSolChunkFF.checked : true,
         noAudio: dom.comfyParamNoAudio?.checked || false,
         h3RefSize: dom.comfyParamH3RefSize?.value || "",
         danceStyle: dom.comfyParamDanceStyle?.value || "",
@@ -335,7 +337,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = !!cp.easyCache;
     if (dom.comfyParamSolAttn) dom.comfyParamSolAttn.value = cp.solAttn || "";
     if (dom.comfyParamSolTau) dom.comfyParamSolTau.value = cp.solTau || "";
-    if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = !!cp.solChunkFF;
+    if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = cp.solChunkFF !== false;
     if (dom.comfyParamNoAudio) dom.comfyParamNoAudio.checked = !!cp.noAudio;
     if (dom.comfyParamH3RefSize) dom.comfyParamH3RefSize.value = cp.h3RefSize || "";
     if (dom.comfyParamDanceStyle) dom.comfyParamDanceStyle.value = cp.danceStyle || "";

@@ -2185,6 +2185,16 @@ function initComfyParamsModal() {
     if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = "h264"; // default codec, not empty
     if (dom.comfyParamPaintQuality) dom.comfyParamPaintQuality.value = "standard";
     if (dom.comfyParamPaintMesh) dom.comfyParamPaintMesh.checked = true;   // texturing defaults ON
+    // H3 / Sol-Attn controls. None of these are in `fields` (that loop only clears
+    // text+select values), so without these lines Reset silently left the whole H3
+    // half of the panel untouched.
+    if (dom.comfyParamSolAttn) dom.comfyParamSolAttn.value = "";
+    if (dom.comfyParamSolTau) dom.comfyParamSolTau.value = "";
+    if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = true; // bit-exact, defaults ON
+    if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = false;
+    if (dom.comfyParamNoAudio) dom.comfyParamNoAudio.checked = false;
+    if (dom.comfyParamH3RefSize) dom.comfyParamH3RefSize.value = "";
+    if (dom.comfyParamH3Clip) dom.comfyParamH3Clip.value = "";
     updateComfyParamVisibility();
     syncVideoCrfPlaceholder();
     state.animateMaskPoint = null; // back to auto-centre target
