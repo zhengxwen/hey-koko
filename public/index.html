@@ -965,6 +965,22 @@
             <span id="comfyParamKeepBackgroundLabel">Keep photo background (Hunyuan3D)</span>
           </label>
           <label>
+            <span id="comfyParamLyricsLabel" title="MiniMax Music 3 only. The words to be sung. Section tags are what actually shape the song — [Intro] [Verse] [Pre-Chorus] [Chorus] [Post-Chorus] [Bridge] [Instrumental] [Solo] [Outro] — while the lyric text itself only carries mood. Leave this empty (or write nothing but tags) for an instrumental, and say so in the prompt as well: the model has been trained overwhelmingly on songs with vocals, so silence here is not by itself an instruction.">Lyrics (Music 3)</span>
+            <textarea id="comfyParamLyrics" rows="4" placeholder="[Intro]&#10;...&#10;&#10;[Verse]&#10;..."></textarea>
+          </label>
+          <label>
+            <span id="comfyParamMusicSecondsLabel" title="MiniMax Music 3 only. The MAXIMUM length in seconds (up to 360). It is a ceiling, not a target: the model decides where the song ends and often stops earlier. Longer songs cost proportionally more time — roughly 3 seconds of compute per second of music.">Max song length (seconds)</span>
+            <input id="comfyParamMusicSeconds" type="number" min="1" max="360" step="1" placeholder="Auto (120)" />
+          </label>
+          <label>
+            <span id="comfyParamMusicCfgLabel" title="MiniMax Music 3 only. Guidance for the language-model stage — the half that decides what the song IS (structure, instrumentation, whether there are vocals at all), as opposed to the sampler's own cfg further up, which only affects the audio rendering. Higher follows the caption more literally; lower gives the model more room. Default 1.7.">Caption adherence (Music 3)</span>
+            <input id="comfyParamMusicCfg" type="number" min="0" max="20" step="0.1" placeholder="Auto (1.7)" />
+          </label>
+          <label class="checkboxLabel comfyParamCheck" title="MiniMax Music 3 only. Decode the audio in overlapping tiles instead of all at once. Cuts VRAM sharply on long songs, at the cost of a little speed and a small risk of an audible seam at a tile boundary. Leave it off unless a long song runs out of memory.">
+            <input id="comfyParamMusicTiled" type="checkbox" />
+            <span id="comfyParamMusicTiledLabel">Tiled audio decode (low VRAM)</span>
+          </label>
+          <label>
             <span id="comfyParamShapeTokensLabel">3D shape detail budget (Hunyuan3D)</span>
             <input id="comfyParamShapeTokens" type="number" min="2048" max="8192" step="1024" placeholder="Auto (4096)" />
           </label>

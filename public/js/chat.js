@@ -247,10 +247,10 @@ function cancelReaderOnAbort(reader, signal) {
 }
 
 // Short label for a queued /imagine job (first prompt, or a generic fallback).
-function bgImagineLabel(cmds, isVideo, isMesh) {
+function bgImagineLabel(cmds, isVideo, isMesh, isMusic) {
   const txt = cmds.map((c) => c.prompt).filter(Boolean).join("; ").trim();
   if (txt) return txt.length > 48 ? txt.slice(0, 48) + "…" : txt;
-  return isMesh ? t("bg_kindMesh") : isVideo ? t("bg_kindVideo") : t("bg_kindImage");
+  return isMusic ? t("bg_kindMusic") : isMesh ? t("bg_kindMesh") : isVideo ? t("bg_kindVideo") : t("bg_kindImage");
 }
 
 // Generation (image/video/audio) always runs through the background queue. This
@@ -345,6 +345,8 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
   const isVideo = !imageModel && comfyModel && state.comfyVideoModels.has(comfyModel);
   // A ComfyUI 3D model → a "mesh" job (routes through generateMesh; .glb/.spz result).
   const isMesh = !imageModel && comfyModel && state.comfyMeshModels && state.comfyMeshModels.has(comfyModel);
+  // A ComfyUI audio-only model → a "music" job (routes through generateMusic; a song).
+  const isMusic = !imageModel && comfyModel && state.comfyMusicModels && state.comfyMusicModels.has(comfyModel);
   const modelOverride = { imageModel, comfyModel };
   // "@tier" is a per-run ⚙ precision: stamp it on every command's options so it travels
   // with the request the same way the panel's value would.
@@ -363,9 +365,9 @@ async function enqueueImagineGen(validCmds, tabId, images, videos, mask, insertI
   const needsEnhance = validCmds.some((c) => c.enhance && c.prompt && c.prompt.trim());
   const created = jobs.map((clip, i) => enqueueBgJob({
     tabId,
-    kind: isMesh ? "mesh" : isVideo ? "video" : "image",
+    kind: isMusic ? "music" : isMesh ? "mesh" : isVideo ? "video" : "image",
     // Tag the label with "(N/M)" so the jobs drawer distinguishes a batch's clips.
-    label: bgImagineLabel(validCmds, isVideo, isMesh) + (multi ? ` (${i + 1}/${clips.length})` : ""),
+    label: bgImagineLabel(validCmds, isVideo, isMesh, isMusic) + (multi ? ` (${i + 1}/${clips.length})` : ""),
     // Keep batch order: each placeholder lands AFTER the previous one.
     insertIndex: insertIndex >= 0 ? insertIndex + i : -1,
     status: needsEnhance ? "enhancing" : "queued",

@@ -209,7 +209,7 @@ function workerHasModel(w, model) {
   if (!model) return true;
   if (!w.models) return true;
   const m = w.models;
-  return (m.image && m.image.has(model)) || (m.edit && m.edit.has(model)) || (m.video && m.video.has(model)) || (m.mesh && m.mesh.has(model));
+  return (m.image && m.image.has(model)) || (m.edit && m.edit.has(model)) || (m.video && m.video.has(model)) || (m.mesh && m.mesh.has(model)) || (m.music && m.music.has(model));
 }
 
 // Lane load = queued + running jobs already on that worker.
@@ -221,7 +221,7 @@ function laneLoad(workerId) {
 // worker that has the model; others go to 'local'. Snapshot onto the job (like
 // modelOverride) so a later config change can't redirect a queued job.
 function assignWorker(job) {
-  if (job.kind !== 'image' && job.kind !== 'video' && job.kind !== 'mesh') { job.workerId = 'local'; job.workerUrl = null; return; }
+  if (job.kind !== 'image' && job.kind !== 'video' && job.kind !== 'mesh' && job.kind !== 'music') { job.workerId = 'local'; job.workerUrl = null; return; }
   const model = (job.payload && job.payload.modelOverride && job.payload.modelOverride.comfyModel) || job.payload?.model || '';
   const all = comfyWorkers();
   if (!all.length) { job.workerId = 'local'; job.workerUrl = null; return; } // no comfy → Ollama image path
@@ -466,7 +466,7 @@ async function runJob(job) {
   } else if (job.kind === 'vedit') {
     await runVedit(job, sink);
   } else {
-    // image OR video OR mesh — generateImage routes to generateVideo / generateMesh
+    // image OR video OR mesh OR music — generateImage routes to generateVideo / generateMesh / generateMusic
     // by the selected model's capability set.
     // modelOverride pins the model captured at submit time, so switching the model
     // dropdown afterwards doesn't change a queued job's destination. job.workerUrl
@@ -739,7 +739,7 @@ function makeBgSink(job, controller) {
       // time + duration, so the bubble shows when it was actually produced (and the ⏱ how
       // long it took) — correct even if the page was closed for the whole render. Scoped to
       // pure generation kinds so it never touches the youtube-reply / analyze place() paths.
-      if (job.kind === 'image' || job.kind === 'video' || job.kind === 'audio' || job.kind === 'mesh') {
+      if (job.kind === 'image' || job.kind === 'video' || job.kind === 'audio' || job.kind === 'mesh' || job.kind === 'music') {
         const timing = serverJobTiming(job.serverJobId);
         if (timing && timing.finishedAt) msg.timestamp = timing.finishedAt;
         if (timing && timing.startedAt && timing.finishedAt && msg.genMs == null) msg.genMs = timing.finishedAt - timing.startedAt;
@@ -1026,7 +1026,7 @@ export function jumpToJob(jobId) {
 
 // ---- drawer UI -------------------------------------------------------------
 
-const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', mesh: '🧊', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄', vedit: '✂️' };
+const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', mesh: '🧊', music: '🎵', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄', vedit: '✂️' };
 
 export function openBgDrawer(flashJobId) {
   state.bgDrawerOpen = true;
@@ -1318,7 +1318,7 @@ function jobMachine(job) {
   }
   // 'local' lane (Ollama image / local ComfyUI / TTS): the comfy display already
   // carries the " (hostname)" suffix the server resolved.
-  if (job.kind === 'image' || job.kind === 'video' || job.kind === 'mesh') {
+  if (job.kind === 'image' || job.kind === 'video' || job.kind === 'mesh' || job.kind === 'music') {
     const d = (dom.comfyUrlDisplay?.textContent || '').trim();
     if (d) return d;
   }
@@ -1395,7 +1395,7 @@ function jobDetail(job) {
     if (q && q.trim()) return clipCtx(q, 44);
   } else if (job.kind === 'docfull') {
     return clipCtx(p.name || '', 44);
-  } else if (job.kind === 'image' || job.kind === 'video' || job.kind === 'mesh') {
+  } else if (job.kind === 'image' || job.kind === 'video' || job.kind === 'mesh' || job.kind === 'music') {
     const m = p.modelOverride || {};
     return clipCtx(m.comfyModel || m.imageModel || '', 44);
   } else if (job.kind === 'vedit') {

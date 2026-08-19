@@ -585,6 +585,43 @@ function meshTypeOf(model) {
   return null;
 }
 
+// MiniMax Music 3 — the one model here whose OUTPUT is audio and nothing else:
+// a structured caption + lyrics go in, a finished song (vocals, arrangement,
+// structure) comes out. Open weights, run locally like every other generator.
+//
+// Matched on the DiT filename. The other two files of the stack — the Qwen3-8B-based
+// text encoder (text_encoders/) and the DAV audio VAE (vae/) — are COMPANIONS resolved
+// off disk by music3Companions; they are enumerated through CLIPLoader/VAELoader, never
+// through the UNET/checkpoint lists a dropdown entry is drawn from, so they cannot
+// arrive here. `/dit/` is belt-and-braces for the day one of them moves.
+const MUSIC3_RE = /minimax.?music.?3/i;
+function audioTypeOf(model) {
+  if (!model) return null;
+  if (MUSIC3_RE.test(model) && /dit/i.test(model)) return "minimax-music3";
+  return null;
+}
+
+// The text encoder + audio VAE the Music 3 DiT cannot run without. Both are single
+// files with no siblings today; the encoder still goes through bestTier so a second
+// build (the 16.7 GB unquantised one upstream also publishes) collapses instead of
+// becoming a coin flip on disk order.
+async function music3Companions() {
+  const [clips, vaes] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name").catch(() => []),
+    comfyEnum("VAELoader", "vae_name").catch(() => []),
+  ]);
+  const clip = bestTier((clips || []).filter((n) => MUSIC3_RE.test(n) && /text.?encoder/i.test(n)));
+  const vae = (vaes || []).find((n) => MUSIC3_RE.test(n) && /dav/i.test(n));
+  const missing = [];
+  if (!clip) missing.push("text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors");
+  if (!vae) missing.push("vae/minimax_music3_dav.safetensors");
+  if (missing.length) {
+    throw new Error(`Missing MiniMax Music 3 companion files: ${missing.join(", ")}. `
+      + "Download them from https://huggingface.co/Comfy-Org/MiniMax-Music-3 into those folders on the ComfyUI machine.");
+  }
+  return { clip, vae };
+}
+
 function videoTypeOf(model) {
   if (!model) return null;
   // Video enhance (interpolate + upscale): a model-free post-process (frame interpolation +
@@ -769,6 +806,7 @@ const OUT_3D = "heykoko_3d";      // .glb — Hunyuan3D, TripoSplat, MoGe
 const OUT_PANO = "heykoko_pano";  // equirectangular 360° stills
 const OUT_IMG = "heykoko_img";    // stills — generation, instruction edits, upscale
 const OUT_VID = "heykoko_vid";    // video, every family
+const OUT_AUDIO = "heykoko_audio"; // songs — MiniMax Music 3 (audio-only output)
 const OUT_TMP = "heykoko_tmp";    // working files that are not results (auto-mask previews)
 
 // Rewrite every save node's filename_prefix to `<folder>/<model>`, just before the
@@ -1201,6 +1239,10 @@ const PRECISION_FREE = new Set([VIDEO_ENHANCE, IMAGE_UPSCALE, TRIPOSPLAT, MOGE_M
 function capsFor(name, group, type, entry) {
   if (name === IMAGE_UPSCALE || name === VIDEO_ENHANCE) return ["tool"];
   if (group === "mesh") return ["mesh"];
+  // Audio-only output. Deliberately NOT the "audio" tag: that one means "the video this
+  // makes has a soundtrack" and always sits beside a mode dot. Here the sound IS the
+  // result, and there is no mode dot to sit beside.
+  if (group === "audio") return ["music"];
   if (name === BERNINI_T2I) return ["image"];
   if (name === PANO_T2I) return ["image"];
   if (name === BERNINI_IMG_EDIT || name === BERNINI_IMG_SUBJECT) return ["edit"];
@@ -1330,6 +1372,11 @@ function isModelReady(name, group, type) {
   // Hunyuan3D 165K-vert mesh (+ PBR texturing), TripoSplat coloured .glb in 12s, and
   // the panorama split→merge→sphere in 7s.
   if (name === TRIPOSPLAT || name === MOGE_MESH || name === MOGE_PANORAMA) return true;
+  // MiniMax Music 3 — verified end-to-end on the live box (three runs, 60 s ceiling):
+  // caption-only, structural-tags-only and a no-vocal-clause control all completed and
+  // decoded to 44.1 kHz stereo. The LM ended one of them early at 51 s, which is the
+  // documented behaviour, not a failure.
+  if (MUSIC3_RE.test(name)) return true;
   const b = precisionBase(name);
   // Before the READY list: /hunyuan/ there would wrongly claim the 3D checkpoint
   // for HunyuanVideo's entry — match it explicitly instead.
@@ -1578,6 +1625,10 @@ async function proxyComfyModels(req, res) {
     // (.glb/.spz), so these must never fall into the pixel pipelines. Each chain is
     // gated on its node set (comfyHasNodes, same policy as MSR/Union: an entry that
     // always errors is worse than no entry) plus at least one weight on disk.
+    // Audio-only generators (MiniMax Music 3). Their own group: everything the video
+    // path offers — size, fps, frame grid, interpolation, codec — is meaningless here,
+    // and the result is a file you play rather than look at.
+    const audioModels = all.filter((n) => audioTypeOf(n)).map((n) => ({ name: n, type: audioTypeOf(n) }));
     const meshModels = [];
     const hunyuan3dCkpt = ckpts.find((n) => meshTypeOf(n) === "hunyuan3d");
     if (hunyuan3dCkpt && await comfyHasNodes(["EmptyLatentHunyuan3Dv2", "Hunyuan3Dv2Conditioning", "VAEDecodeHunyuan3D", "VoxelToMesh", "SaveGLB"])) {
@@ -1751,6 +1802,8 @@ async function proxyComfyModels(req, res) {
     const videoOut = dedupePrecision(videoModels, (m) => m.name, relabel);
     const editOut = dedupePrecision(editModels, (m) => m.name, relabel);
     const meshOut = dedupePrecision(meshModels, (m) => m.name, relabel);
+    // Music 3 ships fp16 + int8 builds of the same DiT — one entry, ⚙ picks the tier.
+    const audioOut = dedupePrecision(audioModels, (m) => m.name, relabel);
     // Image upscale (image HD): always offered — needs only an upscale model (checked
     // at gen time) + an attached image. Sits in the image model list as a sentinel.
     //
@@ -1777,6 +1830,8 @@ async function proxyComfyModels(req, res) {
     editOut.sort((a, b) => editRank(a.name) - editRank(b.name));
     videoOut.sort((a, b) => videoRank(a.name) - videoRank(b.name));
     meshOut.sort((a, b) => meshRank(a.name) - meshRank(b.name));
+    // One model in the group, so no rank table to keep: sort by the name shown.
+    audioOut.sort((a, b) => String(a.name).localeCompare(String(b.name)));
     // Per-model display metadata: a clean market name (precision stripped) and the
     // capability tags the frontend turns into coloured dots. Keyed by the value the
     // option carries, so lookup is O(1) regardless of which group it came from.
@@ -1845,6 +1900,7 @@ async function proxyComfyModels(req, res) {
     for (const m of editOut) setMeta(m.name, "edit", m.type, m);
     for (const m of videoOut) setMeta(m.name, "video", m.type, m);
     for (const m of meshOut) setMeta(m.name, "mesh", m.type, m);
+    for (const m of audioOut) setMeta(m.name, "audio", m.type, m);
     // MSR's precision tiers come from whichever pool its ACTIVE path uses, read by TIER
     // directly — the mxfp8 file's "_block32" suffix breaks the precisionBase grouping
     // tiersFor relies on, so that path would wrongly report fp8-only after mxfp8 is added.
@@ -1878,9 +1934,9 @@ async function proxyComfyModels(req, res) {
     // the progress estimate matches the graph the server builds; gpuName → shown in the
     // model picker. Both null when unknown.
     const { gib: vramGib, gpuName } = await comfyGpuInfo();
-    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, modelMeta, upscaleModels: upscaleModels.filter((n) => !isRestoreModel(n)), restoreModels: upscaleModels.filter(isRestoreModel), panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, krea2Loras: krea2.length ? krea2Loras : [], h3TextEncoders, hostname, vramGib, gpuName });
+    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, audioModels: audioOut, modelMeta, upscaleModels: upscaleModels.filter((n) => !isRestoreModel(n)), restoreModels: upscaleModels.filter(isRestoreModel), panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, krea2Loras: krea2.length ? krea2Loras : [], h3TextEncoders, hostname, vramGib, gpuName });
   } catch {
-    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [], krea2Loras: [], h3TextEncoders: [] });
+    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], audioModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [], krea2Loras: [], h3TextEncoders: [] });
   }
 }
 
@@ -3797,6 +3853,57 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     head = "ec";
   }
   wf["guide"].inputs.model = [head, 0];
+  return wf;
+}
+
+// ── MiniMax Music 3 ───────────────────────────────────────────────────────────
+// Caption + lyrics → a finished song. Flattened from ComfyUI's official
+// audio_minimax_music_3 template (its subgraph, minus the SeedNode and the
+// tiled/non-tiled ComfySwitchNode, which are UI conveniences), and verified
+// end-to-end on the live box.
+//
+// The one structural thing to know: the TEXT ENCODE node is not a text encoder in
+// the usual sense. It runs the autoregressive half of the model — a Qwen3-8B-based
+// LM that generates the song's acoustic token sequence — which is why it carries its
+// own seed / cfg_scale / top_k, and why it takes minutes rather than milliseconds.
+// The KSampler after it is the flow-matching stage that turns those tokens into a
+// latent. Two sampling stages, two sets of knobs, and the LM's are the ones that
+// decide what the song IS.
+//
+// Consequently the LENGTH is the model's to choose: the encode node reports how many
+// seconds it actually generated (its second output), and that — not the requested
+// maximum — is what sizes the empty latent. `max_duration` is a ceiling, and a song
+// that wants to end sooner does (verified: a 60 s request came back at 51 s). Wiring
+// the request's own number into the latent instead would pad the tail with whatever
+// the VAE makes of tokens the LM never produced.
+function buildMiniMaxMusic3({ model, caption, lyrics, seconds, seed, cfgScale, topK, steps, cfg, sampler, scheduler, comp, tiled, format }) {
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "minimax", device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "4": { class_type: "MiniMaxMusic3TextEncode", inputs: {
+      clip: ["2", 0], caption, lyrics,
+      seed, max_duration: seconds, cfg_scale: cfgScale, top_k: topK,
+    } },
+    // The negative branch is the zeroed positive — the template's own arrangement, and
+    // the only one available: there is no second caption slot to put a real negative in
+    // (a "negative caption" would have to be run through the LM as its own song).
+    "5": { class_type: "ConditioningZeroOut", inputs: { conditioning: ["4", 0] } },
+    "6": { class_type: "EmptyMiniMaxMusic3LatentAudio", inputs: { seconds: ["4", 1], batch_size: 1 } },
+    "7": { class_type: "KSampler", inputs: {
+      model: ["1", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0],
+      seed, steps, cfg, sampler_name: sampler, scheduler, denoise: 1,
+    } },
+    // Tiled decode trades a little speed (and a small risk of a seam at a tile
+    // boundary) for a much lower VRAM peak on long songs — off by default, per the
+    // template's own switch.
+    "8": tiled
+      ? { class_type: "VAEDecodeAudioTiled", inputs: { samples: ["7", 0], vae: ["3", 0], tile_size: 1536, overlap: 64 } }
+      : { class_type: "VAEDecodeAudio", inputs: { samples: ["7", 0], vae: ["3", 0] } },
+  };
+  wf["9"] = format === "mp3"
+    ? { class_type: "SaveAudioMP3", inputs: { audio: ["8", 0], filename_prefix: OUT_AUDIO, quality: "V0" } }
+    : { class_type: "SaveAudio", inputs: { audio: ["8", 0], filename_prefix: OUT_AUDIO } };
   return wf;
 }
 
@@ -6243,6 +6350,7 @@ async function waitForOutputs(promptId, signal, deadline) {
 async function generateComfyImage(req, res) {
   let clientGone = false; // set if the client disconnects before we respond
   let isVideoReq = false; // for a video-aware timeout message in the catch
+  let isAudioReq = false; // same, for the song path (minutes, not seconds — and no "steps" to cut)
   let precisionUsed = null; // tier(s) actually loaded — always reported
   let ltxLoraUsed = null;   // { name, strength } when an LTX LoRA was actually mounted
   let phantomTurboUsed = null; // { lora } when Phantom's step-distill LoRA was mounted
@@ -6400,6 +6508,8 @@ async function generateComfyImage(req, res) {
     const videoType = berniniImageTask ? null : videoTypeOf(model);
     // 3D mesh chains (Hunyuan3D / TripoSplat / MoGe) — output is a .glb/.spz FILE.
     const meshType = meshTypeOf(model);
+    // Audio-only chains (MiniMax Music 3) — output is a song, no picture at all.
+    const audioType = audioTypeOf(model);
 
     // "/imagine -s 10": a DURATION, resolved to a frame count HERE — the first point
     // where the model is a real filename, so the rate is the one that will actually be
@@ -6432,9 +6542,12 @@ async function generateComfyImage(req, res) {
     // long Wan Animate render out on a stable box; only a Stop / client disconnect ends it), N =
     // N seconds (the manual cap, NO upper clamp). Images keep the 10-min safety cap.
     isVideoReq = !!videoType;
+    isAudioReq = !!audioType;
     // Mesh rides the video timeout policy — Hunyuan3D's octree decode alone can take
-    // minutes, so the 10-min image safety cap is the wrong ceiling for it.
-    const timeoutMs = (videoType || meshType)
+    // minutes, so the 10-min image safety cap is the wrong ceiling for it. So does audio:
+    // a song costs roughly 3 s of compute per second of music, so the 5-minute maximum
+    // this model supports is a ~17-minute render — well past the image cap.
+    const timeoutMs = (videoType || meshType || audioType)
       ? (reqTimeout === 0 ? 0 : Math.max(60, reqTimeout || 1800) * 1000)
       : Math.min(600, Math.max(60, reqTimeout || 120)) * 1000;
     const deadline = timeoutMs ? Date.now() + timeoutMs : Infinity;
@@ -6458,6 +6571,7 @@ async function generateComfyImage(req, res) {
       // chunked graph is built, and also keeps the single-output tail rewrites off that
       // workflow (see below).
       let meshViewKind = null; // how the viewer should place its camera, set by the mesh branch
+      let musicInfo = null;    // what the song run actually asked for (reported on the done-line)
       let panoDims = null;     // the 360 recipe forces its own 2:1 size; the log should say so
       let panoOutpaintUsed = 0; // set only when a photo was grown into the panorama
       let panoLoraUsed = null;  // { name, strength } when an equirect LoRA was mounted
@@ -7370,6 +7484,36 @@ async function generateComfyImage(req, res) {
           imageName: panoImageName,
           outpaintDenoise: panoOutpaintUsed || 0.85,
           seamRepair: opts.panoSeamRepair !== false });
+      } else if (audioType) {
+        // MiniMax Music 3: caption (the prompt) + lyrics (⚙ / --lyrics) → a song.
+        // Attachments are ignored — this graph has no image, video or audio input.
+        const comp = await music3Companions();
+        // "--second 180" / ⚙ length-in-seconds is a CEILING here, not a target: the
+        // LM decides where the song ends and reports it back (see buildMiniMaxMusic3).
+        // The node's own range is 0.04–360 s; 120 is the template's default.
+        const wantSec = Number(opts.lengthSec) > 0 ? Number(opts.lengthSec)
+          : Number(opts.musicSeconds) > 0 ? Number(opts.musicSeconds) : 120;
+        const musicSec = Math.min(360, Math.max(0.04, wantSec));
+        // Sampling settings are the template's, NOT resolveConfig's — familyPreset has
+        // no branch for this model and would hand back the SD1.5 fallback
+        // (dpmpp_2m/karras/cfg 7/25 steps), which is a different sampler and four times
+        // the guidance. The ⚙ fields still override, one by one.
+        const musicSteps = opts.steps > 0 ? opts.steps : 30;
+        const musicCfg = opts.cfg != null ? Number(opts.cfg) : 1.7;
+        // The LM stage's own guidance / sampling width. Separate knobs from the
+        // sampler's above — they steer whether the song FOLLOWS the caption, which is
+        // the lever that matters most here.
+        const musicLmCfg = opts.musicCfgScale != null ? Number(opts.musicCfgScale) : 1.7;
+        const musicTopK = opts.musicTopK > 0 ? Math.round(opts.musicTopK) : 50;
+        workflow = buildMiniMaxMusic3({
+          model, caption: prompt || "", lyrics: typeof opts.lyrics === "string" ? opts.lyrics : "",
+          seconds: musicSec, seed, cfgScale: musicLmCfg, topK: musicTopK,
+          steps: musicSteps, cfg: musicCfg,
+          sampler: opts.sampler || "euler", scheduler: opts.scheduler || "simple",
+          comp, tiled: !!opts.musicTiledDecode, format: opts.musicFormat === "mp3" ? "mp3" : "flac",
+        });
+        musicInfo = { seconds: musicSec, steps: musicSteps, cfg: musicCfg, cfgScale: musicLmCfg, topK: musicTopK,
+          lyrics: !!(opts.lyrics && String(opts.lyrics).trim()), format: opts.musicFormat === "mp3" ? "mp3" : "flac" };
       } else if (meshType) {
         // 3D mesh generation — every chain is image-driven (no text conditioning
         // anywhere in these graphs), so an attached image is mandatory.
@@ -7849,7 +7993,7 @@ async function generateComfyImage(req, res) {
       // Give the result a home that says what it is and what made it. Deliberately
       // the last thing done to the graph — see stampOutputPrefix.
       stampOutputPrefix(workflow,
-        meshType ? OUT_3D : panoDims ? OUT_PANO : isVideoTail ? OUT_VID : OUT_IMG,
+        audioType ? OUT_AUDIO : meshType ? OUT_3D : panoDims ? OUT_PANO : isVideoTail ? OUT_VID : OUT_IMG,
         // The panorama recipe is a sentinel, not a checkpoint; name the file after
         // the checkpoint it actually generated with.
         panoDims ? (panoBase || model) : model);
@@ -7896,6 +8040,8 @@ async function generateComfyImage(req, res) {
       const outImages = [];
       const outVideos = [];
       const outMeshes = [], meshMimes = [], meshNames = [];
+      const outAudios = [];
+      let audioMime = "audio/flac";
       let videoMime = "video/mp4";
       let firstVideoBuf = null; // kept to ffprobe the real output frame count (animate chunking)
       // Incremental save (SCAIL-2 / Wan Animate): N silent clips → one video + source audio.
@@ -7938,9 +8084,10 @@ async function generateComfyImage(req, res) {
       for (const nodeId of Object.keys(outputs)) {
         if (skipNodes && skipNodes.has(nodeId)) continue; // already merged above
         // SaveVideo/SaveImage report under `images`; VHS_VideoCombine (⚙ H.265) reports
-        // the saved file under `gifs`; SaveGLB reports under `3d` (ui={"3d": results}) —
-        // all the same {filename,subfolder,type} shape for /view.
-        for (const img of [...(outputs[nodeId].images || []), ...(outputs[nodeId].gifs || []), ...(outputs[nodeId]["3d"] || [])]) {
+        // the saved file under `gifs`; SaveGLB reports under `3d` (ui={"3d": results});
+        // SaveAudio/SaveAudioMP3 report under `audio` — all the same
+        // {filename,subfolder,type} shape for /view.
+        for (const img of [...(outputs[nodeId].images || []), ...(outputs[nodeId].gifs || []), ...(outputs[nodeId]["3d"] || []), ...(outputs[nodeId].audio || [])]) {
           if (img.type === "temp") continue; // skip previews, keep final outputs
           const params = new URLSearchParams({
             filename: img.filename,
@@ -7952,7 +8099,13 @@ async function generateComfyImage(req, res) {
           const buf = Buffer.from(await viewResp.arrayBuffer());
           // 3D files first: TripoSplat saves BOTH a turntable mp4 and a .spz in one
           // run, so the mesh test must not be an else-arm of the video test.
-          if (/\.(glb|gltf|spz|ply|ksplat)$/i.test(img.filename)) {
+          if (/\.(flac|wav|mp3|opus|m4a|ogg)$/i.test(img.filename)) {
+            audioMime = /\.mp3$/i.test(img.filename) ? "audio/mpeg"
+              : /\.wav$/i.test(img.filename) ? "audio/wav"
+              : /\.(opus|ogg)$/i.test(img.filename) ? "audio/ogg"
+              : /\.m4a$/i.test(img.filename) ? "audio/mp4" : "audio/flac";
+            outAudios.push(buf.toString("base64"));
+          } else if (/\.(glb|gltf|spz|ply|ksplat)$/i.test(img.filename)) {
             outMeshes.push(buf.toString("base64"));
             meshMimes.push(/\.glb$/i.test(img.filename) ? "model/gltf-binary" : "application/octet-stream");
             meshNames.push(img.filename);
@@ -8053,6 +8206,23 @@ async function generateComfyImage(req, res) {
           videos: outVideos.length ? outVideos : undefined,
           videoMime: outVideos.length ? videoMime : undefined,
           model, seed, precisionNote, precisionUsed, imagesUsed });
+      } else if (audioType) {
+        // The song's REAL length, probed from the file — the model ends where it wants
+        // to (a 60 s ceiling came back at 51 s), so echoing the request here would be a
+        // number that is simply wrong. 0 when ffprobe is absent; the client shows nothing
+        // rather than a made-up duration.
+        const realSec = outAudios.length ? await probeAudioDuration(Buffer.from(outAudios[0], "base64")) : 0;
+        console.log(`${ts} [comfy-gen] model=${model}, mode=music:${audioType}, max=${musicInfo?.seconds}s`
+          + `${realSec ? ` → ${Math.round(realSec * 10) / 10}s` : ""}, lyrics=${musicInfo?.lyrics ? "yes" : "no"}, tracks=${outAudios.length}`);
+        if (!outAudios.length) {
+          const nodeIds = Object.keys(outputs || {}).join(", ") || "none";
+          sendJson(res, 502, { error: `ComfyUI finished but produced no audio file (output nodes: ${nodeIds}). Make sure the workflow includes a SaveAudio node, or retry.` });
+          return;
+        }
+        const mediaIds = toGallery("audio", outAudios, audioMime, { ...galleryMeta, seconds: realSec || undefined });
+        sendJson(res, 200, { audios: outAudios, mediaIds, audioMime, model, seed, precisionNote, precisionUsed,
+          seconds: realSec ? Math.round(realSec * 10) / 10 : undefined,
+          maxSeconds: musicInfo?.seconds, hasLyrics: musicInfo?.lyrics || undefined });
       } else if (videoType) {
         console.log(`${ts} [comfy-gen] model=${model}, mode=video:${videoType}${isImg2Img ? "(i2v)" : "(t2v)"}, ${videoDims ? videoDims.width + "x" + videoDims.height : "?"}, videos=${outVideos.length}`);
         // Ran to completion but no video file came back — tell the client why rather
@@ -8109,7 +8279,9 @@ async function generateComfyImage(req, res) {
     }
     if (clientGone || res.writableEnded) return; // client already disconnected — nothing to send
     if (error.name === "AbortError") {
-      sendJson(res, 504, { error: isVideoReq
+      sendJson(res, 504, { error: isAudioReq
+        ? "ComfyUI music generation timed out (exceeded the \u2699 \"timeout\" minutes). A song costs roughly 3 s of compute per second of music, so a 5-minute track needs ~20 minutes — raise \u2699 \"timeout\", set it to 0 for no limit, or ask for a shorter song (--second)."
+        : isVideoReq
         ? "ComfyUI video generation timed out (exceeded the ⚙ \"timeout\" minutes, default 4 hours). Increase ⚙ \"timeout\", or set it to 0 for no time limit (long videos keep running on the server until done); you can also lower the resolution (⚙ size) or reduce the frame count (⚙ Length)."
         : "ComfyUI image generation timed out. Please retry or reduce the step count." });
     } else if (error.isComfyError || (typeof error.message === "string" && error.message.startsWith("ComfyUI execution error"))) {

@@ -384,7 +384,7 @@ export async function refreshBgWorkers() {
   // uMesh belongs here for the same reason as the rest: leave a list out of the union and
   // its whole group silently vanishes from the dropdown on the multi-worker path while the
   // single-endpoint path still shows it.
-  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uMesh = new Map(), uUpscale = new Map(), uPano = new Map(), uPanoLora = new Map(), uLtxLora = new Map(), uKrea2Lora = new Map(), uH3Clip = new Map();
+  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uMesh = new Map(), uAudio = new Map(), uUpscale = new Map(), uPano = new Map(), uPanoLora = new Map(), uLtxLora = new Map(), uKrea2Lora = new Map(), uH3Clip = new Map();
   // Union of the collapsed-group representatives across lanes — without carrying this
   // through, a multi-precision image model would keep its token in the label on the
   // multi-endpoint path while the single-endpoint path hides it.
@@ -401,7 +401,7 @@ export async function refreshBgWorkers() {
   await Promise.all(targets.map(async (url) => {
     try {
       const d = await (await fetch(`/api/comfy-models?comfyUrl=${encodeURIComponent(url)}`)).json();
-      const models = d.models || [], editModels = d.editModels || [], videoModels = d.videoModels || [], meshModels = d.meshModels || [];
+      const models = d.models || [], editModels = d.editModels || [], videoModels = d.videoModels || [], meshModels = d.meshModels || [], audioModels = d.audioModels || [];
       for (const n of (d.upscaleModels || [])) if (!uUpscale.has(n)) uUpscale.set(n, n);
       for (const n of (d.panoBases || [])) if (!uPano.has(n)) uPano.set(n, n);
       for (const n of (d.panoLoras || [])) if (!uPanoLora.has(n)) uPanoLora.set(n, n);
@@ -417,8 +417,10 @@ export async function refreshBgWorkers() {
         // Needed by workerHasModel: without it a mesh job matches NO lane and falls back
         // to "any online one", which may well be a box without the 3D weights.
         mesh: new Set(meshModels.map((m) => m.name)),
+        // Same reasoning as mesh: a song job must land on a lane that has the weights.
+        music: new Set(audioModels.map((m) => m.name)),
       };
-      const online = (models.length + editModels.length + videoModels.length + meshModels.length) > 0;
+      const online = (models.length + editModels.length + videoModels.length + meshModels.length + audioModels.length) > 0;
       setBgWorkerStatus(url, { online, models: sets, hostname: d.hostname || "" });
       for (const n of (d.imageCollapsed || [])) uCollapsed.add(n);
       if (online && typeof d.vramGib === "number" && d.vramGib > 0) vrams.push(d.vramGib);
@@ -436,9 +438,10 @@ export async function refreshBgWorkers() {
       for (const m of editModels) if (!uEdit.has(m.name)) uEdit.set(m.name, m);
       for (const m of videoModels) if (!uVideo.has(m.name)) uVideo.set(m.name, m);
       for (const m of meshModels) if (!uMesh.has(m.name)) uMesh.set(m.name, m);
+      for (const m of audioModels) if (!uAudio.has(m.name)) uAudio.set(m.name, m);
     } catch { setBgWorkerStatus(url, { online: false }); }
   }));
-  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], meshModels: [...uMesh.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()], krea2Loras: [...uKrea2Lora.values()], h3TextEncoders: [...uH3Clip.values()], vramGib: vrams.length ? Math.min(...vrams) : null, devices });
+  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], meshModels: [...uMesh.values()], audioModels: [...uAudio.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()], krea2Loras: [...uKrea2Lora.values()], h3TextEncoders: [...uH3Clip.values()], vramGib: vrams.length ? Math.min(...vrams) : null, devices });
 }
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
@@ -463,6 +466,7 @@ function applyComfyModels(data) {
     const editModels = data.editModels || [];         // instruction-edit models (need a ref image)
     const videoModels = data.videoModels || [];       // text→video / image→video
     const meshModels = data.meshModels || [];         // image→3D model (.glb/.spz output)
+    const audioModels = data.audioModels || [];       // text→song (audio-only output)
     // Target box VRAM → Wan Animate per-pass frame cap (see animateSegmentCap). Undefined
     // on the multi-worker path unless the union computed a MIN; treat that as unknown.
     state.comfyVramGib = (typeof data.vramGib === "number" && data.vramGib > 0) ? data.vramGib : null;
@@ -474,6 +478,10 @@ function applyComfyModels(data) {
     state.comfyVideoModels = new Set(videoModels.map((m) => m.name));
     // 3D mesh models route to generateMesh and get a mesh bubble instead of pixels.
     state.comfyMeshModels = new Set(meshModels.map((m) => m.name));
+    // Audio-only models route to generateMusic and get an <audio> player instead.
+    // Named comfyMUSICModels deliberately: state.comfyAudioModels already exists and
+    // means the opposite kind of thing — VIDEO models whose clip carries a soundtrack.
+    state.comfyMusicModels = new Set(audioModels.map((m) => m.name));
     // Texturing needs an add-on on the ComfyUI machine; where it is missing the
     // server just makes a white mesh, so the ⚙ box stays hidden rather than lying.
     state.comfyMeshPaintModels = new Set(meshModels.filter((m) => m.paint).map((m) => m.name));
@@ -655,7 +663,7 @@ function applyComfyModels(data) {
       }
       dom.comfyParamKrea2Lora.value = state.comfyKrea2Loras.includes(savedKrea2) ? savedKrea2 : "";
     }
-    const allNames = [...models, ...editModels.map((m) => m.name), ...videoModels.map((m) => m.name), ...meshModels.map((m) => m.name)];
+    const allNames = [...models, ...editModels.map((m) => m.name), ...videoModels.map((m) => m.name), ...meshModels.map((m) => m.name), ...audioModels.map((m) => m.name)];
     dom.comfyModelSelect.innerHTML = "";
     // Capability-dot legend under the dropdown — only meaningful once there are models.
 
@@ -694,7 +702,7 @@ function applyComfyModels(data) {
       // The coloured circles are input→output MODES and read as a set. "audio" is a
       // different axis — an extra property of the output, not another mode — so it gets
       // a pictograph rather than one more colour in the row.
-      const CAP_DOT = { image: "🔵", edit: "🟠", t2v: "🟢", i2v: "🟡", v2v: "🟣", tool: "⚪", audio: "🔊", mesh: "🟤" };
+      const CAP_DOT = { image: "🔵", edit: "🟠", t2v: "🟢", i2v: "🟡", v2v: "🟣", tool: "⚪", audio: "🔊", mesh: "🟤", music: "🎵" };
       const capDots = (name) => {
         const caps = (meta[name] && meta[name].caps) || [];
         const dots = caps.map((c) => CAP_DOT[c] || "").join("");
@@ -797,6 +805,15 @@ function applyComfyModels(data) {
         for (const m of meshModels) addOption(group, m.name, m.label, bucket);
         dom.comfyModelSelect.appendChild(group);
         groups.push({ key: "comfy_3d_group", items: bucket });
+      }
+      if (audioModels.length) {
+        const group = document.createElement("optgroup");
+        group.dataset.i18n = "comfy_music_group";
+        group.label = t("comfy_music_group");
+        const bucket = [];
+        for (const m of audioModels) addOption(group, m.name, m.label, bucket);
+        dom.comfyModelSelect.appendChild(group);
+        groups.push({ key: "comfy_music_group", items: bucket });
       }
       // Alphabetical WITHIN each group (the groups themselves keep their fixed order:
       // image → edit → video → video-in → 3D). Sorting here rather than on the server is
@@ -1714,6 +1731,9 @@ export function updateComfyParamVisibility() {
   // so the prompt add-ons / guidance / denoise knobs would all silently do nothing.
   // Hunyuan3D is the one with a real KSampler, so it alone keeps the sampler row.
   const mesh = !!(state.comfyMeshModels && state.comfyMeshModels.has(m));
+  // Audio-only (MiniMax Music 3): no pixels anywhere, so every size / length / fps /
+  // interpolation / codec knob is meaningless — it gets its own four instead.
+  const music = !!(state.comfyMusicModels && state.comfyMusicModels.has(m));
   // Hunyuan3D and TripoSplat run real KSamplers; MoGe has none (pure estimation).
   const meshSampler = mesh && (/hunyuan[._-]?3d/i.test(m) || m === "triposplat");
   // Hide a field by its <label> (or by a shared wrapper when a pair lives on one
@@ -1723,6 +1743,8 @@ export function updateComfyParamVisibility() {
   // generic frame-length and fps fields are hidden for it (duration is picked in
   // SECONDS below, and the recipe's output rate is fixed at 30 fps).
   const dancer = /dancer/i.test(m);
+  for (const el of [dom.comfyParamLyrics, dom.comfyParamMusicSeconds, dom.comfyParamMusicCfg]) setVis(el, music);
+  setVis(dom.comfyParamMusicTiled, music, ".comfyParamCheck");
   for (const el of [dom.comfyParamDanceStyle, dom.comfyParamDanceAmplitude, dom.comfyParamDanceDuration]) setVis(el, dancer);
   setVis(dom.comfyParamDanceQuality, dancer, ".comfyParamCheck");
   // Video timing — gen length is diffusion-only (an upscale / VFI keeps the source's own length).
@@ -1739,7 +1761,7 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamFps, video && !dancer && fpsTunable && !/video-enhance/i.test(m));
   setVis(dom.comfyParamTargetFps, video, ".comfyParamRow");          // frame-interpolation + interpolation-engine row
   // Timeout: mesh renders ride the video timeout policy (Hunyuan3D can take minutes).
-  setVis(dom.comfyParamTimeout, video || mesh);
+  setVis(dom.comfyParamTimeout, video || mesh || music);   // a 5-minute song is a ~20-minute render
   // 3D knobs. meshDetail drives BOTH meshers — Hunyuan3D's voxel octree and
   // SplatToMesh's density grid — and TripoSplat always meshes now, so this is
   // simply "the two mesh models".
@@ -1843,21 +1865,25 @@ export function updateComfyParamVisibility() {
   // no equivalent node), so it stays with that entry.
   setVis(dom.comfyParamSharpen, /video-enhance/i.test(m));
   // Image-edit / txt2img only.
-  setVis(dom.comfyParamImageCfg, diffusion && !video && !mesh);
+  setVis(dom.comfyParamImageCfg, diffusion && !video && !mesh && !music);
   // Quantisation preference — diffusion models only (the upscale pipelines load an
   // upscale model, which has no precision variants; the mesh chains ship one file each).
   setVis(dom.comfyParamPrecision, diffusion && !mesh);
   if (diffusion && !mesh) syncPrecisionOptions(m);
   // Prompt add-ons — every diffusion model reads them (an upscale pipeline takes no
   // prompt, and the mesh chains have no text conditioning at all).
-  setVis(dom.comfyParamPositive, diffusion && !mesh);
+  // …except a song: the caption is a STRUCTURED document (Global Metadata / Vocal
+  // Details / Arrangement), and silently gluing an add-on line onto the end of it is
+  // how a carefully written arrangement section acquires "masterpiece, 8k".
+  setVis(dom.comfyParamPositive, diffusion && !mesh && !music);
   // Empty set = a server too old to send the flag; don't hide the box for every video
   // model then (same guard as cfg / fps above).
   const negTunable = !video || !state.comfyNegativeTunable?.size || state.comfyNegativeTunable.has(m);
-  setVis(dom.comfyParamNegative, diffusion && !mesh && negTunable);
+  // Music 3 has no negative branch either — its negative IS the zeroed positive.
+  setVis(dom.comfyParamNegative, diffusion && !mesh && !music && negTunable);
   // Guidance + img2img denoise are IMAGE-only: no video builder accepts either
   // (resolveVideoConfig doesn't even carry them).
-  for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video && !mesh);
+  for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video && !mesh && !music);
   // Sampler / scheduler / steps / cfg: honoured by every image model, but only by the
   // preset-driven video models. SCAIL-2 / Wan Animate / bernini hardcode a schedule
   // bound to their distill LoRA and ignore these — so hide rather than lie. Of the
@@ -2014,6 +2040,10 @@ function initComfyParamsModal() {
     dom.comfyParamLength,
     dom.comfyParamFps,
     dom.comfyParamTimeout,
+    dom.comfyParamLyrics,
+    dom.comfyParamMusicSeconds,
+    dom.comfyParamMusicCfg,
+    dom.comfyParamMusicTiled,
     dom.comfyParamMeshDetail,
     dom.comfyParamShapeTokens,
     dom.comfyParamMeshGaussians,

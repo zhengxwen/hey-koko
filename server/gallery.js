@@ -210,6 +210,9 @@ function record({ kind, mime, b64, buffer, meta = {} }) {
     height: meta.height,
     fps: meta.fps,
     length: meta.length,
+    // Audio has no pixels, so its "size" is its DURATION. Kept as its own field rather
+    // than folded into `length`, which counts video FRAMES.
+    seconds: meta.seconds,
     precisionUsed: meta.precisionUsed,
     params: meta.params,
     conversationId: meta.conversationId,
@@ -525,6 +528,9 @@ function ffprobe() {
 // frame rate and a length. Anything missing is what backfill goes looking for.
 function missingSpecs(e) {
   if (!e) return [];
+  // Audio has no pixel size to be missing. Without this, every song stays permanently
+  // "incomplete" and backfill re-probes it on every sweep, finding nothing each time.
+  if (e.kind === "audio") return e.seconds ? [] : ["seconds"];
   const want = ["width", "height"];
   if (e.kind === "video") want.push("fps", "length");
   return want.filter((k) => !e[k]);
@@ -542,7 +548,10 @@ async function probeSpecs(absPath) {
   if (!bin) return {};
   const out = await new Promise((resolve) => {
     execFile(bin, ["-v", "error", "-select_streams", "v:0",
-      "-show_entries", "stream=width,height,r_frame_rate,nb_frames,duration",
+      // format=duration as well as the video stream's: an AUDIO file has no v:0 at all,
+      // so the stream half comes back empty and the container duration is the only
+      // thing there is to learn from it.
+      "-show_entries", "stream=width,height,r_frame_rate,nb_frames,duration:format=duration",
       "-of", "default=noprint_wrappers=1", absPath],
       { timeout: 20000 }, (err, stdout) => resolve(err ? "" : String(stdout)));
   });
@@ -562,6 +571,10 @@ async function probeSpecs(absPath) {
     specs.fps = Math.round(fps * 100) / 100;
     specs.length = nb > 0 ? nb : Math.round(fps * dur);
   }
+  // No video stream → the duration that came back is the container's, i.e. an audio
+  // file's playing time. (`kv.duration` holds whichever of the two ffprobe printed
+  // last; with no v:0 stream only the format one is printed at all.)
+  if (!(w > 0) && dur > 0) specs.seconds = Math.round(dur * 10) / 10;
   return specs;
 }
 

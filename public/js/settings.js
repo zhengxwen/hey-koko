@@ -60,6 +60,10 @@ export function saveCurrentSettings() {
         upscaleDenoise: dom.comfyParamUpscaleDenoise?.value || "",
         upscaleModel: dom.comfyParamUpscaleModel?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
+        lyrics: dom.comfyParamLyrics?.value || "",
+        musicSeconds: dom.comfyParamMusicSeconds?.value || "",
+        musicCfg: dom.comfyParamMusicCfg?.value || "",
+        musicTiled: dom.comfyParamMusicTiled?.checked || false,
         meshDetail: dom.comfyParamMeshDetail?.value || "",
         shapeTokens: dom.comfyParamShapeTokens?.value || "",
         meshGaussians: dom.comfyParamMeshGaussians?.value || "",
@@ -300,6 +304,10 @@ export function loadSavedSettings() {
     // Best-effort — applyComfyModels re-applies this once the option list has loaded.
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
+    if (dom.comfyParamLyrics) dom.comfyParamLyrics.value = cp.lyrics || "";
+    if (dom.comfyParamMusicSeconds) dom.comfyParamMusicSeconds.value = cp.musicSeconds || "";
+    if (dom.comfyParamMusicCfg) dom.comfyParamMusicCfg.value = cp.musicCfg || "";
+    if (dom.comfyParamMusicTiled) dom.comfyParamMusicTiled.checked = !!cp.musicTiled;
     if (dom.comfyParamMeshDetail) dom.comfyParamMeshDetail.value = cp.meshDetail || "";
     if (dom.comfyParamShapeTokens) dom.comfyParamShapeTokens.value = cp.shapeTokens || "";
     if (dom.comfyParamMeshGaussians) dom.comfyParamMeshGaussians.value = cp.meshGaussians || "";

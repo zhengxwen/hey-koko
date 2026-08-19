@@ -76,6 +76,10 @@ export const dom = {
   comfyParamTargetFps: document.querySelector("#comfyParamTargetFps"),
   comfyParamInterpMethod: document.querySelector("#comfyParamInterpMethod"),
   comfyParamTimeout: document.querySelector("#comfyParamTimeout"),
+  comfyParamLyrics: document.querySelector("#comfyParamLyrics"),
+  comfyParamMusicSeconds: document.querySelector("#comfyParamMusicSeconds"),
+  comfyParamMusicCfg: document.querySelector("#comfyParamMusicCfg"),
+  comfyParamMusicTiled: document.querySelector("#comfyParamMusicTiled"),
   comfyParamMeshDetail: document.querySelector("#comfyParamMeshDetail"),
   comfyParamShapeTokens: document.querySelector("#comfyParamShapeTokens"),
   comfyParamPaintMesh: document.querySelector("#comfyParamPaintMesh"),
@@ -244,6 +248,8 @@ export const state = {
   bgDrawerOpen: false,               // whether the Background Jobs drawer is visible
   comfyModelGroups: [],              // [{key,items}] per model type — feeds the 4-column picker
   comfyVideoModels: new Set(),       // ComfyUI model names that generate video
+  comfyMusicModels: new Set(),       // ComfyUI model names whose output is AUDIO ONLY (MiniMax Music 3).
+                                     // NOT comfyAudioModels — that one is video models whose clip has sound.
   comfySamplerTunable: new Set(),    // video models whose ⚙ sampler/steps/cfg reach the graph (server-decided)
   comfyVideoInModels: new Set(),     // ComfyUI video models that need a SOURCE video (fps follows source)
   comfyVideoOptionalModels: new Set(), // …of those, the ones a source video is OPTIONAL for (bernini: image alone → i2v)

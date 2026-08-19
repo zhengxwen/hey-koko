@@ -147,6 +147,8 @@ Usage
   imagine.js [options] <prompt words...>
   imagine.js --cmd "/imagine -m minimax-h3-r2v -s 6 a cat dances"
   imagine.js --batch shots.jsonl [options]
+  imagine.js -m minimax-music3 -s 120 "Global Metadata: lo-fi hip-hop, 78 BPM…" \\
+             --lyrics @song.txt                a song (flac); --lyrics is optional
   imagine.js --add clip.mp4 photo.jpg          file existing media, no generation
   imagine.js --list-models [filter]
   imagine.js --scan                            find ComfyUI machines on the network
@@ -161,8 +163,19 @@ Inputs
       --video <path>       source or reference video
       --audio <path>       source or reference audio
 
+Music (-m minimax-music3)
+      --lyrics <text|@file>  song words. Section tags drive the STRUCTURE: [Intro] [Verse]
+                           [Chorus] [Bridge] [Instrumental] [Solo] [Outro]. Leave it out
+                           (or use tags with no words) for an instrumental — and say so in
+                           the caption too, e.g. "the piece is entirely instrumental, no
+                           vocals, no wordless humming".
+                           The PROMPT is the caption: write it as Global Metadata /
+                           Vocal Details / Arrangement. --second is a CEILING; the model
+                           ends the song where it wants to (max 360).
+
 Generation
-  -s, --second <n>         clip duration in seconds (server snaps to the model's frame grid)
+  -s, --second <n>         clip duration in seconds (server snaps to the model's frame grid;
+                           on a music model it is the maximum song length)
       --length <n>         frame count instead of --second
       --size <WxH|preset>  ${Object.keys(SIZE_PRESETS).join(" / ")}
       --seed <n>           fixed seed (a batch uses seed, seed+1, …)
@@ -237,6 +250,14 @@ function parseArgv(argv) {
       case "--seed": o.seed = parseInt(need(i, a), 10); i++; break;
       case "--steps": o.steps = parseInt(need(i, a), 10); i++; break;
       case "--no": o.negative = need(i, a); i++; break;
+      // Song lyrics (MiniMax Music 3). A shell is a bad place to type verses, so
+      // "@path" reads them from a file — which is how anyone with more than a chorus
+      // will actually pass them.
+      case "--lyrics": {
+        const v = need(i, a); i++;
+        o.options.lyrics = v.startsWith("@") ? fs.readFileSync(path.resolve(v.slice(1)), "utf8") : v;
+        break;
+      }
       case "-n": case "--count": o.count = parseInt(need(i, a), 10); i++; break;
       case "-e": case "--enhance": o.enhance = true; break;
       case "--enhance-model": o.enhanceModel = need(i, a); i++; break;
@@ -305,6 +326,8 @@ async function loadCatalogue(server, comfyUrl) {
   for (const m of d.editModels || []) add(m.name, "edit", m);
   for (const m of d.videoModels || []) add(m.name, m.needsVideo ? "video-in" : "video", m);
   for (const m of d.meshModels || []) add(m.name, "3d", m);
+  // Audio-only generators (MiniMax Music 3): a prompt goes in, a song file comes out.
+  for (const m of d.audioModels || []) add(m.name, "music", m);
   // The upscale / restore weights are not models you generate with — they are the
   // choices for --upscale / --restore on the two enhance tools. Listed all the same:
   // without them those flags can only be filled by guessing a filename.
@@ -541,6 +564,7 @@ function sniffDims(buf) {
 }
 
 function extFor(data) {
+  if (data.audios) return /mpeg|mp3/i.test(data.audioMime || "") ? "mp3" : "flac";
   if (data.videos) return /webm/i.test(data.videoMime || "") ? "webm" : "mp4";
   if (data.meshes) return (data.meshNames && /\.spz$/i.test(data.meshNames[0])) ? "spz" : "glb";
   return "png";
@@ -553,7 +577,20 @@ async function runTask(task, cli, ctx) {
   if (model.tier) options.precision = model.tier;
 
   const isVideo = model.group === "video" || model.group === "video-in";
+  // Audio-only: no attachment reaches this graph, and the prompt is not decorative —
+  // it IS the music description the model conditions on.
+  const isMusic = model.group === "music";
   const images = (task.images || []).map(readB64);
+
+  if (isMusic) {
+    if (!task.prompt) {
+      throw new Error(`${model.id} needs a caption: describe the music — style, tempo, mood, `
+        + "vocals, arrangement. Add the words with --lyrics <text|@file>.");
+    }
+    if (images.length || task.video || task.audio) {
+      throw new Error(`${model.id} takes no attachments — it generates from the caption and lyrics alone`);
+    }
+  }
 
   // The r2v family accepts images, a clip and audio interchangeably as references —
   // catch "nothing attached" here rather than after the request has travelled.
@@ -568,7 +605,13 @@ async function runTask(task, cli, ctx) {
   }
 
   let prompt = task.prompt || "";
-  if (task.enhance && prompt) {
+  // --enhance rewrites a prompt for a picture. A structured music caption (Global
+  // Metadata / Vocal Details / Arrangement) is a different document, and there is no
+  // music-aware rewriter behind /api/enhance-prompt — running it would quietly turn
+  // the caption into an image prompt. Skip it and say so, rather than damage the input.
+  if (task.enhance && prompt && isMusic) {
+    if (!cli.quiet && !cli.json) process.stderr.write("ℹ --enhance skipped: no music-aware prompt rewriter\n");
+  } else if (task.enhance && prompt) {
     const llm = cli.enhanceModel || ctx.chatModel;
     if (!llm) throw new Error("--enhance needs a chat model (--enhance-model <name>)");
     const r = await postJson("/api/enhance-prompt",
@@ -680,7 +723,7 @@ async function runTask(task, cli, ctx) {
       finally { stop(); }
       data = r.json;
       if (!data) throw new Error(`server returned non-JSON (${r.status}): ${r.text.slice(0, 300)}`);
-      if (data.noop || (r.status === 200 && (data.videos || data.images || data.meshes))) break;
+      if (data.noop || (r.status === 200 && (data.videos || data.images || data.meshes || data.audios))) break;
       const msg = data.error || data.detail || `generation failed (${r.status})`;
       // VRAM exhaustion often outlives the failed job (back-to-back renders leave the
       // card fragmented), so ONE automatic ComfyUI /free + retry heals it — and costs
@@ -708,7 +751,7 @@ async function runTask(task, cli, ctx) {
       else if (!cli.quiet) process.stderr.write(`ℹ ${data.message || "nothing to do"}\n`);
       continue;
     }
-    const arr = data.videos || data.images || data.meshes;
+    const arr = data.videos || data.images || data.meshes || data.audios;
     const ext = extFor(data);
     const elapsed = Math.round((Date.now() - started) / 1000);
     for (let k = 0; k < arr.length; k++) {
@@ -746,15 +789,16 @@ async function runTask(task, cli, ctx) {
         prompt,
         // Duration is invariant under re-timing, so it is computed from the frames and
         // the rate the MODEL produced, not from the rate the file ended up at.
-        seconds: (data.length && data.fps) ? Math.round((data.length / data.fps) * 10) / 10 : undefined,
+        seconds: data.seconds !== undefined ? data.seconds
+          : (data.length && data.fps) ? Math.round((data.length / data.fps) * 10) / 10 : undefined,
         ...(fpsNote ? { fpsNote } : {}),
         elapsedSec: elapsed,
       };
       results.push(rec);
       if (cli.json) process.stdout.write(JSON.stringify(rec) + "\n");
       else if (!cli.quiet) {
-        const size = rec.width ? `${rec.width}×${rec.height}` : "?";
-        const dur = rec.seconds ? `, ${rec.seconds}s` : "";
+        const size = rec.width ? `${rec.width}×${rec.height}` : data.audios ? "" : "?";
+        const dur = rec.seconds ? `${size ? ", " : ""}${rec.seconds}s` : "";
         process.stderr.write(`✓ ${file}  (${size}${dur}, seed ${data.seed}, ${elapsed}s)\n`);
       }
     }
@@ -1025,7 +1069,7 @@ async function main() {
       return 0;
     }
     const w = Math.max(4, ...rows.map((m) => m.id.length));
-    for (const g of ["image", "edit", "video", "video-in", "3d"]) {
+    for (const g of ["image", "edit", "video", "video-in", "3d", "music"]) {
       const inGroup = rows.filter((m) => m.group === g);
       if (!inGroup.length) continue;
       process.stdout.write(`\n${g}\n`);

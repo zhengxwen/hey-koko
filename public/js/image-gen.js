@@ -83,6 +83,15 @@ function comfyOverrides() {
   // 3D mesh knobs (each read by exactly one chain; harmless elsewhere).
   // meshDetail is shared: Hunyuan3D's octree_resolution and SplatToMesh's density
   // grid are the same idea, so one knob drives whichever mesher is running.
+  // MiniMax Music 3 knobs. lyrics is sent even when blank-looking is fine — an empty
+  // string is dropped, because "" and "absent" mean the same thing to the graph.
+  const lyrics = (dom.comfyParamLyrics?.value || "").trim();
+  if (lyrics) ov.lyrics = dom.comfyParamLyrics.value;   // raw, not trimmed: leading tags/blank lines are structure
+  const musicSeconds = num(dom.comfyParamMusicSeconds?.value);
+  if (musicSeconds !== undefined) ov.musicSeconds = musicSeconds;
+  const musicCfgScale = num(dom.comfyParamMusicCfg?.value);
+  if (musicCfgScale !== undefined) ov.musicCfgScale = musicCfgScale;
+  if (dom.comfyParamMusicTiled?.checked) ov.musicTiledDecode = true;
   const meshDetail = num(dom.comfyParamMeshDetail?.value);
   if (meshDetail !== undefined) ov.meshDetail = meshDetail;
   const shapeTokens = num(dom.comfyParamShapeTokens?.value);
@@ -1855,6 +1864,158 @@ export async function generateMesh(parsed, model, tabId = state.activeTabId, ins
   }
 }
 
+// Music generation (MiniMax Music 3) — the leanest of the three specialised paths:
+// no attachments, no size, no frame grid, no codec tail. The prompt is the CAPTION
+// (style / mood / vocals / arrangement) and ⚙ "Lyrics" carries the words; the result
+// is a song, rendered with the same <audio> player /voice results use.
+export async function generateMusic(parsed, model, tabId = state.activeTabId, insertIndex = -1, sink = null, comfyUrl = null) {
+  const tab = getTab(tabId);
+  if (!tab) return;
+  const comfyHost = ((comfyUrl || dom.comfyUrlDisplay?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim()).replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  const genStart = Date.now();
+  if (!sink) sink = foregroundSink({ tabId, insertIndex, setGenerating: _setGenerating, renderChat: _renderChat, saveChat, getTab });
+
+  const abortController = { signal: sink.signal };
+  sink.lock(true);
+  setAvatarState("thinking");
+  const musicModelLabel = resolvedModelName(model);
+  sink.start("music", `${t("msg_generatingMusic")}${musicModelLabel ? ` · ${musicModelLabel}` : ""}`);
+  await new Promise((r) => setTimeout(r, 0)); // let the bubble paint first
+
+  // ⚙ overrides fill whatever /imagine flags didn't set. Pixel dimensions are dropped:
+  // this graph has no picture in it at all.
+  const reqOptions = { ...parsed.options };
+  delete reqOptions.width;
+  delete reqOptions.height;
+  const ov = comfyOverrides();
+  for (const k of Object.keys(ov)) {
+    if (reqOptions[k] === undefined) reqOptions[k] = ov[k];
+  }
+
+  // The caption is not decorative here — it is the whole conditioning. Fail before the
+  // round trip rather than let the server 400 it.
+  if (!(parsed.prompt || "").trim()) {
+    sink.clearBubble();
+    sink.fail(t("msg_musicNeedsPrompt"));
+    sink.place({ role: "assistant", content: t("msg_musicNeedsPrompt"), timestamp: Date.now() });
+    setAvatarState("idle");
+    sink.done(); sink.cleanup();
+    return;
+  }
+
+  // Songs ride the video timeout policy server-side; empty ⚙ field → 1 h, which covers
+  // the 5-minute maximum (~20 min of compute) with room to spare.
+  const tMin = reqOptions.timeoutMin;
+  const musicTimeout = (tMin === undefined) ? 3600 : (tMin > 0 ? Math.round(tMin * 60) : 0);
+
+  // Live progress. Only the KSampler stage reports steps; the LM stage before it — which
+  // is most of the wall clock — reports nothing, so the pulse fallback carries it.
+  const clientId = (sink.server && sink.server.comfyClientId)
+    || (crypto.randomUUID ? crypto.randomUUID() : `hk-${Date.now()}-${Math.random()}`);
+  let _progStall = null;
+  sink.indeterminate(true);
+  const unsubscribe = subscribeComfyProgress(comfyHost, clientId, {
+    onProgress: (value, max) => {
+      if (!max) return;
+      sink.indeterminate(false);
+      sink.progress(value, max);
+      clearTimeout(_progStall);
+      _progStall = setTimeout(() => sink.indeterminate(true), 2500);
+    },
+  });
+  abortController.signal.addEventListener("abort", () => interruptComfy(comfyHost), { once: true });
+
+  const count = Math.min(Math.max(parsed.count || 1, 1), 8);
+  // One song = one message: `generatedAudio` is a SCALAR slot (see utils.js AUDIO_GROUP),
+  // unlike the image/video arrays, so a batch cannot share a bubble. Streaming them as
+  // they finish is right when the sink appends; when it splices at a fixed index
+  // (resend-in-place) each new message would land ABOVE the previous one, so that case
+  // buffers and flushes in reverse — which comes out in order.
+  const appends = !(insertIndex >= 0);
+  const buffered = [];
+  let placed = 0;
+
+  const emit = (msg) => { if (appends) sink.place(msg); else buffered.push(msg); placed++; };
+
+  const failFatal = (errText) => {
+    sink.clearBubble();
+    const failMsg = t("img_musicGenFailed", { err: errText || t("img_noAudioReturned") });
+    sink.fail(failMsg);
+    sink.place({ role: "assistant", content: failMsg, timestamp: Date.now() });
+    setAvatarState("idle");
+  };
+
+  const requestSong = (perOptions, isFirstSubRun) => {
+    const body = {
+      model,
+      prompt: (parsed.prompt || "").trim(),
+      options: perOptions,
+      timeout: musicTimeout,
+      clientId,
+      comfyUrl: comfyHost || undefined,
+    };
+    return sink.server
+      ? comfyFetch(body, { bgJob: isFirstSubRun ? sink.server.bgJob : null, kind: "music", comfyUrl: comfyHost, conversationId: sink.server.conversationId, msgId: sink.server.msgId, label: sink.server.label, clientId, signal: abortController.signal })
+      : fetch("/api/generate-comfy", { method: "POST", headers: { "Content-Type": "application/json" }, signal: abortController.signal, body: JSON.stringify(body) });
+  };
+
+  try {
+    for (let i = 0; i < count; i++) {
+      if (abortController.signal.aborted) break;
+      if (i > 0) sink.progress(0, 1);
+      const perOptions = { ...reqOptions };
+      if (perOptions.seed !== undefined) perOptions.seed = reqOptions.seed + i;
+      if (count > 1) sink.label(`${t("msg_generatingMusic")}${musicModelLabel ? ` · ${musicModelLabel}` : ""} (${i + 1}/${count})`);
+      const resp = await requestSong(perOptions, i === 0);
+      const data = await resp.json();
+      if (!resp.ok || !data.audios || !data.audios.length) {
+        if (!placed) { failFatal(data.error || data.detail); return; }
+        break;
+      }
+      const plang = getPromptLanguage();
+      const usedModel = stripModelExt(data.model) || musicModelLabel;
+      // The model chooses where the song ends, so the length is REPORTED, never assumed.
+      const dur = data.seconds ? `${data.seconds}s` : "?";
+      let doneLine = t("msg_musicDone", { dur }, plang)
+        + (count > 1 ? ` ${i + 1}/${count}` : "")
+        + (usedModel ? ` · ${usedModel}` : "")
+        + (data.precisionUsed ? ` · ${data.precisionUsed}` : "");
+      if (typeof data.seed === "number") doneLine += `\n${t("msg_seedUsed", { seed: data.seed }, plang)}`;
+      emit({
+        role: "assistant",
+        content: doneLine,
+        // Same fields the /voice player reads: a gallery URL when the server filed it,
+        // the raw base64 otherwise.
+        generatedAudio: (data.mediaIds && data.mediaIds[0]) ? galleryUrl(data.mediaIds[0]) : data.audios[0],
+        audioMime: data.audioMime || "audio/flac",
+        imagePrompt: parsed.prompt || "",
+        timestamp: Date.now(),
+        genMs: Date.now() - genStart,
+      });
+      if (data.mediaIds && data.mediaIds[0]) {
+        try { window.dispatchEvent(new CustomEvent("hk-media-added", { detail: { ids: [data.mediaIds[0]] } })); } catch { /* no DOM */ }
+      }
+    }
+    for (const msg of buffered.reverse()) sink.place(msg);
+    sink.clearBubble();
+    if (placed) showExpression("happy");
+  } catch (error) {
+    sink.clearBubble();
+    if (error.name !== "AbortError" && !placed) {
+      const errMsg = t("img_musicGenFailed", { err: error.message });
+      sink.fail(errMsg);
+      sink.place({ role: "assistant", content: errMsg, timestamp: Date.now() });
+    }
+    setAvatarState("idle");
+  } finally {
+    clearTimeout(_progStall);
+    sink.clearBubble();
+    sink.done();
+    unsubscribe();
+    sink.cleanup();
+  }
+}
+
 export async function generateImage(parsedInput, tabId = state.activeTabId, insertIndex = -1, initImages = null, initVideo = null, maskB64 = null, sink = null, modelOverride = null, refMasks = null) {
   const parsedList = Array.isArray(parsedInput) ? parsedInput : [parsedInput];
   const tab = getTab(tabId);
@@ -1890,6 +2051,12 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // path — mesh models are in neither set, but the order documents the intent).
   if (!imageModel && comfyModel && state.comfyMeshModels && state.comfyMeshModels.has(comfyModel)) {
     return generateMesh(parsedList[0], comfyModel, tabId, insertIndex, refImages, sink, ovComfyUrl, maskB64);   // this branch already implies the ComfyUI path
+  }
+
+  // A selected ComfyUI AUDIO-ONLY model routes to the music path (no attachments, and
+  // the result is a song rather than pixels).
+  if (!imageModel && comfyModel && state.comfyMusicModels && state.comfyMusicModels.has(comfyModel)) {
+    return generateMusic(parsedList[0], comfyModel, tabId, insertIndex, sink, ovComfyUrl);
   }
 
   // A selected ComfyUI VIDEO model routes to the dedicated video path. Pass the

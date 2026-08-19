@@ -142,6 +142,8 @@ function paintTileRating(id, rating) {
 function specsLabel(e) {
   const bits = [];
   if (e.width && e.height) bits.push(`${e.width}×${e.height}`);
+  // A song has no pixel size — its duration is the spec that answers the same question.
+  if (e.kind === "audio" && e.seconds) bits.push(`${e.seconds}s`);
   if (e.kind === "video") {
     if (e.fps) bits.push(`${e.fps}fps`);
     if (e.length) bits.push(e.fps ? `${(e.length / e.fps).toFixed(1)}s` : `${e.length}f`);
@@ -603,6 +605,7 @@ function specLine(e) {
   const bits = [];
   const ext = (e.path.split(".").pop() || "").toUpperCase();
   if (e.width && e.height) bits.push(`${e.width}×${e.height}`);
+  if (e.kind === "audio" && e.seconds) bits.push(`${e.seconds}s`);
   if (ext) bits.push(ext);
   if (e.kind === "video") {
     if (e.fps) bits.push(`${e.fps}fps`);
@@ -1353,7 +1356,8 @@ function renderDetail() {
     // Frames are what the ledger stores and what a render is configured in; seconds are
     // what the clip is actually discussed in. Show both rather than making anyone divide.
     [t("gal_fLength"), e.kind === "video" && e.length
-      ? `${e.length}f${e.fps ? ` @${e.fps}fps · ${(e.length / e.fps).toFixed(1)}s` : ""}` : ""],
+      ? `${e.length}f${e.fps ? ` @${e.fps}fps · ${(e.length / e.fps).toFixed(1)}s` : ""}`
+      : e.kind === "audio" && e.seconds ? `${e.seconds}s` : ""],
     [t("gal_fPrecision"), e.precisionUsed],
     [t("gal_fWhen"), fmtDate(e.ts)],
     [t("gal_fBytes"), fmtSize(e.bytes)],
@@ -1467,8 +1471,11 @@ function renderDetail() {
 // migration pulled out of an archive — and the ledger cannot invent them.
 function specsMissing(e) {
   if (!e) return false;
+  // Audio has a duration to learn, but no pixel size — asking for width/height there
+  // would make every song permanently "incomplete" and re-ask on every click.
+  if (e.kind === "audio") return !e.seconds;
   const want = e.kind === "video" ? ["width", "height", "fps", "length"] : ["width", "height"];
-  return e.kind !== "mesh" && e.kind !== "audio" && want.some((k) => !e[k]);
+  return e.kind !== "mesh" && want.some((k) => !e[k]);
 }
 
 // Ask the server to ffprobe an item whose specs are incomplete, then repaint. Opening

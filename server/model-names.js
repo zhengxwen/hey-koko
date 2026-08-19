@@ -182,6 +182,12 @@ const FILE_ID_RULES = [
   [/sulphur/, "ltx2-sulphur"],
   [/ltx.?2[._]?5/, "ltx2.5-22b"],
   [/ltx/, "ltx2.3-22b"],
+  // Music 3 BEFORE the H3 rules. They do not collide today (/minimax.?h3/ cannot match
+  // "minimax_music3" — the ".?" would have to swallow "_mu"), but the two are one
+  // vendor prefix apart and a looser H3 pattern later would silently claim the song
+  // model. The DiT is the only file that reaches an id: its text encoder and audio VAE
+  // are companions resolved off disk, never dropdown entries.
+  [/minimax.?music.?3/, "minimax-music3"],
   [/minimax.?h3.*ref2va/, "minimax-h3-r2v"],
   [/minimax.?h3/, "minimax-h3-t2v"],
   [/phantom.*14b/, "phantom-14b"],
@@ -221,6 +227,7 @@ const ID_LABELS = {
   "bernini:t2i": "Bernini (text → image)",
   "phantom-14b": "Phantom-Wan 14B",
   "phantom-1.3b": "Phantom-Wan 1.3B",
+  "minimax-music3": "MiniMax Music 3 (text → song)",
   "minimax-h3-t2v": "MiniMax H3 (t2v / i2v)",
   "minimax-h3-r2v": "MiniMax H3 (r2v)",
   "ltx2.3-22b": "LTX-2.3 22B",
