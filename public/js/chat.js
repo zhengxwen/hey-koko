@@ -4366,49 +4366,27 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         };
         autosizeInput();
         input.addEventListener("input", autosizeInput);
-        function finishEdit(save, triggerSend = true) {
+        // Committing an edit only rewrites the text — it never re-runs the message.
+        // Re-running is the 重发 / resend button's job, so no key in this editor can
+        // fire a generation, and the edited text can be read over before anything is
+        // spent on it. (No in-page-job guard is needed here either: nothing is
+        // dispatched. resendChatMessage still carries its own.)
+        function finishEdit(save) {
           const newContent = input.value.trim();
-          // Editing a user bubble re-runs it (a generation edit re-queues; text
-          // edits regenerate in place). Only an in-page analysis job blocks this (it
-          // splices in place) — server-side gen jobs are detached and don't. Refuse
-          // with a dialog + restore the original text (revert this edit) instead.
-          if (save && triggerSend && role === "user" && newContent && newContent !== original
-              && !/^\/(memory|remind)(\s|$)/.test(newContent) && bubbleHasActiveInPageJob(getActiveTab(), index)) {
-            alert(t('bg_queueBusyAlert'));
-            input.replaceWith(text);
-            return;
-          }
           if (save && newContent && newContent !== original) {
             const scrollY = dom.messagesEl.scrollTop;
             const tab = getActiveTab();
             tab.messages[index].content = newContent;
-            if (triggerSend) tab.messages[index].timestamp = Date.now();
-            if (role === "user" && triggerSend) {
-              // /memory and /remind already took effect when first sent; editing
-              // only updates the displayed text — don't re-execute (this mirrors why
-              // the resend button is hidden for them). Everything else behaves
-              // exactly like the resend button — context truncation, in-place
-              // insertion and locked-safe cleanup all come from resendChatMessage,
-              // so the two paths can never drift apart again.
-              if (/^\/(memory|remind)(\s|$)/.test(newContent)) {
-                saveChat();
-                renderChat();
-              } else {
-                saveChat();
-                resendChatMessage(index);
-              }
-            } else {
-              saveChat();
-              renderChat();
-              dom.messagesEl.scrollTop = scrollY;
-            }
+            saveChat();
+            renderChat();
+            dom.messagesEl.scrollTop = scrollY;
           } else {
             input.replaceWith(text);
           }
         }
         input.addEventListener("keydown", (e) => {
-          if (e.key === "Enter" && e.ctrlKey) { e.preventDefault(); finishEdit(true, false); }
-          if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey) { e.preventDefault(); finishEdit(true); }
+          // Enter and Ctrl+Enter both just save; Shift+Enter is a new line.
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finishEdit(true); }
           if (e.key === "Escape") { finishEdit(false); }
         });
         input.addEventListener("blur", () => finishEdit(false));
