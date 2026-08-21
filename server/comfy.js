@@ -468,6 +468,27 @@ async function comfyReachable(timeoutMs = 5000) {
 
 // Instruction-edit models live in diffusion_models/ (loaded via UNETLoader, not
 // CheckpointLoaderSimple) and each needs its own workflow + companion files.
+// The Qwen-Image control / decomposition routes. Each is a PIPELINE, not a weight file:
+// the same Qwen-Image base is driven through a different control mechanism, so they get
+// sentinel ids like the Bernini and Krea-2 routes rather than appearing as models on disk.
+// Every one of them is offered ONLY when its own weights are installed (qwenRouteParts).
+const QWEN_CONTROL = "qwen-control";              // InstantX Union ControlNet (any control map)
+const QWEN_CONTROL_PATCH = "qwen-control-patch";  // DiffSynth model-patch (canny), cheapest
+const QWEN_CONTROL_LORA = "qwen-control-lora";    // DiffSynth union control LoRA
+const QWEN_CONTROL_2512 = "qwen-control-2512";    // Fun Union ControlNet, 2512 base
+const QWEN_INPAINT = "qwen-inpaint";              // InstantX inpainting ControlNet
+const QWEN_LAYERED = "qwen-layered";              // decompose a picture into RGBA layers
+const QWEN_RELIGHT = "qwen-relight";              // 2509 + the Relight LoRA
+// Every Qwen recipe except the layered one wants the ordinary qwen_image_vae. The
+// layered model ships its OWN vae, whose filename also reads "qwen…image…vae" and
+// sorts FIRST alphabetically — so a generic match silently hands the layered vae to
+// txt2img, edit, control and inpaint alike. Excluded here, once, for all of them.
+const QWEN_VAE_RE = /^(?!.*layered).*(qwen.*image.*vae|qwen[-_]?image|qwen.*vae)/i;
+// The edit types that go through the shared Qwen-route dispatch rather than the generic
+// instruction-edit one. Same order as the ids above.
+const QWEN_ROUTES = new Set(["qwen-control", "qwen-control-patch", "qwen-control-lora",
+  "qwen-control-2512", "qwen-inpaint", "qwen-layered", "qwen-relight"]);
+
 function editTypeOf(model) {
   if (!model) return null;
   // Bernini image sentinels route through the instruction-edit dispatch (they take
@@ -478,7 +499,19 @@ function editTypeOf(model) {
   // Same reasoning as the Bernini sentinels: an exact-id match, so the plain krea2
   // txt2img files (which contain no "style_ref") keep falling through to the image list.
   if (model === KREA2_STYLE_REF) return "krea2-style";
+  // The Qwen routes — exact ids, same reasoning again.
+  if (model === QWEN_CONTROL) return "qwen-control";
+  if (model === QWEN_CONTROL_PATCH) return "qwen-control-patch";
+  if (model === QWEN_CONTROL_LORA) return "qwen-control-lora";
+  if (model === QWEN_CONTROL_2512) return "qwen-control-2512";
+  if (model === QWEN_INPAINT) return "qwen-inpaint";
+  if (model === QWEN_LAYERED) return "qwen-layered";
+  if (model === QWEN_RELIGHT) return "qwen-relight";
   if (/kontext/i.test(model)) return "kontext";
+  // 2511 is a DIFFERENT recipe from 2509 (Kontext multi-reference latents, an encoded
+  // latent instead of an empty one, 40 steps at cfg 3), so it needs its own type — and it
+  // must be tested BEFORE the generic qwen-edit match, which would swallow it.
+  if (/qwen.*edit.*2511|qwen.*2511.*edit/i.test(model)) return "qwen2511";
   if (/qwen.*edit|qwen[-_]?image[-_]?edit/i.test(model)) return "qwen";
   if (/omnigen/i.test(model)) return "omnigen";
   if (/pix2pix|instruct.?pix|ip2p/i.test(model)) return "ip2p";
@@ -1352,6 +1385,12 @@ function meshRank(n) {
 // edited by hand as models get verified. Seeded from the project roadmap.
 function isModelReady(name, group, type) {
   if (name === IMAGE_UPSCALE || name === VIDEO_ENHANCE) return true; // model-free tools
+  // The Qwen control / decomposition routes, and the 2511 / 2512 weights: wired from the
+  // official templates and structurally validated against a live ComfyUI, but no real
+  // render has been judged yet. Greyed with a warning, still selectable — which is exactly
+  // what this flag is for.
+  if (QWEN_ROUTES.has(type)) return false;
+  if (/qwen.*(2511|2512)/i.test(name)) return false;
   // Sentinels carry a synthetic name (not a filename) — match them by exact id.
   if (name === WAN14B_AUTO) return true;    // Wan 2.2 14B t2v+i2v — verified
   if (name === BERNINI_AUTO) return true;   // Bernini v2v / rv2v — verified end-to-end
@@ -1747,6 +1786,25 @@ async function proxyComfyModels(req, res) {
       && await comfyHasNodes(["TextEncodeQwenImageEditPlus", "FluxKontextMultiReferenceLatentMethod", "ModelSamplingFlux", "CFGGuider", "SamplerCustomAdvanced"])) {
       editModels.push({ name: KREA2_STYLE_REF, type: "krea2-style", needsImages: 1, precFrom: bestTier(krea2) });
     }
+    // The Qwen control / decomposition routes. Each is offered only when its own weights
+    // are on disk (qwenRouteParts resolves the whole set, including the shared encoder and
+    // VAE), so the menu never carries an entry that can only fail. All of them take one
+    // attached picture — a control map, a photo to inpaint, or a picture to decompose —
+    // except the layered route, which also works from a prompt alone.
+    // `needsMask` marks the one route that cannot run without a painted region — the
+    // browser hides it behind 🖌 and the CLI checks it before the request travels.
+    for (const [name, route, needsImages, needsMask] of [
+      [QWEN_CONTROL, "qwen-control", 1, 0],
+      [QWEN_CONTROL_PATCH, "qwen-control-patch", 1, 0],
+      [QWEN_CONTROL_LORA, "qwen-control-lora", 1, 0],
+      [QWEN_CONTROL_2512, "qwen-control-2512", 1, 0],
+      [QWEN_INPAINT, "qwen-inpaint", 1, 1],
+      [QWEN_RELIGHT, "qwen-relight", 1, 0],
+      [QWEN_LAYERED, "qwen-layered", 0, 0],
+    ]) {
+      const parts = await qwenRouteParts(route);
+      if (parts) editModels.push({ name, type: route, needsImages, ...(needsMask ? { needsMask: 1 } : {}), precFrom: parts.model });
+    }
     // Bernini text→image (length 1, nothing connected). A sentinel, not a filename —
     // it must stay OUT of dedupePrecision (no precision siblings to collapse) and is
     // appended after it, next to the other image sentinel (IMAGE_UPSCALE).
@@ -1943,10 +2001,11 @@ async function proxyComfyModels(req, res) {
 // Pick the companion files (text encoders + VAE) an edit model needs from what
 // ComfyUI actually has on disk. Throws a user-actionable error naming any
 // missing file so the UI can tell the user what to download.
-async function editCompanions(editType) {
-  const [clips, vaes] = await Promise.all([
+async function editCompanions(editType, model) {
+  const [clips, vaes, loras] = await Promise.all([
     comfyEnum("CLIPLoader", "clip_name"),
     comfyEnum("VAELoader", "vae_name"),
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
   ]);
   const find = (list, re) => list.find((x) => re.test(x));
   const aeVae = () => find(vaes, /^ae\b|ae\.safetensors/i) || find(vaes, /flux/i);
@@ -1962,15 +2021,19 @@ async function editCompanions(editType) {
     if (missing.length) throw new Error("Missing files required by Kontext:\n- " + missing.join("\n- "));
     return { t5, clipL, vae };
   }
-  if (editType === "qwen") {
+  if (editType === "qwen" || editType === "qwen2511") {
     // Qwen-Image-Edit wants the 7B Qwen2.5-VL encoder (prefer it if present).
     const clip = clips.find((x) => /qwen.*vl/i.test(x) && /7b/i.test(x)) || find(clips, /qwen.*vl/i);
-    const vae = find(vaes, /qwen.*image.*vae|qwen[-_]?image|qwen.*vae/i);
+    const vae = find(vaes, QWEN_VAE_RE);
     const missing = [];
     if (!clip) missing.push("qwen_2.5_vl_7b_fp8_scaled.safetensors → text_encoders/");
     if (!vae) missing.push("qwen_image_vae.safetensors → vae/");
     if (missing.length) throw new Error("Missing files required by Qwen-Image-Edit:\n- " + missing.join("\n- "));
-    return { clip, vae };
+    // The EDIT-family Lightning LoRA, when one is installed: 4 steps at cfg 1 instead of
+    // the 20-step full schedule. The base model has had this since it was added; the edit
+    // path simply never looked for it.
+    const light = qwenLightning(loras, true, qwenVersionOf(model));
+    return { clip, vae, lora: light ? light.name : null, loraSteps: light ? light.steps : 0 };
   }
   if (editType === "omnigen") {
     // OmniGen2 wants the smaller (3B) Qwen2.5-VL encoder — AVOID the 7B one.
@@ -2019,8 +2082,24 @@ function familyPreset(model) {
   if (/kontext/i.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: 2.5, steps: 20, sd3Latent: false };
   }
+  // Qwen-Image-Edit 2511 — its own template's full branch: 40 steps at cfg 3 (2509 is
+  // 20/2.5). Ahead of the generic qwen-edit line, which would otherwise claim it.
+  if (/qwen.*edit.*2511|qwen.*2511.*edit/i.test(model)) {
+    return { sampler: "euler", scheduler: "simple", cfg: 3, guidance: null, steps: 40, sd3Latent: false };
+  }
   if (/qwen.*edit|qwen[-_]?image[-_]?edit/i.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 2.5, guidance: null, steps: 20, sd3Latent: false };
+  }
+  // The control routes: euler/simple at cfg 2.5 / 20 steps, which is what every DiffSynth
+  // and InstantX template uses on the non-distilled branch. A Lightning LoRA swaps in its
+  // own schedule later (qwenTurboCfg).
+  if (model === QWEN_CONTROL || model === QWEN_CONTROL_PATCH || model === QWEN_CONTROL_LORA
+      || model === QWEN_INPAINT || model === QWEN_LAYERED || model === QWEN_RELIGHT) {
+    return { sampler: "euler", scheduler: "simple", cfg: 2.5, guidance: null, steps: 20, sd3Latent: false };
+  }
+  // Fun Union rides the 2512 base, whose full schedule is 50 steps at cfg 4.
+  if (model === QWEN_CONTROL_2512) {
+    return { sampler: "euler", scheduler: "simple", cfg: 4, guidance: null, steps: 50, sd3Latent: false };
   }
   if (/omnigen/i.test(model)) {
     return { sampler: "euler", scheduler: "normal", cfg: 4, guidance: null, steps: 20, sd3Latent: false };
@@ -2074,6 +2153,11 @@ function familyPreset(model) {
   // then hands to buildQwenImage — overriding its own defaults and wrecking the output.
   // The turbo branch (8 steps / cfg 1) needs the Lightning LoRA, which buildQwenImage
   // switches to on its own when the LoRA is installed.
+  // Qwen-Image 2512 asks for 50 steps where 2508 asked for 20 — same sampler, same shift,
+  // longer schedule (its own template's non-turbo branch).
+  if (/qwen.?image.*2512|qwen.*2512/i.test(model)) {
+    return { sampler: "euler", scheduler: "simple", cfg: 4, guidance: null, steps: 50, sd3Latent: true };
+  }
   if (/qwen.?image/i.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 4, guidance: null, steps: 20, sd3Latent: true };
   }
@@ -2180,10 +2264,53 @@ function buildHiDreamImage({ model, prompt, negative, width, height, seed, cfg, 
   };
 }
 
+// Qwen's distilled "Lightning" LoRAs. There is one per family AND per step count —
+// Qwen-Image-Lightning-8steps, Qwen-Image-2512-Lightning-4steps,
+// Qwen-Image-Edit-2509-Lightning-4steps, Wuli-Qwen-Image-2512-Turbo-LoRA-2steps — so the
+// step count is READ OFF THE FILENAME rather than assumed: it is part of the recipe, and
+// running a 4-step LoRA on the 20-step schedule throws away the whole point of it.
+// `wantEdit` keeps the two families apart: the names differ by that one word, and mounting
+// the edit LoRA on the base model (or the reverse) is worse than mounting none.
+function qwenLightning(loras, wantEdit, version) {
+  const pool = (loras || []).filter((n) => /qwen.*image.*(lightning|turbo)/i.test(n)
+    && /edit/i.test(n) === !!wantEdit);
+  // A LoRA is trained against ONE generation of the weights, and the generation is in the
+  // filename (…-2509-…, …-2511-…, …-2512-…). Mounting 2509's on 2511 is not a small
+  // mismatch — so a versioned model takes a matching LoRA, or an unversioned one, and
+  // never someone else's. `version` absent = the original release, which names no version.
+  const verOf = (n) => (/-(2\d{3})-/.exec(n) || [])[1] || null;
+  // Unversioned model → unversioned LoRA only. Borrowing 2509's for the original release
+  // is the same mistake as borrowing it for 2511, just harder to notice.
+  const hit = version
+    ? (pool.find((n) => verOf(n) === version) || pool.find((n) => !verOf(n)))
+    : pool.find((n) => !verOf(n));
+  if (!hit) return null;
+  const m = /(\d+)\s*steps?/i.exec(hit);
+  return { name: hit, steps: m ? Number(m[1]) : 8 };
+}
+
+// The weights generation a Qwen model file belongs to ("2509"/"2511"/"2512"), or null for
+// the original release — used to keep each model on its own Lightning LoRA.
+function qwenVersionOf(name) {
+  return (/(2\d{3})/.exec(String(name || "")) || [])[1] || null;
+}
+
+// A distilled LoRA's own step count and cfg 1 ARE its recipe, and familyPreset's full
+// schedule would waste it. resolveConfig cannot know — the LoRA is discovered by querying
+// ComfyUI — so the swap happens here, and only where the user has not pinned a value in ⚙.
+function qwenTurboCfg(cfg, opts, comp) {
+  if (!comp || !comp.lora) return cfg;
+  return {
+    ...cfg,
+    steps: opts.steps || comp.loraSteps || cfg.steps,
+    cfg: opts.cfg != null ? opts.cfg : 1,
+  };
+}
+
 // Qwen-Image (txt2img) companions — the same encoder + VAE the EDIT variant uses, plus
 // the OPTIONAL Lightning speed LoRA. Absent LoRA = the full 20-step / cfg-4 schedule
 // (same "turbo iff the LoRA is installed" rule as bernini / WAN 14B).
-async function qwenImageCompanions() {
+async function qwenImageCompanions(model) {
   const [clips, vaes, loras] = await Promise.all([
     comfyEnum("CLIPLoader", "clip_name"),
     comfyEnum("VAELoader", "vae_name"),
@@ -2192,13 +2319,13 @@ async function qwenImageCompanions() {
   const find = (list, re) => list.find((x) => re.test(x));
   // The 7B Qwen2.5-VL encoder, preferred if present — matches editCompanions("qwen").
   const clip = clips.find((x) => /qwen.*vl/i.test(x) && /7b/i.test(x)) || find(clips, /qwen.*vl/i);
-  const vae = find(vaes, /qwen.*image.*vae|qwen[-_]?image|qwen.*vae/i);
-  const lora = find(loras, /qwen.?image.?lightning/i); // optional turbo
+  const vae = find(vaes, QWEN_VAE_RE);
+  const light = qwenLightning(loras, false, qwenVersionOf(model));   // optional turbo (distilled)
   const missing = [];
   if (!clip) missing.push("qwen_2.5_vl_7b_fp8_scaled.safetensors → text_encoders/");
   if (!vae) missing.push("qwen_image_vae.safetensors → vae/");
   if (missing.length) throw new Error("Missing files required by Qwen-Image:\n- " + missing.join("\n- "));
-  return { clip, vae, lora };
+  return { clip, vae, lora: light ? light.name : null, loraSteps: light ? light.steps : 0 };
 }
 
 // Qwen-Image (txt2img), flattened from the official "Qwen-Image: Text to Image" template
@@ -2282,7 +2409,7 @@ async function krea2Companions() {
   ]);
   const find = (list, re) => list.find((x) => re.test(x));
   const clip = clips.find((x) => /qwen3vl/i.test(x) && /(^|[_-])4b([_-]|$)/i.test(x));
-  const vae = find(vaes, /qwen.*image.*vae|qwen[-_]?image|qwen.*vae/i);
+  const vae = find(vaes, QWEN_VAE_RE);
   const styleRefLora = find(loras, KREA2_STYLE_REF_LORA_RE);
   const missing = [];
   if (!clip) missing.push("qwen3vl_4b_fp8_scaled.safetensors → text_encoders/");
@@ -2617,10 +2744,31 @@ function buildKontext({ model, prompt, imageName, maskName, seed, cfg, comp, wid
   return wf;
 }
 
+// The model side of both Qwen edit graphs, straight from the official templates
+// (image_qwen_image_edit and …_2509 have the identical chain):
+//
+//   UNETLoader → [Lightning LoRA, when installed] → ModelSamplingAuraFlow(3) → CFGNorm(1)
+//
+// Both patches were missing here while the base txt2img builder and boogu-edit both had
+// the sampling shift — the shift IS part of the recipe (it rewrites the sigma schedule),
+// and CFGNorm keeps the guided prediction from drifting in magnitude. Node ids are in the
+// 30s so they cannot collide with either builder's own numbering.
+function qwenEditModelChain(wf, model, comp) {
+  wf["1"] = { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } };
+  let ref = ["1", 0];
+  if (comp && comp.lora) {
+    wf["30"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ref, lora_name: comp.lora, strength_model: 1 } };
+    ref = ["30", 0];
+  }
+  wf["31"] = { class_type: "ModelSamplingAuraFlow", inputs: { model: ref, shift: 3.0 } };
+  wf["32"] = { class_type: "CFGNorm", inputs: { model: ["31", 0], strength: 1.0 } };
+  return ["32", 0];
+}
+
 // Qwen-Image-Edit — TextEncodeQwenImageEdit folds the reference image + prompt
 // into the conditioning (multimodal Qwen2.5-VL encoder). Negative is the same
 // node with an empty prompt.
-function buildQwenEdit({ model, prompt, imageName, maskName, seed, cfg, comp }) {
+function buildQwenEdit({ model, prompt, negative, imageName, maskName, seed, cfg, comp }) {
   // The reference image drives BOTH the conditioning and the latent — they must
   // match. Do NOT force an output size by VAE-encoding a resized copy: the
   // TextEncodeQwenImageEdit conditioning encodes the original, so a mismatched
@@ -2633,12 +2781,16 @@ function buildQwenEdit({ model, prompt, imageName, maskName, seed, cfg, comp }) 
     "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
     "4": { class_type: "LoadImage", inputs: { image: imageName } },
     "5": { class_type: "TextEncodeQwenImageEdit", inputs: { clip: ["2", 0], prompt, vae: ["3", 0], image: ["4", 0] } },
-    "6": { class_type: "TextEncodeQwenImageEdit", inputs: { clip: ["2", 0], prompt: "", vae: ["3", 0], image: ["4", 0] } },
+    // The negative goes through the SAME multimodal encoder — it sees the reference image
+    // too, which is what makes "don't change the background" mean anything here. cfg is
+    // 2.5, so this branch is really weighted; an empty string is a valid negative.
+    "6": { class_type: "TextEncodeQwenImageEdit", inputs: { clip: ["2", 0], prompt: negative || "", vae: ["3", 0], image: ["4", 0] } },
     "7": { class_type: "VAEEncode", inputs: { pixels: ["4", 0], vae: ["3", 0] } },
-    "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["1", 0], positive: ["5", 0], negative: ["6", 0], latent_image: ["7", 0] } },
+    "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: null, positive: ["5", 0], negative: ["6", 0], latent_image: ["7", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
+  wf["8"].inputs.model = qwenEditModelChain(wf, model, comp);
   // Masked Qwen-Image-Edit: gate the latent so the instruction only repaints the
   // painted region (the conditioning still sees the whole image for context), then
   // COMPOSITE the original image back OUTSIDE the mask so the background stays
@@ -2655,12 +2807,320 @@ function buildQwenEdit({ model, prompt, imageName, maskName, seed, cfg, comp }) 
   return wf;
 }
 
+// Everything a Qwen control / decomposition route needs, resolved against what is
+// actually on disk. Returns null when any required piece is missing, which is how the
+// dropdown decides whether to offer the route at all — an entry that always errors is
+// worse than no entry. The SAME function then runs at generation time, so the error names
+// the exact file to download rather than failing inside ComfyUI.
+async function qwenRouteResolve(route) {
+  const [unets, clips, vaes, loras, controlNets, patches] = await Promise.all([
+    comfyEnum("UNETLoader", "unet_name"),
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyEnum("ControlNetLoader", "control_net_name").catch(() => []),
+    comfyEnum("ModelPatchLoader", "name").catch(() => []),
+  ]);
+  const find = (list, re) => (list || []).find((x) => re.test(x));
+  const clip = clips.find((x) => /qwen.*vl/i.test(x) && /7b/i.test(x)) || find(clips, /qwen.*vl/i);
+  const vae = find(vaes, QWEN_VAE_RE);
+  // The BASE model each route drives: a Qwen-Image txt2img UNET (never an edit one).
+  const bases = (unets || []).filter((n) => /qwen.?image/i.test(n) && !editTypeOf(n) && !/layered/i.test(n));
+  const base2512 = bases.find((n) => /2512/i.test(n));
+  const parts = { clip, vae, missing: [] };
+  const need = (v, what) => { if (!v) parts.missing.push(what); return v; };
+  need(clip, "qwen_2.5_vl_7b_fp8_scaled.safetensors → text_encoders/");
+  need(vae, "qwen_image_vae.safetensors → vae/");
+
+  if (route === "qwen-layered") {
+    parts.model = need(find(unets, /qwen.?image.?layered(?!.*control)/i), "qwen_image_layered_bf16.safetensors → diffusion_models/");
+    parts.vae = need(find(vaes, /qwen.?image.?layered.?vae/i), "qwen_image_layered_vae.safetensors → vae/");
+    // The layered weights are their own model — no Lightning LoRA exists for them.
+    return parts;
+  }
+  if (route === "qwen-relight") {
+    parts.model = need(find(unets, /qwen.*edit.*2509/i), "qwen_image_edit_2509_fp8_e4m3fn.safetensors → diffusion_models/");
+    parts.relight = need(find(loras, /qwen.?image.?edit.?2509.?relight/i), "Qwen-Image-Edit-2509-Relight.safetensors → loras/");
+    const light = qwenLightning(loras, true, "2509");
+    parts.lora = light ? light.name : null;
+    parts.loraSteps = light ? light.steps : 0;
+    return parts;
+  }
+
+  parts.model = route === "qwen-control-2512"
+    ? need(base2512, "qwen_image_2512_fp8_e4m3fn.safetensors → diffusion_models/")
+    : need(bases[0], "qwen_image_fp8_e4m3fn.safetensors → diffusion_models/");
+  if (route === "qwen-control") {
+    parts.controlNet = need(find(controlNets, /qwen.?image.?instantx.?controlnet.?union/i),
+      "Qwen-Image-InstantX-ControlNet-Union.safetensors → controlnet/");
+  } else if (route === "qwen-control-2512") {
+    parts.controlNet = need(find(controlNets, /qwen.?image.?2512.?fun.?controlnet/i),
+      "Qwen-Image-2512-Fun-Controlnet-Union-2602.safetensors → controlnet/");
+  } else if (route === "qwen-inpaint") {
+    parts.controlNet = need(find(controlNets, /qwen.?image.?instantx.?controlnet.?inpainting/i),
+      "Qwen-Image-InstantX-ControlNet-Inpainting.safetensors → controlnet/");
+  } else if (route === "qwen-control-patch") {
+    parts.modelPatch = need(find(patches, /qwen.?image.*diffsynth.?controlnet/i),
+      "qwen_image_canny_diffsynth_controlnet.safetensors → model_patches/");
+  } else if (route === "qwen-control-lora") {
+    parts.unionLora = need(find(loras, /qwen.?image.?union.?diffsynth/i),
+      "qwen_image_union_diffsynth_lora.safetensors → loras/");
+  }
+  // Every control route rides the BASE Lightning LoRA when one is installed (all of the
+  // upstream templates ship that branch), so they inherit the 4-step schedule for free —
+  // matched to the generation of the base this route actually loads.
+  const light = qwenLightning(loras, false, qwenVersionOf(parts.model));
+  parts.lora = light ? light.name : null;
+  parts.loraSteps = light ? light.steps : 0;
+  return parts;
+}
+
+// "Is this route usable?" — for the dropdown. null = something is missing.
+async function qwenRouteParts(route) {
+  const parts = await qwenRouteResolve(route);
+  return parts.missing.length ? null : parts;
+}
+
+// The same resolution at generation time, where "not offered" is no longer an option:
+// throw the download list instead, naming every file and the folder it belongs in.
+async function qwenRouteCompanions(route) {
+  const parts = await qwenRouteResolve(route);
+  if (!parts.missing.length) return parts;
+  throw new Error(`Missing files required by this Qwen route:\n- ${parts.missing.join("\n- ")}`);
+}
+
+// Qwen-Image-Edit 2511 — the newer edit weights, and a different recipe from 2509:
+//   • every reference goes through FluxKontextImageScale (2511 was trained on those buckets),
+//   • the canvas is a VAEEncode of reference #1, not an empty latent,
+//   • both conditionings pass through FluxKontextMultiReferenceLatentMethod("index_timestep_zero"),
+//     which is what lets it tell "image 1" from "image 2" in the instruction,
+//   • shift 3.1 (2509 uses 3), CFGNorm(1), 40 steps at cfg 3.
+// Flattened from the official image_qwen_image_edit_2511 template, links included.
+function buildQwen2511Edit({ model, prompt, negative, imageNames, maskName, seed, cfg, comp }) {
+  const refs = (imageNames || []).slice(0, 3);
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "qwen_image" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+  };
+  refs.forEach((nm, i) => { wf[String(11 + i)] = { class_type: "LoadImage", inputs: { image: nm } }; });
+  // Only reference #1 is bucket-scaled and encoded — it is the canvas; the others are
+  // pure references, exactly as the template wires them.
+  wf["15"] = { class_type: "FluxKontextImageScale", inputs: { image: ["11", 0] } };
+  const enc = (text) => {
+    const inputs = { clip: ["2", 0], prompt: text, vae: ["3", 0], image1: ["15", 0] };
+    refs.forEach((_, i) => { if (i > 0) inputs["image" + (i + 1)] = [String(11 + i), 0]; });
+    return { class_type: "TextEncodeQwenImageEditPlus", inputs };
+  };
+  wf["4"] = enc(prompt);
+  wf["5"] = enc(negative || "");
+  wf["6"] = { class_type: "FluxKontextMultiReferenceLatentMethod", inputs: { conditioning: ["4", 0], reference_latents_method: "index_timestep_zero" } };
+  wf["7"] = { class_type: "FluxKontextMultiReferenceLatentMethod", inputs: { conditioning: ["5", 0], reference_latents_method: "index_timestep_zero" } };
+  wf["16"] = { class_type: "VAEEncode", inputs: { pixels: ["15", 0], vae: ["3", 0] } };
+  // 2511 patches in the other order than 2509 — shift, then CFGNorm, then the LoRA.
+  let mref = ["1", 0];
+  wf["31"] = { class_type: "ModelSamplingAuraFlow", inputs: { model: mref, shift: 3.1 } };
+  wf["32"] = { class_type: "CFGNorm", inputs: { model: ["31", 0], strength: 1.0 } };
+  mref = ["32", 0];
+  if (comp.lora) {
+    wf["30"] = { class_type: "LoraLoaderModelOnly", inputs: { model: mref, lora_name: comp.lora, strength_model: 1 } };
+    mref = ["30", 0];
+  }
+  wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: mref, positive: ["6", 0], negative: ["7", 0], latent_image: ["16", 0] } };
+  wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } };
+  // Same masked-edit treatment as 2509: repaint inside the brush only, and put the
+  // original back outside it so the untouched part is not a VAE round-trip.
+  if (maskName) {
+    wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+    wf["21"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["16", 0], mask: ["20", 0] } };
+    wf["8"].inputs.latent_image = ["21", 0];
+    wf["22"] = { class_type: "ImageCompositeMasked", inputs: { destination: ["15", 0], source: ["9", 0], x: 0, y: 0, resize_source: false, mask: ["20", 0] } };
+    wf["10"].inputs.images = ["22", 0];
+  }
+  return wf;
+}
+
+// The control-image front end shared by every Qwen control route: scale the attached
+// picture to the pixel budget the templates use, then optionally run Canny over it.
+// `prep` — "canny" turns a photo into an edge map (what the ControlNet was trained on);
+// "raw" passes the picture through untouched, which is what you want when the attachment
+// ALREADY is a control map (a depth pass, a pose skeleton, a scribble).
+function qwenControlSource(wf, imageName, { prep, megapixels, low, high }) {
+  wf["11"] = { class_type: "LoadImage", inputs: { image: imageName } };
+  // `resolution_steps` is an advanced input the UI hides, so the template JSON carries
+  // it but never shows it. It is declared REQUIRED, so spell out its default rather
+  // than trust the box to fill a missing required field.
+  wf["12"] = { class_type: "ImageScaleToTotalPixels", inputs: { image: ["11", 0], upscale_method: "lanczos", megapixels, resolution_steps: 1 } };
+  if (prep !== "canny") return { control: ["12", 0], scaled: ["12", 0] };
+  wf["13"] = { class_type: "Canny", inputs: { image: ["12", 0], low_threshold: low, high_threshold: high } };
+  return { control: ["13", 0], scaled: ["12", 0] };
+}
+
+// Model chain shared by the control routes: UNET → [route LoRA] → [Lightning] → shift 3.1.
+function qwenControlModel(wf, model, comp, extraLora) {
+  wf["1"] = { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } };
+  let ref = ["1", 0];
+  if (extraLora) {
+    wf["28"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ref, lora_name: extraLora, strength_model: 1 } };
+    ref = ["28", 0];
+  }
+  if (comp.lora) {
+    wf["29"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ref, lora_name: comp.lora, strength_model: 1 } };
+    ref = ["29", 0];
+  }
+  wf["31"] = { class_type: "ModelSamplingAuraFlow", inputs: { model: ref, shift: 3.1 } };
+  return ["31", 0];
+}
+
+// The three prompt/VAE/CLIP nodes every control route shares.
+function qwenControlHead(wf, comp, prompt, negative) {
+  wf["2"] = { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "qwen_image" } };
+  wf["3"] = { class_type: "VAELoader", inputs: { vae_name: comp.vae } };
+  wf["4"] = { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: prompt } };
+  wf["5"] = { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: negative || "" } };
+}
+
+// Qwen-Image ControlNet — InstantX Union (a real CONTROL_NET file) or the 2512 Fun Union,
+// which differ only in which file is loaded and how the canvas is sized:
+//   • InstantX encodes the control image, so the output matches it 1:1;
+//   • Fun Union starts from an empty latent at the control image's size.
+// Both: CLIPTextEncode ×2 → ControlNetApplyAdvanced(strength, 0..1) → KSampler.
+function buildQwenControlNet({ model, prompt, negative, imageName, seed, cfg, comp, control, empty }) {
+  const wf = {};
+  qwenControlHead(wf, comp, prompt, negative);
+  const src = qwenControlSource(wf, imageName, control);
+  wf["14"] = { class_type: "ControlNetLoader", inputs: { control_net_name: comp.controlNet } };
+  wf["15"] = { class_type: "ControlNetApplyAdvanced", inputs: {
+    positive: ["4", 0], negative: ["5", 0], control_net: ["14", 0], image: src.control,
+    strength: control.strength, start_percent: 0, end_percent: 1, vae: ["3", 0] } };
+  if (empty) {
+    wf["16"] = { class_type: "GetImageSize", inputs: { image: src.scaled } };
+    wf["17"] = { class_type: "EmptySD3LatentImage", inputs: { width: ["16", 0], height: ["16", 1], batch_size: 1 } };
+  } else {
+    wf["17"] = { class_type: "VAEEncode", inputs: { pixels: src.scaled, vae: ["3", 0] } };
+  }
+  const mref = qwenControlModel(wf, model, comp, null);
+  wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: mref, positive: ["15", 0], negative: ["15", 1], latent_image: ["17", 0] } };
+  wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } };
+  return wf;
+}
+
+// Qwen-Image ControlNet — DiffSynth MODEL PATCH. No CONTROL_NET file and no conditioning
+// detour: the control map is folded into the MODEL itself (QwenImageDiffsynthControlnet),
+// which is why upstream calls this the cheap one. Canvas = the encoded control source.
+function buildQwenControlPatch({ model, prompt, negative, imageName, seed, cfg, comp, control }) {
+  const wf = {};
+  qwenControlHead(wf, comp, prompt, negative);
+  const src = qwenControlSource(wf, imageName, control);
+  wf["14"] = { class_type: "ModelPatchLoader", inputs: { name: comp.modelPatch } };
+  const mref = qwenControlModel(wf, model, comp, null);
+  wf["15"] = { class_type: "QwenImageDiffsynthControlnet", inputs: {
+    model: mref, model_patch: ["14", 0], vae: ["3", 0], image: src.control, strength: control.strength } };
+  wf["17"] = { class_type: "VAEEncode", inputs: { pixels: src.scaled, vae: ["3", 0] } };
+  wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["15", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["17", 0] } };
+  wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } };
+  return wf;
+}
+
+// Qwen-Image ControlNet — DiffSynth UNION LoRA. The control signal rides a LoRA plus
+// ReferenceLatent on both conditionings (the control map is encoded once and referenced),
+// so there is no ControlNet file at all.
+function buildQwenControlLora({ model, prompt, negative, imageName, seed, cfg, comp, control }) {
+  const wf = {};
+  qwenControlHead(wf, comp, prompt, negative);
+  const src = qwenControlSource(wf, imageName, control);
+  wf["17"] = { class_type: "VAEEncode", inputs: { pixels: src.control, vae: ["3", 0] } };
+  wf["6"] = { class_type: "ReferenceLatent", inputs: { conditioning: ["4", 0], latent: ["17", 0] } };
+  wf["7"] = { class_type: "ReferenceLatent", inputs: { conditioning: ["5", 0], latent: ["17", 0] } };
+  const mref = qwenControlModel(wf, model, comp, comp.unionLora);
+  wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: mref, positive: ["6", 0], negative: ["7", 0], latent_image: ["17", 0] } };
+  wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } };
+  return wf;
+}
+
+// Qwen-Image ControlNet — InstantX INPAINTING. The brush decides what is repainted:
+// the mask goes to ControlNetInpaintingAliMamaApply (so the model knows the hole) AND to
+// SetLatentNoiseMask (so only that region is sampled), and the original is composited back
+// outside it. Without a mask this route has nothing to do, so the dispatch requires one.
+function buildQwenInpaint({ model, prompt, negative, imageName, maskName, seed, cfg, comp, control }) {
+  const wf = {};
+  qwenControlHead(wf, comp, prompt, negative);
+  wf["11"] = { class_type: "LoadImage", inputs: { image: imageName } };
+  wf["12"] = { class_type: "ImageScaleToMaxDimension", inputs: { image: ["11", 0], upscale_method: "lanczos", largest_size: control.maxSide } };
+  wf["20"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+  // Grow the painted region a little: an inpaint seam lands better a few pixels outside
+  // what the user brushed, which is what the template's GrowMask does too.
+  wf["21"] = { class_type: "GrowMask", inputs: { mask: ["20", 0], expand: 8, tapered_corners: true } };
+  wf["14"] = { class_type: "ControlNetLoader", inputs: { control_net_name: comp.controlNet } };
+  wf["15"] = { class_type: "ControlNetInpaintingAliMamaApply", inputs: {
+    positive: ["4", 0], negative: ["5", 0], control_net: ["14", 0], vae: ["3", 0],
+    image: ["12", 0], mask: ["21", 0], strength: control.strength, start_percent: 0, end_percent: 1 } };
+  wf["17"] = { class_type: "VAEEncode", inputs: { pixels: ["12", 0], vae: ["3", 0] } };
+  wf["18"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["17", 0], mask: ["21", 0] } };
+  const mref = qwenControlModel(wf, model, comp, null);
+  wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: mref, positive: ["15", 0], negative: ["15", 1], latent_image: ["18", 0] } };
+  wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } };
+  wf["22"] = { class_type: "ImageCompositeMasked", inputs: { destination: ["12", 0], source: ["9", 0], x: 0, y: 0, resize_source: false, mask: ["21", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["22", 0] } };
+  return wf;
+}
+
+// Qwen-Image-Layered — decompose a picture into N stacked RGBA layers (background, then
+// subjects), returned as a BATCH: one image per layer, which the bubble already renders as
+// several results. Its own UNET and VAE, shift 1 (not 3.1), and the layer count is the
+// latent's depth: EmptyQwenImageLayeredLatentImage(layers) → sample → LatentCut drops the
+// composite plane → LatentCutToBatch turns the stack into one image per layer.
+function buildQwenLayered({ model, prompt, negative, imageName, seed, cfg, comp, layers, width, height }) {
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "qwen_image" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    "4": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: prompt } },
+    "5": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: negative || "" } },
+    "31": { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 1.0 } },
+  };
+  let pos = ["4", 0], neg = ["5", 0], latent;
+  if (imageName) {
+    // Decomposing an EXISTING picture: it is the reference on both conditionings, and the
+    // canvas takes its size. 640 on the long side is the template's working resolution.
+    wf["11"] = { class_type: "LoadImage", inputs: { image: imageName } };
+    wf["12"] = { class_type: "ImageScaleToMaxDimension", inputs: { image: ["11", 0], upscale_method: "lanczos", largest_size: 640 } };
+    wf["13"] = { class_type: "VAEEncode", inputs: { pixels: ["12", 0], vae: ["3", 0] } };
+    wf["6"] = { class_type: "ReferenceLatent", inputs: { conditioning: ["4", 0], latent: ["13", 0] } };
+    wf["7"] = { class_type: "ReferenceLatent", inputs: { conditioning: ["5", 0], latent: ["13", 0] } };
+    wf["14"] = { class_type: "GetImageSize", inputs: { image: ["12", 0] } };
+    wf["15"] = { class_type: "EmptyQwenImageLayeredLatentImage", inputs: { width: ["14", 0], height: ["14", 1], layers, batch_size: 1 } };
+    pos = ["6", 0]; neg = ["7", 0];
+  } else {
+    // Text → layers: no reference, so the canvas comes from the requested aspect ratio
+    // scaled to the template's 640 working resolution (the size these weights were
+    // tuned at). The RATIO is the user's; the resolution is the recipe's.
+    const ar = (width > 0 && height > 0) ? width / height : 1;
+    const snap = (v) => Math.max(256, Math.round(v / 32) * 32);
+    const w = snap(ar >= 1 ? 640 : 640 * ar);
+    const h = snap(ar >= 1 ? 640 / ar : 640);
+    wf["15"] = { class_type: "EmptyQwenImageLayeredLatentImage", inputs: { width: w, height: h, layers, batch_size: 1 } };
+  }
+  latent = ["15", 0];
+  wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["31", 0], positive: pos, negative: neg, latent_image: latent } };
+  // 16384 is the template's "take everything after plane 0" amount, not a size in pixels.
+  wf["16"] = { class_type: "LatentCut", inputs: { samples: ["8", 0], dim: "t", index: 1, amount: 16384 } };
+  wf["17"] = { class_type: "LatentCutToBatch", inputs: { samples: ["16", 0], dim: "t", slice_size: 1 } };
+  wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["17", 0], vae: ["3", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } };
+  return wf;
+}
+
 // Qwen-Image-Edit-2509 "Plus" — MULTI-image composition (up to 3 reference
 // images). TextEncodeQwenImageEditPlus folds prompt + image1/2/3 into the
 // conditioning; the canvas is a FRESH EmptySD3LatentImage (NOT a VAEEncode of
 // one image — that would bias to it and drop the others). Width/height set the
 // output size of the composite.
-function buildQwenEditPlus({ model, prompt, imageNames, maskName, seed, cfg, comp, width, height }) {
+function buildQwenEditPlus({ model, prompt, negative, imageNames, maskName, seed, cfg, comp, width, height }) {
   const loads = {};
   imageNames.slice(0, 3).forEach((nm, i) => {
     loads[String(11 + i)] = { class_type: "LoadImage", inputs: { image: nm } };
@@ -2677,12 +3137,15 @@ function buildQwenEditPlus({ model, prompt, imageNames, maskName, seed, cfg, com
     "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
     ...loads,
     "4": encInputs(prompt),
-    "5": encInputs(""),
+    // Same encoder for the negative (it reads the references too), and a real one now —
+    // it used to be hardcoded empty, which quietly discarded whatever ⚙ "negative" held.
+    "5": encInputs(negative || ""),
     "6": { class_type: "EmptySD3LatentImage", inputs: { width: outW, height: outH, batch_size: 1 } },
-    "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["1", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } },
+    "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: null, positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
   };
+  wf["8"].inputs.model = qwenEditModelChain(wf, model, comp);
   // Background lock (person-swap): keep the ORIGINAL scene (first reference, node
   // 11) pixel-for-pixel OUTSIDE the painted mask; only the masked region — the
   // swapped-in person from the fresh compose (node 9) — is taken from the
@@ -2821,6 +3284,9 @@ function buildBooguEdit({ model, prompt, negative, imageName, imageNames, maskNa
 function buildEditWorkflow(editType, args) {
   if (editType === "kontext") return buildKontext(args);
   if (editType === "qwen") return buildQwenEdit(args);
+  // 2511 always goes through its own multi-reference builder — with one image it simply
+  // has one reference, which is exactly what the official template does.
+  if (editType === "qwen2511") return buildQwen2511Edit({ ...args, imageNames: [args.imageName] });
   if (editType === "ip2p") return buildInstructPix2Pix(args);
   if (editType === "hidream-e1") return buildHiDreamEdit(args);
   if (editType === "omnigen") return buildOmniGen2Edit(args);
@@ -6530,7 +6996,17 @@ async function generateComfyImage(req, res) {
       sendJson(res, 400, { error: "Krea-2 style reference needs a style image. Attach 1–3 images whose style you want, then use /imagine <what to draw>." });
       return;
     }
-    if (editType && !isImg2Img) {
+    // The layered route is registered alongside the edit models (it shares their
+    // dispatch) but decomposes a PROMPT into layers just as happily as a picture, so
+    // it is the one edit type that may run with nothing attached.
+    // Inpainting IS the mask: without one there is no region to repaint, and the graph
+    // would fail deep inside ComfyUI with a missing-input error that names a node the
+    // user never saw. Say it here instead.
+    if (editType === "qwen-inpaint" && !mask) {
+      sendJson(res, 400, { error: "Inpainting needs a painted region. Attach the picture, paint the area to replace with the mask brush, then describe what belongs there." });
+      return;
+    }
+    if (editType && editType !== "qwen-layered" && !isImg2Img) {
       sendJson(res, 400, { error: "This model is for instruction-based editing. Attach a reference image first, then use /imagine <edit instruction>." });
       return;
     }
@@ -7749,6 +8225,58 @@ async function generateComfyImage(req, res) {
         // one "how hard should the style push" knob rather than two that look alike.
         workflow = buildKrea2StyleRef({ model, prompt, imageNames, width, height, seed, cfg, comp, loraStrength: krea2Strength(opts.krea2LoraStrength) });
         imagesUsed = imageNames.length;
+      } else if (QWEN_ROUTES.has(editType)) {
+        // The Qwen control / decomposition routes. They share one dispatch because they
+        // share one shape: an attached picture (a control map, a photo, a scene) plus a
+        // prompt, driven through a different control mechanism per route. Companions are
+        // resolved here so a missing weight names its own download instead of failing
+        // inside ComfyUI, and the Lightning schedule is applied the same way as elsewhere.
+        const comp = await qwenRouteCompanions(editType);
+        const routeCfg = qwenTurboCfg(cfg, opts, comp);
+        const model = comp.model;
+        // ⚙ knobs shared by the control routes. `controlPrep` decides whether the picture
+        // is turned into an edge map first: leave it on "canny" for a photo, switch to
+        // "raw" when the attachment ALREADY is a control map (a depth pass, a pose rig).
+        const control = {
+          prep: opts.controlPrep === "raw" ? "raw" : "canny",
+          strength: opts.controlStrength > 0 ? Math.min(2, opts.controlStrength) : 1,
+          megapixels: 1.0,
+          low: opts.cannyLow > 0 ? opts.cannyLow : 0.26,
+          high: opts.cannyHigh > 0 ? opts.cannyHigh : 0.35,
+          maxSide: 1024,
+        };
+        const first = (Array.isArray(images) && images.length) ? images[0] : null;
+        if (!first && editType !== "qwen-layered") {
+          sendJson(res, 400, { error: "This Qwen route needs an attached picture: a control map (or a photo to derive one from), the picture to inpaint, or the scene to decompose." });
+          return;
+        }
+        const imageName = first ? await uploadImage(first, controller.signal) : null;
+        const maskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mask.png") : null;
+        if (editType === "qwen-layered") {
+          // Layer count: 2 = background + subject, more splits the subjects apart. The
+          // model's own ceiling is what the latent can carry, so keep it modest.
+          const layers = Math.max(2, Math.min(6, Math.round(opts.layerCount || 3)));
+          workflow = buildQwenLayered({ model, prompt, negative: negative_prompt || "", imageName, seed, cfg: routeCfg, comp, layers, width, height });
+        } else if (editType === "qwen-inpaint") {
+          if (!maskName) {
+            sendJson(res, 400, { error: "Qwen inpainting needs a painted region: open the 🖌 on the attached picture and brush what should be replaced." });
+            return;
+          }
+          workflow = buildQwenInpaint({ model, prompt, negative: negative_prompt || "", imageName, maskName, seed, cfg: routeCfg, comp, control });
+        } else if (editType === "qwen-control-patch") {
+          workflow = buildQwenControlPatch({ model, prompt, negative: negative_prompt || "", imageName, seed, cfg: routeCfg, comp, control });
+        } else if (editType === "qwen-control-lora") {
+          workflow = buildQwenControlLora({ model, prompt, negative: negative_prompt || "", imageName, seed, cfg: routeCfg, comp, control });
+        } else if (editType === "qwen-relight") {
+          // Relight is 2509 plus one LoRA: the same multi-reference edit graph, with the
+          // relight weights mounted on top. The instruction describes the light.
+          workflow = buildQwenEditPlus({ model, prompt, negative: negative_prompt || "", imageNames: [imageName], maskName, seed, cfg: routeCfg, comp: { ...comp, lora: comp.relight }, width: 0, height: 0 });
+        } else {
+          // InstantX Union, and the 2512 Fun Union — one builder, two files. Fun Union
+          // starts from an empty canvas at the control image's size; InstantX encodes the
+          // control image itself, so the result lands on exactly that frame.
+          workflow = buildQwenControlNet({ model, prompt, negative: negative_prompt || "", imageName, seed, cfg: routeCfg, comp, control, empty: editType === "qwen-control-2512" });
+        }
       } else if (editType) {
         // Instruction-edit. Checkpoint-based models (ip2p) bundle CLIP+VAE;
         // HiDream-E1 needs the 4 HiDream encoders; the rest (Kontext/Qwen) pick
@@ -7761,9 +8289,14 @@ async function generateComfyImage(req, res) {
           comp = await editCompanions("omnigen");
           editDenoise = opts.denoise !== undefined ? opts.denoise : 0.8;
         } else {
-          comp = editIsCheckpoint(editType) ? {} : await editCompanions(editType);
+          comp = editIsCheckpoint(editType) ? {} : await editCompanions(editType, model);
         }
-        if ((editType === "qwen" || editType === "boogu-edit") && isMultiImage) {
+        // Qwen's Lightning LoRA, when one is installed, brings its own schedule (its step
+        // count, cfg 1). Resolved here rather than in the builders because only this point
+        // knows BOTH what ComfyUI has on disk and what the user pinned in ⚙. Non-Qwen edit
+        // types pass `cfg` through untouched.
+        const editCfg = (editType === "qwen" || editType === "qwen2511") ? qwenTurboCfg(cfg, opts, comp) : cfg;
+        if ((editType === "qwen" || editType === "qwen2511" || editType === "boogu-edit") && isMultiImage) {
           // Multi-reference compose: Qwen-Image-Edit-2509 Plus, or boogu's
           // TextEncodeBooguEdit autogrow (image_1..image_N). Cap at 3.
           const imageNames = [];
@@ -7790,14 +8323,16 @@ async function generateComfyImage(req, res) {
           }
           workflow = editType === "boogu-edit"
             ? buildBooguEdit({ model, prompt, negative: negative_prompt || "", imageNames, maskName, seed, cfg, comp })
-            : buildQwenEditPlus({ model, prompt, imageNames, maskName, seed, cfg, comp, width: qw, height: qh });
+            : editType === "qwen2511"
+              ? buildQwen2511Edit({ model, prompt, negative: negative_prompt || "", imageNames, maskName, seed, cfg: editCfg, comp })
+              : buildQwenEditPlus({ model, prompt, negative: negative_prompt || "", imageNames, maskName, seed, cfg: editCfg, comp, width: qw, height: qh });
         } else {
           const imageName = await uploadImage(images[0], controller.signal);
           // Masked instruction-edit (Kontext / Qwen): confine the edit to the
           // painted region. Other edit types ignore maskName (their builds don't
           // read it) — they fall back to whole-image editing.
           const maskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mask.png") : null;
-          workflow = buildEditWorkflow(editType, { model, prompt, negative: negative_prompt || "", imageName, maskName, seed, cfg, comp, denoise: editDenoise, width: ew, height: eh });
+          workflow = buildEditWorkflow(editType, { model, prompt, negative: negative_prompt || "", imageName, maskName, seed, cfg: editCfg, comp, denoise: editDenoise, width: ew, height: eh });
         }
       } else if (model === IMAGE_UPSCALE) {
         // Image HD / upscale: attached image → AI upscale model. No prompt needed; a
@@ -7864,8 +8399,8 @@ async function generateComfyImage(req, res) {
       } else if (/qwen.?image/i.test(model)) {
         // Qwen-Image txt2img. Only the BASE model reaches here — editTypeOf routes
         // anything matching /qwen.*edit/ down the edit path long before this.
-        const comp = await qwenImageCompanions();
-        workflow = buildQwenImage({ model, prompt, negative: negative_prompt || "", width, height, seed, cfg, comp });
+        const comp = await qwenImageCompanions(model);
+        workflow = buildQwenImage({ model, prompt, negative: negative_prompt || "", width, height, seed, cfg: qwenTurboCfg(cfg, opts, comp), comp });
       } else if (KREA2_RE.test(model)) {
         // Krea-2 txt2img (UNET + CLIPLoader "krea2" + Qwen-Image VAE). The style-reference
         // route never reaches here — its sentinel is an edit model, dispatched above.

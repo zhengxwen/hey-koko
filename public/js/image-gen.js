@@ -132,6 +132,11 @@ function comfyOverrides() {
   if (dom.comfyParamUpscaleModel?.value) ov.upscaleModel = dom.comfyParamUpscaleModel.value; // manual upscale model (empty = auto)
   if (dom.comfyParamRestoreModel?.value) ov.restoreModel = dom.comfyParamRestoreModel.value; // 1x de-artifact model ("off" = the blur fallback)
   if (dom.comfyParamSharpen?.value) ov.sharpen = dom.comfyParamSharpen.value; // video upscale: post-resize unsharp mask (light|medium|strong)
+  if (dom.comfyParamControlPrep?.value) ov.controlPrep = dom.comfyParamControlPrep.value; // qwen control: canny | raw
+  const ctlStrength = num(dom.comfyParamControlStrength?.value);
+  if (ctlStrength !== undefined) ov.controlStrength = ctlStrength;   // how hard the control map is enforced
+  const layerCount = num(dom.comfyParamLayerCount?.value);
+  if (layerCount !== undefined) ov.layerCount = layerCount;          // qwen layered: how many layers to split into
   if (dom.comfyParamUpscaleTarget?.value) ov.upscaleTarget = Number(dom.comfyParamUpscaleTarget.value); // long side, px (empty = 2x capped)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
   if (dom.comfyParamVideoCodec?.value) ov.videoCodec = dom.comfyParamVideoCodec.value; // video: h264 (default) | h265, via VHS_VideoCombine

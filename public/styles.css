@@ -6227,11 +6227,15 @@ body.isResizingComposer {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  /* Room for the SELECTED dot's ring: it is drawn as a box-shadow 4px outside the dot
+     and the dot is scaled 1.1, so without this the first swatch's ring sits flush
+     against the panel edge (and the top/bottom ring gets cramped by the rows above). */
+  padding: 4px 0 4px 10px;
 }
 
 .themeColorDot {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   cursor: pointer;
   border: 3px solid transparent;

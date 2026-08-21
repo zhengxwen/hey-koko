@@ -149,6 +149,16 @@ const SENTINEL_IDS = {
   // style-reference LoRA and a different graph (TextEncodeQwenImageEditPlus +
   // SamplerCustomAdvanced), so it is a MODE — ":" — not a separate model.
   krea2_style_ref: "krea2-turbo:style-ref",
+  // The Qwen-Image control / decomposition routes: the same base weights driven through a
+  // different control mechanism, so each is a MODE of qwen-image — except Fun Union, which
+  // only runs on the 2512 base, and Relight, which is a LoRA on the 2509 edit weights.
+  "qwen-control": "qwen-image:control",
+  "qwen-control-patch": "qwen-image:control-patch",
+  "qwen-control-lora": "qwen-image:control-lora",
+  "qwen-control-2512": "qwen-image-2512:control",
+  "qwen-inpaint": "qwen-image:inpaint",
+  "qwen-layered": "qwen-image:layered",
+  "qwen-relight": "qwen-image-edit:relight",
 };
 
 // Filename → id, matched against the PRECISION-STRIPPED base. Stripping first is what
@@ -175,7 +185,9 @@ const FILE_ID_RULES = [
   [/boogu.*edit/, "boogu-edit"],
   [/boogu.*base/, "boogu-base"],
   [/boogu.*turbo/, "boogu-turbo"],
+  [/qwen.?image.?edit.*2511|qwen.*2511.*edit/, "qwen-image-edit-2511"],
   [/qwen.?image.?edit/, "qwen-image-edit"],
+  [/qwen.?image.*2512|qwen.*2512/, "qwen-image-2512"],
   [/qwen.?image/, "qwen-image"],
   [/omnigen/, "omnigen2"],
   [/pix2pix|instruct.?pix/, "instruct-pix2pix"],
@@ -256,6 +268,15 @@ const ID_LABELS = {
   "boogu-edit": "Boogu Edit",
   "qwen-image": "Qwen-Image",
   "qwen-image-edit": "Qwen-Image-Edit 2509",
+  "qwen-image-edit-2511": "Qwen-Image-Edit 2511",
+  "qwen-image-2512": "Qwen-Image 2512",
+  "qwen-image:control": "Qwen-Image ControlNet (InstantX Union)",
+  "qwen-image:control-patch": "Qwen-Image ControlNet (DiffSynth patch)",
+  "qwen-image:control-lora": "Qwen-Image ControlNet (DiffSynth union LoRA)",
+  "qwen-image-2512:control": "Qwen-Image 2512 ControlNet (Fun Union)",
+  "qwen-image:inpaint": "Qwen-Image Inpainting (InstantX)",
+  "qwen-image:layered": "Qwen-Image Layered",
+  "qwen-image-edit:relight": "Qwen-Image-Edit Relight",
   omnigen2: "OmniGen2",
   "instruct-pix2pix": "Instruct-Pix2Pix",
   triposplat: "TripoSplat (image → 3D splat)",

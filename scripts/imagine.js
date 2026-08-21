@@ -227,7 +227,7 @@ Server
 Exit: 0 all good, 1 usage/setup error, 2 one or more renders failed.`;
 
 function parseArgv(argv) {
-  const o = { images: [], addFiles: [], opts: {}, options: {} };
+  const o = { images: [], mask: "", addFiles: [], opts: {}, options: {} };
   const need = (i, flag) => {
     if (i + 1 >= argv.length) { throw new Error(`${flag} needs a value`); }
     return argv[i + 1];
@@ -242,6 +242,10 @@ function parseArgv(argv) {
       case "-m": case "--model": o.model = need(i, a).toLowerCase(); i++; break;
       case "--precision": o.precision = need(i, a); i++; break;
       case "-i": case "--image": o.images.push(need(i, a)); i++; break;
+      // The white area of this picture is the region to repaint — what the mask
+      // brush paints in the browser. Only the inpainting route requires one; the
+      // instruction-edit models take it as an optional "change only here" hint.
+      case "--mask": o.mask = need(i, a); i++; break;
       case "--video": o.video = need(i, a); i++; break;
       case "--audio": o.audio = need(i, a); i++; break;
       case "-s": case "--second": o.seconds = parseFloat(String(need(i, a)).replace(/s$/i, "")); i++; break;
@@ -427,6 +431,7 @@ function taskFromArgs(a) {
   if (a.prompt) t.prompt = a.prompt;
   if (a.negative) t.negative = a.negative;
   if (a.images.length) t.images = a.images.slice();
+  if (a.mask) t.mask = a.mask;
   if (a.video) t.video = a.video;
   if (a.audio) t.audio = a.audio;
   if (a.seconds > 0) t.seconds = a.seconds;
@@ -581,6 +586,7 @@ async function runTask(task, cli, ctx) {
   // it IS the music description the model conditions on.
   const isMusic = model.group === "music";
   const images = (task.images || []).map(readB64);
+  const mask = task.mask ? readB64(task.mask) : "";
 
   if (isMusic) {
     if (!task.prompt) {
@@ -599,6 +605,13 @@ async function runTask(task, cli, ctx) {
   }
   if (model.spec.needsVideo && !model.spec.videoOptional && !task.video) {
     throw new Error(`${model.id} needs a source video (--video <file>)`);
+  }
+  // Inpainting is defined by its mask: white = repaint, black = keep.
+  if (model.spec.needsMask && !mask) {
+    throw new Error(`${model.id} needs a mask (--mask <file>): white where the picture should be repainted, black everywhere else`);
+  }
+  if (mask && !images.length) {
+    throw new Error("--mask marks a region OF an image — attach the picture too (-i <file>)");
   }
   if (!task.prompt && !images.length && !task.video) {
     throw new Error("nothing to work from: give a prompt, an image, or a video");
@@ -688,6 +701,7 @@ async function runTask(task, cli, ctx) {
       negative_prompt: task.negative || "",
       options: perOptions,
       images: images.length ? images : undefined,
+      mask: mask || undefined,
       sourceVideoName, sourceVideoFrames, sourceVideoFps, sourceVideoWidth, sourceVideoHeight,
       sourceAudioName, sourceAudioDuration,
       timeout,

@@ -53,6 +53,9 @@ export function saveCurrentSettings() {
         upscaleTarget: dom.comfyParamUpscaleTarget?.value || "",
         restoreModel: dom.comfyParamRestoreModel?.value || "",
         sharpen: dom.comfyParamSharpen?.value || "",
+        controlPrep: dom.comfyParamControlPrep?.value || "",
+        controlStrength: dom.comfyParamControlStrength?.value || "",
+        layerCount: dom.comfyParamLayerCount?.value || "",
         fps: dom.comfyParamFps?.value || "",
         targetFps: dom.comfyParamTargetFps?.value || "",
         interpMethod: dom.comfyParamInterpMethod?.value || "rife",
@@ -303,6 +306,9 @@ export function loadSavedSettings() {
     if (dom.comfyParamTargetFps) dom.comfyParamTargetFps.value = cp.targetFps || "";
     if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = cp.interpMethod || "rife";
     if (dom.comfyParamSharpen) dom.comfyParamSharpen.value = cp.sharpen || "";
+    if (dom.comfyParamControlPrep) dom.comfyParamControlPrep.value = cp.controlPrep || "canny";
+    if (dom.comfyParamControlStrength) dom.comfyParamControlStrength.value = cp.controlStrength || "";
+    if (dom.comfyParamLayerCount) dom.comfyParamLayerCount.value = cp.layerCount || "";
     // Best-effort — applyComfyModels re-applies this once the option list has loaded.
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;

@@ -413,7 +413,7 @@ export async function refreshBgWorkers() {
         edit: new Set(editModels.map((m) => m.name)),
         video: new Set(videoModels.map((m) => m.name)),
         videoIn: new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name)),
-        multiImage: new Set(editModels.filter((m) => m.type === "qwen").map((m) => m.name)),
+        multiImage: new Set(editModels.filter((m) => m.type === "qwen" || m.type === "qwen2511").map((m) => m.name)),
         // Needed by workerHasModel: without it a mesh job matches NO lane and falls back
         // to "any online one", which may well be a box without the 3D weights.
         mesh: new Set(meshModels.map((m) => m.name)),
@@ -518,7 +518,7 @@ function applyComfyModels(data) {
     // Qwen-Image-Edit accepts 2-3 reference images (multi-image composition).
     // Multi-reference compose: Qwen-Image-Edit-2509, and Bernini subject→image
     // (r2i is inherently multi-ref — "image0 wearing image1 in image2's scene").
-    state.comfyMultiImageModels = new Set(editModels.filter((m) => m.type === "qwen" || m.type === "bernini-r2i").map((m) => m.name));
+    state.comfyMultiImageModels = new Set(editModels.filter((m) => m.type === "qwen" || m.type === "qwen2511" || m.type === "bernini-r2i").map((m) => m.name));
     // Reference-driven models (r2v + subject→image): every staged image gets its own 🖌
     // button, and a mask there is a SUBJECT CUTOUT (keep what is inside), not an inpaint
     // region. Server-decided (refMaskModel) so a new model can't fall out of step.
@@ -563,6 +563,10 @@ function applyComfyModels(data) {
     if (dom.comfyParamUpscaleTarget) {
       const labels = ["comfy_upscaleTarget_auto", "comfy_upscaleTarget_1080", "comfy_upscaleTarget_1440", "comfy_upscaleTarget_4k"];
       [...dom.comfyParamUpscaleTarget.options].forEach((o, i) => { if (labels[i]) o.textContent = t(labels[i]); });
+    }
+    if (dom.comfyParamControlPrep) {
+      const labels = ["comfy_controlPrep_canny", "comfy_controlPrep_raw"];
+      [...dom.comfyParamControlPrep.options].forEach((o, i) => { if (labels[i]) o.textContent = t(labels[i]); });
     }
     if (dom.comfyParamSharpen) {
       const labels = ["comfy_sharpen_off", "comfy_sharpen_light", "comfy_sharpen_medium", "comfy_sharpen_strong"];
@@ -1109,6 +1113,13 @@ function comfyModelHint(name) {
   // Image edit (needs a reference image + an instruction).
   if (/kontext/.test(n)) return t("oll_hint_kontext");
   if (/boogu.*edit/.test(n)) return t("oll_hint_booguEdit");
+  if (n === "qwen-control" || n === "qwen-control-2512") return t("oll_hint_qwenControl");
+  if (n === "qwen-control-patch") return t("oll_hint_qwenControlPatch");
+  if (n === "qwen-control-lora") return t("oll_hint_qwenControlLora");
+  if (n === "qwen-inpaint") return t("oll_hint_qwenInpaint");
+  if (n === "qwen-layered") return t("oll_hint_qwenLayered");
+  if (n === "qwen-relight") return t("oll_hint_qwenRelight");
+  if (/qwen.*edit.*2511|qwen.*2511/.test(n)) return t("oll_hint_qwenEdit2511");
   if (/qwen.*edit/.test(n)) return t("oll_hint_qwenEdit");
   if (/omnigen/.test(n)) return t("oll_hint_omnigen");
   if (/pix2pix|ip2p|instruct/.test(n)) return t("oll_hint_pix2pix");
@@ -1864,6 +1875,13 @@ export function updateComfyParamVisibility() {
   // Sharpening is wired into the video-enhance builder only (the image upscale tail has
   // no equivalent node), so it stays with that entry.
   setVis(dom.comfyParamSharpen, /video-enhance/i.test(m));
+  // Qwen control routes: what the attachment is, and how hard the control is enforced.
+  // Inpainting takes its region from the 🖌 instead of a control map, so it gets the
+  // strength knob but not the Canny/raw one.
+  const qwenControl = /^qwen-control/.test(m);
+  setVis(dom.comfyParamControlPrep, qwenControl);
+  setVis(dom.comfyParamControlStrength, qwenControl || m === "qwen-inpaint");
+  setVis(dom.comfyParamLayerCount, m === "qwen-layered");
   // Image-edit / txt2img only.
   setVis(dom.comfyParamImageCfg, diffusion && !video && !mesh && !music);
   // Quantisation preference — diffusion models only (the upscale pipelines load an

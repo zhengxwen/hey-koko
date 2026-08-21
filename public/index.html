@@ -1111,6 +1111,21 @@
               <option value="off">Blur (built-in, cheaper)</option>
             </select>
           </label>
+          <label title="Qwen ControlNet routes only: what the attached picture IS. Edge map (Canny) turns a photo into line art for the ControlNet to follow — use it for an ordinary photo. Use as-is passes the picture through untouched, which is what you want when it ALREADY is a control map (a depth pass, a pose skeleton, a scribble).">
+            <span id="comfyParamControlPrepLabel">Control input</span>
+            <select id="comfyParamControlPrep">
+              <option value="canny">Edge map (Canny)</option>
+              <option value="raw">Use as-is (already a control map)</option>
+            </select>
+          </label>
+          <label title="Qwen ControlNet routes only: how hard the control map is enforced. 1.0 is the templates' value. Lower it when the control fights the prompt; raise it when the result drifts off the reference structure.">
+            <span id="comfyParamControlStrengthLabel">Control strength</span>
+            <input id="comfyParamControlStrength" type="number" min="0" max="2" step="0.05" placeholder="1.0" />
+          </label>
+          <label title="Qwen Layered only: how many layers to split the picture into. 2 = background + subject; more separates the subjects from each other. Every layer is returned as its own image.">
+            <span id="comfyParamLayerCountLabel">Layers</span>
+            <input id="comfyParamLayerCount" type="number" min="2" max="6" step="1" placeholder="3" />
+          </label>
           <label>
             <span id="comfyParamSharpenLabel" title="Video upscale only: an unsharp-mask pass AFTER the resize. Set the upscale model to Off and leave the size alone to sharpen a clip at its original resolution and nothing else. Do not overdo it — past Medium, video picks up halos that flicker frame to frame.">Sharpen</span>
             <select id="comfyParamSharpen">
