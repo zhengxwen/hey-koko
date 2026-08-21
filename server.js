@@ -597,6 +597,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/gallery/upload") { gallery.handleUpload(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/reveal") { gallery.handleReveal(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/rename") { gallery.handleRename(req, res); return; }
+  if (req.method === "POST" && req.url === "/api/gallery/hide") { gallery.handleHide(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/move") { gallery.handleMove(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/folder") { gallery.handleFolderCreate(req, res); return; }
   if (req.method === "POST" && req.url === "/api/gallery/folder-rename") { gallery.handleFolderRename(req, res); return; }

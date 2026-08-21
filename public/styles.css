@@ -7858,6 +7858,14 @@ body.isResizingComposer {
 /* Same reveal-on-hover as the chat's copy of this button. */
 .galleryDetailMedia:hover .videoFullscreenBtn { opacity: 1; }
 
+/* Hide/unhide sits in the action row with the other verdicts on the file, so it takes
+   that row's sizing; only the "already hidden" state needs saying, and it says it by
+   looking like the toggle it is rather than one more thing to click. */
+.galleryHideBtn.isHidden {
+  background: var(--accent);
+  color: #fff;
+}
+
 .galleryDetail dl {
   display: grid;
   grid-template-columns: auto 1fr;

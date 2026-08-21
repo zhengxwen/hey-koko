@@ -509,6 +509,14 @@
                     <option value="rated">Rated</option>
                     <option value="unrated">Unrated</option>
                   </select>
+                  <!-- The one facet with a non-empty default: a hidden file is hidden,
+                       so "" means EXCLUDE, not "no filter". "Only hidden" is how you get
+                       back to something in order to unhide it. -->
+                  <select id="galleryHiddenFilter" class="libraryRatingFilter">
+                    <option value="">Hidden: excluded</option>
+                    <option value="include">Hidden: shown too</option>
+                    <option value="only">Hidden only</option>
+                  </select>
                   <button id="galleryFilterClear" type="button" class="secondary galleryFilterClearBtn">Clear filters</button>
                   <!-- Not a facet: it TICKS everything the reference graph cannot account
                        for, so the ordinary 🗑 does the deleting with its own confirmation.

@@ -1606,6 +1606,17 @@ const UI = {
     gal_deleteSelHint: "Delete the selected files from the gallery",
     gal_confirmDeleteMany: "Delete ${n} selected file(s) (${size}) from the gallery? This cannot be undone.",
     gal_confirmDeleteManyUsed: "${n} of them are used in a conversation or an archive, which will show a placeholder instead.",
+    gal_hide: "🙈 Hide",
+    gal_unhide: "👁 Unhide",
+    gal_hideHint: "Keep the file, stop it turning up — the Filter panel brings hidden files back",
+    gal_unhideHint: "Show this file in the gallery again",
+    gal_hideSel: "🙈 Hide",
+    gal_hideSelHint: "Hide the ticked files",
+    gal_unhideSel: "👁 Unhide",
+    gal_unhideSelHint: "Show the ticked files in the gallery again",
+    gal_hiddenExcluded: "Hidden: excluded",
+    gal_hiddenIncluded: "Hidden: shown too",
+    gal_hiddenOnly: "Hidden only",
     gal_openFull: "Click to view full size",
     gal_tidyNone: "Nothing to tidy \u2014 every file is still referenced by a conversation or archive.",
     gal_tidyPicked: "🧹 Ticked ${n} unreferenced file(s), ${size}.",
@@ -3222,6 +3233,17 @@ const UI = {
     gal_deleteSelHint: "把选中的文件从作品库删除",
     gal_confirmDeleteMany: "从作品库删除选中的 ${n} 件（${size}）？不可撤销。",
     gal_confirmDeleteManyUsed: "其中 ${n} 件在对话或存档中被引用，删除后那些位置会显示占位提示。",
+    gal_hide: "🙈 隐藏",
+    gal_unhide: "👁 取消隐藏",
+    gal_hideHint: "文件留着，只是不再出现——在「筛选」里可以把隐藏的调回来",
+    gal_unhideHint: "让这个文件重新出现在作品库里",
+    gal_hideSel: "🙈 隐藏",
+    gal_hideSelHint: "隐藏勾选的文件",
+    gal_unhideSel: "👁 取消隐藏",
+    gal_unhideSelHint: "让勾选的文件重新出现在作品库里",
+    gal_hiddenExcluded: "隐藏文件：不显示",
+    gal_hiddenIncluded: "隐藏文件：一并显示",
+    gal_hiddenOnly: "只看隐藏的",
     gal_openFull: "点击查看大图",
     gal_tidyNone: "没什么可整理的 —— 每个文件都还被某个对话或存档引用着。",
     gal_tidyPicked: "🧹 已勾选 ${n} 个未被引用的文件，共 ${size}。",
@@ -4838,6 +4860,17 @@ const UI = {
     gal_deleteSelHint: "把選取的檔案從作品庫刪除",
     gal_confirmDeleteMany: "從作品庫刪除選取的 ${n} 件（${size}）？不可復原。",
     gal_confirmDeleteManyUsed: "其中 ${n} 件在對話或封存中被引用，刪除後那些位置會顯示佔位提示。",
+    gal_hide: "🙈 隱藏",
+    gal_unhide: "👁 取消隱藏",
+    gal_hideHint: "檔案留著，只是不再出現——在「篩選」裡可以把隱藏的調回來",
+    gal_unhideHint: "讓這個檔案重新出現在作品庫裡",
+    gal_hideSel: "🙈 隱藏",
+    gal_hideSelHint: "隱藏勾選的檔案",
+    gal_unhideSel: "👁 取消隱藏",
+    gal_unhideSelHint: "讓勾選的檔案重新出現在作品庫裡",
+    gal_hiddenExcluded: "隱藏檔案：不顯示",
+    gal_hiddenIncluded: "隱藏檔案：一併顯示",
+    gal_hiddenOnly: "只看隱藏的",
     gal_openFull: "點擊查看大圖",
     gal_tidyNone: "沒什麼可整理的 —— 每個檔案都還被某個對話或存檔引用著。",
     gal_tidyPicked: "🧹 已勾選 ${n} 個未被引用的檔案，共 ${size}。",
@@ -5667,6 +5700,15 @@ export function applyUILanguage() {
   // only set it here when nothing has painted it yet — a bare language switch.
   const galFilterBtn = document.querySelector("#galleryFilterBtn");
   if (galFilterBtn && !galFilterBtn.classList.contains("isOn")) galFilterBtn.textContent = t("gal_filter");
+  // All three rows are words, so all three are translated (unlike the rating facet,
+  // whose ★ rows are the same glyphs everywhere).
+  const galHidden = document.querySelector("#galleryHiddenFilter");
+  if (galHidden) {
+    for (const opt of galHidden.options) {
+      opt.textContent = t(opt.value === "" ? "gal_hiddenExcluded"
+        : opt.value === "include" ? "gal_hiddenIncluded" : "gal_hiddenOnly");
+    }
+  }
   const galFilterClear = document.querySelector("#galleryFilterClear");
   if (galFilterClear) galFilterClear.textContent = t("gal_filterClear");
   // The button is a door, so it is named after the room: the same words as the overlay's

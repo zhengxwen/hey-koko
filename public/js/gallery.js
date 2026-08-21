@@ -542,7 +542,35 @@ function updateBulkBar() {
     updateBulkBar();
   });
 
-  bar.append(count, move, clear, invert);
+  // Hiding is usually a verdict on a batch of takes, so it belongs beside Move: tick the
+  // duds, hide them all. One request for the lot (handleHide takes a list) rather than N
+  // racing each other into the ledger.
+  //
+  // Unhide when the selection is ALREADY entirely hidden — reachable through the "Hidden
+  // only" facet, where a button saying "Hide" would be nonsense. The label is computed
+  // from the selection rather than fixed: updateBulkBar runs on every tick, so it always
+  // describes what the click will actually do. A file the grid is not showing counts as
+  // not-hidden, so a mixed or off-page selection hides rather than silently unhiding.
+  const ids = [...selectedIds];
+  const allHidden = ids.length > 0 && ids.every((id) => items.find((x) => x.path === id)?.hidden);
+  const hide = document.createElement("button");
+  hide.type = "button";
+  hide.className = "secondary";
+  hide.textContent = allHidden ? t("gal_unhideSel") : t("gal_hideSel");
+  hide.title = allHidden ? t("gal_unhideSelHint") : t("gal_hideSelHint");
+  hide.classList.toggle("isHidden", allHidden);
+  hide.addEventListener("click", async () => {
+    if (!ids.length) return;
+    try {
+      await fetch("/api/gallery/hide", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, hidden: !allHidden }) });
+    } catch { return; }
+    selectedIds.clear();
+    await refresh();
+    await refreshStrip();
+  });
+
+  bar.append(count, move, hide, clear, invert);
 }
 
 // ---------------------------------------------------------------------------
@@ -907,6 +935,7 @@ function renderStripFilterChip(f) {
   const folderName = f.folder === "root" ? t("gal_folderRoot")
     : folderList.find((x) => x.fid === f.folder)?.name || "";
   const bits = [f.q ? `“${f.q}”` : "", pick("galleryTypeFilter"), pick("galleryRatingFilter"),
+                pick("galleryHiddenFilter"),
                 pick("gallerySourceFilter"), f.model, folderName].filter(Boolean);
   const label = `🔎 ${bits.join(" · ")}`;
   if (old && old.dataset.label === label) return;
@@ -920,7 +949,7 @@ function renderStripFilterChip(f) {
   chip.title = t("gal_stripFilterHint");
   chip.addEventListener("click", () => {
     for (const id of ["gallerySearch", "galleryTypeFilter", "gallerySourceFilter",
-                      "galleryModelFilter", "galleryRatingFilter"]) {
+                      "galleryModelFilter", "galleryRatingFilter", "galleryHiddenFilter"]) {
       const node = el(id);
       if (node) node.value = "";
     }
@@ -1157,7 +1186,7 @@ function rateWidget(e) {
       paintTileRating(e.path, e.rating);
       // A rating filter is on and this file may no longer belong in the list — re-run it
       // rather than leaving a row that contradicts the filter above it.
-      if (el("galleryRatingFilter")?.value) refresh();
+      if (el("galleryRatingFilter")?.value || el("galleryHiddenFilter")?.value) refresh();
     } catch {
       label.textContent = t("gal_rateFailed");
     }
@@ -1404,6 +1433,29 @@ function renderDetail() {
   }, t("gal_rerunHint"));
   // ✂️ — trim/stitch this clip (and any others picked in the editor's lane later).
   if (e.kind === "video") act(`✂️ ${t("vedit_open")}`, () => openVideoEditor([e.path]), t("vedit_openHint"));
+  // Hidden: out of the way, not gone. A file you do not want to see again but will not
+  // delete — a bad take you might still want the seed of — has nowhere else to go: a ★0
+  // still fills the grid, and a folder still shows in the folder row. It belongs with
+  // the other verdicts on the file, not floating on its own above the metadata.
+  const hideBtn = act(e.hidden ? t("gal_unhide") : t("gal_hide"), async () => {
+    const want = !e.hidden;
+    try {
+      const r = await fetch("/api/gallery/hide", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: e.path, hidden: want }) }).then((x) => x.json());
+      if (!r || !r.ok) return;
+      if (want) e.hidden = true; else delete e.hidden;   // `e` is the live object in `items`
+      hideBtn.textContent = e.hidden ? t("gal_unhide") : t("gal_hide");
+      hideBtn.title = e.hidden ? t("gal_unhideHint") : t("gal_hideHint");
+      hideBtn.classList.toggle("isHidden", !!e.hidden);
+      // Under the default filter the file has just left the answer, so the grid and the
+      // strip must be re-asked rather than repainted in place.
+      await refresh();
+      await refreshStrip();
+    } catch { /* the button keeps its label; the next click retries */ }
+  }, e.hidden ? t("gal_unhideHint") : t("gal_hideHint"));
+  hideBtn.classList.add("galleryHideBtn");
+  hideBtn.classList.toggle("isHidden", !!e.hidden);
+
   act(t("gal_reveal"), async () => {
     await fetch("/api/gallery/reveal", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: e.path }) });
@@ -1569,7 +1621,9 @@ async function deleteItem(entry) {
 async function tidy() {
   setFilterMenuOpen(false);
   await loadArchiveRefs();
-  const all = await fetch("/api/gallery/list?limit=500").then((r) => r.json()).catch(() => ({ items: [] }));
+  // hidden=include: a hidden file is still on disk taking space, and "nothing points at
+  // it" is exactly the verdict that makes it worth deleting rather than just tucking away.
+  const all = await fetch("/api/gallery/list?limit=500&hidden=include").then((r) => r.json()).catch(() => ({ items: [] }));
   const orphans = (all.items || []).filter((e) => {
     const r = refsFor(e.path);
     return !r.live.length && !r.archived.length;
@@ -1579,6 +1633,10 @@ async function tidy() {
   // Clear the facets first. Ticking files the filter is hiding would show a count with
   // nothing under it, and 🗑 would then delete what was never on screen.
   for (const id of MENU_FACETS) { const node = el(id); if (node) node.value = ""; }
+  // …including the hidden facet, whose cleared value EXCLUDES. If any orphan is hidden,
+  // clearing it would put the ticks back out of sight, which is the exact failure the
+  // line above exists to prevent.
+  if (orphans.some((e) => e.hidden)) { const h = el("galleryHiddenFilter"); if (h) h.value = "include"; }
   const search = el("gallerySearch");
   if (search) search.value = "";
   activeFolder = null;
@@ -1610,6 +1668,7 @@ function currentFilter() {
     source: el("gallerySourceFilter")?.value || "",
     model: el("galleryModelFilter")?.value || "",
     rating: el("galleryRatingFilter")?.value || "",
+    hidden: el("galleryHiddenFilter")?.value || "",
     folder: activeFolder || "",
   };
 }
@@ -1617,10 +1676,11 @@ function currentFilter() {
 const filterIsOn = (f) => !!(f.q || f.type || f.source || f.model || f.rating || f.folder);
 const filterKey = (f) => `${f.q} ${f.type} ${f.source} ${f.model} ${f.rating} ${f.folder}`;
 
-// The four facets behind the button. The search box and the folder chips are their own
+// The facets behind the button. The search box and the folder chips are their own
 // visible controls, so they are not counted here — this number answers "how much is the
 // panel hiding", not "how filtered is the gallery".
-const MENU_FACETS = ["galleryTypeFilter", "galleryModelFilter", "gallerySourceFilter", "galleryRatingFilter"];
+const MENU_FACETS = ["galleryTypeFilter", "galleryModelFilter", "gallerySourceFilter",
+                     "galleryRatingFilter", "galleryHiddenFilter"];
 
 function setFilterMenuOpen(open) {
   const menu = el("galleryFilterMenu");
@@ -1653,6 +1713,10 @@ function filterParams(f, extra = {}) {
   // is what makes "show me everything I rated ★4+" a real query rather than a narrowing
   // of whichever 200 came back.
   if (f.rating) params.set("rating", f.rating);
+  // Always sent, blank included: blank means EXCLUDE hidden, which is a real instruction
+  // and the server's default only by coincidence. Spelling it out keeps the two ends from
+  // disagreeing the day the default changes.
+  params.set("hidden", f.hidden || "");
   // Server-side (unlike the source filter): the ledger is the only place that knows every
   // entry's model, and filtering before the page limit is what makes it a real filter
   // rather than a narrowing of whatever 200 happened to come back.
@@ -1817,6 +1881,7 @@ export function initGallery() {
   el("galleryTypeFilter")?.addEventListener("change", refresh);
   el("galleryModelFilter")?.addEventListener("change", refresh);
   el("galleryRatingFilter")?.addEventListener("change", refresh);
+  el("galleryHiddenFilter")?.addEventListener("change", refresh);
 
   // The filter panel. It stays open while facets are set — narrowing by media type and
   // then by rating is one action in the user's head, and a panel that shut after each

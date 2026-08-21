@@ -258,10 +258,16 @@ function absPathOf(id) {
   return abs.startsWith(GALLERY_DIR) ? abs : null;
 }
 
-function list({ type, model, source, q, rating, before, beforePath, limit = 60, folder } = {}) {
+function list({ type, model, source, q, rating, hidden, before, beforePath, limit = 60, folder } = {}) {
   load();
   const needle = String(q || "").toLowerCase();
   let all = [...entries.values()];
+  // Hidden is the ONLY facet with a non-empty default: the point of hiding a file is that
+  // it stops turning up, so "" excludes rather than "does not filter". "include" shows
+  // everything, "only" is how you find what you hid in order to unhide it. Applied first
+  // so every other facet counts within the visible set.
+  if (hidden === "only") all = all.filter((e) => !!e.hidden);
+  else if (hidden !== "include") all = all.filter((e) => !e.hidden);
   if (type) all = all.filter((e) => e.kind === type);
   // Folder facet: undefined = everything, "root" = unfiled, else a fid. An entry whose
   // folder was deleted (dangling fid) reads as root everywhere.
@@ -414,6 +420,22 @@ function rate(id, rating) {
   const n = Number(rating);
   if (rating == null || rating === "" || !Number.isFinite(n)) delete next.rating;
   else next.rating = Math.max(0, Math.min(5, Math.round(n * 2) / 2));
+  entries.set(id, next);
+  append(next);
+  return next;
+}
+
+// Hidden: out of the way without being gone. Same shape as a rating — a metadata-only
+// flag written as a fresh full record, the file itself untouched — but it is the one
+// field that changes what list() returns by DEFAULT, so it is stored only when true and
+// deleted otherwise: an entry carrying `hidden: false` forever would be a lie about ever
+// having been hidden, and the filter reads truthiness anyway.
+function setHidden(id, hidden) {
+  load();
+  const cur = entries.get(id);
+  if (!cur) return null;
+  const next = { ...cur };
+  if (hidden) next.hidden = true; else delete next.hidden;
   entries.set(id, next);
   append(next);
   return next;
@@ -828,6 +850,7 @@ function handleList(req, res) {
       source: u.searchParams.get("source") || undefined,
       q: u.searchParams.get("q") || undefined,
       rating: u.searchParams.get("rating") || undefined,
+      hidden: u.searchParams.get("hidden") || undefined,
       before: u.searchParams.get("before") || undefined,
       beforePath: u.searchParams.get("beforePath") || undefined,
       limit: u.searchParams.get("limit") || undefined,
@@ -960,6 +983,20 @@ async function handleRate(req, res) {
     const e = rate(String(body.id || ""), body.rating);
     if (!e) { sendJson(res, 404, { error: "not in gallery" }); return; }
     sendJson(res, 200, { ok: true, rating: e.rating ?? null });
+  } catch (e) { sendJson(res, 500, { error: e.message }); }
+}
+
+// { id | ids, hidden } — hide or unhide. Takes a list because hiding is usually a bulk
+// verdict on a batch of takes, and one request beats N round trips racing the ledger.
+async function handleHide(req, res) {
+  try {
+    const body = await readBody(req);
+    const ids = Array.isArray(body.ids) ? body.ids : [String(body.id || "")];
+    const on = !!body.hidden;
+    let n = 0;
+    for (const id of ids) { if (setHidden(String(id), on)) n++; }
+    if (!n) { sendJson(res, 404, { error: "not in gallery" }); return; }
+    sendJson(res, 200, { ok: true, hidden: on, n });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
@@ -1131,10 +1168,10 @@ async function handleImport(req, res) {
 
 module.exports = {
   GALLERY_DIR, record, recordMany, get, list, stats, remove, describe, rate, compact, archiveRefs, makeThumb,
-  setDisplayName, setFolder, createFolder, renameFolder, deleteFolder, listFolders, absPathOf, probeSpecs,
+  setDisplayName, setHidden, setFolder, createFolder, renameFolder, deleteFolder, listFolders, absPathOf, probeSpecs,
   handleList, handleEntry, handleFile, handleThumb, handlePutThumb, handleDelete, handleDescribe, handleRate, handleStats,
   handleRefs, handleCompact, handleImport, handleUpload, handleReveal, handleProbe,
-  handleRename, handleMove, handleFolderCreate, handleFolderRename, handleFolderDelete,
+  handleRename, handleHide, handleMove, handleFolderCreate, handleFolderRename, handleFolderDelete,
   backfill, missingSpecs,
   _reset() { entries = null; hashIndex = null; folders = null; },   // tests
 };
