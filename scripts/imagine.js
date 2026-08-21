@@ -160,6 +160,8 @@ Model
 
 Inputs
   -i, --image <path>       reference/first-frame image; repeat for more (r2v takes up to 9)
+      --mask <path>        region to repaint: white = change, black = keep (required by
+                           qwen-image:inpaint, an optional hint for the edit models)
       --video <path>       source or reference video
       --audio <path>       source or reference audio
 
@@ -714,7 +716,7 @@ async function runTask(task, cli, ctx) {
     };
 
     if (cli.dryRun) {
-      const shown = { ...body, images: images.length ? [`<${images.length} image(s)>`] : undefined };
+      const shown = { ...body, images: images.length ? [`<${images.length} image(s)>`] : undefined, mask: mask ? "<mask>" : undefined };
       // Indented for a human, but ONE LINE under --json: a caller parsing the stream
       // line by line must not have to special-case this mode.
       process.stdout.write((cli.json ? JSON.stringify(shown) : JSON.stringify(shown, null, 2)) + "\n");
