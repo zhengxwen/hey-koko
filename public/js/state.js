@@ -77,6 +77,15 @@ export const dom = {
   comfyParamControlStrengthLabel: document.querySelector("#comfyParamControlStrengthLabel"),
   comfyParamLayerCount: document.querySelector("#comfyParamLayerCount"),
   comfyParamLayerCountLabel: document.querySelector("#comfyParamLayerCountLabel"),
+  comfyParamCamStrength: document.querySelector("#comfyParamCamStrength"),
+  comfyParamCamStrengthLabel: document.querySelector("#comfyParamCamStrengthLabel"),
+  comfyCamPicker: document.querySelector("#comfyCamPicker"),
+  comfyCamAzimuth: document.querySelector("#comfyCamAzimuth"),
+  comfyCamElevation: document.querySelector("#comfyCamElevation"),
+  comfyCamDistance: document.querySelector("#comfyCamDistance"),
+  comfyCamAzimuthCaption: document.querySelector("#comfyCamAzimuthCaption"),
+  comfyCamElevationCaption: document.querySelector("#comfyCamElevationCaption"),
+  comfyCamPrompt: document.querySelector("#comfyCamPrompt"),
   comfyParamSharpenLabel: document.querySelector("#comfyParamSharpenLabel"),
   comfyParamFps: document.querySelector("#comfyParamFps"),
   comfyParamTargetFps: document.querySelector("#comfyParamTargetFps"),
@@ -266,6 +275,11 @@ export const state = {
   scrollPin: null,                   // when set (resend/edit in place), auto-scroll holds this scrollTop instead of jumping to the bottom
   _pinClearTimer: null,              // delayed release of scrollPin once generation fully ends
   stickToBottom: true,               // streaming auto-scroll only while the user sits near the bottom (so they can scroll up mid-generation)
+  // Qwen 3D Camera: which of the LoRA's 96 poses the ⚙ dial is on. Kept as KEYS, not
+  // as the trained English phrase — the server owns that vocabulary (cameraPrompt).
+  camAzimuth: "front",
+  camElevation: "eye",
+  camDistance: "medium",
   animateMaskPoint: null,            // Wan Animate REPLACE: user's ⚙-picked {x,y} (0–1) of which person to replace; null = auto center
   comfyVramGib: null,                // usable VRAM (GiB) of the target ComfyUI box, from /system_stats; scales Wan Animate's per-pass frame cap (multi-worker → MIN across lanes, for OOM safety). null = unknown → 32GB reference table
   comfyDevices: [],                  // detected ComfyUI GPU(s) for display in the model picker: [{ gpuName, vramGib, hostname }] — one per online endpoint/lane

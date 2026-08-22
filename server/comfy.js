@@ -478,16 +478,52 @@ const QWEN_CONTROL_LORA = "qwen-control-lora";    // DiffSynth union control LoR
 const QWEN_CONTROL_2512 = "qwen-control-2512";    // Fun Union ControlNet, 2512 base
 const QWEN_INPAINT = "qwen-inpaint";              // InstantX inpainting ControlNet
 const QWEN_LAYERED = "qwen-layered";              // decompose a picture into RGBA layers
-const QWEN_RELIGHT = "qwen-relight";              // 2509 + the Relight LoRA
+const QWEN_RELIGHT = "qwen-relight";              // 2511, plus a Relight LoRA when one is installed
+const QWEN_ANGLES = "qwen-angles";                // 2511, plus fal's Multiple-Angles LoRA (96 camera poses)
 // Every Qwen recipe except the layered one wants the ordinary qwen_image_vae. The
 // layered model ships its OWN vae, whose filename also reads "qwen…image…vae" and
 // sorts FIRST alphabetically — so a generic match silently hands the layered vae to
 // txt2img, edit, control and inpaint alike. Excluded here, once, for all of them.
+// fal's Multiple-Angles LoRA answers to a fixed 96-word vocabulary and nothing else:
+// `<sks> <azimuth> <elevation> <distance>`, in that order. These strings ARE the recipe
+// (the LoRA was trained on exactly them), so they are data rather than UI copy and never
+// get translated — the ⚙ picker shows localized labels and sends these keys.
+const CAM_AZIMUTH = {
+  front: "front view",
+  "front-right": "front-right quarter view",
+  right: "right side view",
+  "back-right": "back-right quarter view",
+  back: "back view",
+  "back-left": "back-left quarter view",
+  left: "left side view",
+  "front-left": "front-left quarter view",
+};
+const CAM_ELEVATION = { low: "low-angle shot", eye: "eye-level shot", elevated: "elevated shot", high: "high-angle shot" };
+const CAM_DISTANCE = { close: "close-up", medium: "medium shot", wide: "wide shot" };
+// Compose the camera instruction. Anything the user typed is NOT appended: the LoRA was
+// trained on the bare pose phrase, and upstream's own guidance is "use the exact prompt
+// format" — free text alongside it pulls the render away from the requested viewpoint.
+// Published to clients (proxyComfyModels) so nothing else has to keep its own copy of
+// these words: the CLI validates `--camera` against THIS list, so adding a pose here
+// reaches the CLI without touching it.
+const CAMERA_VOCAB = {
+  azimuth: Object.keys(CAM_AZIMUTH),
+  elevation: Object.keys(CAM_ELEVATION),
+  distance: Object.keys(CAM_DISTANCE),
+  defaults: { azimuth: "front", elevation: "eye", distance: "medium" },
+};
+
+function cameraPrompt(opts) {
+  const az = CAM_AZIMUTH[opts.camAzimuth] || CAM_AZIMUTH.front;
+  const el = CAM_ELEVATION[opts.camElevation] || CAM_ELEVATION.eye;
+  const di = CAM_DISTANCE[opts.camDistance] || CAM_DISTANCE.medium;
+  return `<sks> ${az} ${el} ${di}`;
+}
 const QWEN_VAE_RE = /^(?!.*layered).*(qwen.*image.*vae|qwen[-_]?image|qwen.*vae)/i;
 // The edit types that go through the shared Qwen-route dispatch rather than the generic
 // instruction-edit one. Same order as the ids above.
 const QWEN_ROUTES = new Set(["qwen-control", "qwen-control-patch", "qwen-control-lora",
-  "qwen-control-2512", "qwen-inpaint", "qwen-layered", "qwen-relight"]);
+  "qwen-control-2512", "qwen-inpaint", "qwen-layered", "qwen-relight", "qwen-angles"]);
 
 function editTypeOf(model) {
   if (!model) return null;
@@ -507,6 +543,7 @@ function editTypeOf(model) {
   if (model === QWEN_INPAINT) return "qwen-inpaint";
   if (model === QWEN_LAYERED) return "qwen-layered";
   if (model === QWEN_RELIGHT) return "qwen-relight";
+  if (model === QWEN_ANGLES) return "qwen-angles";
   if (/kontext/i.test(model)) return "kontext";
   // 2511 is a DIFFERENT recipe from 2509 (Kontext multi-reference latents, an encoded
   // latent instead of an empty one, 40 steps at cfg 3), so it needs its own type — and it
@@ -1800,6 +1837,7 @@ async function proxyComfyModels(req, res) {
       [QWEN_CONTROL_2512, "qwen-control-2512", 1, 0],
       [QWEN_INPAINT, "qwen-inpaint", 1, 1],
       [QWEN_RELIGHT, "qwen-relight", 1, 0],
+      [QWEN_ANGLES, "qwen-angles", 1, 0],
       [QWEN_LAYERED, "qwen-layered", 0, 0],
     ]) {
       const parts = await qwenRouteParts(route);
@@ -1992,7 +2030,7 @@ async function proxyComfyModels(req, res) {
     // the progress estimate matches the graph the server builds; gpuName → shown in the
     // model picker. Both null when unknown.
     const { gib: vramGib, gpuName } = await comfyGpuInfo();
-    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, audioModels: audioOut, modelMeta, upscaleModels: upscaleModels.filter((n) => !isRestoreModel(n)), restoreModels: upscaleModels.filter(isRestoreModel), panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, krea2Loras: krea2.length ? krea2Loras : [], h3TextEncoders, hostname, vramGib, gpuName });
+    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, audioModels: audioOut, modelMeta, upscaleModels: upscaleModels.filter((n) => !isRestoreModel(n)), restoreModels: upscaleModels.filter(isRestoreModel), panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, krea2Loras: krea2.length ? krea2Loras : [], h3TextEncoders, cameraVocab: CAMERA_VOCAB, hostname, vramGib, gpuName });
   } catch {
     sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], audioModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [], krea2Loras: [], h3TextEncoders: [] });
   }
@@ -2094,7 +2132,8 @@ function familyPreset(model) {
   // and InstantX template uses on the non-distilled branch. A Lightning LoRA swaps in its
   // own schedule later (qwenTurboCfg).
   if (model === QWEN_CONTROL || model === QWEN_CONTROL_PATCH || model === QWEN_CONTROL_LORA
-      || model === QWEN_INPAINT || model === QWEN_LAYERED || model === QWEN_RELIGHT) {
+      || model === QWEN_INPAINT || model === QWEN_LAYERED || model === QWEN_RELIGHT
+      || model === QWEN_ANGLES) {
     return { sampler: "euler", scheduler: "simple", cfg: 2.5, guidance: null, steps: 20, sd3Latent: false };
   }
   // Fun Union rides the 2512 base, whose full schedule is 50 steps at cfg 4.
@@ -2827,6 +2866,12 @@ async function qwenRouteResolve(route) {
   // The BASE model each route drives: a Qwen-Image txt2img UNET (never an edit one).
   const bases = (unets || []).filter((n) => /qwen.?image/i.test(n) && !editTypeOf(n) && !/layered/i.test(n));
   const base2512 = bases.find((n) => /2512/i.test(n));
+  // The InstantX / DiffSynth control weights were trained against the ORIGINAL
+  // Qwen-Image, and pairing them with a later generation quietly wastes them — the
+  // structure barely survives (InstantX) or the render tears (the union LoRA). Ask for
+  // an UNVERSIONED base explicitly: `bases[0]` reads like "the plain one" but the list
+  // is alphabetical, so installing 2512 silently made it the first entry.
+  const baseOriginal = bases.find((n) => !qwenVersionOf(n));
   const parts = { clip, vae, missing: [] };
   const need = (v, what) => { if (!v) parts.missing.push(what); return v; };
   need(clip, "qwen_2.5_vl_7b_fp8_scaled.safetensors → text_encoders/");
@@ -2838,10 +2883,28 @@ async function qwenRouteResolve(route) {
     // The layered weights are their own model — no Lightning LoRA exists for them.
     return parts;
   }
+  if (route === "qwen-angles") {
+    // fal's Multiple-Angles LoRA: re-shoot the attached picture from one of 96 camera
+    // poses. Rides the 2511 edit graph (upstream's own workflow is that graph verbatim),
+    // with the angles LoRA stacked under Lightning. Unlike relight the LoRA is REQUIRED —
+    // it is the whole feature, and 2511 alone does not answer to the `<sks>` vocabulary.
+    parts.model = need(find(unets, /qwen.*edit.*2511/i), "qwen_image_edit_2511_fp8mixed.safetensors → diffusion_models/");
+    parts.angles = need(find(loras, /qwen.?image.?edit.?2511.?multiple.?angles/i),
+      "qwen-image-edit-2511-multiple-angles-lora.safetensors → loras/");
+    const light = qwenLightning(loras, true, "2511");
+    parts.lora = light ? light.name : null;
+    parts.loraSteps = light ? light.steps : 0;
+    return parts;
+  }
   if (route === "qwen-relight") {
-    parts.model = need(find(unets, /qwen.*edit.*2509/i), "qwen_image_edit_2509_fp8_e4m3fn.safetensors → diffusion_models/");
-    parts.relight = need(find(loras, /qwen.?image.?edit.?2509.?relight/i), "Qwen-Image-Edit-2509-Relight.safetensors → loras/");
-    const light = qwenLightning(loras, true, "2509");
+    parts.model = need(find(unets, /qwen.*edit.*2511/i), "qwen_image_edit_2511_fp8mixed.safetensors → diffusion_models/");
+    // 2511 folds the popular community LoRAs — relighting among them — into the base
+    // weights, so the Relight LoRA is a bonus rather than a requirement: mount a
+    // 2511-matched one when it is on disk, otherwise the instruction alone drives the
+    // light. A 2509 Relight file is NOT a fallback here (wrong generation) and the
+    // version-anchored pattern below will not match one.
+    parts.relight = find(loras, /qwen.?image.?edit.?2511.?relight|relight.*2511/i) || null;
+    const light = qwenLightning(loras, true, "2511");
     parts.lora = light ? light.name : null;
     parts.loraSteps = light ? light.steps : 0;
     return parts;
@@ -2849,7 +2912,7 @@ async function qwenRouteResolve(route) {
 
   parts.model = route === "qwen-control-2512"
     ? need(base2512, "qwen_image_2512_fp8_e4m3fn.safetensors → diffusion_models/")
-    : need(bases[0], "qwen_image_fp8_e4m3fn.safetensors → diffusion_models/");
+    : need(baseOriginal, "qwen_image_fp8_e4m3fn.safetensors → diffusion_models/ (an UNVERSIONED Qwen-Image base — the 2512 weights are a different generation and these control weights were not trained on them)");
   if (route === "qwen-control") {
     parts.controlNet = need(find(controlNets, /qwen.?image.?instantx.?controlnet.?union/i),
       "Qwen-Image-InstantX-ControlNet-Union.safetensors → controlnet/");
@@ -2896,7 +2959,7 @@ async function qwenRouteCompanions(route) {
 //     which is what lets it tell "image 1" from "image 2" in the instruction,
 //   • shift 3.1 (2509 uses 3), CFGNorm(1), 40 steps at cfg 3.
 // Flattened from the official image_qwen_image_edit_2511 template, links included.
-function buildQwen2511Edit({ model, prompt, negative, imageNames, maskName, seed, cfg, comp }) {
+function buildQwen2511Edit({ model, prompt, negative, imageNames, maskName, seed, cfg, comp, extraLora, extraLoraStrength = 1 }) {
   const refs = (imageNames || []).slice(0, 3);
   const wf = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
@@ -2917,11 +2980,18 @@ function buildQwen2511Edit({ model, prompt, negative, imageNames, maskName, seed
   wf["6"] = { class_type: "FluxKontextMultiReferenceLatentMethod", inputs: { conditioning: ["4", 0], reference_latents_method: "index_timestep_zero" } };
   wf["7"] = { class_type: "FluxKontextMultiReferenceLatentMethod", inputs: { conditioning: ["5", 0], reference_latents_method: "index_timestep_zero" } };
   wf["16"] = { class_type: "VAEEncode", inputs: { pixels: ["15", 0], vae: ["3", 0] } };
-  // 2511 patches in the other order than 2509 — shift, then CFGNorm, then the LoRA.
+  // 2511 patches in the other order than 2509 — shift, then CFGNorm, then the LoRAs.
   let mref = ["1", 0];
   wf["31"] = { class_type: "ModelSamplingAuraFlow", inputs: { model: mref, shift: 3.1 } };
   wf["32"] = { class_type: "CFGNorm", inputs: { model: ["31", 0], strength: 1.0 } };
   mref = ["32", 0];
+  // A route LoRA (relight) stacks UNDER the Lightning one rather than replacing it —
+  // routeCfg already shortened the schedule on the strength of Lightning being there,
+  // so dropping it would leave a 4-step run with nothing distilled to back it.
+  if (extraLora) {
+    wf["33"] = { class_type: "LoraLoaderModelOnly", inputs: { model: mref, lora_name: extraLora, strength_model: extraLoraStrength } };
+    mref = ["33", 0];
+  }
   if (comp.lora) {
     wf["30"] = { class_type: "LoraLoaderModelOnly", inputs: { model: mref, lora_name: comp.lora, strength_model: 1 } };
     mref = ["30", 0];
@@ -6938,7 +7008,11 @@ async function generateComfyImage(req, res) {
     // file's (which is the only thing that knows t2v from i2v behind the merged entry).
     galleryMeta = {
       model, modelId: galleryModelId(body.model, model),
-      prompt, negative: negative_prompt, seed, params: opts,
+      // The 3D-camera route ignores the typed prompt, so `prompt` is normally empty
+      // here — and an entry with no prompt at all gives the gallery nothing to say
+      // which of the 96 poses produced it. File the camera phrase instead.
+      prompt: body.model === QWEN_ANGLES ? cameraPrompt(opts) : prompt,
+      negative: negative_prompt, seed, params: opts,
       conversationId: body.conversationId, msgId: body.msgId,
     };
     const isMultiImage = Array.isArray(images) && images.length >= 2;
@@ -8267,10 +8341,20 @@ async function generateComfyImage(req, res) {
           workflow = buildQwenControlPatch({ model, prompt, negative: negative_prompt || "", imageName, seed, cfg: routeCfg, comp, control });
         } else if (editType === "qwen-control-lora") {
           workflow = buildQwenControlLora({ model, prompt, negative: negative_prompt || "", imageName, seed, cfg: routeCfg, comp, control });
+        } else if (editType === "qwen-angles") {
+          // The camera pose IS the prompt here — see cameraPrompt(). Whatever the user
+          // typed is deliberately dropped: this LoRA was trained on the bare `<sks>`
+          // phrase and upstream's guidance is to send exactly that, so free text
+          // alongside it drags the render off the requested viewpoint.
+          const camStrength = Number(opts.camStrength) > 0 ? Math.min(Number(opts.camStrength), 2) : 0.9;
+          workflow = buildQwen2511Edit({ model, prompt: cameraPrompt(opts), negative: negative_prompt || "", imageNames: [imageName], maskName, seed, cfg: routeCfg, comp, extraLora: comp.angles, extraLoraStrength: camStrength });
         } else if (editType === "qwen-relight") {
-          // Relight is 2509 plus one LoRA: the same multi-reference edit graph, with the
-          // relight weights mounted on top. The instruction describes the light.
-          workflow = buildQwenEditPlus({ model, prompt, negative: negative_prompt || "", imageNames: [imageName], maskName, seed, cfg: routeCfg, comp: { ...comp, lora: comp.relight }, width: 0, height: 0 });
+          // Relight rides the 2511 edit graph, with the Relight LoRA (when installed)
+          // stacked on top of Lightning. The instruction describes the light.
+          // No canvas pinning here: unlike the 2509 EmptySD3 graph — which defaults to a
+          // 1024² SQUARE and would hand a portrait back visibly squashed — 2511 encodes
+          // bucket-scaled reference #1 AS the canvas, so the source aspect survives.
+          workflow = buildQwen2511Edit({ model, prompt, negative: negative_prompt || "", imageNames: [imageName], maskName, seed, cfg: routeCfg, comp, extraLora: comp.relight });
         } else {
           // InstantX Union, and the 2512 Fun Union — one builder, two files. Fun Union
           // starts from an empty canvas at the control image's size; InstantX encodes the

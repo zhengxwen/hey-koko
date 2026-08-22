@@ -151,6 +151,9 @@ Usage
              --lyrics @song.txt                a song (flac); --lyrics is optional
   imagine.js --add clip.mp4 photo.jpg          file existing media, no generation
   imagine.js --list-models [filter]
+  imagine.js --help <flag>                     legal values for one flag
+                                               (camera, size, sharpen, quality,
+                                                precision, upscale, restore, voice)
   imagine.js --scan                            find ComfyUI machines on the network
 
 Model
@@ -162,6 +165,9 @@ Inputs
   -i, --image <path>       reference/first-frame image; repeat for more (r2v takes up to 9)
       --mask <path>        region to repaint: white = change, black = keep (required by
                            qwen-image:inpaint, an optional hint for the edit models)
+      --camera <pose>      3D-camera route only: where to put the camera, as comma-separated
+                           words in any order, e.g. "back-left,low,wide". Omitted axes keep
+                           their default (front / eye / medium) — see --help camera
       --video <path>       source or reference video
       --audio <path>       source or reference audio
 
@@ -229,7 +235,7 @@ Server
 Exit: 0 all good, 1 usage/setup error, 2 one or more renders failed.`;
 
 function parseArgv(argv) {
-  const o = { images: [], mask: "", addFiles: [], opts: {}, options: {} };
+  const o = { images: [], mask: "", camera: "", helpFor: "", addFiles: [], opts: {}, options: {} };
   const need = (i, flag) => {
     if (i + 1 >= argv.length) { throw new Error(`${flag} needs a value`); }
     return argv[i + 1];
@@ -238,7 +244,16 @@ function parseArgv(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
-      case "-h": case "--help": o.help = true; break;
+      case "-h": case "--help": {
+        o.help = true;
+        // Optional topic: `--help camera` lists that flag's legal values. Only consumed
+        // when the next word is not another flag, so a bare `--help` still works and
+        // `--help --json` keeps meaning "usage, as JSON".
+        const nxt = argv[i + 1];
+        if (nxt && !/^-/.test(nxt)) { o.helpFor = nxt.toLowerCase(); i++; }
+        else if (nxt && /^--[a-z-]+$/.test(nxt) && HELP_TOPICS.includes(nxt.slice(2))) { o.helpFor = nxt.slice(2); i++; }
+        break;
+      }
       case "--list-models": o.listModels = true; break;
       case "--scan": o.scan = true; break;
       case "-m": case "--model": o.model = need(i, a).toLowerCase(); i++; break;
@@ -248,6 +263,10 @@ function parseArgv(argv) {
       // brush paints in the browser. Only the inpainting route requires one; the
       // instruction-edit models take it as an optional "change only here" hint.
       case "--mask": o.mask = need(i, a); i++; break;
+      // Camera pose for the 3D-camera route. One flag rather than three because the
+      // three vocabularies are disjoint, so the tokens can arrive in any order and any
+      // of them may be left out: "--camera back-left,low" keeps the default distance.
+      case "--camera": o.camera = need(i, a); i++; break;
       case "--video": o.video = need(i, a); i++; break;
       case "--audio": o.audio = need(i, a); i++; break;
       case "-s": case "--second": o.seconds = parseFloat(String(need(i, a)).replace(/s$/i, "")); i++; break;
@@ -434,6 +453,7 @@ function taskFromArgs(a) {
   if (a.negative) t.negative = a.negative;
   if (a.images.length) t.images = a.images.slice();
   if (a.mask) t.mask = a.mask;
+  if (a.camera) t.camera = a.camera;
   if (a.video) t.video = a.video;
   if (a.audio) t.audio = a.audio;
   if (a.seconds > 0) t.seconds = a.seconds;
@@ -577,6 +597,89 @@ function extFor(data) {
   return "png";
 }
 
+// Resolve a "--camera back-left,low,wide" spec against the vocabulary the SERVER
+// publishes, so the words live in exactly one place and a new pose reaches the CLI
+// without editing it. The three lists are disjoint, so a token identifies its own axis:
+// order is free and any axis may be omitted (it keeps its default). Unknown tokens are
+// an ERROR, not a shrug — the server silently renders a front view for anything it does
+// not recognise, so a typo would otherwise cost a GPU minute and look like the model
+// ignoring the request.
+function resolveCamera(spec, vocab) {
+  if (!vocab) throw new Error("--camera needs a server that publishes the camera vocabulary (restart the hey-koko server)");
+  const axes = [["camAzimuth", "azimuth"], ["camElevation", "elevation"], ["camDistance", "distance"]];
+  const out = {};
+  for (const [key, axis] of axes) out[key] = vocab.defaults?.[axis] || (vocab[axis] || [])[0];
+  for (const tok of String(spec).split(/[,\/\s]+/).filter(Boolean)) {
+    const t = tok.toLowerCase();
+    const hit = axes.find(([, axis]) => (vocab[axis] || []).includes(t));
+    if (!hit) {
+      const all = axes.map(([, axis]) => `${axis}: ${(vocab[axis] || []).join(" ")}`).join("\n  ");
+      throw new Error(`--camera: unknown position "${tok}"\n  ${all}\n  (--help camera lists these)`);
+    }
+    out[hit[0]] = t;
+  }
+  return out;
+}
+
+// `--help <flag>` topics: every flag whose values are a closed set worth listing.
+// Kept next to the printer so adding a topic is one edit, not two.
+const HELP_TOPICS = ["camera", "size", "sharpen", "quality", "precision", "upscale", "restore", "voice"];
+
+function printHelpTopic(topic, cat, files, out) {
+  const line = (label, vals, note) => out(`  ${label.padEnd(10)} ${vals.join("  ")}${note ? `\n  ${" ".repeat(10)} ${note}` : ""}\n`);
+  switch (topic) {
+    case "camera": {
+      const v = cat.cameraVocab;
+      if (!v) { out("this server does not publish a camera vocabulary (restart it)\n"); return 1; }
+      out("--camera <a,b,c>  poses for -m qwen-image-edit:angles (any order; omit an axis to keep its default)\n\n");
+      for (const axis of ["azimuth", "elevation", "distance"]) {
+        line(axis, v[axis].map((x) => (x === v.defaults?.[axis] ? `${x} (default)` : x)));
+      }
+      out(`\n  ${v.azimuth.length} x ${v.elevation.length} x ${v.distance.length} = ${v.azimuth.length * v.elevation.length * v.distance.length} poses\n`);
+      return 0;
+    }
+    case "size":
+      out("--size <token>    frame size\n\n");
+      line("presets", Object.keys(SIZE_PRESETS));
+      line("literal", ["WxH"], "e.g. 1280x720");
+      return 0;
+    case "sharpen":
+      out("--sharpen <level> post-resize unsharp mask (video-enhance / image-upscale)\n\n");
+      line("levels", ["off (default)", "light", "medium", "strong"], "works with --upscale off: filter only, no resize");
+      return 0;
+    case "quality":
+      out("--quality <level> sampling effort — trades steps for time\n\n");
+      line("levels", ["high", "medium", "low"]);
+      return 0;
+    case "precision": {
+      const tiers = [...new Set(cat.rows.flatMap((m) => m.tiers || []))].sort();
+      out("--precision <tier>  weight precision; a model only accepts tiers it has installed\n\n");
+      line("installed", tiers.length ? tiers : ["(none reported)"], "per-model tiers are shown by --list-models");
+      return 0;
+    }
+    case "upscale":
+    case "restore": {
+      const group = topic === "upscale" ? "upscaler" : "restore";
+      const names = files.filter((f) => f.group === group).map((f) => f.file);
+      out(`--${topic} <model>   ${topic === "upscale" ? "upscale" : "1x de-artifact"} weights installed on this ComfyUI\n\n`);
+      line("special", ["auto (default)", "off"]);
+      for (const n of names) out(`             ${n}\n`);
+      if (!names.length) out("             (none installed)\n");
+      return 0;
+    }
+    case "voice": {
+      out("--voice <id>      TTS voice for \"photo speaks\" / read-aloud\n\n");
+      const vs = cat.voices || [];
+      if (!vs.length) { out("  (this server reported no voices)\n"); return 0; }
+      for (const v of vs) out(`  ${(v.id || v.name || v)}${v.label ? `  ${v.label}` : ""}\n`);
+      return 0;
+    }
+    default:
+      out(`no help topic "${topic}"\n\ntopics: ${HELP_TOPICS.join(", ")}\n`);
+      return 1;
+  }
+}
+
 async function runTask(task, cli, ctx) {
   const model = resolveModel(ctx.rows, task.model);
   const options = taskToOptions(task);
@@ -589,6 +692,12 @@ async function runTask(task, cli, ctx) {
   const isMusic = model.group === "music";
   const images = (task.images || []).map(readB64);
   const mask = task.mask ? readB64(task.mask) : "";
+  if (task.camera) {
+    if (model.id !== "qwen-image-edit:angles") {
+      throw new Error(`--camera only applies to the 3D-camera route (-m qwen-image-edit:angles), not ${model.id}`);
+    }
+    Object.assign(options, resolveCamera(task.camera, ctx.cameraVocab));
+  }
 
   if (isMusic) {
     if (!task.prompt) {
@@ -1024,7 +1133,10 @@ async function main() {
   try { cli = parseArgv(process.argv.slice(2)); }
   catch (e) { process.stderr.write(`${e.message}\n\n${USAGE}\n`); return 1; }
 
-  if (cli.help || (!cli.listModels && !cli.scan && !cli.add && !cli.batch && !cli.cmd && !cli.prompt && !cli.images.length && !cli.video)) {
+  // A bare --help (or nothing to do) prints the usage. `--help <topic>` needs the
+  // catalogue first — half the topics list what is installed on THIS ComfyUI — so it
+  // deliberately falls through to the fetch below.
+  if (!cli.helpFor && (cli.help || (!cli.listModels && !cli.scan && !cli.add && !cli.batch && !cli.cmd && !cli.prompt && !cli.images.length && !cli.video))) {
     process.stdout.write(`${USAGE}\n`);
     return cli.help ? 0 : 1;
   }
@@ -1063,6 +1175,19 @@ async function main() {
   try { cat = await loadCatalogue(cli.server, cli.comfyUrl); }
   catch (e) { process.stderr.write(`${e.message}\n`); return 1; }
 
+  if (cli.helpFor) {
+    if (cli.json && cli.helpFor === "camera") {
+      process.stdout.write(JSON.stringify(cat.raw.cameraVocab || null) + "\n");
+      return 0;
+    }
+    const topic = cli.helpFor.replace(/^--/, "");
+    // Voices are not part of the model catalogue, so fetch them only when asked.
+    const voices = topic === "voice"
+      ? ((await getJson("/api/voices", cli.server).catch(() => null))?.voices || [])
+      : [];
+    return printHelpTopic(topic, { ...cat.raw, rows: cat.rows, voices }, cat.files,
+      (x) => process.stdout.write(x));
+  }
   if (cli.listModels) {
     const filter = cli.prompt.toLowerCase();
     const rows = cat.rows.filter((m) => !filter || m.id.includes(filter) || m.label.toLowerCase().includes(filter));
@@ -1111,7 +1236,7 @@ async function main() {
     const m = await getJson("/api/models", cli.server).catch(() => null);
     chatModel = m && m.models && m.models[0] && m.models[0].name;
   }
-  const ctx = { rows: cat.rows, comfyUrl: cat.raw.comfyUrl || (await getJson("/api/ollama-url", cli.server).catch(() => null))?.comfyUrl, chatModel };
+  const ctx = { rows: cat.rows, cameraVocab: cat.raw.cameraVocab || null, comfyUrl: cat.raw.comfyUrl || (await getJson("/api/ollama-url", cli.server).catch(() => null))?.comfyUrl, chatModel };
 
   const defaults = taskFromArgs(cli);
   let tasks;

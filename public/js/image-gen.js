@@ -137,6 +137,13 @@ function comfyOverrides() {
   if (ctlStrength !== undefined) ov.controlStrength = ctlStrength;   // how hard the control map is enforced
   const layerCount = num(dom.comfyParamLayerCount?.value);
   if (layerCount !== undefined) ov.layerCount = layerCount;          // qwen layered: how many layers to split into
+  // Qwen 3D Camera: the dial's three KEYS travel as-is — the server turns them into
+  // the `<sks> ...` phrase the LoRA was trained on, so only one side knows that wording.
+  ov.camAzimuth = state.camAzimuth || "front";
+  ov.camElevation = state.camElevation || "eye";
+  ov.camDistance = state.camDistance || "medium";
+  const camStrength = num(dom.comfyParamCamStrength?.value);
+  if (camStrength !== undefined) ov.camStrength = camStrength;       // angle LoRA strength (upstream: 0.8-1.0)
   if (dom.comfyParamUpscaleTarget?.value) ov.upscaleTarget = Number(dom.comfyParamUpscaleTarget.value); // long side, px (empty = 2x capped)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
   if (dom.comfyParamVideoCodec?.value) ov.videoCodec = dom.comfyParamVideoCodec.value; // video: h264 (default) | h265, via VHS_VideoCombine

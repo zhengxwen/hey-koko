@@ -56,6 +56,11 @@ export function saveCurrentSettings() {
         controlPrep: dom.comfyParamControlPrep?.value || "",
         controlStrength: dom.comfyParamControlStrength?.value || "",
         layerCount: dom.comfyParamLayerCount?.value || "",
+        camStrength: dom.comfyParamCamStrength?.value || "",
+        // The dial lives in state, not in an input, so persist it from there.
+        camAzimuth: state.camAzimuth || "front",
+        camElevation: state.camElevation || "eye",
+        camDistance: state.camDistance || "medium",
         fps: dom.comfyParamFps?.value || "",
         targetFps: dom.comfyParamTargetFps?.value || "",
         interpMethod: dom.comfyParamInterpMethod?.value || "rife",
@@ -309,6 +314,10 @@ export function loadSavedSettings() {
     if (dom.comfyParamControlPrep) dom.comfyParamControlPrep.value = cp.controlPrep || "canny";
     if (dom.comfyParamControlStrength) dom.comfyParamControlStrength.value = cp.controlStrength || "";
     if (dom.comfyParamLayerCount) dom.comfyParamLayerCount.value = cp.layerCount || "";
+    if (dom.comfyParamCamStrength) dom.comfyParamCamStrength.value = cp.camStrength || "";
+    state.camAzimuth = cp.camAzimuth || "front";
+    state.camElevation = cp.camElevation || "eye";
+    state.camDistance = cp.camDistance || "medium";
     // Best-effort — applyComfyModels re-applies this once the option list has loaded.
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;

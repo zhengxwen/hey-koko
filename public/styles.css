@@ -9057,3 +9057,56 @@ body.isResizingComposer {
   background-color: #ff9f1a;
   color: #1a1a1a;
 }
+
+/* ── 3D camera picker (Qwen 2511 Multiple-Angles) ────────────────────────────
+   The LoRA knows 96 fixed poses, so this is a chooser over a discrete grid, not
+   a free orbit. Inline SVG, no library. NB: the global `input{width:100%}` rule
+   does not reach the SVG, but the strength field beside it is an ordinary
+   number input and keeps the panel's own styling. */
+.camPicker {
+  grid-column: 1 / -1;   /* the modal body is a 3-column grid; the dial wants the full row */
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.camPickerTitle { font-size: 12px; opacity: 0.75; }
+/* One centred row of controls. The band spans the modal's full 3-column width, so
+   without a cap the three distance buttons stretch across ~1000px and stop reading as
+   a single widget. */
+.camPickerBody { display: flex; gap: 14px; align-items: center; justify-content: center; flex-wrap: wrap; }
+.camCell { display: grid; justify-items: center; gap: 2px; }
+.camDial, .camElev { width: 108px; height: 108px; }
+.camCaption { font-size: 11px; opacity: 0.7; }
+.camRing { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.camGround, .camArc { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.camArc { stroke-dasharray: 3 3; }
+.camSubject { fill: var(--muted); opacity: 0.8; }
+.camFacing { fill: var(--ink); opacity: 0.65; }
+.camHit { fill: transparent; }
+.camDot { cursor: pointer; outline: none; }
+.camDotMark { fill: var(--muted); transition: fill 0.12s, r 0.12s; }
+.camDot:hover .camDotMark { fill: var(--text); }
+.camDot:focus-visible .camDotMark { stroke: var(--accent, #6aa9ff); stroke-width: 2; }
+.camDot.isOn .camDotMark { fill: var(--accent, #6aa9ff); r: 7; }
+.camDistance { display: flex; gap: 6px; justify-content: center; width: 100%; max-width: 300px; margin: 0 auto; }
+.camDistBtn {
+  flex: 1;
+  padding: 4px 6px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.camDistBtn.isOn { border-color: var(--accent, #6aa9ff); color: var(--accent, #6aa9ff); }
+.camPrompt {
+  text-align: center;
+  font-size: 11px;
+  opacity: 0.65;
+  word-break: break-word;
+  /* This is the phrase actually sent to the model — never translated. */
+  direction: ltr;
+}

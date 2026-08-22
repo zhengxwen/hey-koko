@@ -1134,6 +1134,29 @@
             <span id="comfyParamLayerCountLabel">Layers</span>
             <input id="comfyParamLayerCount" type="number" min="2" max="6" step="1" placeholder="3" />
           </label>
+          <!-- 3D camera picker (Qwen 2511 Multiple-Angles). The LoRA knows exactly 96
+               poses, so this is a PICKER over a discrete grid rather than a free orbit:
+               a dial for the 8 azimuths, a side view for the 4 elevations, 3 distances.
+               The dots are drawn by cam-picker.js so the markup stays readable. -->
+          <div id="comfyCamPicker" class="camPicker">
+            <span class="camPickerTitle" id="comfyCamPickerLabel" title="Qwen 3D Camera only: re-shoot the attached picture from another camera position. The LoRA was trained on 96 fixed poses, so the dial snaps to those — it is a chooser, not a free orbit.">3D camera</span>
+            <div class="camPickerBody">
+              <div class="camCell">
+                <svg id="comfyCamAzimuth" class="camDial" viewBox="0 0 120 120" aria-label="Camera azimuth"></svg>
+                <span class="camCaption" id="comfyCamAzimuthCaption">Front</span>
+              </div>
+              <div class="camCell">
+                <svg id="comfyCamElevation" class="camElev" viewBox="0 0 120 120" aria-label="Camera elevation"></svg>
+                <span class="camCaption" id="comfyCamElevationCaption">Eye level</span>
+              </div>
+            </div>
+            <div class="camDistance" id="comfyCamDistance"></div>
+            <code class="camPrompt" id="comfyCamPrompt"></code>
+          </div>
+          <label title="Qwen 3D Camera only: how hard the angle LoRA is applied. Upstream recommends 0.8-1.0 and suggests starting at 0.9 — lower it if the subject starts drifting, raise it if the camera barely moves.">
+            <span id="comfyParamCamStrengthLabel">Camera LoRA strength</span>
+            <input id="comfyParamCamStrength" type="number" min="0" max="2" step="0.05" placeholder="0.9" />
+          </label>
           <label>
             <span id="comfyParamSharpenLabel" title="Video upscale only: an unsharp-mask pass AFTER the resize. Set the upscale model to Off and leave the size alone to sharpen a clip at its original resolution and nothing else. Do not overdo it — past Medium, video picks up halos that flicker frame to frame.">Sharpen</span>
             <select id="comfyParamSharpen">

@@ -159,6 +159,7 @@ const SENTINEL_IDS = {
   "qwen-inpaint": "qwen-image:inpaint",
   "qwen-layered": "qwen-image:layered",
   "qwen-relight": "qwen-image-edit:relight",
+  "qwen-angles": "qwen-image-edit:angles",
 };
 
 // Filename → id, matched against the PRECISION-STRIPPED base. Stripping first is what
@@ -277,6 +278,7 @@ const ID_LABELS = {
   "qwen-image:inpaint": "Qwen-Image Inpainting (InstantX)",
   "qwen-image:layered": "Qwen-Image Layered",
   "qwen-image-edit:relight": "Qwen-Image-Edit Relight",
+  "qwen-image-edit:angles": "Qwen-Image-Edit 3D Camera (96 angles)",
   omnigen2: "OmniGen2",
   "instruct-pix2pix": "Instruct-Pix2Pix",
   triposplat: "TripoSplat (image → 3D splat)",

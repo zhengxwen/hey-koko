@@ -9,6 +9,7 @@ import { saveCurrentSettings } from './settings.js';
 import { getBgWorkers, setBgWorkerStatus, MULTI_WORKERS_ENABLED } from './bg-jobs.js';
 import { updateCloudBadge } from './avatar.js';
 import { refreshModelMaxContext } from './context-meter.js';
+import { initCamPicker, syncCamPicker } from './cam-picker.js';
 
 // "http://127.0.0.1:11434" + "localhost" -> "127.0.0.1:11434 (localhost)".
 // The hostname (reverse-DNS, from the server) is only appended when present.
@@ -1119,6 +1120,7 @@ function comfyModelHint(name) {
   if (n === "qwen-inpaint") return t("oll_hint_qwenInpaint");
   if (n === "qwen-layered") return t("oll_hint_qwenLayered");
   if (n === "qwen-relight") return t("oll_hint_qwenRelight");
+  if (n === "qwen-angles") return t("oll_hint_qwenAngles");
   if (/qwen.*edit.*2511|qwen.*2511/.test(n)) return t("oll_hint_qwenEdit2511");
   if (/qwen.*edit/.test(n)) return t("oll_hint_qwenEdit");
   if (/omnigen/.test(n)) return t("oll_hint_omnigen");
@@ -1882,6 +1884,10 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamControlPrep, qwenControl);
   setVis(dom.comfyParamControlStrength, qwenControl || m === "qwen-inpaint");
   setVis(dom.comfyParamLayerCount, m === "qwen-layered");
+  // The 3D camera dial is its own widget, not a labelled field — setVis falls back to
+  // the element itself when there is no wrapping <label>.
+  setVis(dom.comfyCamPicker, m === "qwen-angles");
+  setVis(dom.comfyParamCamStrength, m === "qwen-angles");
   // Image-edit / txt2img only.
   setVis(dom.comfyParamImageCfg, diffusion && !video && !mesh && !music);
   // Quantisation preference — diffusion models only (the upscale pipelines load an
@@ -2043,6 +2049,9 @@ function initScanModal() {
 // denoise). Each field is optional — empty means "use the per-model default".
 function initComfyParamsModal() {
   const modal = dom.comfyParamsModal;
+  // Build the 3D camera dial once. Every pick writes straight to state and saves, the
+  // same as any other ⚙ field — there is no separate Apply step in this modal.
+  initCamPicker(dom, state, saveCurrentSettings);
   if (!modal) return;
   const fields = [
     dom.comfyParamPositive,
@@ -2108,6 +2117,7 @@ function initComfyParamsModal() {
   function open() {
     modal.hidden = false;
     syncMaskPointLabel();
+    syncCamPicker();          // redraw the dial's selection + read-out (also picks up a language switch)
     updateComfyParamVisibility();   // show only the params the selected model actually uses
     document.addEventListener("keydown", onKeydown);
   }
@@ -2217,6 +2227,9 @@ function initComfyParamsModal() {
     syncVideoCrfPlaceholder();
     state.animateMaskPoint = null; // back to auto-centre target
     syncMaskPointLabel();
+    state.camAzimuth = "front"; state.camElevation = "eye"; state.camDistance = "medium";
+    if (dom.comfyParamCamStrength) dom.comfyParamCamStrength.value = "";
+    syncCamPicker();
     saveCurrentSettings();
   });
 }
