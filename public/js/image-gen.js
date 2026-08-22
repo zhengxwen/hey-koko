@@ -223,9 +223,25 @@ function comfyOverrides() {
   return ov;
 }
 
+// Pull `--pos <text>` / `--neg <text>` out of a command line. Each value ends at the
+// next ` --flag` or at the end of the line, so the two can appear in any order and in
+// any position, and ordinary flags may follow them. A repeated flag: last one wins.
+function peelTextFlags(line) {
+  const out = { rest: line, pos: "", neg: "" };
+  for (;;) {
+    const m = out.rest.match(/(^|\s)--(pos|neg)\s+/i);
+    if (!m) break;
+    const after = out.rest.slice(m.index + m[0].length);
+    const stop = after.search(/\s--[a-z]/i);
+    out[m[2].toLowerCase()] = (stop < 0 ? after : after.slice(0, stop)).trim();
+    out.rest = (out.rest.slice(0, m.index) + (stop < 0 ? "" : after.slice(stop))).trim();
+  }
+  return out;
+}
+
 // The persistent negative prompt from the ⚙ ComfyUI params modal. A per-command
-// `--no ...` always wins; this is the default applied to image AND video gen when
-// no `--no` is given. Empty → undefined so the server falls back to its own default.
+// `--neg ...` always wins; this is the default applied to image AND video gen when
+// no `--neg` is given. Empty → undefined so the server falls back to its own default.
 function comfyNegative(parsedNegative) {
   if (parsedNegative && parsedNegative.trim()) return parsedNegative.trim();
   const v = dom.comfyParamNegative?.value?.trim();
@@ -237,8 +253,11 @@ function comfyNegative(parsedNegative) {
 // always added, e.g. "cinematic, high detail"). Content first, add-on after; silent (not shown in
 // the bubble). Empty → the prompt is returned unchanged. An empty prompt (attachment-driven gen)
 // becomes just the add-on.
-function comfyPositive(promptText) {
-  const add = dom.comfyParamPositive?.value?.trim();
+function comfyPositive(promptText, parsedPositive) {
+  // `--pos ...` REPLACES the ⚙ add-on for this one run, exactly the way `--neg` replaces
+  // the ⚙ negative — one rule for both halves rather than "negative overrides, positive
+  // stacks", which nobody would remember.
+  const add = (parsedPositive && parsedPositive.trim()) || dom.comfyParamPositive?.value?.trim();
   if (!add) return promptText;
   const base = (promptText || "").trim();
   return base ? `${base}, ${add}` : add;
@@ -322,7 +341,7 @@ function parseImagineCommand(input) {
   if (!match) return null;
 
   let rest = (match[1] || "").trim();
-  const result = { prompt: "", count: 1, options: {}, negativePrompt: "", enhance: false };
+  const result = { prompt: "", count: 1, options: {}, positivePrompt: "", negativePrompt: "", enhance: false };
 
   const batchMatch = rest.match(/^(\d+)x\s+(.+)$/s);
   if (batchMatch) {
@@ -334,11 +353,15 @@ function parseImagineCommand(input) {
     rest = batchMatch[2];
   }
 
-  const noMatch = rest.match(/--no\s+(.+)$/s);
-  if (noMatch) {
-    result.negativePrompt = noMatch[1].trim();
-    rest = rest.slice(0, noMatch.index).trim();
-  }
+  // `--pos` and `--neg` carry FREE TEXT, so each one runs to the next flag rather than
+  // to the next word. They are peeled off here, before the flag loop, because that loop
+  // only understands flags sitting at the START of what is left. Two of them is also
+  // why the old "--no eats to the end of the line" rule had to go: with a second text
+  // flag the greedy one would have swallowed it, and it forced --no to be typed last.
+  const peeled = peelTextFlags(rest);
+  rest = peeled.rest;
+  if (peeled.pos) result.positivePrompt = peeled.pos;
+  if (peeled.neg) result.negativePrompt = peeled.neg;
 
   // Long flags plus the two short ones. A short flag has to be listed HERE as well as
   // handled below — the loop is what decides whether the token is a flag at all, so a
@@ -449,6 +472,14 @@ function parseImagineCommand(input) {
       result.options.height = h;
     }
   }
+  // A flag written AFTER the prompt was always silently absorbed into the prompt text
+  // ("a bird --seed 7" rendered a bird holding the words). That trap was easy to miss
+  // while every flag belonged in front; now that --pos / --neg deliberately sit at the
+  // END, typing one more flag after them is a natural mistake, so name it. Only KNOWN
+  // flag names are rejected, so prose that happens to contain a double dash is safe.
+  const strayFlag = rest.match(/\s--(enhance|size|steps|model|second|seed|quality|voice|pos|neg)\b/i);
+  if (strayFlag) return { error: t("img_flagAfterPrompt", { arg: strayFlag[1] }) };
+
 
   result.prompt = rest.trim();
   // Empty prompt is allowed (no error) — gen is attachment-driven for video-edit
@@ -1548,7 +1579,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   const requestVideo = (perOptions, extra, isFirstSubRun) => {
     const vbody = {
       model,
-      prompt: comfyPositive(videoPrompt),
+      prompt: comfyPositive(videoPrompt, parsed.positivePrompt),
       negative_prompt: comfyNegative(parsed.negativePrompt),
       options: perOptions,
       images: refImages || undefined,
@@ -2240,7 +2271,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
 
         const reqBody = {
           model: activeModel,
-          prompt: comfyPositive(prompt),
+          prompt: comfyPositive(prompt, parsed.positivePrompt),
           negative_prompt: comfyNegative(parsed.negativePrompt),
           options: reqOptions,
           images: panoImages || refImages || undefined,

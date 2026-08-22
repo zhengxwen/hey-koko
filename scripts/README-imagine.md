@@ -233,6 +233,10 @@ node scripts/imagine.js -m <id> -i ref.png -s 6 -O out/ --json "…" 2>/dev/null
 | `fps`, `frames`, `seconds` | video only; `seconds` = `frames / fps` |
 | `precision` | quantisation tier that loaded (`fp8`, `int8`, …), when known |
 | `fpsNote` | only when `--fps` could not be hit exactly: `nearest-frame` or `no-ffmpeg` |
+| `solAttn` | MiniMax H3 only: sparse-attention mode that ran, when one was asked for |
+| `solChunkFF` | MiniMax H3 only: `true` when MLP chunking was applied (the default) |
+| `codec` | video only: `h264` (default) or `h265` |
+| `codecNote` | `local-transcode` (HEVC made by local ffmpeg) or `vhs-missing` (asked for HEVC, got h264) |
 | `mediaId` | gallery id, or `null` when not filed (the default — see above) |
 | `prompt` | prompt actually sent (after `--enhance`, if used) |
 | `elapsedSec` | wall-clock seconds for the render |
@@ -394,6 +398,36 @@ A target at or below the source rate is skipped — there is nothing to interpol
 `ffmpeg` on the calling machine the clip is still delivered, at the multiple rather than
 the target, and the record says `"fpsNote":"no-ffmpeg"`.
 
+### `--h265` — HEVC output
+
+The default is **H.264** — every video comes back as h264 in an mp4 unless asked
+otherwise. `--h265` writes HEVC instead:
+
+```bash
+node scripts/imagine.js -m <video-model> --h265 -O out/ "…"
+```
+
+Two ways it can be produced, and the record says which:
+
+| | `codec` | `codecNote` |
+| --- | --- | --- |
+| ComfyUI wrote it (VideoHelperSuite installed there) | `h265` | — |
+| that box has no VideoHelperSuite → local ffmpeg transcoded the result | `h265` | `local-transcode` |
+| neither was possible (no VHS, no local ffmpeg) | `h264` | `vhs-missing` |
+
+So `--h265` gets you HEVC even against a ComfyUI that cannot write it — the server falls
+back to h264 and the CLI finishes the job locally. Note the local route is a
+**second-generation encode** (h264 → HEVC), so it is not identical to having rendered
+HEVC directly.
+
+Quality target is crf 28, the same as the server's; `--opt videoCrf=24` overrides it.
+**HEVC does not shrink files automatically** — at crf 22 it can come out larger than
+h264; ~28 is where it reliably wins. Playback is narrower too (fine on Safari and recent
+Macs, not everywhere), which is why h264 remains the default.
+
+When `--fps` and `--h265` both apply, they run as **one** ffmpeg pass rather than
+encoding the clip twice.
+
 On a **generator** rather than the enhance tool, `--fps` means the rate the model muxes
 at, which is what "output fps" means there. Models with a fixed rate ignore it — MiniMax
 H3 is defined at 24 fps, and re-timing its picture would desync the soundtrack it
@@ -433,6 +467,7 @@ Exit codes: **0** all good, **1** usage or connection problem, **2** one or more
 | Model | `-m/--model <id[@tier]>`, `--precision <tier>` |
 | Inputs | `-i/--image <path>` (repeatable), `--video <path>`, `--audio <path>` |
 | Generation | `-s/--second <n>`, `--length <frames>`, `--size <WxH\|preset>`, `--seed <n>`, `--steps <n>`, `--no <text>`, `-n/--count <1-8>`, `-e/--enhance`, `--enhance-model <llm>` |
+| Video output | `--h265` |
 | Upscale tools | `--fps <n>`, `--upscale <auto\|off\|file>`, `--upscale-to <px>`, `--sharpen <off\|light\|medium\|strong>`, `--upscale-denoise <0-1>`, `--restore <auto\|off\|file>` |
 | ⚙ escape hatch | `--opt key=value` (repeatable) |
 | Output | `-o/--out <path>`, `-O/--out-dir <dir>`, `-g/--gallery`, `--json`, `--progress`, `-q/--quiet`, `--dry-run` |
@@ -456,9 +491,10 @@ settings-panel value lives. Values are parsed as JSON when they look like it
 
 ```
 --opt noAudio=true              deliver a silent clip
---opt videoCodec=h265           H.265 output (needs VideoHelperSuite on that box)
---opt videoCrf=28               quality/size for the above
+--opt videoCrf=24               HEVC quality/size (use --h265 for the codec itself)
 --opt easyCache=true            MiniMax H3: EasyCache sampling
+--opt solAttn=bf16              MiniMax H3: sparse attention — bf16 | int8_qk | int8_qk_pv
+--opt solChunkFF=false          MiniMax H3: turn OFF MLP chunking (on by default)
 --opt h3RefSize=512             MiniMax H3: reference-image working size
 --opt h3TextEncoder=<file>      MiniMax H3: pick the Qwen3-VL encoder tier by filename
 --opt fps=30 --opt shift=5      models whose preset leaves these tunable
@@ -488,3 +524,9 @@ The server enforces these; the CLI just catches the obvious cases earlier:
   the prompt, which is also where the soundtrack is directed.
 - Default size is `864×480`, the size actually measured to fit a 32 GB card at 124 frames.
   Larger is an explicit `--size` opt-in.
+- **Sol-Attn (sparse attention) is OFF** unless asked for with `--opt solAttn=bf16`; the
+  bit-exact **MLP chunking is ON** by default (`solChunkFF`). Both need the
+  ComfyUI-sol-attn node pack on that worker — without it the sparse request is ignored
+  and the response says `solAttnSkipped`. Sol-Attn changes the sampling trajectory, so a
+  seed reproduces a clip only when the same setting is used; the result record carries
+  `solAttn` / `solChunkFF` for exactly that reason.

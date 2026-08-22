@@ -86,6 +86,23 @@ function parseSize(val) {
 
 // Parse a literal "/imagine …" line into a task. Kept in step with the browser's
 // parser so a command copied out of the chat means the same thing here.
+// Twin of image-gen.js's peelTextFlags: `--pos <text>` / `--neg <text>` each run to the
+// next ` --flag` or to the end of the line, so both can appear in any order and other
+// flags may follow them. Kept in step with the browser copy — the same /imagine line has
+// to mean the same thing typed in chat or piped through --batch.
+function peelTextFlags(line) {
+  const out = { rest: line, pos: "", neg: "" };
+  for (;;) {
+    const m = out.rest.match(/(^|\s)--(pos|neg)\s+/i);
+    if (!m) break;
+    const after = out.rest.slice(m.index + m[0].length);
+    const stop = after.search(/\s--[a-z]/i);
+    out[m[2].toLowerCase()] = (stop < 0 ? after : after.slice(0, stop)).trim();
+    out.rest = (out.rest.slice(0, m.index) + (stop < 0 ? "" : after.slice(stop))).trim();
+  }
+  return out;
+}
+
 function parseImagineLine(line) {
   let rest = String(line).replace(/^\/imagine\b\s*/, "").trim();
   const task = { prompt: "", count: 1, options: {}, negative: "", enhance: false };
@@ -97,9 +114,12 @@ function parseImagineLine(line) {
     task.count = n;
     rest = batch[2];
   }
-  // --no eats to end of input, so it is peeled off before the flag loop (same as the UI).
-  const no = rest.match(/--no\s+([\s\S]+)$/);
-  if (no) { task.negative = no[1].trim(); rest = rest.slice(0, no.index).trim(); }
+  // Peeled off before the flag loop, which only understands flags at the START of what
+  // is left. See peelTextFlags for why they are no longer greedy-to-end.
+  const peeled = peelTextFlags(rest);
+  rest = peeled.rest;
+  if (peeled.pos) task.positive = peeled.pos;
+  if (peeled.neg) task.negative = peeled.neg;
 
   while (rest.startsWith("--") || /^-e\b/.test(rest) || /^-[ms]\s/.test(rest)) {
     const take = (re, what) => {
@@ -135,6 +155,14 @@ function parseImagineLine(line) {
       throw new Error(`unknown flag ${rest.match(/^(\S+)/)[1]}`);
     }
   }
+  // A flag written AFTER the prompt was always silently absorbed into the prompt text
+  // ("a bird --seed 7" rendered a bird holding the words). That trap was easy to miss
+  // while every flag belonged in front; now that --pos / --neg deliberately sit at the
+  // END, typing one more flag after them is a natural mistake, so name it. Only KNOWN
+  // flag names are rejected, so prose that happens to contain a double dash is safe.
+  const strayFlag = rest.match(/\s--(enhance|size|steps|model|second|seed|quality|voice|pos|neg)\b/i);
+  if (strayFlag) throw new Error(`"--${strayFlag[1]}" came after the prompt text — flags go BEFORE the prompt; only --pos and --neg may follow it`);
+
   task.prompt = rest.trim();
   return task;
 }
@@ -188,7 +216,9 @@ Generation
       --size <WxH|preset>  ${Object.keys(SIZE_PRESETS).join(" / ")}
       --seed <n>           fixed seed (a batch uses seed, seed+1, …)
       --steps <n>
-      --no <text>          negative prompt (ignored by models without a negative branch)
+      --neg <text>         negative prompt (ignored by models without a negative branch)
+      --pos <text>         extra positive text appended to the prompt (style / quality
+                           booster); in chat it overrides the ⚙ "positive add-on"
   -n, --count <n>          render N variations of this prompt (1-8)
   -e, --enhance            rewrite the prompt with an LLM first (--enhance-model to pick it)
 
@@ -200,6 +230,8 @@ Upscale / sharpen tools (-m video-enhance --video clip.mp4, or -m image-upscale 
                            on a generator it sets the mux rate instead)
       --upscale-denoise <n>  0-1 (or a percentage) — clean up before upscaling
       --restore <m>        denoise/restore model: auto | off | a filename
+      --h265               write HEVC instead of H.264 (smaller). Where that ComfyUI has
+                           no VideoHelperSuite, local ffmpeg transcodes the result instead
       --opt k=v            any ⚙ option verbatim, repeatable. e.g. --opt noAudio=true
                            --opt videoCodec=h265 --opt easyCache=true --opt h3RefSize=512
 
@@ -235,7 +267,7 @@ Server
 Exit: 0 all good, 1 usage/setup error, 2 one or more renders failed.`;
 
 function parseArgv(argv) {
-  const o = { images: [], mask: "", camera: "", helpFor: "", addFiles: [], opts: {}, options: {} };
+  const o = { images: [], mask: "", camera: "", helpFor: "", positive: "", addFiles: [], opts: {}, options: {} };
   const need = (i, flag) => {
     if (i + 1 >= argv.length) { throw new Error(`${flag} needs a value`); }
     return argv[i + 1];
@@ -274,7 +306,10 @@ function parseArgv(argv) {
       case "--size": o.size = need(i, a); i++; break;
       case "--seed": o.seed = parseInt(need(i, a), 10); i++; break;
       case "--steps": o.steps = parseInt(need(i, a), 10); i++; break;
-      case "--no": o.negative = need(i, a); i++; break;
+      // Free-text prompt halves. In argv the shell's quoting is the delimiter, so these
+      // take ONE token each: --neg "blurry, extra fingers".
+      case "--neg": o.negative = need(i, a); i++; break;
+      case "--pos": o.positive = need(i, a); i++; break;
       // Song lyrics (MiniMax Music 3). A shell is a bad place to type verses, so
       // "@path" reads them from a file — which is how anyone with more than a chorus
       // will actually pass them.
@@ -289,6 +324,9 @@ function parseArgv(argv) {
       // The upscale/sharpen tools' knobs. They are ordinary ⚙ options underneath, but
       // reaching them through --opt means knowing the key names, and these two models
       // are useless without them.
+      // H.265 output. It is an ordinary ⚙ key underneath, but "which codec" is a
+      // decision people make per run, and --opt videoCodec=h265 is not discoverable.
+      case "--h265": o.options.videoCodec = "h265"; break;
       case "--fps": o.fps = parseFloat(need(i, a)); i++; break;
       case "--upscale": o.options.upscaleModel = need(i, a); i++; break;
       case "--upscale-to": o.options.upscaleTarget = parseInt(need(i, a), 10); i++; break;
@@ -451,6 +489,7 @@ function taskFromArgs(a) {
   if (a.model) t.model = a.model;
   if (a.prompt) t.prompt = a.prompt;
   if (a.negative) t.negative = a.negative;
+  if (a.positive) t.positive = a.positive;
   if (a.images.length) t.images = a.images.slice();
   if (a.mask) t.mask = a.mask;
   if (a.camera) t.camera = a.camera;
@@ -808,7 +847,11 @@ async function runTask(task, cli, ctx) {
     const clientId = `koko-cli-${process.pid}-${Date.now()}-${i}`;
     const body = {
       model: model.value,
-      prompt,
+      // `--pos` is the CLI's stand-in for the browser's ⚙ "positive add-on": appended
+      // to the prompt, same joiner the UI uses, so a line typed in either place renders
+      // the same thing. There is no ⚙ out here to override — localStorage is the
+      // browser's — so the flag simply IS the add-on.
+      prompt: task.positive ? (prompt ? `${prompt}, ${task.positive}` : task.positive) : prompt,
       negative_prompt: task.negative || "",
       options: perOptions,
       images: images.length ? images : undefined,
@@ -890,17 +933,41 @@ async function runTask(task, cli, ctx) {
       // good, it just plays at the multiple, and the record says so.
       let finalFps = data.fps;
       let fpsNote = null;
-      if (fpsPlan && data.videos) {
-        if (fpsPlan.exact) finalFps = fpsPlan.target;
-        else {
+      let codec = data.videoCodec;
+      let codecNote = data.videoCodecNote;
+      if (data.videos) {
+        const wantH265 = options.videoCodec === "h265";
+        // The server writes HEVC only where VideoHelperSuite is installed; elsewhere it
+        // falls back to H.264. Finish the job here instead — the point of asking for
+        // h265 is the file, not which machine produced it.
+        // Only when we KNOW the server wrote H.264. An older server that reports no
+        // codec at all must not trigger a pointless re-encode of a file already HEVC.
+        const needH265 = wantH265 && (data.videoCodec === "h264" || data.videoCodecNote === "vhs-missing");
+        const needRetime = !!fpsPlan && !fpsPlan.exact;
+        if (fpsPlan && fpsPlan.exact) finalFps = fpsPlan.target;
+        // ONE ffmpeg pass does both — re-timing and transcoding separately would encode
+        // the clip twice for nothing.
+        if (needRetime || needH265) {
           try {
-            resampleFile(file, fpsPlan.target);
-            finalFps = fpsPlan.target;
-            if (!fpsPlan.clean) fpsNote = "nearest-frame";   // cadence isn't perfectly even
+            resampleFile(file, {
+              fps: needRetime ? fpsPlan.target : 0,
+              h265: wantH265,
+              crf: Number(options.videoCrf) || 0,
+            });
+            if (needRetime) {
+              finalFps = fpsPlan.target;
+              if (!fpsPlan.clean) fpsNote = "nearest-frame";   // cadence isn't perfectly even
+            }
+            if (needH265) { codec = "h265"; codecNote = "local-transcode"; }
           } catch {
-            fpsNote = "no-ffmpeg";
-            if (!cli.quiet && !cli.json) {
-              process.stderr.write(`⚠ kept ${data.fps} fps — ffmpeg is needed to re-time to ${fpsPlan.target}\n`);
+            if (needRetime) {
+              fpsNote = "no-ffmpeg";
+              if (!cli.quiet && !cli.json) {
+                process.stderr.write(`⚠ kept ${data.fps} fps — ffmpeg is needed to re-time to ${fpsPlan.target}\n`);
+              }
+            }
+            if (needH265 && !cli.quiet && !cli.json) {
+              process.stderr.write("⚠ wrote H.264 — that ComfyUI has no VideoHelperSuite and local ffmpeg is unavailable\n");
             }
           }
         }
@@ -911,6 +978,10 @@ async function runTask(task, cli, ctx) {
         ok: true, file, model: model.id, modelFile: data.model, seed: data.seed,
         width: dims.width, height: dims.height, fps: finalFps, frames: data.length,
         precision: data.precisionUsed, mediaId: (data.mediaIds || [])[k] || null,
+        ...(data.solAttn ? { solAttn: data.solAttn } : {}),
+        ...(data.solChunkFF ? { solChunkFF: true } : {}),
+        ...(codec ? { codec } : {}),
+        ...(codecNote ? { codecNote } : {}),
         prompt,
         // Duration is invariant under re-timing, so it is computed from the frames and
         // the rate the MODEL produced, not from the rate the file ended up at.
@@ -926,6 +997,11 @@ async function runTask(task, cli, ctx) {
         const dur = rec.seconds ? `${size ? ", " : ""}${rec.seconds}s` : "";
         process.stderr.write(`✓ ${file}  (${size}${dur}, seed ${data.seed}, ${elapsed}s)\n`);
       }
+    }
+    // Asked for sparse attention on a box without the node pack — the render is valid
+    // but it is NOT the faster path that was requested.
+    if (data.solAttnSkipped && !cli.quiet && !cli.json) {
+      process.stderr.write("⚠ Sol-Attn ignored — ComfyUI-sol-attn is not installed on that worker\n");
     }
     if (data.partial && data.partial.total && !cli.quiet) {
       process.stderr.write(`⚠ partial render: ${data.partial.done}/${data.partial.total} segments\n`);
@@ -1033,12 +1109,19 @@ function planFps(srcFps, target) {
 
 // Re-time a finished clip to an exact rate, in place. Duration and audio are preserved
 // (ffmpeg's fps filter drops/repeats frames rather than changing playback speed).
-function resampleFile(file, fps) {
+function resampleFile(file, { fps = 0, h265 = false, crf = 0 } = {}) {
   const { execFileSync } = require("node:child_process");
   const tmp = `${file}.retime.mp4`;
-  execFileSync("ffmpeg", ["-y", "-v", "error", "-i", file, "-vf", `fps=${fps}`,
-    // crf 16: this is a second encode of an already-encoded clip, so keep it near-visually-lossless.
-    "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy", tmp],
+  // HEVC: the file is being re-encoded to save space, so use the same quality target the
+  // server would (crf 28, or ⚙ videoCrf) — note this is a SECOND-generation encode.
+  // H.264 here is only ever a re-time of an h264 clip, so crf 16 keeps it near-lossless.
+  // hvc1 is the tag Apple players need; without it the file plays nowhere on macOS.
+  const codec = h265
+    ? ["-c:v", "libx265", "-crf", String(crf || 28), "-tag:v", "hvc1"]
+    : ["-c:v", "libx264", "-crf", "16"];
+  execFileSync("ffmpeg", ["-y", "-v", "error", "-i", file,
+    ...(fps > 0 ? ["-vf", `fps=${fps}`] : []),
+    ...codec, "-pix_fmt", "yuv420p", "-c:a", "copy", tmp],
     { stdio: ["ignore", "ignore", "pipe"] });
   fs.renameSync(tmp, file);
 }
@@ -1115,8 +1198,8 @@ function readBatch(spec) {
       } else {
         const t = parseImagineLine(line);
         tasks.push({
-          model: t.model, prompt: t.prompt, negative: t.negative, count: t.count,
-          enhance: t.enhance, options: t.options, _line: n + 1,
+          model: t.model, prompt: t.prompt, negative: t.negative, positive: t.positive,
+          count: t.count, enhance: t.enhance, options: t.options, _line: n + 1,
         });
       }
     } catch (e) {
@@ -1245,8 +1328,8 @@ async function main() {
     else if (cli.cmd) {
       const p = parseImagineLine(cli.cmd);
       tasks = [mergeTask(defaults, {
-        model: p.model, prompt: p.prompt, negative: p.negative, count: p.count,
-        enhance: p.enhance, options: p.options,
+        model: p.model, prompt: p.prompt, negative: p.negative, positive: p.positive,
+        count: p.count, enhance: p.enhance, options: p.options,
       })];
     } else tasks = [defaults];
   } catch (e) { process.stderr.write(`${e.message}\n`); return 1; }

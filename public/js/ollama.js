@@ -500,7 +500,7 @@ function applyComfyModels(data) {
     // in server/comfy.js. Absent for source-sized models (they follow the input clip).
     state.comfyLenInfo = new Map(videoModels.filter((m) => m.lenInfo).map((m) => [m.name, m.lenInfo]));
     // Models with no negative branch in their graph (MiniMax H3): the ⚙ negative box and
-    // /imagine's `--no …` are discarded, so showing the box would invite the user to type
+    // /imagine's `--neg …` are discarded, so showing the box would invite the user to type
     // a constraint that never arrives.
     state.comfyNegativeTunable = new Set(videoModels.filter((m) => m.negativeTunable).map((m) => m.name));
     // Models whose output can carry a soundtrack, so the ⚙ "silent video" box has

@@ -198,7 +198,7 @@
           </div>
 
           <div class="imageGenOptions" id="imageGenOptions">
-            <label title="/imagine [Nx] [options] prompt&#10;&#10;Parameters:&#10;  Nx — batch N images (e.g. 4x), max 8&#10;  --enhance / -e — AI enhance prompt&#10;  --size WxH or preset — custom size&#10;     presets: 480p, 720p, 1080p (add -portrait for vertical), ultrawide, ultrawide-small&#10;  -s / --second N — video length in seconds&#10;  --steps N — steps (1~100)&#10;  --seed N — seed (0~2147483647)&#10;  --no text — negative prompt">
+            <label title="/imagine [Nx] [options] prompt&#10;&#10;Parameters:&#10;  Nx — batch N images (e.g. 4x), max 8&#10;  --enhance / -e — AI enhance prompt&#10;  --size WxH or preset — custom size&#10;     presets: 480p, 720p, 1080p (add -portrait for vertical), ultrawide, ultrawide-small&#10;  -s / --second N — video length in seconds&#10;  --steps N — steps (1~100)&#10;  --seed N — seed (0~2147483647)&#10;  --pos text — extra positive text&#10;  --neg text — negative prompt">
               <span id="imageSizeLabelText">Default Media Size</span>
               <select id="defaultImageSize">
                 <option value="auto">Auto</option>
@@ -872,12 +872,12 @@
           </div>
           <div class="comfyModelInfo" id="comfyModelInfo" hidden></div>
           <label>
-            <span id="comfyParamPositiveLabel" title="A persistent positive prompt APPENDED to every image &amp; video prompt (e.g. a fixed style / quality booster). Like the negative below, but it adds to your prompt rather than replacing it. Empty = off.">Positive add-on (appended to every prompt)</span>
+            <span id="comfyParamPositiveLabel" title="A persistent positive prompt APPENDED to every image &amp; video prompt (e.g. a fixed style / quality booster). Like the negative below, but it adds to your prompt rather than replacing it. Overridden by --pos on a single /imagine. Empty = off.">Positive add-on (appended to every prompt)</span>
             <textarea id="comfyParamPositive" rows="2" placeholder="e.g. cinematic, high detail, 8k" title="Appended to every prompt. Empty = off."></textarea>
           </label>
           <label>
             <span id="comfyParamNegativeLabel">Negative prompt</span>
-            <textarea id="comfyParamNegative" rows="2" placeholder="e.g. blurry, low quality, extra fingers (overridden by --no)"></textarea>
+            <textarea id="comfyParamNegative" rows="2" placeholder="e.g. blurry, low quality, extra fingers (overridden by --neg)"></textarea>
           </label>
           <label title="When a model ships in several quantisations (fp8 / mxfp8 / nvfp4 / int8 / fp16), prefer this one. Auto = whatever is installed (fp8 when both exist). A model with no build at the chosen precision keeps its own — for a two-expert video model each expert falls back on its own, and the done-line then reports the mix.">
             <span id="comfyParamPrecisionLabel">Model precision</span>

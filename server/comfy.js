@@ -1758,7 +1758,7 @@ async function proxyComfyModels(req, res) {
       m.fpsTunable = !(preset && preset.fpsFixed) && m.name !== VIDEO_ENHANCE;
       // Whether a negative prompt reaches the graph at all. MiniMax H3 guides with a
       // BasicGuider — ONE conditioning branch — so there is nowhere to put it: both the
-      // ⚙ field and /imagine's `--no …` are discarded. Everything the user wants
+      // ⚙ field and /imagine's `--neg …` are discarded. Everything the user wants
       // suppressed has to be said positively in the prompt instead, which is also where
       // the soundtrack is directed.
       m.negativeTunable = m.type !== "minimax-h3";
