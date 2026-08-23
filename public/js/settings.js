@@ -224,6 +224,9 @@ function saveChatMessage(message) {
   if (message.isCompactSummary) stored.isCompactSummary = true;
   if (message.isFilePreview) stored.isFilePreview = true;
   if (message.translation) stored.translation = message.translation;
+  // Older versions of an edited bubble (the 🕘 history) — text only, so it stays
+  // small; without this an edit's undo path would die on reload.
+  if (message.editHistory?.length) stored.editHistory = message.editHistory;
   // Library-doc chunk bubbles ("import to chat" special tab) carry block metadata
   // so the tab can be written back to the library on archive.
   if (message.isLibraryBlock) {

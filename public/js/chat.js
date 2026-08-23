@@ -4037,6 +4037,142 @@ function openTimestampEditor(index) {
   input.focus();
 }
 
+// ─── Bubble edit history ──────────────────────────────────────────────────────
+// Every committed in-bubble edit stashes the version it replaced in msg.editHistory
+// (oldest first), so editing a message is never a one-way door: the 🕘 button next
+// to 复制 lists the older versions and puts one back. A restore is itself an edit —
+// it stashes what it replaces — so it can be undone the same way. Capped, oldest
+// falling off first, so a heavily reworked message can't grow the tab's stored
+// record without bound.
+const EDIT_HISTORY_MAX = 30;
+
+function pushEditHistory(msg, previous) {
+  if (!msg || typeof previous !== "string" || !previous) return;
+  const list = Array.isArray(msg.editHistory) ? msg.editHistory : (msg.editHistory = []);
+  // `at` is when THAT version came into being (the bubble's own clock while it was
+  // the live text) — not when it was replaced. A version and its time travel
+  // together: committing an edit re-stamps the bubble, restoring puts the old
+  // stamp back with the old text.
+  list.push({ content: previous, at: msg.timestamp || Date.now() });
+  if (list.length > EDIT_HISTORY_MAX) list.splice(0, list.length - EDIT_HISTORY_MAX);
+}
+
+// The 🕘 popup: current version on top, previous versions newest-first, each with
+// 恢复 / × of its own.
+function openEditHistory(index) {
+  const tab = getActiveTab();
+  const msg = tab?.messages?.[index];
+  if (!msg?.editHistory?.length) return;
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "scanModalBackdrop";
+  const modal = document.createElement("div");
+  modal.className = "scanModal editHistoryModal";
+  modal.innerHTML = `
+    <div class="scanModalHeader">
+      <h3 class="scanModalTitle">${escapeHtml(t("hist_title"))}</h3>
+      <span class="scanModalStatus editHistoryCount"></span>
+      <button type="button" class="scanModalClose" aria-label="Close">✕</button>
+    </div>
+    <div class="editHistoryList"></div>
+    <div class="editHistoryActions">
+      <button type="button" class="secondary editHistoryClear">${escapeHtml(t("hist_clear"))}</button>
+      <button type="button" class="primary editHistoryDone">${escapeHtml(t("hist_done"))}</button>
+    </div>`;
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  const listEl = modal.querySelector(".editHistoryList");
+  const countEl = modal.querySelector(".editHistoryCount");
+
+  const close = () => {
+    document.removeEventListener("keydown", onKey);
+    backdrop.remove();
+  };
+  const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); close(); } };
+  // Repaint the bubble under the popup so a restore shows at once. renderChat()
+  // rebuilds the message list only — the popup lives on document.body, untouched.
+  const commit = () => {
+    const scrollY = dom.messagesEl.scrollTop;
+    saveChat();
+    renderChat();
+    dom.messagesEl.scrollTop = scrollY;
+  };
+
+  const makeCard = ({ label, when, text, current, i }) => {
+    const row = document.createElement("div");
+    row.className = "editHistoryItem" + (current ? " isCurrent" : "");
+    const head = document.createElement("div");
+    head.className = "editHistoryHead";
+    const name = document.createElement("span");
+    name.className = "editHistoryLabel";
+    name.textContent = label;
+    head.appendChild(name);
+    const time = document.createElement("span");
+    time.className = "editHistoryTime";
+    time.textContent = when ? formatTimestamp(when) : "";
+    head.appendChild(time);
+    if (!current) {
+      const restore = document.createElement("button");
+      restore.type = "button";
+      restore.className = "editHistoryRestore";
+      restore.textContent = t("hist_restore");
+      restore.addEventListener("click", () => {
+        pushEditHistory(msg, msg.content);   // what it replaces joins the log
+        msg.content = text;
+        // The bubble carries the restored version's own time, not the time of the
+        // restore — putting an old version back puts its clock back with it.
+        if (when) msg.timestamp = when;
+        commit();
+        close();   // the restore is done — get out of the way and show the bubble
+      });
+      head.appendChild(restore);
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "editHistoryDelete";
+      del.title = t("hist_delete");
+      del.setAttribute("aria-label", t("hist_delete"));
+      del.textContent = "×";
+      del.addEventListener("click", () => {
+        msg.editHistory.splice(i, 1);
+        if (!msg.editHistory.length) delete msg.editHistory;
+        commit();
+        paint();
+      });
+      head.appendChild(del);
+    }
+    row.appendChild(head);
+    const body = document.createElement("div");
+    body.className = "editHistoryText";
+    body.textContent = text;
+    row.appendChild(body);
+    return row;
+  };
+
+  const paint = () => {
+    const hist = msg.editHistory || [];
+    if (!hist.length) { close(); return; }   // last version deleted → nothing left to manage
+    countEl.textContent = t("hist_count", { n: hist.length });
+    listEl.textContent = "";
+    listEl.appendChild(makeCard({ label: t("hist_current"), when: msg.timestamp, text: msg.content, current: true }));
+    for (let i = hist.length - 1; i >= 0; i--) {
+      listEl.appendChild(makeCard({ label: t("hist_version", { n: i + 1 }), when: hist[i].at, text: hist[i].content, i }));
+    }
+  };
+  paint();
+
+  modal.querySelector(".editHistoryClear").addEventListener("click", () => {
+    if (!confirm(t("hist_clearConfirm"))) return;
+    delete msg.editHistory;
+    commit();
+    close();
+  });
+  modal.querySelector(".scanModalClose").addEventListener("click", close);
+  modal.querySelector(".editHistoryDone").addEventListener("click", close);
+  backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(); });
+  document.addEventListener("keydown", onKey);
+}
+
 function renderMessage(role, content, displayImages, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMimes, generatedAudio, audioMime, generatedVideoThumbnails) {
   const item = document.createElement("div");
   item.className = `message ${role}`;
@@ -4198,6 +4334,18 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       copyButton.textContent = "📋";
       copyButton.addEventListener("click", () => copyMessageText(content, copyButton, item));
       leftActions.appendChild(copyButton);
+    }
+
+    // 🕘 sits right of 复制 — and only on a bubble that actually has older versions.
+    if (_libMsg?.editHistory?.length) {
+      const historyButton = document.createElement("button");
+      historyButton.className = "messageAction historyMessage";
+      historyButton.type = "button";
+      historyButton.title = t("hist_btn", { n: _libMsg.editHistory.length });
+      historyButton.setAttribute("aria-label", t("hist_title"));
+      historyButton.textContent = "🕘";
+      historyButton.addEventListener("click", () => openEditHistory(index));
+      leftActions.appendChild(historyButton);
     }
 
     if (Number.isInteger(index)) {
@@ -4376,7 +4524,11 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
           if (save && newContent && newContent !== original) {
             const scrollY = dom.messagesEl.scrollTop;
             const tab = getActiveTab();
+            // Stash the version this edit replaces (with its own time), so 🕘 can
+            // bring both back, and stamp the bubble with this version's birth time.
+            pushEditHistory(tab.messages[index], original);
             tab.messages[index].content = newContent;
+            tab.messages[index].timestamp = Date.now();
             saveChat();
             renderChat();
             dom.messagesEl.scrollTop = scrollY;
