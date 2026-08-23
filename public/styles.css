@@ -951,9 +951,12 @@ p {
 
 /* The global `label { display:grid }` + `.comfyParamRow { display:grid }` author rules otherwise
    BEAT the UA `[hidden]{display:none}`, so a label/row/button that updateComfyParamVisibility()
-   hides for the selected model would still show. Restore the hidden behaviour inside the ⚙ panel. */
+   hides for the selected model would still show. Restore the hidden behaviour inside the ⚙ panel.
+   ANY new ⚙ widget that sets its own `display` has to be listed here too — `.camPicker` is a
+   plain div with `display:grid`, and without this line it stayed on screen for every model. */
 .comfyParamsBody label[hidden],
 .comfyParamRow[hidden],
+.camPicker[hidden],
 .comfyParamsBody button[hidden] { display: none; }
 
 /* Inline caution under a ⚙ field (e.g. a window size the current GPU probably cannot fit).
@@ -4020,6 +4023,20 @@ body.isResizingComposer {
 .scanModal.maskModal {
   width: min(1040px, 96vw);
   max-height: 90vh;
+}
+
+/* ✏️ motion-track editor: one canvas, sized 1:1 by the module, crosshair to draw. */
+.trackStage {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 8px;
+}
+.trackStage canvas {
+  display: block;
+  cursor: crosshair;
+  touch-action: none;
+  border-radius: 6px;
 }
 
 .maskBody {

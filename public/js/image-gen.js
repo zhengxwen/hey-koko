@@ -226,6 +226,31 @@ function comfyOverrides() {
 // Pull `--pos <text>` / `--neg <text>` out of a command line. Each value ends at the
 // next ` --flag` or at the end of the line, so the two can appear in any order and in
 // any position, and ordinary flags may follow them. A repeated flag: last one wins.
+// `--track` value → normalized polylines, the SAME text in the browser parser and the
+// CLI (a drift test compares the two sources byte for byte). Grammar:
+//   x,y>x,y[>x,y…]        one trajectory, 0-1 coordinates, left-top origin
+//   a;b                    several trajectories in one flag (or repeat the flag)
+// Returns the accumulated list, or a string describing the first bad token.
+function parseTrackFlag(value, acc) {
+  const out = Array.isArray(acc) ? acc.slice() : [];
+  for (const raw of String(value || "").split(";")) {
+    const spec = raw.trim();
+    if (!spec) continue;
+    const pts = [];
+    for (const tok of spec.split(">")) {
+      const m = tok.trim().match(/^(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)$/);
+      if (!m) return `bad point "${tok.trim()}" (want x,y with 0-1 coordinates)`;
+      const x = parseFloat(m[1]), y = parseFloat(m[2]);
+      if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return `point "${tok.trim()}" out of range (0-1)`;
+      pts.push({ x, y });
+    }
+    if (pts.length < 2) return `track "${spec}" needs at least two points (x,y>x,y)`;
+    out.push(pts);
+  }
+  if (out.length > 16) return "at most 16 tracks";
+  return out;
+}
+
 function peelTextFlags(line) {
   const out = { rest: line, pos: "", neg: "" };
   for (;;) {
@@ -450,6 +475,15 @@ function parseImagineCommand(input) {
       }
       result.options.quality = val;
       rest = rest.replace(/^--quality\s+\S+\s*/, "").trim();
+    } else if (/^--track\s/.test(rest)) {
+      // Motion-Track trajectories (LTX-2.5 Motion Track ONLY — the server rejects the
+      // flag on every other model rather than dropping it). Repeatable.
+      const trackFlag = rest.match(/^--track\s+(\S+)/);
+      if (!trackFlag) return { error: t("img_trackNeedsArg") };
+      const parsedTracks = parseTrackFlag(trackFlag[1], result.options.tracks);
+      if (typeof parsedTracks === "string") return { error: t("img_trackInvalid", { why: parsedTracks }) };
+      result.options.tracks = parsedTracks;
+      rest = rest.replace(/^--track\s+\S+\s*/, "").trim();
     } else if (/^--voice\s/.test(rest)) {
       // TTS voice for "photo speaks" (InfiniteTalk): a Kokoro voice id, e.g.
       // zf_xiaoxiao / zm_yunxi / af_heart. Validated server-side; other models ignore it.
@@ -477,7 +511,7 @@ function parseImagineCommand(input) {
   // while every flag belonged in front; now that --pos / --neg deliberately sit at the
   // END, typing one more flag after them is a natural mistake, so name it. Only KNOWN
   // flag names are rejected, so prose that happens to contain a double dash is safe.
-  const strayFlag = rest.match(/\s--(enhance|size|steps|model|second|seed|quality|voice|pos|neg)\b/i);
+  const strayFlag = rest.match(/\s--(enhance|size|steps|model|second|seed|quality|voice|track|pos|neg)\b/i);
   if (strayFlag) return { error: t("img_flagAfterPrompt", { arg: strayFlag[1] }) };
 
 
@@ -1134,6 +1168,12 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // Still dropped for SOURCE-VIDEO jobs (video edit / pose transfer / interpolate), which
   // derive their output size from the clip they are editing: feeding those a default meant
   // for stills would silently re-frame the source. Only an explicit --size overrides there.
+  // ✏️ tracks staged in the ⚙ editor ride along for the Motion-Track model unless the
+  // command carried its own --track (typed wins). Other models never get them — the
+  // ⚙ button is hidden there and the server rejects the field regardless.
+  if (model === "ltx25-track" && !(parsed.options && parsed.options.tracks) && Array.isArray(state.pendingTracks) && state.pendingTracks.length) {
+    parsed = { ...parsed, options: { ...(parsed.options || {}), tracks: state.pendingTracks } };
+  }
   const reqOptions = { ...parsed.options };
   if (sourceVideo && !parsed.sizeExplicit) {
     delete reqOptions.width;

@@ -138,6 +138,11 @@ const SENTINEL_IDS = {
   "ltx-union": "ltx2.3-22b:union",
   "ltx25-union": "ltx2.5-22b:union",
   "ltx25-ingredients": "ltx2.5-22b:ingredients",
+  "ltx25-upscale": "ltx2.5-22b:upscale",
+  "ltx25-outpaint": "ltx2.5-22b:outpaint",
+  "ltx25-inpaint": "ltx2.5-22b:inpaint",
+  "ltx-foley": "ltx2.3-22b:foley",
+  "ltx25-track": "ltx2.5-22b:track",
   infinitetalk: "infinitetalk:dub",
   infinitetalk_speak: "infinitetalk:speak",
   "video-enhance": "video-enhance",
@@ -247,6 +252,11 @@ const ID_LABELS = {
   "ltx2.5-22b": "LTX-2.5 22B",
   "ltx2.5-22b:union": "LTX-2.5 22B Union",
   "ltx2.5-22b:ingredients": "LTX-2.5 22B Ingredients",
+  "ltx2.5-22b:upscale": "LTX-2.5 22B Pixel Upscale ×2",
+  "ltx2.5-22b:outpaint": "LTX-2.5 22B Outpaint",
+  "ltx2.5-22b:inpaint": "LTX-2.5 22B Inpaint",
+  "ltx2.3-22b:foley": "LTX-2.3 22B Foley (video → sound)",
+  "ltx2.5-22b:track": "LTX-2.5 22B Motion Track",
   "ltx2.3-22b:msr": "LTX-2.3 22B MSR",
   "ltx2.3-22b:union": "LTX-2.3 22B Union",
   "ltx2-sulphur": "LTX-2 Sulphur",
@@ -305,6 +315,9 @@ function canonicalModelId(name) {
   const n = String(name || "").trim();
   if (!n) return null;
   if (Object.prototype.hasOwnProperty.call(SENTINEL_IDS, n)) return SENTINEL_IDS[n];
+  // The LTX-2.5 effect sentinels are a family ("ltx25-fx-<effect>"): one graph, one
+  // IC-LoRA per effect, so the effect rides the MODE part of the id.
+  if (n.startsWith("ltx25-fx-")) return "ltx2.5-22b:fx-" + n.slice(9);
   const base = precisionBase(n);
   for (const [re, id] of FILE_ID_RULES) if (re.test(base)) return id;
   return slugify(base) || null;
@@ -327,7 +340,12 @@ function galleryModelId(requested, resolved) {
 
 // Display name for an id (or for a raw name, via its id).
 function labelForId(id) {
-  return ID_LABELS[id] || id || "";
+  if (ID_LABELS[id]) return ID_LABELS[id];
+  if (String(id || "").startsWith("ltx2.5-22b:fx-")) {
+    const fx = id.slice(14).replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    return `LTX-2.5 22B ${fx}`;
+  }
+  return id || "";
 }
 
 module.exports = {

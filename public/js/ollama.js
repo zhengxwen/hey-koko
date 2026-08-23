@@ -5,6 +5,7 @@
 import { dom, state } from './state.js';
 import { SETTINGS_KEY } from './constants.js';
 import { t } from './i18n.js';
+import { refreshTrackLabel } from './track-paint.js';
 import { saveCurrentSettings } from './settings.js';
 import { getBgWorkers, setBgWorkerStatus, MULTI_WORKERS_ENABLED } from './bg-jobs.js';
 import { updateCloudBadge } from './avatar.js';
@@ -1050,6 +1051,10 @@ function videoAutoDefaults(modelName) {
   // LTX-2.5 sentinels (their names don't match the dotted regex below).
   if (m === "ltx25-union") return { fps: 24, length: 97, cfg: 1 };
   if (m === "ltx25-ingredients") return { fps: 24, length: 121, steps: 8, cfg: 1 };
+  if (m === "ltx25-upscale" || m.startsWith("ltx25-fx-")) return { fps: 24, length: 121, steps: 8, cfg: 1 };
+  if (m === "ltx25-outpaint" || m === "ltx25-inpaint") return { fps: 24, length: 121, cfg: 1 };
+  if (m === "ltx-foley") return { fps: 24, length: 89, steps: 30, cfg: 6 };
+  if (m === "ltx25-track") return { fps: 24, length: 121, steps: 8, cfg: 1 };
   // LTX-2.5 BEFORE the generic LTX test (its filenames match both): 24 fps, 5 s → 121
   // frames, always cfg 1 (distilled transformer). Steps still flip with the unseen
   // two-stage-vs-single-stage choice, so they stay a bare "Auto" like the 2.3 cascade.
@@ -1110,6 +1115,12 @@ function comfyModelHint(name) {
   // underneath changed), so it shares the hint; ingredients gets its own.
   if (n === "ltx-union" || n === "ltx25-union") return t("oll_hint_ltxUnion");
   if (n === "ltx25-ingredients") return t("oll_hint_ltx25Ingredients");
+  if (n === "ltx25-upscale") return t("oll_hint_ltx25Upscale");
+  if (n.startsWith("ltx25-fx-")) return t("oll_hint_ltx25Fx");
+  if (n === "ltx25-outpaint") return t("oll_hint_ltx25Outpaint");
+  if (n === "ltx25-inpaint") return t("oll_hint_ltx25Inpaint");
+  if (n === "ltx-foley") return t("oll_hint_ltxFoley");
+  if (n === "ltx25-track") return t("oll_hint_ltx25Track");
   if (LTX_RE.test(n)) return t("oll_hint_ltx");
   // Image edit (needs a reference image + an instruction).
   if (/kontext/.test(n)) return t("oll_hint_kontext");
@@ -1475,6 +1486,12 @@ function comfyModelComponents(name) {
   if (/hunyuan/.test(n)) return "HunyuanVideo · UNETLoader · CLIP clip_l + llava · VAE hunyuan · KSampler";
   if (n === "ltx-msr") return "LTX-2.3 MSR · UNETLoader(distilled) + ckpt VAE · LTXICLoRALoader · LiconMSR · LTXAddVideoICLoRAGuide · PromptRelayEncode · LTX2_NAG (+audio)";
   if (n === "ltx-union") return "LTX-2.3 Union Control · CheckpointLoader(distilled) · LoraLoaderModelOnly(union-control IC-LoRA) → GetICLoRAParameters · LoadVideo→GetVideoComponents→MoGe depth · LTXVImgToVideoInplace(ref frame) · LTXVAddGuide(depth + iclora_parameters) · KSampler 8-step (+audio)";
+  if (n === "ltx25-upscale") return "LTX-2.5 Pixel Upscale ×2 · UNETLoader(distilled) + LTXICLoRALoader(pixel-spatial-upscaler) · source clip as half-size reference → 2× re-render · source audio frozen · 8-step single-stage";
+  if (n.startsWith("ltx25-fx-")) return "LTX-2.5 effect IC-LoRA · UNETLoader(distilled) + LTXICLoRALoader(effect) · source clip as reference → re-render at its own size · source audio frozen · 8-step single-stage";
+  if (n === "ltx25-outpaint") return "LTX-2.5 Outpaint · in-outpainting IC-LoRA · source fitted into the target canvas, padding = mask · two-stage: 8-step half-size → pixel blend → ×2 re-encode → 2-step refine · source audio frozen";
+  if (n === "ltx25-inpaint") return "LTX-2.5 Inpaint · in-outpainting IC-LoRA · SAM2 tracks the 🎯 object → dilated mask · two-stage: 8-step half-size → pixel blend → ×2 re-encode → 2-step refine · source audio frozen";
+  if (n === "ltx25-track") return "LTX-2.5 Motion Track · UNETLoader(distilled) + LTXICLoRALoader(motion-track) · --track trajectories → LTXVDrawTracks dot video → LTXAddVideoICLoRAGuide · optional start still (0.7) · 8-step single-stage (+audio)";
+  if (n === "ltx-foley") return "LTX-2.3 Foley V2A · CheckpointLoader(dev) + foley LoRA · video latent frozen, audio denoised (LTXVSetAudioVideoMaskByTime) · MultimodalGuider cfg 6 / STG block 29 · 30 steps";
   if (n === "ltx25-union") return "LTX-2.5 Union Control · UNETLoader(distilled) + LTXICLoRALoader(union-control) · LoadVideo→MoGe depth · LTXAddVideoICLoRAGuide · two-stage: 8-step at depth size → latent ×2 → 3-step refine (+audio)";
   if (n === "ltx25-ingredients") return "LTX-2.5 Ingredients · UNETLoader(distilled) + LTXICLoRALoader(ingredients) · references stitched into one sheet → LTXAddVideoICLoRAGuide (sheet on every frame) · 8-step single-stage (+audio)";
   if (/ltx.?2[._]5/.test(n)) return "LTX-2.5 · UNETLoader(distilled) · CLIP gemma4-12b(ltxv) · video+audio VAE · LTXVDualCFGGuider · two-stage: 8-step half-size → latent ×2 → 3-step refine (+audio)";
@@ -1810,7 +1827,14 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamTorchCompile, animate || scail2);
   setVis(dom.comfyParamRelight, animate);
   // Replace only: which person in the source to swap out.
-  setVis(dom.comfyMaskPointBtn, animateReplace);
+  // Inpaint picks its object the same way Replace does: one 🎯 click on the source.
+  setVis(dom.comfyMaskPointBtn, animateReplace || m === "ltx25-inpaint");
+  // ✏️ motion tracks — LTX-2.5 Motion Track ONLY; staged tracks die with the model switch
+  // (the server would reject them on any other model anyway).
+  const isTrack = m === "ltx25-track";
+  setVis(dom.comfyTrackBtn, isTrack);
+  if (!isTrack && state.pendingTracks) state.pendingTracks = null;
+  refreshTrackLabel();
   // Bernini only — turbo is otherwise forced on by the mere presence of the distill
   // LoRA, and ref_max_size is the only knob on how much reference detail survives.
   for (const el of [dom.comfyParamBerniniMode, dom.comfyParamRefMaxSize]) setVis(el, /bernini/i.test(m));
@@ -1842,7 +1866,7 @@ export function updateComfyParamVisibility() {
   // trained on the 2.3 architecture, and the server ignores the field for 2.5 —
   // showing it would be a dead control. The union/ingredients IC-LoRAs mount
   // automatically server-side, same policy as 2.3's MSR/union.
-  const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union" && !/ltx.?2[._]5|ltx25/.test(m.toLowerCase());
+  const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union" && m.toLowerCase() !== "ltx-foley" && !/ltx.?2[._]5|ltx25/.test(m.toLowerCase());
   for (const el of [dom.comfyParamLtxLora, dom.comfyParamLtxLoraStrength]) setVis(el, ltx);
   if (ltx) syncLtxLoraOptions(m);
   // Krea-2 — the style LoRA slot and its strength. The LoRA picker is hidden on the

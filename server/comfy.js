@@ -604,6 +604,40 @@ const LTX25_DEV_RE = /dev[-_ ]?transformer/i;
 const LTX25_UNION = "ltx25-union";
 const LTX25_INGREDIENTS = "ltx25-ingredients";
 const LTX25_ING_MAX_REFS = 4;
+// Video→video IC-LoRA lines on the 2.5 stack (official LTX-2.5_V2V_ICLoRA workflow:
+// source frames are the guide, the source soundtrack is frozen, single-stage 8-step).
+// One builder, one LoRA file per entry. `ds` = reference_downscale_factor the LoRA
+// was trained with — the pixel upscaler reads a half-size reference, so its canvas is
+// 2× the source; the effect LoRAs re-render at the source's own size.
+const LTX25_UPSCALE = "ltx25-upscale";
+const LTX25_FX_PREFIX = "ltx25-fx-";
+const LTX25_FX = [
+  { key: "deblur",        re: /ic-lora-deblur/i,           label: "Deblur" },
+  { key: "colorization",  re: /ic-lora-colorization/i,     label: "Colorize" },
+  { key: "day-to-night",  re: /ic-lora-day-to-night/i,     label: "Day → Night" },
+  { key: "clean-plate",   re: /ic-lora-clean-plate/i,      label: "Clean Plate" },
+  { key: "hdr",           re: /ic-lora-hdr-\d/i,           label: "HDR" },
+  { key: "relight",       re: /ic-lora-relight/i,          label: "Relight" },
+  { key: "decompression", re: /ic-lora-decompression/i,    label: "Decompress" },
+  { key: "instant-shave", re: /ic-lora-instant-shave/i,    label: "Instant Shave" },
+  { key: "water-sim",     re: /ic-lora-water-simulation/i, label: "Water Simulation" },
+  { key: "cross-eyed",    re: /ic-lora-cross-eyed/i,       label: "Cross-Eyed" },
+];
+// Masked two-stage lines (official Inpaint / Outpaint two-stage workflows, ONE shared
+// in-outpainting IC-LoRA): outpaint pads the source onto a bigger canvas (mask = the
+// padding), inpaint masks an object tracked by SAM2 from a 🎯 click.
+const LTX25_OUTPAINT = "ltx25-outpaint";
+const LTX25_INPAINT = "ltx25-inpaint";
+// Foley V2A rides the 2.3 DEV stack (its recipe is real CFG 6 over 30 steps — not a
+// distilled schedule), freezing the video latent and denoising only the audio.
+const LTX_FOLEY = "ltx-foley";
+// Motion Track Control (official LTX-2.5_ICLoRA_Motion_Track workflow): sparse point
+// TRAJECTORIES drawn over the canvas are rendered into a dot-trail video
+// (LTXVDrawTracks) and injected as the IC-LoRA guide — whatever sits under a dot
+// follows its path. The trajectories are the `--track` flag / ⚙ input of THIS model
+// only (options.tracks, normalized 0-1 polylines); every other model rejects them.
+const LTX25_TRACK = "ltx25-track";
+const LTX25_TRACK_MAX = 16;
 
 // Finetunes distributed BOTH as a full checkpoint and as a standalone LoRA of the
 // same training. Sulphur is one: sulphur_dev_*.safetensors already contains what
@@ -737,6 +771,11 @@ function videoTypeOf(model) {
   // needs a separator between the 2 and the 5.
   if (model === LTX25_UNION) return "ltx25-union";
   if (model === LTX25_INGREDIENTS) return "ltx25-ingredients";
+  if (model === LTX25_UPSCALE || model.startsWith(LTX25_FX_PREFIX)) return "ltx25-v2v";
+  if (model === LTX25_OUTPAINT) return "ltx25-outpaint";
+  if (model === LTX25_INPAINT) return "ltx25-inpaint";
+  if (model === LTX_FOLEY) return "ltx-foley";
+  if (model === LTX25_TRACK) return "ltx25-track";
   // LTX-2.5 BEFORE the generic LTX tests: its filenames match LTX_MODEL_RE too, but it
   // loads via UNETLoader + separate VAE/encoder files, so it must not reach the 2.3
   // checkpoint paths. The dev transformer is a component (see LTX25_DEV_RE).
@@ -1181,6 +1220,102 @@ async function ltx25IngredientsParts(pref) {
   return nodes && parts.ingredientsLora ? parts : null;
 }
 
+// The v2v IC-LoRA lines (pixel upscaler + effects): 2.5 core + the one LoRA the entry
+// names + the audio-freeze nodes. `which` is "upscale" or an LTX25_FX key.
+const LTX25_V2V_NODES = [
+  "LTXICLoRALoaderModelOnly", "LTXAddVideoICLoRAGuide", "LTXVCropGuides", "LTXVSetAudioRefTokens",
+  "VAEEncodeAudio", "GetVideoComponents", "Video Slice", "GetImageSize", "ImageScale", "LTXVImgToVideoInplace",
+];
+async function ltx25V2VParts(which, pref) {
+  const core = await ltx25CoreParts(pref);
+  if (!core) return null;
+  const [loras, nodes] = await Promise.all([
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyHasNodes(LTX25_V2V_NODES),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  let lora = null, ds = 1, label = null;
+  if (which === "upscale") {
+    // The 2.5-native pixel upscaler (reference at half size → ds 2). The 2.3 x2 file is
+    // the fallback — same contract, older base.
+    lora = find(loras, /ltx.?2[._]5.*pixel.?spatial.?upscaler.?x2/i) || find(loras, /pixel.?spatial.?upscaler.?x2/i);
+    ds = 2; label = "Pixel Upscale ×2";
+  } else {
+    const fx = LTX25_FX.find((f) => f.key === which);
+    if (!fx) return null;
+    lora = find(loras, fx.re); label = fx.label;
+  }
+  return nodes && lora ? { ...core, lora, ds, label } : null;
+}
+// Every installed v2v entry, for the catalog: [{ name, label }].
+async function ltx25V2VEntries() {
+  const out = [];
+  if (await ltx25V2VParts("upscale")) out.push({ name: LTX25_UPSCALE, label: "LTX-2.5 Pixel Upscale ×2" });
+  for (const fx of LTX25_FX) if (await ltx25V2VParts(fx.key)) out.push({ name: LTX25_FX_PREFIX + fx.key, label: `LTX-2.5 ${fx.label}` });
+  return out;
+}
+
+// Inpaint + outpaint share ONE IC-LoRA and one masked two-stage graph; inpaint adds
+// the SAM2 video tracker for the mask. The spatial upscaler is part of the shape
+// (stage 2 is encoded from the ×2 pixel blend, not latent-upsampled, but the official
+// workflow still lists it — we don't need it, so it is not required here).
+const LTX25_MASKED_NODES = [
+  "LTXICLoRALoaderModelOnly", "LTXAddVideoICLoRAGuideAdvanced", "LTXVInpaintPreprocess",
+  "LTXVLaplacianPyramidBlend", "LTXVSetAudioRefTokens", "VAEEncodeAudio", "VAEEncodeTiled",
+  "LTXVImgToVideoConditionOnly", "LTXVCropGuides", "GetVideoComponents", "Video Slice",
+  "GetImageSize", "ImageScale", "ImageScaleBy", "ImagePadForOutpaintTargetSize",
+  "MaskToImage", "ImageToMask", "LTXVDilateVideoMask",
+];
+async function ltx25MaskedParts(kind, pref) {
+  const core = await ltx25CoreParts(pref);
+  if (!core) return null;
+  const [loras, nodes, sam] = await Promise.all([
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyHasNodes(LTX25_MASKED_NODES),
+    kind === "inpaint" ? comfyHasNodes(["DownloadAndLoadSAM2Model", "Sam2Segmentation"]) : Promise.resolve(true),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  const inoutLora = find(loras, /in.?outpaint/i);
+  return nodes && sam && inoutLora ? { ...core, inoutLora } : null;
+}
+
+// Motion Track: 2.5 core + the motion-track IC-LoRA (ref0.5 → downscale 2, so the
+// canvas is /64) + the track renderer.
+async function ltx25TrackParts(pref) {
+  const core = await ltx25CoreParts(pref);
+  if (!core) return null;
+  const [loras, nodes] = await Promise.all([
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyHasNodes(["LTXICLoRALoaderModelOnly", "LTXAddVideoICLoRAGuide", "LTXVDrawTracks", "LTXVCropGuides", "LTXVImgToVideoInplace"]),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  const trackLora = find(loras, /motion.?track/i);
+  return nodes && trackLora ? { ...core, trackLora } : null;
+}
+
+// Foley V2A — the 2.3 DEV checkpoint (full, with VAE + audio VAE), its Gemma-3
+// encoder, the foley LoRA, and the Internal-pack audio/video masking nodes.
+const LTX_FOLEY_NODES = [
+  "LTXAVTextEncoderLoader", "LTXVAudioVAELoader", "LTXVEmptyLatentAudio", "LTXVConcatAVLatent",
+  "LTXVSetAudioVideoMaskByTime", "GuiderParameters", "MultimodalGuider", "LTXVScheduler",
+  "LTXVSeparateAVLatent", "LTXVAudioVAEDecode", "GetVideoComponents", "Video Slice", "ImageFromBatch", "ImageScale", "VAEEncode",
+];
+async function ltxFoleyParts() {
+  const [ckpts, loras, clips, nodes] = await Promise.all([
+    comfyEnum("CheckpointLoaderSimple", "ckpt_name").catch(() => []),
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyEnum("LTXAVTextEncoderLoader", "text_encoder").catch(() => []),
+    comfyHasNodes(LTX_FOLEY_NODES),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  const parts = {
+    ckpt: find(ckpts, /ltx.?2[._]3.*dev/i),
+    lora: find(loras, /foley/i),
+    encoder: find(clips.filter((n) => !LTX25_RE.test(n)), /gemma.*12b/i) || find(clips, /gemma_?3/i),
+  };
+  return nodes && parts.ckpt && parts.lora && parts.encoder ? parts : null;
+}
+
 // Everything InfiniteTalk V2V needs. Wrapper-based (WanVideoWrapper node family), so the
 // loaders are the wrapper's own: WanVideoModelLoader scans diffusion_models/,
 // MultiTalkModelLoader too (hence the patch copies there), Wav2VecModelLoader scans
@@ -1322,6 +1457,12 @@ function capsFor(name, group, type, entry) {
   if (name === LTX_UNION) return ["v2v", "audio"]; // depth-driven; LTX decodes a soundtrack
   if (name === LTX25_UNION) return ["v2v", "audio"];       // same claim, 2.5 stack
   if (name === LTX25_INGREDIENTS) return ["i2v", "audio"]; // reference-sheet driven, generates sound
+  // The v2v / in-outpaint lines keep the SOURCE soundtrack (frozen audio tokens), so no
+  // "audio" claim — that tag means "generates a soundtrack". Foley is the opposite: its
+  // whole output is a generated soundtrack.
+  if (name === LTX25_UPSCALE || name === LTX25_OUTPAINT || name === LTX25_INPAINT || name.startsWith(LTX25_FX_PREFIX)) return ["v2v"];
+  if (name === LTX_FOLEY) return ["v2v", "audio"];
+  if (name === LTX25_TRACK) return ["t2v", "i2v", "audio"]; // trajectories + optional still; generates sound
   if (name === INFINITETALK) return ["v2v", "audio"]; // audio-DRIVEN dubbing (lip re-sync to a speech file)
   if (name === INFINITETALK_SPEAK) return ["i2v", "audio"]; // photo + speech/TTS → talking video
   if (type === "dancer") return ["i2v", "audio"]; // reference photo + MUSIC → dance video synced to it
@@ -1389,6 +1530,12 @@ function videoRank(n) {
   if (/minimax.?h3/i.test(n)) return 6.5;
   if (n === LTX25_INGREDIENTS) return 6.91;
   if (n === LTX25_UNION) return 6.92;
+  if (n === LTX25_UPSCALE) return 6.93;
+  if (n === LTX25_OUTPAINT) return 6.94;
+  if (n === LTX25_INPAINT) return 6.95;
+  if (n.startsWith(LTX25_FX_PREFIX)) return 6.96;
+  if (n === LTX_FOLEY) return 7.45;
+  if (n === LTX25_TRACK) return 6.97;
   if (LTX25_RE.test(n)) return 6.9;  // before the generic LTX test, which also matches
   if (LTX_MODEL_RE.test(n)) return 7;
   // scail BEFORE animate: the "scail2_animate" sentinel contains "animate", so the
@@ -1436,6 +1583,13 @@ function isModelReady(name, group, type) {
   if (name === LTX_UNION) return true;      // Union Control — verified end-to-end (depth transfer, sharp)
   if (name === LTX25_UNION) return true;    // 2.5 Union — verified live 2026-08-14 (two-stage, MoGe depth)
   if (name === LTX25_INGREDIENTS) return true; // verified live 2026-08-14 (2-ref sheet, both identities held)
+  // The 2026-08-22 batch: flipped to true one by one as each survives a live smoke.
+  if (name === LTX25_UPSCALE) return true;   // verified live on Spark 2026-08-22 (2× fox clip: real fur/grass detail, audio kept)
+  if (name === LTX25_OUTPAINT) return true;  // verified live 2026-08-22 (768→1280 wide, seamless snowfield/treeline)
+  if (name === LTX25_INPAINT) return true;   // verified live 2026-08-22 (SAM2-tracked fox → wolf cub, background intact)
+  if (name.startsWith(LTX25_FX_PREFIX)) return false;
+  if (name === LTX_FOLEY) return true;   // verified live 2026-08-22 (native-size frames; see foleyCanvas)
+  if (name === LTX25_TRACK) return true;  // verified live on Spark 2026-08-22 (fox follows a 3-point arc left→right)
   if (name === ANIMATE_REPLACE) return true; // Replace verified end-to-end (scene kept, person swapped)
   if (name === INFINITETALK) return true;    // V2V dub recipe verified live (92-frame lip re-sync, trim tail exact)
   if (name === INFINITETALK_SPEAK) return true; // I2V talking-photo recipe verified live (see buildInfiniteTalk)
@@ -1688,6 +1842,11 @@ async function proxyComfyModels(req, res) {
     // same policy as MSR/Union: an entry that always errors is worse than no entry.
     if (await ltx25UnionParts()) videoModels.push({ name: LTX25_UNION, type: "ltx25-union", label: "LTX-2.5 Union", needsVideo: true, needsImages: 1 });
     if (await ltx25IngredientsParts()) videoModels.push({ name: LTX25_INGREDIENTS, type: "ltx25-ingredients", label: "LTX-2.5 Ingredients", needsImages: 1 });
+    for (const e of await ltx25V2VEntries()) videoModels.push({ name: e.name, type: "ltx25-v2v", label: e.label, needsVideo: true });
+    if (await ltx25MaskedParts("outpaint")) videoModels.push({ name: LTX25_OUTPAINT, type: "ltx25-outpaint", label: "LTX-2.5 Outpaint", needsVideo: true });
+    if (await ltx25MaskedParts("inpaint")) videoModels.push({ name: LTX25_INPAINT, type: "ltx25-inpaint", label: "LTX-2.5 Inpaint", needsVideo: true });
+    if (await ltxFoleyParts()) videoModels.push({ name: LTX_FOLEY, type: "ltx-foley", label: "LTX-2.3 Foley (video → sound)", needsVideo: true });
+    if (await ltx25TrackParts()) videoModels.push({ name: LTX25_TRACK, type: "ltx25-track", label: "LTX-2.5 Motion Track" });
     // InfiniteTalk V2V (audio-driven dubbing / lip re-sync): needs a SOURCE VIDEO plus a
     // SPEECH AUDIO file (needsAudio — the frontend gates on it). Wrapper-based; only
     // offered when the whole node+weight set is installed, same policy as MSR/Union.
@@ -2021,7 +2180,7 @@ async function proxyComfyModels(req, res) {
     // The 2.5 sentinels' tiers come from the 2.5 distilled transformer pool (the piece
     // the ⚙ preference actually swaps; the IC-LoRA itself has no precision variants).
     const p25 = all.filter((n) => LTX25_RE.test(n) && /distill/i.test(n) && !LTX25_DEV_RE.test(n));
-    for (const s of [LTX25_UNION, LTX25_INGREDIENTS]) {
+    for (const s of [LTX25_UNION, LTX25_INGREDIENTS, LTX25_UPSCALE, LTX25_OUTPAINT, LTX25_INPAINT, LTX25_TRACK, ...Object.keys(modelMeta).filter((k) => k.startsWith(LTX25_FX_PREFIX))]) {
       if (!modelMeta[s]) continue;
       const tiers = [...new Set(p25.map(precisionOf).filter(Boolean))];
       if (tiers.length) modelMeta[s].prec = tiers;
@@ -3642,6 +3801,31 @@ function videoPreset(videoType, model, turbo) {
     // "euler" per the official workflow; the builder pins that itself.
     return { sampler: "euler_ancestral", scheduler: "simple", cfg: 1, steps: 11, shift: 0, width: 640, height: 352, length: 97, fps: 24, dimMult: 64, lenMult: 8 };
   }
+  if (videoType === "ltx25-v2v") {
+    // Official V2V IC-LoRA workflow: single-stage 8-step, euler_ancestral, cfg 1; the
+    // canvas is the source's own size (or 2× it for the pixel upscaler) — width/height
+    // here are only the pixel BUDGET the dispatch fits the source aspect into. /64:
+    // the upscaler's half-size reference needs an even latent.
+    return { sampler: "euler_ancestral", scheduler: "simple", cfg: 1, steps: 8, shift: 0, width: 1280, height: 704, length: 121, fps: 24, dimMult: 64, lenMult: 8 };
+  }
+  if (videoType === "ltx25-outpaint" || videoType === "ltx25-inpaint") {
+    // Official two-stage masked workflows: 8-step base at half size (noise 43), pixel
+    // blend, ×2 re-encode, 2-step refine ("0.725, 0.4219, 0") with euler. width/height
+    // are the STAGE-2 (final) canvas budget; dims /64 so the half canvas stays /32.
+    return { sampler: "euler_ancestral", scheduler: "simple", cfg: 1, steps: 10, shift: 0, width: 1280, height: 704, length: 121, fps: 24, dimMult: 64, lenMult: 8 };
+  }
+  if (videoType === "ltx25-track") {
+    // Official motion-track workflow: single-stage 8-step euler_ancestral, cfg 1, the
+    // canvas snapped to /(32·downscale) = /64 (ref0.5 LoRA). 960×576 ≈ the template's
+    // 544-short-side default on the /64 grid; an attached still sets the aspect.
+    return { sampler: "euler_ancestral", scheduler: "simple", cfg: 1, steps: 8, shift: 0, width: 960, height: 576, length: 121, fps: 24, dimMult: 64, lenMult: 8 };
+  }
+  if (videoType === "ltx-foley") {
+    // The LoRA card's recipe: 30 steps, CFG 6 on the AUDIO modality (video frozen at
+    // cfg 1), STG 1.0 on block 29, 960×544 @ 24 fps, ≤169 frames. cfg here feeds the
+    // audio guider; steps feed LTXVScheduler. lenMax 169 is the workflow's own cap.
+    return { sampler: "euler", scheduler: "simple", cfg: 6, steps: 30, shift: 0, width: 960, height: 544, length: 89, fps: 24, dimMult: 32, lenMult: 8, lenMax: 169 };
+  }
   if (videoType === "ltx25-ingredients") {
     // Official ingredients workflow: SINGLE stage, euler_ancestral_cfg_pp, 8-step
     // distilled table, cfg 1. The canvas follows the stitched reference sheet's
@@ -5034,6 +5218,341 @@ function buildLtx25Ingredients({ prompt, negative, comp, imageNames, seed, v }) 
   wf["cv"] = { class_type: "CreateVideo", inputs: { images: ["dec", 0], fps: v.fps, audio: ["adec", 0] } };
   wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
   return wf;
+}
+
+
+// ── LTX-2.5 v2v IC-LoRA (pixel upscaler + effect LoRAs) ─────────────────────────
+// Flattened from LTX-2.5_V2V_ICLoRA_Single_Stage_Distilled: the source frames are the
+// in-context guide (scaled to canvas / comp.ds — the upscaler reads a half-size
+// reference), the source SOUNDTRACK is frozen into the audio tokens
+// (VAEEncodeAudio → LTXVSetAudioRefTokens) so the clip keeps its own sound, optional
+// start still at 0.7, single-stage 8-step euler_ancestral at cfg 1, CropGuides, decode.
+// A silent source (no audio stream → GetVideoComponents yields no AUDIO) would break
+// VAEEncodeAudio, so `freezeAudio` false swaps in an empty audio latent instead and
+// the model generates a soundtrack.
+function buildLtx25V2V({ prompt, negative, comp, imageName, videoName, durationSec, v, seed, freezeAudio = true }) {
+  const neg = negative && negative.trim() ? negative : LTX25_DEFAULT_NEGATIVE;
+  const ds = comp.ds || 1;
+  const wf = {
+    "un": { class_type: "UNETLoader", inputs: { unet_name: comp.transformer, weight_dtype: "default" } },
+    "lo": { class_type: "LTXICLoRALoaderModelOnly", inputs: { model: ["un", 0], lora_name: comp.lora, strength_model: 1.0 } },
+    "te": { class_type: "CLIPLoader", inputs: { clip_name: comp.encoder, type: "ltxv", device: "default" } },
+    "pos": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: prompt || "" } },
+    "neg": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: neg } },
+    "cond": { class_type: "LTXVConditioning", inputs: { positive: ["pos", 0], negative: ["neg", 0], frame_rate: v.fps } },
+    "vv": { class_type: "VAELoader", inputs: { vae_name: comp.videoVae } },
+    "av": { class_type: "VAELoader", inputs: { vae_name: comp.audioVae } },
+    "lv": { class_type: "LoadVideo", inputs: { file: videoName } },
+    "vsl": { class_type: "Video Slice", inputs: { video: ["lv", 0], start_time: 0.0, duration: durationSec, strict_duration: false } },
+    "gvc": { class_type: "GetVideoComponents", inputs: { video: ["vsl", 0] } },
+    "gscale": { class_type: "ImageScale", inputs: { image: ["gvc", 0], upscale_method: "lanczos", width: Math.round(v.width / ds), height: Math.round(v.height / ds), crop: "disabled" } },
+    "gis": { class_type: "GetImageSize", inputs: { image: ["gscale", 0] } },
+    "empty": { class_type: "EmptyLTXVLatentVideo", inputs: { width: v.width, height: v.height, length: ["gis", 2], batch_size: 1 } },
+  };
+  let lat = ["empty", 0];
+  if (imageName) {
+    wf["li"] = { class_type: "LoadImage", inputs: { image: imageName } };
+    wf["inpl"] = { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["vv", 0], image: ["li", 0], latent: ["empty", 0], strength: 0.7, bypass: false } };
+    lat = ["inpl", 0];
+  }
+  wf["guide"] = { class_type: "LTXAddVideoICLoRAGuide", inputs: { positive: ["cond", 0], negative: ["cond", 1], vae: ["vv", 0], latent: lat, image: ["gscale", 0], frame_idx: 0, strength: 1.0, latent_downscale_factor: ["lo", 1], crop: "disabled", use_tiled_encode: false, tile_size: 256, tile_overlap: 64 } };
+  let pos = ["guide", 0], negC = ["guide", 1], alat;
+  if (freezeAudio) {
+    wf["aenc"] = { class_type: "VAEEncodeAudio", inputs: { audio: ["gvc", 1], vae: ["av", 0] } };
+    wf["aref"] = { class_type: "LTXVSetAudioRefTokens", inputs: { positive: pos, negative: negC, audio_latent: ["aenc", 0] } };
+    pos = ["aref", 0]; negC = ["aref", 1]; alat = ["aref", 2];
+  } else {
+    wf["aud"] = { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: ["gis", 2], frame_rate: v.fps, batch_size: 1, audio_vae: ["av", 0] } };
+    alat = ["aud", 0];
+  }
+  wf["cat"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: ["guide", 2], audio_latent: alat } };
+  wf["ssel"] = { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } };
+  wf["sig"] = { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_BASE } };
+  wf["n1"] = { class_type: "RandomNoise", inputs: { noise_seed: seed } };
+  wf["g1"] = { class_type: "CFGGuider", inputs: { model: ["lo", 0], positive: pos, negative: negC, cfg: v.cfg } };
+  wf["s1"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["n1", 0], guider: ["g1", 0], sampler: ["ssel", 0], sigmas: ["sig", 0], latent_image: ["cat", 0] } };
+  wf["sep"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["s1", 0] } };
+  wf["crop"] = { class_type: "LTXVCropGuides", inputs: { positive: pos, negative: negC, latent: ["sep", 0] } };
+  let decodeLatent = ["crop", 2];
+  if (comp.vramPurge) {
+    wf["purge"] = { class_type: "VRAM_Debug", inputs: { empty_cache: true, gc_collect: true, unload_all_models: true, any_input: decodeLatent } };
+    decodeLatent = ["purge", 0];
+  }
+  wf["dec"] = { class_type: "VAEDecodeTiled", inputs: { samples: decodeLatent, vae: ["vv", 0], tile_size: 512, overlap: 64, temporal_size: 128, temporal_overlap: 32 } };
+  wf["adec"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep", 1], audio_vae: ["av", 0] } };
+  wf["cv"] = { class_type: "CreateVideo", inputs: { images: ["dec", 0], fps: v.fps, audio: ["adec", 0] } };
+  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  return wf;
+}
+
+// ── LTX-2.5 masked two-stage (inpaint / outpaint) ────────────────────────────────
+// Flattened from the official Inpaint/Outpaint two-stage workflows. Both run the SAME
+// core: stage-2 frames + mask are prepared at the final canvas (v.width×v.height);
+// stage 1 works at half size on LTXVInpaintPreprocess'd (masked) frames injected by
+// LTXAddVideoICLoRAGuideAdvanced, 8 steps euler_ancestral; the decoded stage-1 frames
+// are PIXEL-blended back over the masked source (Laplacian pyramid, mask dilation 5),
+// scaled ×2 and re-ENCODED (VAEEncodeTiled — no latent upsampler here), refined with
+// 2 steps ("0.725, 0.4219, 0", euler, fixed noise 42) and blended again (dilation 6).
+// The source soundtrack is frozen through both stages. The official stage-1 sampler
+// output is its DENOISED slot (1) — mirrored.
+//   outpaint: the source is fitted inside the target canvas and ImagePadForOutpaint-
+//             TargetSize supplies frames+mask (mask = the padding); start still via
+//             LTXVImgToVideoConditionOnly.
+//   inpaint:  SAM2 (video segmentor, one 🎯 positive point) tracks the object across
+//             the stage-2 frames; the mask is dilated 2r at stage 2 and r at stage 1,
+//             exactly the official radius split; start still via LTXVImgToVideoInplace.
+function buildLtx25Masked({ kind, prompt, negative, comp, imageName, videoName, durationSec, v, seed, freezeAudio = true, fit, seedPoint, dilate = 12 }) {
+  const neg = negative && negative.trim() ? negative : LTX25_DEFAULT_NEGATIVE;
+  const W = v.width, H = v.height, W1 = W / 2, H1 = H / 2;
+  const wf = {
+    "un": { class_type: "UNETLoader", inputs: { unet_name: comp.transformer, weight_dtype: "default" } },
+    "lo": { class_type: "LTXICLoRALoaderModelOnly", inputs: { model: ["un", 0], lora_name: comp.inoutLora, strength_model: 1.0 } },
+    "te": { class_type: "CLIPLoader", inputs: { clip_name: comp.encoder, type: "ltxv", device: "default" } },
+    "pos": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: prompt || "" } },
+    "neg": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: neg } },
+    "cond": { class_type: "LTXVConditioning", inputs: { positive: ["pos", 0], negative: ["neg", 0], frame_rate: v.fps } },
+    "vv": { class_type: "VAELoader", inputs: { vae_name: comp.videoVae } },
+    "av": { class_type: "VAELoader", inputs: { vae_name: comp.audioVae } },
+    "lv": { class_type: "LoadVideo", inputs: { file: videoName } },
+    "vsl": { class_type: "Video Slice", inputs: { video: ["lv", 0], start_time: 0.0, duration: durationSec, strict_duration: false } },
+    "gvc": { class_type: "GetVideoComponents", inputs: { video: ["vsl", 0] } },
+  };
+  // Stage-2 frames + mask at the final canvas.
+  let frames2, mask2, maskRaw;
+  if (kind === "outpaint") {
+    wf["fit"] = { class_type: "ImageScale", inputs: { image: ["gvc", 0], upscale_method: "lanczos", width: fit.width, height: fit.height, crop: "disabled" } };
+    wf["pad"] = { class_type: "ImagePadForOutpaintTargetSize", inputs: { image: ["fit", 0], target_width: W, target_height: H, feathering: 0, upscale_method: "nearest-exact" } };
+    frames2 = ["pad", 0]; mask2 = ["pad", 1]; maskRaw = ["pad", 1];
+  } else {
+    wf["f2"] = { class_type: "ImageScale", inputs: { image: ["gvc", 0], upscale_method: "lanczos", width: W, height: H, crop: "disabled" } };
+    wf["sam"] = { class_type: "DownloadAndLoadSAM2Model", inputs: { model: "sam2_hiera_base_plus.safetensors", segmentor: "video", device: "cuda", precision: "fp16" } };
+    wf["seg"] = { class_type: "Sam2Segmentation", inputs: { sam2_model: ["sam", 0], image: ["f2", 0], keep_model_loaded: false, coordinates_positive: seedPoint } };
+    wf["dil2"] = { class_type: "LTXVDilateVideoMask", inputs: { mask: ["seg", 0], spatial_radius: 2 * dilate, temporal_radius: 0 } };
+    frames2 = ["f2", 0]; mask2 = ["dil2", 0]; maskRaw = ["seg", 0];
+  }
+  // Stage-1 frames + mask = the stage-2 pair at half size (masks travel as images).
+  wf["f1"] = { class_type: "ImageScaleBy", inputs: { image: frames2, upscale_method: "lanczos", scale_by: 0.5 } };
+  wf["m2i"] = { class_type: "MaskToImage", inputs: { mask: maskRaw } };
+  wf["m1i"] = { class_type: "ImageScaleBy", inputs: { image: ["m2i", 0], upscale_method: "area", scale_by: 0.5 } };
+  wf["m1"] = { class_type: "ImageToMask", inputs: { image: ["m1i", 0], channel: "red" } };
+  let mask1 = ["m1", 0];
+  if (kind === "inpaint") {
+    wf["dil1"] = { class_type: "LTXVDilateVideoMask", inputs: { mask: ["m1", 0], spatial_radius: dilate, temporal_radius: 0 } };
+    mask1 = ["dil1", 0];
+  }
+  // Stage 1.
+  wf["mp1"] = { class_type: "LTXVInpaintPreprocess", inputs: { images: ["f1", 0], mask: mask1 } };
+  wf["gis"] = { class_type: "GetImageSize", inputs: { image: ["mp1", 0] } };
+  wf["empty"] = { class_type: "EmptyLTXVLatentVideo", inputs: { width: W1, height: H1, length: ["gis", 2], batch_size: 1 } };
+  let lat1 = ["empty", 0];
+  const pinNode = kind === "outpaint" ? "LTXVImgToVideoConditionOnly" : "LTXVImgToVideoInplace";
+  if (imageName) {
+    wf["li"] = { class_type: "LoadImage", inputs: { image: imageName } };
+    wf["lprep"] = { class_type: "LTXVPreprocess", inputs: { image: ["li", 0], img_compression: 18 } };
+    wf["pin1"] = { class_type: pinNode, inputs: { vae: ["vv", 0], image: ["lprep", 0], latent: ["empty", 0], strength: 0.7, bypass: false } };
+    lat1 = ["pin1", 0];
+  }
+  wf["guide"] = { class_type: "LTXAddVideoICLoRAGuideAdvanced", inputs: { positive: ["cond", 0], negative: ["cond", 1], vae: ["vv", 0], latent: lat1, image: ["mp1", 0], frame_idx: 0, strength: 1.0, latent_downscale_factor: ["lo", 1], crop: "disabled", use_tiled_encode: false, tile_size: 256, tile_overlap: 64, attention_strength: 1.0 } };
+  let pos1 = ["guide", 0], neg1 = ["guide", 1], alat1;
+  if (freezeAudio) {
+    wf["aenc"] = { class_type: "VAEEncodeAudio", inputs: { audio: ["gvc", 1], vae: ["av", 0] } };
+    wf["aref1"] = { class_type: "LTXVSetAudioRefTokens", inputs: { positive: pos1, negative: neg1, audio_latent: ["aenc", 0] } };
+    pos1 = ["aref1", 0]; neg1 = ["aref1", 1]; alat1 = ["aref1", 2];
+  } else {
+    wf["aud"] = { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: ["gis", 2], frame_rate: v.fps, batch_size: 1, audio_vae: ["av", 0] } };
+    alat1 = ["aud", 0];
+  }
+  wf["cat1"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: ["guide", 2], audio_latent: alat1 } };
+  wf["ssel1"] = { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } };
+  wf["sig1"] = { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_BASE } };
+  wf["n1"] = { class_type: "RandomNoise", inputs: { noise_seed: seed } };
+  wf["g1"] = { class_type: "CFGGuider", inputs: { model: ["lo", 0], positive: pos1, negative: neg1, cfg: v.cfg } };
+  wf["s1"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["n1", 0], guider: ["g1", 0], sampler: ["ssel1", 0], sigmas: ["sig1", 0], latent_image: ["cat1", 0] } };
+  wf["sep1"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["s1", 1] } };
+  wf["crop1"] = { class_type: "LTXVCropGuides", inputs: { positive: pos1, negative: neg1, latent: ["sep1", 0] } };
+  wf["dec1"] = { class_type: "VAEDecodeTiled", inputs: { samples: ["crop1", 2], vae: ["vv", 0], tile_size: 512, overlap: 64, temporal_size: 128, temporal_overlap: 32 } };
+  wf["blend1"] = { class_type: "LTXVLaplacianPyramidBlend", inputs: { image_a: ["dec1", 0], image_b: ["mp1", 0], mask: mask1, trim_to_shortest: true, mask_low_res_dilation: 5 } };
+  // Stage 2: ×2 pixels → re-encode → (re-pin still) → 2-step refine.
+  wf["up"] = { class_type: "ImageScaleBy", inputs: { image: ["blend1", 0], upscale_method: "lanczos", scale_by: 2.0 } };
+  wf["enc2"] = { class_type: "VAEEncodeTiled", inputs: { pixels: ["up", 0], vae: ["vv", 0], tile_size: 512, overlap: 64, temporal_size: 500, temporal_overlap: 64 } };
+  let lat2 = ["enc2", 0];
+  if (imageName) {
+    wf["pin2"] = { class_type: pinNode, inputs: { vae: ["vv", 0], image: ["lprep", 0], latent: ["enc2", 0], strength: 1.0, bypass: false } };
+    lat2 = ["pin2", 0];
+  }
+  let pos2 = ["crop1", 0], neg2 = ["crop1", 1];
+  if (freezeAudio) {
+    wf["aref2"] = { class_type: "LTXVSetAudioRefTokens", inputs: { positive: pos2, negative: neg2, audio_latent: ["sep1", 1] } };
+    pos2 = ["aref2", 0]; neg2 = ["aref2", 1];
+  }
+  wf["cat2"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: lat2, audio_latent: ["sep1", 1] } };
+  wf["ssel2"] = { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } };
+  wf["sig2"] = { class_type: "ManualSigmas", inputs: { sigmas: "0.7250, 0.4219, 0.0" } };
+  wf["n2"] = { class_type: "RandomNoise", inputs: { noise_seed: LTX_REFINE_NOISE } };
+  wf["g2"] = { class_type: "CFGGuider", inputs: { model: ["lo", 0], positive: pos2, negative: neg2, cfg: v.cfg } };
+  wf["s2"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["n2", 0], guider: ["g2", 0], sampler: ["ssel2", 0], sigmas: ["sig2", 0], latent_image: ["cat2", 0] } };
+  wf["sep2"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["s2", 0] } };
+  let decodeLatent = ["sep2", 0];
+  if (comp.vramPurge) {
+    wf["purge"] = { class_type: "VRAM_Debug", inputs: { empty_cache: true, gc_collect: true, unload_all_models: true, any_input: decodeLatent } };
+    decodeLatent = ["purge", 0];
+  }
+  wf["dec2"] = { class_type: "VAEDecodeTiled", inputs: { samples: decodeLatent, vae: ["vv", 0], tile_size: 512, overlap: 64, temporal_size: 128, temporal_overlap: 32 } };
+  wf["mp2"] = { class_type: "LTXVInpaintPreprocess", inputs: { images: frames2, mask: mask2 } };
+  wf["blend2"] = { class_type: "LTXVLaplacianPyramidBlend", inputs: { image_a: ["dec2", 0], image_b: ["mp2", 0], mask: mask2, trim_to_shortest: true, mask_low_res_dilation: 6 } };
+  wf["adec"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep2", 1], audio_vae: ["av", 0] } };
+  wf["cv"] = { class_type: "CreateVideo", inputs: { images: ["blend2", 0], fps: v.fps, audio: ["adec", 0] } };
+  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  return wf;
+}
+
+// ── LTX-2.3 Foley V2A ─────────────────────────────────────────────────────────────
+// The LoRA card's own ComfyUI recipe (ltx-2.3-foley-v2a.json): 2.3 DEV checkpoint +
+// foley LoRA; the source frames (scaled to the 960×544 bucket, trimmed to 8n+1 ≤ 169)
+// are VAE-encoded and FROZEN (LTXVSetAudioVideoMaskByTime mask_video=false,
+// mask_audio=true); a MultimodalGuider runs CFG 6 + STG on the audio modality only
+// (video at cfg 1), 30 LTXVScheduler steps, euler. Output = the original frames muxed
+// with the generated soundtrack.
+// `--track` polylines (normalized 0-1, ≥2 points each) → the JSON LTXVDrawTracks
+// renders: one point PER FRAME per track, pixel coords on the canvas, sampled
+// uniformly by arc length so a dot moves at constant speed along its path. Returns
+// null when nothing parses. Shared by the dispatch and the tests.
+function tracksToJson(tracks, width, height, length) {
+  if (!Array.isArray(tracks) || !tracks.length) return null;
+  const out = [];
+  for (const trk of tracks.slice(0, LTX25_TRACK_MAX)) {
+    const pts = (Array.isArray(trk) ? trk : []).filter((p) => p && isFinite(p.x) && isFinite(p.y))
+      .map((p) => ({ x: Math.min(1, Math.max(0, Number(p.x))), y: Math.min(1, Math.max(0, Number(p.y))) }));
+    if (pts.length < 2) continue;
+    const seg = [];
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) { const d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y); seg.push(d); total += d; }
+    const frames = Math.max(2, Math.floor(length) || 2);
+    const samples = [];
+    for (let f = 0; f < frames; f++) {
+      const t = frames === 1 ? 0 : f / (frames - 1);
+      let target = t * total, i = 0;
+      while (i < seg.length - 1 && target > seg[i]) { target -= seg[i]; i++; }
+      const u = seg[i] > 0 ? Math.min(1, target / seg[i]) : 0;
+      const x = pts[i].x + (pts[i + 1].x - pts[i].x) * u, y = pts[i].y + (pts[i + 1].y - pts[i].y) * u;
+      samples.push({ x: Math.round(x * (width - 1)), y: Math.round(y * (height - 1)) });
+    }
+    out.push(samples);
+  }
+  return out.length ? JSON.stringify(out) : null;
+}
+
+// LTX-2.5 Motion Track — flattened from the official workflow: LTXVDrawTracks paints
+// the trajectories on a canvas of the generation size; that dot video is the IC-LoRA
+// guide (downscale read off the loader), an attached still is pinned at 0.7 (same
+// i2v split as every other 2.5 line), single-stage 8 steps, CropGuides, decode.
+function buildLtx25MotionTrack({ prompt, negative, comp, imageName, tracksJson, v, seed }) {
+  const neg = negative && negative.trim() ? negative : LTX25_DEFAULT_NEGATIVE;
+  const wf = {
+    "un": { class_type: "UNETLoader", inputs: { unet_name: comp.transformer, weight_dtype: "default" } },
+    "lo": { class_type: "LTXICLoRALoaderModelOnly", inputs: { model: ["un", 0], lora_name: comp.trackLora, strength_model: 1.0 } },
+    "te": { class_type: "CLIPLoader", inputs: { clip_name: comp.encoder, type: "ltxv", device: "default" } },
+    "pos": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: prompt || "" } },
+    "neg": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: neg } },
+    "cond": { class_type: "LTXVConditioning", inputs: { positive: ["pos", 0], negative: ["neg", 0], frame_rate: v.fps } },
+    "vv": { class_type: "VAELoader", inputs: { vae_name: comp.videoVae } },
+    "av": { class_type: "VAELoader", inputs: { vae_name: comp.audioVae } },
+    "empty": { class_type: "EmptyLTXVLatentVideo", inputs: { width: v.width, height: v.height, length: v.length, batch_size: 1 } },
+    "draw": { class_type: "LTXVDrawTracks", inputs: { tracks: tracksJson, width: v.width, height: v.height } },
+  };
+  let lat = ["empty", 0];
+  if (imageName) {
+    wf["li"] = { class_type: "LoadImage", inputs: { image: imageName } };
+    wf["inpl"] = { class_type: "LTXVImgToVideoInplace", inputs: { vae: ["vv", 0], image: ["li", 0], latent: ["empty", 0], strength: 0.7, bypass: false } };
+    lat = ["inpl", 0];
+  }
+  wf["guide"] = { class_type: "LTXAddVideoICLoRAGuide", inputs: { positive: ["cond", 0], negative: ["cond", 1], vae: ["vv", 0], latent: lat, image: ["draw", 0], frame_idx: 0, strength: 1.0, latent_downscale_factor: ["lo", 1], crop: "disabled", use_tiled_encode: false, tile_size: 256, tile_overlap: 64 } };
+  wf["aud"] = { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: v.length, frame_rate: v.fps, batch_size: 1, audio_vae: ["av", 0] } };
+  wf["cat"] = { class_type: "LTXVConcatAVLatent", inputs: { video_latent: ["guide", 2], audio_latent: ["aud", 0] } };
+  wf["ssel"] = { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } };
+  wf["sig"] = { class_type: "ManualSigmas", inputs: { sigmas: LTX_SIGMAS_BASE } };
+  wf["n1"] = { class_type: "RandomNoise", inputs: { noise_seed: seed } };
+  wf["g1"] = { class_type: "CFGGuider", inputs: { model: ["lo", 0], positive: ["guide", 0], negative: ["guide", 1], cfg: v.cfg } };
+  wf["s1"] = { class_type: "SamplerCustomAdvanced", inputs: { noise: ["n1", 0], guider: ["g1", 0], sampler: ["ssel", 0], sigmas: ["sig", 0], latent_image: ["cat", 0] } };
+  wf["sep"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["s1", 0] } };
+  wf["crop"] = { class_type: "LTXVCropGuides", inputs: { positive: ["guide", 0], negative: ["guide", 1], latent: ["sep", 0] } };
+  let decodeLatent = ["crop", 2];
+  if (comp.vramPurge) {
+    wf["purge"] = { class_type: "VRAM_Debug", inputs: { empty_cache: true, gc_collect: true, unload_all_models: true, any_input: decodeLatent } };
+    decodeLatent = ["purge", 0];
+  }
+  wf["dec"] = { class_type: "VAEDecodeTiled", inputs: { samples: decodeLatent, vae: ["vv", 0], tile_size: 512, overlap: 64, temporal_size: 128, temporal_overlap: 32 } };
+  wf["adec"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep", 1], audio_vae: ["av", 0] } };
+  wf["cv"] = { class_type: "CreateVideo", inputs: { images: ["dec", 0], fps: v.fps, audio: ["adec", 0] } };
+  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  return wf;
+}
+
+// Foley canvas rule, found by bisection on the live box (2026-08-22, 8 runs): frames that
+// were UPSCALED before the VAE encode (768×448 → 960×544 / 960×512, lanczos or bilinear,
+// ImageScale or VHS's own resize) make the frozen-video V2A pass come out as digital
+// silence (-90 dB), while native-size and DOWNSCALED frames (640×352) produce normal
+// Foley (-38…-67 dB, seed-dependent). So: never enlarge — keep the source size snapped
+// down to /32, and only shrink when it exceeds the budget.
+function foleyCanvas(sw, sh, budget) {
+  const floor32 = (n) => Math.max(32, Math.floor(n / 32) * 32);
+  if (!(sw > 0 && sh > 0)) return null;
+  let w = sw, h = sh;
+  if (w * h > budget) { const r = Math.sqrt(budget / (w * h)); w *= r; h *= r; }
+  return { width: floor32(w), height: floor32(h) };
+}
+const LTX_FOLEY_NEGATIVE = "music, melody, song, singing, vocals, score, soundtrack, beat, instrumental backing, speech, dialogue, talking, narration, tinny, thin, harsh, clipped, distorted, low bitrate, static, noise, room tone";
+const LTX_FOLEY_TAIL = "No speech is present. No music is present.";
+function buildLtxFoley({ prompt, negative, comp, videoName, durationSec, nFrames, v, seed }) {
+  const neg = negative && negative.trim() ? negative : LTX_FOLEY_NEGATIVE;
+  // The card recommends ending every prompt with the tail; append unless already there.
+  const p = String(prompt || "").trim();
+  const posText = /no (speech|music) is present/i.test(p) ? p : `${p} ${LTX_FOLEY_TAIL}`.trim();
+  return {
+    "ck": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: comp.ckpt } },
+    "lo": { class_type: "LoraLoaderModelOnly", inputs: { model: ["ck", 0], lora_name: comp.lora, strength_model: 1.0 } },
+    "te": { class_type: "LTXAVTextEncoderLoader", inputs: { text_encoder: comp.encoder, ckpt_name: comp.ckpt, device: "default" } },
+    "pos": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: posText } },
+    "neg": { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: neg } },
+    "lv": { class_type: "LoadVideo", inputs: { file: videoName } },
+    "vsl": { class_type: "Video Slice", inputs: { video: ["lv", 0], start_time: 0.0, duration: durationSec, strict_duration: false } },
+    "gvc": { class_type: "GetVideoComponents", inputs: { video: ["vsl", 0] } },
+    "fscale": { class_type: "ImageScale", inputs: { image: ["gvc", 0], upscale_method: "lanczos", width: v.width, height: v.height, crop: "disabled" } },
+    "trim": { class_type: "ImageFromBatch", inputs: { image: ["fscale", 0], batch_index: 0, length: nFrames } },
+    "venc": { class_type: "VAEEncode", inputs: { pixels: ["trim", 0], vae: ["ck", 2] } },
+    "avae": { class_type: "LTXVAudioVAELoader", inputs: { ckpt_name: comp.ckpt } },
+    "aud": { class_type: "LTXVEmptyLatentAudio", inputs: { frames_number: nFrames, frame_rate: v.fps, batch_size: 1, audio_vae: ["avae", 0] } },
+    "cat": { class_type: "LTXVConcatAVLatent", inputs: { video_latent: ["venc", 0], audio_latent: ["aud", 0] } },
+    "mask": { class_type: "LTXVSetAudioVideoMaskByTime", inputs: { av_latent: ["cat", 0], positive: ["pos", 0], negative: ["neg", 0], model: ["lo", 0], vae: ["ck", 2], audio_vae: ["avae", 0], start_time: 0.0, end_time: 30.0, video_fps: v.fps, mask_video: false, mask_audio: true, mask_init_value_video: 0.0, mask_init_value_audio: 0.0, slope_len: 1 } },
+    "gpA": { class_type: "GuiderParameters", inputs: { modality: "AUDIO", cfg: v.cfg, stg: 1.0, perturb_attn: true, rescale: 0.0, modality_scale: 3.0, skip_step: 0, cross_attn: true } },
+    "gpV": { class_type: "GuiderParameters", inputs: { modality: "VIDEO", cfg: 1.0, stg: 1.0, perturb_attn: true, rescale: 0.0, modality_scale: 3.0, skip_step: 0, cross_attn: true, parameters: ["gpA", 0] } },
+    "guider": { class_type: "MultimodalGuider", inputs: { model: ["lo", 0], positive: ["mask", 0], negative: ["mask", 1], parameters: ["gpV", 0], skip_blocks: "29" } },
+    "sched": { class_type: "LTXVScheduler", inputs: { steps: v.steps, max_shift: 2.05, base_shift: 0.95, stretch: true, terminal: 0.1, latent: ["mask", 2] } },
+    "ssel": { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
+    "n1": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
+    "s1": { class_type: "SamplerCustomAdvanced", inputs: { noise: ["n1", 0], guider: ["guider", 0], sampler: ["ssel", 0], sigmas: ["sched", 0], latent_image: ["mask", 2] } },
+    "sep": { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["s1", 0] } },
+    "adec": { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep", 1], audio_vae: ["avae", 0] } },
+    "cv": { class_type: "CreateVideo", inputs: { images: ["trim", 0], fps: v.fps, audio: ["adec", 0] } },
+    "save": { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } },
+  };
+}
+
+// Whether an uploaded source clip carries an audio stream — decides between freezing
+// the source soundtrack (the official v2v/in-outpaint shape) and letting the model
+// generate one. Inline bytes are probed; a pre-uploaded name is looked up in the
+// table uploadComfyVideo fills; unknown → assume audio (hey-koko's own renders all
+// carry a track).
+const SOURCE_AUDIO = new Map();
+async function sourceHasAudio(sourceVideo, sourceVideoName) {
+  if (sourceVideo) {
+    try {
+      const b64 = String(sourceVideo).replace(/^data:[^,]*,/, "");
+      return !!(await audioCodecOf(Buffer.from(b64, "base64")));
+    } catch { return true; }
+  }
+  if (sourceVideoName && SOURCE_AUDIO.has(sourceVideoName)) return SOURCE_AUDIO.get(sourceVideoName);
+  return true;
 }
 
 function buildVideoWorkflow(videoType, args) {
@@ -6690,11 +7209,15 @@ async function uploadComfyVideo(req, res) {
     // No-op for safe/aac/no-audio clips; only re-encodes a problematic soundtrack.
     const fixed = await makeSourceDecodable(buf);
     if (fixed !== buf) { buf = fixed; mime = "video/mp4"; }
-    const [name, probe] = await Promise.all([
+    const [name, probe, hasAudio] = await Promise.all([
       uploadVideoBuffer(buf, mime),
       probeVideo(buf),
+      audioCodecOf(buf).then((c) => !!c).catch(() => true),
     ]);
-    sendJson(res, 200, { name, frames: probe.frames, fps: probe.fps });
+    // Remembered for the lines that freeze the source soundtrack (see sourceHasAudio).
+    SOURCE_AUDIO.set(name, hasAudio);
+    if (SOURCE_AUDIO.size > 500) SOURCE_AUDIO.delete(SOURCE_AUDIO.keys().next().value);
+    sendJson(res, 200, { name, frames: probe.frames, fps: probe.fps, hasAudio });
   } catch (e) {
     sendJson(res, 500, { error: String((e && e.message) || e) });
   }
@@ -7046,6 +7569,12 @@ async function generateComfyImage(req, res) {
     // "bernini" and send down the VIDEO path — force it to null so the image
     // branch below claims them instead.
     const videoType = berniniImageTask ? null : videoTypeOf(model);
+    // `--track` belongs to ONE model. Anywhere else it would be silently dropped, and a
+    // silently-dropped trajectory is worse than an error.
+    if (opts.tracks !== undefined && videoType !== "ltx25-track") {
+      sendJson(res, 400, { error: "--track only works with LTX-2.5 Motion Track. Select that model (or add -m ltx2.5-22b:track) — other models have no trajectory input." });
+      return;
+    }
     // 3D mesh chains (Hunyuan3D / TripoSplat / MoGe) — output is a .glb/.spz FILE.
     const meshType = meshTypeOf(model);
     // Audio-only chains (MiniMax Music 3) — output is a song, no picture at all.
@@ -7834,6 +8363,118 @@ async function generateComfyImage(req, res) {
         workflow = buildLtx25Ingredients({ prompt, negative: negative_prompt || "", comp, imageNames: ingNames, seed, v });
         precisionUsed = comp.transformerTier;
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
+      } else if (videoType === "ltx25-v2v") {
+        // Pixel upscaler / effect IC-LoRA: a source clip re-rendered (2× for the
+        // upscaler) keeping its own soundtrack; an attached image is an optional
+        // start still.
+        if (!sourceVideo && !sourceVideoName) { sendJson(res, 400, { error: "This LTX-2.5 video→video model needs a source video. Attach a clip, then /imagine <description>." }); return; }
+        const which = model === LTX25_UPSCALE ? "upscale" : model.slice(LTX25_FX_PREFIX.length);
+        const comp = await ltx25V2VParts(which, opts.precision);
+        if (!comp) throw new Error("This LTX-2.5 video→video line is missing pieces: the 2.5 stack (distilled transformer, Gemma-4 12B encoder, both VAEs) plus its IC-LoRA in loras/ (pixel-spatial-upscaler-x2 / the effect's ic-lora file) and the ComfyUI-LTXVideo node pack.");
+        const v = resolveVideoConfig("ltx25-v2v", opts, model, false);
+        // Canvas = the source's size (×2 for the upscaler), fitted into the budget,
+        // /64 so the half-size reference keeps an even latent.
+        const sw = Number(sourceVideoWidth) || 0, sh = Number(sourceVideoHeight) || 0;
+        const budget = (opts.width && opts.height) ? opts.width * opts.height : v.width * v.height;
+        let cw = v.width, ch = v.height;
+        if (sw > 0 && sh > 0) {
+          let bw = sw * comp.ds, bh = sh * comp.ds;
+          if (bw * bh > budget) { const r = Math.sqrt(budget / (bw * bh)); bw *= r; bh *= r; }
+          cw = snapDim(bw, 64); ch = snapDim(bh, 64);
+        } else if (opts.width && opts.height) { cw = snapDim(opts.width, 64); ch = snapDim(opts.height, 64); }
+        v.width = cw; v.height = ch;
+        const uFps = Number(sourceVideoFps) || v.fps || 24;
+        v.fps = Math.min(60, Math.max(8, uFps));
+        const srcFrames = Number(sourceVideoFrames) || 0;
+        const V2V_CAP = 241;
+        const wantFrames = opts.length ? Math.min(opts.length, V2V_CAP) : (srcFrames ? Math.min(srcFrames, V2V_CAP) : v.length);
+        const durationSec = wantFrames / uFps;
+        const freezeAudio = await sourceHasAudio(sourceVideo, sourceVideoName);
+        const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+        let startName = null;
+        if (Array.isArray(images) && images.length) { startName = await uploadImage(images[0], controller.signal, "heykoko_v2vstart.png"); imagesUsed = 1; }
+        workflow = buildLtx25V2V({ prompt, negative: negative_prompt || "", comp, imageName: startName, videoName, durationSec, v, seed, freezeAudio });
+        precisionUsed = comp.transformerTier;
+        const outFrames = srcFrames ? Math.min(wantFrames, srcFrames) : wantFrames;
+        videoDims = { width: v.width, height: v.height, length: outFrames, fps: v.fps };
+        if (srcFrames > wantFrames) videoDims.truncatedFrom = srcFrames;
+      } else if (videoType === "ltx25-outpaint" || videoType === "ltx25-inpaint") {
+        const kind = videoType === "ltx25-inpaint" ? "inpaint" : "outpaint";
+        if (!sourceVideo && !sourceVideoName) { sendJson(res, 400, { error: kind === "inpaint" ? "LTX-2.5 Inpaint needs a source video. Attach a clip, pick the object with 🎯 in ⚙, then /imagine <what should be there instead>." : "LTX-2.5 Outpaint needs a source video. Attach a clip, set the target size (--size or ⚙), then /imagine <what the extended area shows>." }); return; }
+        const comp = await ltx25MaskedParts(kind, opts.precision);
+        if (!comp) throw new Error("LTX-2.5 in/outpaint is missing pieces: the 2.5 stack, loras/ltx-2.3-22b-ic-lora-in-outpainting-0.9.safetensors, the ComfyUI-LTXVideo node pack" + (kind === "inpaint" ? ", and ComfyUI-segment-anything-2 (SAM2 video tracking)." : "."));
+        const v = resolveVideoConfig(videoType, opts, model, false);
+        const sw = Number(sourceVideoWidth) || 0, sh = Number(sourceVideoHeight) || 0;
+        let fit = null;
+        if (kind === "outpaint") {
+          // Target canvas: explicit --size wins (that IS the outpaint instruction); else
+          // the preset's. The source is fitted inside it, aspect kept.
+          v.width = snapDim(opts.width || v.width, 64); v.height = snapDim(opts.height || v.height, 64);
+          const r = (sw > 0 && sh > 0) ? Math.min(v.width / sw, v.height / sh) : 1;
+          fit = { width: Math.max(16, Math.round((sw || v.width) * r / 2) * 2), height: Math.max(16, Math.round((sh || v.height) * r / 2) * 2) };
+        } else {
+          // Inpaint keeps the source aspect at the budget.
+          const budget = (opts.width && opts.height) ? opts.width * opts.height : v.width * v.height;
+          if (sw > 0 && sh > 0) { const a = sw / sh; v.width = snapDim(Math.sqrt(budget * a), 64); v.height = snapDim(Math.sqrt(budget / a), 64); }
+          else if (opts.width && opts.height) { v.width = snapDim(opts.width, 64); v.height = snapDim(opts.height, 64); }
+        }
+        const uFps = Number(sourceVideoFps) || v.fps || 24;
+        v.fps = Math.min(60, Math.max(8, uFps));
+        const srcFrames = Number(sourceVideoFrames) || 0;
+        const MASKED_CAP = 241;
+        const wantFrames = opts.length ? Math.min(opts.length, MASKED_CAP) : (srcFrames ? Math.min(srcFrames, MASKED_CAP) : v.length);
+        const durationSec = wantFrames / uFps;
+        const freezeAudio = await sourceHasAudio(sourceVideo, sourceVideoName);
+        const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+        let startName = null;
+        if (Array.isArray(images) && images.length) { startName = await uploadImage(images[0], controller.signal, "heykoko_maskstart.png"); imagesUsed = 1; }
+        // Inpaint: the 🎯 point (normalized) lands on the stage-2 canvas; the dilation
+        // radius scales with the canvas (the official 15 px was at a 1024-short frame).
+        const seedPoint = animateSeedPoint(opts.maskPoint, v.width, v.height);
+        const dilate = Math.max(4, Math.round(15 * Math.min(v.width, v.height) / 1024));
+        workflow = buildLtx25Masked({ kind, prompt, negative: negative_prompt || "", comp, imageName: startName, videoName, durationSec, v, seed, freezeAudio, fit, seedPoint, dilate });
+        precisionUsed = comp.transformerTier;
+        const outFrames = srcFrames ? Math.min(wantFrames, srcFrames) : wantFrames;
+        videoDims = { width: v.width, height: v.height, length: outFrames, fps: v.fps };
+        if (srcFrames > wantFrames) videoDims.truncatedFrom = srcFrames;
+      } else if (videoType === "ltx25-track") {
+        const tracksIn = Array.isArray(opts.tracks) ? opts.tracks : null;
+        if (!tracksIn || !tracksIn.length) { sendJson(res, 400, { error: "LTX-2.5 Motion Track needs trajectories: --track x1,y1>x2,y2 (0-1 coordinates, left-top origin; more points with >, more tracks with ; or repeated --track). Optionally attach a still as the first frame." }); return; }
+        const comp = await ltx25TrackParts(opts.precision);
+        if (!comp) throw new Error("LTX-2.5 Motion Track is missing pieces: the 2.5 stack, loras/ltx-2.3-22b-ic-lora-motion-track-control-ref0.5.safetensors, and the ComfyUI-LTXVideo node pack (LTXVDrawTracks).");
+        // Canvas follows the attached still's aspect at the budget (/64); t2v keeps the preset.
+        const vOpts = { ...opts };
+        if (Array.isArray(images) && images.length) { const d = imageDims(images[0]); if (d && d.width && d.height && !(opts.width && opts.height)) vOpts.aspect = d.width / d.height; }
+        const v = resolveVideoConfig("ltx25-track", vOpts, model, false);
+        const tracksJson = tracksToJson(tracksIn, v.width, v.height, v.length);
+        if (!tracksJson) { sendJson(res, 400, { error: "--track needs at least two points per track, e.g. --track 0.2,0.5>0.8,0.5" }); return; }
+        let startName = null;
+        if (Array.isArray(images) && images.length) { startName = await uploadImage(images[0], controller.signal, "heykoko_trackstart.png"); imagesUsed = 1; }
+        workflow = buildLtx25MotionTrack({ prompt, negative: negative_prompt || "", comp, imageName: startName, tracksJson, v, seed });
+        precisionUsed = comp.transformerTier;
+        videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
+      } else if (videoType === "ltx-foley") {
+        if (!sourceVideo && !sourceVideoName) { sendJson(res, 400, { error: "LTX Foley needs a source video (the clip to add sound to). Attach one, then /imagine <describe the sounds you see being made>." }); return; }
+        const comp = await ltxFoleyParts();
+        if (!comp) throw new Error("LTX Foley is missing pieces. It needs: the FULL ltx-2.3-22b-dev checkpoint (checkpoints/), loras/ltx-2.3-22b-lora-foley-v2a-1.0.safetensors, a gemma_3_12B text encoder, and the ComfyUI-LTXVideo (+ its Internal audio nodes) pack.");
+        const v = resolveVideoConfig("ltx-foley", opts, model, false);
+        // Source size, shrink-only (see foleyCanvas — enlarging the frames silences the
+        // output); ≤169 frames on the 8n+1 grid (the workflow's own cap); rate follows
+        // the source.
+        const sw = Number(sourceVideoWidth) || 0, sh = Number(sourceVideoHeight) || 0;
+        const budget = (opts.width && opts.height) ? opts.width * opts.height : v.width * v.height;
+        const fc = foleyCanvas(sw, sh, budget);
+        if (fc) { v.width = fc.width; v.height = fc.height; }
+        const uFps = Number(sourceVideoFps) || v.fps || 24;
+        v.fps = Math.min(60, Math.max(8, uFps));
+        const srcFrames = Number(sourceVideoFrames) || 0;
+        const want = opts.length || (srcFrames || v.length);
+        const nFrames = Math.max(9, Math.min(169, Math.floor((want - 1) / 8) * 8 + 1));
+        const durationSec = (nFrames + 2) / uFps;
+        const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+        workflow = buildLtxFoley({ prompt, negative: negative_prompt || "", comp, videoName, durationSec, nFrames, v, seed });
+        videoDims = { width: v.width, height: v.height, length: nFrames, fps: v.fps };
+        if (srcFrames > nFrames) videoDims.truncatedFrom = srcFrames;
       } else if (videoType === "minimax-h3") {
         // MiniMax H3. Two weight files with different input contracts, one branch:
         //   fl2va  — 0-2 attached images become first_frame / last_frame (none = t2v)

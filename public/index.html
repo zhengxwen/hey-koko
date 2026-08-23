@@ -1289,6 +1289,7 @@
             <input id="comfyParamRelight" type="number" min="0" max="2" step="0.05" placeholder="Auto (1.0)" />
           </label>
           <button id="comfyMaskPointBtn" type="button" class="secondary" title="Wan Animate Replace only: click the person in the source video / scene image you want to swap out. Default = the one nearest the centre.">🎯 <span id="comfyMaskPointLabel">Pick person to replace</span></button>
+          <button id="comfyTrackBtn" type="button" class="secondary" title="LTX-2.5 Motion Track only: draw the paths things should move along (over the attached still, or a blank canvas). Same as the --track flag.">✏️ <span id="comfyTrackLabel">Draw motion tracks</span></button>
           <label title="SCAIL-2 only: what to track in the SOURCE VIDEO, in plain words (SAM3 open-vocabulary). Default 'human'. Use a description to target one person in a crowd, e.g. 'person in a red shirt'. Non-human subjects ('dog') are accepted but the model is trained on people.">
             <span id="comfyParamScailSubjectLabel">Subject to track (SCAIL-2)</span>
             <input id="comfyParamScailSubject" type="text" placeholder="Auto (human)" />
@@ -1361,6 +1362,27 @@
     </div>
 
     <!-- Wan Animate Replace: pick which person to swap (SAM2 seed point) -->
+    <div id="trackModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal maskModal" role="dialog" aria-modal="true" aria-labelledby="trackModalTitle">
+        <div class="scanModalHeader">
+          <h3 id="trackModalTitle" class="scanModalTitle">Draw motion tracks</h3>
+          <button id="trackModalClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
+        </div>
+        <div class="maskBody">
+          <p class="hint" id="trackHint">Drag to draw a path: whatever sits under its start follows it, in the direction drawn. Each stroke is one track (up to 16). Esc cancels, ⌘/Ctrl+Z undoes.</p>
+          <div class="maskStageScroll trackStage">
+            <canvas id="trackCanvas"></canvas>
+          </div>
+          <div class="maskControls">
+            <button id="trackUndo" type="button" class="secondary">Undo</button>
+            <button id="trackClear" type="button" class="secondary">Clear</button>
+            <span class="maskSpacer"></span>
+            <button id="trackCancel" type="button" class="secondary">Cancel</button>
+            <button id="trackSave" type="button" class="primary maskSaveBtn">Use these tracks</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <div id="maskPointModal" class="scanModalBackdrop" hidden>
       <div class="scanModal" role="dialog" aria-modal="true" aria-labelledby="maskPointTitle">
         <div class="scanModalHeader">

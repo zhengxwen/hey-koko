@@ -157,6 +157,15 @@ export const dom = {
   comfyParamPoseStart: document.querySelector("#comfyParamPoseStart"),
   comfyParamPoseEnd: document.querySelector("#comfyParamPoseEnd"),
   comfyMaskPointBtn: document.querySelector("#comfyMaskPointBtn"),
+  comfyTrackBtn: document.querySelector("#comfyTrackBtn"),
+  comfyTrackLabel: document.querySelector("#comfyTrackLabel"),
+  trackModal: document.querySelector("#trackModal"),
+  trackModalClose: document.querySelector("#trackModalClose"),
+  trackCanvas: document.querySelector("#trackCanvas"),
+  trackUndo: document.querySelector("#trackUndo"),
+  trackClear: document.querySelector("#trackClear"),
+  trackCancel: document.querySelector("#trackCancel"),
+  trackSave: document.querySelector("#trackSave"),
   comfyMaskPointLabel: document.querySelector("#comfyMaskPointLabel"),
   maskPointModal: document.querySelector("#maskPointModal"),
   maskPointClose: document.querySelector("#maskPointClose"),
@@ -243,6 +252,7 @@ export const state = {
   selectedFile: null,
   selectedVideo: null,
   selectedAudio: null,               // staged speech audio (InfiniteTalk dubbing): { base64, mime, name, duration }
+  pendingTracks: null,               // ✏️ motion trajectories for LTX-2.5 Motion Track: [[{x,y},…],…] normalized 0-1 (session-only; cleared when another model is picked)
   activeSpeechButton: null,
   speechAbortController: null,
   activeTranslationAbort: null,

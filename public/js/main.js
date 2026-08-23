@@ -34,6 +34,7 @@ import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMe
 import { loadReminders, getReminders, removeReminder, describeReminder, setReminderChangeHandler, setDeliverHandler, startScheduler } from './proactive.js';
 import { initPanelResize } from './panel-resize.js';
 import { openMaskModal } from './mask-paint.js';
+import { openTrackModal, refreshTrackLabel } from './track-paint.js';
 import { setBgDeps, restoreBgJobsOnLoad, restoreBgWorkersOnLoad, toggleBgDrawer, closeBgDrawer, enqueueBgJob } from './bg-jobs.js';
 import { connectServerQueue } from './server-queue.js';   // Option B: SSE stream of server-side gen jobs
 import { initTabGuard } from './tab-guard.js';   // warn when hey-koko is open in 2+ tabs (shared IndexedDB, last save wins)
@@ -930,6 +931,12 @@ function openMaskPointModal() {
 function closeMaskPointModal() { if (dom.maskPointModal) dom.maskPointModal.hidden = true; }
 
 dom.comfyMaskPointBtn?.addEventListener("click", openMaskPointModal);
+// ✏️ motion tracks (LTX-2.5 Motion Track): drawn over the staged still / clip frame, or a
+// blank canvas for t2v. null = cancelled → keep what was staged; [] = cleared.
+dom.comfyTrackBtn?.addEventListener("click", async () => {
+  const res = await openTrackModal(maskPointSource(), state.pendingTracks);
+  if (res !== null) { state.pendingTracks = res.length ? res : null; refreshTrackLabel(); }
+});
 dom.maskPointClose?.addEventListener("click", closeMaskPointModal);
 dom.maskPointModal?.addEventListener("click", (e) => { if (e.target === dom.maskPointModal) closeMaskPointModal(); });
 

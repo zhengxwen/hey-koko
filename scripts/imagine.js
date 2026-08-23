@@ -90,6 +90,31 @@ function parseSize(val) {
 // next ` --flag` or to the end of the line, so both can appear in any order and other
 // flags may follow them. Kept in step with the browser copy — the same /imagine line has
 // to mean the same thing typed in chat or piped through --batch.
+// `--track` value → normalized polylines, the SAME text in the browser parser and the
+// CLI (a drift test compares the two sources byte for byte). Grammar:
+//   x,y>x,y[>x,y…]        one trajectory, 0-1 coordinates, left-top origin
+//   a;b                    several trajectories in one flag (or repeat the flag)
+// Returns the accumulated list, or a string describing the first bad token.
+function parseTrackFlag(value, acc) {
+  const out = Array.isArray(acc) ? acc.slice() : [];
+  for (const raw of String(value || "").split(";")) {
+    const spec = raw.trim();
+    if (!spec) continue;
+    const pts = [];
+    for (const tok of spec.split(">")) {
+      const m = tok.trim().match(/^(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)$/);
+      if (!m) return `bad point "${tok.trim()}" (want x,y with 0-1 coordinates)`;
+      const x = parseFloat(m[1]), y = parseFloat(m[2]);
+      if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return `point "${tok.trim()}" out of range (0-1)`;
+      pts.push({ x, y });
+    }
+    if (pts.length < 2) return `track "${spec}" needs at least two points (x,y>x,y)`;
+    out.push(pts);
+  }
+  if (out.length > 16) return "at most 16 tracks";
+  return out;
+}
+
 function peelTextFlags(line) {
   const out = { rest: line, pos: "", neg: "" };
   for (;;) {
@@ -149,6 +174,10 @@ function parseImagineLine(line) {
       task.options.seed = n;
     } else if (/^--quality\s/.test(rest)) {
       task.options.quality = take(/^--quality\s+(\S+)\s*/, "--quality");
+    } else if (/^--track\s/.test(rest)) {
+      const parsedTracks = parseTrackFlag(take(/^--track\s+(\S+)\s*/, "--track"), task.options.tracks);
+      if (typeof parsedTracks === "string") throw new Error(`--track: ${parsedTracks}`);
+      task.options.tracks = parsedTracks;
     } else if (/^--voice\s/.test(rest)) {
       task.options.ttsVoice = take(/^--voice\s+(\S+)\s*/, "--voice");
     } else {
@@ -160,7 +189,7 @@ function parseImagineLine(line) {
   // while every flag belonged in front; now that --pos / --neg deliberately sit at the
   // END, typing one more flag after them is a natural mistake, so name it. Only KNOWN
   // flag names are rejected, so prose that happens to contain a double dash is safe.
-  const strayFlag = rest.match(/\s--(enhance|size|steps|model|second|seed|quality|voice|pos|neg)\b/i);
+  const strayFlag = rest.match(/\s--(enhance|size|steps|model|second|seed|quality|voice|track|pos|neg)\b/i);
   if (strayFlag) throw new Error(`"--${strayFlag[1]}" came after the prompt text — flags go BEFORE the prompt; only --pos and --neg may follow it`);
 
   task.prompt = rest.trim();
@@ -217,6 +246,8 @@ Generation
       --seed <n>           fixed seed (a batch uses seed, seed+1, …)
       --steps <n>
       --neg <text>         negative prompt (ignored by models without a negative branch)
+      --track x,y>x,y[>…]  trajectory for LTX-2.5 Motion Track ONLY (0-1 coords, left-top
+                           origin; ";" or a repeated flag adds tracks) — rejected elsewhere
       --pos <text>         extra positive text appended to the prompt (style / quality
                            booster); in chat it overrides the ⚙ "positive add-on"
   -n, --count <n>          render N variations of this prompt (1-8)
@@ -309,6 +340,14 @@ function parseArgv(argv) {
       // Free-text prompt halves. In argv the shell's quoting is the delimiter, so these
       // take ONE token each: --neg "blurry, extra fingers".
       case "--neg": o.negative = need(i, a); i++; break;
+      // Motion-Track trajectories — LTX-2.5 Motion Track ONLY (the server rejects the
+      // flag elsewhere). Repeatable; "a;b" packs several into one value.
+      case "--track": {
+        const parsedTracks = parseTrackFlag(need(i, a), o.options.tracks); i++;
+        if (typeof parsedTracks === "string") throw new Error(`--track: ${parsedTracks}`);
+        o.options.tracks = parsedTracks;
+        break;
+      }
       case "--pos": o.positive = need(i, a); i++; break;
       // Song lyrics (MiniMax Music 3). A shell is a bad place to type verses, so
       // "@path" reads them from a file — which is how anyone with more than a chorus
