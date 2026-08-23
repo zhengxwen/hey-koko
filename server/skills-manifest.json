@@ -152,12 +152,17 @@
   "h3-prompt-writing": {
     "repo": "https://github.com/MiniMax-AI/MiniMax-H3",
     "models": [
-      "minimax-h3"
+      "minimax-h3",
+      "10eros-max-h3"
     ],
     "kind": "video",
     "ids": [
       "minimax-h3-t2v",
-      "minimax-h3-r2v"
+      "minimax-h3-r2v",
+      "10eros-max-h3-t2v",
+      "10eros-max-h3-r2v",
+      "10eros-max-h3-t2v:turbo",
+      "10eros-max-h3-r2v:turbo"
     ],
     "duration": {
       "minSec": 5.2,

@@ -96,6 +96,8 @@ export function saveCurrentSettings() {
         berniniMode: dom.comfyParamBerniniMode?.value || "",
         berniniTask: dom.comfyParamBerniniTask?.value || "",
         easyCache: dom.comfyParamEasyCache?.checked || false,
+        h3Lora: dom.comfyParamH3Lora?.value || "",
+        h3LoraStrength: dom.comfyParamH3LoraStrength?.value || "",
         solAttn: dom.comfyParamSolAttn?.value || "",
         solTau: dom.comfyParamSolTau?.value || "",
         // Defaults ON (bit-exact + faster + lower peak), so store the raw state —
@@ -353,6 +355,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = cp.berniniMode || (cp.berniniLightx2v ? "lightx2v" : cp.berniniQuality ? "quality" : "");
     if (dom.comfyParamBerniniTask) dom.comfyParamBerniniTask.value = cp.berniniTask || "";
     if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = !!cp.easyCache;
+    if (dom.comfyParamH3LoraStrength) dom.comfyParamH3LoraStrength.value = cp.h3LoraStrength || "";
     if (dom.comfyParamSolAttn) dom.comfyParamSolAttn.value = cp.solAttn || "";
     if (dom.comfyParamSolTau) dom.comfyParamSolTau.value = cp.solTau || "";
     if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = cp.solChunkFF !== false;

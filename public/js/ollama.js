@@ -386,7 +386,7 @@ export async function refreshBgWorkers() {
   // uMesh belongs here for the same reason as the rest: leave a list out of the union and
   // its whole group silently vanishes from the dropdown on the multi-worker path while the
   // single-endpoint path still shows it.
-  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uMesh = new Map(), uAudio = new Map(), uUpscale = new Map(), uPano = new Map(), uPanoLora = new Map(), uLtxLora = new Map(), uKrea2Lora = new Map(), uH3Clip = new Map();
+  const uModels = new Map(), uEdit = new Map(), uVideo = new Map(), uMesh = new Map(), uAudio = new Map(), uUpscale = new Map(), uPano = new Map(), uPanoLora = new Map(), uLtxLora = new Map(), uKrea2Lora = new Map(), uH3Clip = new Map(), uH3Lora = new Map();
   // Union of the collapsed-group representatives across lanes — without carrying this
   // through, a multi-precision image model would keep its token in the label on the
   // multi-endpoint path while the single-endpoint path hides it.
@@ -410,6 +410,7 @@ export async function refreshBgWorkers() {
       for (const n of (d.ltxLoras || [])) if (!uLtxLora.has(n)) uLtxLora.set(n, n);
       for (const n of (d.krea2Loras || [])) if (!uKrea2Lora.has(n)) uKrea2Lora.set(n, n);
       for (const n of (d.h3TextEncoders || [])) if (!uH3Clip.has(n)) uH3Clip.set(n, n);
+      for (const l of (d.h3Loras || [])) if (l && !uH3Lora.has(l.name)) uH3Lora.set(l.name, l);
       const sets = {
         image: new Set(models),
         edit: new Set(editModels.map((m) => m.name)),
@@ -443,7 +444,7 @@ export async function refreshBgWorkers() {
       for (const m of audioModels) if (!uAudio.has(m.name)) uAudio.set(m.name, m);
     } catch { setBgWorkerStatus(url, { online: false }); }
   }));
-  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], meshModels: [...uMesh.values()], audioModels: [...uAudio.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()], krea2Loras: [...uKrea2Lora.values()], h3TextEncoders: [...uH3Clip.values()], vramGib: vrams.length ? Math.min(...vrams) : null, devices });
+  applyComfyModels({ models: [...uModels.values()], imageCollapsed: [...uCollapsed], editModels: [...uEdit.values()], videoModels: [...uVideo.values()], meshModels: [...uMesh.values()], audioModels: [...uAudio.values()], modelMeta: uMeta, upscaleModels: [...uUpscale.values()], panoBases: [...uPano.values()], panoLoras: [...uPanoLora.values()], ltxLoras: [...uLtxLora.values()], krea2Loras: [...uKrea2Lora.values()], h3TextEncoders: [...uH3Clip.values()], h3Loras: [...uH3Lora.values()], vramGib: vrams.length ? Math.min(...vrams) : null, devices });
 }
 
 // Populate state.comfy* model Sets + the model dropdown from a {models,editModels,
@@ -574,6 +575,9 @@ function applyComfyModels(data) {
       const labels = ["comfy_sharpen_off", "comfy_sharpen_light", "comfy_sharpen_medium", "comfy_sharpen_strong"];
       [...dom.comfyParamSharpen.options].forEach((o, i) => { if (labels[i]) o.textContent = t(labels[i]); });
     }
+    // ⚙ "H3 LoRA". Options are rebuilt on every model change (syncH3LoraOptions) because
+    // the list is filtered by TASK — so only the raw data is stashed here.
+    state.comfyH3Loras = data.h3Loras || [];
     // ⚙ "H3 text encoder": Auto + every Qwen3-VL build installed. Listed by FILENAME
     // rather than by tier — the tier is in the name, and the file is what the user
     // downloaded and can delete, so naming it keeps the menu honest about what is on the
@@ -1010,6 +1014,42 @@ function syncLtxLoraOptions(model) {
   annotateOptions(dom.comfyParamLtxLora,
     (v) => LORA_BAKED_IN_RE.some((re) => re.test(model) && re.test(v)),
     "comfy_ltxLora_bakedIn");
+}
+
+// ⚙ "H3 LoRA", filtered to the task the SELECTED weight can actually use. A fl2v Turbo
+// LoRA on the ref2va weight (or the reverse) loads without error and renders badly, so
+// the wrong ones are never offered — the server refuses the mismatch too, covering the
+// CLI and any stale saved value. An entry whose task cannot be read off the filename is
+// always offered: unknown is not the same as wrong.
+const stripLoraExt = (n) => (n || "").replace(/\.(safetensors|ckpt|gguf|pth|sft|bin)$/i, "");
+function syncH3LoraOptions(model) {
+  const sel = dom.comfyParamH3Lora;
+  if (!sel) return;
+  const want = /ref2va/i.test(model) ? "ref2v" : "fl2v";
+  // A TURBO checkpoint (10Eros-Max) carries the step distillation in its own weights, so
+  // a turbo LoRA on top is the same surgery twice. Drop those from the list rather than
+  // leave a choice that only ever renders worse; the server refuses the pair too, for the
+  // CLI and for stale saved values. Non-turbo H3 LoRAs stay offered.
+  const isTurboWeight = /turbo/i.test(model);
+  const list = (state.comfyH3Loras || [])
+    .filter((l) => !l.task || l.task === want)
+    .filter((l) => !(isTurboWeight && l.turbo));
+  const saved = sel.value;
+  sel.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = ""; none.textContent = t("comfy_h3Lora_none");
+  sel.appendChild(none);
+  for (const l of list) {
+    const o = document.createElement("option");
+    o.value = l.name;
+    // Surface the recipe in the label. Steps and shift are not separate choices from the
+    // LoRA, and showing them is what stops the Steps field being set at odds with it.
+    const bits = [l.steps ? `${l.steps} steps` : null,
+                  l.turbo ? `shift ${l.shiftVideo}/${l.shiftAudio}` : null].filter(Boolean);
+    o.textContent = stripLoraExt(l.name) + (bits.length ? `  ·  ${bits.join(" · ")}` : "");
+    sel.appendChild(o);
+  }
+  sel.value = list.some((l) => l.name === saved) ? saved : "";
 }
 
 // Quantisation tiers the selected model doesn't ship in. `prec` absent = the server
@@ -1856,6 +1896,12 @@ export function updateComfyParamVisibility() {
   // one and missing on another, and only the server knows which box a job lands on. It
   // drops the request there and the done-line says it did.
   const h3 = /minimax.?h3/i.test(m);
+  // The LoRA row hides itself when nothing matching is installed, so a box without the
+  // files never shows a slot it cannot fill.
+  syncH3LoraOptions(m);
+  const h3LoraCount = (dom.comfyParamH3Lora?.options.length || 1) - 1;
+  setVis(dom.comfyParamH3Lora, h3 && h3LoraCount > 0);
+  setVis(dom.comfyParamH3LoraStrength, h3 && h3LoraCount > 0 && !!dom.comfyParamH3Lora?.value);
   setVis(dom.comfyParamSolAttn, h3);
   setVis(dom.comfyParamSolTau, h3 && !!dom.comfyParamSolAttn?.value); // tau is meaningless with Sol off
   setVis(dom.comfyParamSolChunkFF, h3, ".comfyParamCheck");
@@ -2197,6 +2243,8 @@ function initComfyParamsModal() {
   dom.comfyParamPaintMesh?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
   // Sol-Attn on/off gates its own tau row — same reason.
   dom.comfyParamSolAttn?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
+  // Picking a LoRA reveals its strength row; clearing it hides it again.
+  dom.comfyParamH3Lora?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
   // Ultra makes a ~17 MB GLB (measured) that then rides base64 through the response
   // and the conversation store — worth a heads-up before the first slow run, not a
   // surprise afterwards.
@@ -2240,6 +2288,8 @@ function initComfyParamsModal() {
     // H3 / Sol-Attn controls. None of these are in `fields` (that loop only clears
     // text+select values), so without these lines Reset silently left the whole H3
     // half of the panel untouched.
+    if (dom.comfyParamH3Lora) dom.comfyParamH3Lora.value = "";
+    if (dom.comfyParamH3LoraStrength) dom.comfyParamH3LoraStrength.value = "";
     if (dom.comfyParamSolAttn) dom.comfyParamSolAttn.value = "";
     if (dom.comfyParamSolTau) dom.comfyParamSolTau.value = "";
     if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = true; // bit-exact, defaults ON

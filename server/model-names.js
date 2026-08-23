@@ -208,6 +208,15 @@ const FILE_ID_RULES = [
   [/minimax.?music.?3/, "minimax-music3"],
   [/minimax.?h3.*ref2va/, "minimax-h3-r2v"],
   [/minimax.?h3/, "minimax-h3-t2v"],
+  // 10Eros-Max — TenStrip's community graft onto H3 (donor character from LTX 2.3 /
+  // Wan 2.2 / Krea 2 grafted into H3's attention layers). Same architecture and the same
+  // builder, so it is NOT a precision variant of the stock weight and gets ids of its
+  // own. TURBO is step-distilled into the checkpoint, which changes the sampling recipe
+  // (6 steps vs 20) — that is a different model to run, hence a separate id.
+  [/10eros(?=.*h3)(?=.*turbo)(?=.*ref2va)/, "10eros-max-h3-r2v:turbo"],
+  [/10eros(?=.*h3)(?=.*turbo)/, "10eros-max-h3-t2v:turbo"],
+  [/10eros(?=.*h3)(?=.*ref2va)/, "10eros-max-h3-r2v"],
+  [/10eros(?=.*h3)/, "10eros-max-h3-t2v"],
   [/phantom.*14b/, "phantom-14b"],
   [/phantom/, "phantom-1.3b"],
   [/hunyuan[._-]?3d/, "hunyuan3d-2.1"],
@@ -248,6 +257,10 @@ const ID_LABELS = {
   "minimax-music3": "MiniMax Music 3 (text → song)",
   "minimax-h3-t2v": "MiniMax H3 (t2v / i2v)",
   "minimax-h3-r2v": "MiniMax H3 (r2v)",
+  "10eros-max-h3-t2v": "10Eros-Max H3 (t2v / i2v)",
+  "10eros-max-h3-r2v": "10Eros-Max H3 (r2v)",
+  "10eros-max-h3-t2v:turbo": "10Eros-Max H3 TURBO (t2v / i2v)",
+  "10eros-max-h3-r2v:turbo": "10Eros-Max H3 TURBO (r2v)",
   "ltx2.3-22b": "LTX-2.3 22B",
   "ltx2.5-22b": "LTX-2.5 22B",
   "ltx2.5-22b:union": "LTX-2.5 22B Union",

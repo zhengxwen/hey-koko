@@ -1013,6 +1013,14 @@
             <input id="comfyParamMogeFov" type="number" min="0" max="170" step="1" placeholder="Auto" />
           </label>
           <label>
+            <span id="comfyParamH3LoraLabel" title="MiniMax H3 only. A distilled Turbo LoRA cuts sampling from 20 steps to 4-8. The list is filtered to the LoRAs built for the weight you picked — a fl2v LoRA on the r2v weight (or the reverse) loads without complaint and renders badly, so the mismatch is refused rather than run. Selecting one also sets its step count and its sigma shift, because those three are one recipe; type a step count in Steps above to override. Ref2VA's only Turbo LoRA was trained at 544p, so at 768p expect to trade some sharpness or raise the steps.">H3 LoRA</span>
+            <select id="comfyParamH3Lora"></select>
+          </label>
+          <label>
+            <span id="comfyParamH3LoraStrengthLabel" title="How strongly the H3 LoRA is applied. 1.0 is what the distillation was trained for. Lower it when the LoRA is being used outside its training resolution and the result looks over-smoothed — that lets the base model contribute more.">H3 LoRA strength</span>
+            <input id="comfyParamH3LoraStrength" type="number" min="0" max="2" step="0.05" placeholder="Auto (1.0)">
+          </label>
+          <label>
             <span id="comfyParamSolAttnLabel" title="MiniMax H3 only. Sol-Attn (NVIDIA Labs, arXiv 2607.24027) is training-free sparse attention: it skips the attention blocks whose proxy score falls under a threshold and approximates their contribution instead of computing it. Measured here on an RTX 5090 at 864x480x124: 50.6s to 45.8s, a 1.10x end-to-end gain, with the kernel itself 1.38-1.65x over SageAttention. The gap is because attention was only about a third of that short run — attention cost grows with the square of the token count while the rest grows roughly linearly, so the gain gets larger with resolution and duration. Needs the ComfyUI-sol-attn node pack on the box that runs the job; without it the setting is dropped and the result says so. int8 variants trade accuracy for speed (about 0.8% relative error for q/k, 1.4% adding P*V).">Sol-Attn (H3)</span>
             <select id="comfyParamSolAttn">
               <option value="">Off</option>

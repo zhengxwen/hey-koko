@@ -726,6 +726,20 @@ async function music3Companions() {
   return { clip, vae };
 }
 
+// Every H3 checkpoint, official or grafted. 10Eros-Max is TenStrip's community
+// fine-tune OF MiniMax H3 (HF lists it as base_model:finetune:MiniMaxAI/MiniMax-H3):
+// identical architecture, identical companions, identical builder — but its filenames
+// read "10Eros_Max_h3_…" with no "minimax" anywhere, so the original sentinel dropped
+// them on the floor and the weights never reached the dropdown at all.
+// The vendor alternative REQUIRES a following "h3": TenStrip also ships an LTX-2.3
+// 10Eros line, whose filenames carry no "h3" and must keep falling through to the LTX
+// branch below.
+const H3_MODEL_RE = /minimax.?h3|10eros.*h3/i;
+// The TURBO builds are step-distilled into the WEIGHTS — no LoRA involved. That makes
+// them a different sampling recipe (6 steps, not 20), and it makes stacking a turbo
+// LoRA on top a double distillation.
+const h3IsTurboWeight = (n) => H3_MODEL_RE.test(n || "") && /turbo/i.test(n || "");
+
 function videoTypeOf(model) {
   if (!model) return null;
   // Video enhance (interpolate + upscale): a model-free post-process (frame interpolation +
@@ -738,7 +752,7 @@ function videoTypeOf(model) {
   // Both are real filenames on disk, so neither needs a sentinel. Placed first because it
   // is disjoint from every ordering trap below — no minimax filename contains wan / ltx /
   // animate / scail / bernini / hunyuan, and none of theirs contains "minimax".
-  if (/minimax.?h3/i.test(model)) return "minimax-h3";
+  if (H3_MODEL_RE.test(model)) return "minimax-h3";
   // Bernini (video-edit), Animate (pose-transfer) and SCAIL-2 (character animation)
   // are all WAN variants whose filenames contain "wan" — check them BEFORE the
   // generic /wan/ branch.
@@ -1526,8 +1540,13 @@ function videoRank(n) {
   if (/phantom/i.test(n)) return 5;
   if (/hunyuan/i.test(n)) return 6;
   // MiniMax H3 sits with the general generators; ref2va right after its fl2va sibling.
-  if (/minimax.?h3.*ref2va/i.test(n)) return 6.6;
-  if (/minimax.?h3/i.test(n)) return 6.5;
+  if (H3_MODEL_RE.test(n)) {
+    const ref = /ref2va/i.test(n);
+    // Community grafts sort right after the official pair they descend from, so the
+    // stock weights stay the first thing in the group.
+    if (/10eros/i.test(n)) return ref ? 6.62 : 6.52;
+    return ref ? 6.6 : 6.5;
+  }
   if (n === LTX25_INGREDIENTS) return 6.91;
   if (n === LTX25_UNION) return 6.92;
   if (n === LTX25_UPSCALE) return 6.93;
@@ -1576,6 +1595,10 @@ function isModelReady(name, group, type) {
   if (QWEN_ROUTES.has(type)) return false;
   if (/qwen.*(2511|2512)/i.test(name)) return false;
   // Sentinels carry a synthetic name (not a filename) — match them by exact id.
+  // 10Eros-Max: wired and structurally validated, but no render of it has been judged.
+  // Stated explicitly rather than left to fall off the end of the allowlist, so that a
+  // future broadening of the H3 pattern below cannot silently promote it.
+  if (/10eros/i.test(name)) return false;
   if (name === WAN14B_AUTO) return true;    // Wan 2.2 14B t2v+i2v — verified
   if (name === BERNINI_AUTO) return true;   // Bernini v2v / rv2v — verified end-to-end
   if (name === SCAIL2_ANIMATE) return true; // SCAIL-2 animate — verified
@@ -1714,6 +1737,10 @@ async function proxyComfyModels(req, res) {
     // Only genuine style/content LoRAs (Sulphur) belong in this slot.
     const LTX_AUTO_LORA_RE = /licon|msr|distill|ic.?lora|union.?control/i;
     const ltxLoras = allLoras.filter((n) => LTX_MODEL_RE.test(n) && !LTX_AUTO_LORA_RE.test(n));
+    // H3's LoRA slot. Unlike LTX's, the entries are TASK-BOUND (fl2v vs ref2v) — the
+    // frontend filters by the selected weight and the server refuses a mismatch, because
+    // the wrong one loads happily and renders garbage.
+    const h3Loras = allLoras.filter((n) => H3_LORA_RE.test(n)).map((n) => ({ name: n, ...h3LoraInfo(n) }));
     // The panorama recipe's LoRA slot sits on an image checkpoint, so every video
     // family's LoRA has to be kept out of it: mounted on Flux they do not error,
     // they just apply almost no matching keys and quietly change nothing (or make a
@@ -1765,8 +1792,14 @@ async function proxyComfyModels(req, res) {
         // it reads (motion / camera / editing rhythm). videoOptional because it is only
         // one of four kinds — images or audio alone are equally valid — so unlike the
         // real video-edit models it must not reject a request that brings no clip.
+        const task = isRef ? "(r2v)" : "(t2v / i2v)";
         videoModels.push({ name: n, type: vt,
-          label: isRef ? "MiniMax H3 (r2v)" : "MiniMax H3 (t2v / i2v)",
+          // A graft must not share the stock weight's label — dedupePrecision keeps them
+          // as separate entries (different precisionBase), so identical labels would put
+          // two indistinguishable "MiniMax H3 (r2v)" rows in the picker.
+          label: /10eros/i.test(n)
+            ? `10Eros-Max H3${h3IsTurboWeight(n) ? " TURBO" : ""} ${task}`
+            : `MiniMax H3 ${task}`,
           ...(isRef ? { needsImages: 1, needsVideo: true, videoOptional: true } : {}) });
         continue;
       }
@@ -2189,9 +2222,9 @@ async function proxyComfyModels(req, res) {
     // the progress estimate matches the graph the server builds; gpuName → shown in the
     // model picker. Both null when unknown.
     const { gib: vramGib, gpuName } = await comfyGpuInfo();
-    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, audioModels: audioOut, modelMeta, upscaleModels: upscaleModels.filter((n) => !isRestoreModel(n)), restoreModels: upscaleModels.filter(isRestoreModel), panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, krea2Loras: krea2.length ? krea2Loras : [], h3TextEncoders, cameraVocab: CAMERA_VOCAB, hostname, vramGib, gpuName });
+    sendJson(res, 200, { models: [...imageOut, ...berniniT2i, ...panoT2i, IMAGE_UPSCALE], imageCollapsed, editModels: editOut, videoModels: videoOut, meshModels: meshOut, audioModels: audioOut, modelMeta, upscaleModels: upscaleModels.filter((n) => !isRestoreModel(n)), restoreModels: upscaleModels.filter(isRestoreModel), panoBases: panoT2i.length ? panoBases : [], panoLoras: panoT2i.length ? panoLoras : [], ltxLoras, krea2Loras: krea2.length ? krea2Loras : [], h3Loras, h3TextEncoders, cameraVocab: CAMERA_VOCAB, hostname, vramGib, gpuName });
   } catch {
-    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], audioModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [], krea2Loras: [], h3TextEncoders: [] });
+    sendJson(res, 200, { models: [], editModels: [], videoModels: [], meshModels: [], audioModels: [], upscaleModels: [], panoBases: [], panoLoras: [], ltxLoras: [], krea2Loras: [], h3Loras: [], h3TextEncoders: [] });
   }
 }
 
@@ -3767,7 +3800,16 @@ function videoPreset(videoType, model, turbo) {
     // latent fixes (124 frames = 5.17 s), while the picture would become 124/fps seconds.
     // Frame interpolation is unaffected and stays available — applyVfi multiplies frames
     // and rate together, so the duration, and with it the audio, is preserved.
-    return { sampler: "res_multistep", scheduler: "simple", cfg: 1, steps: 20, shift: 0,
+    //
+    // TURBO weights (10Eros-Max) are step-distilled into the checkpoint, so their step
+    // count is part of the WEIGHTS, not a user preference. TenStrip's model card:
+    // "For TURBO model use multires/simple 6 steps, er_sde/simple 6 steps". res_multistep
+    // + simple is already what this preset runs, so only the step count moves. Running a
+    // turbo weight at 20 steps is not "safer" — it over-denoises past the schedule it was
+    // distilled for. (The card also offers an er_sde route with a hand-written 7-step sigma
+    // string; core BasicScheduler cannot take one, so that variant is not wired.)
+    return { sampler: "res_multistep", scheduler: "simple", cfg: 1,
+      steps: h3IsTurboWeight(model) ? 6 : 20, shift: 0,
       width: 864, height: 480, length: 124, fps: 24, fpsFixed: true,
       dimMult: 32, lenMult: 17, lenOffset: 5, lenMin: 124, lenMax: 362 };
   }
@@ -4434,6 +4476,35 @@ const H3_MAX_REF_IMAGES = 9;
 // proxyComfyModels (which offers the list to ⚙) so the two cannot drift apart.
 const H3_CLIP_RE = /qwen3vl.*minimax|minimax.*qwen3vl/i;
 
+// H3 LoRAs on disk. lightx2v's Turbo distillations are the only ones that exist today,
+// and every one of them is TASK-SPECIFIC: a fl2v LoRA on the ref2va weight (or the
+// reverse) loads without complaint and renders garbage, so the task is parsed out of the
+// filename and enforced rather than left to the user.
+const H3_LORA_RE = /minimax.?h3/i;
+// What a Turbo LoRA implies about the sampling schedule. It is NOT free-standing: the
+// distillation, the step count and the sigma shift are one recipe, and getting any of
+// the three wrong produces a valid-looking render that is simply wrong — the same failure
+// mode as the LTX cascade, where the sigma table is part of the distilled LoRA.
+//
+// Everything here is read off the filename because ComfyUI exposes no LoRA metadata over
+// its API. lightx2v's naming is consistent (…_fl2v_turbo_4step_v1.1_768p_…), and an
+// unrecognised name simply yields nulls, which leaves the preset untouched.
+function h3LoraInfo(name) {
+  const n = String(name || "").toLowerCase();
+  if (!H3_LORA_RE.test(n)) return null;
+  const steps = (n.match(/(\d+)\s*step/) || [])[1];
+  return {
+    // Which weight file it belongs to. null = cannot tell → no guard, no auto-recipe.
+    task: /ref2v/.test(n) ? "ref2v" : /fl2v/.test(n) ? "fl2v" : null,
+    turbo: /turbo|lightx2v|distill/.test(n),
+    steps: steps ? Number(steps) : null,
+    // ModelTC's spec table: the 768p distillations were trained with shift 6/3, every
+    // 544p one with 12/3. Wrong shift is not an error, it is a wasted render.
+    shiftVideo: /768p/.test(n) ? 6 : 12,
+    shiftAudio: 3,
+  };
+}
+
 // MiniMax H3 — ONE graph shape for both weight files; which node it hangs on is the task:
 //   MiniMaxH3ImageToVideo     (fl2va) — prompt alone = t2v, + first_frame / last_frame = i2v / FLF
 //   MiniMaxH3ReferenceToVideo (ref2va) — reference images (≤9), video (≤3) and audio (≤3)
@@ -4462,7 +4533,8 @@ const H3_CLIP_RE = /qwen3vl.*minimax|minimax.*qwen3vl/i;
 // itself proof the keys landed — which is how the current names were confirmed (both
 // weight files verified end-to-end, Aug 2026). "It validated" still proves nothing.
 function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
-  refImageNames, refVideoName, refAudioName, refImageSize, easyCache, solAttn, solTau, solChunkFF }) {
+  refImageNames, refVideoName, refAudioName, refImageSize, easyCache, solAttn, solTau, solChunkFF,
+  h3Lora, h3LoraStrength, shiftVideo, shiftAudio }) {
   const isRef = /ref2va/i.test(model || "");
   const refs = (Array.isArray(refImageNames) ? refImageNames : []).filter(Boolean).slice(0, H3_MAX_REF_IMAGES);
   const wf = {
@@ -4474,9 +4546,11 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     "avae":  { class_type: "VAELoader", inputs: { vae_name: comp.audioVae } },
     "noise": { class_type: "RandomNoise", inputs: { noise_seed: seed } },
     "samp":  { class_type: "KSamplerSelect", inputs: { sampler_name: v.sampler } },
+    // BOTH of these are rewritten at the end of this function once the optional patches
+    // are known; "unet" is the no-patches case. They do NOT end up on the same node:
+    // a LoRA and a sigma shift belong upstream of the scheduler, while the sampling-only
+    // patches (Sol-Attn / chunking / EasyCache) must NOT reach it — see the chain below.
     "sig":   { class_type: "BasicScheduler", inputs: { model: ["unet", 0], scheduler: v.scheduler, steps: v.steps, denoise: 1.0 } },
-    // The guider's model input is rewritten at the end of this function when any of the
-    // optional MODEL→MODEL patches are spliced in; "unet" is the no-patches case.
     "guide": { class_type: "BasicGuider", inputs: { model: ["unet", 0], conditioning: ["h3", 0] } },
     "ks":    { class_type: "SamplerCustomAdvanced", inputs: { noise: ["noise", 0], guider: ["guide", 0], sampler: ["samp", 0], sigmas: ["sig", 0], latent_image: ["h3", 1] } },
     "vdec":  { class_type: "VAEDecode", inputs: { samples: ["ks", 0], vae: ["vae", 0] } },
@@ -4519,11 +4593,36 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     wf["h3"] = { class_type: "MiniMaxH3ImageToVideo", inputs: h3 };
   }
 
-  // Optional MODEL→MODEL patches, chained between the UNET and the guider in the order
-  // ComfyUI-sol-attn documents as MANDATORY: attention → MLP chunking → EasyCache.
-  // BasicScheduler deliberately keeps the RAW unet (sigmas must not depend on any of
-  // this), so only the guider's model input moves.
+  // Optional MODEL→MODEL patches. They split into two groups with DIFFERENT reach:
+  //
+  //   weights + schedule   LoRA → SigmaShift      feeds BasicScheduler *and* the guider
+  //   sampling only        Sol-Attn → chunk → EC  feeds the guider only
+  //
+  // MiniMaxH3SigmaShift does two things (core source): it add_object_patch()es
+  // "model_sampling", which is exactly what BasicScheduler reads to build the sigma
+  // table, AND it writes the shifts into transformer_options for the DiT. Hang it off
+  // the guider alone and half of it silently does nothing — the sigma table stays
+  // unshifted while the DiT thinks it moved. So the schedule group has to reach `sig`.
+  //
+  // The sampling group is the opposite: sigmas must not depend on whether caching or a
+  // sparse-attention kernel is on, so those stay off the scheduler's path.
   let head = "unet";
+  if (h3Lora) {
+    // Model-only loader: the LoRA targets the DiT's blocks (attn.qkv_proj / out_proj /
+    // mlp.fc1 / fc2, plus token_refiner) and nothing in the text encoder — verified by
+    // diffing its tensor names against the checkpoint's.
+    wf["lora"] = { class_type: "LoraLoaderModelOnly", inputs: {
+      model: [head, 0], lora_name: h3Lora,
+      strength_model: h3LoraStrength > 0 ? h3LoraStrength : 1.0 } };
+    head = "lora";
+  }
+  if (shiftVideo > 0) {
+    wf["shift"] = { class_type: "MiniMaxH3SigmaShift", inputs: {
+      model: [head, 0], shift_video: shiftVideo, shift_audio: shiftAudio > 0 ? shiftAudio : 3 } };
+    head = "shift";
+  }
+  // Everything above this line changes the schedule, so the scheduler must see it.
+  wf["sig"].inputs.model = [head, 0];
   if (solAttn) {
     // Sol-Attn (NVIDIA Labs, arXiv 2607.24027) — training-free sparse attention. VERIFIED
     // live on the RTX 5090: 50/50 blocks patched, no dense fallback, 50.58s → 45.83s
@@ -7662,6 +7761,10 @@ async function generateComfyImage(req, res) {
       let solAttnUsed = null;     // Sol-Attn mode actually applied ("bf16"/"int8_qk"/"int8_qk_pv")
       let solChunkUsed;           // MLP chunking actually applied
       let solAttnSkipped = false; // asked for, but ComfyUI-sol-attn is not on this worker
+      let h3LoraUsed = null;      // ⚙ H3 LoRA actually mounted
+      let h3RecipeUsed = null;    // { steps, shiftVideo, shiftAudio } the LoRA implied
+      let h3ShiftVideo = 0;       // 0 = no SigmaShift node (the model's own built-in shift)
+      let h3ShiftAudio = 0;
       let panoCfg = null;      // …and its own sampler settings, taken from the chosen checkpoint
       let panoBase = "";       // which checkpoint that was, for the log
       let interpWarning = null; // interpolation skipped (source fps already ≥ target) → tell the client
@@ -8550,10 +8653,54 @@ async function generateComfyImage(req, res) {
         if (solChunkFF && !(await comfyHasNodes(["MiniMaxH3ChunkFeedForward"]))) solChunkFF = false;
         solAttnUsed = solAttn || null;
         solChunkUsed = solChunkFF || undefined;
+
+        // ⚙ H3 LoRA. The Turbo distillations are task-bound, and picking the wrong one is
+        // NOT an error anyone would notice: ComfyUI loads it, sampling runs, and 16
+        // minutes later you have a ruined clip. So a mismatch is refused up front rather
+        // than rendered. (Selecting one for a weight it does not belong to can only
+        // happen from a stale ⚙ value or the CLI — the picker filters by task.)
+        const wantLora = String(opts.h3Lora || "").trim();
+        let h3Lora = "";
+        if (wantLora) {
+          const loras = await comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []);
+          if (!loras.includes(wantLora)) {
+            sendJson(res, 400, { error: `H3 LoRA "${wantLora}" is not installed on the machine that would run this job. Install it into models/loras/, or clear the H3 LoRA setting.` });
+            return;
+          }
+          const info = h3LoraInfo(wantLora);
+          const want = isRef ? "ref2v" : "fl2v";
+          if (info && info.task && info.task !== want) {
+            sendJson(res, 400, { error: `H3 LoRA "${wantLora}" is built for ${info.task === "ref2v" ? "MiniMax H3 (r2v)" : "MiniMax H3 (t2v / i2v)"}, but this job uses the other weight. Loading it would not fail — it would just render badly — so pick the matching LoRA or clear the setting.` });
+            return;
+          }
+          // Double distillation. A TURBO checkpoint already HAS the step reduction baked
+          // into its weights; a turbo LoRA is the same surgery a second time. Like the
+          // task mismatch above this cannot fail loudly — it renders, badly.
+          if (info && info.turbo && h3IsTurboWeight(model)) {
+            sendJson(res, 400, { error: `"${model}" is already a step-distilled TURBO checkpoint, so adding the turbo LoRA "${wantLora}" would distil it twice. Clear the H3 LoRA setting — the weights carry the speed-up on their own.` });
+            return;
+          }
+          h3Lora = wantLora;
+          h3LoraUsed = wantLora;
+          // A distillation LoRA, its step count and its sigma shift are ONE recipe. Apply
+          // the recipe's steps and shift unless the user pinned them explicitly — an
+          // explicit ⚙ value always wins, because the whole point of raising steps is to
+          // claw back sharpness when the LoRA is used outside its training resolution.
+          if (info) {
+            if (info.steps && !opts.steps) v.steps = info.steps;
+            if (info.turbo) {
+              h3ShiftVideo = info.shiftVideo;
+              h3ShiftAudio = info.shiftAudio;
+            }
+            h3RecipeUsed = { steps: v.steps, shiftVideo: info.shiftVideo, shiftAudio: info.shiftAudio };
+          }
+        }
         workflow = buildMiniMaxH3({ model, prompt, comp, v, seed,
           firstFrameName, lastFrameName, refImageNames, refVideoName, refAudioName,
           refImageSize: opts.h3RefSize, easyCache: !!opts.easyCache,
-          solAttn, solTau: Number(opts.solTau) || 0, solChunkFF });
+          solAttn, solTau: Number(opts.solTau) || 0, solChunkFF,
+          h3Lora, h3LoraStrength: Number(opts.h3LoraStrength) || 0,
+          shiftVideo: h3ShiftVideo, shiftAudio: h3ShiftAudio });
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
       } else if (model === PANO_T2I) {
         // A recipe, not a checkpoint: it picks its own weights and forces 2:1, since
@@ -9493,7 +9640,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
-        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, imagesUsed });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own

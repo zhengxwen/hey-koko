@@ -166,6 +166,9 @@ function comfyOverrides() {
   // deliberate "max" pick travels (the slow, high-fidelity reference pipeline).
   if (dom.comfyParamH3RefSize?.value) ov.h3RefSize = dom.comfyParamH3RefSize.value;
   if (dom.comfyParamH3Clip?.value) ov.h3TextEncoder = dom.comfyParamH3Clip.value; // "" = auto (best installed tier)
+  if (dom.comfyParamH3Lora?.value) ov.h3Lora = dom.comfyParamH3Lora.value;
+  const h3LoraStrength = num(dom.comfyParamH3LoraStrength?.value);
+  if (h3LoraStrength !== undefined) ov.h3LoraStrength = h3LoraStrength;
   if (dom.comfyParamSolAttn?.value) ov.solAttn = dom.comfyParamSolAttn.value;     // "" = off
   const solTau = num(dom.comfyParamSolTau?.value);
   if (solTau !== undefined) ov.solTau = solTau;                                   // empty = the node's 1.3
@@ -1522,6 +1525,14 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     // Sol-Attn: name it when it ran, and say so when it was asked for and dropped. The
     // whole point of the setting is speed, and a run that quietly ignored it looks exactly
     // like one where it did nothing — the difference has to be on the line.
+    // Name the LoRA AND the recipe it pulled in. The step count and shift are set by the
+    // LoRA, not typed by the user, so they have to be visible — otherwise a render at 4
+    // steps looks identical on the line to one at 20.
+    if (lastData.h3Lora && lastData.h3Recipe) {
+      doneLine += `\n${t("msg_h3LoraUsed", { lora: stripModelExt(lastData.h3Lora),
+        steps: lastData.h3Recipe.steps, shiftV: lastData.h3Recipe.shiftVideo,
+        shiftA: lastData.h3Recipe.shiftAudio }, plang)}`;
+    }
     if (lastData.solAttnSkipped) doneLine += `\n${t("msg_solAttnSkipped", {}, plang)}`;
     else if (lastData.solAttn) {
       doneLine += `\n${t("msg_solAttnUsed", { mode: lastData.solAttn }, plang)}`
