@@ -15,7 +15,7 @@ import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs, renderAttachments } from './tabs.js';
 import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractKeyFrames, comfyModelSupportsRefMask } from './image-gen.js';
 import { openMaskModal } from './mask-paint.js';
-import { galleryRefsFor, deleteGalleryFiles, galleryRateWidget, galleryEntryCached } from './gallery.js';
+import { galleryRefsFor, deleteGalleryFiles, galleryRateWidget, galleryEntryCached, openGalleryAt } from './gallery.js';
 import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
@@ -3795,7 +3795,13 @@ async function openRatePopover(btn, id) {
   _ratePopover = { el: pop, onKey, onAway };
 }
 
-function makeMediaRateButton(id) {
+// The two corner buttons on a generated picture/clip: ★ score at the bottom-left,
+// 🎨 "show me this one in the gallery" at the top-left. Opposite corners, so each is
+// positioned on its own (CSS) and this only has to hand both back — a fragment rather
+// than a wrapper, since they end up in different corners of the same wrapper.
+function makeMediaCornerButtons(id) {
+  const row = document.createDocumentFragment();
+
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "mediaRateBtn";
@@ -3810,7 +3816,21 @@ function makeMediaRateButton(id) {
     if (_ratePopover) { closeRatePopover(); return; }   // second press closes it
     openRatePopover(btn, id);
   });
-  return btn;
+  row.appendChild(btn);
+
+  const jump = document.createElement("button");
+  jump.type = "button";
+  jump.className = "mediaGalleryBtn";
+  jump.title = t("rate_openInGallery");
+  jump.setAttribute("aria-label", t("rate_openInGallery"));
+  jump.textContent = "🎨";
+  jump.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeRatePopover();
+    openGalleryAt(id);         // clears the facets, un-hides a hidden file, reveals the tile
+  });
+  row.appendChild(jump);
+  return row;
 }
 
 // A score set in the gallery panel (or on another copy of the same picture) repaints
@@ -4859,7 +4879,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         // ★ (top-left) on the AI's own renders — the bubble is where they get judged.
         if (role === "assistant") {
           const rateId = mediaRateId(_libMsg, i, "image");
-          if (rateId) wrapper.appendChild(makeMediaRateButton(rateId));
+          if (rateId) wrapper.appendChild(makeMediaCornerButtons(rateId));
         }
         // Download button (bottom-right) — full-res src when available.
         const dlSrc = img.dataset.fullSrc || img.src;
@@ -5072,7 +5092,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       // ★ (top-left) on a generated clip — same control, same rules as the picture grid.
       if (role === "assistant") {
         const rateId = mediaRateId(_libMsg, vi, "video");
-        if (rateId) wrapper.appendChild(makeMediaRateButton(rateId));
+        if (rateId) wrapper.appendChild(makeMediaCornerButtons(rateId));
       }
       // Download button (bottom-right) — an <a download> pointing at the (data) URL.
       // Tooltip shows the filename and decoded byte size.

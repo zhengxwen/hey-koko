@@ -721,9 +721,25 @@ function applyComfyModels(data) {
       // tier → filename for the same group, so a label can name the file a run WILL load
       // instead of the group's arbitrary representative (see resolvedModelName).
       state.comfyModelPrecFiles = {};
+      // Market name per entry, and per FILE. Two maps because the two callers hold
+      // different things: a progress bubble has the dropdown entry, while a done-line has
+      // the filename the server actually loaded — which for a collapsed precision group is
+      // a different string. Without the second map the done-line would fall back to the
+      // raw filename and contradict the bubble that preceded it.
+      state.comfyModelLabels = {};
+      state.comfyModelFileLabels = {};
       for (const [k, v] of Object.entries(meta)) {
         if (v && v.prec) state.comfyModelPrec[k] = v.prec;
         if (v && v.precFiles) state.comfyModelPrecFiles[k] = v.precFiles;
+        if (!v || !v.label) continue;
+        state.comfyModelLabels[k] = v.label;
+        // Tier is only worth printing when the group HAS more than one build — otherwise
+        // there is nothing to disambiguate and " · int8" is noise on every bubble.
+        const multi = (v.prec || []).length > 1;
+        state.comfyModelFileLabels[k] = { label: v.label, tier: "" };
+        for (const [tier, file] of Object.entries(v.precFiles || {})) {
+          state.comfyModelFileLabels[file] = { label: v.label, tier: multi ? tier : "" };
+        }
       }
       // The coloured circles are input→output MODES and read as a set. "audio" is a
       // different axis — an extra property of the output, not another mode — so it gets
@@ -960,6 +976,14 @@ export function resolveModelToken(token) {
   return { value: hit.value, id: hit.id, tier: "" };
 }
 
+// Mirrors H3_MODEL_RE in server/comfy.js. A community graft of H3 carries the vendor's
+// own name, not MiniMax's: 10Eros-Max's files read "10Eros_Max_h3_…". Matching only
+// "minimax" here does not misroute anything — it silently DROPS the model out of every
+// H3-gated branch, so the ⚙ panel loses its H3 knobs and the hint falls through to the
+// generic Stable-Diffusion line. The trailing "h3" requirement keeps TenStrip's separate
+// LTX-2.3 10Eros line (no "h3" in its filenames) out of this test.
+const H3_RE = /minimax.?h3|10eros.*h3/i;
+
 // Mirrors LTX_MODEL_RE in server/comfy.js — "sulphur" is an LTX-family checkpoint whose
 // filename says nothing about LTX. Display-side only (auto-defaults / hint / component
 // summary), so a drift here costs a wrong hint, never a wrong workflow.
@@ -1163,8 +1187,9 @@ function comfyModelHint(name) {
   if (/vace/.test(n)) return t("oll_hint_vace");
   if (/wan/.test(n)) return /14b/.test(n) || n === "wan2.2_14b" ? t("oll_hint_wan14b") : t("oll_hint_wan5b");
   if (/hunyuan/.test(n)) return t("oll_hint_hunyuan");
-  // MiniMax H3 — ref2va first, both filenames contain "minimax_h3".
-  if (/minimax.?h3/.test(n)) return /ref2va/.test(n) ? t("oll_hint_minimaxH3Ref") : t("oll_hint_minimaxH3");
+  // MiniMax H3 — ref2va first. H3_RE covers the community grafts too (10Eros-Max),
+  // which are the same architecture and want the same hint.
+  if (H3_RE.test(n)) return /ref2va/.test(n) ? t("oll_hint_minimaxH3Ref") : t("oll_hint_minimaxH3");
   // MSR + Union Control before the generic LTX test — both are distinct LTX modes.
   if (n === "ltx-msr") return t("oll_hint_ltxMsr");
   // The 2.5 union has the same contract and behavior as the 2.3 line (only the stack
@@ -1898,20 +1923,20 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamBerniniTask, /bernini/i.test(m) && !/bernini_(image_edit|subject_image|text_image)/i.test(m));
   // EasyCache is only WIRED into the MiniMax H3 builder — showing it elsewhere would be
   // a control that reaches no graph. Gated by name, like the H3 reference-detail knob.
-  setVis(dom.comfyParamEasyCache, /minimax.?h3/i.test(m), ".comfyParamCheck");
+  setVis(dom.comfyParamEasyCache, H3_RE.test(m), ".comfyParamCheck");
   // "Silent video" — only where there is a track to drop (generated or carried through).
   setVis(dom.comfyParamNoAudio, !!(state.comfyAudioModels && state.comfyAudioModels.has(m)), ".comfyParamCheck");
   // MiniMax H3: reference sizing exists only on the reference→video weights (ref2va).
   // The t2v/i2v file (fl2va) has no reference pipeline, so the knob would be inert there.
-  setVis(dom.comfyParamH3RefSize, /minimax.?h3.*ref2va/i.test(m));
+  setVis(dom.comfyParamH3RefSize, H3_RE.test(m) && /ref2va/i.test(m));
   // The H3 text-encoder picker applies to BOTH weights (they share the encoder). Hidden
   // when only one build is installed — a menu whose sole entry equals Auto is noise.
-  setVis(dom.comfyParamH3Clip, /minimax.?h3/i.test(m) && (state.comfyH3Encoders || 0) > 1);
+  setVis(dom.comfyParamH3Clip, H3_RE.test(m) && (state.comfyH3Encoders || 0) > 1);
   // Sol-Attn: only the H3 builder wires it, same gate as EasyCache. Whether the node pack
   // is actually installed is NOT checked here — with several workers it can be present on
   // one and missing on another, and only the server knows which box a job lands on. It
   // drops the request there and the done-line says it did.
-  const h3 = /minimax.?h3/i.test(m);
+  const h3 = H3_RE.test(m);
   // The LoRA row hides itself when nothing matching is installed, so a box without the
   // files never shows a slot it cannot fill.
   syncH3LoraOptions(m);

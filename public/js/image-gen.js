@@ -27,12 +27,27 @@ const stripModelExt = (n) => (n || "").replace(/\.(safetensors|ckpt|gguf|pth|sft
 // so the same answer can be computed here without a round trip. Falls back to the
 // selection whenever the map is missing (older server, ungrouped model, unknown tier) —
 // the done-line still reports the authoritative name either way.
+// A model file as a PERSON reads it: the market name the server publishes, plus the
+// precision tier when the group ships more than one build. A bubble reading
+// "10Eros_Max_h3_TURBO_ref2va_beta2_int8_convrot" names a FILE, not a model — it answers
+// "which build" while failing to answer "which model", which is the question someone
+// watching a render actually has. The tier stays because it is the one thing the filename
+// carried that a label cannot: two entries can share a label and differ only by build.
+function friendlyModelName(file) {
+  const hit = state.comfyModelFileLabels && state.comfyModelFileLabels[file];
+  if (!hit) return stripModelExt(file);   // older server, or a model it has no metadata for
+  return hit.tier ? `${hit.label} · ${hit.tier}` : hit.label;
+}
+
+// The same, for a DROPDOWN entry rather than a filename: ⚙ precision decides which build
+// of the group a run will load, so the tier shown must follow that choice and not the
+// group's arbitrary representative.
 function resolvedModelName(model) {
   const files = state.comfyModelPrecFiles && state.comfyModelPrecFiles[model];
-  if (!files) return stripModelExt(model);
-  const pref = dom.comfyParamPrecision?.value || "";
   const tiers = (state.comfyModelPrec && state.comfyModelPrec[model]) || [];
-  return stripModelExt((pref && files[pref]) || (!pref && files[tiers[0]]) || model);
+  const pref = dom.comfyParamPrecision?.value || "";
+  const file = (pref && files && files[pref]) || (!pref && files && files[tiers[0]]) || model;
+  return friendlyModelName(file);
 }
 
 // Compact "time remaining" → "m:ss" or "h:mm:ss" (language-neutral).
@@ -1450,7 +1465,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     // sibling server-side. Naming the pre-flight value made the done-line contradict its
     // own tier suffix ("…_pruned_fp8_scaled · int8"). Falls back to the selection when an
     // older server sends no model back.
-    const usedModel = stripModelExt(lastData.model) || vidModel;
+    const usedModel = friendlyModelName(lastData.model) || vidModel;
     // The tier that actually loaded rides alongside the model name — a model can ship
     // several quantisations and they differ in both speed and fidelity, so which one
     // ran is part of reading the result. Absent for models whose filename carries no
@@ -1827,7 +1842,7 @@ export async function generateMesh(parsed, model, tabId = state.activeTabId, ins
     const plang = getPromptLanguage();
     const totalBytes = allMeshes.reduce((s, b) => s + Math.floor(b.length * 0.75), 0);
     const sizeStr = totalBytes > 1024 * 1024 ? `${(totalBytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(totalBytes / 1024)} KB`;
-    const usedModel = stripModelExt(lastData.model) || meshModelLabel; // loaded file, not the dropdown value
+    const usedModel = friendlyModelName(lastData.model) || meshModelLabel; // loaded file, not the dropdown value
     let doneLine = t("msg_meshDone", { size: sizeStr }, plang)
       + (count > 1 ? ` ×${allMeshes.length}${allMeshes.length < count ? `/${count}` : ""}` : "")
       + (usedModel ? ` · ${usedModel}` : "")
@@ -2069,7 +2084,7 @@ export async function generateMusic(parsed, model, tabId = state.activeTabId, in
         break;
       }
       const plang = getPromptLanguage();
-      const usedModel = stripModelExt(data.model) || musicModelLabel;
+      const usedModel = friendlyModelName(data.model) || musicModelLabel;
       // The model chooses where the song ends, so the length is REPORTED, never assumed.
       const dur = data.seconds ? `${data.seconds}s` : "?";
       let doneLine = t("msg_musicDone", { dur }, plang)
@@ -2425,7 +2440,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         : t("msg_imageDone", dims, plang);
       // Append the model used (selected name, extension stripped) + the precision tier
       // that actually loaded. See the video done-line for why the tier is always named.
-      const usedModel = stripModelExt(modelFileUsed) || shortModel;
+      const usedModel = friendlyModelName(modelFileUsed) || shortModel;
       if (usedModel) doneLine += ` · ${usedModel}`;
       if (precisionUsedTier) doneLine += ` · ${precisionUsedTier}`;
       // Seed used (single output only) → lets the user reproduce via --seed.

@@ -730,6 +730,8 @@ const UI = {
     mask_cancel: "Cancel",
     mask_apply: "Apply mask",
     // Bubble media × → three-way dialog (bubble only / also the gallery file)
+    rate_openInGallery: "Show this file in the gallery",
+    gal_jumpHidden: "This file is hidden — the hidden filter was switched on to show it.",
     rate_btnUnrated: "Rate this file",
     delMsg_title: "Delete message",
     delMsg_confirm: "Delete this message?",
@@ -2432,6 +2434,8 @@ const UI = {
     mask_cancel: "取消",
     mask_apply: "应用蒙版",
     // 气泡媒体 × → 三选一（只删气泡里的 / 连作品库文件一起删）
+    rate_openInGallery: "在作品库中查看这个文件",
+    gal_jumpHidden: "这个文件是隐藏状态——已临时打开「显示隐藏」才能看到它。",
     rate_btnUnrated: "给这个文件评分",
     delMsg_title: "删除消息",
     delMsg_confirm: "删除这条消息？",
@@ -4123,6 +4127,8 @@ const UI = {
     mask_cancel: "取消",
     mask_apply: "套用遮罩",
     // 泡泡媒體 × → 三選一（只刪泡泡裡的 / 連作品庫檔案一起刪）
+    rate_openInGallery: "在作品庫中檢視這個檔案",
+    gal_jumpHidden: "這個檔案是隱藏狀態——已暫時開啟「顯示隱藏」才能看到它。",
     rate_btnUnrated: "給這個檔案評分",
     delMsg_title: "刪除訊息",
     delMsg_confirm: "刪除這則訊息？",

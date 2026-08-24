@@ -1879,6 +1879,35 @@ async function refresh() {
   refreshStrip();
 }
 
+// Jump straight from a bubble's picture to its tile: open the panel, clear whatever
+// would keep the file off the grid, select it, scroll it into view and pulse it.
+//
+// Two things can hide a file from its own jump. A HIDDEN file is excluded by the default
+// filter, so that facet is switched to "include" (and said out loud — the panel now looks
+// filtered and the user did not do it). And the grid draws one page, so a file older than
+// 200 renders is simply not on it; searching its own name pulls it in rather than opening
+// a detail pane over a grid that does not contain it.
+export async function openGalleryAt(id) {
+  // Read the entry FRESH: a file hidden from the panel a minute ago would still look
+  // visible in the session cache, and the jump would land on an empty grid.
+  let entry = null;
+  try {
+    const r = await fetch(`/api/gallery/entry?id=${encodeURIComponent(id)}`);
+    entry = r.ok ? await r.json() : null;
+  } catch { /* offline — fall through with the filters cleared */ }
+  for (const f of MENU_FACETS) { const node = el(f); if (node) node.value = ""; }
+  if (entry?.hidden) { const h = el("galleryHiddenFilter"); if (h) h.value = "include"; }
+  const search = el("gallerySearch");
+  if (search) search.value = "";
+  activeFolder = null;
+  await openGallery();
+  if (entry && !document.querySelector(`.galleryTile[data-id="${CSS.escape(id)}"]`)) {
+    if (search) { search.value = fileLabel(entry); await refresh(); }
+  }
+  await selectItem(id, { reveal: true });
+  if (entry?.hidden) flashStats(t("gal_jumpHidden"));
+}
+
 export async function openGallery() {
   const overlay = el("galleryOverlay");
   if (!overlay) return;
