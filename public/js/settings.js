@@ -144,6 +144,7 @@ export function saveCurrentSettings() {
       uiLanguage: dom.uiLanguageSelect?.value || "en",
       promptLanguage: dom.promptLanguageSelect?.value || "en",
       allowCloudModels: dom.allowCloudModels?.checked || false,
+      thinkEffort: dom.thinkEffort?.value || "",
       showThinking: dom.showThinkingCheckbox?.checked || false,
       sendTime: dom.sendTimeToggle?.checked ?? true,
       tools: dom.toolsToggle?.checked || false,
@@ -432,6 +433,7 @@ export function loadSavedSettings() {
   // absent (a fresh profile) means off.
   if (dom.allowCloudModels) dom.allowCloudModels.checked = !!savedSettings.allowCloudModels;
   if (savedSettings.showThinking && dom.showThinkingCheckbox) dom.showThinkingCheckbox.checked = true;
+  if (dom.thinkEffort) dom.thinkEffort.value = savedSettings.thinkEffort || "";
   // Sending time info defaults to ON; respect an explicit saved off-choice.
   if (dom.sendTimeToggle) dom.sendTimeToggle.checked = savedSettings.sendTime !== undefined ? !!savedSettings.sendTime : true;
   // Tool calling defaults to ON; respect an explicit saved off-choice.

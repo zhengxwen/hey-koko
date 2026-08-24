@@ -354,9 +354,15 @@ function toOpenAITools(ollamaTools) {
 }
 
 // Build the OpenAI request payload shared by proxyChat and complete.
-function buildPayload({ model, messages, tools, stream, maxTokens, temperature }) {
+function buildPayload({ model, messages, tools, stream, maxTokens, temperature, thinkEffort }) {
   const reasoning = isReasoningModel(model);
   const payload = { model, messages, stream };
+  // ⚙ "Thinking effort" → the o-series/gpt-5 knob of the same idea. Only for reasoning
+  // models: a classic chat model 400s on the unknown parameter, and has nothing to spend
+  // it on anyway. Absent (the default) leaves the provider's own default in place.
+  if (reasoning && (thinkEffort === "low" || thinkEffort === "medium" || thinkEffort === "high")) {
+    payload.reasoning_effort = thinkEffort;
+  }
   if (tools) payload.tools = tools;
   if (maxTokens && maxTokens > 0) {
     if (reasoning) payload.max_completion_tokens = maxTokens;
@@ -411,7 +417,8 @@ async function proxyChat(res, body) {
   const maxTokens = numPredict && numPredict > 0 ? numPredict : 0;
   const temperature = body.options && typeof body.options.temperature === "number" ? body.options.temperature : undefined;
 
-  const payload = buildPayload({ model: body.model, messages, tools, stream: wantStream, maxTokens, temperature });
+  const payload = buildPayload({ model: body.model, messages, tools, stream: wantStream, maxTokens, temperature,
+                                thinkEffort: body.thinkEffort });
   // OpenRouter only RETURNS a reasoning model's chain-of-thought when asked — enable it
   // when the user turned on "show thinking". Gated to the OpenRouter provider: DeepSeek-
   // direct returns reasoning_content by default (no flag), and api.openai.com would 400

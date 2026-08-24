@@ -12,7 +12,15 @@ async function proxyOllamaChat(req, res, preBody) {
     console.log(`${ts} [chat] model=${body.model || '?'}, messages=${(body.messages || []).length}`);
 
     const reqTimeout = body.timeout;
-    const { timeout: _discard, ...chatBody } = body;
+    const { timeout: _discard, thinkEffort, ...chatBody } = body;
+    // ⚙ "Thinking effort": Ollama expresses it through `think` itself, which takes either
+    // a boolean or a level ("low"/"medium"/"high") on models that HAVE levels (gpt-oss,
+    // DeepSeek-V3.1). A level also implies thinking is on, so it overrides the boolean
+    // the browser sends for "show me the reasoning" — the two questions are separate on
+    // our side and one field on Ollama's.
+    if (thinkEffort === "low" || thinkEffort === "medium" || thinkEffort === "high") {
+      chatBody.think = thinkEffort;
+    }
     // Tool-calling turns are sent with stream:false (more reliable); honor it.
     const wantStream = chatBody.stream !== false;
     const controller = new AbortController();
@@ -22,12 +30,21 @@ async function proxyOllamaChat(req, res, preBody) {
       timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
     }
 
-    const response = await fetch(`${config.ollamaUrl}/api/chat`, {
+    const ask = (payload) => fetch(`${config.ollamaUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...chatBody, stream: wantStream }),
+      body: JSON.stringify({ ...payload, stream: wantStream }),
       signal: controller.signal,
     });
+    let response = await ask(chatBody);
+    // A model that thinks but has no LEVELS rejects the string outright. The user asked
+    // for more thinking, not for an error, so fall back to plain thinking-on once —
+    // silently, because there is nothing for them to fix.
+    if (!response.ok && response.status === 400 && typeof chatBody.think === "string") {
+      const why = await response.text().catch(() => "");
+      console.log(`[chat] thinking level "${chatBody.think}" refused (${why.trim().slice(0, 120)}) — retrying with think:true`);
+      response = await ask({ ...chatBody, think: true });
+    }
 
     if (!response.ok) {
       if (timeoutHandle) clearTimeout(timeoutHandle);

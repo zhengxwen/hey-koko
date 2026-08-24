@@ -37,6 +37,18 @@ import { parseRemind, addReminder, describeReminder, markActivity } from './proa
 import { activeToolSchemas, executeTool, getToolLabel } from './tools.js';
 import { applyHighlights, captureAnchor, highlightsInSelection, registerHighlightHost, resolveHighlightHost } from './highlight.js';
 
+// ⚙ "Thinking effort" (More options). "" = leave it alone, which is what every model
+// did before this knob existed. A level rides along as its OWN field, not folded into
+// `think`: `think` means "show me the reasoning", effort means "how hard to think", and
+// they are independent — thinking hard with the trace hidden is a normal thing to want.
+// The server maps it per backend (Ollama thinking levels, OpenAI reasoning_effort).
+// Only the three conversational calls send it; analysis/summary helpers are utility
+// calls where extra reasoning is spent tokens for no visible gain.
+function thinkEffort() {
+  const v = dom.thinkEffort?.value || "";
+  return v === "low" || v === "medium" || v === "high" ? v : "";
+}
+
 // Streaming markdown re-render throttle. Ollama streams a chunk (often a single
 // token/character) at a time; re-parsing the whole message and swapping the
 // bubble's innerHTML on every chunk makes the bubble flicker. We coalesce those
@@ -1939,6 +1951,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
       timeout: getLlmTimeout(),
     };
     if (showThinking) fetchBody.think = true;
+    if (thinkEffort()) fetchBody.thinkEffort = thinkEffort();
 
     const response = await fetch("/api/chat", {
       method: "POST",
@@ -2165,6 +2178,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       timeout: getLlmTimeout(),
     };
     if (showThinking) fetchBody.think = true;
+    if (thinkEffort()) fetchBody.thinkEffort = thinkEffort();
 
     const response = await fetch("/api/chat", {
       method: "POST",
@@ -2699,6 +2713,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
         messages,
         ...(useTools ? { tools: activeToolSchemas() } : {}),
         ...(showThinking ? { think: true } : {}),
+        ...(thinkEffort() ? { thinkEffort: thinkEffort() } : {}),
         stream: !isCloud,
         options: { temperature: 0.7, num_ctx: getNumCtx() },
         timeout: getLlmTimeout(),

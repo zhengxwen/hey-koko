@@ -201,6 +201,7 @@ export const dom = {
   uiLanguageSelect: document.querySelector("#uiLanguageSelect"),
   promptLanguageSelect: document.querySelector("#promptLanguageSelect"),
   allowCloudModels: document.querySelector("#allowCloudModels"),
+  thinkEffort: document.querySelector("#thinkEffort"),
   showThinkingCheckbox: document.querySelector("#showThinking"),
   sendTimeToggle: document.querySelector("#sendTime"),
   toolsToggle: document.querySelector("#toolsToggle"),

@@ -228,6 +228,7 @@ if (dom.allowCloudModels) {
 dom.showThinkingCheckbox.addEventListener("change", () => {
   saveCurrentSettings();
 });
+if (dom.thinkEffort) dom.thinkEffort.addEventListener("change", saveCurrentSettings);
 if (dom.sendTimeToggle) {
   dom.sendTimeToggle.addEventListener("change", saveCurrentSettings);
 }
@@ -1442,7 +1443,13 @@ dom.chatForm.addEventListener("drop", async (event) => {
 
 // Clear chat button
 dom.clearChat.addEventListener("click", () => {
-  getActiveTab().messages = [];
+  // Wiping a conversation has no undo, and the button sits among export/import — one
+  // slip and the whole thread is gone. Ask first, and say how much is at stake. An
+  // empty chat has nothing to lose, so it just clears.
+  const tab = getActiveTab();
+  const n = (tab.messages || []).length;
+  if (n && !confirm(t("confirm_clearChat", { n }))) return;
+  tab.messages = [];
   saveChat();
   renderChat();
 });

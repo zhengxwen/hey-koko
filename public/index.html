@@ -1452,15 +1452,31 @@
         </div>
         <div class="comfyParamsBody">
           <p class="hint" id="llmParamsHint">Leave empty = no limit</p>
-          <label class="numCtxLabel">
-            <span id="numCtxLabelText">Context window</span>
-            <select id="numCtxSelect">
-              <option value="4096">4096</option>
-              <option value="8192">8192</option>
-              <option value="16384">16384</option>
-              <option value="32768" selected>32768</option>
-            </select>
-          </label>
+          <!-- How much the model reads and how hard it thinks are both per-model
+               generation settings, and both are short dropdowns — so they share a row
+               (.comfyParamRow bottom-aligns them, keeping the selects level when the
+               longer label wraps). "Thinking effort" is not "Show thinking process"
+               (More options): that one only decides whether the reasoning is displayed. -->
+          <div class="comfyParamRow">
+            <label class="numCtxLabel">
+              <span id="numCtxLabelText">Context window</span>
+              <select id="numCtxSelect">
+                <option value="4096">4096</option>
+                <option value="8192">8192</option>
+                <option value="16384">16384</option>
+                <option value="32768" selected>32768</option>
+              </select>
+            </label>
+            <label class="numCtxLabel" id="thinkEffortRow" title="How hard the model should think before answering. Model default changes nothing; a level is sent to models that have thinking levels (Ollama gpt-oss/DeepSeek) and to cloud reasoning models. It applies even with the thinking process hidden.">
+              <span id="thinkEffortLabel">Thinking effort</span>
+              <select id="thinkEffort">
+                <option value="">Model default</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+          </div>
           <!-- The two caps are one idea — how much of the conversation goes up — and both
                take a short number, so they share a row (.comfyParamRow bottom-aligns them
                so the inputs stay level when the longer label wraps). -->

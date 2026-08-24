@@ -1284,6 +1284,10 @@ function renderDetail() {
       fs.addEventListener("click", (ev) => {
         ev.stopPropagation();
         if (!state.openMediaViewer) return;
+        // The viewer takes over the screen, but this little preview keeps playing behind
+        // it — two soundtracks at once, and a clip that has silently run to the end by
+        // the time you close the viewer. Stop it here; the viewer is the one playing now.
+        if (tag === "video") { try { media.pause(); } catch { /* not playable anyway */ } }
         const run = items
           .filter((x) => x.kind === "image" || x.kind === "video")
           .map((x) => ({ kind: x.kind, src: fileUrl(x.path), poster: galleryThumbUrl(x.path), name: fileLabel(x) }));
