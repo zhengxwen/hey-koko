@@ -211,6 +211,20 @@ dom.uiLanguageSelect.addEventListener("change", () => {
 dom.promptLanguageSelect.addEventListener("change", () => {
   saveCurrentSettings();
 });
+// Allow online models: rebuild the LLM dropdown right away. force:true because the
+// list may now be EMPTY (cloud-only setup, switched off) — that has to show as
+// "no models detected" rather than leaving the cloud entries on screen. loadModels
+// re-picks a listed model when the current one just disappeared, so save afterwards
+// and re-read the context window for whatever it landed on.
+if (dom.allowCloudModels) {
+  dom.allowCloudModels.addEventListener("change", async () => {
+    saveCurrentSettings();
+    await loadModels({ force: true }).catch(() => {});
+    refreshModelMaxContext(dom.modelSelect.value);
+    updateCloudBadge();
+    saveCurrentSettings();
+  });
+}
 dom.showThinkingCheckbox.addEventListener("change", () => {
   saveCurrentSettings();
 });

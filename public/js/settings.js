@@ -143,6 +143,7 @@ export function saveCurrentSettings() {
       themeAccent: state.currentThemeAccent,
       uiLanguage: dom.uiLanguageSelect?.value || "en",
       promptLanguage: dom.promptLanguageSelect?.value || "en",
+      allowCloudModels: dom.allowCloudModels?.checked || false,
       showThinking: dom.showThinkingCheckbox?.checked || false,
       sendTime: dom.sendTimeToggle?.checked ?? true,
       tools: dom.toolsToggle?.checked || false,
@@ -427,6 +428,9 @@ export function loadSavedSettings() {
   if (savedSettings.uiLanguage && dom.uiLanguageSelect) dom.uiLanguageSelect.value = savedSettings.uiLanguage;
   if (savedSettings.promptLanguage && dom.promptLanguageSelect) dom.promptLanguageSelect.value = savedSettings.promptLanguage;
   // Thinking
+  // Cloud chat backends stay out of the model dropdown unless this was turned on —
+  // absent (a fresh profile) means off.
+  if (dom.allowCloudModels) dom.allowCloudModels.checked = !!savedSettings.allowCloudModels;
   if (savedSettings.showThinking && dom.showThinkingCheckbox) dom.showThinkingCheckbox.checked = true;
   // Sending time info defaults to ON; respect an explicit saved off-choice.
   if (dom.sendTimeToggle) dom.sendTimeToggle.checked = savedSettings.sendTime !== undefined ? !!savedSettings.sendTime : true;

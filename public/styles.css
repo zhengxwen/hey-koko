@@ -3370,6 +3370,120 @@ button.secondary:disabled {
   padding: 0 16px 16px;
 }
 
+/* ★ score in the corner of an AI bubble's picture/clip. Same 22px chrome as the other
+   media buttons, but it grows to fit its label ("★4.5") and, once the file has a score,
+   it stays visible — the number is information, not a control you go looking for. */
+.mediaRateBtn {
+  position: absolute;
+  top: 6px;
+  left: 6px;                 /* pictures: the top-left corner is free */
+  height: 22px;
+  min-height: 0;
+  min-width: 22px;
+  width: auto;
+  padding: 0 5px;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  z-index: 2;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+/* Clips already carry ⛶ (left:6) and ⧉ (left:34) up there — sit to their right. */
+.videoWrapper .mediaRateBtn {
+  left: 62px;
+}
+.imageWrapper:hover .mediaRateBtn,
+.videoWrapper:hover .mediaRateBtn,
+.mediaRateBtn.isRated {
+  opacity: 1;
+}
+.mediaRateBtn.isRated {
+  background: rgba(240, 164, 23, 0.92);
+  color: #1a1a1a;
+  font-weight: 700;
+}
+.mediaRateBtn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+/* The star strip itself: floats over everything, positioned against the button's rect
+   (the picture grid clips, so it cannot live inside the bubble). */
+.mediaRatePopover {
+  position: fixed;
+  z-index: 300;
+  padding: 4px 12px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+}
+.mediaRatePopover .galleryRateRow {
+  margin: 4px 0;
+}
+
+/* Bubble media × → "just this bubble, or the file too?" — reuses .scanModal's frame. */
+.mediaDeleteModal {
+  width: min(520px, 92vw);
+}
+.mediaDeleteBody {
+  padding: 14px 16px 4px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+.mediaDeleteBody p { margin: 0 0 6px; }
+.mediaDeleteLead { color: var(--muted); }
+.mediaDeleteFiles,
+.mediaDeleteRefList {
+  margin: 0 0 10px;
+  padding-left: 18px;
+}
+/* Filenames and conversation titles are arbitrary strings — keep a long one inside the
+   box instead of widening the dialog past the viewport. */
+.mediaDeleteFiles li,
+.mediaDeleteRefList li {
+  word-break: break-word;
+}
+.mediaDeleteFiles li {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  color: var(--ink);
+}
+.mediaDeleteRefs { font-weight: 700; }
+.mediaDeleteRefList li { color: var(--muted); }
+.mediaDeleteMore { font-style: italic; }
+.mediaDeleteWarn { color: #c2282d; }
+/* Cancel sits apart on the left; the two ways of saying yes are grouped on the right,
+   ordered least → most destructive. */
+.mediaDeleteActions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 16px 16px;
+  flex-wrap: wrap;
+}
+.mediaDeleteActions .mediaDeleteBubble { margin-left: auto; }
+/* A literal red, not var(--rose): several themes map --rose to an indigo, which next
+   to the blue primary reads as a second "safe" button rather than the destructive one. */
+.mediaDeleteActions .mediaDeleteBoth {
+  background: #e5484d;
+  border-color: #e5484d;
+  color: #fff;
+}
+.mediaDeleteActions .mediaDeleteBoth:hover {
+  background: #c2282d;
+  border-color: #c2282d;
+}
+
 /* Bubble edit history popup (🕘 next to Copy) — reuses .scanModal's frame. */
 .editHistoryModal {
   width: min(560px, 92vw);

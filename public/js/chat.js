@@ -15,6 +15,7 @@ import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs, renderAttachments } from './tabs.js';
 import { parseNoteCommand, parseImagineCommands, videoThumbnail, extractKeyFrames, comfyModelSupportsRefMask } from './image-gen.js';
 import { openMaskModal } from './mask-paint.js';
+import { galleryRefsFor, deleteGalleryFiles, galleryRateWidget, galleryEntryCached } from './gallery.js';
 import { parseVoiceCommand } from './voice-gen.js';
 import { translateMessage } from './translate.js';
 import { parseUrlCommand } from './url-fetch.js';
@@ -3628,19 +3629,13 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   saveChat();
   if (state.activeTabId === tabId) renderChat();
 
-  // Prompt-workshop mode (an unfolded /skill guide governs this tab): the staged
-  // pictures/clips are the FUTURE /imagine's inputs, not just this turn's payload.
-  // A plain send normally consumes them — which means one iteration turn ("make it
-  // slower") silently empties the composer, and the ▶ dispatch at the end renders an
-  // r2v with no reference subject. So while a guide is active, hand them back after
-  // attaching, exactly like the /skill turn itself does (the 🖌 mask lives on the
-  // staged object, so it survives the round trip). Folding the guide — the documented
-  // exit from prompt mode — restores normal consumption.
-  if ((image || video) && activeGuides(tab).length && state.activeTabId === tabId) {
-    if (image) state.selectedImage = image;
-    if (video) state.selectedVideo = video;
-    renderAttachments();
-  }
+  // Sending consumes the composer — in prompt-workshop mode too. This used to hand
+  // the pictures back while a /skill guide was active, so the ▶ dispatch at the end
+  // would still have its reference subjects; workshopMedia() now gathers those from
+  // the user bubbles after the guide instead (masks included — they ride along in
+  // msg.imageMasks), so the composer no longer has to hold them. Handing them back
+  // just meant every send in a tab that once ran /skill left its pictures sitting in
+  // the box, long after the prompt was written.
 
   // A video with no accompanying text/image is purely an upload — nothing for the
   // model to respond to, so don't trigger a reply.
@@ -3720,6 +3715,251 @@ function imageExtFromSrc(src) {
 // The × that removes one image from a bubble. Shared by both grids: generatedImages
 // (display-only output) and contextImages (attachments / tool payloads shown above the
 // text) — deleteMessageImage splices whichever arrays the message actually has.
+// Every gallery id a bubble slot points at. deleteMessageImage/deleteMessageVideo
+// splice the same index out of each parallel array, so the file behind the × is
+// whatever those arrays hold there — the artifact and, where it is a separate file,
+// its poster/thumbnail. Slots holding inline bytes (older conversations) yield no id.
+function slotGalleryIds(msg, idx, kind) {
+  const fields = kind === "video"
+    ? ["generatedVideos", "generatedVideoThumbnails"]
+    : ["generatedImages", "generatedThumbnails", "contextImages", "displayImages"];
+  const ids = new Set();
+  for (const f of fields) {
+    const v = Array.isArray(msg?.[f]) ? msg[f][idx] : null;
+    const id = v ? galleryIdOf(v) : null;
+    if (id) ids.add(id);
+  }
+  return [...ids];
+}
+
+// ─── ★ on a generated picture/clip ────────────────────────────────────────────
+// Rating is a gallery property, so a render can only be graded from the panel — which
+// means opening it, finding the file, and losing the conversation you were judging it
+// in. The ★ in the corner of an AI bubble's picture is the same control in the place
+// where the judgement actually happens. Only files the gallery holds can carry a score,
+// so pre-gallery inline bytes get no button.
+function mediaRateId(msg, idx, kind) {
+  const first = kind === "video"
+    ? [msg?.generatedVideos?.[idx]]
+    : [msg?.generatedImages?.[idx], msg?.generatedThumbnails?.[idx]];
+  for (const v of first) {
+    const id = v ? galleryIdOf(v) : null;
+    if (id) return id;
+  }
+  return null;
+}
+
+// "★4.5" / "★0" / "☆" — the label IS the current score, so a rated file shows its grade
+// without opening anything (and stays visible, unlike the hover-only buttons).
+function paintRateButton(btn, rating) {
+  btn.textContent = rating == null ? "☆" : `★${rating}`;
+  btn.classList.toggle("isRated", rating != null);
+  btn.title = rating == null ? t("rate_btnUnrated") : t("gal_rateValue", { n: rating });
+}
+
+let _ratePopover = null;
+function closeRatePopover() {
+  if (!_ratePopover) return;
+  document.removeEventListener("keydown", _ratePopover.onKey, true);
+  document.removeEventListener("mousedown", _ratePopover.onAway, true);
+  _ratePopover.el.remove();
+  _ratePopover = null;
+}
+
+// The star strip itself, floating next to the button it belongs to. Fixed-positioned
+// against the button's rect rather than parented to the bubble: the picture grid clips
+// and scrolls, and a popover inside it would be cut in half.
+async function openRatePopover(btn, id) {
+  closeRatePopover();
+  const entry = await galleryEntryCached(id);
+  if (!entry) { paintRateButton(btn, null); return; }   // file is gone — nothing to grade
+  const pop = document.createElement("div");
+  pop.className = "mediaRatePopover";
+  pop.appendChild(galleryRateWidget(entry, (r) => paintRateButton(btn, r)));
+  document.body.appendChild(pop);
+
+  const r = btn.getBoundingClientRect();
+  const w = pop.offsetWidth || 240;
+  // Below the button by default, flipped above when the bubble sits near the bottom,
+  // and pulled back inside the viewport horizontally.
+  const left = Math.min(Math.max(6, r.left), window.innerWidth - w - 6);
+  const below = r.bottom + 6;
+  const fitsBelow = below + pop.offsetHeight + 6 < window.innerHeight;
+  pop.style.left = `${left}px`;
+  pop.style.top = fitsBelow ? `${below}px` : `${Math.max(6, r.top - pop.offsetHeight - 6)}px`;
+
+  const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); closeRatePopover(); } };
+  const onAway = (e) => { if (!pop.contains(e.target) && e.target !== btn) closeRatePopover(); };
+  document.addEventListener("keydown", onKey, true);
+  document.addEventListener("mousedown", onAway, true);
+  _ratePopover = { el: pop, onKey, onAway };
+}
+
+function makeMediaRateButton(id) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "mediaRateBtn";
+  btn.dataset.rateId = id;
+  btn.setAttribute("aria-label", t("rate_btnUnrated"));
+  paintRateButton(btn, null);
+  // The score is on disk, not in the message — read it once per file per session
+  // (galleryEntryCached), then paint. A miss leaves the empty ☆.
+  galleryEntryCached(id).then((e) => { if (e) paintRateButton(btn, e.rating ?? null); });
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();       // don't open the lightbox
+    if (_ratePopover) { closeRatePopover(); return; }   // second press closes it
+    openRatePopover(btn, id);
+  });
+  return btn;
+}
+
+// A score set in the gallery panel (or on another copy of the same picture) repaints
+// every ★ on screen for that file — registered once, for the lifetime of the page.
+document.addEventListener("hk-gallery-rating", (e) => {
+  const { id, rating } = e.detail || {};
+  if (!id) return;
+  for (const btn of document.querySelectorAll(`.mediaRateBtn[data-rate-id="${CSS.escape(id)}"]`)) {
+    paintRateButton(btn, rating ?? null);
+  }
+});
+
+// Every gallery id anywhere on a message — what the bubble's own × is about to drop
+// its references to. Same field list the gallery panel scans for the reverse question
+// ("who points at this file"), so the two halves can never disagree.
+const MSG_MEDIA_FIELDS = ["generatedImages", "generatedThumbnails", "contextImages", "displayImages",
+                          "generatedVideos", "generatedVideoThumbnails",
+                          "generatedAudio", "generatedMeshes"];
+function messageGalleryIds(msg) {
+  const ids = new Set();
+  for (const f of MSG_MEDIA_FIELDS) {
+    const v = msg?.[f];
+    const arr = Array.isArray(v) ? v : typeof v === "string" ? [v] : [];
+    for (const item of arr) {
+      const id = item ? galleryIdOf(item) : null;
+      if (id) ids.add(id);
+    }
+  }
+  return [...ids];
+}
+
+// The × on a picture/clip in a bubble. A file that lives in the gallery is ONE copy
+// that this bubble merely points at, so "take it out of this bubble" and "delete the
+// file" are two different acts — and which one is right depends on who else points at
+// it. The dialog says that (other conversations, archives), then offers both. Media
+// still stored as inline bytes has no such question: it exists only here, so the
+// plain confirm stands. Resolves to "cancel" | "bubble" | "gallery".
+async function confirmMediaDelete({ ids, msg, fallbackKey,
+                                   titleKey = "delMedia_title",
+                                   leadKey = "delMedia_inGallery",
+                                   keepKey = "delMedia_bubbleOnly" }) {
+  if (!ids.length) return confirm(t(fallbackKey)) ? "bubble" : "cancel";
+
+  // Refs for every id behind this slot, merged. The bubble the × belongs to is not
+  // "someone else" — drop it, or every file would report a reference of its own.
+  const live = new Map();
+  const archived = new Map();
+  for (const id of ids) {
+    let r;
+    try { r = await galleryRefsFor(id); } catch { r = { live: [], archived: [] }; }
+    for (const h of r.live || []) {
+      if (msg && h.msgId && h.msgId === msg.id) continue;
+      live.set(`${h.tabId}/${h.msgId}`, h);
+    }
+    for (const a of r.archived || []) archived.set(`${a.archive}/${a.msgId}`, a);
+  }
+  const others = [...live.values()];
+  const arch = [...archived.values()];
+
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "scanModalBackdrop";
+    const modal = document.createElement("div");
+    modal.className = "scanModal mediaDeleteModal";
+    modal.innerHTML = `
+      <div class="scanModalHeader">
+        <h3 class="scanModalTitle">${escapeHtml(t(titleKey))}</h3>
+        <button type="button" class="scanModalClose" aria-label="Close">✕</button>
+      </div>
+      <div class="mediaDeleteBody"></div>
+      <div class="mediaDeleteActions">
+        <button type="button" class="secondary mediaDeleteCancel">${escapeHtml(t("delMedia_cancel"))}</button>
+        <button type="button" class="primary mediaDeleteBubble">${escapeHtml(t(keepKey))}</button>
+        <button type="button" class="danger mediaDeleteBoth">${escapeHtml(t("delMedia_alsoGallery"))}</button>
+      </div>`;
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    const body = modal.querySelector(".mediaDeleteBody");
+    const line = (cls, text) => {
+      const p = document.createElement("p");
+      p.className = cls;
+      p.textContent = text;
+      body.appendChild(p);
+      return p;
+    };
+    line("mediaDeleteLead", t(leadKey));
+    const names = document.createElement("ul");
+    names.className = "mediaDeleteFiles";
+    // A whole bubble can carry a dozen files; the list is here to make the delete
+    // concrete, not to enumerate everything, so it stops and says how many are left.
+    for (const id of ids.slice(0, 8)) {
+      const li = document.createElement("li");
+      li.textContent = galleryName(id) || id;   // the ledger name, or the id itself
+      names.appendChild(li);
+    }
+    if (ids.length > 8) {
+      const li = document.createElement("li");
+      li.className = "mediaDeleteMore";
+      li.textContent = t("delMedia_more", { n: ids.length - 8 });
+      names.appendChild(li);
+    }
+    body.appendChild(names);
+
+    const total = others.length + arch.length;
+    if (!total) {
+      line("mediaDeleteRefs", t("delMedia_onlyHere"));
+    } else {
+      line("mediaDeleteRefs", t("delMedia_alsoUsed", { n: total }));
+      const ul = document.createElement("ul");
+      ul.className = "mediaDeleteRefList";
+      const rows = [
+        ...others.map((h) => t("delMedia_refChat", { title: h.tabTitle || "—" })
+          + (h.excerpt ? ` · ${h.excerpt}` : "")),
+        ...arch.map((a) => t("delMedia_refArchive", { title: a.title || a.archive })),
+      ];
+      // A file used in fifty places would push the buttons off screen; the count above
+      // is the real answer, this list is only there to make it concrete.
+      for (const text of rows.slice(0, 6)) {
+        const li = document.createElement("li");
+        li.textContent = text;
+        ul.appendChild(li);
+      }
+      if (rows.length > 6) {
+        const li = document.createElement("li");
+        li.className = "mediaDeleteMore";
+        li.textContent = t("delMedia_more", { n: rows.length - 6 });
+        ul.appendChild(li);
+      }
+      body.appendChild(ul);
+      line("mediaDeleteWarn", t("delMedia_warn"));
+    }
+
+    const done = (answer) => {
+      document.removeEventListener("keydown", onKey);
+      backdrop.remove();
+      resolve(answer);
+    };
+    const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); done("cancel"); } };
+    modal.querySelector(".scanModalClose").addEventListener("click", () => done("cancel"));
+    modal.querySelector(".mediaDeleteCancel").addEventListener("click", () => done("cancel"));
+    modal.querySelector(".mediaDeleteBubble").addEventListener("click", () => done("bubble"));
+    modal.querySelector(".mediaDeleteBoth").addEventListener("click", () => done("gallery"));
+    backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) done("cancel"); });
+    document.addEventListener("keydown", onKey);
+    modal.querySelector(".mediaDeleteBubble").focus();
+  });
+}
+
 function makeImageDeleteButton(msgIndex, imgIdx) {
   const btn = document.createElement("button");
   btn.type = "button";
@@ -3727,9 +3967,15 @@ function makeImageDeleteButton(msgIndex, imgIdx) {
   btn.title = t("chat_delImgTitle");
   btn.setAttribute("aria-label", t("chat_delImgTitle"));
   btn.textContent = "×";
-  btn.addEventListener("click", (e) => {
+  btn.addEventListener("click", async (e) => {
     e.stopPropagation();          // don't open the lightbox
-    if (!confirm(t("chat_confirmDelImg"))) return;
+    const msg = getActiveTab()?.messages?.[msgIndex];
+    const ids = slotGalleryIds(msg, imgIdx, "image");
+    const answer = await confirmMediaDelete({ ids, msg, fallbackKey: "chat_confirmDelImg" });
+    if (answer === "cancel") return;
+    // File first, bubble second: if the delete fails, the reference is still there to
+    // try again from, rather than a bubble emptied of a file that never went away.
+    if (answer === "gallery") await deleteGalleryFiles(ids);
     deleteMessageImage(msgIndex, imgIdx);
   });
   return btn;
@@ -4366,7 +4612,22 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       deleteButton.title = "×";
       deleteButton.setAttribute("aria-label", "delete");
       deleteButton.textContent = "×";
-      deleteButton.addEventListener("click", () => deleteChatMessage(index));
+      // Deleting a whole bubble is a confirmed act now — and when the bubble carries
+      // media filed in the gallery, the same three-way question the per-picture × asks:
+      // drop the references, or delete the files as well.
+      deleteButton.addEventListener("click", async () => {
+        const tab = getActiveTab();
+        const msg = tab?.messages?.[index];
+        if (!msg || tab.locked || msg.locked) return;   // pinned/locked: no dialog for a no-op
+        const ids = messageGalleryIds(msg);
+        const answer = await confirmMediaDelete({
+          ids, msg, fallbackKey: "delMsg_confirm",
+          titleKey: "delMsg_title", leadKey: "delMedia_inGalleryMsg", keepKey: "delMedia_msgOnly",
+        });
+        if (answer === "cancel") return;
+        if (answer === "gallery") await deleteGalleryFiles(ids);
+        deleteChatMessage(index);
+      });
       rightActions.appendChild(deleteButton);
     }
 
@@ -4595,6 +4856,11 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         if (Number.isInteger(index)) {
           wrapper.appendChild(makeImageDeleteButton(index, i));
         }
+        // ★ (top-left) on the AI's own renders — the bubble is where they get judged.
+        if (role === "assistant") {
+          const rateId = mediaRateId(_libMsg, i, "image");
+          if (rateId) wrapper.appendChild(makeMediaRateButton(rateId));
+        }
         // Download button (bottom-right) — full-res src when available.
         const dlSrc = img.dataset.fullSrc || img.src;
         // Per-image download/lightbox filename: library figure bubbles carry
@@ -4792,12 +5058,21 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         del.title = t("btn_deleteVideo");
         del.setAttribute("aria-label", t("btn_deleteVideo"));
         del.textContent = "×";
-        del.addEventListener("click", (e) => {
+        del.addEventListener("click", async (e) => {
           e.stopPropagation();
-          if (!confirm(t("confirm_deleteVideo"))) return;
+          const msg = getActiveTab()?.messages?.[index];
+          const ids = slotGalleryIds(msg, vi, "video");
+          const answer = await confirmMediaDelete({ ids, msg, fallbackKey: "confirm_deleteVideo" });
+          if (answer === "cancel") return;
+          if (answer === "gallery") await deleteGalleryFiles(ids);
           deleteMessageVideo(index, vi);
         });
         wrapper.appendChild(del);
+      }
+      // ★ (top-left) on a generated clip — same control, same rules as the picture grid.
+      if (role === "assistant") {
+        const rateId = mediaRateId(_libMsg, vi, "video");
+        if (rateId) wrapper.appendChild(makeMediaRateButton(rateId));
       }
       // Download button (bottom-right) — an <a download> pointing at the (data) URL.
       // Tooltip shows the filename and decoded byte size.

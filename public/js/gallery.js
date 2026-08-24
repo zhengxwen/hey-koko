@@ -1136,7 +1136,7 @@ async function copyText(s) {
 // own button. Clearing therefore needs its own affordance too — the ✕, plus the usual
 // click-the-current-value shortcut, which always clears rather than dropping to zero (an
 // ambiguous ★1 → 0 would make the two states impossible to tell apart by feel).
-function rateWidget(e) {
+function rateWidget(e, onChange) {
   const row = document.createElement("div");
   row.className = "galleryRateRow";
 
@@ -1184,6 +1184,11 @@ function rateWidget(e) {
       e.rating = r.rating ?? null;      // `e` is the live object inside `items`
       paint();
       paintTileRating(e.path, e.rating);
+      if (onChange) onChange(e.rating);
+      // Anyone else showing this file's score — a ★ on a chat bubble's picture — repaints
+      // from this. A DOM event rather than a registry: the listeners come and go with
+      // every renderChat, and none of them is this module's business.
+      document.dispatchEvent(new CustomEvent("hk-gallery-rating", { detail: { id: e.path, rating: e.rating } }));
       // A rating filter is on and this file may no longer belong in the list — re-run it
       // rather than leaving a row that contradicts the filter above it.
       if (el("galleryRatingFilter")?.value || el("galleryHiddenFilter")?.value) refresh();
@@ -1212,6 +1217,29 @@ function rateWidget(e) {
   paint();
   row.append(zero, stars, clear, label);
   return row;
+}
+
+// The bubble ★ (chat.js) builds the SAME control this panel uses, on the same entry
+// object, so a score set from a picture in the conversation and one set here are one
+// act with one set of rules (three states, half stars, click-to-clear).
+export function galleryRateWidget(entry, onChange) {
+  return rateWidget(entry, onChange);
+}
+
+// Ledger entries by id, cached for the session. Two bubbles showing the same file share
+// one object, so rating it in one place is already rated in the other; a miss (deleted,
+// or never filed) is cached as null so a bubble full of pre-gallery pictures does not
+// re-ask on every render.
+const entryCache = new Map();
+export async function galleryEntryCached(id) {
+  if (entryCache.has(id)) return entryCache.get(id);
+  let entry = null;
+  try {
+    const r = await fetch(`/api/gallery/entry?id=${encodeURIComponent(id)}`);
+    entry = r.ok ? await r.json() : null;
+  } catch { entry = null; }
+  entryCache.set(id, entry);
+  return entry;
 }
 
 // The served path of a ledger entry, and the name the viewers caption it with. Inlined
@@ -1651,11 +1679,41 @@ async function tidy() {
     + (offPage > 0 ? ` ${t("gal_tidyOffPage", { n: offPage })}` : ""), 9000);
 }
 
+let archiveRefsLoaded = false;   // "" and {} are both real answers — a flag, not a size check
 async function loadArchiveRefs() {
   try {
     const r = await fetch("/api/gallery/refs").then((x) => x.json());
     archiveRefs = (r && r.archives) || {};
   } catch { archiveRefs = {}; }
+  archiveRefsLoaded = true;
+}
+
+// Who else points at a gallery file, for a caller outside this panel — the × on a
+// bubble's picture asks before offering to delete the file itself. The archive half
+// is fetched once and then reused for the session, exactly as the panel does it.
+export async function galleryRefsFor(id) {
+  if (!archiveRefsLoaded) await loadArchiveRefs();
+  return refsFor(id);
+}
+
+// Delete files from the gallery on behalf of that same caller, and keep whatever is
+// on screen in step: the filmstrip always, the grid only when the panel is open (it
+// re-reads on open anyway, and refresh() would otherwise fetch two lists into a
+// hidden panel on every bubble delete).
+export async function deleteGalleryFiles(ids) {
+  const list = [...new Set((ids || []).filter(Boolean))];
+  if (!list.length) return { ok: false };
+  let out = { ok: false };
+  try {
+    const r = await fetch("/api/gallery/delete", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: list }) });
+    out = await r.json();
+  } catch (e) { return { ok: false, error: e.message }; }
+  for (const id of list) { selectedIds.delete(id); entryCache.delete(id); }
+  if (selected && list.includes(selected.path)) selected = null;
+  if (isPanelOverlayOpen("galleryOverlay")) await refresh().catch(() => {});
+  await refreshStrip().catch(() => {});
+  return { ok: true, ...out };
 }
 
 // The gallery's filter controls are the single definition of "which media are we talking

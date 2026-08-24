@@ -200,6 +200,7 @@ export const dom = {
   aiName: document.querySelector("#aiName"),
   uiLanguageSelect: document.querySelector("#uiLanguageSelect"),
   promptLanguageSelect: document.querySelector("#promptLanguageSelect"),
+  allowCloudModels: document.querySelector("#allowCloudModels"),
   showThinkingCheckbox: document.querySelector("#showThinking"),
   sendTimeToggle: document.querySelector("#sendTime"),
   toolsToggle: document.querySelector("#toolsToggle"),

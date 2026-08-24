@@ -1595,10 +1595,11 @@ function isModelReady(name, group, type) {
   if (QWEN_ROUTES.has(type)) return false;
   if (/qwen.*(2511|2512)/i.test(name)) return false;
   // Sentinels carry a synthetic name (not a filename) — match them by exact id.
-  // 10Eros-Max: wired and structurally validated, but no render of it has been judged.
-  // Stated explicitly rather than left to fall off the end of the allowlist, so that a
-  // future broadening of the H3 pattern below cannot silently promote it.
-  if (/10eros/i.test(name)) return false;
+  // 10Eros-Max — TenStrip's community graft on H3. The TURBO ref2va build is verified
+  // live on the 5090 (2026-08-23). Its siblings (fl2va, and the non-turbo ref2va) run
+  // through the same builder but at a DIFFERENT step recipe — 20 rather than 6 — so a
+  // verified turbo says nothing about them; they stay greyed until each is run.
+  if (/10eros/i.test(name)) return /turbo/i.test(name) && /ref2va/i.test(name);
   if (name === WAN14B_AUTO) return true;    // Wan 2.2 14B t2v+i2v — verified
   if (name === BERNINI_AUTO) return true;   // Bernini v2v / rv2v — verified end-to-end
   if (name === SCAIL2_ANIMATE) return true; // SCAIL-2 animate — verified

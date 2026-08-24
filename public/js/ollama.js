@@ -78,6 +78,15 @@ function reloadLlmModelLists() {
 // Embedding and image models live in their own dropdowns — keep them out of the LLM list.
 const NON_LLM_RE = /embed|z-image|flux/i;
 
+// ⚙ "Allow online models" (More options). Off — the default, and what a fresh profile
+// gets — means chat is local-only as far as the UI is concerned: no cloud model reaches
+// the LLM dropdown or the browse dialog, whether it came from a provider config or from
+// an earlier ad-hoc pick still sitting in localStorage. Nothing is disabled server-side;
+// a configured provider simply stays invisible until this is ticked.
+export function cloudModelsAllowed() {
+  return !!dom.allowCloudModels?.checked;
+}
+
 // force: rebuild the dropdown even when no models come back (URL just changed —
 // a dead endpoint must show as "none detected", not silently keep the old
 // machine's list). The default keeps the lenient page-load behavior (Ollama
@@ -129,8 +138,11 @@ export async function loadModels({ force = false } = {}) {
   // Merge the user's ad-hoc picks (absent from the provider allowlist).
   const known = new Set(entries.map((m) => m.name));
   for (const name of loadExtraModels()) if (!known.has(name)) entries.push({ name, model: name, cloud: true });
+  // Online models are opt-in — filtered here, at the one place the dropdown is built,
+  // so every caller (startup, an endpoint change, the browse dialog's reload) obeys it.
+  const listed = cloudModelsAllowed() ? entries : entries.filter((m) => !m.cloud);
 
-  if (entries.length === 0) {
+  if (listed.length === 0) {
     if (!force) return;
     dom.modelSelect.innerHTML = "";
     const opt = document.createElement("option");
@@ -144,11 +156,11 @@ export async function loadModels({ force = false } = {}) {
     return;
   }
 
-  const names = entries.map((m) => m.name);
+  const names = listed.map((m) => m.name);
   const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
   const current = saved.model || dom.modelSelect.value;
   dom.modelSelect.innerHTML = "";
-  for (const m of entries) {
+  for (const m of listed) {
     const option = document.createElement("option");
     option.value = m.name;  // raw name — this is what /api/chat receives
     // Symbol prefix only in the label: ☁️ cloud (Claude) vs 💻 local (Ollama).
@@ -232,6 +244,10 @@ export async function openModelBrowser() {
     // list is raw `ollama list`, so apply the same non-LLM filter the dropdown uses
     // — otherwise an embedding model is offered here and breaks chat when picked.
     all = (d.models || []).filter((m) => !(m.local && NON_LLM_RE.test(m.id)));
+    // With online models off, this dialog is a local-model picker (still worth having:
+    // it is how a freshly pulled Ollama model gets into the dropdown). Offering cloud
+    // rows here would hand back a model the dropdown then refuses to list.
+    if (!cloudModelsAllowed()) all = all.filter((m) => m.local);
   } catch (e) {
     listEl.textContent = t("mb_failed", { error: (e && e.message) || "?" });
     return;
