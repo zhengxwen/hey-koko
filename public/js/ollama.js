@@ -733,12 +733,13 @@ function applyComfyModels(data) {
         if (v && v.precFiles) state.comfyModelPrecFiles[k] = v.precFiles;
         if (!v || !v.label) continue;
         state.comfyModelLabels[k] = v.label;
-        // Tier is only worth printing when the group HAS more than one build — otherwise
-        // there is nothing to disambiguate and " · int8" is noise on every bubble.
-        const multi = (v.prec || []).length > 1;
+        // The tier is printed whenever the file HAS one, single-build groups included: the
+        // question "what precision is this actually running at" is worth answering even
+        // when there is no second build to confuse it with. A model with no quantised
+        // variants at all (a plain checkpoint) has no tier and gets the bare label.
         state.comfyModelFileLabels[k] = { label: v.label, tier: "" };
         for (const [tier, file] of Object.entries(v.precFiles || {})) {
-          state.comfyModelFileLabels[file] = { label: v.label, tier: multi ? tier : "" };
+          state.comfyModelFileLabels[file] = { label: v.label, tier };
         }
       }
       // The coloured circles are input→output MODES and read as a set. "audio" is a

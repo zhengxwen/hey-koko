@@ -4737,9 +4737,16 @@ body.isResizingComposer {
 /* ☰ beside the title: same shape as the back arrow, quieter, and it must not be pushed
    away by the toolbar that follows it in the gallery header. */
 .archiveTasksBtn {
+  position: relative;        /* anchors the job-count badge */
   font-size: 18px;
   color: var(--muted, #888);
   margin-left: -4px;
+}
+/* Tucked in tighter than the composer button's, whose 34px square leaves room to spare;
+   this ☰ is a bare glyph in a header row. */
+.archiveTasksBtn .bgJobsBadge {
+  bottom: 0;
+  right: -2px;
 }
 .archiveTasksBtn:hover { color: var(--accent-strong); }
 

@@ -287,7 +287,11 @@ async function runJob(job) {
       let o; try { o = JSON.parse(line); } catch { return; }
       if (o.type === "progress") {
         if (o.stage) job.label = o.stage;
-        job.progress = o.progress || null;
+        // video-edit reports one FRACTION of the whole export; every other producer here
+        // reports {value,max}, and that is what the drawer renders — so normalize.
+        job.progress = typeof o.progress === "number"
+          ? { value: Math.round(o.progress * 100), max: 100 }
+          : (o.progress || null);
         emitUpdate(job);
       } else if (o.type === "done") result = o.result;
       else if (o.type === "error") errored = o.error;

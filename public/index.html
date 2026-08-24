@@ -475,7 +475,7 @@
             <!-- The background-task drawer sits ABOVE this overlay, so it can be flipped
                  open without leaving the gallery — worth a button, because an export
                  started in here reports its progress over there. -->
-            <button id="galleryTasksBtn" type="button" class="archiveBackBtn archiveTasksBtn">☰</button>
+            <button id="galleryTasksBtn" type="button" class="archiveBackBtn archiveTasksBtn">☰<span id="galleryTasksBadge" class="bgJobsBadge" hidden></span></button>
             <div class="archiveToolbar">
               <input id="gallerySearch" type="text" class="archiveSearchInput" placeholder="Search prompts…" />
               <!-- The four facets live behind one button: side by side they filled the
@@ -571,7 +571,7 @@
           <div class="archiveHeader">
             <button id="veditCloseBtn" type="button" class="archiveBackBtn" aria-label="Back">←</button>
             <h2 id="veditTitle" class="archiveTitle">✂️ Video editor</h2>
-            <button id="veditTasksBtn" type="button" class="archiveBackBtn archiveTasksBtn">☰</button>
+            <button id="veditTasksBtn" type="button" class="archiveBackBtn archiveTasksBtn">☰<span id="veditTasksBadge" class="bgJobsBadge" hidden></span></button>
           </div>
           <!-- Top row: the clips being edited on the left, the preview player on the
                right. Under BOTH of them, full width, the trim scrubber (frames of the

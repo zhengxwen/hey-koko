@@ -49,11 +49,23 @@ const { sendJson, readBody } = require("./utils");
 const MAX_CLIPS = 20;
 const CRF_DEFAULT = 18;   // stitching already-compressed clips: err on the high-quality side
 
-function run(args, signal, tag) {
+// `onTick(seconds)` — the output timestamp ffmpeg prints on its status line, so a caller
+// that knows how long the output will be can turn one encode into a smooth percentage
+// instead of a step. Only the long runs (per-clip normalize, crossfade) pass it.
+function run(args, signal, tag, onTick) {
   return new Promise((resolve) => {
     const p = spawn("ffmpeg", ["-y", ...args], signal ? { signal } : undefined);
     let err = "";
-    p.stderr.on("data", (d) => { err += d; });
+    p.stderr.on("data", (d) => {
+      err += d;
+      if (!onTick) return;
+      // Status lines are rewritten with \r, so a chunk can hold several; the LAST
+      // time= in it is the current position.
+      const times = String(d).match(/time=\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)/g);
+      if (!times || !times.length) return;
+      const m = /time=\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)/.exec(times[times.length - 1]);
+      if (m) onTick(Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]));
+    });
     p.on("close", (code) => {
       if (code !== 0) console.log(`[video-edit] ${tag} failed: ${err.trim().split("\n").slice(-3).join(" | ")}`);
       resolve(code === 0);
@@ -409,7 +421,12 @@ async function editVideo(spec, onProgress = () => {}, signal) {
         if (wantAudio) args.push("-map", hasAud ? "0:a:0" : "1:a:0", "-c:a", "aac", "-ar", "48000", "-ac", "2");
         else args.push("-an");
         args.push(...vcodec, "-pix_fmt", "yuv420p", "-shortest");
-        return run([...args, segPaths[i]], signal, tag);
+        // Each clip owns a slice of the 0.05–0.65 band; ffmpeg's own timestamp moves the
+        // bar WITHIN that slice, so a long clip is not a number sitting still for minutes.
+        return run([...args, segPaths[i]], signal, tag, (sec) => {
+          const within = c.len > 0 ? Math.min(1, sec / c.len) : 0;
+          onProgress(`clip ${i + 1}/${clips.length}`, 0.05 + 0.6 * ((i + within) / clips.length));
+        });
       };
       for (let i = 0; i < clips.length; i++) {
         if (signal?.aborted) throw new Error("cancelled");
@@ -459,7 +476,13 @@ async function editVideo(spec, onProgress = () => {}, signal) {
         const args = [...inputs, "-filter_complex", filter, "-map", "[v]"];
         if (wantAudio) args.push("-map", "[a]", "-c:a", "aac");
         args.push(...vcodec, "-pix_fmt", "yuv420p");
-        if (!(await run([...args, mergedPath], signal, "xfade"))) throw new Error("ffmpeg failed crossfading");
+        // Expected output length = ΣL − (N−1)·fade (the same arithmetic the offsets use),
+        // which is what turns the crossfade encode into a percentage.
+        const xfadeLen = clips.reduce((n, c) => n + c.len, 0) - (clips.length - 1) * fade;
+        if (!(await run([...args, mergedPath], signal, "xfade", (sec) => {
+          const within = xfadeLen > 0 ? Math.min(1, sec / xfadeLen) : 0;
+          onProgress("concat", 0.7 + 0.18 * within);
+        }))) throw new Error("ffmpeg failed crossfading");
       }
     }
 
@@ -527,7 +550,16 @@ async function handleVideoEdit(req, res) {
   req.on("close", () => ctrl.abort());
   const send = (obj) => { try { res.write(JSON.stringify(obj) + "\n"); } catch { /* client gone */ } };
   try {
-    const result = await editVideo(body, (stage, progress) => send({ type: "progress", stage, progress }), ctrl.signal);
+    // ffmpeg ticks several times a second; the drawer shows whole percents. Emit only
+    // when the percent (or the stage) actually changes, so one export is a few dozen
+    // NDJSON lines rather than a few thousand.
+    let lastPct = -1, lastStage = "";
+    const result = await editVideo(body, (stage, progress) => {
+      const pct = Math.round((Number(progress) || 0) * 100);
+      if (stage === lastStage && pct === lastPct) return;
+      lastStage = stage; lastPct = pct;
+      send({ type: "progress", stage, progress });
+    }, ctrl.signal);
     send({ type: "done", result });
   } catch (e) {
     if (!ctrl.signal.aborted) send({ type: "error", error: (e && e.message) || "video edit failed" });

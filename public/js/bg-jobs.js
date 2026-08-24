@@ -133,9 +133,22 @@ function bgProgressLabel(stage, progress) {
     case 'rendering': return t('bg_rendering');
     case 'importing': return t('lib_importing');
     case 'distilling': return t('bg_distilling');
+    // ✂️ video editor (kind 'vedit'): the stage names are the server's own words, and the
+    // per-clip ones carry their counts inside the string ("clip 3/7") — the export's
+    // long middle, and the reason this job needed a progress readout at all.
+    case 'probe': return t('vedit_stageProbe');
+    case 'concat': return t('vedit_stageConcat');
+    case 'audio': return t('vedit_stageAudio');
+    case 'filing': return t('vedit_stageFiling');
     // news-feeds.md: whole-history backfill of one subscription
     case 'backfilling': return progress ? t('bg_backfilling', { i: progress.value, n: progress.max }) : t('bg_backfillingStart');
-    default: return '';
+    default: {
+      // "clip 3/7" / "enhance 1/2" — the count is inside the stage name because it is
+      // the server's own loop counter, not the job's overall {value,max}.
+      const m = /^(clip|enhance) (\d+)\/(\d+)$/.exec(stage || '');
+      if (m) return t(m[1] === 'clip' ? 'vedit_stageClip' : 'vedit_stageEnhance', { i: m[2], n: m[3] });
+      return '';
+    }
   }
 }
 
@@ -1121,12 +1134,17 @@ function statusText(job) {
   }
 }
 
+// Every ☰ on the page carries the same count — the composer's button and the gallery's,
+// which is the one you are looking at while an export you started from there runs.
+// Class-based, so a panel that grows its own ☰ only has to add the badge span.
 export function updateBadge() {
-  const badge = document.querySelector('#bgJobsBadge');
-  if (!badge) return;
+  const badges = document.querySelectorAll('.bgJobsBadge');
+  if (!badges.length) return;
   const n = unfinishedCount();
-  badge.textContent = n ? String(n) : '';
-  badge.hidden = n === 0;
+  for (const badge of badges) {
+    badge.textContent = n ? String(n) : '';
+    badge.hidden = n === 0;
+  }
 }
 
 // ---- reorder (drag) of queued jobs -----------------------------------------
