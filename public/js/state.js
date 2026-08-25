@@ -297,6 +297,7 @@ export const state = {
   camElevation: "eye",
   camDistance: "medium",
   animateMaskPoint: null,            // Wan Animate REPLACE: user's ⚙-picked {x,y} (0–1) of which person to replace; null = auto center
+  comfyModelMaxSize: {},              // canonical model → "WxH" native max, for `/imagine --size max`
   comfyVramGib: null,                // usable VRAM (GiB) of the target ComfyUI box, from /system_stats; scales Wan Animate's per-pass frame cap (multi-worker → MIN across lanes, for OOM safety). null = unknown → 32GB reference table
   comfyDevices: [],                  // detected ComfyUI GPU(s) for display in the model picker: [{ gpuName, vramGib, hostname }] — one per online endpoint/lane
 };

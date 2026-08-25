@@ -1163,7 +1163,10 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video, at 
     skillGuide: modelId,
     skillKind: composed.kind || "",
     content: `${getPrompt("skillHeader", composed.name, composed.mode)}${supersededNote}${newTabNote}\n\n` +
-      `${getPrompt(SKILL_WRAPPERS[composed.style] || "skillWrapper", modelId, stagedNote)}\n\n` +
+      // `kind` decides whether the wrapper talks about a runtime at all: an image guide that
+      // asks for a DURATION and puts `--second` on the dispatch line is instructing the
+      // assistant to add a flag /imagine will reject.
+      `${getPrompt(SKILL_WRAPPERS[composed.style] || "skillWrapper", modelId, stagedNote, composed.kind || "")}\n\n` +
       `<details>\n<summary>${getPrompt("skillGuideSummary")}</summary>\n\n${composed.text}\n\n</details>`,
     timestamp: Date.now(),
   };

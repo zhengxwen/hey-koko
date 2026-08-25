@@ -718,6 +718,9 @@ function applyComfyModels(data) {
       // greys out the rest. Kept on state because the menu is rebuilt on model change,
       // long after this function has returned.
       state.comfyModelPrec = {};
+      // Native max frame per model, for `/imagine --size max`. Only families with a
+      // documented number appear here; a missing entry makes the flag refuse.
+      state.comfyModelMaxSize = {};
       // tier → filename for the same group, so a label can name the file a run WILL load
       // instead of the group's arbitrary representative (see resolvedModelName).
       state.comfyModelPrecFiles = {};
@@ -729,6 +732,7 @@ function applyComfyModels(data) {
       state.comfyModelLabels = {};
       state.comfyModelFileLabels = {};
       for (const [k, v] of Object.entries(meta)) {
+        if (v && v.maxSize) state.comfyModelMaxSize[k] = v.maxSize;   // what `--size max` resolves to
         if (v && v.prec) state.comfyModelPrec[k] = v.prec;
         if (v && v.precFiles) state.comfyModelPrecFiles[k] = v.precFiles;
         if (!v || !v.label) continue;

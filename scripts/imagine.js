@@ -74,11 +74,27 @@ const SIZE_PRESETS = {
   "4k": "3840x2160", "4k-portrait": "2160x3840",
 };
 
-function parseSize(val) {
-  const preset = SIZE_PRESETS[String(val).toLowerCase()];
+// `max` / `max-portrait` are the two tokens whose meaning depends on the MODEL, so the
+// caller resolves them first and passes the model's native frame in as `maxSize`. Without
+// one they are refused: silently falling back to a preset would render at some other size
+// than the one that was asked for, and the user would only find out by measuring the file.
+function parseSize(val, maxSize) {
+  const token = String(val).toLowerCase();
+  if (token === "max" || token === "max-portrait") {
+    if (!maxSize) {
+      throw new Error(`--size ${token}: this model has no documented native size. Give an explicit WxH, or a preset (${Object.keys(SIZE_PRESETS).join(", ")})`);
+    }
+    const mm = String(maxSize).match(/^(\d+)x(\d+)$/i);
+    if (!mm) throw new Error(`this model's recorded max size "${maxSize}" is not WxH`);
+    const [a, b] = [+mm[1], +mm[2]];
+    // The table stores landscape; -portrait is the same frame stood on end.
+    const [w, h] = token === "max-portrait" ? [Math.min(a, b), Math.max(a, b)] : [Math.max(a, b), Math.min(a, b)];
+    return { width: w, height: h };
+  }
+  const preset = SIZE_PRESETS[token];
   const spec = preset || val;
   const m = String(spec).match(/^(\d+)x(\d+)$/i);
-  if (!m) throw new Error(`unknown size "${val}" (presets: ${Object.keys(SIZE_PRESETS).join(", ")}, or WxH)`);
+  if (!m) throw new Error(`unknown size "${val}" (presets: ${Object.keys(SIZE_PRESETS).join(", ")}, max, max-portrait, or WxH)`);
   const w = +m[1], h = +m[2];
   if (w < 256 || w > 4096 || h < 256 || h > 4096) throw new Error(`size ${w}x${h} out of range (256-4096)`);
   return { width: w, height: h };
@@ -243,6 +259,7 @@ Generation
                            on a music model it is the maximum song length)
       --length <n>         frame count instead of --second
       --size <WxH|preset>  ${Object.keys(SIZE_PRESETS).join(" / ")}
+                           max / max-portrait = the model\u2019s own largest trained frame
       --seed <n>           fixed seed (a batch uses seed, seed+1, …)
       --steps <n>
       --neg <text>         negative prompt (ignored by models without a negative branch)
@@ -421,7 +438,7 @@ async function loadCatalogue(server, comfyUrl) {
     if (!meta || !meta.id) return;      // unnamed entries are pickable in the UI only
     rows.push({
       id: meta.id, value: name, label: meta.label || name, group,
-      caps: meta.caps || [], tiers: meta.prec || [], ready: meta.ready !== false, spec: spec || {},
+      caps: meta.caps || [], tiers: meta.prec || [], ready: meta.ready !== false, maxSize: meta.maxSize || "", spec: spec || {},
     });
   };
   for (const n of d.models || []) add(n, "image");
@@ -554,7 +571,7 @@ function mergeTask(base, over) {
 
 function taskToOptions(task) {
   const o = { ...(task.options || {}) };
-  if (task.size) Object.assign(o, parseSize(task.size));
+  if (task.size) Object.assign(o, parseSize(task.size, task._maxSize));
   if (task.seconds > 0) o.lengthSec = task.seconds;
   if (task.length > 0) o.length = task.length;
   if (Number.isFinite(task.seed)) o.seed = task.seed;
@@ -720,6 +737,14 @@ function printHelpTopic(topic, cat, files, out) {
       out("--size <token>    frame size\n\n");
       line("presets", Object.keys(SIZE_PRESETS));
       line("literal", ["WxH"], "e.g. 1280x720");
+      line("native", ["max", "max-portrait"], "the model's own largest trained frame; only some families have one");
+      // Listed as-is. A family member that only emits audio (ltx2.3-22b:foley) inherits
+      // the id prefix and so shows a frame size it will never use — harmless, and there is
+      // no flag that separates it from its video siblings (both are group video-in with
+      // caps v2v+audio), so filtering would mean inventing a distinction that is not there.
+      const withMax = cat.rows.filter((m) => m.maxSize);
+      for (const m of withMax) out(`             ${m.id.padEnd(24)} ${m.maxSize}\n`);
+      if (!withMax.length) out("             (no model in this catalogue declares one)\n");
       return 0;
     case "sharpen":
       out("--sharpen <level> post-resize unsharp mask (video-enhance / image-upscale)\n\n");
@@ -760,6 +785,8 @@ function printHelpTopic(topic, cat, files, out) {
 
 async function runTask(task, cli, ctx) {
   const model = resolveModel(ctx.rows, task.model);
+  // `--size max` is model-relative, so it can only be resolved now that the model is known.
+  task._maxSize = model.maxSize || "";
   const options = taskToOptions(task);
   if (task.precision && !options.precision) options.precision = task.precision;
   if (model.tier) options.precision = model.tier;

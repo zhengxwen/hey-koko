@@ -418,8 +418,20 @@ function parseImagineCommand(input) {
       if (!sizeFlag) return { error: t("img_sizeNeedsArg") };
       const sizeVal = sizeFlag[1];
       let w, h;
-      const preset = SIZE_PRESETS[sizeVal.toLowerCase()];
-      if (preset) {
+      // `max` / `max-portrait` mean "this model's native frame", so they resolve against
+      // the SELECTED model rather than a fixed table. Only families with a documented
+      // number have one; the rest are refused instead of quietly falling back to a preset.
+      const maxTok = /^max(-portrait)?$/i.test(sizeVal);
+      const nativeMax = maxTok ? (state.comfyModelMaxSize?.[dom.comfyModelSelect?.value] || "") : "";
+      if (maxTok && !nativeMax) {
+        return { error: t("img_sizeNoMax", { model: dom.comfyModelSelect?.value || "?" }) };
+      }
+      const preset = maxTok ? nativeMax : SIZE_PRESETS[sizeVal.toLowerCase()];
+      if (maxTok) {
+        const [a, b] = nativeMax.split("x").map(Number);
+        // The table stores landscape; -portrait is the same frame stood on end.
+        [w, h] = /-portrait$/i.test(sizeVal) ? [Math.min(a, b), Math.max(a, b)] : [Math.max(a, b), Math.min(a, b)];
+      } else if (preset) {
         [w, h] = preset.split("x").map(Number);
       } else {
         const sizeParsed = sizeVal.match(/^(\d+)x(\d+)$/i);

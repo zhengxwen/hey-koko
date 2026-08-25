@@ -13,7 +13,7 @@ const { hostnameFor } = require("./network");
 const {
   PRECISION_RE_G, PREC_AUTO_ORDER,
   precisionOf, precisionBase, pickPrecision, bestTier,
-  canonicalModelId, galleryModelId, labelForId,
+  canonicalModelId, galleryModelId, labelForId, maxSizeForId,
 } = require("./model-names");
 const { synthToWav } = require("./tts"); // InfiniteTalk "photo speaks": prompt → local TTS → speech track
 const gallery = require("./gallery"); // every finished artifact is teed to disk before it goes back
@@ -2177,6 +2177,9 @@ async function proxyComfyModels(req, res) {
       const id = canonicalModelId(name);
       modelMeta[name] = { id, label: labelForId(id) || baseLabel(name), caps: capsFor(name, group, type, entry), ready: isModelReady(name, group, type) };
       if (tiers.length) { modelMeta[name].prec = tiers; modelMeta[name].precFiles = files; }
+      // Native max frame, when this family has a documented one — what `--size max` resolves to.
+      const mx = maxSizeForId(id);
+      if (mx) modelMeta[name].maxSize = mx;
     };
     for (const n of imageOut) setMeta(n, "image", null, null);
     for (const n of berniniT2i) setMeta(n, "image", null, null);

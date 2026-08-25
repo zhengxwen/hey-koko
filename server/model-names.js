@@ -315,6 +315,27 @@ const ID_LABELS = {
 // Last-resort id for a file no rule claims: its precision-stripped base, slugified.
 // Still stable across installed builds (that is what the stripping buys) and still
 // lowercase — just not pretty. A model that shows up here wants a FILE_ID_RULES entry.
+// A model's NATIVE MAXIMUM output size, landscape — the largest frame these weights
+// were actually trained to produce. NOT a VRAM ceiling and not a hard clamp: it is the
+// point past which the model stops adding detail and starts repeating itself, which is
+// what `/imagine --size max` asks for. Matched by canonical-id PREFIX so a family's
+// variants (minimax-h3-t2v / -r2v, ltx2.3-22b:msr / :union) inherit one number.
+//
+// A model with no entry here has no size we can defend, and `--size max` REFUSES rather
+// than guessing — an invented ceiling would quietly cap or blow up a render. Adding one
+// is a single line, but the number has to come from the model card or a measured run,
+// not from what looks plausible.
+const ID_MAX_SIZE = [
+  [/^minimax-h3/, "1376x768"],
+  [/^ltx2\.3-22b|^ltx2-sulphur/, "1920x1088"],
+];
+
+function maxSizeForId(id) {
+  const s = String(id || "");
+  for (const [re, size] of ID_MAX_SIZE) if (re.test(s)) return size;
+  return null;
+}
+
 function slugify(s) {
   return String(s || "")
     .toLowerCase()
@@ -362,6 +383,7 @@ function labelForId(id) {
 }
 
 module.exports = {
+  maxSizeForId,
   PRECISION_RE_G, PREC_AUTO_ORDER,
   precisionOf, precisionBase, pickPrecision, bestTier,
   canonicalModelId, galleryModelId, labelForId,
