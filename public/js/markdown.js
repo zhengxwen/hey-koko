@@ -591,11 +591,16 @@ function attachImagineButton(pre) {
     // this send creates is a receipt, not new content — sendMessage folds it (collapsed
     // + out of context) on seeing this one-shot flag.
     state.foldNextCommandBubble = true;
+    // …and it belongs to THIS draft: the receipt is inserted right under this bubble,
+    // replacing the one a previous press of this same ▶ left there. renderChat stamps
+    // the stable id on every bubble, which is what survives edits/deletions above.
+    state.dispatchFromMsgId = btn.closest("[data-msg-id]")?.dataset.msgId || null;
     dom.chatForm.requestSubmit();
     // sendMessage consumes the flag synchronously (the submit handler has no await
     // before it), so this only disarms the case where the handler bailed out early —
     // a stale flag must never fold the user's next hand-typed command.
     state.foldNextCommandBubble = false;
+    state.dispatchFromMsgId = null;
     dom.messageInput.value = draft;
     dom.messageInput.dispatchEvent(new Event("input", { bubbles: true }));  // autosize + button state
     btn.textContent = "✓";

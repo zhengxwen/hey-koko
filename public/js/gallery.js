@@ -215,6 +215,16 @@ function tileFor(entry) {
     cut.title = t("gal_cutBadge");
     btn.appendChild(cut);
   }
+  // Same question, other direction: a still pulled out of a clip is pixel-for-pixel an
+  // image and nothing in the picture says where it came from. Same corner — a frame is
+  // never a cut, so the two can never both be here.
+  if (entry.modelId === "video-frame") {
+    const grab = document.createElement("span");
+    grab.className = "galleryBadge galleryCutBadge";
+    grab.textContent = "📷";
+    grab.title = t("gal_frameBadge");
+    btn.appendChild(grab);
+  }
   // Built for every tile but only shown in list view (CSS). Switching views is then
   // one attribute on the grid — no re-render, no second tile builder.
   const text = document.createElement("span");
@@ -1854,7 +1864,9 @@ async function refresh() {
         // Model ids are the ledger's own words and stay that way — except the editor's
         // own output, which is not a model at all and reads as noise among them.
         o.value = m.id;
-        o.textContent = m.id === "video-edit" ? `✂️ ${t("vedit_title")} (${m.n})` : `${m.id} (${m.n})`;
+        o.textContent = m.id === "video-edit" ? `✂️ ${t("vedit_title")} (${m.n})`
+          : m.id === "video-frame" ? `${t("gal_frameModel")} (${m.n})`
+          : `${m.id} (${m.n})`;
         modelSel.appendChild(o);
       }
       // A model can vanish from the list (its last file deleted) while it is the active

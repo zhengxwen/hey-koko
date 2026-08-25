@@ -175,6 +175,8 @@ function saveChatMessage(message) {
   if (message.genMs) stored.genMs = message.genMs;
   stored.content = message.content;
   if (message.folded) stored.folded = true;
+  if (message.dispatched) stored.dispatched = true;   // ▶ receipt — lets the next press replace it
+
   if (message.locked) stored.locked = true;
   // Uploaded-image fields: displayImages (thumbnails, shown in the bubble) and
   // contextImages (full-res, what's actually sent to the model). See migrateImageFields.

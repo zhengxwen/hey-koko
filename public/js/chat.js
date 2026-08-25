@@ -1252,6 +1252,22 @@ function deleteMessageMesh(msgIndex, meshIndex) {
   dom.messagesEl.scrollTop = scrollY;
 }
 
+// Which bubbles can be re-run: the user's own turns only, and not the commands that
+// already DID their thing when first sent (/memory writes a memory, /remind sets a
+// reminder — replaying them would just do it twice). The bubble's 重发 button and the
+// in-bubble editor's Ctrl+Enter both ask this, so they can never disagree.
+// The folded /imagine bubble a ▶ press leaves under its draft. `dispatched` is what
+// new ones carry; the folded-/imagine test also recognises the receipts already sitting
+// in conversations from before that flag existed.
+function isDispatchReceipt(msg) {
+  return !!msg && msg.role === "user" && !!msg.folded
+    && (msg.dispatched === true || /^\/imagine(\s|$)/.test(msg.content || ""));
+}
+
+function isResendable(msg) {
+  return !!msg && msg.role === "user" && !/^\/(memory|remind)(\s|$)/.test(msg.content || "");
+}
+
 function resendChatMessage(index) {
   if (state.currentAbortController || state.imageGenAbortController) return;
   // Block only if THIS bubble's own in-page job is still running (would clobber it).
@@ -3291,6 +3307,8 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   // for the user's next real message.
   const foldCommandBubble = state.foldNextCommandBubble;
   state.foldNextCommandBubble = false;
+  const dispatchFromMsgId = state.dispatchFromMsgId;
+  state.dispatchFromMsgId = null;
 
   markActivity();
 
@@ -3462,7 +3480,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     // is lost: the full command still lives here as the resend anchor and the record of
     // which attachments produced the clip, one ▼ away. A HAND-TYPED /imagine is never
     // folded — there is no draft above it, so that bubble IS the only record.
-    if (foldCommandBubble) userMessage.folded = true;
+    if (foldCommandBubble) { userMessage.folded = true; userMessage.dispatched = true; }
     // Attached video(s) are the SOURCE for a video-edit model (Bernini / Animate).
     // Several clips can be staged → each runs the workflow once (batch). They ride on
     // the user bubble for display (reusing the generatedVideos field).
@@ -3499,26 +3517,50 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     }
     // Speech audio (InfiniteTalk dubbing) rides the user bubble + the gen payload.
     attachAudioToMessage(userMessage, audio);
-    tab.messages.push(userMessage);
+    // ▶ dispatch: the receipt belongs under the draft it came from, not at the far end of
+    // the conversation — the prompt and the command that ran it read as one thing, and a
+    // long thread no longer scatters a trail of identical /imagine bubbles. Pressing the
+    // same ▶ again REPLACES the receipt already sitting there instead of stacking a
+    // second one (renders made earlier stay where they are). Falls back to appending when
+    // the draft is gone (deleted, or a different tab).
+    let imagineAt = -1;                 // -1 = append, the hand-typed-/imagine behaviour
+    if (dispatchFromMsgId) {
+      const from = tab.messages.findIndex((m) => m && m.id === dispatchFromMsgId);
+      if (from >= 0) {
+        if (isDispatchReceipt(tab.messages[from + 1])) tab.messages.splice(from + 1, 1);
+        imagineAt = from + 1;
+      }
+    }
+    if (imagineAt >= 0) tab.messages.splice(imagineAt, 0, userMessage);
+    else tab.messages.push(userMessage);
     const firstError = imagineCmds.find((cmd) => cmd && cmd.error);
     // A bare "/imagine" (no prompt) is valid only when something is attached
     // (image or video) — the gen is then attachment-driven (video edit / img2img).
     const hasAttach = !!(userMessage.contextImages?.length || imagineVideos.length);
     const validCmds = imagineCmds.filter((cmd) => cmd && !cmd.error && (cmd.prompt || hasAttach));
+    // A refusal belongs next to the command that was refused — same placement rule as
+    // the render itself, or a ▶ dispatched from halfway up the thread would report its
+    // error at the bottom, under someone else's picture.
+    const sayHere = (error) => {
+      const msg = { role: "assistant", content: t("msg_commandError", { error }), timestamp: Date.now() };
+      if (imagineAt >= 0) tab.messages.splice(imagineAt + 1, 0, msg);
+      else tab.messages.push(msg);
+      saveChat();
+      if (state.activeTabId === tabId) renderChat();
+    };
     if (firstError) {
-      tab.messages.push({ role: "assistant", content: t("msg_commandError", { error: firstError.error }), timestamp: Date.now() });
-      saveChat();
-      if (state.activeTabId === tabId) renderChat();
+      sayHere(firstError.error);
     } else if (validCmds.length === 0) {
-      tab.messages.push({ role: "assistant", content: t("msg_commandError", { error: t("chat_needPromptOrMedia") }), timestamp: Date.now() });
-      saveChat();
-      if (state.activeTabId === tabId) renderChat();
+      sayHere(t("chat_needPromptOrMedia"));
     } else {
       // Generation ALWAYS goes to the background queue. One source clip → one job;
       // multiple clips fan out (cartesian with each command's count).
       saveChat();
       if (state.activeTabId === tabId) renderChat();
-      enqueueImagineGen(validCmds, tabId, userMessage.contextImages || null, imagineVideos, userMessage.mask || null, -1, audio, userMessage.imageMasks || null);
+      // …and its output goes directly under that receipt (imagineAt + 1), so command and
+      // render stay together. -1 keeps the old "append at the end" for a hand-typed one.
+      enqueueImagineGen(validCmds, tabId, userMessage.contextImages || null, imagineVideos, userMessage.mask || null,
+                        imagineAt >= 0 ? imagineAt + 1 : -1, audio, userMessage.imageMasks || null);
     }
     return;
   }
@@ -3813,11 +3855,11 @@ async function openRatePopover(btn, id) {
   _ratePopover = { el: pop, onKey, onAway };
 }
 
-// The two corner buttons on a generated picture/clip: ★ score at the bottom-left,
-// 🎨 "show me this one in the gallery" at the top-left. Opposite corners, so each is
-// positioned on its own (CSS) and this only has to hand both back — a fragment rather
-// than a wrapper, since they end up in different corners of the same wrapper.
-function makeMediaCornerButtons(id) {
+// The corner buttons on a generated picture/clip: ★ score at the bottom-left, 🎨 "show
+// me this one in the gallery" at the top-left, and — clips only — ✂️ straight into the
+// editor. They land in different corners, so each is positioned on its own (CSS) and
+// this only has to hand them back: a fragment rather than a wrapper.
+function makeMediaCornerButtons(id, kind) {
   const row = document.createDocumentFragment();
 
   const btn = document.createElement("button");
@@ -3848,6 +3890,27 @@ function makeMediaCornerButtons(id) {
     openGalleryAt(id);         // clears the facets, un-hides a hidden file, reveals the tile
   });
   row.appendChild(jump);
+
+  // ✂️ — clips only, right of 🎨. The gallery's detail pane has had this button all
+  // along; needing to go and find the clip there first was the only reason to leave the
+  // bubble. The editor takes gallery ids, which is exactly what `id` is here.
+  if (kind === "video") {
+    const cut = document.createElement("button");
+    cut.type = "button";
+    cut.className = "mediaCutBtn";
+    cut.title = t("vedit_openHint");
+    cut.setAttribute("aria-label", t("vedit_open"));
+    cut.textContent = "✂️";
+    cut.addEventListener("click", async (e) => {
+      e.stopPropagation();     // don't open the video viewer
+      closeRatePopover();
+      // Imported on demand: a static import here would put chat.js in the editor's
+      // dependency graph, and the editor already reaches back into image-gen.
+      const ve = await import("./video-edit.js");
+      ve.openVideoEditor([id]);
+    });
+    row.appendChild(cut);
+  }
   return row;
 }
 
@@ -4557,10 +4620,8 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
   }
 
   const canSpeak = role === "assistant" && content && content !== "thinking-placeholder";
-  // /memory and /remind already acted when first sent; resending them is meaningless.
   // (/search IS resendable — it re-runs the web search.)
-  const isNonResendableCmd = role === "user" && /^\/(memory|remind)(\s|$)/.test(content || "");
-  const canResend = role === "user" && Number.isInteger(index) && !isNonResendableCmd;
+  const canResend = Number.isInteger(index) && isResendable({ role, content });
   const canTranslate = Number.isInteger(index) && content && content !== "thinking-placeholder";
 
   if (canSpeak || canResend || canTranslate || Number.isInteger(index)) {
@@ -4813,12 +4874,18 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         };
         autosizeInput();
         input.addEventListener("input", autosizeInput);
-        // Committing an edit only rewrites the text — it never re-runs the message.
-        // Re-running is the 重发 / resend button's job, so no key in this editor can
-        // fire a generation, and the edited text can be read over before anything is
-        // spent on it. (No in-page-job guard is needed here either: nothing is
-        // dispatched. resendChatMessage still carries its own.)
-        function finishEdit(save) {
+        // Enter commits the text and stops there — an edit can be read over before
+        // anything is spent on it. Ctrl+Enter is the shortcut for "and run it now",
+        // the same act as pressing 重发 afterwards (and only where that button would
+        // appear: a user turn that is not /memory or /remind). resendChatMessage
+        // carries the in-page-job guard, so nothing here needs one.
+        // Removing the textarea fires `blur`, whose handler calls this again — and the
+        // second call would try to replace a node that is no longer in the document
+        // (which throws, and swallowed the resend below). One shot per editor.
+        let editorClosed = false;
+        function finishEdit(save, resend = false) {
+          if (editorClosed) return;
+          editorClosed = true;
           const newContent = input.value.trim();
           if (save && newContent && newContent !== original) {
             const scrollY = dom.messagesEl.scrollTop;
@@ -4834,10 +4901,14 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
           } else {
             input.replaceWith(text);
           }
+          // Ctrl+Enter with nothing changed is still a resend — the keystroke says "run
+          // this", and having it silently do nothing because a character happened not to
+          // change would be the surprise.
+          if (resend && isResendable(getActiveTab()?.messages?.[index])) resendChatMessage(index);
         }
         input.addEventListener("keydown", (e) => {
-          // Enter and Ctrl+Enter both just save; Shift+Enter is a new line.
-          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finishEdit(true); }
+          // Enter saves; Ctrl+Enter saves AND resends; Shift+Enter is a new line.
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finishEdit(true, e.ctrlKey); }
           if (e.key === "Escape") { finishEdit(false); }
         });
         input.addEventListener("blur", () => finishEdit(false));
@@ -4897,7 +4968,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         // ★ (top-left) on the AI's own renders — the bubble is where they get judged.
         if (role === "assistant") {
           const rateId = mediaRateId(_libMsg, i, "image");
-          if (rateId) wrapper.appendChild(makeMediaCornerButtons(rateId));
+          if (rateId) wrapper.appendChild(makeMediaCornerButtons(rateId, "image"));
         }
         // Download button (bottom-right) — full-res src when available.
         const dlSrc = img.dataset.fullSrc || img.src;
@@ -5110,7 +5181,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       // ★ (top-left) on a generated clip — same control, same rules as the picture grid.
       if (role === "assistant") {
         const rateId = mediaRateId(_libMsg, vi, "video");
-        if (rateId) wrapper.appendChild(makeMediaCornerButtons(rateId));
+        if (rateId) wrapper.appendChild(makeMediaCornerButtons(rateId, "video"));
       }
       // Download button (bottom-right) — an <a download> pointing at the (data) URL.
       // Tooltip shows the filename and decoded byte size.

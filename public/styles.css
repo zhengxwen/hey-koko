@@ -2438,6 +2438,26 @@ button.secondary:disabled {
   display: none;
 }
 
+/* …with one exception: the ×. A folded bubble is one you have decided you are done
+   reading, which is exactly when you may want it gone — and there was no way to delete
+   it without unfolding first. The other actions (重发/翻译/复制/分支) still need a bubble
+   you can see, so they stay hidden; only the delete button comes back, and it asks for
+   confirmation like every other delete does. Written after the two rules above so it
+   wins at equal specificity. */
+.message.isFolded > .messageActionsRight,
+.message.isFolded:hover > .messageActionsRight {
+  display: flex;
+}
+.message.isFolded > .messageActionsRight > :not(.deleteMessage) {
+  display: none;
+}
+/* The bubble is only ~24px tall folded, so the usual -8px top would float the button
+   above it — centre it on the edge instead. */
+.message.isFolded > .messageActionsRight {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
 .message.isFolded .messageFoldToggle {
   opacity: 0.6;
 }
@@ -3386,12 +3406,19 @@ button.secondary:disabled {
   top: 6px;
   left: 6px;                 /* pictures: that corner is free (🖌 is user-bubble only) */
 }
-/* Clips already carry ⛶ (left:6) and ⧉ (left:34) up top — 🎨 sits to their right. */
+/* Clips already carry ⛶ (left:6) and ⧉ (left:34) up top — 🎨 sits to their right, and
+   ✂️ right of that. Clips only, so it needs no rule for the picture case. */
 .videoWrapper .mediaGalleryBtn {
   left: 62px;
 }
+.mediaCutBtn {
+  position: absolute;
+  top: 6px;
+  left: 90px;
+}
 .mediaRateBtn,
-.mediaGalleryBtn {
+.mediaGalleryBtn,
+.mediaCutBtn {
   z-index: 2;
   height: 22px;
   min-height: 0;
@@ -3415,6 +3442,7 @@ button.secondary:disabled {
 .imageWrapper:hover .mediaGalleryBtn,
 .videoWrapper:hover .mediaRateBtn,
 .videoWrapper:hover .mediaGalleryBtn,
+.videoWrapper:hover .mediaCutBtn,
 .mediaRateBtn.isRated {
   opacity: 1;
 }
@@ -3424,7 +3452,8 @@ button.secondary:disabled {
   font-weight: 700;
 }
 .mediaRateBtn:hover,
-.mediaGalleryBtn:hover {
+.mediaGalleryBtn:hover,
+.mediaCutBtn:hover {
   background: var(--accent);
   color: #fff;
 }
@@ -9066,6 +9095,15 @@ body.isResizingComposer {
 .veditTrimControls button,
 .veditOptsPanel button { font-size: 12px; min-height: 28px; }
 
+/* Stills: the "📷 Save frame" group at the end of the trim row, and the receipt line
+   that reports where the PNG landed. */
+.veditRowBreak { flex-basis: 100%; height: 0; }
+/* The receipt takes its own line under the buttons and breaks anywhere: it carries a
+   gallery filename, which has no spaces to wrap at, and the lane is 240px wide. */
+.veditGrabStatus { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; }
+.veditGrabStatus:empty { display: none; }
+.veditGrabStatus.isWarn { color: #e07a30; opacity: 1; }
+
 .veditTimeField {
   width: 64px;
   font-size: 12px;
@@ -9158,6 +9196,19 @@ body.isResizingComposer {
   padding: 0;
   font-size: 18px;
 }
+
+/* The still buttons share the Export row, so they take its height rather than the 42px
+   every button gets by default. A size down and unbolded, too: they are the secondary
+   action on that line, and three bold words beside Export competed with it. The label
+   carries the weight instead, since it is what names the group. */
+.veditGrabBtn {
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+}
+.veditGrabLabel { font-size: 13px; font-weight: 650; }
 
 .veditEstimate.isWarn { color: #e07a30; opacity: 1; }
 

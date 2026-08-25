@@ -692,6 +692,7 @@ function renderTrim() {
   // With one clip the two buttons would do exactly the same thing, and a pair of buttons
   // that behave identically is what made the single toggle confusing in the first place.
   playBtn.disabled = clips.length < 2;
+
   controls.append(lbl('vedit_in'), inField, setIn, lbl('vedit_out'), outField, setOut, playOne, playBtn);
 
   box.append(strip, controls);
@@ -756,6 +757,63 @@ function setOptsOpen(open) {
     btn.classList.toggle('isOn', open);
     btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
+}
+
+// ---------------------------------------------------------------------------
+// Stills: save the active clip's first / current / last frame into the gallery.
+// ---------------------------------------------------------------------------
+
+// Chaining is the point: the last frame of one take is the first frame of the next
+// generation, so these file a full-resolution PNG into the gallery, where it is reachable
+// as a reference image. First/last follow the TRIM points — the clip you are composing,
+// not the file — which on an untouched clip is the same thing.
+//
+// It lives under the Export row rather than in the trim controls, and reads clips[active]
+// at CLICK time: this bar is not rebuilt when the selection moves, and a stale capture
+// would quietly grab a frame out of the wrong clip.
+function buildStillControls(lbl, btn) {
+  const status = document.createElement('span');
+  status.className = 'hint veditGrabStatus';
+  let busy = false;
+  // What to ask the server for. In/out are TIMES, and the two ends do not mean the same
+  // kind of thing: the in point is on a frame, the out point is the boundary after the
+  // last one — hence `before`, which the server turns into a frame index rather than
+  // guessing here in floating-point seconds. An out point that is the end of the file
+  // goes down the tail read instead, the only way to be sure of the true final frame.
+  const spec = (which, c) => {
+    if (which === 'first') return { at: c.in || 0 };
+    if (which === 'cur') { const v = el('veditPreview'); return { at: Math.max(0, v?.currentTime || c.in || 0) }; }
+    if (c.dur && c.out >= c.dur - 0.001) return { at: 'end' };
+    return { at: c.out, before: true };
+  };
+  const grab = async (which) => {
+    const c = clips[active];
+    if (!c || busy) return;
+    busy = true;
+    status.classList.remove('isWarn');
+    status.textContent = t('vedit_grabbing');
+    const fail = (msg) => { status.textContent = msg; status.classList.add('isWarn'); };
+    try {
+      const r = await fetch('/api/video-edit/frame', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: c.id, ...spec(which, c) }),
+      }).then((x) => x.json());
+      if (r && r.id) status.textContent = t('vedit_grabbed', { name: r.id.split('/').pop() });
+      else fail((r && r.error) || t('vedit_grabFailed'));
+    } catch { fail(t('vedit_grabFailed')); }
+    busy = false;
+  };
+  // A deliberate line break, not whatever the column width decides: the lane is 240px by
+  // default, and left to wrap these four land in four different places.
+  const brk = document.createElement('span');
+  brk.className = 'veditRowBreak';
+  const label = lbl('vedit_grabLabel');
+  label.classList.add('veditGrabLabel');
+  return [brk, label,
+          btn(t('vedit_grabFirst'), t('vedit_grabFirstHint'), () => grab('first')),
+          btn(t('vedit_grabCur'), t('vedit_grabCurHint'), () => grab('cur')),
+          btn(t('vedit_grabLast'), t('vedit_grabLastHint'), () => grab('last')),
+          status];
 }
 
 function renderExportBar() {
@@ -970,7 +1028,16 @@ function renderExportBar() {
   optsBtn.setAttribute('aria-controls', 'veditExportBar');
   optsBtn.addEventListener('click', (ev) => { ev.stopPropagation(); setOptsOpen(!optsOpen()); });
 
-  head?.append(exportBtn, optsBtn, estimateEl);
+  // The still grabber gets the line under Export/⚙/estimate. `btn` here is the same
+  // shape the trim controls use — a small secondary button — so the two rows match.
+  const stillBtn = (text, title, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'secondary veditGrabBtn'; b.textContent = text;
+    if (title) b.title = title;
+    b.addEventListener('click', fn);
+    return b;
+  };
+  head?.append(exportBtn, optsBtn, estimateEl, ...buildStillControls(lbl, stillBtn));
 
   // One setting per row, label left, control right — a wrapping row of eight controls was
   // how Export ended up somewhere different every time the window changed width.

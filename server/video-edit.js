@@ -530,6 +530,99 @@ async function editVideo(spec, onProgress = () => {}, signal) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Stills: pull one frame out of a clip and file it back as a PNG.
+// ---------------------------------------------------------------------------
+
+// Why the server and not a canvas grab in the browser: the LAST frame. A browser seek
+// to the end of a clip clamps short or lands on whatever the decoder had handy, and the
+// last frame is the one that matters — it is what gets fed back as the next generation's
+// first frame (i2v chaining is the whole reason this feature exists). `-sseof` asks the
+// demuxer for the tail and `-update 1` lets every frame in it overwrite the output, so
+// what survives is the real final picture. PNG, full resolution, no other re-encode.
+//
+// `at` is seconds, or the string "end" for that tail trick.
+async function grabFrame(spec, signal) {
+  const id = String((spec && spec.id) || "");
+  const entry = gallery.get(id);
+  if (!entry || entry.kind !== "video") throw new Error("not a gallery video");
+  const abs = gallery.absPathOf(id);
+  if (!abs || !fs.existsSync(abs)) throw new Error("the clip file is missing");
+
+  // Which frame is meant is decided HERE, in frames, not by handing ffmpeg a raw
+  // timestamp: `-ss` returns the first frame at or after the mark, so a playhead sitting
+  // mid-frame would hand back the NEXT one. Two questions, two answers:
+  //   plain `at`      — the frame on screen at that instant   → floor(at·fps)
+  //   `at` + `before` — the last frame that starts before it  → ceil(at·fps) − 1, which
+  //                     is what an OUT point means (the cut plays up to, not including it)
+  // The chosen frame is then asked for a quarter-frame early, so float rounding cannot
+  // flip the seek onto its neighbour.
+  const atEnd = spec.at === "end";
+  const fps = Number(entry.fps) || 0;
+  const want = atEnd ? 0 : Math.max(0, Number(spec.at) || 0);
+  let at = want;
+  if (!atEnd && fps) {
+    const idx = spec.before ? Math.ceil(want * fps - 1e-6) - 1 : Math.floor(want * fps + 1e-6);
+    at = Math.max(0, (idx - 0.25) / fps);
+  } else if (!atEnd && spec.before) {
+    at = Math.max(0, want - 0.04);   // no fps in the ledger: a frame is at most ~1/25s
+  }
+  const out = path.join(os.tmpdir(), `hk-frame-${crypto.randomBytes(6).toString("hex")}.png`);
+  // Note the missing -frames:v on the tail read: capping it at one frame would keep the
+  // FIRST frame of the last second, which is the opposite of what is wanted.
+  let ok = atEnd
+    ? await run(["-sseof", "-1", "-i", abs, "-update", "1", out], signal, "frame-end")
+    : await run(["-ss", at.toFixed(3), "-i", abs, "-frames:v", "1", out], signal, "frame");
+  // A clip shorter than that tail window, or one the container cannot seek backwards in,
+  // yields nothing — read it from the front and keep overwriting instead.
+  if (!ok && atEnd) ok = await run(["-i", abs, "-update", "1", out], signal, "frame-scan");
+  if (!ok) { fsp.unlink(out).catch(() => {}); throw new Error("could not decode that frame"); }
+
+  try {
+    const buf = await fsp.readFile(out);
+    if (!buf.length) throw new Error("could not decode that frame");
+    const specs = await gallery.probeSpecs(out);
+    const e = gallery.record({
+      kind: "image", mime: "image/png", buffer: buf,
+      meta: {
+        model: "video-frame", modelId: "video-frame",
+        width: specs.width || entry.width, height: specs.height || entry.height,
+        // The still IS a picture of that prompt, so it carries it — that is what makes it
+        // findable next to the clip it came from. The SEED deliberately does not come
+        // along: re-running it would produce a video, not this image.
+        prompt: entry.prompt,
+        conversationId: entry.conversationId,
+        dedup: false,
+        params: { frame: { from: id, at: atEnd ? "end" : Number(at.toFixed(3)) } },
+      },
+    });
+    gallery.makeThumb(e.path).catch(() => {});
+    console.log(`[video-edit] frame ${atEnd ? "end" : `${at.toFixed(2)}s`} of ${id} → ${e.path}`);
+    return { id: e.path, entry: e };
+  } finally {
+    fsp.unlink(out).catch(() => {});
+  }
+}
+
+// POST /api/video-edit/frame — one frame, filed into the gallery. Plain JSON, not the
+// NDJSON stream its big sibling uses: this takes a fraction of a second, so a progress
+// channel would be more machinery than work.
+async function handleGrabFrame(req, res) {
+  let body;
+  try { body = await readBody(req); } catch { sendJson(res, 400, { error: "invalid body" }); return; }
+  if (!(await hasLocalTool("ffmpeg"))) {
+    sendJson(res, 400, { error: "Saving a frame needs ffmpeg on the server. Install with `brew install ffmpeg`." });
+    return;
+  }
+  const ctrl = new AbortController();
+  req.on("close", () => ctrl.abort());
+  try {
+    sendJson(res, 200, await grabFrame(body, ctrl.signal));
+  } catch (e) {
+    sendJson(res, 400, { error: (e && e.message) || "frame grab failed" });
+  }
+}
+
 // POST /api/video-edit — NDJSON stream: {type:"progress",stage,progress}… then
 // {type:"done",result} | {type:"error",error}. The exact shape jobs.js's youtube
 // branch already consumes, so the bg-queue integration is a clone of that branch.
@@ -568,4 +661,4 @@ async function handleVideoEdit(req, res) {
   }
 }
 
-module.exports = { editVideo, handleVideoEdit };
+module.exports = { editVideo, handleVideoEdit, grabFrame, handleGrabFrame };

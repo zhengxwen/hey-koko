@@ -138,6 +138,7 @@ export function initArchive() {
       }
       m.content = msg.content;
       if (msg.folded) m.folded = true;
+      if (msg.dispatched) m.dispatched = true;   // ▶ receipt marker, round-tripped with the fold
       if (msg.displayImages) m.displayImages = msg.displayImages;
       if (msg.contextImages) m.contextImages = msg.contextImages;
       if (msg.imageNames) m.imageNames = msg.imageNames;
