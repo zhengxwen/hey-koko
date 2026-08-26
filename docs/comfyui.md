@@ -68,17 +68,31 @@ Three image-to-3D chains appear in the **3D models** dropdown group once their w
 
 **Sweep panoramas (phone "Panorama" mode).** These are *cylindrical strips*, not equirectangular: wide, vertically only as tall as the lens (~60–70°), with no zenith or nadir. Send them to **MoGe-2**, not MoGe-2 (360°) — the 360° chain maps any image onto the full sphere and would stretch a 65° band to 180°. MoGe fits a pinhole camera, which cannot hold a sweep, so a wide one comes back compressed: measured on a 216°-wide band, the automatic solve settled on a 105° cone. ⚙ *Source field of view* overrides that, but it is a nudge and not a repair — on the same band, 120 opened the cone to 121° and still held together, 150 tore the reconstruction apart, and 170 blew the depth range from 18× to 159×. Leave it empty for ordinary photos.
 
-**Where the files land.** Under ComfyUI's own `output/`, one folder per kind of result, each file named after the model that made it:
+**Where the files land.** Under ComfyUI's own `output/`, one folder per kind of result, each file named after the model that made it. The folders share one leading **tag** — eight hex characters, generated on first run and kept in `~/.hey-koko/comfy.json`:
 
 | | |
 |---|---|
-| `heykoko_img/` | stills — generation, instruction edits, upscale |
-| `heykoko_vid/` | video, every family |
-| `heykoko_3d/` | `.glb` models |
-| `heykoko_pano/` | equirectangular 360° stills |
-| `heykoko_tmp/` | working files that are not results (auto-mask previews) |
+| `<tag>_img/` | stills — generation, instruction edits, upscale |
+| `<tag>_vid/` | video, every family |
+| `<tag>_audio/` | songs |
+| `<tag>_3d/` | `.glb` models |
+| `<tag>_pano/` | equirectangular 360° stills |
+| `<tag>_tmp/` | working files that are not results (auto-mask previews) |
 
-So a Flux render is `heykoko_img/flux1-dev-fp8_00001_.png` and a Qwen edit is `heykoko_img/qwen_image_edit_2509_fp8_00001_.png`, each with its own counter. The prefix is stamped centrally just before the graph is queued rather than written into each builder, which is why it stays consistent as models are added. The app downloads what it needs into the conversation, so these files are only for finding a result again on the render machine.
+So with a tag of `a3f19c2b`, a Flux render is `a3f19c2b_img/flux1-dev-fp8_00001_.png` and a Qwen edit is `a3f19c2b_img/qwen_image_edit_2509_fp8_00001_.png`, each with its own counter. The prefix is stamped centrally just before the graph is queued rather than written into each builder, which is why it stays consistent as models are added. The app downloads what it needs into the conversation, so these files are only for finding a result again on the render machine.
+
+**Why a token and not a name.** A folder called `heykoko_img/` — and uploaded inputs called `heykoko_pose.png` — announce which app queued the job to anyone who lists that directory, and the endpoint picker exists precisely so you can point at a ComfyUI that isn't yours. The token says nothing, stays stable across restarts so you can still find your own output, and won't collide with another user of the same shared box the way a guessable `wf_` would.
+
+Override it in `~/.hey-koko/comfy.json` (both fields optional):
+
+```json
+{
+  "filePrefix": "a3f19c2b",
+  "hosts": { "gpu.example.com:8188": "studio" }
+}
+```
+
+`filePrefix` renames everything; `hosts` matches an exact `host[:port]` and wins for that endpoint — that is where a box you're happy to be identified on goes, or where a shared machine gets a name your collaborators recognise. `COMFY_FILE_PREFIX` overrides the default from the environment. The file is read at startup, so restart the server after editing it. Already-rendered files keep the name they were written with — the tag only decides what the *next* job is called.
 
 **Text → a 360° panorama.** The model entry **360° panorama (text or photo → equirect)** writes an equirectangular image you can then run through MoGe-2 (360°). It is a recipe rather than a checkpoint: it generates at a forced 2:1 with whichever base you pick in ⚙ *Panorama base model*, then *repairs the wrap seam*, which is the one thing an ordinary model gets wrong. Eligible bases are the plain txt2img checkpoints plus the UNET families whose stack this graph knows (z-image, boogu); Auto prefers a panorama-tuned name if you have one, then Flux. The graph follows the family — an SDXL pick gets a plain latent, real CFG and no guidance node; a distilled one gets cfg 1 and a zeroed negative. Measured as the left/right edge mismatch divided by what two genuinely adjacent columns differ by (1.00 = a perfect wrap): z-image 3.82, Flux 1.99, and on one prompt as bad as 39.3 — plausible pictures whose ends simply do not meet. After the repair: 0.92–1.15 across Flux, SDXL and z-image alike, i.e. indistinguishable from any other pair of neighbouring columns, and better than a real stitched photo (3.39). The repair levels the bases out — z-image starts worst and finishes as good as Flux, at two-thirds the time. The repair rolls the image half a turn so the join sits in the middle, regenerates a band across it, composites that back through a feathered mask and rolls back; ⚙ turns it off. The prompt is prefixed with an equirectangular cue unless you already wrote one — without it the model just paints an ordinary photo at 2:1.
 

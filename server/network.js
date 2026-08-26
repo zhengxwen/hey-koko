@@ -55,6 +55,9 @@ function getLocalIPv4s() {
   return out;
 }
 
+// The loopback, under every name it answers to, in the order we would rather show.
+const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]"];
+
 // Probe a single host:port. `path` lets each service hit a cheap endpoint that
 // confirms it's the service we want (Ollama answers on "/", ComfyUI on
 // "/system_stats"). Returns the base URL on success, null otherwise.
@@ -103,8 +106,17 @@ function streamScan(req, res, probe) {
   });
 
   (async () => {
-    // Local machine first.
-    const localhost = await probe("127.0.0.1", abort.signal);
+    // Local machine first — and by NAME as well as by IPv4 literal. A daemon bound only
+    // to the IPv6 loopback (::1) never answers 127.0.0.1, which is exactly the case where
+    // the scan used to report nothing on a machine running the service itself; "localhost"
+    // also picks up whatever a hosts file has been told it means. All three are probed at
+    // once (one 2s timeout, not three in a row) and only the first hit is reported — they
+    // are three names for one service, not three services. The IPv4 literal comes first
+    // because it is the least ambiguous thing to show and to store as the URL.
+    const results = await Promise.all(
+      LOOPBACK_HOSTS.map((host) => probe(host, abort.signal)),
+    );
+    const localhost = results.find(Boolean);
     if (localhost) send({ type: "found", url: localhost });
 
     // Then every /24 the host sits on (skip our own IPs — localhost covers us).

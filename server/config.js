@@ -159,6 +159,40 @@ const config = {
   // launched with --remote-debugging-port. Optional ~/.hey-koko/browser.json
   // { "cdpBase": "http://127.0.0.1:9222" } overrides the default (e.g. Chrome on
   // another machine via SSH tunnel); BROWSER_CDP_URL env wins over both.
+  // What this app's files are CALLED once they land on the ComfyUI box — the folder
+  // its outputs go in (`<tag>_img/`, `<tag>_vid/`, …) and the names its uploaded
+  // inputs take. ONE opaque tag for every endpoint: eight hex characters, generated
+  // on first run and kept in ~/.hey-koko/comfy.json so the names stay stable across
+  // restarts (and don't collide with another user of the same shared box).
+  //
+  // A recognisable "heykoko_" would be nicer to read in your own output dir, but it
+  // is a fingerprint on a ComfyUI you don't own — it announces which app queued the
+  // job to anyone who lists the directory. Rather than decide per endpoint whose
+  // machine it is (a judgement that is silently wrong when it's wrong), everything
+  // gets the token; the folder still clusters and still says what is in it.
+  //
+  // ~/.hey-koko/comfy.json, every field optional:
+  //   { "filePrefix": "a3f19c2b",
+  //     "hosts": { "gpu.example.com:8188": "studio" } }   // exact host[:port] wins
+  // COMFY_FILE_PREFIX overrides the default.
+  COMFY_FILES: (() => {
+    const file = path.join(DATA_DIR, "comfy.json");
+    let j = {};
+    try { j = JSON.parse(fs.readFileSync(file, "utf8")) || {}; } catch { /* optional */ }
+    // A tag becomes a real path segment and a real filename on the far side, so keep
+    // it to characters that can't climb out of a directory or need quoting.
+    const clean = (v) => String(v || "").replace(/[^A-Za-z0-9._-]+/g, "").replace(/^[._-]+/, "").slice(0, 32);
+    let tag = clean(process.env.COMFY_FILE_PREFIX || j.filePrefix);
+    if (!tag) {
+      tag = require("crypto").randomBytes(4).toString("hex");
+      // Persist so the box keeps ONE folder instead of a new one per restart.
+      // Best-effort: an unwritable data dir just means the token lives for this run.
+      try { fs.writeFileSync(file, JSON.stringify({ ...j, filePrefix: tag }, null, 2)); } catch { /* keep in memory */ }
+    }
+    const hosts = {};
+    for (const k in j.hosts || {}) { const v = clean(j.hosts[k]); if (v) hosts[String(k).toLowerCase()] = v; }
+    return { tag, hosts };
+  })(),
   BROWSER_CDP: (() => {
     let file = {};
     try { file = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "browser.json"), "utf8")) || {}; } catch { /* optional */ }

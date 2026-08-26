@@ -56,6 +56,28 @@ function toGallery(kind, arr, mime, meta) {
 // call tree — parallel-safe — and falls back to the configured default when unset.
 const comfyCtx = new AsyncLocalStorage();
 function currentComfyUrl() { return comfyCtx.getStore()?.comfyUrl || config.comfyUrl; }
+// ── What our files are CALLED on the ComfyUI box ─────────────────────────────
+// Every name this app puts on the far side — the output folders and each uploaded
+// input — starts with ONE opaque tag (config.COMFY_FILES), not with this app's
+// name: a folder called `heykoko_img/` tells whoever lists that directory exactly
+// which app queued the job, and half the point of the endpoint picker is pointing
+// at a ComfyUI that isn't yours. `hosts` in comfy.json overrides it per endpoint,
+// which is why this is resolved per REQUEST rather than read once — the same
+// process queues to several boxes, and they don't all get the same tag.
+const tagMemo = new Map();
+function comfyTag() {
+  const url = currentComfyUrl();
+  if (tagMemo.has(url)) return tagMemo.get(url);
+  const cf = config.COMFY_FILES;
+  let tag = cf.tag;
+  try {
+    const u = new URL(url);
+    tag = cf.hosts[u.host.toLowerCase()] || cf.hosts[u.hostname.toLowerCase()] || cf.tag;
+  } catch { /* unparseable → the default tag */ }
+  tagMemo.set(url, tag);
+  return tag;
+}
+
 // Normalize a host[:port] or full URL to a fetchable origin (no trailing slash).
 function normComfyUrl(u) {
   if (!u || typeof u !== "string") return null;
@@ -920,24 +942,27 @@ const BERNINI_T2I = "bernini_text_image";
 // with an ordinary checkpoint and then REPAIRS the wrap seam, which is the one
 // thing a normal model gets wrong (measured: its left and right edges mismatch
 // twice as much as two genuinely adjacent columns do).
-// Where this app's files land inside ComfyUI/output/. Everything carries the
-// `heykoko_` prefix so it clusters together in a directory listing shared with
-// whatever else that machine renders, and each folder says what is in it — one
-// `heykoko/` holding meshes and panoramas side by side told you nothing when you
-// opened it. Flat outputs (images, video) already use the same prefix as a filename.
-const OUT_3D = "heykoko_3d";      // .glb — Hunyuan3D, TripoSplat, MoGe
-const OUT_PANO = "heykoko_pano";  // equirectangular 360° stills
-const OUT_IMG = "heykoko_img";    // stills — generation, instruction edits, upscale
-const OUT_VID = "heykoko_vid";    // video, every family
-const OUT_AUDIO = "heykoko_audio"; // songs — MiniMax Music 3 (audio-only output)
-const OUT_TMP = "heykoko_tmp";    // working files that are not results (auto-mask previews)
+// Where this app's files land inside ComfyUI/output/. Everything shares ONE tag
+// (comfyTag(), endpoint-dependent) so it clusters together in a directory listing
+// shared with whatever else that machine renders, and each folder says what is in
+// it — one `<tag>/` holding meshes and panoramas side by side told you nothing when
+// you opened it. These are the SUFFIXES; outDir() puts the tag in front, and it has
+// to be called per request rather than baked into a constant, because the same
+// server queues to several endpoints and they don't all get the same tag.
+const OUT_3D = "3d";      // .glb — Hunyuan3D, TripoSplat, MoGe
+const OUT_PANO = "pano";  // equirectangular 360° stills
+const OUT_IMG = "img";    // stills — generation, instruction edits, upscale
+const OUT_VID = "vid";    // video, every family
+const OUT_AUDIO = "audio"; // songs — MiniMax Music 3 (audio-only output)
+const OUT_TMP = "tmp";    // working files that are not results (auto-mask previews)
+const outDir = (kind) => `${comfyTag()}_${kind}`;
 
 // Rewrite every save node's filename_prefix to `<folder>/<model>`, just before the
 // graph is queued.
 //
 // Left to the builders this drifted badly: thirteen image builders all wrote a flat
-// `heykoko_*.png`, so a Flux render and a Qwen edit were indistinguishable in a folder
-// of thousands; seven video builders shared `heykoko_vid` while eight others happened
+// flat `<tag>.png`, so a Flux render and a Qwen edit were indistinguishable in a folder
+// of thousands; seven video builders shared one video name while eight others happened
 // to carry their own name, with no rule behind which was which. Stamping here instead
 // means a builder cannot get it wrong, and the name follows the MODEL, which is the
 // thing you are actually looking for when you go digging.
@@ -947,7 +972,10 @@ const OUT_TMP = "heykoko_tmp";    // working files that are not results (auto-ma
 // Hy3D21ExportMesh is skipped: it reports nothing to /history, so the server fetches
 // it back by the exact per-run prefix it passed in, and renaming it would lose it.
 const SAVE_NODES = new Set(["SaveImage", "SaveVideo", "SaveGLB", "SaveAudio", "VHS_VideoCombine"]);
-function stampOutputPrefix(wf, folder, model) {
+function stampOutputPrefix(wf, kind, model) {
+  // The tag is resolved HERE, at queue time, from the endpoint this graph is about
+  // to be sent to — the builders ran before that was decided.
+  const folder = outDir(kind);
   // ComfyUI builds a real path out of this, so anything that could climb out of
   // output/ or confuse the counter suffix has to go.
   const stem = String(model || "out")
@@ -2433,7 +2461,7 @@ function commonNodes({ model, prompt, negative, guidance }) {
     "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: ["4", 1] } },
     "7": { class_type: "CLIPTextEncode", inputs: { text: negative, clip: ["4", 1] } },
     "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] } },
-    "9": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["8", 0] } },
+    "9": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["8", 0] } },
   };
   if (guidance != null) {
     nodes["12"] = { class_type: "FluxGuidance", inputs: { conditioning: ["6", 0], guidance } };
@@ -2495,7 +2523,7 @@ function buildHiDreamImage({ model, prompt, negative, width, height, seed, cfg, 
     "7": { class_type: "ModelSamplingSD3", inputs: { model: ["1", 0], shift: 3.0 } },
     "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
-    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } },
   };
 }
 
@@ -2582,7 +2610,7 @@ function buildQwenImage({ model, prompt, negative, width, height, seed, comp, cf
     "5": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: negative || "" } },
     "6": { class_type: "EmptySD3LatentImage", inputs: { width, height, batch_size: 1 } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
-    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } },
   };
   if (turbo) wf["11"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.lora, strength_model: 1 } };
   wf["7"] = { class_type: "ModelSamplingAuraFlow", inputs: { model: [turbo ? "11" : "1", 0], shift: 3.1 } };
@@ -2624,7 +2652,7 @@ function buildZImage({ model, prompt, width, height, seed, cfg, comp }) {
     "7": { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 3.0 } },
     "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
-    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } },
   };
 }
 
@@ -2709,7 +2737,7 @@ function buildKrea2({ model, prompt, width, height, seed, cfg, comp, lora, loraS
     "5": { class_type: "ConditioningZeroOut", inputs: { conditioning: ["4", 0] } },
     "6": { class_type: "EmptyLatentImage", inputs: { width, height, batch_size: 1 } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
-    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } },
   };
   if (lora) wf["11"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: lora, strength_model: loraStrength != null ? loraStrength : 1 } };
   wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: [lora ? "11" : "1", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } };
@@ -2752,7 +2780,7 @@ function buildKrea2StyleRef({ model, prompt, imageNames, width, height, seed, cf
     // Slot 0 is `output`; slot 1 is `denoised_output`. The template decodes slot 0.
     "58": { class_type: "SamplerCustomAdvanced", inputs: { noise: ["63", 0], guider: ["57", 0], sampler: ["59", 0], sigmas: ["60", 0], latent_image: ["61", 0] } },
     "62": { class_type: "VAEDecode", inputs: { samples: ["58", 0], vae: ["3", 0] } },
-    "65": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["62", 0] } },
+    "65": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["62", 0] } },
   };
   (imageNames || []).slice(0, 3).forEach((nm, i) => {
     wf[String(40 + i)] = { class_type: "LoadImage", inputs: { image: nm } };
@@ -2792,7 +2820,7 @@ function buildBoogu({ model, prompt, negative, width, height, seed, cfg, comp, t
     "4": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: prompt } },
     "7": { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 3.0 } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
-    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } },
   };
   // Negative: distilled turbo (cfg≈1) zeroes it; base encodes a real one.
   wf["5"] = turbo
@@ -2838,7 +2866,7 @@ function buildHiDreamEdit({ model, prompt, negative, imageName, maskName, seed, 
     "7": { class_type: "ModelSamplingSD3", inputs: { model: ["1", 0], shift: 3.0 } },
     "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: denoise != null ? denoise : 0.85, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["15", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
-    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } },
   };
   if (width && height) wf["16"] = scaleNode(["14", 0], width, height);
   // Masked edit: confine the instruction to the painted region (gate the latent).
@@ -2875,7 +2903,7 @@ function buildHiDreamO1({ model, prompt, negative, imageNames, width, height, se
     "156": { class_type: "EmptyHiDreamO1LatentImage", inputs: { width: W, height: H, batch_size: 1 } },
     "108": { class_type: "SamplerCustom", inputs: { add_noise: true, noise_seed: seed, cfg: cfg.cfg, model: ["232", 0], positive: ["110", 0], negative: ["188", 0], sampler: ["230", 0], sigmas: ["112", 0], latent_image: ["156", 0] } },
     "105": { class_type: "VAEDecode", inputs: { samples: ["108", 0], vae: ["6", 2] } },
-    "227": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["105", 0] } },
+    "227": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["105", 0] } },
   };
   if (isEdit) {
     // Reference images feed the conditioning. This COMFY_AUTOGROW_V3 input uses
@@ -2966,7 +2994,7 @@ function buildKontext({ model, prompt, imageName, maskName, seed, cfg, comp, wid
     "10": { class_type: "ConditioningZeroOut", inputs: { conditioning: ["7", 0] } },
     "11": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["1", 0], positive: ["9", 0], negative: ["10", 0], latent_image: ["6", 0] } },
     "12": { class_type: "VAEDecode", inputs: { samples: ["11", 0], vae: ["3", 0] } },
-    "13": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["12", 0] } },
+    "13": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["12", 0] } },
   };
   // Masked Kontext: confine the instruction edit to the painted region. The mask
   // gates the latent that the sampler denoises (SetLatentNoiseMask), so the
@@ -3023,7 +3051,7 @@ function buildQwenEdit({ model, prompt, negative, imageName, maskName, seed, cfg
     "7": { class_type: "VAEEncode", inputs: { pixels: ["4", 0], vae: ["3", 0] } },
     "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: null, positive: ["5", 0], negative: ["6", 0], latent_image: ["7", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
-    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } },
   };
   wf["8"].inputs.model = qwenEditModelChain(wf, model, comp);
   // Masked Qwen-Image-Edit: gate the latent so the instruction only repaints the
@@ -3194,7 +3222,7 @@ function buildQwen2511Edit({ model, prompt, negative, imageNames, maskName, seed
   }
   wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: mref, positive: ["6", 0], negative: ["7", 0], latent_image: ["16", 0] } };
   wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } };
-  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } };
   // Same masked-edit treatment as 2509: repaint inside the brush only, and put the
   // original back outside it so the untouched part is not a VAE round-trip.
   if (maskName) {
@@ -3269,7 +3297,7 @@ function buildQwenControlNet({ model, prompt, negative, imageName, seed, cfg, co
   const mref = qwenControlModel(wf, model, comp, null);
   wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: mref, positive: ["15", 0], negative: ["15", 1], latent_image: ["17", 0] } };
   wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } };
-  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } };
   return wf;
 }
 
@@ -3287,7 +3315,7 @@ function buildQwenControlPatch({ model, prompt, negative, imageName, seed, cfg, 
   wf["17"] = { class_type: "VAEEncode", inputs: { pixels: src.scaled, vae: ["3", 0] } };
   wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: ["15", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["17", 0] } };
   wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } };
-  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } };
   return wf;
 }
 
@@ -3304,7 +3332,7 @@ function buildQwenControlLora({ model, prompt, negative, imageName, seed, cfg, c
   const mref = qwenControlModel(wf, model, comp, comp.unionLora);
   wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: mref, positive: ["6", 0], negative: ["7", 0], latent_image: ["17", 0] } };
   wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } };
-  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } };
   return wf;
 }
 
@@ -3331,7 +3359,7 @@ function buildQwenInpaint({ model, prompt, negative, imageName, maskName, seed, 
   wf["8"] = { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: mref, positive: ["15", 0], negative: ["15", 1], latent_image: ["18", 0] } };
   wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } };
   wf["22"] = { class_type: "ImageCompositeMasked", inputs: { destination: ["12", 0], source: ["9", 0], x: 0, y: 0, resize_source: false, mask: ["21", 0] } };
-  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["22", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["22", 0] } };
   return wf;
 }
 
@@ -3377,7 +3405,7 @@ function buildQwenLayered({ model, prompt, negative, imageName, seed, cfg, comp,
   wf["16"] = { class_type: "LatentCut", inputs: { samples: ["8", 0], dim: "t", index: 1, amount: 16384 } };
   wf["17"] = { class_type: "LatentCutToBatch", inputs: { samples: ["16", 0], dim: "t", slice_size: 1 } };
   wf["9"] = { class_type: "VAEDecode", inputs: { samples: ["17", 0], vae: ["3", 0] } };
-  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } };
+  wf["10"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } };
   return wf;
 }
 
@@ -3409,7 +3437,7 @@ function buildQwenEditPlus({ model, prompt, negative, imageNames, maskName, seed
     "6": { class_type: "EmptySD3LatentImage", inputs: { width: outW, height: outH, batch_size: 1 } },
     "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: 1, model: null, positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
-    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } },
   };
   wf["8"].inputs.model = qwenEditModelChain(wf, model, comp);
   // Background lock (person-swap): keep the ORIGINAL scene (first reference, node
@@ -3447,7 +3475,7 @@ function buildOmniGen2Edit({ model, prompt, negative, imageName, maskName, seed,
     "5": { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: negative || "" } },
     "8": { class_type: "KSampler", inputs: { seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler, denoise: denoise != null ? denoise : 0.8, model: ["1", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["15", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
-    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } },
   };
   if (width && height) wf["16"] = scaleNode(["14", 0], width, height);
   // Masked edit: confine the instruction to the painted region (gate the latent).
@@ -3480,7 +3508,7 @@ function buildInstructPix2Pix({ model, prompt, negative, imageName, maskName, se
     "9": { class_type: "BasicScheduler", inputs: { model: ["1", 0], scheduler: cfg.scheduler, steps: cfg.steps, denoise: 1 } },
     "10": { class_type: "SamplerCustomAdvanced", inputs: { noise: ["7", 0], guider: ["6", 0], sampler: ["8", 0], sigmas: ["9", 0], latent_image: ["5", 2] } },
     "11": { class_type: "VAEDecode", inputs: { samples: ["10", 0], vae: ["1", 2] } },
-    "12": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["11", 0] } },
+    "12": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["11", 0] } },
   };
   if (width && height) wf["13"] = scaleNode(["4", 0], width, height);
   // Masked edit: gate the ip2p latent (from InstructPixToPixConditioning, ["5",2])
@@ -3514,7 +3542,7 @@ function buildBooguEdit({ model, prompt, negative, imageName, imageNames, maskNa
     "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
     "7": { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 3.0 } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
-    "10": { class_type: "SaveImage", inputs: { filename_prefix: "heykoko", images: ["9", 0] } },
+    "10": { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["9", 0] } },
   };
   const encInputs = { prompt, negative_prompt: negative || "", clip: ["2", 0], vae: ["3", 0] };
   refs.slice(0, 12).forEach((name, i) => {
@@ -4056,7 +4084,7 @@ function applyVideoCodec(wf, codec, crf) {
   }
   if (!createId) return false;
   const cv = wf[createId].inputs;
-  const prefix = (saveId && wf[saveId].inputs.filename_prefix) || "heykoko_vid";
+  const prefix = (saveId && wf[saveId].inputs.filename_prefix) || `${comfyTag()}_vid`;
   const inputs = {
     images: cv.images,
     frame_rate: cv.fps,
@@ -4287,7 +4315,7 @@ function buildVideoEnhance({ videoName, upscaleModel, outW, outH, denoise, resto
     const cv = { images: ref, fps: fpsRef };
     if (!chunk) cv.audio = ["6", 1];
     wf[`${p}v`] = { class_type: "CreateVideo", inputs: cv };
-    wf[enhanceSaveNodeId(k)] = { class_type: "SaveVideo", inputs: { video: [`${p}v`, 0], filename_prefix: "heykoko_enhance", format: "auto", codec: "auto" } };
+    wf[enhanceSaveNodeId(k)] = { class_type: "SaveVideo", inputs: { video: [`${p}v`, 0], filename_prefix: `${comfyTag()}_enhance`, format: "auto", codec: "auto" } };
   };
 
   if (!chunk) tail(0, 0, 0);
@@ -4343,7 +4371,7 @@ function buildImageUpscale({ imageName, upscaleModel, outW, outH, denoise, resto
     ref = ["3", 0];
   }
   if (outW > 0 && outH > 0) { wf["4"] = scaleNode(ref, outW, outH); ref = ["4", 0]; }
-  wf["9"] = { class_type: "SaveImage", inputs: { images: ref, filename_prefix: "heykoko_upscale" } };
+  wf["9"] = { class_type: "SaveImage", inputs: { images: ref, filename_prefix: `${comfyTag()}_upscale` } };
   return wf;
 }
 
@@ -4412,7 +4440,7 @@ function buildWan14B({ model, prompt, negative, comp, imageName, endImageName, s
   wf["9"] = { class_type: "KSamplerAdvanced", inputs: { model: ["12", 0], add_noise: "disable", noise_seed: seed, steps: v.steps, cfg: v.cfg, sampler_name: v.sampler, scheduler: v.scheduler, positive: posRef, negative: negRef, latent_image: ["8", 0], start_at_step: boundary, end_at_step: v.steps, return_with_leftover_noise: "disable" } };
   wf["10"] = { class_type: "VAEDecode", inputs: { samples: ["9", 0], vae: ["4", 0] } };
   wf["14"] = { class_type: "CreateVideo", inputs: { images: ["10", 0], fps: v.fps } };
-  wf["15"] = { class_type: "SaveVideo", inputs: { video: ["14", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  wf["15"] = { class_type: "SaveVideo", inputs: { video: ["14", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } };
   return wf;
 }
 
@@ -4437,7 +4465,7 @@ function buildWanVideo(args) {
     "8": { class_type: "KSampler", inputs: { seed, steps: v.steps, cfg: v.cfg, sampler_name: v.sampler, scheduler: v.scheduler, denoise: 1, model: ["2", 0], positive: ["5", 0], negative: ["6", 0], latent_image: ["7", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["4", 0] } },
     "10": { class_type: "CreateVideo", inputs: { images: ["9", 0], fps: v.fps } },
-    "11": { class_type: "SaveVideo", inputs: { video: ["10", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } },
+    "11": { class_type: "SaveVideo", inputs: { video: ["10", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } },
   };
   if (imageName) wf["12"] = { class_type: "LoadImage", inputs: { image: imageName } };
   return wf;
@@ -4458,7 +4486,7 @@ function buildHunyuanVideo({ model, prompt, negative, comp, seed, v }) {
     "8": { class_type: "KSampler", inputs: { seed, steps: v.steps, cfg: v.cfg, sampler_name: v.sampler, scheduler: v.scheduler, denoise: 1, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } },
     "9": { class_type: "VAEDecode", inputs: { samples: ["8", 0], vae: ["3", 0] } },
     "10": { class_type: "CreateVideo", inputs: { images: ["9", 0], fps: v.fps } },
-    "11": { class_type: "SaveVideo", inputs: { video: ["10", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } },
+    "11": { class_type: "SaveVideo", inputs: { video: ["10", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } },
   };
 }
 
@@ -4560,7 +4588,7 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     "vdec":  { class_type: "VAEDecode", inputs: { samples: ["ks", 0], vae: ["vae", 0] } },
     "adec":  { class_type: "VAEDecodeAudio", inputs: { samples: ["ks", 0], vae: ["avae", 0] } },
     "cv":    { class_type: "CreateVideo", inputs: { images: ["vdec", 0], audio: ["adec", 0], fps: v.fps } },
-    "save":  { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } },
+    "save":  { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } },
   };
   const h3 = { clip: ["clip", 0], vae: ["vae", 0], prompt: prompt || "",
     width: v.width, height: v.height, length: v.length };
@@ -4725,8 +4753,8 @@ function buildMiniMaxMusic3({ model, caption, lyrics, seconds, seed, cfgScale, t
       : { class_type: "VAEDecodeAudio", inputs: { samples: ["7", 0], vae: ["3", 0] } },
   };
   wf["9"] = format === "mp3"
-    ? { class_type: "SaveAudioMP3", inputs: { audio: ["8", 0], filename_prefix: OUT_AUDIO, quality: "V0" } }
-    : { class_type: "SaveAudio", inputs: { audio: ["8", 0], filename_prefix: OUT_AUDIO } };
+    ? { class_type: "SaveAudioMP3", inputs: { audio: ["8", 0], filename_prefix: outDir(OUT_AUDIO), quality: "V0" } }
+    : { class_type: "SaveAudio", inputs: { audio: ["8", 0], filename_prefix: outDir(OUT_AUDIO) } };
   return wf;
 }
 
@@ -4794,7 +4822,7 @@ function buildLtxMsr({ prompt, negative, comp, imageNames, backgroundName, seed,
     "38": { class_type: "VAEDecode", inputs: { samples: ["17", 2], vae: ["3", 2] } },
     "174":{ class_type: "LTXVAudioVAEDecode", inputs: { samples: ["24", 1], audio_vae: ["21", 0] } },
     "172":{ class_type: "CreateVideo", inputs: { images: ["38", 0], fps: v.fps, audio: ["174", 0] } },
-    "173":{ class_type: "SaveVideo", inputs: { video: ["172", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } },
+    "173":{ class_type: "SaveVideo", inputs: { video: ["172", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } },
   };
   subjects.forEach((nm, i) => {
     const id = String(200 + i);
@@ -4855,7 +4883,7 @@ function buildLtxUnionControl({ prompt, negative, comp, imageName, videoName, du
     "vdec":   { class_type: "VAEDecodeTiled", inputs: { samples: ["crop", 2], vae: ["ck", 2], tile_size: 768, overlap: 64, temporal_size: 4096, temporal_overlap: 64 } },
     "adec":   { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep", 1], audio_vae: ["avae", 0] } },
     "cv":     { class_type: "CreateVideo", inputs: { images: ["vdec", 0], audio: ["adec", 0], fps: v.fps } },
-    "save":   { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } },
+    "save":   { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } },
   };
 }
 
@@ -5009,7 +5037,7 @@ function buildLtxCascade({ model, prompt, negative, comp, imageName, imageNames,
     : { class_type: "VAEDecode", inputs: { samples: ["93", 0], vae: ["1", 2] } };
   wf["24"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["93", 1], audio_vae: ["20", 0] } };
   wf["12"] = { class_type: "CreateVideo", inputs: { images: ["11", 0], fps: v.fps, audio: ["24", 0] } };
-  wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } };
   return wf;
 }
 
@@ -5075,7 +5103,7 @@ function buildLtxSingleStage({ model, prompt, negative, comp, imageName, imageNa
   wf["11"] = { class_type: "VAEDecode", inputs: { samples: decodeLatentRef, vae: ["1", 2] } };
   wf["24"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["23", 1], audio_vae: ["20", 0] } };
   wf["12"] = { class_type: "CreateVideo", inputs: { images: ["11", 0], fps: v.fps, audio: ["24", 0] } };
-  wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } };
   return wf;
 }
 
@@ -5193,7 +5221,7 @@ function buildLtx25({ model, prompt, negative, comp, imageName, imageNames, seed
   wf["11"] = { class_type: "VAEDecodeTiled", inputs: { samples: decodeLatent, vae: ["19", 0], tile_size: 512, overlap: 64, temporal_size: 64, temporal_overlap: 16 } };
   wf["24"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: audioLatent, audio_vae: ["20", 0] } };
   wf["12"] = { class_type: "CreateVideo", inputs: { images: ["11", 0], fps: v.fps, audio: ["24", 0] } };
-  wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } };
   return wf;
 }
 
@@ -5264,7 +5292,7 @@ function buildLtx25Union({ prompt, negative, comp, imageName, videoName, duratio
   wf["dec"] = { class_type: "VAEDecodeTiled", inputs: { samples: decodeLatent, vae: ["vv", 0], tile_size: 512, overlap: 64, temporal_size: 128, temporal_overlap: 32 } };
   wf["adec"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep2", 1], audio_vae: ["av", 0] } };
   wf["cv"] = { class_type: "CreateVideo", inputs: { images: ["dec", 0], fps: v.fps, audio: ["adec", 0] } };
-  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } };
   return wf;
 }
 
@@ -5319,7 +5347,7 @@ function buildLtx25Ingredients({ prompt, negative, comp, imageNames, seed, v }) 
   wf["dec"] = { class_type: "VAEDecodeTiled", inputs: { samples: decodeLatent, vae: ["vv", 0], tile_size: 512, overlap: 64, temporal_size: 128, temporal_overlap: 32 } };
   wf["adec"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep", 1], audio_vae: ["av", 0] } };
   wf["cv"] = { class_type: "CreateVideo", inputs: { images: ["dec", 0], fps: v.fps, audio: ["adec", 0] } };
-  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } };
   return wf;
 }
 
@@ -5384,7 +5412,7 @@ function buildLtx25V2V({ prompt, negative, comp, imageName, videoName, durationS
   wf["dec"] = { class_type: "VAEDecodeTiled", inputs: { samples: decodeLatent, vae: ["vv", 0], tile_size: 512, overlap: 64, temporal_size: 128, temporal_overlap: 32 } };
   wf["adec"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep", 1], audio_vae: ["av", 0] } };
   wf["cv"] = { class_type: "CreateVideo", inputs: { images: ["dec", 0], fps: v.fps, audio: ["adec", 0] } };
-  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } };
   return wf;
 }
 
@@ -5505,7 +5533,7 @@ function buildLtx25Masked({ kind, prompt, negative, comp, imageName, videoName, 
   wf["blend2"] = { class_type: "LTXVLaplacianPyramidBlend", inputs: { image_a: ["dec2", 0], image_b: ["mp2", 0], mask: mask2, trim_to_shortest: true, mask_low_res_dilation: 6 } };
   wf["adec"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep2", 1], audio_vae: ["av", 0] } };
   wf["cv"] = { class_type: "CreateVideo", inputs: { images: ["blend2", 0], fps: v.fps, audio: ["adec", 0] } };
-  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } };
   return wf;
 }
 
@@ -5587,7 +5615,7 @@ function buildLtx25MotionTrack({ prompt, negative, comp, imageName, tracksJson, 
   wf["dec"] = { class_type: "VAEDecodeTiled", inputs: { samples: decodeLatent, vae: ["vv", 0], tile_size: 512, overlap: 64, temporal_size: 128, temporal_overlap: 32 } };
   wf["adec"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep", 1], audio_vae: ["av", 0] } };
   wf["cv"] = { class_type: "CreateVideo", inputs: { images: ["dec", 0], fps: v.fps, audio: ["adec", 0] } };
-  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } };
+  wf["save"] = { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } };
   return wf;
 }
 
@@ -5637,7 +5665,7 @@ function buildLtxFoley({ prompt, negative, comp, videoName, durationSec, nFrames
     "sep": { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["s1", 0] } },
     "adec": { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["sep", 1], audio_vae: ["avae", 0] } },
     "cv": { class_type: "CreateVideo", inputs: { images: ["trim", 0], fps: v.fps, audio: ["adec", 0] } },
-    "save": { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: "heykoko_vid", format: "mp4", codec: "h264" } },
+    "save": { class_type: "SaveVideo", inputs: { video: ["cv", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } },
   };
 }
 
@@ -5746,7 +5774,7 @@ function buildPhantom({ model, prompt, negative, comp, imageNames, seed, v, imgC
     ...(comp.lora ? { "60": { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.lora, strength_model: 1.0 } } } : {}),
     "13": { class_type: "VAEDecode", inputs: { samples: ["12", 0], vae: ["4", 0] } },
     "14": { class_type: "CreateVideo", inputs: { images: ["13", 0], fps: v.fps } },
-    "15": { class_type: "SaveVideo", inputs: { video: ["14", 0], filename_prefix: "heykoko_phantom", format: "mp4", codec: "h264" } },
+    "15": { class_type: "SaveVideo", inputs: { video: ["14", 0], filename_prefix: `${comfyTag()}_phantom`, format: "mp4", codec: "h264" } },
   };
   // Reference subjects → a single IMAGE batch. The node resizes the whole batch to
   // width×height itself, then vae.encodes each frame; ImageBatch takes two at a time,
@@ -5905,9 +5933,9 @@ function buildBernini({ model, prompt, negative, comp, videoName, refImageName, 
       wf["5"] = { class_type: "LoadImage", inputs: { image: sourceImageName } };
       wf["9"].inputs.source_video = ["5", 0];
     }
-    wf["19"] = { class_type: "SaveImage", inputs: { images: ["17", 0], filename_prefix: "heykoko" } };
+    wf["19"] = { class_type: "SaveImage", inputs: { images: ["17", 0], filename_prefix: comfyTag() } };
   } else {
-    wf["19"] = { class_type: "SaveVideo", inputs: { video: ["18", 0], filename_prefix: "heykoko_bernini", format: "auto", codec: "auto" } };
+    wf["19"] = { class_type: "SaveVideo", inputs: { video: ["18", 0], filename_prefix: `${comfyTag()}_bernini`, format: "auto", codec: "auto" } };
     // Source clip (v2v/rv2v): LoadVideo → GetVideoComponents feeds source_video and
     // the output's audio + fps. i2v has no source — CreateVideo gets an explicit fps.
     if (!i2v) {
@@ -6041,7 +6069,7 @@ function buildInfiniteTalk({ prompt, negative, comp, videoName, imageName, audio
     // Trim the last window's padding to the REAL audio frame count, mux the audio.
     "26": { class_type: "GetImageRangeFromBatch", inputs: { images: ["20", 0], start_index: 0, num_frames: ["17", 2] } },
     "21": { class_type: "CreateVideo", inputs: { images: ["26", 0], fps, audio: ["17", 1] } },
-    "22": { class_type: "SaveVideo", inputs: { video: ["21", 0], filename_prefix: "heykoko_infinitetalk", format: "auto", codec: "auto" } },
+    "22": { class_type: "SaveVideo", inputs: { video: ["21", 0], filename_prefix: `${comfyTag()}_infinitetalk`, format: "auto", codec: "auto" } },
   };
 }
 
@@ -6116,7 +6144,7 @@ function buildWanDancer({ prompt, negative, comp, imageName, audioName, width, h
     // Merge the segment list back into one batch, mux the trimmed music, 30 fps.
     "38": { class_type: "RebatchImages", inputs: { images: ["37", 0], batch_size: 4096 } },
     "39": { class_type: "CreateVideo", inputs: { images: ["38", 0], fps: 30, audio: ["13", 0] } },
-    "40": { class_type: "SaveVideo", inputs: { video: ["39", 0], filename_prefix: "heykoko_dancer", format: "auto", codec: "auto" } },
+    "40": { class_type: "SaveVideo", inputs: { video: ["39", 0], filename_prefix: `${comfyTag()}_dancer`, format: "auto", codec: "auto" } },
   };
   if (turbo) wf["2"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.lora, strength_model: 3 } };
   return wf;
@@ -6473,7 +6501,7 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
       // soundtrack is laid over the concatenated result by the app (see the header).
       const CV = String(b + 12), SV = String(b + 13);
       wf[CV] = { class_type: "CreateVideo", inputs: { images: out, fps: fpsRef } };
-      wf[SV] = { class_type: "SaveVideo", inputs: { video: [CV, 0], filename_prefix: "heykoko_scail2", format: "auto", codec: "auto" } };
+      wf[SV] = { class_type: "SaveVideo", inputs: { video: [CV, 0], filename_prefix: `${comfyTag()}_scail2`, format: "auto", codec: "auto" } };
     } else if (k === 0) acc = out;
     else { const B = String(b + 11); wf[B] = { class_type: "ImageBatch", inputs: { image1: acc, image2: out } }; acc = [B, 0]; }
     prevOut = out;
@@ -6483,7 +6511,7 @@ function buildScail2({ model, prompt, negative, comp, videoName, refImageName, r
   // fine for a clip of a few windows; it is the accumulation that cannot scale.
   if (!incrementalSave) {
     wf["90"] = { class_type: "CreateVideo", inputs: { images: acc, audio: ["15", 1], fps: ["15", 2] } };
-    wf["91"] = { class_type: "SaveVideo", inputs: { video: ["90", 0], filename_prefix: "heykoko_scail2", format: "auto", codec: "auto" } };
+    wf["91"] = { class_type: "SaveVideo", inputs: { video: ["90", 0], filename_prefix: `${comfyTag()}_scail2`, format: "auto", codec: "auto" } };
   }
   return wf;
 }
@@ -6604,7 +6632,7 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
       // DWPose; Replace adds 33/34), which no per-chunk save can touch — see the header.
       const CV = String(b + 6), SV = String(b + 7);
       wf[CV] = { class_type: "CreateVideo", inputs: { images: [F, 0], fps: ["15", 2] } };
-      wf[SV] = { class_type: "SaveVideo", inputs: { video: [CV, 0], filename_prefix: "heykoko_animate", format: "auto", codec: "auto" } };
+      wf[SV] = { class_type: "SaveVideo", inputs: { video: [CV, 0], filename_prefix: `${comfyTag()}_animate`, format: "auto", codec: "auto" } };
     } else if (k === 0) accFrames = [F, 0];
     else { const B = String(b + 5); wf[B] = { class_type: "ImageBatch", inputs: { image1: accFrames, image2: [F, 0] } }; accFrames = [B, 0]; }
     prevAnim = A; prevFrames = F;
@@ -6614,7 +6642,7 @@ function buildWanAnimate({ model, prompt, negative, comp, videoName, refImageNam
   // is what cannot scale.
   if (!incrementalSave) {
     wf["90"] = { class_type: "CreateVideo", inputs: { images: accFrames, audio: ["15", 1], fps: ["15", 2] } };
-    wf["91"] = { class_type: "SaveVideo", inputs: { video: ["90", 0], filename_prefix: "heykoko_animate", format: "auto", codec: "auto" } };
+    wf["91"] = { class_type: "SaveVideo", inputs: { video: ["90", 0], filename_prefix: `${comfyTag()}_animate`, format: "auto", codec: "auto" } };
   }
   return wf;
 }
@@ -6669,7 +6697,7 @@ function buildWanAnimateStill({ model, prompt, negative, comp, poseImageName, re
     "21": { class_type: "VAEDecode", inputs: { samples: ["20", 0], vae: ["6", 0] } },
     // Take the LAST frame — by then the character has fully adopted the target pose.
     "22": { class_type: "ImageFromBatch", inputs: { image: ["21", 0], batch_index: STILL_FRAMES - 1, length: 1 } },
-    "23": { class_type: "SaveImage", inputs: { images: ["22", 0], filename_prefix: "heykoko_animate_still" } },
+    "23": { class_type: "SaveImage", inputs: { images: ["22", 0], filename_prefix: `${comfyTag()}_animate_still` } },
   };
   if (torchCompile) wf["25"] = { class_type: "TorchCompileModel", inputs: { model: ["3", 0], backend: "inductor" } };
   // REPLACE still: image[0] is a SCENE (a person to swap out + a background to keep),
@@ -6757,7 +6785,7 @@ function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = 
     // so the paint model isn't asked to match colours from a different crop.
     paintTail["24"] = { class_type: "Hy3DMultiViewsGenerator", inputs: { trimesh: ["22", 0], camera_config: ["23", 0], view_size: paintViews, image: condImage, steps: paintSteps, guidance_scale: 3, texture_size: textureSize, unwrap_mesh: false, seed } };
     paintTail["25"] = { class_type: "Hy3DBakeMultiViews", inputs: { pipeline: ["24", 0], camera_config: ["23", 0], albedo: ["24", 1], mr: ["24", 2] } };
-    paintTail["26"] = { class_type: "Hy3DInPaint", inputs: { pipeline: ["25", 0], albedo: ["25", 1], albedo_mask: ["25", 2], mr: ["25", 3], mr_mask: ["25", 4], output_mesh_name: "heykoko_paint" } };
+    paintTail["26"] = { class_type: "Hy3DInPaint", inputs: { pipeline: ["25", 0], albedo: ["25", 1], albedo_mask: ["25", 2], mr: ["25", 3], mr_mask: ["25", 4], output_mesh_name: `${comfyTag()}_paint` } };
     paintTail["27"] = { class_type: "Hy3D21ExportMesh", inputs: { trimesh: ["26", 2], filename_prefix: paintPrefix, file_format: "glb", save_file: true } };
   }
   return {
@@ -6772,7 +6800,7 @@ function buildHunyuan3D({ ckpt, imageName, seed, steps = 30, cfg = 5, sampler = 
     "7": { class_type: "KSampler", inputs: { model: ["6", 0], positive: ["4", 0], negative: ["4", 1], latent_image: ["5", 0], seed, steps, cfg, sampler_name: sampler, scheduler, denoise: 1 } },
     "8": { class_type: "VAEDecodeHunyuan3D", inputs: { samples: ["7", 0], vae: ["1", 2], num_chunks: numChunks, octree_resolution: octreeRes } },
     "9": { class_type: "VoxelToMesh", inputs: { voxel: ["8", 0], algorithm: "surface net", threshold } },
-    ...(paint ? {} : { "10": { class_type: "SaveGLB", inputs: { mesh: ["9", 0], filename_prefix: `${OUT_3D}/mesh` } } }),
+    ...(paint ? {} : { "10": { class_type: "SaveGLB", inputs: { mesh: ["9", 0], filename_prefix: `${outDir(OUT_3D)}/mesh` } } }),
   };
 }
 
@@ -6798,7 +6826,7 @@ function buildMoGeMesh({ modelName, imageName, resolutionLevel = 9, decimation =
     "1": { class_type: "LoadImage", inputs: { image: imageName } },
     "3": { class_type: "LoadMoGeModel", inputs: { model_name: modelName } },
     "5": { class_type: "MoGePointMapToMesh", inputs: { moge_geometry: ["4", 0], batch_index: 0, decimation, discontinuity_threshold: 0.04, texture } },
-    "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: `${OUT_3D}/mesh` } },
+    "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: `${outDir(OUT_3D)}/mesh` } },
   };
   if (needsResize) g["2"] = { class_type: "ResizeImagesByLongerEdge", inputs: { images: ["1", 0], longer_edge: 2048 } };
   // Everything downstream reads whatever the resize guard left as "the image".
@@ -6948,7 +6976,7 @@ function buildPanorama360({ ckpt, unet, unetClip, unetClipType, unetVae, shift =
   // bandFrac 0 means the picture already goes most of the way round, so there is no
   // room to repair without repainting the photo — see seamBandFraction.
   if (!seamRepair || bandFrac <= 0) {
-    g["99"] = { class_type: "SaveImage", inputs: { images: generated, filename_prefix: `${OUT_PANO}/pano` } };
+    g["99"] = { class_type: "SaveImage", inputs: { images: generated, filename_prefix: `${outDir(OUT_PANO)}/pano` } };
     return g;
   }
   const band = Math.max(64, Math.round(width * bandFrac) & ~7);
@@ -6966,7 +6994,7 @@ function buildPanorama360({ ckpt, unet, unetClip, unetClipType, unetVae, shift =
   g["26"] = { class_type: "VAEDecode", inputs: { samples: ["25", 0], vae: VAE } };
   g["27"] = { class_type: "ImageCompositeMasked", inputs: { destination: rolled, source: ["26", 0],
     x: 0, y: 0, resize_source: false, mask: ["23", 0] } };
-  g["99"] = { class_type: "SaveImage", inputs: { images: roll(30, ["27", 0]), filename_prefix: `${OUT_PANO}/pano` } };
+  g["99"] = { class_type: "SaveImage", inputs: { images: roll(30, ["27", 0]), filename_prefix: `${outDir(OUT_PANO)}/pano` } };
   return g;
 }
 
@@ -7006,7 +7034,7 @@ function buildMoGePanorama({ modelName, imageName, resolutionLevel = 9, splitRes
     // usefully separates the subject from the background; inside a panorama the same
     // culling punches holes in the walls and you see white voids through the world.
     "5": { class_type: "MoGePointMapToMesh", inputs: { moge_geometry: ["4", 0], batch_index: 0, decimation, discontinuity_threshold: gapThreshold, texture } },
-    "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: `${OUT_3D}/mesh` } },
+    "6": { class_type: "SaveGLB", inputs: { mesh: ["5", 0], filename_prefix: `${outDir(OUT_3D)}/mesh` } },
   };
   if (needsResize) g["2"] = { class_type: "ResizeImagesByLongerEdge", inputs: { images: ["1", 0], longer_edge: 2048 } };
   if (refineTarget && refineModel) {
@@ -7058,7 +7086,7 @@ function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler =
     // 12–14 were the turntable render; the ids stay free rather than renumbering a
     // graph whose wiring is otherwise a link-for-link port of the template.
     "15": { class_type: "SplatToMesh", inputs: { splat: ["11", 0], resolution: meshDetail, kernel: 5, smooth: 0, level: 0.6, min_component: 500, min_opacity: 0.02, color_sharpen: 2 } },
-    "16": { class_type: "SaveGLB", inputs: { mesh: ["15", 0], filename_prefix: `${OUT_3D}/mesh` } },
+    "16": { class_type: "SaveGLB", inputs: { mesh: ["15", 0], filename_prefix: `${outDir(OUT_3D)}/mesh` } },
   };
   // Same rule as Hunyuan3D: a painted mask outranks both the background remover and
   // the alpha fallback — it is the user pointing at the subject directly.
@@ -7205,10 +7233,10 @@ async function interruptComfyServer() {
 
 // Upload a base64 image to ComfyUI's input folder so a LoadImage node can use
 // it. Returns the name (prefixed with subfolder when ComfyUI nests it). The
-// filename defaults to a shared "heykoko_input.png"; pass a distinct name when an
+// filename defaults to a shared "<tag>_input.png"; pass a distinct name when an
 // image must coexist with another upload in the same workflow (e.g. an inpaint
 // mask alongside its source — both overwrite=true, so a shared name would clobber).
-async function uploadImage(b64, signal, filename = "heykoko_input.png") {
+async function uploadImage(b64, signal, filename = `${comfyTag()}_input.png`) {
   const clean = typeof b64 === "string" && b64.startsWith("data:") ? b64.split(",")[1] : b64;
   const buf = Buffer.from(clean, "base64");
   const form = new FormData();
@@ -7227,14 +7255,14 @@ async function uploadVideoBuffer(buf, mime, signal) {
   const m = mime || "video/mp4";
   const ext = /webm/i.test(m) ? "webm" : /quicktime|mov/i.test(m) ? "mov" : "mp4";
   // Per-CONTENT filename. A multi-video batch fires its source-video uploads CONCURRENTLY; a
-  // shared name ("heykoko_source.mp4") + overwrite=true makes them clobber each other's bytes
+  // shared name ("<tag>_source.mp4") + overwrite=true makes them clobber each other's bytes
   // mid-write → a corrupt file that GetVideoComponents can't decode ("avcodec_send_packet /
   // [aac] channel element not allocated"). Hashing the content gives DISTINCT clips DISTINCT
   // files (no collision), while the SAME clip maps to one shared file — so ComfyUI's input dir
   // stays bounded by distinct content instead of growing per-upload.
   const hash = crypto.createHash("sha256").update(buf).digest("hex").slice(0, 16);
   const form = new FormData();
-  form.append("image", new Blob([buf], { type: m }), `heykoko_source_${hash}.${ext}`);
+  form.append("image", new Blob([buf], { type: m }), `${comfyTag()}_source_${hash}.${ext}`);
   form.append("overwrite", "true");
   const r = await fetch(`${currentComfyUrl()}/upload/image`, { method: "POST", body: form, signal });
   if (!r.ok) throw new Error(`video upload failed (${r.status})`);
@@ -7276,7 +7304,7 @@ async function uploadAudioBuffer(buf, mime, signal) {
   const ext = /mpeg|mp3/i.test(m) ? "mp3" : /ogg|opus/i.test(m) ? "ogg" : /flac/i.test(m) ? "flac" : /m4a|mp4|aac/i.test(m) ? "m4a" : "wav";
   const hash = crypto.createHash("sha256").update(buf).digest("hex").slice(0, 16);
   const form = new FormData();
-  form.append("image", new Blob([buf], { type: m }), `heykoko_speech_${hash}.${ext}`);
+  form.append("image", new Blob([buf], { type: m }), `${comfyTag()}_speech_${hash}.${ext}`);
   form.append("overwrite", "true");
   const r = await fetch(`${currentComfyUrl()}/upload/image`, { method: "POST", body: form, signal });
   if (!r.ok) throw new Error(`audio upload failed (${r.status})`);
@@ -7860,7 +7888,7 @@ async function generateComfyImage(req, res) {
         if (insertMode) {
           // ads2v is documented as source_video + reference_video ONLY — extra images
           // have no slot in that combination, so only the first is used.
-          insertImageName = await uploadImage(images[0], controller.signal, "heykoko_berniniinsert.png");
+          insertImageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_berniniinsert.png`);
           imagesUsed = 1;
         } else {
           // Every attached image is a reference view (see buildBernini), up to the
@@ -7868,7 +7896,7 @@ async function generateComfyImage(req, res) {
           // would have each upload overwrite the last.
           const refSrc = hasImage ? images.slice(0, BERNINI_MAX_REFS) : [];
           for (let i = 0; i < refSrc.length; i++) {
-            refImageNames.push(await uploadImage(refSrc[i], controller.signal, `heykoko_berniniref${i}.png`));
+            refImageNames.push(await uploadImage(refSrc[i], controller.signal, `${comfyTag()}_berniniref${i}.png`));
           }
           imagesUsed = refImageNames.length;
         }
@@ -8047,7 +8075,7 @@ async function generateComfyImage(req, res) {
         // would end up being the same picture.
         const refImageNames = [];
         for (let i = 0; i < images.length; i++) {
-          refImageNames.push(await uploadImage(images[i], controller.signal, `heykoko_scailref${i}.png`));
+          refImageNames.push(await uploadImage(images[i], controller.signal, `${comfyTag()}_scailref${i}.png`));
         }
         imagesUsed = refImageNames.length;
         // Stream the source per window instead of decoding it whole (see buildScail2).
@@ -8120,12 +8148,12 @@ async function generateComfyImage(req, res) {
         } else {
           aw = ah = snapDim(896, 16);
         }
-        // DISTINCT filenames — uploadImage defaults to "heykoko_input.png" with
+        // DISTINCT filenames — uploadImage defaults to "<tag>_input.png" with
         // overwrite, so two default-named uploads would clobber each other (the pose
         // would become the character → DWPose reads the character's own pose → no
         // transfer). Name them apart.
-        const poseImageName = await uploadImage(images[0], controller.signal, "heykoko_pose.png");
-        const refImageName = await uploadImage(images[1], controller.signal, "heykoko_animref.png");
+        const poseImageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_pose.png`);
+        const refImageName = await uploadImage(images[1], controller.signal, `${comfyTag()}_animref.png`);
         imagesUsed = 2;
         stillMode = true;
         workflow = buildWanAnimateStill({ model, prompt, negative: negative_prompt || "", comp, poseImageName, refImageName, width: aw, height: ah, seed, torchCompile: !!opts.torchCompile, relightStrength: opts.relightStrength, replace: animateReplace, maskPoint: opts.maskPoint });
@@ -8229,7 +8257,7 @@ async function generateComfyImage(req, res) {
         // would collapse them to the last image).
         const refs = images.slice(0, PHANTOM_MAX_REFS);
         const imageNames = [];
-        for (let i = 0; i < refs.length; i++) imageNames.push(await uploadImage(refs[i], controller.signal, `heykoko_phantom${i}.png`));
+        for (let i = 0; i < refs.length; i++) imageNames.push(await uploadImage(refs[i], controller.signal, `${comfyTag()}_phantom${i}.png`));
         imagesUsed = imageNames.length;
         workflow = buildPhantom({ model, prompt, negative: negative_prompt || "", comp, imageNames, seed, v, imgCfg });
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
@@ -8298,7 +8326,7 @@ async function generateComfyImage(req, res) {
           audioName = await uploadAudioBuffer(wavBuf, "audio/wav", controller.signal);
         }
         let videoName = null, imageName = null;
-        if (speak) { imageName = await uploadImage(images[0], controller.signal, "heykoko_itref.png"); imagesUsed = 1; }
+        if (speak) { imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_itref.png`); imagesUsed = 1; }
         else videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         // Scene prompt: dub (and speak-with-audio) keep the user prompt; speak-with-TTS
         // reads the prompt ALOUD, so the scene falls back to the builder's generic default.
@@ -8363,7 +8391,7 @@ async function generateComfyImage(req, res) {
         const styleKey = STYLES[opts.danceStyle] ? opts.danceStyle : (sniff(String(prompt || "")) || "latin");
         const AMPS = { low: "低", medium: "中等", high: "高", max: "最大" };
         const ampWord = AMPS[opts.danceAmplitude] || AMPS.low;
-        const imageName = await uploadImage(images[0], controller.signal, "heykoko_dancer_ref.png");
+        const imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_dancer_ref.png`);
         imagesUsed = 1;
         const audioName = sourceAudioName || await uploadAudio(sourceAudio, controller.signal, sourceAudioMime);
         // Turbo (template default): global expert distill-LoRA×3 / 6 steps / cfg 1.
@@ -8403,7 +8431,7 @@ async function generateComfyImage(req, res) {
         const wantFrames = opts.length ? Math.min(opts.length, UNION_HARD_CAP) : (srcFrames ? Math.min(srcFrames, UNION_HARD_CAP) : v.length);
         const durationSec = wantFrames / uFps;
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
-        const refImageName = await uploadImage(images[0], controller.signal, "heykoko_unionref.png");
+        const refImageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_unionref.png`);
         imagesUsed = 1;
         workflow = buildLtxUnionControl({ prompt, negative: negative_prompt || "", comp, imageName: refImageName, videoName, durationSec, v, seed });
         const outFrames = srcFrames ? Math.min(wantFrames, srcFrames) : wantFrames;
@@ -8440,7 +8468,7 @@ async function generateComfyImage(req, res) {
         const wantFrames = opts.length ? Math.min(opts.length, UNION25_HARD_CAP) : (srcFrames ? Math.min(srcFrames, UNION25_HARD_CAP) : v.length);
         const durationSec = wantFrames / uFps;
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
-        const refImageName = await uploadImage(images[0], controller.signal, "heykoko_unionref.png");
+        const refImageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_unionref.png`);
         imagesUsed = 1;
         workflow = buildLtx25Union({ prompt, negative: negative_prompt || "", comp, imageName: refImageName, videoName, durationSec, v, seed });
         precisionUsed = comp.transformerTier;
@@ -8465,7 +8493,7 @@ async function generateComfyImage(req, res) {
         v.width = snapDim(Math.sqrt(budget * aspectSum), 32);
         v.height = snapDim(Math.sqrt(budget / aspectSum), 32);
         const ingNames = [];
-        for (let i = 0; i < refs.length; i++) ingNames.push(await uploadImage(refs[i], controller.signal, `heykoko_ing${i}.png`));
+        for (let i = 0; i < refs.length; i++) ingNames.push(await uploadImage(refs[i], controller.signal, `${comfyTag()}_ing${i}.png`));
         imagesUsed = ingNames.length;
         workflow = buildLtx25Ingredients({ prompt, negative: negative_prompt || "", comp, imageNames: ingNames, seed, v });
         precisionUsed = comp.transformerTier;
@@ -8499,7 +8527,7 @@ async function generateComfyImage(req, res) {
         const freezeAudio = await sourceHasAudio(sourceVideo, sourceVideoName);
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         let startName = null;
-        if (Array.isArray(images) && images.length) { startName = await uploadImage(images[0], controller.signal, "heykoko_v2vstart.png"); imagesUsed = 1; }
+        if (Array.isArray(images) && images.length) { startName = await uploadImage(images[0], controller.signal, `${comfyTag()}_v2vstart.png`); imagesUsed = 1; }
         workflow = buildLtx25V2V({ prompt, negative: negative_prompt || "", comp, imageName: startName, videoName, durationSec, v, seed, freezeAudio });
         precisionUsed = comp.transformerTier;
         const outFrames = srcFrames ? Math.min(wantFrames, srcFrames) : wantFrames;
@@ -8534,7 +8562,7 @@ async function generateComfyImage(req, res) {
         const freezeAudio = await sourceHasAudio(sourceVideo, sourceVideoName);
         const videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         let startName = null;
-        if (Array.isArray(images) && images.length) { startName = await uploadImage(images[0], controller.signal, "heykoko_maskstart.png"); imagesUsed = 1; }
+        if (Array.isArray(images) && images.length) { startName = await uploadImage(images[0], controller.signal, `${comfyTag()}_maskstart.png`); imagesUsed = 1; }
         // Inpaint: the 🎯 point (normalized) lands on the stage-2 canvas; the dilation
         // radius scales with the canvas (the official 15 px was at a 1024-short frame).
         const seedPoint = animateSeedPoint(opts.maskPoint, v.width, v.height);
@@ -8556,7 +8584,7 @@ async function generateComfyImage(req, res) {
         const tracksJson = tracksToJson(tracksIn, v.width, v.height, v.length);
         if (!tracksJson) { sendJson(res, 400, { error: "--track needs at least two points per track, e.g. --track 0.2,0.5>0.8,0.5" }); return; }
         let startName = null;
-        if (Array.isArray(images) && images.length) { startName = await uploadImage(images[0], controller.signal, "heykoko_trackstart.png"); imagesUsed = 1; }
+        if (Array.isArray(images) && images.length) { startName = await uploadImage(images[0], controller.signal, `${comfyTag()}_trackstart.png`); imagesUsed = 1; }
         workflow = buildLtx25MotionTrack({ prompt, negative: negative_prompt || "", comp, imageName: startName, tracksJson, v, seed });
         precisionUsed = comp.transformerTier;
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
@@ -8619,13 +8647,13 @@ async function generateComfyImage(req, res) {
           // May legitimately be empty now: a clip or an audio file on its own is a valid
           // reference set, so `images` can be absent entirely.
           const refs = (Array.isArray(images) ? images : []).slice(0, H3_MAX_REF_IMAGES);
-          for (let i = 0; i < refs.length; i++) refImageNames.push(await uploadImage(refs[i], controller.signal, `heykoko_h3ref${i}.png`));
+          for (let i = 0; i < refs.length; i++) refImageNames.push(await uploadImage(refs[i], controller.signal, `${comfyTag()}_h3ref${i}.png`));
           imagesUsed = refImageNames.length;
         } else if (Array.isArray(images) && images.length) {
-          firstFrameName = await uploadImage(images[0], controller.signal, "heykoko_h3first.png");
+          firstFrameName = await uploadImage(images[0], controller.signal, `${comfyTag()}_h3first.png`);
           imagesUsed = 1;
           if (images.length >= 2) {
-            lastFrameName = await uploadImage(images[1], controller.signal, "heykoko_h3last.png");
+            lastFrameName = await uploadImage(images[1], controller.signal, `${comfyTag()}_h3last.png`);
             imagesUsed = 2;
           }
         }
@@ -8762,7 +8790,7 @@ async function generateComfyImage(req, res) {
             return;
           }
           pw = d.width; ph = d.height;
-          panoImageName = await uploadImage(images[0], controller.signal, "heykoko_pano_src.png");
+          panoImageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_pano_src.png`);
           imagesUsed = 1;
         } else {
           pw = Math.max(768, Math.min(2048, (opts.width || 1536) & ~15));
@@ -8863,12 +8891,12 @@ async function generateComfyImage(req, res) {
           sendJson(res, 400, { error: "This model turns an image into a 3D model. Attach an image first, then use /imagine." });
           return;
         }
-        const imageName = await uploadImage(images[0], controller.signal, "heykoko_mesh_in.png");
+        const imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_mesh_in.png`);
         imagesUsed = 1;
         // 🖌 mask: the painted region IS the subject here (in the edit chains it is
         // the region to change). Nothing else in a 3D graph consumes a mask, so
         // there is no other reading, and it saves the user fighting the auto cut-out.
-        const meshMaskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mesh_mask.png") : null;
+        const meshMaskName = hasMask ? await uploadImage(mask, controller.signal, `${comfyTag()}_mesh_mask.png`) : null;
         // ⚙ "3D mesh detail" is one knob over both meshers — Hunyuan3D's octree
         // resolution and SplatToMesh's density grid mean the same thing.
         const meshDetail = opts.meshDetail || 256;
@@ -8882,7 +8910,7 @@ async function generateComfyImage(req, res) {
           // (verified: the run's outputs list only ever contained the SaveGLB nodes),
           // so the file has to be fetched by name. A per-run token keeps the prefix
           // unused, which pins ComfyUI's counter at _00001_.
-          if (paint) paintGlb = `${OUT_3D}/paint_${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+          if (paint) paintGlb = `${outDir(OUT_3D)}/paint_${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
           workflow = buildHunyuan3D({ ckpt: model, imageName, seed,
             steps: opts.steps || 30, cfg: opts.cfg !== undefined ? opts.cfg : 5,
             sampler: opts.sampler || "euler", scheduler: opts.scheduler || "normal",
@@ -9022,20 +9050,20 @@ async function generateComfyImage(req, res) {
           const single = images.length === 1;
           const subjects = single ? images.slice(0, 1) : images.slice(0, Math.min(images.length - 1, LTX_MSR_MAX_SUBJECTS));
           imageNames = [];
-          for (let i = 0; i < subjects.length; i++) imageNames.push(await uploadImage(subjects[i], controller.signal, `heykoko_msr${i}.png`));
+          for (let i = 0; i < subjects.length; i++) imageNames.push(await uploadImage(subjects[i], controller.signal, `${comfyTag()}_msr${i}.png`));
           const bgSource = single ? images[0] : images[images.length - 1];
-          backgroundName = await uploadImage(bgSource, controller.signal, "heykoko_msrbg.png");
+          backgroundName = await uploadImage(bgSource, controller.signal, `${comfyTag()}_msrbg.png`);
           imagesUsed = single ? 1 : imageNames.length + 1;
         } else if (wantImage && isLtxKeyframes) {
           imageNames = [];
           // DISTINCT filenames — uploadImage's default name + overwrite would clobber.
           const kfs = images.slice(0, LTX_MAX_KEYFRAMES);
-          for (let ki = 0; ki < kfs.length; ki++) imageNames.push(await uploadImage(kfs[ki], controller.signal, `heykoko_kf${ki}.png`));
+          for (let ki = 0; ki < kfs.length; ki++) imageNames.push(await uploadImage(kfs[ki], controller.signal, `${comfyTag()}_kf${ki}.png`));
           imagesUsed = imageNames.length;
         } else if (wantImage) {
-          imageName = await uploadImage(images[0], controller.signal, "heykoko_start.png");
+          imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_start.png`);
           imagesUsed = 1;
-          if (isFLF) { endImageName = await uploadImage(images[1], controller.signal, "heykoko_end.png"); imagesUsed = 2; }
+          if (isFLF) { endImageName = await uploadImage(images[1], controller.signal, `${comfyTag()}_end.png`); imagesUsed = 2; }
         }
         workflow = buildVideoWorkflow(videoType, { model, prompt, negative: negative_prompt || "", comp, imageName, endImageName, imageNames, backgroundName, seed, v, experts: expertPair });
       } else if (berniniImageTask) {
@@ -9061,13 +9089,13 @@ async function generateComfyImage(req, res) {
         let sourceImageName = null;
         const refImageNames = [];
         if (berniniImageTask === "i2i") {
-          sourceImageName = await uploadImage(images[0], controller.signal, "heykoko_bimg.png");
+          sourceImageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_bimg.png`);
           imagesUsed = 1;
         } else if (berniniImageTask === "r2i") {
           // Multi-subject compose: DISTINCT filenames (a shared name + overwrite would
           // collapse every reference to the last one). Prompt must name image0/image1…
           const refs = images.slice(0, BERNINI_MAX_REFS);
-          for (let ri = 0; ri < refs.length; ri++) refImageNames.push(await uploadImage(refs[ri], controller.signal, `heykoko_bref${ri}.png`));
+          for (let ri = 0; ri < refs.length; ri++) refImageNames.push(await uploadImage(refs[ri], controller.signal, `${comfyTag()}_bref${ri}.png`));
           imagesUsed = refImageNames.length;
         }
         workflow = buildBernini({
@@ -9086,7 +9114,7 @@ async function generateComfyImage(req, res) {
         const comp = await krea2Companions();
         const imageNames = [];
         const refs = images.slice(0, 3);
-        for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `heykoko_krea2ref${ri}.png`));
+        for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `${comfyTag()}_krea2ref${ri}.png`));
         // The style-reference LoRA rides the same ⚙ strength field as the style LoRAs —
         // one "how hard should the style push" knob rather than two that look alike.
         workflow = buildKrea2StyleRef({ model, prompt, imageNames, width, height, seed, cfg, comp, loraStrength: krea2Strength(opts.krea2LoraStrength) });
@@ -9117,7 +9145,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const imageName = first ? await uploadImage(first, controller.signal) : null;
-        const maskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mask.png") : null;
+        const maskName = hasMask ? await uploadImage(mask, controller.signal, `${comfyTag()}_mask.png`) : null;
         if (editType === "qwen-layered") {
           // Layer count: 2 = background + subject, more splits the subjects apart. The
           // model's own ceiling is what the latent can carry, so keep it modest.
@@ -9179,14 +9207,14 @@ async function generateComfyImage(req, res) {
           // DISTINCT filenames — uploadImage's default name + overwrite would clobber,
           // collapsing all references to the last image (breaks multi-subject compose).
           const refs = images.slice(0, 3);
-          for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `heykoko_ref${ri}.png`));
+          for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `${comfyTag()}_ref${ri}.png`));
           // Background-lock person-swap: a mask painted on the FIRST image (the
           // scene) keeps everything outside it pixel-identical to the source. Qwen
           // composes onto a FRESH latent, so pin its output to the scene's own
           // aspect (from the first image) — otherwise the default 1024² square
           // would distort the pasted-back background. boogu decodes at the scene's
           // native size already, so it needs no size hint.
-          const maskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mask.png") : null;
+          const maskName = hasMask ? await uploadImage(mask, controller.signal, `${comfyTag()}_mask.png`) : null;
           // Qwen composes onto a FRESH EmptySD3 latent, which otherwise defaults to
           // a 1024² SQUARE — wrong for a person-swap (output must equal the scene)
           // and wrong for plain multi-subject compose too. Always pin its output to
@@ -9207,7 +9235,7 @@ async function generateComfyImage(req, res) {
           // Masked instruction-edit (Kontext / Qwen): confine the edit to the
           // painted region. Other edit types ignore maskName (their builds don't
           // read it) — they fall back to whole-image editing.
-          const maskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mask.png") : null;
+          const maskName = hasMask ? await uploadImage(mask, controller.signal, `${comfyTag()}_mask.png`) : null;
           workflow = buildEditWorkflow(editType, { model, prompt, negative: negative_prompt || "", imageName, maskName, seed, cfg: editCfg, comp, denoise: editDenoise, width: ew, height: eh });
         }
       } else if (model === IMAGE_UPSCALE) {
@@ -9248,7 +9276,7 @@ async function generateComfyImage(req, res) {
           // Distinct filenames per reference — uploadImage's default name + overwrite
           // would clobber them down to the last image (breaks multi-reference).
           const refs = images.slice(0, 10);
-          for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `heykoko_o1ref${ri}.png`));
+          for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `${comfyTag()}_o1ref${ri}.png`));
           // O1 reference editing ONLY converges at the model's trained resolution
           // (~4MP / 2048²) — verified live: at ≤1024 the edit returns NOISE, at 2048
           // it's clean. So size the canvas to a 4MP budget at the input's aspect
@@ -9294,14 +9322,14 @@ async function generateComfyImage(req, res) {
         const turbo = /turbo/i.test(model);
         const imageName = isImg2Img ? await uploadImage(images[0], controller.signal) : null;
         // A painted mask turns img2img into inpaint (repaint only the masked region).
-        const maskName = hasMask ? await uploadImage(mask, controller.signal, "heykoko_mask.png") : null;
+        const maskName = hasMask ? await uploadImage(mask, controller.signal, `${comfyTag()}_mask.png`) : null;
         workflow = buildBoogu({ model, prompt, negative: negative_prompt || "", width: ew || width, height: eh || height, seed, cfg, comp, turbo, imageName, maskName, denoise });
       } else if (hasMask) {
         // Inpaint with a plain checkpoint (SD / SDXL / Flux): repaint ONLY the
         // painted region from the prompt, preserving everything outside the mask.
         // denoise defaults to 1.0 (full repaint of the region) for inpaint.
         const imageName = await uploadImage(images[0], controller.signal);
-        const maskName = await uploadImage(mask, controller.signal, "heykoko_mask.png");
+        const maskName = await uploadImage(mask, controller.signal, `${comfyTag()}_mask.png`);
         workflow = buildInpaint({
           model,
           prompt,
@@ -9474,14 +9502,14 @@ async function generateComfyImage(req, res) {
         // A hole in the middle would splice the clip together across a gap and put the
         // rest of it out of sync with the audio — refuse rather than ship that silently.
         if (missing.length || segBufs.length !== segmentMerge.saveNodeIds.length) {
-          sendJson(res, 502, { error: `${segmentMerge.label} rendered ${segBufs.length} of ${segmentMerge.saveNodeIds.length} segments — nothing came back from save node(s) ${missing.join(", ") || "?"}. The finished segments are in ComfyUI's output folder (heykoko_vid/) and can be joined by hand; set ⚙ "Long-clip memory" to Off to go back to the single-file path.` });
+          sendJson(res, 502, { error: `${segmentMerge.label} rendered ${segBufs.length} of ${segmentMerge.saveNodeIds.length} segments — nothing came back from save node(s) ${missing.join(", ") || "?"}. The finished segments are in ComfyUI's output folder (${outDir(OUT_VID)}/) and can be joined by hand; set ⚙ "Long-clip memory" to Off to go back to the single-file path.` });
           return;
         }
         const wantCodec = opts.videoCodec === "h265" ? "h265" : "h264";
         const srcBuf = await fetchComfyInputFile(segmentMerge.sourceName, controller.signal);
         const merged = await mergeScail2Segments(segBufs, srcBuf, wantCodec, Number(opts.videoCrf) || 0, controller.signal);
         if (!merged) {
-          sendJson(res, 502, { error: `${segmentMerge.label} rendered all ${segBufs.length} segments but ffmpeg could not join them (is ffmpeg installed and on PATH?). The segments are in ComfyUI's output folder (heykoko_vid/) — nothing was lost. Set ⚙ "Long-clip memory" to Off to have ComfyUI write one file instead.` });
+          sendJson(res, 502, { error: `${segmentMerge.label} rendered all ${segBufs.length} segments but ffmpeg could not join them (is ffmpeg installed and on PATH?). The segments are in ComfyUI's output folder (${outDir(OUT_VID)}/) — nothing was lost. Set ⚙ "Long-clip memory" to Off to have ComfyUI write one file instead.` });
           return;
         }
         firstVideoBuf = merged.buf;
@@ -9744,7 +9772,7 @@ async function comfyAutoMask(req, res) {
       return;
     }
     const deadline = Date.now() + 120000; // SAM2/SAM3 are fast; 2 min is ample
-    const imageName = await uploadImage(image, controller.signal, "heykoko_automask_src.png");
+    const imageName = await uploadImage(image, controller.signal, `${comfyTag()}_automask_src.png`);
     const expand = Number.isFinite(grow) ? Math.max(0, Math.min(64, Math.round(grow))) : 6;
     // Three modes on ONE endpoint:
     //   • text (a phrase like "bird")   → SAM3.1 open-vocabulary text segmentation.
@@ -9766,7 +9794,7 @@ async function comfyAutoMask(req, res) {
         "4": { class_type: "SAM3_Detect", inputs: { model: ["1", 0], image: ["3", 0], conditioning: ["2", 0], threshold: thr, refine_iterations: 2, individual_masks: false } },
         "5": { class_type: "GrowMask", inputs: { mask: ["4", 0], expand, tapered_corners: true } },
         "6": { class_type: "MaskToImage", inputs: { mask: ["5", 0] } },
-        "7": { class_type: "SaveImage", inputs: { images: ["6", 0], filename_prefix: `${OUT_TMP}/automask` } },
+        "7": { class_type: "SaveImage", inputs: { images: ["6", 0], filename_prefix: `${outDir(OUT_TMP)}/automask` } },
       };
     } else if (wantBox) {
       // Normalized box (0–1) → pixel XYXY in the LOADED image's space (SAM2's
@@ -9783,7 +9811,7 @@ async function comfyAutoMask(req, res) {
         "4": { class_type: "Sam2Segmentation", inputs: { sam2_model: ["1", 0], image: ["2", 0], keep_model_loaded: true, individual_objects: false, bboxes: ["3", 0] } },
         "5": { class_type: "GrowMask", inputs: { mask: ["4", 0], expand, tapered_corners: true } },
         "6": { class_type: "MaskToImage", inputs: { mask: ["5", 0] } },
-        "7": { class_type: "SaveImage", inputs: { images: ["6", 0], filename_prefix: `${OUT_TMP}/automask` } },
+        "7": { class_type: "SaveImage", inputs: { images: ["6", 0], filename_prefix: `${outDir(OUT_TMP)}/automask` } },
       };
     } else {
       const dims = imageDims(image) || { width: 1024, height: 1024 };
@@ -9794,7 +9822,7 @@ async function comfyAutoMask(req, res) {
         "3": { class_type: "Sam2Segmentation", inputs: { sam2_model: ["1", 0], image: ["2", 0], keep_model_loaded: true, coordinates_positive: coords } },
         "4": { class_type: "GrowMask", inputs: { mask: ["3", 0], expand, tapered_corners: true } },
         "5": { class_type: "MaskToImage", inputs: { mask: ["4", 0] } },
-        "6": { class_type: "SaveImage", inputs: { images: ["5", 0], filename_prefix: `${OUT_TMP}/automask` } },
+        "6": { class_type: "SaveImage", inputs: { images: ["5", 0], filename_prefix: `${outDir(OUT_TMP)}/automask` } },
       };
     }
     const clientId = crypto.randomUUID();
