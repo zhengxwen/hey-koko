@@ -1959,6 +1959,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
   let content = "";
   let thinkingContent = "";
   let usageStats = null;
+  let cutReason = "";
   let aborted = false;
   const genStart = Date.now();
   const showThinking = dom.showThinkingCheckbox?.checked || false;
@@ -1994,6 +1995,11 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     function appendStreamLine(line) {
       if (!line.trim()) return;
       const data = JSON.parse(line);
+      // Why the stream ended. Ollama says "stop" for a finished answer; "length" means
+      // it ran out of context room, and our proxy signs off with "timeout" when the
+      // model went quiet. Both of those leave a half-written answer that otherwise
+      // looks complete — record it so the bubble can say so.
+      if (data.done && data.done_reason && data.done_reason !== "stop") cutReason = data.done_reason;
       if (data.prompt_eval_count || data.eval_count) {
         const tps = data.eval_count && data.eval_duration
           ? (data.eval_count / (data.eval_duration / 1e9))
@@ -2098,6 +2104,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     state.streamingInfo = null;
     const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart };
     if (thinkingContent) reply.thinking = thinkingContent;
+    if (cutReason) reply.cutOff = cutReason;
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
       tab.messages.splice(insertIndex, 0, reply);
     } else {
@@ -2114,6 +2121,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
       if (content.trim()) {
         const reply = { role: "assistant", content: content.trim(), timestamp: Date.now(), genMs: Date.now() - genStart };
         if (thinkingContent) reply.thinking = thinkingContent;
+        if (cutReason) reply.cutOff = cutReason;
         if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
           tab.messages.splice(insertIndex, 0, reply);
         } else {
@@ -2178,6 +2186,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
   let content = "";
   let thinkingContent = "";
   let usageStats = null;
+  let cutReason = "";
   let aborted = false;
   const genStart = Date.now();
   const showThinking = dom.showThinkingCheckbox?.checked || false;
@@ -2221,6 +2230,11 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     function appendStreamLine(line) {
       if (!line.trim()) return;
       const data = JSON.parse(line);
+      // Why the stream ended. Ollama says "stop" for a finished answer; "length" means
+      // it ran out of context room, and our proxy signs off with "timeout" when the
+      // model went quiet. Both of those leave a half-written answer that otherwise
+      // looks complete — record it so the bubble can say so.
+      if (data.done && data.done_reason && data.done_reason !== "stop") cutReason = data.done_reason;
       if (data.prompt_eval_count || data.eval_count) {
         const tps = data.eval_count && data.eval_duration
           ? (data.eval_count / (data.eval_duration / 1e9))
@@ -2332,6 +2346,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     }
     const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart, ...replyMeta };
     if (thinkingContent) reply.thinking = thinkingContent;
+    if (cutReason) reply.cutOff = cutReason;
     if (bg) {
       // Multi-message bg job (docfull/url) passes a real insertIndex (the cursor) →
       // splice there, keeping the placeholder below. Single-result job (insertIndex<0)
@@ -2372,6 +2387,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
         }
         const reply = { role: "assistant", content: content.trim(), timestamp: Date.now(), genMs: Date.now() - genStart, ...replyMeta };
         if (thinkingContent) reply.thinking = thinkingContent;
+        if (cutReason) reply.cutOff = cutReason;
         if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
           tab.messages.splice(insertIndex, 0, reply);
         } else {
@@ -4061,6 +4077,13 @@ async function confirmMediaDelete({ ids, msg, fallbackKey,
   });
 }
 
+// A pinned bubble's pictures and clips are part of what is pinned. The buttons that
+// would rewrite them (×, ⬆ replace, 🖌 mask) are hidden by CSS while the 🔒 is on;
+// these guards are the same rule stated where the work would actually happen.
+function bubbleIsLocked(msgIndex) {
+  return !!getActiveTab()?.messages?.[msgIndex]?.locked;
+}
+
 function makeImageDeleteButton(msgIndex, imgIdx) {
   const btn = document.createElement("button");
   btn.type = "button";
@@ -4070,6 +4093,7 @@ function makeImageDeleteButton(msgIndex, imgIdx) {
   btn.textContent = "×";
   btn.addEventListener("click", async (e) => {
     e.stopPropagation();          // don't open the lightbox
+    if (bubbleIsLocked(msgIndex)) return;
     const msg = getActiveTab()?.messages?.[msgIndex];
     const ids = slotGalleryIds(msg, imgIdx, "image");
     const answer = await confirmMediaDelete({ ids, msg, fallbackKey: "chat_confirmDelImg" });
@@ -4091,6 +4115,7 @@ function makeReplaceImageButton(msgIndex, imgIdx) {
   btn.textContent = "⬆";
   btn.addEventListener("click", (e) => {
     e.stopPropagation();          // don't open the lightbox
+    if (bubbleIsLocked(msgIndex)) return;
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "image/*";
@@ -4464,7 +4489,14 @@ function openEditHistory(index) {
       restore.type = "button";
       restore.className = "editHistoryRestore";
       restore.textContent = t("hist_restore");
+      // Restoring rewrites the bubble's text, so a locked bubble refuses it too —
+      // the log stays readable, only the button that would change the bubble is out.
+      if (msg.locked) {
+        restore.disabled = true;
+        restore.title = t("hist_restoreLocked");
+      }
       restore.addEventListener("click", () => {
+        if (msg.locked) return;
         pushEditHistory(msg, msg.content);   // what it replaces joins the log
         msg.content = text;
         // The bubble carries the restored version's own time, not the time of the
@@ -4535,6 +4567,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       ts.addEventListener("dblclick", (e) => {
         e.stopPropagation();
         if (getActiveTab().locked) return;
+        if (getActiveTab().messages[index]?.locked) return;   // pinned: clock included
         openTimestampEditor(index);
       });
     }
@@ -4813,6 +4846,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         maskBtn.textContent = "🖌";
         maskBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
+          if (bubbleIsLocked(index)) return;
           const tab = getActiveTab();
           const mm = tab?.messages?.[index];
           if (!mm) return;
@@ -4855,6 +4889,9 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     if ((role === "user" || role === "assistant") && Number.isInteger(index)) {
       text.addEventListener("dblclick", () => {
         if (getActiveTab().locked) return;
+        // A locked bubble is pinned: its text is what it is. The 🔒 already disables
+        // its × and keeps resend from replacing it — editing is the same promise.
+        if (getActiveTab().messages[index]?.locked) return;
         const original = getActiveTab().messages[index]?.content || "";
         const textWidth = text.offsetWidth;
         const input = document.createElement("textarea");
@@ -4916,6 +4953,14 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     }
     item.appendChild(text);
     textEl = text;
+    // The reply stopped before the model was finished — say so under it, rather than
+    // letting half an answer pass for a whole one.
+    if (_libMsg?.cutOff) {
+      const note = document.createElement("div");
+      note.className = "replyCutNote";
+      note.textContent = t(_libMsg.cutOff === "length" ? "cut_length" : "cut_timeout");
+      item.appendChild(note);
+    }
     // Distill-card bubble: visualize its «§ Relations» section as a node-link relation graph
     // below the text (parsed from the card markdown; null when the card has no relations).
     if (_libMsg?.libraryKind === "card") {
@@ -5169,6 +5214,7 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         del.textContent = "×";
         del.addEventListener("click", async (e) => {
           e.stopPropagation();
+          if (bubbleIsLocked(index)) return;
           const msg = getActiveTab()?.messages?.[index];
           const ids = slotGalleryIds(msg, vi, "video");
           const answer = await confirmMediaDelete({ ids, msg, fallbackKey: "confirm_deleteVideo" });

@@ -1496,8 +1496,8 @@
                sites used to carry inline was short enough that a cold model load could
                eat it before the first token. -->
           <label>
-            <span id="llmTimeoutLabel" title="How long to wait for the chat model before giving up. Covers replies, translation, page summaries and library distillation. Empty = 240 seconds. Media renders have their own timeouts (Models tab).">Reply timeout (seconds)</span>
-            <input id="llmTimeout" type="number" min="10" max="3600" step="10" placeholder="240" title="How long to wait for the chat model before giving up. Covers replies, translation, page summaries and library distillation. Empty = 240 seconds. Media renders have their own timeouts (Models tab)." />
+            <span id="llmTimeoutLabel" title="How long to wait with NOTHING arriving from the chat model before giving up. A reply that is still streaming is never cut off, however long it takes. Covers replies, translation, page summaries and library distillation. Empty = 240 seconds. Media renders have their own timeouts (Models tab).">Reply timeout (seconds)</span>
+            <input id="llmTimeout" type="number" min="10" max="3600" step="10" placeholder="240" title="How long to wait with NOTHING arriving from the chat model before giving up. A reply that is still streaming is never cut off, however long it takes. Covers replies, translation, page summaries and library distillation. Empty = 240 seconds. Media renders have their own timeouts (Models tab)." />
           </label>
 
           <hr class="settingsDivider" />

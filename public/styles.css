@@ -9405,3 +9405,89 @@ body.isResizingComposer {
   /* This is the phrase actually sent to the model — never translated. */
   direction: ltr;
 }
+
+/* ===== Dark mode: floating chrome =====
+   Every hover-revealed chip in the app is semi-transparent BLACK, which is the right
+   call over light paper and over a photograph. In dark mode the paper is nearly black
+   too, so chip and ground merge: the button is there, but there is no edge to find it
+   by. Two different repairs, because the two families sit on different grounds.
+
+   (a) Chips floating over the app's own surface — bubble corners, code blocks, the
+       jump-to-bottom bar. Nothing behind them but dark paper, so flip the fill to a
+       light translucent one; white glyph on a light wash reads at a glance.
+   (b) Chips floating over media — pictures, clips, audio, mesh. The ground there is
+       the user's own content and can be any colour, so the dark fill stays (a light
+       chip would vanish on a bright photo) and gets a hairline light ring instead,
+       which gives the chip an edge on dark footage without hiding the frame beneath.
+
+   The :not(:hover) guards let each element's own hover rule (accent, red, rose) keep
+   winning even though these selectors are later in the file and more specific. */
+
+/* (a) over the app surface */
+[data-mode="dark"] .messageAction:not(.stopTranslateBtn):not(:hover):not(.isSpeaking) {
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+[data-mode="dark"] .messageAction:hover:not(.stopTranslateBtn):not(.deleteMessage),
+[data-mode="dark"] .messageAction.isSpeaking {
+  background: rgba(255, 255, 255, 0.3);
+}
+[data-mode="dark"] .mdCopyBtn:not(:hover),
+[data-mode="dark"] .mdImagineBtn:not(:hover) {
+  background: rgba(255, 255, 255, 0.16);
+}
+[data-mode="dark"] .mdCopyBtn:hover,
+[data-mode="dark"] .mdImagineBtn:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+[data-mode="dark"] .scrollToBottomBtn:not(:hover) {
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2), 0 3px 10px rgba(0, 0, 0, 0.35);
+}
+[data-mode="dark"] .scrollToBottomBtn:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+/* (b) over media — ring only, so the fill still works on a white photo */
+[data-mode="dark"] .imageDeleteBtn,
+[data-mode="dark"] .imageDownloadBtn,
+[data-mode="dark"] .messageReplaceBtn,
+[data-mode="dark"] .messageMaskBtn,
+[data-mode="dark"] .videoDeleteBtn,
+[data-mode="dark"] .videoDownloadBtn,
+[data-mode="dark"] .videoFullscreenBtn,
+[data-mode="dark"] .videoPipBtn,
+[data-mode="dark"] .videoVolume,
+[data-mode="dark"] .audioDownloadBtn,
+[data-mode="dark"] .mediaGalleryBtn,
+[data-mode="dark"] .mediaCutBtn,
+[data-mode="dark"] .mediaRateBtn:not(.isRated),
+[data-mode="dark"] .meshGlHost:not(.isFs) .meshHudBtn {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35), 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* A locked bubble is pinned whole — its pictures and clips are part of what is
+   pinned. The controls that would rewrite them go away with the 🔒 on; ★ rating,
+   🎨 open-in-gallery, ⬇ download, ✂️ trim and ⛶/⧉ stay, because they read the
+   bubble rather than change it. Last in the file so it beats the :hover reveal
+   rules, which carry the same specificity. */
+.message.bubbleLocked .imageDeleteBtn,
+.message.bubbleLocked .videoDeleteBtn,
+.message.bubbleLocked .messageReplaceBtn,
+.message.bubbleLocked .messageMaskBtn {
+  display: none;
+}
+
+/* "This reply was cut off" — a footnote under a half-written answer (timeout, or the
+   context window filling up). Quiet but unmissable: the bubble must not pass for a
+   complete reply just because it ends in a full sentence. */
+.replyCutNote {
+  margin-top: 8px;
+  padding: 6px 9px;
+  border-left: 3px solid #e5a23d;
+  border-radius: 0 6px 6px 0;
+  background: rgba(229, 162, 61, 0.12);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}

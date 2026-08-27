@@ -162,6 +162,7 @@ export function initArchive() {
       if (msg.isFilePreview) m.isFilePreview = true;
       if (msg.translation) m.translation = msg.translation;
       if (msg.editHistory?.length) m.editHistory = msg.editHistory;   // 🕘 older versions of an edited bubble
+      if (msg.cutOff) m.cutOff = msg.cutOff;                          // reply stopped early (timeout / context full)
       // User text highlights / annotations — round-trip so retrieval restores them.
       if (msg.highlights && msg.highlights.length) m.highlights = msg.highlights;
       return m;

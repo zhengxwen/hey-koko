@@ -5,8 +5,12 @@ const config = require("./config");
 const { sendJson, readBody } = require("./utils");
 
 async function proxyOllamaChat(req, res, preBody) {
+  let bodyModel = "";
+  let timedOut = false;
+  let sawFirstByte = false;
   try {
     const body = preBody || await readBody(req);
+    bodyModel = body.model || "";
     const now = new Date();
     const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
     console.log(`${ts} [chat] model=${body.model || '?'}, messages=${(body.messages || []).length}`);
@@ -24,11 +28,30 @@ async function proxyOllamaChat(req, res, preBody) {
     // Tool-calling turns are sent with stream:false (more reliable); honor it.
     const wantStream = chatBody.stream !== false;
     const controller = new AbortController();
+    // The ⚙ field offers up to 3600s, so honour up to 3600 — the old ceiling of 600
+    // silently overrode anything larger the user had typed.
+    const timeoutMs = reqTimeout && reqTimeout > 0
+      ? Math.min(3600, Math.max(60, reqTimeout)) * 1000
+      : 0;
     let timeoutHandle = null;
-    if (reqTimeout && reqTimeout > 0) {
-      const timeoutMs = Math.min(600, Math.max(60, reqTimeout)) * 1000;
-      timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
-    }
+    // IDLE timeout, not a total-duration cap: a reply that is still arriving token by
+    // token is working, and killing it at N seconds truncates it mid-sentence for no
+    // reason (a 30B on a slow box takes minutes to say something long). The clock is
+    // restarted on every chunk, so it only fires when the model has gone quiet — which
+    // is the thing worth giving up on. A stream:false turn gets no chunks before the
+    // end, so for those it stays exactly the hard cap it always was.
+    //
+    // Waiting for the FIRST byte runs on the same budget, deliberately: one number the
+    // user set, meaning the same thing in both places. It does cover a different kind of
+    // wait — loading 30GB of weights, or sitting in Ollama's queue behind another
+    // client's whole answer (it serves one at a time) — so if a request dies having
+    // produced nothing at all, that budget is what to raise.
+    const armTimeout = (ms) => {
+      if (!ms) return;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      timeoutHandle = setTimeout(() => { timedOut = true; controller.abort(); }, ms);
+    };
+    armTimeout(timeoutMs);
 
     const ask = (payload) => fetch(`${config.ollamaUrl}/api/chat`, {
       method: "POST",
@@ -59,17 +82,32 @@ async function proxyOllamaChat(req, res, preBody) {
     });
 
     for await (const chunk of response.body) {
+      sawFirstByte = true;
+      armTimeout(timeoutMs);      // still talking — start the quiet-clock over
       res.write(chunk);
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
     res.end();
   } catch (error) {
     if (res.headersSent) {
+      // The reply was already streaming, so there is no error response left to send —
+      // and just closing the socket is exactly how a cut-off answer used to reach the
+      // user looking like a complete one. Sign off with a final NDJSON line saying why
+      // it stopped, in the same shape Ollama's own done-line has, so the browser can
+      // say "this was cut" instead of quietly keeping half an answer.
+      const reason = error.name === "AbortError" ? (timedOut ? "timeout" : "aborted") : "error";
+      try {
+        res.write(`\n${JSON.stringify({ model: bodyModel, done: true, done_reason: reason, message: { role: "assistant", content: "" } })}\n`);
+      } catch { /* socket already gone — nothing to say it to */ }
       res.end();
       return;
     }
     if (error.name === "AbortError") {
-      sendJson(res, 504, { error: "Request timed out: the model exceeded the configured response time limit." });
+      sendJson(res, 504, {
+        error: sawFirstByte
+          ? "Request timed out: the model stopped responding partway through."
+          : "Request timed out: nothing came back at all. Ollama may still be loading the model, or be busy with another request.",
+      });
     } else {
       sendJson(res, 500, {
         error: "Cannot connect to local Ollama. Make sure Ollama is running and the model has been downloaded.",
