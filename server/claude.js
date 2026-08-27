@@ -317,7 +317,9 @@ async function proxyChat(res, body) {
   const think = true;
   // Reveal the (summarized) reasoning only when the user enabled "show thinking";
   // otherwise the model still thinks but the reasoning is omitted from the stream.
-  const thinkingDisplay = body.think ? "summarized" : "omitted";
+  // This is a VIEW setting and nothing else — `think` carries the separate question of
+  // whether to think at all, which on this backend is answered above (always yes).
+  const thinkingDisplay = body.showThinking ? "summarized" : "omitted";
   const numPredict = body.options && body.options.num_predict;
   const maxTokens = numPredict && numPredict > 0 ? numPredict : (wantStream ? 32000 : 16000);
 
@@ -330,7 +332,12 @@ async function proxyChat(res, body) {
   // caller did not ask for.
   const effort = ["low", "medium", "high", "xhigh", "max"].includes(body.thinkEffort)
     ? body.thinkEffort
-    : "";
+    // ⚙ "Thinking off" lands on the lowest effort rather than thinking: {type:"disabled"}.
+    // Disabling it here is not the cheap version of thinking less: Opus writes its
+    // reasoning into the visible reply instead, sometimes writes a tool call as plain
+    // text (so the call never runs), and our tool turns depend on replaying thinking
+    // blocks verbatim. Lowest effort buys the same speed without any of that.
+    : (body.think === false ? "low" : "");
   const payload = {
     model: body.model,
     max_tokens: maxTokens,

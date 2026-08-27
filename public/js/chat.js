@@ -50,6 +50,14 @@ function thinkEffort() {
   return THINK_LEVELS.includes(v) ? v : "";
 }
 
+// WHETHER the model thinks and whether we SHOW the thinking are two different
+// questions, and this one is the first: "Thinking off" asks a hybrid model (Qwen3,
+// DeepSeek-V3.1) to answer straight away. Empty means neither on nor off — the
+// model's own default, which for most thinking models is on.
+function thinkOff() {
+  return dom.thinkEffort?.value === "off";
+}
+
 // Streaming markdown re-render throttle. Ollama streams a chunk (often a single
 // token/character) at a time; re-parsing the whole message and swapping the
 // bubble's innerHTML on every chunk makes the bubble flicker. We coalesce those
@@ -1971,7 +1979,12 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
       options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
       timeout: getLlmTimeout(),
     };
-    if (showThinking) fetchBody.think = true;
+    // "Show thinking" is a VIEW setting and says nothing about whether the model
+    // should think — asking for the reasoning used to switch thinking on, which made
+    // the two impossible to set independently. `think` now comes from the ⚙ level
+    // alone: absent = the model's default, false = off, a level = on at that depth.
+    fetchBody.showThinking = showThinking;
+    if (thinkOff()) fetchBody.think = false;
     if (thinkEffort()) fetchBody.thinkEffort = thinkEffort();
 
     const response = await fetch("/api/chat", {
@@ -2206,7 +2219,12 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       options: { temperature: 0.85, top_p: 0.9, num_ctx: getNumCtx() },
       timeout: getLlmTimeout(),
     };
-    if (showThinking) fetchBody.think = true;
+    // "Show thinking" is a VIEW setting and says nothing about whether the model
+    // should think — asking for the reasoning used to switch thinking on, which made
+    // the two impossible to set independently. `think` now comes from the ⚙ level
+    // alone: absent = the model's default, false = off, a level = on at that depth.
+    fetchBody.showThinking = showThinking;
+    if (thinkOff()) fetchBody.think = false;
     if (thinkEffort()) fetchBody.thinkEffort = thinkEffort();
 
     const response = await fetch("/api/chat", {
@@ -2748,7 +2766,8 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
         model: dom.modelSelect.value,
         messages,
         ...(useTools ? { tools: activeToolSchemas() } : {}),
-        ...(showThinking ? { think: true } : {}),
+        showThinking,                                    // display only — see thinkOff()
+        ...(thinkOff() ? { think: false } : {}),
         ...(thinkEffort() ? { thinkEffort: thinkEffort() } : {}),
         stream: !isCloud,
         options: { temperature: 0.7, num_ctx: getNumCtx() },

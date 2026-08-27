@@ -1477,10 +1477,11 @@
                 <option value="32768" selected>32768</option>
               </select>
             </label>
-            <label class="numCtxLabel" id="thinkEffortRow" title="How hard the model should think before answering. Model default changes nothing. A level goes to models that have thinking levels — Ollama (gpt-oss, DeepSeek, Qwen3.8) and cloud reasoning models. Extra high and Max exist on Claude and on some Ollama models; a model without the level asked for falls back to plain thinking-on. It applies even with the thinking process hidden.">
+            <label class="numCtxLabel" id="thinkEffortRow" title="Whether the model thinks before answering, and how hard — a separate question from "Show thinking process", which only decides whether you see the reasoning. Model default changes nothing. Thinking off asks a hybrid model (Qwen3, DeepSeek) to answer straight away; models that cannot switch it off keep their default, and Claude drops to its lowest effort instead. Extra high and Max exist on Claude and on some Ollama models; a model without the level asked for falls back to plain thinking-on.">
               <span id="thinkEffortLabel">Thinking effort</span>
               <select id="thinkEffort">
                 <option value="">Model default</option>
+                <option value="off">Thinking off</option>
                 <option value="low">Low</option>
                 <option value="medium">Medium</option>
                 <option value="high">High</option>

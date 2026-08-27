@@ -16,7 +16,9 @@ async function proxyOllamaChat(req, res, preBody) {
     console.log(`${ts} [chat] model=${body.model || '?'}, messages=${(body.messages || []).length}`);
 
     const reqTimeout = body.timeout;
-    const { timeout: _discard, thinkEffort, ...chatBody } = body;
+    // showThinking is ours, not Ollama's — it decides what the BROWSER renders, and a
+    // field Ollama does not know has no business in the request.
+    const { timeout: _discard, thinkEffort, showThinking: _display, ...chatBody } = body;
     // ⚙ "Thinking effort": Ollama expresses it through `think` itself, which takes either
     // a boolean or a level on models that HAVE levels (gpt-oss, DeepSeek-V3.1, Qwen3.8).
     // Which levels exist is the model's business, not ours — we pass the level through
@@ -68,6 +70,15 @@ async function proxyOllamaChat(req, res, preBody) {
       const why = await response.text().catch(() => "");
       console.log(`[chat] thinking level "${chatBody.think}" refused (${why.trim().slice(0, 120)}) — retrying with think:true`);
       response = await ask({ ...chatBody, think: true });
+    }
+    // The mirror image: a model whose thinking cannot be switched off (gpt-oss) rejects
+    // think:false. Retry with the field DROPPED, never with think:true — the user asked
+    // for less thinking, and turning it on would be the opposite of what they chose.
+    if (!response.ok && response.status === 400 && chatBody.think === false) {
+      const why = await response.text().catch(() => "");
+      console.log(`[chat] this model cannot turn thinking off (${why.trim().slice(0, 120)}) — retrying without the field`);
+      const { think: _off, ...noThink } = chatBody;
+      response = await ask(noThink);
     }
 
     if (!response.ok) {

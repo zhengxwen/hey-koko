@@ -354,7 +354,7 @@ function toOpenAITools(ollamaTools) {
 }
 
 // Build the OpenAI request payload shared by proxyChat and complete.
-function buildPayload({ model, messages, tools, stream, maxTokens, temperature, thinkEffort }) {
+function buildPayload({ model, messages, tools, stream, maxTokens, temperature, thinkEffort, thinkOff }) {
   const reasoning = isReasoningModel(model);
   const payload = { model, messages, stream };
   // ⚙ "Thinking effort" → the o-series/gpt-5 knob of the same idea. Only for reasoning
@@ -365,6 +365,9 @@ function buildPayload({ model, messages, tools, stream, maxTokens, temperature, 
   const EFFORT_FOR_OPENAI = { low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" };
   if (reasoning && EFFORT_FOR_OPENAI[thinkEffort]) {
     payload.reasoning_effort = EFFORT_FOR_OPENAI[thinkEffort];
+  } else if (reasoning && thinkOff) {
+    // A reasoning model has no off switch — the lowest effort is as close as it gets.
+    payload.reasoning_effort = "low";
   }
   if (tools) payload.tools = tools;
   if (maxTokens && maxTokens > 0) {
@@ -421,12 +424,12 @@ async function proxyChat(res, body) {
   const temperature = body.options && typeof body.options.temperature === "number" ? body.options.temperature : undefined;
 
   const payload = buildPayload({ model: body.model, messages, tools, stream: wantStream, maxTokens, temperature,
-                                thinkEffort: body.thinkEffort });
+                                thinkEffort: body.thinkEffort, thinkOff: body.think === false });
   // OpenRouter only RETURNS a reasoning model's chain-of-thought when asked — enable it
   // when the user turned on "show thinking". Gated to the OpenRouter provider: DeepSeek-
   // direct returns reasoning_content by default (no flag), and api.openai.com would 400
   // on this unknown param. Harmless/ignored for non-reasoning OpenRouter models.
-  if (body.think && cfg.kind === "openrouter") payload.include_reasoning = true;
+  if (body.showThinking && cfg.kind === "openrouter") payload.include_reasoning = true;
 
   const controller = new AbortController();
   let timeoutHandle = null;
@@ -565,7 +568,7 @@ async function proxyChat(res, body) {
           // provider-specific field: DeepSeek `reasoning_content`, OpenRouter
           // `reasoning`. Forward either as `thinking` (gated by the toggle).
           const rc = delta.reasoning_content || delta.reasoning;
-          if (body.think && rc) {
+          if (body.showThinking && rc) {
             writeChunk({ message: { role: "assistant", content: "", thinking: rc }, done: false });
           }
           if (delta.content) {
