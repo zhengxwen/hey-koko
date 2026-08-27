@@ -323,6 +323,14 @@ async function proxyChat(res, body) {
 
   // Note: temperature/top_p are intentionally NOT forwarded — Opus 4.8/4.7
   // reject sampling params outright, so dropping them keeps every model valid.
+  // ⚙ "Thinking effort". Anthropic spells it output_config.effort — a sibling of
+  // adaptive thinking, not a replacement for it: thinking stays on, this says how deep.
+  // Left off, the API's own default (high) applies. The two top levels are newer than
+  // some models, so a 400 falls back to no effort at all rather than to a level the
+  // caller did not ask for.
+  const effort = ["low", "medium", "high", "xhigh", "max"].includes(body.thinkEffort)
+    ? body.thinkEffort
+    : "";
   const payload = {
     model: body.model,
     max_tokens: maxTokens,
@@ -331,6 +339,7 @@ async function proxyChat(res, body) {
     ...(system ? { system } : {}),
     ...(tools ? { tools } : {}),
     ...(think ? { thinking: { type: "adaptive", display: thinkingDisplay } } : {}),
+    ...(effort ? { output_config: { effort } } : {}),
   };
 
   const controller = new AbortController();
@@ -340,18 +349,29 @@ async function proxyChat(res, body) {
     timeoutHandle = setTimeout(() => controller.abort(), ms);
   }
 
+  const ask = (p) => fetch(`${cfg.baseUrl}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": cfg.apiKey,
+      "anthropic-version": ANTHROPIC_VERSION,
+    },
+    body: JSON.stringify(p),
+    signal: controller.signal,
+  });
+
   let response;
   try {
-    response = await fetch(`${cfg.baseUrl}/v1/messages`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": cfg.apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
+    response = await ask(payload);
+    // A model older than the level asked for rejects it outright. The user asked for
+    // more thinking, not for an error, so drop the level once and let the model's own
+    // default stand — logged, because nothing on their side needs fixing.
+    if (!response.ok && response.status === 400 && effort) {
+      const why = await response.text().catch(() => "");
+      console.log(`[claude] effort "${effort}" refused (${why.trim().slice(0, 120)}) — retrying without it`);
+      const { output_config: _drop, ...noEffort } = payload;
+      response = await ask(noEffort);
+    }
   } catch (error) {
     if (timeoutHandle) clearTimeout(timeoutHandle);
     if (error.name === "AbortError") {

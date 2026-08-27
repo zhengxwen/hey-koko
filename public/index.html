@@ -1477,13 +1477,15 @@
                 <option value="32768" selected>32768</option>
               </select>
             </label>
-            <label class="numCtxLabel" id="thinkEffortRow" title="How hard the model should think before answering. Model default changes nothing; a level is sent to models that have thinking levels (Ollama gpt-oss/DeepSeek) and to cloud reasoning models. It applies even with the thinking process hidden.">
+            <label class="numCtxLabel" id="thinkEffortRow" title="How hard the model should think before answering. Model default changes nothing. A level goes to models that have thinking levels — Ollama (gpt-oss, DeepSeek, Qwen3.8) and cloud reasoning models. Extra high and Max exist on Claude and on some Ollama models; a model without the level asked for falls back to plain thinking-on. It applies even with the thinking process hidden.">
               <span id="thinkEffortLabel">Thinking effort</span>
               <select id="thinkEffort">
                 <option value="">Model default</option>
                 <option value="low">Low</option>
                 <option value="medium">Medium</option>
                 <option value="high">High</option>
+                <option value="xhigh">Extra high</option>
+                <option value="max">Max</option>
               </select>
             </label>
           </div>

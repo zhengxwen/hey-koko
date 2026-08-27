@@ -44,9 +44,10 @@ import { applyHighlights, captureAnchor, highlightsInSelection, registerHighligh
 // The server maps it per backend (Ollama thinking levels, OpenAI reasoning_effort).
 // Only the three conversational calls send it; analysis/summary helpers are utility
 // calls where extra reasoning is spent tokens for no visible gain.
+const THINK_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 function thinkEffort() {
   const v = dom.thinkEffort?.value || "";
-  return v === "low" || v === "medium" || v === "high" ? v : "";
+  return THINK_LEVELS.includes(v) ? v : "";
 }
 
 // Streaming markdown re-render throttle. Ollama streams a chunk (often a single

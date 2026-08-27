@@ -18,11 +18,12 @@ async function proxyOllamaChat(req, res, preBody) {
     const reqTimeout = body.timeout;
     const { timeout: _discard, thinkEffort, ...chatBody } = body;
     // ⚙ "Thinking effort": Ollama expresses it through `think` itself, which takes either
-    // a boolean or a level ("low"/"medium"/"high") on models that HAVE levels (gpt-oss,
-    // DeepSeek-V3.1). A level also implies thinking is on, so it overrides the boolean
-    // the browser sends for "show me the reasoning" — the two questions are separate on
-    // our side and one field on Ollama's.
-    if (thinkEffort === "low" || thinkEffort === "medium" || thinkEffort === "high") {
+    // a boolean or a level on models that HAVE levels (gpt-oss, DeepSeek-V3.1, Qwen3.8).
+    // Which levels exist is the model's business, not ours — we pass the level through
+    // and let the retry below handle a model that does not know it. A level also implies
+    // thinking is on, so it overrides the boolean the browser sends for "show me the
+    // reasoning" — the two questions are separate on our side and one field on Ollama's.
+    if (["low", "medium", "high", "xhigh", "max"].includes(thinkEffort)) {
       chatBody.think = thinkEffort;
     }
     // Tool-calling turns are sent with stream:false (more reliable); honor it.

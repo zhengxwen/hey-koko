@@ -360,8 +360,11 @@ function buildPayload({ model, messages, tools, stream, maxTokens, temperature, 
   // ⚙ "Thinking effort" → the o-series/gpt-5 knob of the same idea. Only for reasoning
   // models: a classic chat model 400s on the unknown parameter, and has nothing to spend
   // it on anyway. Absent (the default) leaves the provider's own default in place.
-  if (reasoning && (thinkEffort === "low" || thinkEffort === "medium" || thinkEffort === "high")) {
-    payload.reasoning_effort = thinkEffort;
+  // reasoning_effort tops out at "high" here — the two levels above it are Claude's
+  // vocabulary, so they land on the ceiling this API actually has rather than 400.
+  const EFFORT_FOR_OPENAI = { low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" };
+  if (reasoning && EFFORT_FOR_OPENAI[thinkEffort]) {
+    payload.reasoning_effort = EFFORT_FOR_OPENAI[thinkEffort];
   }
   if (tools) payload.tools = tools;
   if (maxTokens && maxTokens > 0) {
