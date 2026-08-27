@@ -105,6 +105,7 @@ export function saveCurrentSettings() {
         solChunkFF: dom.comfyParamSolChunkFF ? dom.comfyParamSolChunkFF.checked : true,
         noAudio: dom.comfyParamNoAudio?.checked || false,
         h3RefSize: dom.comfyParamH3RefSize?.value || "",
+        h3Anchor: dom.comfyParamH3Anchor?.value || "",
         danceStyle: dom.comfyParamDanceStyle?.value || "",
         danceAmplitude: dom.comfyParamDanceAmplitude?.value || "",
         danceDuration: dom.comfyParamDanceDuration?.value || "",
@@ -368,6 +369,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = cp.solChunkFF !== false;
     if (dom.comfyParamNoAudio) dom.comfyParamNoAudio.checked = !!cp.noAudio;
     if (dom.comfyParamH3RefSize) dom.comfyParamH3RefSize.value = cp.h3RefSize || "";
+    if (dom.comfyParamH3Anchor) dom.comfyParamH3Anchor.value = cp.h3Anchor || "";
     if (dom.comfyParamDanceStyle) dom.comfyParamDanceStyle.value = cp.danceStyle || "";
     if (dom.comfyParamDanceAmplitude) dom.comfyParamDanceAmplitude.value = cp.danceAmplitude || "";
     if (dom.comfyParamDanceDuration) dom.comfyParamDanceDuration.value = cp.danceDuration || "";

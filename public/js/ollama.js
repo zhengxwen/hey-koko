@@ -1934,6 +1934,8 @@ export function updateComfyParamVisibility() {
   // MiniMax H3: reference sizing exists only on the reference→video weights (ref2va).
   // The t2v/i2v file (fl2va) has no reference pipeline, so the knob would be inert there.
   setVis(dom.comfyParamH3RefSize, H3_RE.test(m) && /ref2va/i.test(m));
+  // Same gate as reference sizing: only the r2v weight takes a source clip to anchor.
+  setVis(dom.comfyParamH3Anchor, H3_RE.test(m) && /ref2va/i.test(m));
   // The H3 text-encoder picker applies to BOTH weights (they share the encoder). Hidden
   // when only one build is installed — a menu whose sole entry equals Auto is noise.
   setVis(dom.comfyParamH3Clip, H3_RE.test(m) && (state.comfyH3Encoders || 0) > 1);
@@ -2342,6 +2344,7 @@ function initComfyParamsModal() {
     if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = false;
     if (dom.comfyParamNoAudio) dom.comfyParamNoAudio.checked = false;
     if (dom.comfyParamH3RefSize) dom.comfyParamH3RefSize.value = "";
+    if (dom.comfyParamH3Anchor) dom.comfyParamH3Anchor.value = "";
     if (dom.comfyParamH3Clip) dom.comfyParamH3Clip.value = "";
     updateComfyParamVisibility();
     syncVideoCrfPlaceholder();

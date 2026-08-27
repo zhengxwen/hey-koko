@@ -4566,7 +4566,7 @@ function h3LoraInfo(name) {
 // weight files verified end-to-end, Aug 2026). "It validated" still proves nothing.
 function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
   refImageNames, refVideoName, refAudioName, refImageSize, easyCache, solAttn, solTau, solChunkFF,
-  h3Lora, h3LoraStrength, shiftVideo, shiftAudio }) {
+  h3Lora, h3LoraStrength, shiftVideo, shiftAudio, h3Anchor }) {
   const isRef = /ref2va/i.test(model || "");
   const refs = (Array.isArray(refImageNames) ? refImageNames : []).filter(Boolean).slice(0, H3_MAX_REF_IMAGES);
   const wf = {
@@ -4617,6 +4617,32 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
       h3["ref_audios.ref_audio_0"] = ["rla", 0];
     }
     wf["h3"] = { class_type: "MiniMaxH3ReferenceToVideo", inputs: h3 };
+    // Continuation anchor. `<Video 1>` tells the model to continue from the source and to
+    // keep its structure, but it is a SEMANTIC reference: every output frame is newly
+    // generated, so the seam lands wherever the model puts it. MiniMaxH3AddGuide is the
+    // hard version — it VAE-encodes real frames into `minimax_keyframes` on the
+    // conditioning, pinning them at a frame index. Anchoring the source's LAST frames at
+    // frame 0 makes segment N+1 literally begin with segment N's tail.
+    //
+    // The two are complementary, not alternatives, and they compose without conflict:
+    // the anchor rides on conditioning keyframes, the reference on reference tokens.
+    //
+    // ImageFromBatch takes a NEGATIVE batch_index (core: `if batch_index < 0:
+    // batch_index += s_in.shape[0]`), so "the last N frames" needs no frame count at
+    // build time — which is what makes this a two-node insertion rather than a probe.
+    // It also clamps, so a source shorter than the anchor degrades instead of failing.
+    //
+    // The anchored frames are CONTEXT, not output: the caller trims them off before
+    // concatenating (seg1 + seg2[N:]), which is also why the soundtrack is left free —
+    // the audio inside a region that gets cut cannot be heard.
+    if (h3Anchor > 0 && refVideoName) {
+      wf["atail"] = { class_type: "ImageFromBatch", inputs: {
+        image: ["rgvc", 0], batch_index: -h3Anchor, length: h3Anchor } };
+      wf["aguide"] = { class_type: "MiniMaxH3AddGuide", inputs: {
+        positive: ["h3", 0], latent: ["h3", 1], vae: ["vae", 0],
+        image: ["atail", 0], frame_idx: 0 } };
+      wf["guide"].inputs.conditioning = ["aguide", 0];
+    }
   } else {
     // fl2va: the two keyframes are optional and independent — first only (i2v), last only
     // (generate INTO a still), or both (first-and-last-frame). Neither = pure t2v.
@@ -7795,6 +7821,7 @@ async function generateComfyImage(req, res) {
       let solAttnSkipped = false; // asked for, but ComfyUI-sol-attn is not on this worker
       let h3LoraUsed = null;      // ⚙ H3 LoRA actually mounted
       let h3RecipeUsed = null;    // { steps, shiftVideo, shiftAudio } the LoRA implied
+      let h3AnchorUsed = 0;       // continuation anchor length, in frames, after snapping
       let h3ShiftVideo = 0;       // 0 = no SigmaShift node (the model's own built-in shift)
       let h3ShiftAudio = 0;
       let panoCfg = null;      // …and its own sampler settings, taken from the chosen checkpoint
@@ -8727,12 +8754,32 @@ async function generateComfyImage(req, res) {
             h3RecipeUsed = { steps: v.steps, shiftVideo: info.shiftVideo, shiftAudio: info.shiftAudio };
           }
         }
+        // Continuation anchor, in frames. The node snaps a guide clip DOWN to the model's
+        // 17k+5 clip grid (5 / 22 / 39 / 56 ...) and treats anything under 5 as a single
+        // still, so snap here too: doing it silently inside ComfyUI would make a CLI
+        // "--opt h3Anchor=30" quietly become 22 with nothing said about it.
+        let h3Anchor = Math.max(0, Math.floor(Number(opts.h3Anchor) || 0));
+        if (h3Anchor > 0) {
+          if (!refVideoName) {
+            sendJson(res, 400, { error: "The continuation anchor needs the previous segment attached as the source video — it anchors that clip's last frames at the start of this one. Attach it, or clear the anchor setting." });
+            return;
+          }
+          while (h3Anchor > 5 && h3Anchor % 17 !== 5) h3Anchor -= 1;
+          if (h3Anchor < 5) h3Anchor = 5;
+          // The guide clip has to fit inside the target with room to actually generate.
+          // Filling most of the clip with anchored frames is never what anyone meant.
+          if (h3Anchor * 2 >= v.length) {
+            sendJson(res, 400, { error: `A ${h3Anchor}-frame anchor does not leave enough of this ${v.length}-frame clip to generate. Shorten the anchor or lengthen the clip.` });
+            return;
+          }
+          h3AnchorUsed = h3Anchor;
+        }
         workflow = buildMiniMaxH3({ model, prompt, comp, v, seed,
           firstFrameName, lastFrameName, refImageNames, refVideoName, refAudioName,
           refImageSize: opts.h3RefSize, easyCache: !!opts.easyCache,
           solAttn, solTau: Number(opts.solTau) || 0, solChunkFF,
           h3Lora, h3LoraStrength: Number(opts.h3LoraStrength) || 0,
-          shiftVideo: h3ShiftVideo, shiftAudio: h3ShiftAudio });
+          shiftVideo: h3ShiftVideo, shiftAudio: h3ShiftAudio, h3Anchor });
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
       } else if (model === PANO_T2I) {
         // A recipe, not a checkpoint: it picks its own weights and forces 2:1, since
@@ -9672,7 +9719,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
-        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Anchor: h3AnchorUsed || undefined, imagesUsed });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own

@@ -1246,6 +1246,16 @@
               <option value="max">Max detail · 2048px (slower)</option>
             </select>
           </label>
+          <label title="MiniMax H3 (r2v) only, with the previous segment attached as the source video: pins that clip's LAST N frames as the literal first N frames of this one, so a multi-segment video joins with no seam. The reference tags keep the scene consistent; this makes the join exact. Anchored frames are context, not output — trim them off before concatenating. Snapped down to the model's 5 / 22 / 39 / 56 clip grid.">
+            <span id="comfyParamH3AnchorLabel">Continuation anchor (MiniMax H3)</span>
+            <select id="comfyParamH3Anchor">
+              <option value="">Off — continue by reference only</option>
+              <option value="5">5 frames (0.2s) · minimal overlap</option>
+              <option value="22">22 frames (0.9s) · recommended</option>
+              <option value="39">39 frames (1.6s) · strongest motion carry</option>
+              <option value="56">56 frames (2.3s)</option>
+            </select>
+          </label>
           <label>
             <span id="comfyParamDanceStyleLabel" title="Wan Dancer only: which of the five trained dance genres to perform. Auto picks it from the prompt (e.g. 'street dance' / '街舞'), falling back to Latin.">Dance style (Wan Dancer)</span>
             <select id="comfyParamDanceStyle" title="Wan Dancer only: which of the five trained dance genres to perform. Auto picks it from the prompt (e.g. 'street dance' / '街舞'), falling back to Latin.">
