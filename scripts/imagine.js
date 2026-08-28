@@ -227,6 +227,7 @@ Usage
   imagine.js --help <flag>                     legal values for one flag
                                                (camera, size, sharpen, quality,
                                                 precision, upscale, restore, voice)
+  imagine.js --cutout "bird" -i photo.jpg      cut the subject out by description (SAM3)
   imagine.js --scan                            find ComfyUI machines on the network
 
 Model
@@ -294,6 +295,13 @@ Output
   -q, --quiet              no progress output
       --dry-run            print the request that would be sent, generate nothing
 
+Cutout (SAM3 open-vocabulary segmentation)
+      --cutout <text>      segment what the phrase describes ("bird", "the red car") in
+                           each -i image; writes <name>_cutout.png on transparency
+      --mask-only          write the black/white mask instead of the cut-out subject
+      --threshold <0-1>    detection confidence (default 0.35 — lower finds more)
+      --grow <px>          expand the mask edge (default 6)
+
 Import
       --add <file...>      put existing media in the gallery AS-IS — no model, no render,
                            no re-encode. Images/video/audio/glb; duplicates are detected.
@@ -336,6 +344,10 @@ function parseArgv(argv) {
       }
       case "--list-models": o.listModels = true; break;
       case "--scan": o.scan = true; break;
+      case "--cutout": o.cutout = need(i, a); i++; break;
+      case "--mask-only": o.maskOnly = true; break;
+      case "--threshold": o.threshold = parseFloat(need(i, a)); i++; break;
+      case "--grow": o.grow = parseInt(need(i, a), 10); i++; break;
       case "-m": case "--model": o.model = need(i, a).toLowerCase(); i++; break;
       case "--precision": o.precision = need(i, a); i++; break;
       case "-i": case "--image": o.images.push(need(i, a)); i++; break;
@@ -1192,6 +1204,83 @@ function resampleFile(file, { fps = 0, h265 = false, crf = 0 } = {}) {
   fs.renameSync(tmp, file);
 }
 
+// ── --cutout: describe a subject, get it cut out (SAM3) ──────────────────────
+
+// SAM3.1 open-vocabulary segmentation: a phrase like "bird" becomes a mask. The server
+// owns the graph (/api/comfy-automask, the same one the app's 🖌 auto-mask button uses);
+// this adds the file handling around it.
+//
+// The endpoint returns a black/white MASK. Turning that into a cutout — the subject on
+// transparency — is an alpha merge, done here with ffmpeg rather than by hand-rolling a
+// PNG codec. Without ffmpeg the mask is still written, and the record says so.
+async function cutoutSubject(cli) {
+  const files = cli.images;
+  if (!files.length) throw new Error("--cutout needs an image (-i photo.jpg)");
+  const { execFileSync } = require("node:child_process");
+  let failed = 0;
+  for (const src of files) {
+    const abs = path.resolve(src);
+    try {
+      if (!fs.existsSync(abs)) throw new Error("no such file");
+      const r = await postJson("/api/comfy-automask", {
+        image: fs.readFileSync(abs).toString("base64"),
+        text: cli.cutout,
+        threshold: Number.isFinite(cli.threshold) ? cli.threshold : undefined,
+        grow: Number.isFinite(cli.grow) ? cli.grow : undefined,
+        comfyUrl: cli.comfyUrl || undefined,
+      }, cli.server);
+      const data = r.json;
+      if (!data || !data.mask) {
+        let msg = (data && (data.error || data.detail)) || `automask failed (${r.status})`;
+        // The automask endpoint has no reachability preflight, so an unreachable ComfyUI
+        // surfaces as a bare "fetch failed" — name the likely cause instead.
+        if (/^fetch failed$/i.test(String(msg))) {
+          msg = "cannot reach ComfyUI — check the address (--comfy-url), or that the box is on";
+        }
+        throw new Error(msg);
+      }
+      const maskPng = Buffer.from(String(data.mask).split(",")[1] || "", "base64");
+
+      const base = path.basename(abs, path.extname(abs));
+      const dir = path.resolve(cli.outDir || ".");
+      fs.mkdirSync(dir, { recursive: true });
+      const out = cli.out && files.length === 1 ? path.resolve(cli.out)
+        : path.join(dir, `${base}_${cli.maskOnly ? "mask" : "cutout"}.png`);
+
+      let kind = "cutout", note = null;
+      if (cli.maskOnly) {
+        fs.writeFileSync(out, maskPng);
+        kind = "mask";
+      } else {
+        const tmpMask = path.join(dir, `.${base}.mask.png`);
+        fs.writeFileSync(tmpMask, maskPng);
+        try {
+          // The mask is white-on-black; alphamerge wants it as the alpha plane. scale2ref
+          // guards the case where SAM returned a mask at a different size than the source.
+          execFileSync("ffmpeg", ["-y", "-v", "error", "-i", abs, "-i", tmpMask,
+            "-filter_complex", "[1:v][0:v]scale2ref=w=iw:h=ih[m][s];[m]format=gray[mm];[s][mm]alphamerge[out]",
+            "-map", "[out]", out], { stdio: ["ignore", "ignore", "pipe"] });
+        } catch {
+          fs.writeFileSync(out, maskPng);          // no ffmpeg → the mask is still useful
+          kind = "mask";
+          note = "no-ffmpeg";
+        } finally {
+          try { fs.unlinkSync(tmpMask); } catch { /* already gone */ }
+        }
+      }
+      const rec = { ok: true, file: out, kind, text: cli.cutout, source: abs, ...(note ? { note } : {}) };
+      if (cli.json) process.stdout.write(JSON.stringify(rec) + "\n");
+      else if (!cli.quiet) process.stderr.write(`✓ ${out}${note === "no-ffmpeg" ? "  (mask only — ffmpeg not found)" : ""}\n`);
+    } catch (e) {
+      failed++;
+      if (cli.json) process.stdout.write(JSON.stringify({ ok: false, file: path.resolve(src), error: e.message }) + "\n");
+      else process.stderr.write(`✗ ${src}: ${e.message}\n`);
+      if (!cli.keepGoing) return 2;
+    }
+  }
+  return failed ? 2 : 0;
+}
+
 // ── --add: file the media as-is, no generation ───────────────────────────────
 
 // Pixel size for the ledger. The browser's uploader measures it because it has already
@@ -1312,6 +1401,10 @@ async function main() {
     if (!cli.json && !cli.quiet) process.stderr.write(`\nuse one with:  --comfy-url <url>\n`);
     return 0;
   }
+
+  // Cutout needs ComfyUI (SAM3 runs there) but no model catalogue — it is not a
+  // /imagine model, it is a separate endpoint.
+  if (cli.cutout) return await cutoutSubject(cli);
 
   // Import mode generates nothing, so it needs neither a model list nor ComfyUI —
   // a box with the GPU switched off can still file its media.

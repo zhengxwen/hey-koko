@@ -38,8 +38,12 @@ function dom() {
     auto: document.querySelector("#maskAutoBtn"),
     autoText: document.querySelector("#maskAutoTextInput"),
     autoTextBtn: document.querySelector("#maskAutoTextBtn"),
+    autoThreshold: document.querySelector("#maskAutoThreshold"),
     erase: document.querySelector("#maskEraseBtn"),
     expand: document.querySelector("#maskExpandBtn"),
+    importBtn: document.querySelector("#maskImportBtn"),
+    exportBtn: document.querySelector("#maskExportBtn"),
+    importFile: document.querySelector("#maskImportFile"),
     invert: document.querySelector("#maskInvertBtn"),
     clear: document.querySelector("#maskClearBtn"),
     cancel: document.querySelector("#maskCancelBtn"),
@@ -68,6 +72,7 @@ let autoDragging = false;       // mouse down in 🪄 mode (may become a click o
 let dragStart = null, dragCur = null; // marquee corners (canvas-internal coords)
 let dragAdd = false;            // Shift held → ADD to the mask instead of replacing it
 let shiftHeld = false;          // live Shift state (drives the add-mode + cursor)
+let importAdd = false;          // Shift was held when 📂 Import was clicked → union, not replace
 let baseW = 0, baseH = 0; // fit-to-container display size at zoom 1
 let zoom = 1;
 let cursorHideTimer = null;
@@ -365,6 +370,19 @@ function bindOnce() {
     if (!maskCanvas) return;
     dilateMask(Math.max(1, Math.round(Number(d.brush.value) || 60)));
   });
+  // Import a mask / cut-out from disk. The file input is hidden — the button is the
+  // control, and it remembers whether Shift was down so the choice is made at CLICK
+  // time (the file dialog steals the keyboard, so shiftHeld is stale by "change").
+  d.importBtn.addEventListener("click", (e) => {
+    importAdd = e.shiftKey || shiftHeld;
+    d.importFile.value = "";              // re-picking the SAME file must still fire change
+    d.importFile.click();
+  });
+  d.importFile.addEventListener("change", () => {
+    const f = d.importFile.files && d.importFile.files[0];
+    if (f) importMaskFile(f, importAdd);
+  });
+  d.exportBtn.addEventListener("click", exportMaskFiles);
   d.invert.addEventListener("click", invertMask);
   d.clear.addEventListener("click", clearAll);
   d.zoomIn.addEventListener("click", () => setZoom(zoom * ZOOM_STEP));
@@ -715,7 +733,11 @@ async function runTextSegment() {
   const label = t("mask_findBtn");
   d.autoTextBtn.textContent = t("mask_finding");
   try {
-    const painted = await loadMaskInto(await postAutomask({ text }));
+    // Threshold rides along from the row's own field. Out-of-range or blank → omitted,
+    // and the server applies its own default rather than being handed a nonsense number.
+    const thr = Number(d.autoThreshold?.value);
+    const threshold = (thr >= 0.05 && thr <= 0.95) ? thr : undefined;
+    const painted = await loadMaskInto(await postAutomask({ text, threshold }));
     if (!painted) flashBtn(d.autoTextBtn, t("mask_notFoundText", { q: text.slice(0, 12) }), label);
     else d.autoTextBtn.textContent = label;
   } catch (err) {
@@ -723,6 +745,114 @@ async function runTextSegment() {
   } finally {
     setAutoBusy(false);
   }
+}
+
+// Load a mask or a cut-out image from disk as the selection.
+//
+// Two kinds of file are accepted, told apart by looking at the pixels rather than by
+// asking the user, because both are things people already have lying around:
+//   • a CUT-OUT (transparent PNG, e.g. imagine.js --cutout) → its ALPHA is the mask
+//   • a MASK (black/white image, e.g. --mask-only)          → WHITE is the mask
+// Judging by alpha first matters: a cut-out's colour channels are the subject's own
+// colours, so reading brightness there would select the light parts of the subject and
+// drop the dark ones. Anything fully opaque falls through to brightness.
+async function importMaskFile(file, add = false) {
+  const d = dom();
+  const label = t("mask_import");
+  if (!maskCanvas) return;
+  try {
+    const url = URL.createObjectURL(file);
+    const im = await loadImg(url);
+    URL.revokeObjectURL(url);
+    if (!im) { flashBtn(d.importBtn, "✕ " + t("mask_importFailed"), label); return; }
+
+    // Read the file at ITS OWN size; loadMaskInto scales the result to the mask canvas.
+    const tmp = document.createElement("canvas");
+    tmp.width = im.naturalWidth || im.width;
+    tmp.height = im.naturalHeight || im.height;
+    const tctx = tmp.getContext("2d", { willReadFrequently: true });
+    tctx.drawImage(im, 0, 0);
+    const id = tctx.getImageData(0, 0, tmp.width, tmp.height);
+    const px = id.data;
+    let transparent = 0;
+    for (let p = 3; p < px.length; p += 4) if (px[p] < 250) { transparent++; if (transparent > 64) break; }
+    const useAlpha = transparent > 64;   // a few stray soft pixels are not a cut-out
+    for (let p = 0; p < px.length; p += 4) {
+      const v = useAlpha ? px[p + 3]
+        : (px[p] * 0.299 + px[p + 1] * 0.587 + px[p + 2] * 0.114) | 0;
+      px[p] = px[p + 1] = px[p + 2] = v;  // loadMaskInto reads the RED channel
+      px[p + 3] = 255;
+    }
+    tctx.putImageData(id, 0, 0);
+    const painted = await loadMaskInto(tmp.toDataURL("image/png"), add);
+    if (!painted) flashBtn(d.importBtn, t("mask_importEmpty"), label);
+  } catch (err) {
+    flashBtn(d.importBtn, "✕ " + String(err.message || err).slice(0, 18), label);
+  }
+}
+
+// Save the selection to disk: the MASK (white on black — what a mask input wants) and
+// the picture CUT OUT on transparency (what a compositor wants). Two files rather than a
+// choice, because which one is needed depends on where it is going next, and re-opening
+// the modal to fetch the other is worse than an extra download.
+//
+// The pair round-trips with 📂 Import and with imagine.js --cutout / --mask-only: both
+// forms are read back correctly.
+function downloadDataUrl(url, name) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// The source image with the mask as its alpha channel, at the image's own size.
+async function cutoutDataUrl() {
+  if (!curSrc || !maskCanvas) return null;
+  const im = await loadImg(b64Src(curSrc));
+  if (!im) return null;
+  const c = document.createElement("canvas");
+  c.width = im.naturalWidth || im.width;
+  c.height = im.naturalHeight || im.height;
+  const ctx = c.getContext("2d");
+  ctx.drawImage(im, 0, 0);
+  // maskCanvas is white-on-TRANSPARENT, so its alpha is the selection already —
+  // destination-in keeps exactly the selected pixels, feathered edges included.
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.drawImage(maskCanvas, 0, 0, c.width, c.height);
+  return c.toDataURL("image/png");
+}
+
+// The mask at the SOURCE image's pixel size. exportMask() hands back the working canvas,
+// which is the fit-to-window size — fine for the server (it scales it), but a mask whose
+// dimensions differ from the picture it belongs to is a trap for every other tool it
+// might be dropped into. Falls back to the working-size mask if the source won't load.
+async function fullSizeMaskDataUrl() {
+  const im = curSrc ? await loadImg(b64Src(curSrc)) : null;
+  if (!im || !maskCanvas) return exportMask();
+  const c = document.createElement("canvas");
+  c.width = im.naturalWidth || im.width;
+  c.height = im.naturalHeight || im.height;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(maskCanvas, 0, 0, c.width, c.height);   // white selection over black
+  return c.toDataURL("image/png");
+}
+
+async function exportMaskFiles() {
+  const d = dom();
+  const label = t("mask_export");
+  if (!exportMask()) { flashBtn(d.exportBtn, t("mask_exportEmpty"), label); return; }
+  const mask = await fullSizeMaskDataUrl();
+  const now = new Date();
+  const p2 = (n) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}-${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}`;
+  downloadDataUrl(mask, `mask-${stamp}.png`);
+  const cut = await cutoutDataUrl();
+  // Staggered: two clicks in the same tick land as one download in some browsers.
+  if (cut) setTimeout(() => downloadDataUrl(cut, `cutout-${stamp}.png`), 300);
 }
 
 // ── Reference-image cutout ────────────────────────────────────────────────────

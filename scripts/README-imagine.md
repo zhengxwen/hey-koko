@@ -436,6 +436,44 @@ generates in the same latent.
 Frame interpolation is otherwise not part of the chat surface: in the app it belongs to
 the ✂️ video editor, which owns the output-fps setting there.
 
+## Cutting a subject out by description — `--cutout`
+
+SAM3.1 open-vocabulary segmentation: name what you want in plain words and get it back on
+a transparent background. No model id, no prompt — this is a different endpoint
+(`/api/comfy-automask`, the same one the app's 🖌 auto-mask uses), not a generator.
+
+```bash
+node scripts/imagine.js --cutout "bird" -i photo.jpg -O out/
+node scripts/imagine.js --cutout "the red car" -i a.jpg -i b.jpg -O out/   # several images
+node scripts/imagine.js --cutout "bird" -i photo.jpg --mask-only           # the mask itself
+```
+
+Writes `<name>_cutout.png` (RGBA, subject on transparency) beside `--out-dir`, or
+`<name>_mask.png` with `--mask-only`. `-o` names the file when there is exactly one image.
+
+| flag | meaning |
+| --- | --- |
+| `--cutout <text>` | what to find — a short English phrase ("bird", "the red car"). SAM3 truncates to ~32 tokens |
+| `--mask-only` | write the black/white mask instead of the cut-out subject |
+| `--threshold <0-1>` | detection confidence, default `0.35`; lower finds more (and more false positives) |
+| `--grow <px>` | expand the mask edge, default `6` — a touch of growth hides hairline gaps |
+
+```json
+{"ok":true,"file":"/…/finch_cutout.png","kind":"cutout","text":"bird","source":"/…/finch.jpg"}
+```
+
+The mask comes from ComfyUI; turning it into transparency is a local **ffmpeg** alpha
+merge. Without ffmpeg the mask is written instead and the record carries
+`"note":"no-ffmpeg"` with `kind` back to `mask`.
+
+Two things worth knowing:
+
+- **The first call on a cold box is slow** — the SAM3 checkpoint has to load, which can
+  exceed the server's 120 s deadline for this endpoint and come back as a timeout. Warm,
+  the same call takes ~10 s. If it times out once, simply run it again.
+- **It needs ComfyUI**, unlike `--add`. If the address is wrong or the box is off you get
+  "cannot reach ComfyUI" — `--scan` finds the right one.
+
 ## Importing existing media
 
 `--add` files media in the gallery **as-is** — no model, no render, no re-encode. It is
@@ -471,6 +509,7 @@ Exit codes: **0** all good, **1** usage or connection problem, **2** one or more
 | Upscale tools | `--fps <n>`, `--upscale <auto\|off\|file>`, `--upscale-to <px>`, `--sharpen <off\|light\|medium\|strong>`, `--upscale-denoise <0-1>`, `--restore <auto\|off\|file>` |
 | ⚙ escape hatch | `--opt key=value` (repeatable) |
 | Output | `-o/--out <path>`, `-O/--out-dir <dir>`, `-g/--gallery`, `--json`, `--progress`, `-q/--quiet`, `--dry-run` |
+| Cutout | `--cutout <text>`, `--mask-only`, `--threshold <0-1>`, `--grow <px>` |
 | Import | `--add <file...>` — file existing media in the gallery, no generation |
 | Batch | `--batch <file\|->`, `--continue-on-error` |
 | Server | `--server <url>`, `--comfy-url <url>`, `--scan`, `--timeout <minutes>` |

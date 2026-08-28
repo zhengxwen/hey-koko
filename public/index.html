@@ -1634,6 +1634,8 @@
           <p class="hint" id="maskHint">用画笔涂抹要让 AI 重绘的区域（高亮处），其余部分保持不变。滚轮缩放，放大后可拖动滚动条查看。</p>
           <div class="maskAutoTextRow">
             <input id="maskAutoTextInput" type="text" placeholder="打字自动抠图（SAM3）：bird / person / dog…（英文，可多个用逗号）" />
+            <label class="maskThreshLabel" for="maskAutoThreshold" title="识别阈值：越低找到的越多（也越容易误选），越高越严格。默认 0.35">阈值</label>
+            <input id="maskAutoThreshold" type="number" min="0.05" max="0.95" step="0.05" value="0.35" title="识别阈值：越低找到的越多（也越容易误选），越高越严格。默认 0.35" />
             <button id="maskAutoTextBtn" type="button" class="secondary">🔍 找它</button>
           </div>
           <div class="maskStageScroll" id="maskStageScroll">
@@ -1659,6 +1661,9 @@
             <button id="maskAutoBtn" type="button" class="secondary" title="点一下图中的物体，自动把它抠成蒙版（SAM2）">🪄 智能选择</button>
             <button id="maskEraseBtn" type="button" class="secondary">橡皮擦</button>
             <button id="maskExpandBtn" type="button" class="secondary" title="把蒙版向外扩张，扩张幅度=画笔大小（滑块调，最小2px），可多次点击">扩张边缘</button>
+            <button id="maskImportBtn" type="button" class="secondary" title="把一张蒙版或抠图 PNG 载入为选区。透明 PNG → 用它的透明通道当蒙版；黑白图 → 白色部分是蒙版。按住 Shift 追加到已有选区。">📂 导入蒙版</button>
+            <input id="maskImportFile" type="file" accept="image/*" hidden />
+            <button id="maskExportBtn" type="button" class="secondary" title="把当前选区存下来：蒙版（黑底白图）+ 抠好的透明底图片，两个 PNG。">💾 导出</button>
             <button id="maskInvertBtn" type="button" class="secondary" title="反选：已选和未选区域互换">反选</button>
             <button id="maskClearBtn" type="button" class="secondary">清除</button>
             <span class="maskSpacer"></span>

@@ -4388,6 +4388,37 @@ body.isResizingComposer {
   flex-wrap: wrap;
 }
 
+/* Compact buttons inside the mask modal. The global 42px tap target is generous for a
+   dialog that is almost entirely buttons — two toolbar rows plus the find row ate the
+   canvas — so they run at 3/4 height (32px) here. Padding has to come down with the
+   min-height or the taller ones (line-height 24 + 8/8 padding = 40px) would ignore it.
+   The close ✕ is excluded: it is an 18px icon target, not part of the toolbar. */
+#maskModal button:not(#maskModalClose) {
+  min-height: 32px;
+  padding-block: 4px;
+  font-weight: 400;   /* a toolbar of a dozen buttons reads calmer unbolded */
+  font-size: 14px;
+}
+
+/* The SAM3 threshold sits in the find row. Both need explicit rules: the global
+   `input { width: 100% }` would stretch the number box across the row, and the global
+   `label { display: grid }` would break the word onto its own line. */
+.maskThreshLabel {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 400;   /* labels are bold globally; this one is a quiet unit caption */
+  color: var(--muted);
+  white-space: nowrap;
+}
+.maskAutoTextRow input[type="number"] {
+  /* Wide enough for "0.35" PLUS the spinner arrows Chrome reserves room for — at 4.5em
+     the value was clipped mid-digit. */
+  width: 5.6em;
+  flex: none;
+  text-align: center;
+}
+
 /* 🔍 type-to-segment (SAM3 text prompt) row above the canvas. */
 .maskAutoTextRow {
   display: flex;
