@@ -1133,7 +1133,8 @@ function scanComfy(server, onFound) {
 function probeComfyGpu(url) {
   return new Promise((resolve) => {
     let done = false;
-    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    let timer = null;
+    const finish = (v) => { if (done) return; done = true; if (timer) clearTimeout(timer); resolve(v); };
     try {
       const u = new URL(url);
       const req = (u.protocol === "https:" ? https : http).request({
@@ -1155,7 +1156,11 @@ function probeComfyGpu(url) {
           } catch { finish(null); }
         });
       });
-      req.setTimeout(4000, () => { req.destroy(); finish(null); });
+      // Our OWN timer, not req.setTimeout: that is a SOCKET inactivity timeout, armed
+      // only once the socket is connected. A host the server can reach but we cannot
+      // sits in connect() until the OS gives up (~75 s on macOS), so the scan would
+      // stall on exactly the case this function exists to survive.
+      timer = setTimeout(() => { req.destroy(); finish(null); }, 4000);
       req.on("error", () => finish(null));
       req.end();
     } catch { finish(null); }
