@@ -91,14 +91,23 @@ function loadProviderConfig({ file: filePath, kind, defaultBase, envKey, envBase
     file = {};
   }
   const apiKey = (envKey && process.env[envKey]) || file.apiKey || "";
-  if (!apiKey) return null;
-  let baseUrl = ((envBase && process.env[envBase]) || file.baseUrl || defaultBase).trim();
+  const ownBase = ((envBase && process.env[envBase]) || file.baseUrl || "").trim();
+  // A self-hosted OpenAI-compatible server — llama.cpp's llama-server, vLLM, LM Studio —
+  // has no API key to hand out, and demanding one made those endpoints impossible to
+  // configure at all: the provider was dropped here, silently. So the key is required
+  // only for the vendor's own endpoint, where a request without one is a guaranteed 401.
+  if (!apiKey && !ownBase) return null;
+  if (!apiKey) warnOnce(filePath + ":nokey", `[openai] ${filePath}: no apiKey — talking to ${ownBase} without an Authorization header (fine for a local server, a 401 from a hosted one means it wanted a key).`);
+  let baseUrl = (ownBase || defaultBase).trim();
   baseUrl = baseUrl.replace(/\/+$/, "");
   if (!/^https?:\/\//i.test(baseUrl)) baseUrl = "https://" + baseUrl;
   // Tolerate a baseUrl that already ends in /v1 (common for OpenAI-compatible
   // relays) — apiBase() below normalizes it so we never double up the segment.
   const models = Array.isArray(file.models) ? file.models : [];
-  return { apiKey, baseUrl, models, kind };
+  // `custom` = an endpoint the user named, not the vendor's. It serves exactly the
+  // models it was started with, so the catalogue denoise written for api.openai.com
+  // (keep only gpt-/o1-shaped names) must not be applied to it.
+  return { apiKey, baseUrl, models, kind, custom: !!ownBase };
 }
 
 // Warn at most once per key (loadProviders runs per message — don't spam the log).
@@ -153,9 +162,22 @@ function resolveProvider(model) {
       // be prefix-routed to the openai.json provider (e.g. `deepseek/…` starts with
       // "deepseek" but must not be sent to api.openai.com).
       return p;
+    } else if (p.kind !== "openrouter" && p.custom && !_localModels.has(model)) {
+      // A custom endpoint's own model names follow no naming rule at all — a llama.cpp
+      // server answers with the gguf's path. Nothing can be inferred from such a name,
+      // so route by what that endpoint SAID it serves. Local Ollama names win first;
+      // discovery is cached, so this stays network-free.
+      const disc = _discovered.get(p.baseUrl);
+      if (disc && disc.ids.includes(model)) return p;
     }
   }
   return null;
+}
+
+// No key, no header: an empty `Bearer ` is worse than nothing — some local servers
+// reject it outright, and it tells a hosted one nothing it did not already know.
+function authHeaders(cfg) {
+  return cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {};
 }
 
 // The /v1 prefix. Callers append "/chat/completions" or "/models".
@@ -201,7 +223,7 @@ async function discoverModels(cfg) {
   const to = setTimeout(() => controller.abort(), 8000);
   try {
     const r = await fetch(`${apiBase(cfg)}/models`, {
-      headers: { Authorization: `Bearer ${cfg.apiKey}` },
+      headers: authHeaders(cfg),
       signal: controller.signal,
     });
     clearTimeout(to);
@@ -209,10 +231,12 @@ async function discoverModels(cfg) {
     const data = await r.json();
     const rawIds = [];
     for (const m of data.data || []) {
-      if (m.id && isChatModelId(m.id)) rawIds.push(m.id);
+      // A custom endpoint lists exactly what it loaded — often one gguf path, which
+      // no vendor-name filter would ever pass. Take it at its word.
+      if (m.id && (cfg.custom || isChatModelId(m.id))) rawIds.push(m.id);
     }
     if (!rawIds.length) return null;
-    const entry = { ts: now, ids: denoiseModelIds(rawIds) };
+    const entry = { ts: now, ids: cfg.custom ? rawIds : denoiseModelIds(rawIds) };
     _discovered.set(cfg.baseUrl, entry);
     return entry;
   } catch {
@@ -238,6 +262,22 @@ function contextLengthFor(model) {
   return 128000;
 }
 
+// Is this endpoint on the user's own machine or LAN? A self-hosted llama.cpp / vLLM /
+// LM Studio reached over an OpenAI-compatible API is not "online" in any sense the user
+// cares about: nothing leaves the house, nothing is billed. It still goes through the
+// cloud CODE PATH (same translation, same non-streaming tool turns), so the entry keeps
+// cloud:true and gets this as a second, separate fact.
+function isLocalEndpoint(baseUrl) {
+  let h;
+  try { h = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, ""); } catch { return false; }
+  if (h === "localhost" || h === "::1") return true;
+  if (/\.(local|lan|home|internal)$/.test(h)) return true;          // mDNS + common LAN suffixes
+  if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;             // 172.16/12
+  if (/^169\.254\./.test(h) || /^fe80:/.test(h) || /^f[cd]/.test(h)) return true;  // link-local + ULA
+  return false;
+}
+
 // Append every configured provider's models to an existing list (mutates it in
 // place). Called by claude.listModels so /api/models carries all clouds.
 // cloud:true lets the frontend badge these (☁️) apart from local Ollama models.
@@ -250,10 +290,17 @@ async function injectModels(models) {
       ids = cfg.models;                                 // manual allowlist (always used for openrouter)
     } else {
       const disc = await discoverModels(cfg);           // auto-discover (openai kind only)
-      ids = disc ? disc.ids : DEFAULT_MODELS;           // fallback if /v1/models unavailable
+      // The DEFAULT_MODELS fallback is OpenAI's own catalogue — offering gpt-5 for an
+      // endpoint that could not even be asked what it serves would put a model in the
+      // dropdown that is guaranteed to fail. Only the vendor endpoint gets that guess.
+      ids = disc ? disc.ids : (cfg.custom ? [] : DEFAULT_MODELS);
+      if (!disc && cfg.custom) {
+        warnOnce(cfg.baseUrl + ":nodisc", `[openai] ${cfg.baseUrl}: /v1/models returned nothing usable — no models from this endpoint will be listed. Check the URL (port included), or list them yourself in "models".`);
+      }
     }
+    const lan = isLocalEndpoint(cfg.baseUrl);
     for (const name of ids) {
-      if (!existing.has(name)) { models.push({ name, model: name, cloud: true }); existing.add(name); }
+      if (!existing.has(name)) { models.push({ name, model: name, cloud: true, lan }); existing.add(name); }
     }
   }
 }
@@ -444,7 +491,7 @@ async function proxyChat(res, body) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.apiKey}`,
+        ...authHeaders(cfg),
       },
       body: JSON.stringify(payload),
       signal: controller.signal,
@@ -608,7 +655,7 @@ async function complete(model, messages, { signal, temperature } = {}) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${cfg.apiKey}`,
+      ...authHeaders(cfg),
     },
     body: JSON.stringify(payload),
     signal,
@@ -636,12 +683,13 @@ async function listAllModels() {
     // in openai.json", which may well be DeepSeek/xAI/Qwen, so the UI labels by host.
     let host = "";
     try { host = new URL(cfg.baseUrl).host; } catch { host = cfg.baseUrl; }
+    const lan = isLocalEndpoint(cfg.baseUrl);
     let data;
     const controller = new AbortController();
     const to = setTimeout(() => controller.abort(), 15000);
     try {
       const r = await fetch(`${apiBase(cfg)}/models`, {
-        headers: { Authorization: `Bearer ${cfg.apiKey}` },
+        headers: authHeaders(cfg),
         signal: controller.signal,
       });
       clearTimeout(to);
@@ -662,6 +710,7 @@ async function listAllModels() {
           id: m.id,
           provider: "openrouter",
           host,
+          lan,
           name: m.name || m.id,
           contextLength: m.context_length || 0,
           // Strings like "0.0000001" (per token) — the UI decides how to show them.
@@ -669,8 +718,10 @@ async function listAllModels() {
           description: String(m.description || "").slice(0, 300),
         });
       } else {
-        if (!isChatModelId(m.id)) continue;
-        out.push({ id: m.id, provider: "openai", host, name: m.id, contextLength: contextLengthFor(m.id), pricing: null, description: "" });
+        // Same rule as discovery: a custom endpoint serves exactly what it serves, and
+        // its names (a gguf path, say) match no vendor pattern.
+        if (!cfg.custom && !isChatModelId(m.id)) continue;
+        out.push({ id: m.id, provider: "openai", host, lan, name: m.id, contextLength: contextLengthFor(m.id), pricing: null, description: "" });
       }
     }
   }
@@ -704,7 +755,7 @@ async function embed(model, texts) {
   if (!cfg) throw new Error("OpenAI is not configured");
   const r = await fetch(`${apiBase(cfg)}/embeddings`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.apiKey}` },
+    headers: { "Content-Type": "application/json", ...authHeaders(cfg) },
     body: JSON.stringify({ model, input: texts }),
   });
   if (!r.ok) {

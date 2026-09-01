@@ -140,7 +140,9 @@ export async function loadModels({ force = false } = {}) {
   for (const name of loadExtraModels()) if (!known.has(name)) entries.push({ name, model: name, cloud: true });
   // Online models are opt-in — filtered here, at the one place the dropdown is built,
   // so every caller (startup, an endpoint change, the browse dialog's reload) obeys it.
-  const listed = cloudModelsAllowed() ? entries : entries.filter((m) => !m.cloud);
+  // `lan` models are exempt: a llama.cpp/vLLM server on your own machine or LAN talks
+  // through the cloud code path but is not online — nothing leaves the house.
+  const listed = cloudModelsAllowed() ? entries : entries.filter((m) => !m.cloud || m.lan);
 
   if (listed.length === 0) {
     if (!force) return;
@@ -163,9 +165,11 @@ export async function loadModels({ force = false } = {}) {
   for (const m of listed) {
     const option = document.createElement("option");
     option.value = m.name;  // raw name — this is what /api/chat receives
-    // Symbol prefix only in the label: ☁️ cloud (Claude) vs 💻 local (Ollama).
-    option.textContent = (m.cloud ? "☁️ " : "💻 ") + m.name;
+    // Symbol prefix only in the label: ☁️ online, 🏠 your own network (a self-hosted
+    // OpenAI-compatible server), 💻 this machine's Ollama.
+    option.textContent = (m.cloud ? (m.lan ? "🏠 " : "☁️ ") : "💻 ") + m.name;
     if (m.cloud) option.dataset.cloud = "1";  // lets the send-status pill badge cloud requests
+    if (m.lan) option.dataset.lan = "1";      // …but it is not "online" — see updateCloudBadge
     dom.modelSelect.appendChild(option);
   }
   appendBrowseOption();   // last entry — opens the full-catalog picker (local + cloud)
@@ -247,7 +251,7 @@ export async function openModelBrowser() {
     // With online models off, this dialog is a local-model picker (still worth having:
     // it is how a freshly pulled Ollama model gets into the dropdown). Offering cloud
     // rows here would hand back a model the dropdown then refuses to list.
-    if (!cloudModelsAllowed()) all = all.filter((m) => m.local);
+    if (!cloudModelsAllowed()) all = all.filter((m) => m.local || m.lan);
   } catch (e) {
     listEl.textContent = t("mb_failed", { error: (e && e.message) || "?" });
     return;

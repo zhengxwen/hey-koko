@@ -8764,6 +8764,15 @@ async function generateComfyImage(req, res) {
             sendJson(res, 400, { error: "The continuation anchor needs the previous segment attached as the source video — it anchors that clip's last frames at the start of this one. Attach it, or clear the anchor setting." });
             return;
           }
+          // MiniMaxH3AddGuide landed in ComfyUI 0.34.0 (2026-08-26), which is far newer
+          // than H3 support itself — so "the box runs H3" does NOT imply it has this node.
+          // Unlike Sol-Attn, a missing anchor is not dropped quietly: it changes the OUTPUT
+          // (the segment stops being a strict continuation) and the loss would only surface
+          // at concatenation time, long after the render was paid for.
+          if (!(await comfyHasNodes(["MiniMaxH3AddGuide"]))) {
+            sendJson(res, 400, { error: "The continuation anchor needs MiniMaxH3AddGuide, added in ComfyUI 0.34.0 — the machine that would run this job is on an older build. Update ComfyUI there, or clear the anchor setting and continue by reference alone." });
+            return;
+          }
           while (h3Anchor > 5 && h3Anchor % 17 !== 5) h3Anchor -= 1;
           if (h3Anchor < 5) h3Anchor = 5;
           // The guide clip has to fit inside the target with room to actually generate.

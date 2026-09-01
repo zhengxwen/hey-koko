@@ -195,7 +195,9 @@ export function isCloudModel() {
 // model change and after the model list (re)loads.
 export function updateCloudBadge() {
   if (!dom.avatarCloudBadge) return;
-  const cloud = isCloudModel();
+  // A self-hosted server on your own network goes through the cloud code path but is
+  // not off-premises — badging it ☁️ would say something untrue about where the words go.
+  const cloud = isCloudModel() && dom.modelSelect?.selectedOptions?.[0]?.dataset.lan !== "1";
   dom.avatarCloudBadge.hidden = !cloud;
   if (!cloud) return;
   const label = t("cloud_badge_tooltip", { model: dom.modelSelect.value });
