@@ -1246,6 +1246,15 @@
               <option value="max">Max detail · 2048px (slower)</option>
             </select>
           </label>
+          <label title="MiniMax H3 (r2v / hybrid) only: pin an attached image as a literal frame of the output instead of reading it as a reference. The reference node has no first/last-frame inputs — those exist only on the t2v weight — so this pins them as guide frames, which is how you keyframe a reference model. The first attachment becomes frame 0, the last becomes the final frame, and whatever is left over stays a reference.">
+            <span id="comfyParamH3KeyframesLabel">Keyframes (MiniMax H3 r2v)</span>
+            <select id="comfyParamH3Keyframes">
+              <option value="">Off — every image is a reference</option>
+              <option value="first">First image → first frame</option>
+              <option value="last">Last image → last frame</option>
+              <option value="both">First → first frame, last → last frame</option>
+            </select>
+          </label>
           <label title="MiniMax H3 (r2v) only, with the previous segment attached as the source video: pins that clip's LAST N frames as the literal first N frames of this one, so a multi-segment video joins with no seam. The reference tags keep the scene consistent; this makes the join exact. Anchored frames are context, not output — trim them off before concatenating. Snapped down to the model's 5 / 22 / 39 / 56 clip grid.">
             <span id="comfyParamH3AnchorLabel">Continuation anchor (MiniMax H3)</span>
             <select id="comfyParamH3Anchor">

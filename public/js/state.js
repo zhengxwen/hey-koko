@@ -137,6 +137,7 @@ export const dom = {
   comfyParamNoAudio: document.querySelector("#comfyParamNoAudio"),
   comfyParamH3RefSize: document.querySelector("#comfyParamH3RefSize"),
   comfyParamH3Anchor: document.querySelector("#comfyParamH3Anchor"),
+  comfyParamH3Keyframes: document.querySelector("#comfyParamH3Keyframes"),
   comfyParamDanceStyle: document.querySelector("#comfyParamDanceStyle"),
   comfyParamDanceAmplitude: document.querySelector("#comfyParamDanceAmplitude"),
   comfyParamDanceDuration: document.querySelector("#comfyParamDanceDuration"),

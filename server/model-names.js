@@ -213,6 +213,11 @@ const FILE_ID_RULES = [
   // builder, so it is NOT a precision variant of the stock weight and gets ids of its
   // own. TURBO is step-distilled into the checkpoint, which changes the sampling recipe
   // (6 steps vs 20) — that is a different model to run, hence a separate id.
+  // Hybrid FIRST: its filename contains "turbo" but neither task word, so the ref2va /
+  // fl2va rules below cannot see it and it would fall through to the t2v id. The id keeps
+  // "-r2v" because the hybrid does read references — which is also what makes /skill pick
+  // the reference prompting guide (its rule is idContains "-r2v").
+  [/10eros(?=.*h3)(?=.*hybrid)/, "10eros-max-h3-r2v:hybrid"],
   [/10eros(?=.*h3)(?=.*turbo)(?=.*ref2va)/, "10eros-max-h3-r2v:turbo"],
   [/10eros(?=.*h3)(?=.*turbo)/, "10eros-max-h3-t2v:turbo"],
   [/10eros(?=.*h3)(?=.*ref2va)/, "10eros-max-h3-r2v"],
@@ -261,6 +266,7 @@ const ID_LABELS = {
   "10eros-max-h3-r2v": "10Eros-Max H3 (r2v)",
   "10eros-max-h3-t2v:turbo": "10Eros-Max H3 TURBO (t2v / i2v)",
   "10eros-max-h3-r2v:turbo": "10Eros-Max H3 TURBO (r2v)",
+  "10eros-max-h3-r2v:hybrid": "10Eros-Max H3 TURBO hybrid (r2v / t2v)",
   "ltx2.3-22b": "LTX-2.3 22B",
   "ltx2.5-22b": "LTX-2.5 22B",
   "ltx2.5-22b:union": "LTX-2.5 22B Union",

@@ -181,6 +181,7 @@ function comfyOverrides() {
   // deliberate "max" pick travels (the slow, high-fidelity reference pipeline).
   if (dom.comfyParamH3RefSize?.value) ov.h3RefSize = dom.comfyParamH3RefSize.value;
   if (dom.comfyParamH3Anchor?.value) ov.h3Anchor = Number(dom.comfyParamH3Anchor.value);
+  if (dom.comfyParamH3Keyframes?.value) ov.h3Keyframes = dom.comfyParamH3Keyframes.value;
   if (dom.comfyParamH3Clip?.value) ov.h3TextEncoder = dom.comfyParamH3Clip.value; // "" = auto (best installed tier)
   if (dom.comfyParamH3Lora?.value) ov.h3Lora = dom.comfyParamH3Lora.value;
   const h3LoraStrength = num(dom.comfyParamH3LoraStrength?.value);
@@ -1563,6 +1564,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     }
     // The anchored frames are context, not output — say so on the line, because the file
     // the user gets back silently starts with N frames they already have.
+    if (lastData.h3Keyframes) doneLine += `\n${t("msg_h3KeyframesUsed", { which: lastData.h3Keyframes }, plang)}`;
     if (lastData.h3Anchor) doneLine += `\n${t("msg_h3AnchorUsed", { n: lastData.h3Anchor }, plang)}`;
     if (lastData.solAttnSkipped) doneLine += `\n${t("msg_solAttnSkipped", {}, plang)}`;
     else if (lastData.solAttn) {

@@ -992,6 +992,10 @@ export function resolveModelToken(token) {
 // generic Stable-Diffusion line. The trailing "h3" requirement keeps TenStrip's separate
 // LTX-2.3 10Eros line (no "h3" in its filenames) out of this test.
 const H3_RE = /minimax.?h3|10eros.*h3/i;
+// Twin of h3ReadsRefs in server/comfy.js. A 10Eros "hybrid" build fuses ref2va and fl2va
+// into one file, so its name carries neither task word — matching only /ref2va/ here hides
+// every reference control for exactly the weight that has the most of them.
+const H3_REF_RE = /ref2va|hybrid/i;
 
 // Mirrors LTX_MODEL_RE in server/comfy.js — "sulphur" is an LTX-family checkpoint whose
 // filename says nothing about LTX. Display-side only (auto-defaults / hint / component
@@ -1074,7 +1078,7 @@ const stripLoraExt = (n) => (n || "").replace(/\.(safetensors|ckpt|gguf|pth|sft|
 function syncH3LoraOptions(model) {
   const sel = dom.comfyParamH3Lora;
   if (!sel) return;
-  const want = /ref2va/i.test(model) ? "ref2v" : "fl2v";
+  const want = H3_REF_RE.test(model) ? "ref2v" : "fl2v";
   // A TURBO checkpoint (10Eros-Max) carries the step distillation in its own weights, so
   // a turbo LoRA on top is the same surgery twice. Drop those from the list rather than
   // leave a choice that only ever renders worse; the server refuses the pair too, for the
@@ -1198,7 +1202,7 @@ function comfyModelHint(name) {
   if (/hunyuan/.test(n)) return t("oll_hint_hunyuan");
   // MiniMax H3 — ref2va first. H3_RE covers the community grafts too (10Eros-Max),
   // which are the same architecture and want the same hint.
-  if (H3_RE.test(n)) return /ref2va/.test(n) ? t("oll_hint_minimaxH3Ref") : t("oll_hint_minimaxH3");
+  if (H3_RE.test(n)) return H3_REF_RE.test(n) ? t("oll_hint_minimaxH3Ref") : t("oll_hint_minimaxH3");
   // MSR + Union Control before the generic LTX test — both are distinct LTX modes.
   if (n === "ltx-msr") return t("oll_hint_ltxMsr");
   // The 2.5 union has the same contract and behavior as the 2.3 line (only the stack
@@ -1937,9 +1941,12 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamNoAudio, !!(state.comfyAudioModels && state.comfyAudioModels.has(m)), ".comfyParamCheck");
   // MiniMax H3: reference sizing exists only on the reference→video weights (ref2va).
   // The t2v/i2v file (fl2va) has no reference pipeline, so the knob would be inert there.
-  setVis(dom.comfyParamH3RefSize, H3_RE.test(m) && /ref2va/i.test(m));
+  setVis(dom.comfyParamH3RefSize, H3_RE.test(m) && H3_REF_RE.test(m));
   // Same gate as reference sizing: only the r2v weight takes a source clip to anchor.
-  setVis(dom.comfyParamH3Anchor, H3_RE.test(m) && /ref2va/i.test(m));
+  setVis(dom.comfyParamH3Anchor, H3_RE.test(m) && H3_REF_RE.test(m));
+  // Keyframes exist on the reference path precisely BECAUSE that node has no first/last
+  // frame inputs — on the t2v weight those are real inputs and this would be redundant.
+  setVis(dom.comfyParamH3Keyframes, H3_RE.test(m) && H3_REF_RE.test(m));
   // The H3 text-encoder picker applies to BOTH weights (they share the encoder). Hidden
   // when only one build is installed — a menu whose sole entry equals Auto is noise.
   setVis(dom.comfyParamH3Clip, H3_RE.test(m) && (state.comfyH3Encoders || 0) > 1);
@@ -2349,6 +2356,7 @@ function initComfyParamsModal() {
     if (dom.comfyParamNoAudio) dom.comfyParamNoAudio.checked = false;
     if (dom.comfyParamH3RefSize) dom.comfyParamH3RefSize.value = "";
     if (dom.comfyParamH3Anchor) dom.comfyParamH3Anchor.value = "";
+    if (dom.comfyParamH3Keyframes) dom.comfyParamH3Keyframes.value = "";
     if (dom.comfyParamH3Clip) dom.comfyParamH3Clip.value = "";
     updateComfyParamVisibility();
     syncVideoCrfPlaceholder();

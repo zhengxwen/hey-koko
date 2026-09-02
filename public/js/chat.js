@@ -1122,7 +1122,10 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video, at 
   // against (invented subject_definitions from an unseen picture, references mapped
   // to the wrong subjects, "I meant this as the first frame") only exist when the
   // prompt is ABOUT reference images.
-  const refNote = composed.mode === "ref" ? " " + getPrompt("skillRefNote") : "";
+  // "both" is the hybrid: it reads references like a ref weight, so the reference ground
+  // rules (say when you cannot see an image, confirm which picture is which, a reference
+  // is not a first frame) apply to it just as much.
+  const refNote = (composed.mode === "ref" || composed.mode === "both") ? " " + getPrompt("skillRefNote") : "";
   // Optional dispatch-line extras. Nx batch is universal (every model renders variants);
   // --size is manifest-gated per model because the valid tokens differ (H3 tops out at
   // its native 1376×768 — offering "1080p" there would render nothing better, just

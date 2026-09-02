@@ -162,7 +162,8 @@
       "10eros-max-h3-t2v",
       "10eros-max-h3-r2v",
       "10eros-max-h3-t2v:turbo",
-      "10eros-max-h3-r2v:turbo"
+      "10eros-max-h3-r2v:turbo",
+      "10eros-max-h3-r2v:hybrid"
     ],
     "duration": {
       "minSec": 5.2,
@@ -177,11 +178,16 @@
       { "token": "768x1376", "max": true }
     ],
     "modeRules": [
+      { "idContains": ":hybrid", "mode": "both" },
       { "idContains": "-r2v", "mode": "ref" }
     ],
     "modes": {
       "base": "references/base-en.txt",
-      "ref": "references/ref-en.txt"
+      "ref": "references/ref-en.txt",
+      "both": ["references/base-en.txt", "references/ref-en.txt"]
+    },
+    "modelNotes": {
+      "10eros-max-h3-r2v:hybrid": "This weight is 10Eros-Max's HYBRID build: the ref2va and fl2va checkpoints fused into one file, so it runs ALL of the modes above \u2014 text-to-video, image-to-video, first/last-frame, AND the full-reference modes. Both guides are loaded for that reason. Pick the mode from what the user actually attaches, and never assume references exist: with nothing attached this is a plain T2VA request, and the reference labels, subject_definitions and retention_analysis sections do not belong in the output at all. An attached image is a reference by default; it becomes a literal first or last frame only when the user says so."
     },
     "files": {
       "SKILL.md": {

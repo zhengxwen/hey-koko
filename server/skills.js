@@ -203,7 +203,14 @@ async function handleCompose(req, res) {
     // with it. Vendor guides upsell (BFL's editing rules keep recommending FLUX.2 over
     // the FLUX.1 Kontext actually installed) and assume the vendor's cloud API, which
     // this app never calls. English, like every other model-facing string the server owns.
-    sendJson(res, 200, { name, mode: mode || "", text, duration: def.duration || null, kind: def.kind || "", sizes: def.sizes || null, style: def.style || "", caveats: def.caveats || null });
+    // `modelNotes` — facts about ONE weight, appended to the skill-wide caveats. A guide
+    // describes a family; a specific checkpoint can differ from it in a way the guide
+    // cannot know. 10Eros-Max's hybrid fuses the ref2va and fl2va weights, so a guide
+    // chosen by the "-r2v" in its id describes only half of what it does — and without
+    // being told, the assistant treats references as mandatory and invents them.
+    const notes = (def.modelNotes || {})[modelId];
+    const caveats = [...(def.caveats || []), ...(notes ? [notes] : [])];
+    sendJson(res, 200, { name, mode: mode || "", text, duration: def.duration || null, kind: def.kind || "", sizes: def.sizes || null, style: def.style || "", caveats: caveats.length ? caveats : null });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 

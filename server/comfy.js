@@ -761,6 +761,14 @@ const H3_MODEL_RE = /minimax.?h3|10eros.*h3/i;
 // them a different sampling recipe (6 steps, not 20), and it makes stacking a turbo
 // LoRA on top a double distillation.
 const h3IsTurboWeight = (n) => H3_MODEL_RE.test(n || "") && /turbo/i.test(n || "");
+// 10Eros-Max "hybrid" builds fuse the ref2va and fl2va weights into ONE checkpoint (the
+// delta1024 merge), so their filenames carry NEITHER task word: "10Eros_Max_h3_TURBO-
+// hybrid_beta4_...". Left to the plain /ref2va/ test they read as fl2va and lose the whole
+// reference pipeline — the one thing a hybrid exists to have. Treated as reference-capable
+// here because that is the superset: MiniMaxH3ReferenceToVideo's reference slots are all
+// optional, so a hybrid with nothing attached still runs as plain t2v.
+const H3_HYBRID_RE = /hybrid/i;
+const h3ReadsRefs = (n) => /ref2va/i.test(n || "") || H3_HYBRID_RE.test(n || "");
 
 function videoTypeOf(model) {
   if (!model) return null;
@@ -1513,7 +1521,7 @@ function capsFor(name, group, type, entry) {
   // AND a clip as references, so it carries both i2v and v2v (like BERNINI_AUTO, whose
   // source video is optional too). Checked BEFORE the generic needsVideo rule below,
   // which would otherwise flatten it to a bare ["v2v"] and drop the audio claim.
-  if (type === "minimax-h3") return /ref2va/i.test(name) ? ["i2v", "v2v", "audio"] : ["t2v", "i2v", "audio"];
+  if (type === "minimax-h3") return h3ReadsRefs(name) ? ["i2v", "v2v", "audio"] : ["t2v", "i2v", "audio"];
   if (entry && entry.needsVideo) return name === BERNINI_AUTO ? ["i2v", "v2v"] : ["v2v"];
   if (name === LTX_MSR) return ["i2v", "audio"];   // reference-image driven, generates a soundtrack
   switch (type) {
@@ -1569,7 +1577,7 @@ function videoRank(n) {
   if (/hunyuan/i.test(n)) return 6;
   // MiniMax H3 sits with the general generators; ref2va right after its fl2va sibling.
   if (H3_MODEL_RE.test(n)) {
-    const ref = /ref2va/i.test(n);
+    const ref = h3ReadsRefs(n);
     // Community grafts sort right after the official pair they descend from, so the
     // stock weights stay the first thing in the group.
     if (/10eros/i.test(n)) return ref ? 6.62 : 6.52;
@@ -1627,7 +1635,13 @@ function isModelReady(name, group, type) {
   // live on the 5090 (2026-08-23). Its siblings (fl2va, and the non-turbo ref2va) run
   // through the same builder but at a DIFFERENT step recipe — 20 rather than 6 — so a
   // verified turbo says nothing about them; they stay greyed until each is run.
-  if (/10eros/i.test(name)) return /turbo/i.test(name) && /ref2va/i.test(name);
+  // 10Eros-Max: the TURBO ref2va build (beta_2) was verified by the user on the 5090, and
+  // the TURBO-hybrid (beta_4) end-to-end here on the Spark — 864x480x124 at euler/simple 6
+  // steps in 136 s, clean on-prompt picture with native audio, and both pinned keyframes
+  // landing literally (PSNR 32.4 / 29.0 dB against the inputs, 2.1 dB cross-checked).
+  // The plain fl2va and non-turbo ref2va siblings run a DIFFERENT step recipe (20, not 6)
+  // and have never been run, so they stay greyed.
+  if (/10eros/i.test(name)) return /turbo/i.test(name) || H3_HYBRID_RE.test(name);
   if (name === WAN14B_AUTO) return true;    // Wan 2.2 14B t2v+i2v — verified
   if (name === BERNINI_AUTO) return true;   // Bernini v2v / rv2v — verified end-to-end
   if (name === SCAIL2_ANIMATE) return true; // SCAIL-2 animate — verified
@@ -1720,7 +1734,7 @@ function isModelReady(name, group, type) {
 function refMaskModel(name, type) {
   if (name === LTX_MSR) return true;              // subjects + background are all references
   if (name === LTX25_INGREDIENTS) return true;    // every attachment is a reference on the sheet
-  if (type === "minimax-h3") return /ref2va/i.test(name); // only the r2v weight takes references
+  if (type === "minimax-h3") return h3ReadsRefs(name); // only the reference-reading weights
   return ["phantom", "animate", "scail2", "dancer", "bernini"].includes(type);
 }
 
@@ -1816,12 +1830,12 @@ async function proxyComfyModels(req, res) {
       // accepts a reference video and reference audio. dedupePrecision below collapses
       // each one's precision variants (pruned int8 / bf16) into a single entry.
       if (vt === "minimax-h3") {
-        const isRef = /ref2va/i.test(n);
+        const isRef = h3ReadsRefs(n);
         // ref2va joins the SOURCE-VIDEO group: an attached clip is one of the references
         // it reads (motion / camera / editing rhythm). videoOptional because it is only
         // one of four kinds — images or audio alone are equally valid — so unlike the
         // real video-edit models it must not reject a request that brings no clip.
-        const task = isRef ? "(r2v)" : "(t2v / i2v)";
+        const task = H3_HYBRID_RE.test(n) ? "hybrid (r2v / t2v)" : isRef ? "(r2v)" : "(t2v / i2v)";
         videoModels.push({ name: n, type: vt,
           // A graft must not share the stock weight's label — dedupePrecision keeps them
           // as separate entries (different precisionBase), so identical labels would put
@@ -3840,7 +3854,12 @@ function videoPreset(videoType, model, turbo) {
     // turbo weight at 20 steps is not "safer" — it over-denoises past the schedule it was
     // distilled for. (The card also offers an er_sde route with a hand-written 7-step sigma
     // string; core BasicScheduler cannot take one, so that variant is not wired.)
-    return { sampler: "res_multistep", scheduler: "simple", cfg: 1,
+    // The hybrid builds ship their OWN sampler. TenStrip's card for beta_4: "use
+    // euler/simple 6-8 steps on all modes" — where the beta_2 TURBO recipe was
+    // multires (res_multistep) or er_sde. A sampler is part of a checkpoint's recipe
+    // here, not a user preference, so it is read off the filename like the step count.
+    return { sampler: H3_HYBRID_RE.test(model || "") ? "euler" : "res_multistep",
+      scheduler: "simple", cfg: 1,
       steps: h3IsTurboWeight(model) ? 6 : 20, shift: 0,
       width: 864, height: 480, length: 124, fps: 24, fpsFixed: true,
       dimMult: 32, lenMult: 17, lenOffset: 5, lenMin: 124, lenMax: 362 };
@@ -4567,7 +4586,7 @@ function h3LoraInfo(name) {
 function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
   refImageNames, refVideoName, refAudioName, refImageSize, easyCache, solAttn, solTau, solChunkFF,
   h3Lora, h3LoraStrength, shiftVideo, shiftAudio, h3Anchor }) {
-  const isRef = /ref2va/i.test(model || "");
+  const isRef = h3ReadsRefs(model);
   const refs = (Array.isArray(refImageNames) ? refImageNames : []).filter(Boolean).slice(0, H3_MAX_REF_IMAGES);
   const wf = {
     "unet":  { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
@@ -4635,14 +4654,38 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     // The anchored frames are CONTEXT, not output: the caller trims them off before
     // concatenating (seg1 + seg2[N:]), which is also why the soundtrack is left free —
     // the audio inside a region that gets cut cannot be heard.
+    //
+    // Every guide is a MiniMaxH3AddGuide taking the previous `positive` and returning a
+    // new one, so they CHAIN: continuation anchor → first frame → last frame. The latent
+    // input stays ["h3", 1] on all of them — the node reads it only for the frame count
+    // and canvas size, and the sampler still consumes it directly.
+    let cond = "h3";
     if (h3Anchor > 0 && refVideoName) {
       wf["atail"] = { class_type: "ImageFromBatch", inputs: {
         image: ["rgvc", 0], batch_index: -h3Anchor, length: h3Anchor } };
       wf["aguide"] = { class_type: "MiniMaxH3AddGuide", inputs: {
-        positive: ["h3", 0], latent: ["h3", 1], vae: ["vae", 0],
+        positive: [cond, 0], latent: ["h3", 1], vae: ["vae", 0],
         image: ["atail", 0], frame_idx: 0 } };
-      wf["guide"].inputs.conditioning = ["aguide", 0];
+      cond = "aguide";
     }
+    // First / last frame on the REFERENCE path. MiniMaxH3ReferenceToVideo has no
+    // first_frame / last_frame inputs — those exist only on the fl2va node, and a
+    // checkpoint can be fed by one or the other, never both. Pinning them as guide frames
+    // is the way to keyframe a reference model: frame_idx 0 is the first frame, and -1 is
+    // resolved by the node as frame_count - 1, i.e. the last.
+    if (firstFrameName) {
+      wf["kff"] = { class_type: "LoadImage", inputs: { image: firstFrameName } };
+      wf["gff"] = { class_type: "MiniMaxH3AddGuide", inputs: {
+        positive: [cond, 0], latent: ["h3", 1], vae: ["vae", 0], image: ["kff", 0], frame_idx: 0 } };
+      cond = "gff";
+    }
+    if (lastFrameName) {
+      wf["klf"] = { class_type: "LoadImage", inputs: { image: lastFrameName } };
+      wf["glf"] = { class_type: "MiniMaxH3AddGuide", inputs: {
+        positive: [cond, 0], latent: ["h3", 1], vae: ["vae", 0], image: ["klf", 0], frame_idx: -1 } };
+      cond = "glf";
+    }
+    if (cond !== "h3") wf["guide"].inputs.conditioning = [cond, 0];
   } else {
     // fl2va: the two keyframes are optional and independent — first only (i2v), last only
     // (generate INTO a still), or both (first-and-last-frame). Neither = pure t2v.
@@ -7822,6 +7865,7 @@ async function generateComfyImage(req, res) {
       let h3LoraUsed = null;      // ⚙ H3 LoRA actually mounted
       let h3RecipeUsed = null;    // { steps, shiftVideo, shiftAudio } the LoRA implied
       let h3AnchorUsed = 0;       // continuation anchor length, in frames, after snapping
+      let h3KeyframesUsed = "";   // which attachments were pinned as literal frames
       let h3ShiftVideo = 0;       // 0 = no SigmaShift node (the model's own built-in shift)
       let h3ShiftAudio = 0;
       let panoCfg = null;      // …and its own sampler settings, taken from the chosen checkpoint
@@ -8646,7 +8690,7 @@ async function generateComfyImage(req, res) {
         // Neither graph has a negative branch, so a typed negative prompt is inert here —
         // the "don't do X" instructions belong in the prompt itself, which is also where
         // the soundtrack is described (dialogue, SFX, music are part of the same prompt).
-        const isRef = /ref2va/i.test(model);
+        const isRef = h3ReadsRefs(model);
         // ref2va needs SOMETHING to reference, but the node's own minimum for each of the
         // four groups is 0 — images, a clip and an audio file are interchangeable ways of
         // giving it one. So the gate is "at least one reference of any kind", not "at
@@ -8671,11 +8715,26 @@ async function generateComfyImage(req, res) {
           // DISTINCT filenames per reference — uploadImage overwrites by name, so a shared
           // default would collapse all nine references onto the last image.
           refImageNames = [];
+          // ⚙ keyframes: peel an attachment off the reference list and PIN it as a literal
+          // frame instead. A reference is something the model looks at; a keyframe is a
+          // frame of the output. The reference node cannot express the second, so it goes
+          // through MiniMaxH3AddGuide — the same mechanism as the continuation anchor.
+          let rest = Array.isArray(images) ? images.slice() : [];
+          const kf = String(opts.h3Keyframes || "").trim();
+          if (kf && rest.length) {
+            if (kf === "first" || kf === "both") {
+              firstFrameName = await uploadImage(rest.shift(), controller.signal, `${comfyTag()}_h3kff.png`);
+            }
+            if ((kf === "last" || kf === "both") && rest.length) {
+              lastFrameName = await uploadImage(rest.pop(), controller.signal, `${comfyTag()}_h3klf.png`);
+            }
+          }
           // May legitimately be empty now: a clip or an audio file on its own is a valid
-          // reference set, so `images` can be absent entirely.
-          const refs = (Array.isArray(images) ? images : []).slice(0, H3_MAX_REF_IMAGES);
+          // reference set, so `images` can be absent entirely — and with "both" and two
+          // attachments, every image became a keyframe.
+          const refs = rest.slice(0, H3_MAX_REF_IMAGES);
           for (let i = 0; i < refs.length; i++) refImageNames.push(await uploadImage(refs[i], controller.signal, `${comfyTag()}_h3ref${i}.png`));
-          imagesUsed = refImageNames.length;
+          imagesUsed = refImageNames.length + (firstFrameName ? 1 : 0) + (lastFrameName ? 1 : 0);
         } else if (Array.isArray(images) && images.length) {
           firstFrameName = await uploadImage(images[0], controller.signal, `${comfyTag()}_h3first.png`);
           imagesUsed = 1;
@@ -8758,7 +8817,24 @@ async function generateComfyImage(req, res) {
         // 17k+5 clip grid (5 / 22 / 39 / 56 ...) and treats anything under 5 as a single
         // still, so snap here too: doing it silently inside ComfyUI would make a CLI
         // "--opt h3Anchor=30" quietly become 22 with nothing said about it.
+        // Both the anchor and the keyframes are MiniMaxH3AddGuide, so they share one
+        // availability check and one conflict rule.
+        const h3Kf = isRef ? String(opts.h3Keyframes || "").trim() : "";
+        if (h3Kf && !firstFrameName && !lastFrameName) {
+          sendJson(res, 400, { error: "The keyframe setting needs at least one attached image to pin — attach one, or set it back to Off." });
+          return;
+        }
+        h3KeyframesUsed = [firstFrameName ? "first frame" : null, lastFrameName ? "last frame" : null].filter(Boolean).join(" + ");
+        if (!isRef) h3KeyframesUsed = "";   // the t2v weight has real inputs; nothing was "pinned"
         let h3Anchor = Math.max(0, Math.floor(Number(opts.h3Anchor) || 0));
+        if (h3Anchor > 0 && firstFrameName) {
+          sendJson(res, 400, { error: "The continuation anchor already pins the output's opening frames from the source clip, so a first keyframe would fight it for frame 0. Use one or the other." });
+          return;
+        }
+        if ((h3Kf && (firstFrameName || lastFrameName)) && !(await comfyHasNodes(["MiniMaxH3AddGuide"]))) {
+          sendJson(res, 400, { error: "Pinning a first/last frame on a reference weight needs MiniMaxH3AddGuide, added in ComfyUI 0.34.0 — the machine that would run this job is on an older build. Update ComfyUI there, or set the keyframe option back to Off." });
+          return;
+        }
         if (h3Anchor > 0) {
           if (!refVideoName) {
             sendJson(res, 400, { error: "The continuation anchor needs the previous segment attached as the source video — it anchors that clip's last frames at the start of this one. Attach it, or clear the anchor setting." });
@@ -9728,7 +9804,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
-        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Anchor: h3AnchorUsed || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Anchor: h3AnchorUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own
