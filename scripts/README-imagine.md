@@ -542,6 +542,13 @@ settings-panel value lives. Values are parsed as JSON when they look like it
 Unknown keys are simply ignored by the builder that doesn't read them, so this is a
 forward-compatible way to reach a knob the CLI has no flag for.
 
+`--opt` is understood in all three places a command can be written — as an argv flag, in
+a `/imagine …` line given to `--cmd` or `--batch`, and **in the app's chat composer**, so
+a command can be moved between the terminal and the chat unchanged. Values keep their
+JSON type where they parse as JSON (`true`, `28`) and are sent as strings otherwise; a
+named flag always wins over an `--opt` naming the same key (`--size 720p --opt width=99`
+renders at 720p).
+
 ## Two behaviours worth knowing
 
 - **`--dry-run` prints the exact request and generates nothing.** Use it to check a batch

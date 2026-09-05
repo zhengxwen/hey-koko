@@ -147,6 +147,9 @@ function peelTextFlags(line) {
 function parseImagineLine(line) {
   let rest = String(line).replace(/^\/imagine\b\s*/, "").trim();
   const task = { prompt: "", count: 1, options: {}, negative: "", enhance: false };
+  // Collected apart from the named flags and merged UNDER them below, so precedence does
+  // not depend on typing order. Mirrors parseImagineCommand in public/js/image-gen.js.
+  const rawOpts = {};
 
   const batch = rest.match(/^(\d+)x\s+([\s\S]+)$/);
   if (batch) {
@@ -194,18 +197,29 @@ function parseImagineLine(line) {
       const parsedTracks = parseTrackFlag(take(/^--track\s+(\S+)\s*/, "--track"), task.options.tracks);
       if (typeof parsedTracks === "string") throw new Error(`--track: ${parsedTracks}`);
       task.options.tracks = parsedTracks;
+    } else if (/^--opt\s/.test(rest)) {
+      // Same escape hatch as the argv --opt, so a line copied out of the chat composer
+      // into a batch file means exactly what it meant there.
+      const kv = take(/^--opt\s+(\S+)\s*/, "--opt");
+      const eq = kv.indexOf("=");
+      if (eq <= 0) throw new Error(`--opt needs key=value, got "${kv}"`);
+      const key = kv.slice(0, eq), rawVal = kv.slice(eq + 1);
+      let val = rawVal;
+      try { val = JSON.parse(rawVal); } catch { /* not JSON — keep the plain string */ }
+      rawOpts[key] = val;
     } else if (/^--voice\s/.test(rest)) {
       task.options.ttsVoice = take(/^--voice\s+(\S+)\s*/, "--voice");
     } else {
       throw new Error(`unknown flag ${rest.match(/^(\S+)/)[1]}`);
     }
   }
+  if (Object.keys(rawOpts).length) task.options = { ...rawOpts, ...task.options };
   // A flag written AFTER the prompt was always silently absorbed into the prompt text
   // ("a bird --seed 7" rendered a bird holding the words). That trap was easy to miss
   // while every flag belonged in front; now that --pos / --neg deliberately sit at the
   // END, typing one more flag after them is a natural mistake, so name it. Only KNOWN
   // flag names are rejected, so prose that happens to contain a double dash is safe.
-  const strayFlag = rest.match(/\s--(enhance|size|steps|model|second|seed|quality|voice|track|pos|neg)\b/i);
+  const strayFlag = rest.match(/\s--(enhance|size|steps|model|second|seed|quality|voice|track|opt|pos|neg)\b/i);
   if (strayFlag) throw new Error(`"--${strayFlag[1]}" came after the prompt text — flags go BEFORE the prompt; only --pos and --neg may follow it`);
 
   task.prompt = rest.trim();
@@ -404,7 +418,7 @@ function parseArgv(argv) {
       case "--opt": {
         const kv = need(i, a); i++;
         const eq = kv.indexOf("=");
-        if (eq < 0) throw new Error(`--opt needs key=value, got "${kv}"`);
+        if (eq <= 0) throw new Error(`--opt needs key=value, got "${kv}"`);
         const k = kv.slice(0, eq), raw = kv.slice(eq + 1);
         let v = raw;
         try { v = JSON.parse(raw); } catch { /* plain string */ }

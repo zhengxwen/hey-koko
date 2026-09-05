@@ -387,6 +387,10 @@ function parseImagineCommand(input) {
 
   let rest = (match[1] || "").trim();
   const result = { prompt: "", count: 1, options: {}, positivePrompt: "", negativePrompt: "", enhance: false };
+  // --opt values are collected apart from the named flags and merged UNDER them below,
+  // so "--size 720p --opt width=99" keeps the size the user actually asked for. Writing
+  // both into one bag would make the precedence depend on typing order.
+  const rawOpts = {};
 
   const batchMatch = rest.match(/^(\d+)x\s+(.+)$/s);
   if (batchMatch) {
@@ -516,6 +520,23 @@ function parseImagineCommand(input) {
       if (typeof parsedTracks === "string") return { error: t("img_trackInvalid", { why: parsedTracks }) };
       result.options.tracks = parsedTracks;
       rest = rest.replace(/^--track\s+\S+\s*/, "").trim();
+    } else if (/^--opt\s/.test(rest)) {
+      // Any ⚙ option, verbatim: --opt noAudio=true, --opt sharpen=light. It is the same
+      // escape hatch scripts/imagine.js has, so a command that works in the terminal
+      // works here — settings-panel values are just keys in this same options object,
+      // and there is no reason a knob should be reachable from one surface only.
+      // A value that parses as JSON keeps its type (true / 12 / "…"); anything else is
+      // sent as the string it is. No spaces: one --opt carries one key=value token.
+      const optFlag = rest.match(/^--opt\s+(\S+)/);
+      if (!optFlag) return { error: t("img_optNeedsArg") };
+      const kv = optFlag[1];
+      const eq = kv.indexOf("=");
+      if (eq <= 0) return { error: t("img_optInvalid", { val: kv }) };
+      const key = kv.slice(0, eq), raw = kv.slice(eq + 1);
+      let val = raw;
+      try { val = JSON.parse(raw); } catch { /* not JSON — keep the plain string */ }
+      rawOpts[key] = val;
+      rest = rest.replace(/^--opt\s+\S+\s*/, "").trim();
     } else if (/^--voice\s/.test(rest)) {
       // TTS voice for "photo speaks" (InfiniteTalk): a Kokoro voice id, e.g.
       // zf_xiaoxiao / zm_yunxi / af_heart. Validated server-side; other models ignore it.
@@ -528,6 +549,10 @@ function parseImagineCommand(input) {
       return { error: t("img_unknownArg", { arg: unknownMatch[1], presets: Object.keys(SIZE_PRESETS).join("/") }) };
     }
   }
+
+  // Named flags win over --opt (see rawOpts above). Done before the default-size fill so
+  // "--opt width=…" counts as a size the user set, exactly as "--size" would.
+  if (Object.keys(rawOpts).length) result.options = { ...rawOpts, ...result.options };
 
   if (!result.options.width) {
     const defaultSize = dom.defaultImageSize.value || "1024x1024";
@@ -543,7 +568,7 @@ function parseImagineCommand(input) {
   // while every flag belonged in front; now that --pos / --neg deliberately sit at the
   // END, typing one more flag after them is a natural mistake, so name it. Only KNOWN
   // flag names are rejected, so prose that happens to contain a double dash is safe.
-  const strayFlag = rest.match(/\s--(enhance|size|steps|model|second|seed|quality|voice|track|pos|neg)\b/i);
+  const strayFlag = rest.match(/\s--(enhance|size|steps|model|second|seed|quality|voice|track|opt|pos|neg)\b/i);
   if (strayFlag) return { error: t("img_flagAfterPrompt", { arg: strayFlag[1] }) };
 
 
