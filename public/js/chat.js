@@ -4934,20 +4934,27 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         };
         autosizeInput();
         input.addEventListener("input", autosizeInput);
-        // Enter commits the text and stops there — an edit can be read over before
-        // anything is spent on it. Ctrl+Enter is the shortcut for "and run it now",
-        // the same act as pressing 重发 afterwards (and only where that button would
-        // appear: a user turn that is not /memory or /remind). resendChatMessage
-        // carries the in-page-job guard, so nothing here needs one.
+        // Four ways out, one per intention:
+        //   Enter          save, and ask again — but only if the text actually changed.
+        //                  A user turn is edited in order to re-ask, so the plain key
+        //                  does the whole act; re-running an untouched bubble is not
+        //                  what it was pressed for, so an unchanged Enter just closes.
+        //   Ctrl/Cmd+Enter save the wording and stop there (fix a typo in the record).
+        //   Escape         throw the edit away, leave the bubble as it was.
+        //   click outside  save, don't send. Clicking elsewhere is not a decision to
+        //                  discard what you typed — it is the least destructive reading.
+        // Resend only happens where 重发 itself would appear (a user turn that is not
+        // /memory or /remind); resendChatMessage carries the in-page-job guard.
         // Removing the textarea fires `blur`, whose handler calls this again — and the
         // second call would try to replace a node that is no longer in the document
         // (which throws, and swallowed the resend below). One shot per editor.
         let editorClosed = false;
-        function finishEdit(save, resend = false) {
+        function finishEdit(mode) {            // "send" | "save" | "cancel"
           if (editorClosed) return;
           editorClosed = true;
           const newContent = input.value.trim();
-          if (save && newContent && newContent !== original) {
+          const changed = !!newContent && newContent !== original;
+          if (mode !== "cancel" && changed) {
             const scrollY = dom.messagesEl.scrollTop;
             const tab = getActiveTab();
             // Stash the version this edit replaces (with its own time), so 🕘 can
@@ -4961,17 +4968,20 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
           } else {
             input.replaceWith(text);
           }
-          // Ctrl+Enter with nothing changed is still a resend — the keystroke says "run
-          // this", and having it silently do nothing because a character happened not to
-          // change would be the surprise.
-          if (resend && isResendable(getActiveTab()?.messages?.[index])) resendChatMessage(index);
+          if (mode === "send" && changed && isResendable(getActiveTab()?.messages?.[index])) {
+            resendChatMessage(index);
+          }
         }
         input.addEventListener("keydown", (e) => {
-          // Enter saves; Ctrl+Enter saves AND resends; Shift+Enter is a new line.
-          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finishEdit(true, e.ctrlKey); }
-          if (e.key === "Escape") { finishEdit(false); }
+          // Shift+Enter stays a newline. Cmd is Ctrl's twin here, as it is everywhere
+          // else in this app (see the library's Cmd/Ctrl+Enter import).
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            finishEdit(e.ctrlKey || e.metaKey ? "save" : "send");
+          }
+          if (e.key === "Escape") { finishEdit("cancel"); }
         });
-        input.addEventListener("blur", () => finishEdit(false));
+        input.addEventListener("blur", () => finishEdit("save"));
       });
     }
     item.appendChild(text);
