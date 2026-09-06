@@ -85,10 +85,11 @@
             <div class="comfyModelRow">
               <label id="modelLabel">
                 <span id="modelLabelText">LLM model</span>
+                <!-- Placeholder only. Never name a real-looking model here: whatever
+                     stands in this list before /api/models answers is selectable, and
+                     would be sent as the model on the first message. -->
                 <select id="modelSelect">
-                  <option value="llama3.1:8b">llama3.1:8b</option>
-                  <option value="qwen2.5:7b">qwen2.5:7b</option>
-                  <option value="mistral:7b">mistral:7b</option>
+                  <option id="modelLoadingOption" value="" disabled selected>Loading models…</option>
                 </select>
               </label>
               <button id="llmParamsBtn" type="button" class="secondary comfyParamsBtn" title="LLM parameters">⚙</button>
@@ -894,7 +895,8 @@
               <option value="mxfp8">mxfp8</option>
               <option value="int8">int8</option>
               <option value="nvfp4">nvfp4</option>
-              <option value="fp16">fp16 / bf16</option>
+              <option value="bf16">bf16</option>
+              <option value="fp16">fp16</option>
             </select>
           </label>
           <label>

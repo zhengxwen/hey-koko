@@ -123,6 +123,11 @@ function appendBrowseOption() {
 export function relocalizeBrowseOption() {
   const opt = dom.modelSelect?.querySelector(`option[value="${BROWSE_MODELS_VALUE}"]`);
   if (opt) opt.textContent = "🔍 " + t("model_browseAll");
+  // The "no model detected" line is built in JS too, and it is the ONLY thing on
+  // screen when there is nothing to pick — leaving it in the old language until the
+  // next poll would be the most visible untranslated string in the app.
+  const none = dom.modelSelect?.querySelector('option[data-empty="1"]');
+  if (none) none.textContent = t("model_none");
 }
 
 export async function loadModels({ force = false } = {}) {
@@ -145,11 +150,17 @@ export async function loadModels({ force = false } = {}) {
   const listed = cloudModelsAllowed() ? entries : entries.filter((m) => !m.cloud || m.lan);
 
   if (listed.length === 0) {
-    if (!force) return;
+    // A poll that comes back empty must not blow away a list that is already up — one
+    // failed refresh is not "the models are gone". But on the first load there is
+    // nothing to protect, and bailing out here used to leave the markup's placeholder
+    // standing, so the empty state was never shown. Keep only a list we built.
+    const hasRealOptions = [...dom.modelSelect.options].some((o) => o.dataset.model === "1");
+    if (!force && hasRealOptions) return;
     dom.modelSelect.innerHTML = "";
     const opt = document.createElement("option");
     opt.value = "";
     opt.textContent = t("model_none");
+    opt.dataset.empty = "1";                  // so a language switch can re-label it
     opt.disabled = true;
     opt.selected = true;
     dom.modelSelect.appendChild(opt);
@@ -168,6 +179,7 @@ export async function loadModels({ force = false } = {}) {
     // Symbol prefix only in the label: ☁️ online, 🏠 your own network (a self-hosted
     // OpenAI-compatible server), 💻 this machine's Ollama.
     option.textContent = (m.cloud ? (m.lan ? "🏠 " : "☁️ ") : "💻 ") + m.name;
+    option.dataset.model = "1";               // a real model, as opposed to a placeholder
     if (m.cloud) option.dataset.cloud = "1";  // lets the send-status pill badge cloud requests
     if (m.lan) option.dataset.lan = "1";      // …but it is not "online" — see updateCloudBadge
     dom.modelSelect.appendChild(option);

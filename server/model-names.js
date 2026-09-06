@@ -15,7 +15,7 @@
 // The naming convention:
 //   IN   family + version, parameter count, and the WEIGHT-level role (t2v / i2v / edit /
 //        turbo / dev / kontext) — anything that means "a different file".
-//   OUT  quantisation (fp8 / mxfp8 / nvfp4 / int8 / bf16), "pruned", packaging noise
+//   OUT  quantisation (fp8 / mxfp8 / nvfp4 / int8 / bf16 / fp16), "pruned", packaging noise
 //        (_scaled, _e4m3fn, _convrot, _KJ), the extension. Precision travels as its own
 //        field; it is a property of the build, not of the model.
 //   ":"  separates a MODE — same weights, different graph (bernini:insert, scail2-14b:animate).
@@ -73,8 +73,13 @@ function precisionOf(name) {
   if (tok === "mxfp8") return "mxfp8";
   if (tok.startsWith("fp8")) return "fp8";
   if (tok.includes("int8")) return "int8"; // includes, not startsWith — "pruned_int8_convrot"
-
-  return "fp16"; // fp16 / bf16 — the unquantised tier
+  // bf16 and fp16 are SEPARATE tiers even though both are unquantised 16-bit. They were
+  // folded together while the distinction looked cosmetic, and that made "@bf16" an
+  // invalid token for a file literally named …_bf16.safetensors — the one spelling that
+  // is nearly universal on ComfyUI (fp16 is the rare one). They are also not
+  // interchangeable at load time: a file only exists under one of the two names.
+  if (tok === "bf16") return "bf16";
+  return "fp16";
 }
 
 // Filename minus its quantisation token + extension — the identity a set of
@@ -106,7 +111,9 @@ function pickPrecision(all, name, pref) {
 // is how a model shipping int8 + bf16 ended up defaulting to the unquantised 21 GB
 // file. Quantised beats unquantised, and nvfp4 sits last of the quantised tiers
 // because the most aggressive one should be asked for, not handed out by default.
-const PREC_AUTO_ORDER = ["fp8", "mxfp8", "int8", "nvfp4", "fp16"];
+// bf16 sits ahead of fp16: when a model ships both unquantised builds, bf16 is the one
+// upstream trains and publishes in, and fp16 is usually a converted afterthought.
+const PREC_AUTO_ORDER = ["fp8", "mxfp8", "int8", "nvfp4", "bf16", "fp16"];
 function bestTier(list, nameOf = (x) => x) {
   const arr = list || [];
   for (const tier of PREC_AUTO_ORDER) {
