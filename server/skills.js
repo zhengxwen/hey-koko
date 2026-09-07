@@ -205,9 +205,11 @@ async function handleCompose(req, res) {
     // this app never calls. English, like every other model-facing string the server owns.
     // `modelNotes` — facts about ONE weight, appended to the skill-wide caveats. A guide
     // describes a family; a specific checkpoint can differ from it in a way the guide
-    // cannot know. 10Eros-Max's hybrid fuses the ref2va and fl2va weights, so a guide
-    // chosen by the "-r2v" in its id describes only half of what it does — and without
-    // being told, the assistant treats references as mandatory and invents them.
+    // cannot know. 10Eros-Max's hybrid fuses the ref2va and fl2va weights, so the
+    // reference guide alone describes only half of what it does — and without being
+    // told, the assistant treats references as mandatory and invents them. (Those fused
+    // builds carry no task segment in their id for the same reason; their mode comes
+    // from the build suffix after the colon, so the `-r2v` rule never sees them.)
     const notes = (def.modelNotes || {})[modelId];
     const caveats = [...(def.caveats || []), ...(notes ? [notes] : [])];
     sendJson(res, 200, { name, mode: mode || "", text, duration: def.duration || null, kind: def.kind || "", sizes: def.sizes || null, style: def.style || "", caveats: caveats.length ? caveats : null });

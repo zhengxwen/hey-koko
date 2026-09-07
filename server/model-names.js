@@ -213,6 +213,20 @@ const FILE_ID_RULES = [
   // model. The DiT is the only file that reaches an id: its text encoder and audio VAE
   // are companions resolved off disk, never dropdown entries.
   [/minimax.?music.?3/, "minimax-music3"],
+  // Ref-Delta BEFORE the task-word rules: these builds carry the ref2va capability as a
+  // rank-1024 SVD of the reference delta baked onto the fl2va base, so the filename says
+  // "refdelta" / "Ref-Delta" and never "ref2va" — left to the rules below they take the
+  // t2v id and /imagine -m plus /skill both treat a reference model as text-only.
+  //
+  // NO TASK SEGMENT, deliberately. The "-t2v" / "-r2v" in the stock ids marks a real
+  // restriction: MiniMax ships fl2va and ref2va as two mutually exclusive partitions and
+  // you load one of them. A fused build has no such choice — it runs text-, image-,
+  // first/last-frame- and reference-to-video from one file — so tagging it "-r2v" names
+  // a third of what it does and reads as "the r2v variant of". The absence of the segment
+  // IS the statement. `/skill` picks their guide off the build suffix after the colon,
+  // never off a task word.
+  [/minimax.?h3(?=.*ref[-_]?delta)(?=.*turbo)/, "minimax-h3:fused-turbo"],
+  [/minimax.?h3(?=.*ref[-_]?delta)/, "minimax-h3:refdelta"],
   [/minimax.?h3.*ref2va/, "minimax-h3-r2v"],
   [/minimax.?h3/, "minimax-h3-t2v"],
   // 10Eros-Max — TenStrip's community graft onto H3 (donor character from LTX 2.3 /
@@ -221,10 +235,10 @@ const FILE_ID_RULES = [
   // own. TURBO is step-distilled into the checkpoint, which changes the sampling recipe
   // (6 steps vs 20) — that is a different model to run, hence a separate id.
   // Hybrid FIRST: its filename contains "turbo" but neither task word, so the ref2va /
-  // fl2va rules below cannot see it and it would fall through to the t2v id. The id keeps
-  // "-r2v" because the hybrid does read references — which is also what makes /skill pick
-  // the reference prompting guide (its rule is idContains "-r2v").
-  [/10eros(?=.*h3)(?=.*hybrid)/, "10eros-max-h3-r2v:hybrid"],
+  // fl2va rules below cannot see it and it would fall through to the t2v id. Like the
+  // Ref-Delta builds above it carries no task segment — it fuses both partitions and runs
+  // every mode, so there is no task to name.
+  [/10eros(?=.*h3)(?=.*hybrid)/, "10eros-max-h3:hybrid"],
   [/10eros(?=.*h3)(?=.*turbo)(?=.*ref2va)/, "10eros-max-h3-r2v:turbo"],
   [/10eros(?=.*h3)(?=.*turbo)/, "10eros-max-h3-t2v:turbo"],
   [/10eros(?=.*h3)(?=.*ref2va)/, "10eros-max-h3-r2v"],
@@ -269,11 +283,13 @@ const ID_LABELS = {
   "minimax-music3": "MiniMax Music 3 (text → song)",
   "minimax-h3-t2v": "MiniMax H3 (t2v / i2v)",
   "minimax-h3-r2v": "MiniMax H3 (r2v)",
+  "minimax-h3:refdelta": "MiniMax H3 Ref-Delta Fused (all modes)",
+  "minimax-h3:fused-turbo": "MiniMax H3 Fused Turbo (all modes)",
   "10eros-max-h3-t2v": "10Eros-Max H3 (t2v / i2v)",
   "10eros-max-h3-r2v": "10Eros-Max H3 (r2v)",
   "10eros-max-h3-t2v:turbo": "10Eros-Max H3 TURBO (t2v / i2v)",
   "10eros-max-h3-r2v:turbo": "10Eros-Max H3 TURBO (r2v)",
-  "10eros-max-h3-r2v:hybrid": "10Eros-Max H3 TURBO hybrid (r2v / t2v)",
+  "10eros-max-h3:hybrid": "10Eros-Max H3 TURBO hybrid (all modes)",
   "ltx2.3-22b": "LTX-2.3 22B",
   "ltx2.5-22b": "LTX-2.5 22B",
   "ltx2.5-22b:union": "LTX-2.5 22B Union",

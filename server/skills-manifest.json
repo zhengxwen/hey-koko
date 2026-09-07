@@ -163,7 +163,9 @@
       "10eros-max-h3-r2v",
       "10eros-max-h3-t2v:turbo",
       "10eros-max-h3-r2v:turbo",
-      "10eros-max-h3-r2v:hybrid"
+      "10eros-max-h3:hybrid",
+      "minimax-h3:refdelta",
+      "minimax-h3:fused-turbo"
     ],
     "duration": {
       "minSec": 5.2,
@@ -179,6 +181,8 @@
     ],
     "modeRules": [
       { "idContains": ":hybrid", "mode": "both" },
+      { "idContains": ":fused-turbo", "mode": "both" },
+      { "idContains": ":refdelta", "mode": "both" },
       { "idContains": "-r2v", "mode": "ref" }
     ],
     "modes": {
@@ -187,7 +191,9 @@
       "both": ["references/base-en.txt", "references/ref-en.txt"]
     },
     "modelNotes": {
-      "10eros-max-h3-r2v:hybrid": "This weight is 10Eros-Max's HYBRID build: the ref2va and fl2va checkpoints fused into one file, so it runs ALL of the modes above \u2014 text-to-video, image-to-video, first/last-frame, AND the full-reference modes. Both guides are loaded for that reason. Pick the mode from what the user actually attaches, and never assume references exist: with nothing attached this is a plain T2VA request, and the reference labels, subject_definitions and retention_analysis sections do not belong in the output at all. An attached image is a reference by default; it becomes a literal first or last frame only when the user says so."
+      "minimax-h3:fused-turbo": "This weight is a Ref-Delta Fused build: the reference-to-video capability is a rank-1024 SVD of the ref2va weight delta baked onto the fl2va base, so ONE file runs all of the modes above — text-to-video, image-to-video, first/last-frame, AND the full-reference modes. Both guides are loaded for that reason. Pick the mode from what the user actually attaches, and never assume references exist: with nothing attached this is a plain T2VA request, and the reference labels, subject_definitions and retention_analysis sections do not belong in the output at all. An attached image is a reference by default; it becomes a literal first or last frame only when the user says so.",
+      "minimax-h3:refdelta": "This weight is a Ref-Delta Fused build: the reference-to-video capability is a rank-1024 SVD of the ref2va weight delta baked onto the fl2va base, so ONE file runs all of the modes above — text-to-video, image-to-video, first/last-frame, AND the full-reference modes. Both guides are loaded for that reason. Pick the mode from what the user actually attaches, and never assume references exist: with nothing attached this is a plain T2VA request, and the reference labels, subject_definitions and retention_analysis sections do not belong in the output at all. An attached image is a reference by default; it becomes a literal first or last frame only when the user says so.",
+      "10eros-max-h3:hybrid": "This weight is 10Eros-Max's HYBRID build: the ref2va and fl2va checkpoints fused into one file, so it runs ALL of the modes above \u2014 text-to-video, image-to-video, first/last-frame, AND the full-reference modes. Both guides are loaded for that reason. Pick the mode from what the user actually attaches, and never assume references exist: with nothing attached this is a plain T2VA request, and the reference labels, subject_definitions and retention_analysis sections do not belong in the output at all. An attached image is a reference by default; it becomes a literal first or last frame only when the user says so."
     },
     "files": {
       "SKILL.md": {

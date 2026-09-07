@@ -1006,8 +1006,16 @@ export function resolveModelToken(token) {
 const H3_RE = /minimax.?h3|10eros.*h3/i;
 // Twin of h3ReadsRefs in server/comfy.js. A 10Eros "hybrid" build fuses ref2va and fl2va
 // into one file, so its name carries neither task word — matching only /ref2va/ here hides
-// every reference control for exactly the weight that has the most of them.
-const H3_REF_RE = /ref2va|hybrid/i;
+// every reference control for exactly the weight that has the most of them. "ref-delta" is
+// the same story from a different publisher (the ref2va delta baked onto an fl2va base),
+// with the separator spelled either way.
+const H3_REF_RE = /ref2va|hybrid|ref[-_]?delta/i;
+// Twin of h3RefDeltaTurbo in server/comfy.js. These weights carry SLA block-sparse
+// attention in their recipe, and the server drops the ⚙ Sol-Attn preference when it
+// applies rather than stacking two sparse backends. Showing the Sol controls for them
+// would be three switches that do nothing — the failure mode the user notices only by
+// diffing the done-line against what they picked.
+const h3RefDeltaTurbo = (n) => /ref[-_]?delta/i.test(n || "") && H3_RE.test(n || "") && /turbo/i.test(n || "");
 
 // Mirrors LTX_MODEL_RE in server/comfy.js — "sulphur" is an LTX-family checkpoint whose
 // filename says nothing about LTX. Display-side only (auto-defaults / hint / component
@@ -1973,8 +1981,11 @@ export function updateComfyParamVisibility() {
   const h3LoraCount = (dom.comfyParamH3Lora?.options.length || 1) - 1;
   setVis(dom.comfyParamH3Lora, h3 && h3LoraCount > 0);
   setVis(dom.comfyParamH3LoraStrength, h3 && h3LoraCount > 0 && !!dom.comfyParamH3Lora?.value);
-  setVis(dom.comfyParamSolAttn, h3);
-  setVis(dom.comfyParamSolTau, h3 && !!dom.comfyParamSolAttn?.value); // tau is meaningless with Sol off
+  // MLP chunking stays: it is a memory patch, not an attention backend, and the server
+  // keeps it on under SLA too.
+  const h3Sla = h3 && h3RefDeltaTurbo(m);
+  setVis(dom.comfyParamSolAttn, h3 && !h3Sla);
+  setVis(dom.comfyParamSolTau, h3 && !h3Sla && !!dom.comfyParamSolAttn?.value); // tau is meaningless with Sol off
   setVis(dom.comfyParamSolChunkFF, h3, ".comfyParamCheck");
   // LTX family only (incl. Sulphur) — the optional LoRA slot. It is the one builder
   // with a user-pickable LoRA; every other model mounts its LoRAs automatically.

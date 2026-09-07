@@ -768,7 +768,36 @@ const h3IsTurboWeight = (n) => H3_MODEL_RE.test(n || "") && /turbo/i.test(n || "
 // here because that is the superset: MiniMaxH3ReferenceToVideo's reference slots are all
 // optional, so a hybrid with nothing attached still runs as plain t2v.
 const H3_HYBRID_RE = /hybrid/i;
-const h3ReadsRefs = (n) => /ref2va/i.test(n || "") || H3_HYBRID_RE.test(n || "");
+// Third spelling of the same trap: the Ref-Delta line ships the reference capability as a
+// rank-1024 SVD of the ref2va weight delta baked onto the fl2va base, so its filenames say
+// "refdelta" / "Ref-Delta" ("minimax_h3_fused_refdelta_r1024_turbo8_…", xmarre's
+// "MiniMax-H3-Pruned-Ref-Delta-Fused-r1024-comfy-…") and never the task word. The separator
+// is optional because the two publishers spell it differently. Whenever a new H3 checkpoint
+// appears, check this test FIRST: a miss here is silent — the weight loads, samples and
+// saves, it just never sees the reference images.
+const H3_REFDELTA_RE = /ref[-_]?delta/i;
+const h3ReadsRefs = (n) =>
+  /ref2va/i.test(n || "") || H3_HYBRID_RE.test(n || "") || H3_REFDELTA_RE.test(n || "");
+// How many steps a distilled checkpoint was distilled FOR — part of the weights, read off
+// the filename like the sampler. Every publisher picked a different ladder and running past
+// it over-denoises. TenStrip's beta_4 card: "euler/simple 6-8 steps on all modes". The
+// Ref-Delta Fused card is blunter — its own heading is "Steps: it says 8, run it at 4",
+// and its ladder (1152x640 x 243 frames) measures 4 -> 76 s, 6 -> 80 s, 8 -> 103 s, so 4 is
+// both the recommended and the cheapest. Only consulted for turbo weights; an undistilled
+// checkpoint (xmarre's plain Ref-Delta base) still takes the 20-step path.
+const h3TurboSteps = (n) => (H3_REFDELTA_RE.test(n || "") ? 4 : 6);
+// Weights that follow the Ref-Delta Fused Turbo card. That card specifies more than a
+// sampler and a step count: SLA block-sparse attention with five fixed values, and the
+// int8 video VAE by name. None of it is a tuning knob — same category as the sampler, so
+// it is read off the filename too. Scoped to the turbo build because that is the only one
+// the card measures; the plain Ref-Delta base has no published recipe and must not
+// inherit one.
+const h3RefDeltaTurbo = (n) => H3_REFDELTA_RE.test(n || "") && h3IsTurboWeight(n);
+// Verbatim from the card. The node sits between the LoRA loaders and the shift, exactly
+// where the published graph puts it: UNETLoader -> H3SLAAttention -> MiniMaxH3SigmaShift
+// -> BasicScheduler + BasicGuider.
+const H3_SLA_RECIPE = { sparsity_ratio: 0.9, block_size: "64", min_seq_len: 8192,
+  dense_last_steps: 0, protect_audio: true, enabled: true };
 
 function videoTypeOf(model) {
   if (!model) return null;
@@ -3664,7 +3693,12 @@ async function videoCompanions(videoType, model, opts = {}) {
       || (opts.precision && opts.precision !== "auto" && clipGroup.find((x) => precisionOf(x) === opts.precision))
       || bestTier(clipGroup)
       || find(clips, /minimax/i);
-    const vae = find(vaes, /minimax.*h3.*video.*vae/i) || find(vaes, /minimax.*video.*vae/i);
+    // The Ref-Delta Fused Turbo card names the int8 video VAE explicitly. Left to the
+    // generic match it would get the fp16 one instead — not because fp16 is wrong, but
+    // because "f" sorts before "i" and first-match decides. Falls back to the generic
+    // pick so a box without that file still runs.
+    const vae = (h3RefDeltaTurbo(model) && find(vaes, /minimax.*h3.*video.*vae.*int8/i))
+      || find(vaes, /minimax.*h3.*video.*vae/i) || find(vaes, /minimax.*video.*vae/i);
     const audioVae = find(vaes, /minimax.*h3.*audio.*vae/i) || find(vaes, /minimax.*audio.*vae/i);
     const missing = [];
     if (!clip) missing.push("qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors → text_encoders/");
@@ -3860,7 +3894,7 @@ function videoPreset(videoType, model, turbo) {
     // here, not a user preference, so it is read off the filename like the step count.
     return { sampler: H3_HYBRID_RE.test(model || "") ? "euler" : "res_multistep",
       scheduler: "simple", cfg: 1,
-      steps: h3IsTurboWeight(model) ? 6 : 20, shift: 0,
+      steps: h3IsTurboWeight(model) ? h3TurboSteps(model) : 20, shift: 0,
       width: 864, height: 480, length: 124, fps: 24, fpsFixed: true,
       dimMult: 32, lenMult: 17, lenOffset: 5, lenMin: 124, lenMax: 362 };
   }
@@ -4585,7 +4619,7 @@ function h3LoraInfo(name) {
 // weight files verified end-to-end, Aug 2026). "It validated" still proves nothing.
 function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
   refImageNames, refVideoName, refAudioName, refImageSize, easyCache, solAttn, solTau, solChunkFF,
-  h3Lora, h3LoraStrength, shiftVideo, shiftAudio, h3Anchor }) {
+  h3Lora, h3LoraStrength, shiftVideo, shiftAudio, h3Anchor, h3Sla }) {
   const isRef = h3ReadsRefs(model);
   const refs = (Array.isArray(refImageNames) ? refImageNames : []).filter(Boolean).slice(0, H3_MAX_REF_IMAGES);
   const wf = {
@@ -4716,6 +4750,15 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
       model: [head, 0], lora_name: h3Lora,
       strength_model: h3LoraStrength > 0 ? h3LoraStrength : 1.0 } };
     head = "lora";
+  }
+  if (h3Sla) {
+    // After the LoRA loaders and before the shift — the pack's own rule is "SLA must be
+    // last" among attention backends, and the published graph feeds its output straight
+    // into MiniMaxH3SigmaShift. Unlike Sol-Attn this one IS on the schedule path, because
+    // that is where the reference graph puts it; it patches attention only, so the sigma
+    // table is unaffected either way.
+    wf["sla"] = { class_type: "H3SLAAttention", inputs: { model: [head, 0], ...H3_SLA_RECIPE } };
+    head = "sla";
   }
   if (shiftVideo > 0) {
     wf["shift"] = { class_type: "MiniMaxH3SigmaShift", inputs: {
@@ -7862,6 +7905,9 @@ async function generateComfyImage(req, res) {
       let solAttnUsed = null;     // Sol-Attn mode actually applied ("bf16"/"int8_qk"/"int8_qk_pv")
       let solChunkUsed;           // MLP chunking actually applied
       let solAttnSkipped = false; // asked for, but ComfyUI-sol-attn is not on this worker
+      let h3Sla = false;          // this weight's recipe calls for SLA block-sparse attention
+      let h3SlaUsed;              // it actually ran
+      let h3SlaSkipped = false;   // recipe wanted it, the SLA node pack is not on this worker
       let h3LoraUsed = null;      // ⚙ H3 LoRA actually mounted
       let h3RecipeUsed = null;    // { steps, shiftVideo, shiftAudio } the LoRA implied
       let h3AnchorUsed = 0;       // continuation anchor length, in frames, after snapping
@@ -8769,6 +8815,15 @@ async function generateComfyImage(req, res) {
           solAttn = "";
         }
         if (solChunkFF && !(await comfyHasNodes(["MiniMaxH3ChunkFeedForward"]))) solChunkFF = false;
+        // SLA is this weight's recipe, so it wins over the ⚙ Sol-Attn preference rather
+        // than stacking with it: two sparse backends on one model is the case the pack
+        // warns about (KJ's low-VRAM attention plus SLA moved the take 17 dB). Missing
+        // node = dense, which the card explicitly allows ("Dense works if you have no
+        // sparse pack; expect the audio to be softer") — reported, never silent.
+        h3Sla = h3RefDeltaTurbo(model);
+        if (h3Sla && !(await comfyHasNodes(["H3SLAAttention"]))) { h3Sla = false; h3SlaSkipped = true; }
+        if (h3Sla) { solAttn = ""; solAttnSkipped = false; }
+        h3SlaUsed = h3Sla || undefined;
         solAttnUsed = solAttn || null;
         solChunkUsed = solChunkFF || undefined;
 
@@ -8864,7 +8919,7 @@ async function generateComfyImage(req, res) {
           refImageSize: opts.h3RefSize, easyCache: !!opts.easyCache,
           solAttn, solTau: Number(opts.solTau) || 0, solChunkFF,
           h3Lora, h3LoraStrength: Number(opts.h3LoraStrength) || 0,
-          shiftVideo: h3ShiftVideo, shiftAudio: h3ShiftAudio, h3Anchor });
+          shiftVideo: h3ShiftVideo, shiftAudio: h3ShiftAudio, h3Anchor, h3Sla });
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
       } else if (model === PANO_T2I) {
         // A recipe, not a checkpoint: it picks its own weights and forces 2:1, since
@@ -9804,7 +9859,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
-        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Anchor: h3AnchorUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Sla: h3SlaUsed, h3SlaSkipped: h3SlaSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Anchor: h3AnchorUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own
