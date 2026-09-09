@@ -21,7 +21,7 @@
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
-const { sendJson } = require("./utils");
+const { sendJson, describeFetchError } = require("./utils");
 
 const CLAUDE_CONFIG_PATH = path.join(config.DATA_DIR, "claude.json");
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
@@ -384,7 +384,7 @@ async function proxyChat(res, body) {
     if (error.name === "AbortError") {
       sendJson(res, 504, { error: "Request timed out: Claude exceeded the configured response time limit." });
     } else {
-      sendJson(res, 502, { error: "Cannot connect to the Claude service. Check the base URL and network.", detail: error.message });
+      sendJson(res, 502, { error: await describeFetchError(error, `${cfg.baseUrl}/v1/messages`, "the Claude service"), detail: error.message });
     }
     return;
   }

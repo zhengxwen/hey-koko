@@ -2098,8 +2098,11 @@ export async function loadEmbedModels() {
     for (const m of entries) {
       const opt = document.createElement("option");
       opt.value = m.name;  // raw name — sent to the embed endpoints unchanged
-      opt.textContent = (m.cloud ? "☁️ " : "💻 ") + m.name;  // ☁️ cloud vs 💻 local Ollama
+      // Same three-way scheme as the chat picker: ☁️ online, 🏠 your own network,
+      // 💻 this machine's Ollama.
+      opt.textContent = (m.cloud ? (m.lan ? "🏠 " : "☁️ ") : "💻 ") + m.name;
       if (m.cloud) opt.dataset.cloud = "1";
+      if (m.lan) opt.dataset.lan = "1";
       dom.embedModelSelect.appendChild(opt);
     }
     if (current && names.includes(current)) {

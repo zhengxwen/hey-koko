@@ -24,7 +24,7 @@
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
-const { sendJson } = require("./utils");
+const { sendJson, describeFetchError } = require("./utils");
 
 const OPENAI_CONFIG_PATH = path.join(config.DATA_DIR, "openai.json");
 const OPENROUTER_CONFIG_PATH = path.join(config.DATA_DIR, "openrouter.json");
@@ -501,7 +501,7 @@ async function proxyChat(res, body) {
     if (error.name === "AbortError") {
       sendJson(res, 504, { error: "Request timed out: OpenAI exceeded the configured response time limit." });
     } else {
-      sendJson(res, 502, { error: "Cannot connect to the OpenAI service. Check the base URL and network.", detail: error.message });
+      sendJson(res, 502, { error: await describeFetchError(error, `${apiBase(cfg)}/chat/completions`, "the OpenAI-compatible endpoint"), detail: error.message });
     }
     return;
   }

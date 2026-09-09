@@ -189,15 +189,23 @@ export function isCloudModel() {
   return dom.modelSelect?.selectedOptions?.[0]?.dataset.cloud === "1";
 }
 
+// The OTHER question, and the one every user-facing cue wants: does this model live
+// somewhere else? A self-hosted llama.cpp/vLLM on your own machine or LAN answers an
+// OpenAI-shaped API — so it travels the cloud CODE PATH (isCloudModel above, which
+// picks the transport) while nothing it is told ever leaves the house. Badges, pills
+// and anything else that tells the user "this is going out" must ask THIS one.
+export function isOffPremisesModel() {
+  const opt = dom.modelSelect?.selectedOptions?.[0];
+  return opt?.dataset.cloud === "1" && opt.dataset.lan !== "1";
+}
+
 // Show/hide the persistent ☁️ avatar badge based on the selected model, naming the
 // specific model in both the tooltip and the accessible label — a sighted user
 // gets the emoji, everyone else needs the label to reach the same cue. Call on
 // model change and after the model list (re)loads.
 export function updateCloudBadge() {
   if (!dom.avatarCloudBadge) return;
-  // A self-hosted server on your own network goes through the cloud code path but is
-  // not off-premises — badging it ☁️ would say something untrue about where the words go.
-  const cloud = isCloudModel() && dom.modelSelect?.selectedOptions?.[0]?.dataset.lan !== "1";
+  const cloud = isOffPremisesModel();
   dom.avatarCloudBadge.hidden = !cloud;
   if (!cloud) return;
   const label = t("cloud_badge_tooltip", { model: dom.modelSelect.value });

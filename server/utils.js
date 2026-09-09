@@ -70,4 +70,51 @@ function cleanSpeechText(s) {
     .trim();
 }
 
-module.exports = { sendJson, serveStatic, readBody, cleanSpeechText, findCommand };
+// "Cannot connect. Check the base URL and network." was true and useless: it named
+// neither the address tried nor what went wrong, and the one detail that answers both
+// (fetch's cause code) was being put in a field the browser never displays. Say which
+// endpoint refused and why — those two facts are the whole diagnosis.
+// Which addresses the name actually resolved to. When a host has several (two NICs,
+// or IPv4 + a fistful of IPv6 privacy addresses) and the service listens on exactly
+// one of them, "timed out" alone is unreadable — the connect went to an address that
+// is real but not serving. Best-effort and time-boxed: a diagnosis must never be the
+// slow part of reporting a failure.
+async function resolvedAddresses(url) {
+  let host = "";
+  try { host = new URL(url).hostname; } catch { return ""; }
+  if (/^[\d.]+$/.test(host) || host.includes(":")) return "";   // already a literal
+  try {
+    const dns = require("dns").promises;
+    const all = await Promise.race([
+      dns.lookup(host, { all: true }),
+      new Promise((resolve) => setTimeout(() => resolve(null), 1000)),
+    ]);
+    if (!all || !all.length) return "";
+    const list = all.map((a) => a.address);
+    const shown = list.slice(0, 6).join(", ") + (list.length > 6 ? `, +${list.length - 6} more` : "");
+    return list.length > 1
+      ? ` The name resolves to ${list.length} addresses (${shown}) — a server bound to just one of them is reachable only at that one.`
+      : ` The name resolves to ${shown}.`;
+  } catch { return ""; }
+}
+
+async function describeFetchError(error, url, what) {
+  const code = error?.cause?.code || error?.code || "";
+  const why = {
+    ECONNREFUSED: "connection refused — nothing is listening on that port, or the server accepts only connections from its own machine (a llama.cpp/vLLM started with --host 127.0.0.1 does exactly this; start it with --host 0.0.0.0, or tunnel the port)",
+    ENOTFOUND: "host not found — check the name",
+    EAI_AGAIN: "host lookup failed — check the name and DNS",
+    ETIMEDOUT: "timed out — the address is not answering",
+    UND_ERR_CONNECT_TIMEOUT: "timed out — the address is not answering",
+    ECONNRESET: "the connection was reset by the far end",
+    EHOSTUNREACH: "no route to that host",
+    ENETUNREACH: "the network is unreachable from here",
+    CERT_HAS_EXPIRED: "the server's TLS certificate has expired",
+  }[code] || (error?.message ? String(error.message) : "unknown error");
+  const where = (code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT" || code === "ECONNREFUSED" || code === "EHOSTUNREACH")
+    ? await resolvedAddresses(url)
+    : "";
+  return `Cannot reach ${what} at ${url}: ${why}.${where}`;
+}
+
+module.exports = { sendJson, serveStatic, readBody, cleanSpeechText, findCommand, describeFetchError };

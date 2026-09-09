@@ -9,7 +9,7 @@ import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadin
          fileIntoGallery, sniffImageMime, cacheGalleryThumb } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams, addBlockCopyButtons } from './markdown.js';
 import { renderRelationGraph } from './relation-graph.js';
-import { setAvatarState, showExpression, detectExpression, isCloudModel, resetAvatarIdle } from './avatar.js';
+import { setAvatarState, showExpression, detectExpression, isCloudModel, isOffPremisesModel, resetAvatarIdle } from './avatar.js';
 import { speakMessage, stopSpeech } from './speech.js';
 import { saveChat, saveTabs } from './settings.js';
 import { getActiveTab, getTab, createTab, switchTab, renderTabs, renderAttachments } from './tabs.js';
@@ -128,8 +128,10 @@ function sendingStatusText() {
     : t("status_sending");
   // Context-full trimming is never silent: annotate how many older messages were dropped.
   if (_sendStatusTrimCount > 0) base += " " + t("status_sendingTrimmed", { n: _sendStatusTrimCount });
-  // Cloud requests leave the machine — prefix the pill with ☁️ (mirrors the avatar badge).
-  return isCloudModel() ? "☁️ " + base : base;
+  // Only a request that actually leaves the house gets the ☁️ (mirrors the avatar
+  // badge). A LAN model reaches the same code path but goes nowhere — see
+  // isOffPremisesModel.
+  return isOffPremisesModel() ? "☁️ " + base : base;
 }
 function scheduleStatus(kind, key) {
   clearTimeout(_sendStatusTimer);
