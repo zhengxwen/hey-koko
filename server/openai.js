@@ -124,6 +124,19 @@ function noteLocalModels(models) {
   for (const m of models) if (m && !m.cloud && m.name) _localModels.add(m.name);
 }
 
+// The set above is what keeps `qwen3.8:27b` from being prefix-routed away from Ollama,
+// and it is filled by the /api/models poll — so between a server restart and the next
+// poll it is empty, and a message sent from an already-open page in that window would
+// be routed by name alone. One fire-and-forget read at startup closes the window.
+// Failure is fine: an unreachable Ollama has no local names to protect.
+async function warmLocalModels() {
+  try {
+    const r = await fetch(`${config.ollamaUrl}/api/tags`);
+    if (!r.ok) return;
+    noteLocalModels((await r.json()).models || []);
+  } catch { /* Ollama not up yet — the next /api/models poll will fill this in */ }
+}
+
 // All configured cloud providers, in ROUTING PRIORITY order. openai.json first
 // (the generic/official slot, prefix-routed), then openrouter.json (allowlist-
 // only). Each is independent — enable either, both, or neither.
@@ -157,10 +170,17 @@ function resolveProvider(model) {
       // Exclude locally-installed Ollama models, which are ALSO slashed
       // (`huihui_ai/gemma-…:tag`) and must stay on local Ollama.
       if (p.kind === "openrouter" && model.includes("/") && !_localModels.has(model)) return p;
-    } else if (p.kind !== "openrouter" && !model.includes("/") && PREFIX_RE.test(model)) {
-      // Bare names only: a slashed id belongs to OpenRouter's namespace and must never
-      // be prefix-routed to the openai.json provider (e.g. `deepseek/…` starts with
-      // "deepseek" but must not be sent to api.openai.com).
+    } else if (p.kind !== "openrouter" && !model.includes("/")
+               && !_localModels.has(model) && PREFIX_RE.test(model)) {
+      // Prefix routing is a guess made from the NAME, so it must never swallow:
+      //   - a model installed in Ollama. `qwen3.8:27b` matches /^qwen/ and would be
+      //     shipped off to a cloud (or LAN) endpoint that never heard of it — and a
+      //     llama.cpp server ignores the model field entirely, so the user would get a
+      //     different model's answer with nothing at all to indicate the swap.
+      //   - a slashed id, which belongs to OpenRouter's namespace (`deepseek/…` starts
+      //     with "deepseek" but must not be sent to api.openai.com).
+      // Kept for custom endpoints too: a relay (DashScope, xAI, DeepSeek) is configured
+      // by baseUrl and its catalogue really does follow these names.
       return p;
     } else if (p.kind !== "openrouter" && p.custom && !_localModels.has(model)) {
       // A custom endpoint's own model names follow no naming rule at all — a llama.cpp
@@ -775,4 +795,5 @@ function hasConfiguredProviders() {
   return loadProviders().length > 0;
 }
 
-module.exports = { isOpenAIModel, contextLengthFor, listModels, injectModels, proxyChat, complete, isCloudEmbedModel, embed, listAllModels, hasConfiguredProviders };
+module.exports = {
+  warmLocalModels, isOpenAIModel, contextLengthFor, listModels, injectModels, proxyChat, complete, isCloudEmbedModel, embed, listAllModels, hasConfiguredProviders };

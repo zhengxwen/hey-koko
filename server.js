@@ -625,6 +625,9 @@ const server = http.createServer((req, res) => {
 server.listen(config.PORT, "127.0.0.1", () => {
   console.log(`Local AI companion: http://127.0.0.1:${config.PORT}`);
   console.log(`Ollama endpoint: ${config.ollamaUrl}`);
+  // Learn the locally-installed model names now, so a message that arrives before the
+  // first /api/models poll still routes to Ollama rather than by name-prefix guess.
+  openai.warmLocalModels();
   const vs = vendor.vendorStatus();
   if (vs.present === vs.total) {
     console.log(`UI libraries: ${vs.present}/${vs.total} local (fully offline)`);
