@@ -3406,6 +3406,16 @@ button.secondary:disabled {
   top: 6px;
   left: 6px;                 /* pictures: that corner is free (🖌 is user-bubble only) */
 }
+/* 📥 "file this one" sits in the SAME corner as 🎨 — they are mutually exclusive:
+   a picture is either in the gallery (🎨, and ★ below it) or it is not (📥). */
+.mediaFileBtn {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+}
+.videoWrapper .mediaFileBtn {
+  left: 62px;                /* clips: right of ⛶ and ⧉, where 🎨 would be */
+}
 /* Clips already carry ⛶ (left:6) and ⧉ (left:34) up top — 🎨 sits to their right, and
    ✂️ right of that. Clips only, so it needs no rule for the picture case. */
 .videoWrapper .mediaGalleryBtn {
@@ -3418,6 +3428,7 @@ button.secondary:disabled {
 }
 .mediaRateBtn,
 .mediaGalleryBtn,
+.mediaFileBtn,
 .mediaCutBtn {
   z-index: 2;
   height: 22px;
@@ -3440,8 +3451,10 @@ button.secondary:disabled {
 }
 .imageWrapper:hover .mediaRateBtn,
 .imageWrapper:hover .mediaGalleryBtn,
+.imageWrapper:hover .mediaFileBtn,
 .videoWrapper:hover .mediaRateBtn,
 .videoWrapper:hover .mediaGalleryBtn,
+.videoWrapper:hover .mediaFileBtn,
 .videoWrapper:hover .mediaCutBtn,
 .mediaRateBtn.isRated {
   opacity: 1;
@@ -3453,6 +3466,7 @@ button.secondary:disabled {
 }
 .mediaRateBtn:hover,
 .mediaGalleryBtn:hover,
+.mediaFileBtn:hover,
 .mediaCutBtn:hover {
   background: var(--accent);
   color: #fff;
@@ -9492,6 +9506,7 @@ body.isResizingComposer {
 [data-mode="dark"] .audioDownloadBtn,
 [data-mode="dark"] .mediaGalleryBtn,
 [data-mode="dark"] .mediaCutBtn,
+[data-mode="dark"] .mediaFileBtn,
 [data-mode="dark"] .mediaRateBtn:not(.isRated),
 [data-mode="dark"] .meshGlHost:not(.isFs) .meshHudBtn {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35), 0 1px 4px rgba(0, 0, 0, 0.4);
@@ -9502,6 +9517,7 @@ body.isResizingComposer {
    🎨 open-in-gallery, ⬇ download, ✂️ trim and ⛶/⧉ stay, because they read the
    bubble rather than change it. Last in the file so it beats the :hover reveal
    rules, which carry the same specificity. */
+.message.bubbleLocked .mediaFileBtn,
 .message.bubbleLocked .imageDeleteBtn,
 .message.bubbleLocked .videoDeleteBtn,
 .message.bubbleLocked .messageReplaceBtn,

@@ -135,6 +135,15 @@ export const MEDIA_SLOT_GROUPS = [
 // generatedAudio is the one scalar slot (a single speech track per bubble).
 const AUDIO_GROUP = { full: "generatedAudio", scalar: true, fallback: "audio/wav" };
 
+// Some bubbles carry a picture as a PREVIEW and nothing else: a YouTube cover and the
+// pictures on a fetched page are stored as their 480px thumbnail, with the full-size
+// left on the site it came from. Deliberately NOT part of MEDIA_SLOT_GROUPS — a sweep
+// must never file previews as artifacts in their own right — but when the user asks for
+// one by name, the preview is the picture this machine has, so it is what gets filed.
+const THUMB_ONLY_GROUPS = [
+  { full: "generatedThumbnails", thumb: null, names: "generatedImageNames", mimes: null, fallback: "image/jpeg" },
+];
+
 // A slot holding actual bytes — raw base64 or a data: URL. http stays put (someone
 // else's file), blob: is a transient object URL, and a gallery reference is already done.
 // The length floor keeps a stray short string from being treated as media.
@@ -174,6 +183,35 @@ function slotName({ msg, g, i }) {
   return (g.names && Array.isArray(msg[g.names]) && msg[g.names][i]) || "";
 }
 
+async function fileSlot(slot) {
+  const id = await fileIntoGallery(rawBytesOf(slot.v), slotMime(slot), slotName(slot));
+  if (!id) return null;
+  const { msg, g, i } = slot;
+  if (g.scalar) msg[g.full] = galleryUrl(id);
+  else msg[g.full][i] = galleryUrl(id);
+  // Hand over the preview this bubble already had, then point at it. Without this the
+  // server would fall back to serving the full-size file as its own "thumbnail".
+  if (g.thumb && Array.isArray(msg[g.thumb]) && msg[g.thumb][i]) {
+    cacheGalleryThumb(id, msg[g.thumb][i]);
+    msg[g.thumb][i] = galleryThumbUrl(id);
+  }
+  return id;
+}
+
+// One slot, filed on purpose — the 📥 button in the corner of a picture that arrived
+// with a document (an email's inline images, a PDF's page renders, the pictures on a
+// fetched page, a YouTube cover). Those are deliberately left inline, so this is the ONLY
+// way they reach the gallery. `fullField` may name a thumbnail-only slot for a bubble
+// that holds nothing else. Rewrites the slot in place and returns the id, or null when
+// it was not inline bytes to begin with (already a reference, or someone else's URL).
+export async function fileMediaSlot(msg, fullField, i) {
+  const g = [...MEDIA_SLOT_GROUPS, ...THUMB_ONLY_GROUPS].find((x) => x.full === fullField);
+  if (!g || !msg || !Array.isArray(msg[g.full])) return null;
+  const v = msg[g.full][i];
+  if (!isInlineBytes(v)) return null;
+  return fileSlot({ msg, g, i, v });
+}
+
 // File every inline slot in these messages and rewrite it as a reference, IN PLACE.
 // Returns { filed, failed, freed } in bytes-no-longer-duplicated.
 //
@@ -189,22 +227,23 @@ export async function fileInlineMedia(messages, onProgress) {
   let filed = 0, failed = 0, freed = 0;
   for (const slot of slots) {
     if (onProgress) onProgress(filed + failed, slots.length);
-    const id = await fileIntoGallery(rawBytesOf(slot.v), slotMime(slot), slotName(slot));
+    const id = await fileSlot(slot);
     if (!id) { failed++; continue; }
-    const { msg, g, i } = slot;
-    if (g.scalar) msg[g.full] = galleryUrl(id);
-    else msg[g.full][i] = galleryUrl(id);
-    // Hand over the preview this bubble already had, then point at it. Without this the
-    // server would fall back to serving the full-size file as its own "thumbnail".
-    if (g.thumb && Array.isArray(msg[g.thumb]) && msg[g.thumb][i]) {
-      cacheGalleryThumb(id, msg[g.thumb][i]);
-      msg[g.thumb][i] = galleryThumbUrl(id);
-    }
     freed += estInlineBytes(slot.v);
     filed++;
   }
   // A thumbnail whose artifact was ALREADY a reference (filed at send time, preview left
   // inline) never appears in the scan above — catch those in one pass at the end.
+  freed += linkInlineThumbs(messages);
+  return { filed, failed, freed };
+}
+
+// The thumbnail half of the sweep above, on its own: for a slot whose full-size artifact
+// is already a gallery reference, hand the server the preview this bubble is carrying and
+// point at it instead. Adds NOTHING new to the gallery — the artifact is already filed —
+// so it is safe on paths that must not file media (archiving). Returns bytes freed.
+export function linkInlineThumbs(messages) {
+  let freed = 0;
   for (const msg of messages || []) {
     if (!msg) continue;
     for (const g of MEDIA_SLOT_GROUPS) {
@@ -218,7 +257,7 @@ export async function fileInlineMedia(messages, onProgress) {
       });
     }
   }
-  return { filed, failed, freed };
+  return freed;
 }
 
 // Hand the server a thumbnail the browser already made. /api/gallery/thumb generates its

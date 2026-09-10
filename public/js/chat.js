@@ -6,7 +6,7 @@ import { dom, state, scrollChatToEnd, scrollChatToEndIfPinned, refreshScrollStat
 import { escapeHtml, formatTimestamp, formatDuration, mediaFilename, stripHeadingEmphasis,
          readFileAsDataUrl, makePreview, convertToJpeg, normalizeOrientation,
          mediaSrc, mediaBase64, isMediaRef, galleryUrl, galleryThumbUrl, galleryIdOf, galleryName,
-         fileIntoGallery, sniffImageMime, cacheGalleryThumb } from './utils.js';
+         fileIntoGallery, sniffImageMime, cacheGalleryThumb, isInlineBytes, fileMediaSlot } from './utils.js';
 import { markdownToHtml, highlightCodeBlocks, renderMermaidDiagrams, addBlockCopyButtons } from './markdown.js';
 import { renderRelationGraph } from './relation-graph.js';
 import { setAvatarState, showExpression, detectExpression, isCloudModel, isOffPremisesModel, resetAvatarIdle } from './avatar.js';
@@ -3955,6 +3955,54 @@ function makeMediaCornerButtons(id, kind) {
   return row;
 }
 
+// Which field a grid cell writes back to, when it is still holding its own bytes. The
+// picture grid is built from whichever of these the bubble has (generatedImages for
+// display-only pictures, contextImages for a file preview's embedded ones), so the live
+// message decides, not the array that was handed to the renderer.
+function inlineMediaField(msg, i, kind) {
+  // The preview comes last: a bubble that has the full-size bytes files THOSE. It is the
+  // only candidate for a picture stored as a preview alone — a YouTube cover, the
+  // pictures on a page /url fetched — where the 480px copy is all this machine holds.
+  const fields = kind === "video"
+    ? ["generatedVideos"]
+    : ["generatedImages", "contextImages", "generatedThumbnails"];
+  for (const f of fields) {
+    if (Array.isArray(msg?.[f]) && isInlineBytes(msg[f][i])) return f;
+  }
+  return null;
+}
+
+// 📥, top-left, on a picture/clip that is NOT in the gallery — the corner where a filed
+// one shows 🎨. Media that arrives with a document (an email's inline images, a PDF's
+// page renders, the pictures on a fetched page) is deliberately never filed on its own:
+// it belongs to that document, not to the user's work, and dozens of them would bury the
+// gallery. This is the one press that says "this one, though". Returns null when the slot
+// is not inline bytes (already filed, or a remote URL that was never ours to file).
+function makeFileIntoGalleryButton(index, i, kind) {
+  if (!Number.isInteger(index)) return null;
+  if (!inlineMediaField(getActiveTab()?.messages?.[index], i, kind)) return null;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "mediaFileBtn";
+  btn.title = t("gal_fileHint");
+  btn.setAttribute("aria-label", t("gal_fileIntoGallery"));
+  btn.textContent = "\u{1F4E5}";
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();          // don't open the lightbox
+    if (btn.disabled) return;
+    const msg = getActiveTab()?.messages?.[index];
+    const field = inlineMediaField(msg, i, kind);
+    if (!field) return;
+    btn.disabled = true;
+    let id = null;
+    try { id = await fileMediaSlot(msg, field, i); } finally { btn.disabled = false; }
+    if (!id) { alert(t("gal_fileFailed")); return; }
+    saveChat();
+    renderChat();                 // the slot is a reference now, so ★ and 🎨 take over
+  });
+  return btn;
+}
+
 // A score set in the gallery panel (or on another copy of the same picture) repaints
 // every ★ on screen for that file — registered once, for the lifetime of the page.
 document.addEventListener("hk-gallery-rating", (e) => {
@@ -5046,9 +5094,15 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
           wrapper.appendChild(makeImageDeleteButton(index, i));
         }
         // ★ (top-left) on the AI's own renders — the bubble is where they get judged.
+        // Only a file that IS in the gallery can be scored, so a picture that came in
+        // with a document gets 📥 in that corner instead: file this one, then judge it.
         if (role === "assistant") {
           const rateId = mediaRateId(_libMsg, i, "image");
           if (rateId) wrapper.appendChild(makeMediaCornerButtons(rateId, "image"));
+          else {
+            const fileBtn = makeFileIntoGalleryButton(index, i, "image");
+            if (fileBtn) wrapper.appendChild(fileBtn);
+          }
         }
         // Download button (bottom-right) — full-res src when available.
         const dlSrc = img.dataset.fullSrc || img.src;
@@ -5259,10 +5313,15 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
         });
         wrapper.appendChild(del);
       }
-      // ★ (top-left) on a generated clip — same control, same rules as the picture grid.
+      // ★ (top-left) on a generated clip — same control, same rules as the picture grid,
+      // 📥 included for a clip that is not in the gallery.
       if (role === "assistant") {
         const rateId = mediaRateId(_libMsg, vi, "video");
         if (rateId) wrapper.appendChild(makeMediaCornerButtons(rateId, "video"));
+        else {
+          const fileBtn = makeFileIntoGalleryButton(index, vi, "video");
+          if (fileBtn) wrapper.appendChild(fileBtn);
+        }
       }
       // Download button (bottom-right) — an <a download> pointing at the (data) URL.
       // Tooltip shows the filename and decoded byte size.

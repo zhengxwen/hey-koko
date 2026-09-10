@@ -3,8 +3,7 @@
 
 // Archive and retrieve functionality
 import { dom, state, openPanelOverlay, closePanelOverlay, isPanelOverlayOpen } from './state.js';
-import { escapeHtml, mediaFilename, mediaSrc, isMediaRef,
-         inlineMediaSlots, fileInlineMedia } from './utils.js';
+import { escapeHtml, mediaFilename, mediaSrc, isMediaRef, linkInlineThumbs } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { applyHighlights } from './highlight.js';
 import { saveTabs } from './settings.js';
@@ -108,26 +107,16 @@ export function initArchive() {
       cancelTabJobs(tab.id);
     }
 
-    // Anything still stored inline goes to disk BEFORE the snapshot is taken, so the
-    // archive is written with references from the start and never has to be repaired
-    // afterwards by scripts/migrate-archives.js. Deliberately run against the LIVE
-    // messages, not the copy below: filing the copy would shrink the archive while
-    // leaving the same bytes sitting in IndexedDB, which is half the job. The
-    // conversation on screen keeps rendering throughout — the slots become references
-    // to the very same pictures, and the server dedups on content hash, so archiving
-    // a conversation twice files nothing the second time.
-    const pendingSlots = inlineMediaSlots(tab.messages).length;
-    if (pendingSlots) {
-      const loadEl = document.querySelector("#chatLoading");
-      const wasHidden = !!loadEl && loadEl.hidden;
-      if (loadEl) loadEl.hidden = false;
-      try {
-        await fileInlineMedia(tab.messages);
-        saveTabs();
-      } finally {
-        if (loadEl && wasHidden) loadEl.hidden = true;
-      }
-    }
+    // Media that is still inline STAYS inline: the archive carries those bytes itself.
+    // Archiving deliberately does not file them into the gallery first — a conversation
+    // can drag in media that is not the user's work at all (the pictures inside an
+    // imported email, the page renders of a PDF), and pouring dozens of those into the
+    // gallery just because the conversation was put away is not what the button means.
+    // Media that was already filed (generated artifacts, sent attachments) is already a
+    // reference and is archived as one. Only the thumbnails of THOSE are reconciled here,
+    // which adds no new artifact and keeps the archive from carrying previews of files
+    // that are on disk anyway.
+    if (linkInlineThumbs(tab.messages)) saveTabs();
 
     const exportMessages = tab.messages.map((msg) => {
       const m = { role: msg.role };
