@@ -2368,6 +2368,71 @@ button.secondary:disabled {
   cursor: not-allowed;
 }
 
+/* Long bubbles: the text is clamped to a readable height with its last lines faded out,
+   and the toggle floats up over that fade. Display only — the whole text is in the DOM
+   and still goes to the model; making a message invisible to the model is the ▲ fold's
+   job, not this one. A mask (rather than an overlay) fades to whatever the bubble's own
+   background happens to be, so it needs no colour of its own in either theme. */
+.markdownBody.isClamped,
+.plainBody.isClamped {
+  max-height: 420px;          /* keep in step with CLAMP_PX in chat.js */
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent 100%);
+}
+/* Bottom-LEFT, sharing the row the ▲ fold strip occupies: the fold is a 12px in-flow
+   strip sitting on the bubble's 9px bottom padding, so its band runs 9-21px up from the
+   bubble's edge and `bottom: 6px` on an 18px control centres the two on each other.
+   Out of flow, so it neither reserves a row nor collides with the ▲ in the middle.
+   Beats the global `button` rule (42px tall, accent-filled, 16px padding). */
+.messageMoreToggle {
+  position: absolute;
+  left: 8px;
+  bottom: 6px;
+  z-index: 2;
+  display: block;
+  width: auto;
+  height: 18px;
+  min-height: 0;
+  margin: 0;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+/* Shortened, it is the only way back and the fade needs explaining, so it stays put —
+   but translucent either way: it shares a row with the ▲ fold, which is a muted glyph
+   with no chrome at all, and a solid pill down there shouts over the message. */
+.messageMoreToggle.isCollapsed,
+.message:hover > .messageMoreToggle {
+  opacity: 0.5;
+}
+/* Under the pointer (or keyboard focus) it comes fully forward. `.message:hover > .x`
+   is THREE simple selectors — it outranks a plain `.x:hover`, which is why that pair
+   has to be spelled out too, or the pill goes accent-blue while staying half faded. */
+.messageMoreToggle:hover,
+.messageMoreToggle:focus-visible,
+.message:hover > .messageMoreToggle:hover,
+.message:hover > .messageMoreToggle:focus-visible {
+  opacity: 1;
+  background: var(--accent);
+}
+[data-mode="dark"] .messageMoreToggle:not(:hover) {
+  background: rgba(255, 255, 255, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+/* Folded whole, or open in the editor: there is no clamped text to talk about. */
+.message.isFolded > .messageMoreToggle,
+.message:has(> .editMessageInput) > .messageMoreToggle {
+  display: none;
+}
+
 .message.isFolded > .markdownBody,
 .message.isFolded > .plainBody,
 .message.isFolded > .imageGrid,

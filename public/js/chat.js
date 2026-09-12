@@ -4625,6 +4625,75 @@ function openEditHistory(index) {
   document.addEventListener("keydown", onKey);
 }
 
+// ── Long bubbles: an on-demand "show less" that shortens the text ──────────────
+// A reading aid and nothing else. Unlike the ▲ fold this changes NOTHING about the
+// message: the whole text stays in the DOM (so find still reaches it — see the unclamp
+// event below) and the bubble is still sent to the model.
+//
+// Shortening only ever happens because the reader ASKED for it. A long bubble renders
+// in full — the reply you just watched arrive is not taken away from you — and merely
+// offers the toggle; nothing here ever collapses a bubble on its own.
+//
+// Which bubbles the reader has collapsed lives in a WeakSet keyed by the message OBJECT,
+// not in a field on it. That survives the full re-render this app does on nearly every
+// action, while staying out of what gets persisted, whitelisted and archived — and it is
+// forgotten when the message is. A reload therefore shows every bubble whole again,
+// which is the same rule from the other side: no collapse the reader did not ask for.
+const CLAMP_PX = 420;        // ~20 lines: what a collapsed bubble keeps on screen
+const CLAMP_SLACK_PX = 80;   // no toggle on a bubble that would only hide two lines
+const _collapsedBubbles = new WeakSet();
+
+function applyLengthClamp(item, textEl, msg) {
+  if (!item || !textEl || !msg) return;
+  const existing = item.querySelector(":scope > .messageMoreToggle");
+  // scrollHeight is the FULL text in both states (max-height does not shrink it), so an
+  // edited-down bubble drops its button here instead of keeping a dead one.
+  if (textEl.scrollHeight <= CLAMP_PX + CLAMP_SLACK_PX) {
+    textEl.classList.remove("isClamped");
+    _collapsedBubbles.delete(msg);
+    if (existing) existing.remove();
+    return;
+  }
+  const btn = existing || document.createElement("button");
+  const paint = () => {
+    const collapsed = _collapsedBubbles.has(msg);
+    textEl.classList.toggle("isClamped", collapsed);
+    // Collapsed, the toggle is the only way back and explains the fade, so it stays
+    // visible; whole, it is a control you go looking for, and follows every other
+    // floating control in this app by waiting for the bubble to be hovered.
+    btn.classList.toggle("isCollapsed", collapsed);
+    btn.textContent = collapsed ? t("fold_showMore") : t("fold_showLess");
+    btn.title = t("fold_clampHint");
+  };
+  if (!existing) {
+    btn.type = "button";
+    btn.className = "messageMoreToggle";
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (_collapsedBubbles.has(msg)) _collapsedBubbles.delete(msg);
+      else _collapsedBubbles.add(msg);
+      // Collapsing takes hundreds of pixels out ABOVE the button, which would throw the
+      // reader somewhere else entirely. Keep the button under the pointer instead.
+      const before = btn.getBoundingClientRect().top;
+      paint();
+      dom.messagesEl.scrollTop += btn.getBoundingClientRect().top - before;
+    });
+    textEl.after(btn);
+    // A picture inside the body lands after this measurement — re-decide once it has.
+    for (const img of textEl.querySelectorAll("img")) {
+      if (!img.complete) img.addEventListener("load", () => applyLengthClamp(item, textEl, msg), { once: true });
+    }
+    // The find bar dispatches this before scrolling to a match: a hit inside the hidden
+    // overflow has to be revealed first, or it scrolls to a spot showing nothing.
+    textEl.addEventListener("heykoko:unclamp", () => {
+      if (!_collapsedBubbles.has(msg)) return;
+      _collapsedBubbles.delete(msg);
+      paint();
+    });
+  }
+  paint();
+}
+
 function renderMessage(role, content, displayImages, index, timestamp, generatedImages, generatedThumbnails, generatedVideos, videoMimes, generatedAudio, audioMime, generatedVideoThumbnails) {
   const item = document.createElement("div");
   item.className = `message ${role}`;
@@ -5451,6 +5520,8 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
   }
 
   dom.messagesEl.appendChild(item);
+  // Only now can the text be measured — scrollHeight is 0 before the bubble is laid out.
+  applyLengthClamp(item, textEl, _libMsg);
   scrollChatToEnd();
 
   // Add fold/unfold toggle

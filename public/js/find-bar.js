@@ -142,10 +142,15 @@ function paint() {
 // Bring a Range into view inside whatever actually scrolls around it (the messages
 // column, a panel body, or the window) without disturbing the selection.
 function scrollRangeIntoView(range) {
-  const rect = range.getBoundingClientRect();
-  if (!rect.width && !rect.height) return;
   let el = range.startContainer;
   if (el.nodeType === Node.TEXT_NODE) el = el.parentElement;
+  // A long bubble collapsed by its "show more" clamp hides the overflow. The match is
+  // still in the DOM with real coordinates, so without this the column would scroll to
+  // a spot where nothing is visible — ask the bubble to open first (chat.js listens).
+  const clamped = el && el.closest ? el.closest(".isClamped") : null;
+  if (clamped) clamped.dispatchEvent(new CustomEvent("heykoko:unclamp"));
+  const rect = range.getBoundingClientRect();
+  if (!rect.width && !rect.height) return;
   let scroller = el;
   while (scroller && scroller !== document.body) {
     const cs = getComputedStyle(scroller);
