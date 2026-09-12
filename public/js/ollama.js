@@ -2127,7 +2127,7 @@ function initScanModal() {
   const closeBtn = document.querySelector("#scanModalClose");
 
   let source = null;          // active EventSource
-  let found = new Set();      // de-dupe discovered URLs
+  let found = new Map();      // url -> its row, for de-duping and for naming it later
   let onSelectFn = null;      // callback for the current scan's selection
 
   function stopScan() {
@@ -2152,21 +2152,36 @@ function initScanModal() {
 
   function addResult(url) {
     if (found.has(url)) return;
-    found.add(url);
     empty.hidden = true;
     const item = document.createElement("button");
     item.type = "button";
     item.className = "scanResult";
-    item.textContent = url.replace(/^https?:\/\//, "");
+    // Two spans rather than one string: the address is here now, the machine's name
+    // arrives in its own event a moment later (see nameResult) and drops into place
+    // without rebuilding the row the user may already be reaching for.
+    const addr = document.createElement("span");
+    addr.textContent = url.replace(/^https?:\/\//, "");
+    const host = document.createElement("span");
+    host.className = "scanResultHost";
+    item.append(addr, host);
     item.addEventListener("click", () => selectUrl(url));
     list.appendChild(item);
+    found.set(url, host);
+  }
+
+  // Reverse-DNS name for an address already on the list — same "(name)" form the
+  // endpoint lines under the dropdowns use, so one machine reads the same everywhere.
+  function nameResult(url, hostname) {
+    const host = found.get(url);
+    if (!host || !hostname) return;
+    host.textContent = ` (${hostname})`;
   }
 
   // `streamUrl` is the SSE endpoint to scan; `titleText` labels the modal;
   // `onSelect(url)` runs when the user picks a result.
   function startScan({ streamUrl, titleText, onSelect }) {
     onSelectFn = onSelect;
-    found = new Set();
+    found = new Map();
     list.innerHTML = "";
     empty.hidden = true;
     if (title && titleText) title.textContent = titleText;
@@ -2180,6 +2195,8 @@ function initScanModal() {
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === "found") {
         addResult(msg.url);
+      } else if (msg.type === "host") {
+        nameResult(msg.url, msg.hostname);
       } else if (msg.type === "done") {
         stopScan();
         status.textContent = "";

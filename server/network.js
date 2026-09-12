@@ -105,6 +105,17 @@ function streamScan(req, res, probe) {
     } catch {}
   });
 
+  // Every hit gets its address out to the client at once, then a reverse-DNS lookup
+  // follows as its own event. Resolving BEFORE announcing would stall each result behind
+  // a lookup that is allowed to take a second and a half and may well come back empty —
+  // an address the user can already act on must not wait for a label. The lookups are
+  // collected so the scan only reports itself done once the names have had their chance.
+  const naming = [];
+  const announce = (url) => {
+    send({ type: "found", url });
+    naming.push(hostnameFor(url).then((hostname) => { if (hostname) send({ type: "host", url, hostname }); }).catch(() => {}));
+  };
+
   (async () => {
     // Local machine first — and by NAME as well as by IPv4 literal. A daemon bound only
     // to the IPv6 loopback (::1) never answers 127.0.0.1, which is exactly the case where
@@ -117,7 +128,7 @@ function streamScan(req, res, probe) {
       LOOPBACK_HOSTS.map((host) => probe(host, abort.signal)),
     );
     const localhost = results.find(Boolean);
-    if (localhost) send({ type: "found", url: localhost });
+    if (localhost) announce(localhost);
 
     // Then every /24 the host sits on (skip our own IPs — localhost covers us).
     const selfIps = new Set(getLocalIPv4s());
@@ -128,12 +139,13 @@ function streamScan(req, res, probe) {
         for (let i = 1; i <= 254; i++) {
           const ip = `${subnet}.${i}`;
           if (ip === "127.0.0.1" || selfIps.has(ip)) continue;
-          promises.push(probe(ip, abort.signal).then((r) => r && send({ type: "found", url: r })));
+          promises.push(probe(ip, abort.signal).then((r) => r && announce(r)));
         }
       }
       await Promise.all(promises);
     }
 
+    await Promise.all(naming);
     send({ type: "done" });
     if (!closed) {
       try {

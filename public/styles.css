@@ -1181,6 +1181,13 @@ p {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
   overflow: hidden;
 }
+/* The 360px frame is shared by a dozen dialogs, so the scan gets its own width rather
+   than widening all of them: a row here is "192.168.1.28:11434 (spark-329b.hsd1.il.
+   comcast.net)", and a reverse-DNS FQDN wraps onto a second line at 360. */
+#scanModal > .scanModal {
+  width: min(560px, 92vw);
+}
+
 /* Positioned so the "queuing selected videos" three-dots overlay (.chatLoading, absolute
    inset:0) covers just this modal box rather than escaping to the fixed backdrop. */
 .scanModal.libraryYtModal { position: relative; }
@@ -1241,6 +1248,12 @@ p {
   background: var(--accent-subtle);
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+
+/* The machine's name, appended to the address once reverse-DNS answers. Muted, so the
+   address stays the thing being read and a long FQDN does not shout. */
+.scanResultHost {
+  color: var(--muted);
 }
 
 .scanResult:hover {
@@ -2392,15 +2405,16 @@ button.secondary:disabled {
   z-index: 2;
   display: block;
   width: auto;
-  height: 18px;
+  --moreH: 18px;              /* one knob: the height the side padding is derived from */
+  height: var(--moreH);
   min-height: 0;
   margin: 0;
-  padding: 0 9px;
+  padding: 0 calc(var(--moreH) * 2);   /* text sits two button-heights in from each end */
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   font-size: 11px;
-  line-height: 18px;
+  line-height: var(--moreH);
   white-space: nowrap;
   cursor: pointer;
   opacity: 0;
@@ -2411,7 +2425,7 @@ button.secondary:disabled {
    with no chrome at all, and a solid pill down there shouts over the message. */
 .messageMoreToggle.isCollapsed,
 .message:hover > .messageMoreToggle {
-  opacity: 0.5;
+  opacity: 0.75;
 }
 /* Under the pointer (or keyboard focus) it comes fully forward. `.message:hover > .x`
    is THREE simple selectors — it outranks a plain `.x:hover`, which is why that pair
