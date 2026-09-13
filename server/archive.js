@@ -9,6 +9,15 @@ const { sendJson, readBody } = require("./utils");
 
 const HAS_ZSTD = typeof zlib.zstdCompressSync === "function";
 
+// The bytes an archive file holds for `obj`, compressed by the TARGET file's extension —
+// so an overwrite never puts zstd data into a .gz file (or plain JSON into either).
+function encodeArchive(filePath, obj) {
+  const buf = Buffer.from(JSON.stringify(obj, null, 2), "utf-8");
+  if (filePath.endsWith(".zst")) return zlib.zstdCompressSync(buf);
+  if (filePath.endsWith(".gz")) return zlib.gzipSync(buf);
+  return buf;
+}
+
 function ensureArchivesDir() {
   if (!fs.existsSync(config.ARCHIVES_DIR)) {
     fs.mkdirSync(config.ARCHIVES_DIR, { recursive: true });
@@ -27,14 +36,7 @@ async function archiveConversation(req, res) {
 
     // Pick the compression by the target file's extension (when overwriting an old archive,
     // keep its suffix so we never write zstd data into a .gz file).
-    const writeArchive = (filePath) => {
-      const buf = Buffer.from(JSON.stringify(body, null, 2), "utf-8");
-      let compressed;
-      if (filePath.endsWith(".zst")) compressed = zlib.zstdCompressSync(buf);
-      else if (filePath.endsWith(".gz")) compressed = zlib.gzipSync(buf);
-      else compressed = buf;
-      fs.writeFileSync(filePath, compressed);
-    };
+    const writeArchive = (filePath) => fs.writeFileSync(filePath, encodeArchive(filePath, body));
 
     // Approach 3: when a conversation was retrieved, the tab recorded the source archive
     // filename (sourceArchive). On re-archive, if the source file still exists, update the
@@ -187,6 +189,39 @@ async function loadArchives(req, res) {
   }
 }
 
+// Give an archived conversation a new title, in place. The title lives INSIDE the
+// compressed archive, so this is a read-modify-write: only `title` changes — the file
+// name, its folder, the tags and every message stay exactly as they were. Written to a
+// temp file and renamed over the original, because a torn write here would not lose a
+// title, it would lose the whole conversation. The leftover-tmp case is harmless: the
+// ".tmp-<pid>" suffix is not an archive extension, so the listing never picks it up.
+async function retitleArchive(req, res) {
+  try {
+    const body = await readBody(req);
+    const filename = String(body.filename || "");
+    const title = String(body.title || "").replace(/[\r\n]+/g, " ").trim();
+    if (!title) { sendJson(res, 400, { error: "Title is empty" }); return; }
+    const normalized = path.normalize(filename).replace(/\\/g, "/");
+    if (!normalized || normalized.startsWith("/") || normalized.startsWith("..")) {
+      sendJson(res, 400, { error: "Invalid path" });
+      return;
+    }
+    const filePath = path.join(config.ARCHIVES_DIR, normalized);
+    if (!filePath.startsWith(config.ARCHIVES_DIR) || !fs.existsSync(filePath)) {
+      sendJson(res, 404, { error: "File does not exist" });
+      return;
+    }
+    const data = JSON.parse(readArchiveFile(filePath));
+    data.title = title;
+    const tmp = `${filePath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, encodeArchive(filePath, data));
+    fs.renameSync(tmp, filePath);
+    sendJson(res, 200, { ok: true, filename: normalized, title });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
 async function deleteArchives(req, res) {
   try {
     const body = await readBody(req);
@@ -314,4 +349,4 @@ async function moveArchives(req, res) {
   }
 }
 
-module.exports = { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives, readArchiveFile, scanArchiveFilenames };
+module.exports = { archiveConversation, listArchives, loadArchives, retitleArchive, deleteArchives, listArchiveDirs, moveArchives, readArchiveFile, scanArchiveFilenames };

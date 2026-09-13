@@ -586,6 +586,82 @@ export function initArchive() {
     openArchivePreview(filename);
   };
 
+  // ── Rename an archived conversation from its preview ─────────────────────────
+  // The same gestures as renaming a tab — double-click the title, or the ✎ that shows
+  // on hover; Enter or clicking away saves, Escape keeps the old name — because what is
+  // being renamed IS a tab's title, only one that has been put away.
+  function paintPreviewTitle(filename, title) {
+    archivePreviewTitle.textContent = "";
+    const text = document.createElement("span");
+    text.className = "archivePreviewTitleText";
+    text.textContent = title || t("arch_untitled");
+    text.title = t("arch_retitleHint");
+    text.addEventListener("dblclick", () => startRetitle(filename, title));
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "archiveRetitleBtn";
+    edit.textContent = "\u270E";
+    edit.title = t("arch_retitle");
+    edit.setAttribute("aria-label", t("arch_retitle"));
+    edit.addEventListener("click", () => startRetitle(filename, title));
+    archivePreviewTitle.append(text, edit);
+  }
+
+  function startRetitle(filename, oldTitle) {
+    if (archivePreviewTitle.querySelector(".archiveTitleInput")) return;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "archiveTitleInput";
+    input.value = oldTitle || "";
+    archivePreviewTitle.textContent = "";
+    archivePreviewTitle.appendChild(input);
+    input.focus();
+    input.select();
+    // Swapping the input back out fires `blur`, which would call this a second time —
+    // once per editor, the same guard the bubble editor needs.
+    let done = false;
+    const finish = async (save) => {
+      if (done) return;
+      done = true;
+      const next = input.value.replace(/[\r\n]+/g, " ").trim();
+      if (!save || !next || next === oldTitle) { paintPreviewTitle(filename, oldTitle); return; }
+      input.disabled = true;
+      try {
+        const r = await fetch("/api/archives/retitle", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename, title: next }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      } catch (e) {
+        alert(t("arch_retitleFailed", { error: e.message }));
+        paintPreviewTitle(filename, oldTitle);
+        return;
+      }
+      const entry = archivesData.find((a) => a.filename === filename);
+      if (entry) entry.title = next;
+      // A tab still open from this archive re-archives OVER it (sourceArchive), and would
+      // quietly write its old title back the next time — so it takes the new name too.
+      const fromHere = state.tabs.filter((tb) => tb.sourceArchive === filename);
+      if (fromHere.length) {
+        for (const tb of fromHere) tb.title = next;
+        saveTabs();
+        renderTabs();
+      }
+      if (activePreviewFilename === filename) paintPreviewTitle(filename, next);
+      renderArchiveList();
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); finish(true); }
+      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); }
+    });
+    input.addEventListener("input", () => {
+      if (/[\r\n]/.test(input.value)) input.value = input.value.replace(/[\r\n]+/g, " ");
+    });
+    input.addEventListener("blur", () => finish(true));
+  }
+
   async function openArchivePreview(filename) {
     try {
       const res = await fetch("/api/archives/load", {
@@ -601,7 +677,7 @@ export function initArchive() {
       }
 
       const conv = result.data;
-      archivePreviewTitle.textContent = conv.title || t("arch_untitled");
+      paintPreviewTitle(filename, conv.title || "");
       archivePreviewContent.innerHTML = "";
 
       (conv.messages || []).forEach(msg => {

@@ -52,7 +52,7 @@ const officecli = require("./server/officecli");     // read/write/render .docx/
 const { buildArchiveIndex, semanticSearchArchives } = require("./server/embed");
 const { listSystemVoices, speakAudio } = require("./server/speech");
 const { listTtsVoices, synthesize } = require("./server/tts");
-const { archiveConversation, listArchives, loadArchives, deleteArchives, listArchiveDirs, moveArchives } = require("./server/archive");
+const { archiveConversation, listArchives, loadArchives, retitleArchive, deleteArchives, listArchiveDirs, moveArchives } = require("./server/archive");
 const { importLibrary, listLibrary, searchLibrary, getLibraryDoc, saveLibraryDoc, deleteLibraryDocs, retrieveLibrary, reparseLibrary, listLibraryDirs, moveLibraryDocs, rescanLibrary, rateLibraryDoc, editLibraryTag, distillLibraryDoc, relatedLibraryDocs, entityLookupLibrary, entityFacetsLibrary, aliasesLibrary, aliasEditLibrary, entityNeighborhoodLibrary, timelineLibrary, expandByRelationsLibrary, relationsForQueryLibrary, citationGraphLibrary, docCitationsLibrary } = require("./server/library");
 const { zoteroCollectionsHandler, zoteroItemsHandler, zoteroSyncAnnotationsHandler, zoteroSyncPlanHandler, zoteroPatchMetaHandler } = require("./server/zotero");
 const { serveStarmap } = require("./server/star-map");
@@ -386,6 +386,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/api/archives/load") {
     loadArchives(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/archives/retitle") {
+    retitleArchive(req, res);
     return;
   }
 
