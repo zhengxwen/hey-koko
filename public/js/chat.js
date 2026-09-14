@@ -4886,14 +4886,20 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
       deleteButton.title = "×";
       deleteButton.setAttribute("aria-label", "delete");
       deleteButton.textContent = "×";
-      // Deleting a whole bubble is a confirmed act now — and when the bubble carries
+      // Deleting a whole bubble is a confirmed act now — and when an AI bubble carries
       // media filed in the gallery, the same three-way question the per-picture × asks:
       // drop the references, or delete the files as well.
+      //
+      // A USER bubble never offers the second half. What it carries are attachments —
+      // the user's own files, which may be pointed at from other conversations or be
+      // the only copy — and removing the turn is not a decision about them. Its × takes
+      // the bubble away and leaves every file where it is (the gallery is the place to
+      // delete one).
       deleteButton.addEventListener("click", async () => {
         const tab = getActiveTab();
         const msg = tab?.messages?.[index];
         if (!msg || tab.locked || msg.locked) return;   // pinned/locked: no dialog for a no-op
-        const ids = messageGalleryIds(msg);
+        const ids = msg.role === "user" ? [] : messageGalleryIds(msg);
         const answer = await confirmMediaDelete({
           ids, msg, fallbackKey: "delMsg_confirm",
           titleKey: "delMsg_title", leadKey: "delMedia_inGalleryMsg", keepKey: "delMedia_msgOnly",

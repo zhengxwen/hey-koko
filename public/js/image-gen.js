@@ -1592,6 +1592,8 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     if (lastData.h3Keyframes) doneLine += `\n${t("msg_h3KeyframesUsed", { which: lastData.h3Keyframes }, plang)}`;
     if (lastData.h3Anchor) doneLine += `\n${t("msg_h3AnchorUsed", { n: lastData.h3Anchor }, plang)}`;
     if (lastData.solAttnSkipped) doneLine += `\n${t("msg_solAttnSkipped", {}, plang)}`;
+    if (lastData.h3SlaSkipped) doneLine += `\n${t("msg_h3SlaSkipped", {}, plang)}`;
+    if (lastData.easyCacheSkipped) doneLine += `\n${t("msg_easyCacheSkippedRef", {}, plang)}`;
     else if (lastData.solAttn) {
       doneLine += `\n${t("msg_solAttnUsed", { mode: lastData.solAttn }, plang)}`
         + (lastData.solChunkFF ? ` · ${t("msg_solChunkFF", {}, plang)}` : "");
