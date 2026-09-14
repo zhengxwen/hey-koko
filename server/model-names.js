@@ -238,7 +238,18 @@ const FILE_ID_RULES = [
   // fl2va rules below cannot see it and it would fall through to the t2v id. Like the
   // Ref-Delta builds above it carries no task segment — it fuses both partitions and runs
   // every mode, so there is no task to name.
-  [/10eros(?=.*h3)(?=.*hybrid)/, "10eros-max-h3:hybrid"],
+  //
+  // The beta number IS part of the identity. TenStrip rebuilds the merge between betas
+  // (beta_5 "is built with a different normalization technique… 7 different concept-
+  // grouped grafts") and ships each one under its own filename, so two betas side by side
+  // are two different models — a single fixed id put beta_4 and beta_5 on one id with one
+  // label: two indistinguishable picker rows, an `-m` that matched both and refused, and
+  // one gallery group for both. Derived from the filename so the next beta needs no edit.
+  // TURBO vs non-TURBO also splits: beta_5 ships both, and they sample differently.
+  [/10eros(?=.*h3)(?=.*hybrid)/, (b) => {
+    const beta = (b.match(/beta[-_]?(\d+)/) || [])[1];
+    return `10eros-max-h3${beta ? "-beta" + beta : ""}:hybrid${/turbo/.test(b) ? "-turbo" : ""}`;
+  }],
   [/10eros(?=.*h3)(?=.*turbo)(?=.*ref2va)/, "10eros-max-h3-r2v:turbo"],
   [/10eros(?=.*h3)(?=.*turbo)/, "10eros-max-h3-t2v:turbo"],
   [/10eros(?=.*h3)(?=.*ref2va)/, "10eros-max-h3-r2v"],
@@ -289,7 +300,6 @@ const ID_LABELS = {
   "10eros-max-h3-r2v": "10Eros-Max H3 (r2v)",
   "10eros-max-h3-t2v:turbo": "10Eros-Max H3 TURBO (t2v / i2v)",
   "10eros-max-h3-r2v:turbo": "10Eros-Max H3 TURBO (r2v)",
-  "10eros-max-h3:hybrid": "10Eros-Max H3 TURBO hybrid (all modes)",
   "ltx2.3-22b": "LTX-2.3 22B",
   "ltx2.5-22b": "LTX-2.5 22B",
   "ltx2.5-22b:union": "LTX-2.5 22B Union",
@@ -356,6 +366,9 @@ const ID_LABELS = {
 // not from what looks plausible.
 const ID_MAX_SIZE = [
   [/^minimax-h3/, "1376x768"],
+  // The graft changes no tensor shape — verified by diffing all 532 shared tensors against
+  // the stock checkpoint (0 mismatches) — so its native envelope is H3's.
+  [/^10eros-max-h3/, "1376x768"],
   [/^ltx2\.3-22b|^ltx2-sulphur/, "1920x1088"],
 ];
 
@@ -382,7 +395,7 @@ function canonicalModelId(name) {
   // IC-LoRA per effect, so the effect rides the MODE part of the id.
   if (n.startsWith("ltx25-fx-")) return "ltx2.5-22b:fx-" + n.slice(9);
   const base = precisionBase(n);
-  for (const [re, id] of FILE_ID_RULES) if (re.test(base)) return id;
+  for (const [re, id] of FILE_ID_RULES) if (re.test(base)) return typeof id === "function" ? id(base) : id;
   return slugify(base) || null;
 }
 
@@ -404,6 +417,10 @@ function galleryModelId(requested, resolved) {
 // Display name for an id (or for a raw name, via its id).
 function labelForId(id) {
   if (ID_LABELS[id]) return ID_LABELS[id];
+  // Versioned 10Eros hybrids — the id is built from the filename (see FILE_ID_RULES), so
+  // the label is too.
+  const eros = /^10eros-max-h3(?:-beta(\d+))?:hybrid(-turbo)?$/.exec(String(id || ""));
+  if (eros) return `10Eros-Max H3${eros[1] ? " beta" + eros[1] : ""}${eros[2] ? " TURBO" : ""} hybrid (all modes)`;
   if (String(id || "").startsWith("ltx2.5-22b:fx-")) {
     const fx = id.slice(14).replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
     return `LTX-2.5 22B ${fx}`;

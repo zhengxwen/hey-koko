@@ -768,6 +768,9 @@ const h3IsTurboWeight = (n) => H3_MODEL_RE.test(n || "") && /turbo/i.test(n || "
 // here because that is the superset: MiniMaxH3ReferenceToVideo's reference slots are all
 // optional, so a hybrid with nothing attached still runs as plain t2v.
 const H3_HYBRID_RE = /hybrid/i;
+// The beta a 10Eros hybrid was cut from (0 when the filename carries none). TenStrip
+// re-derives the merge between betas and the sampling advice moves with it.
+const h3HybridBeta = (n) => Number((String(n || "").match(/beta[-_]?(\d+)/i) || [])[1] || 0);
 // Third spelling of the same trap: the Ref-Delta line ships the reference capability as a
 // rank-1024 SVD of the ref2va weight delta baked onto the fl2va base, so its filenames say
 // "refdelta" / "Ref-Delta" ("minimax_h3_fused_refdelta_r1024_turbo8_…", xmarre's
@@ -3892,7 +3895,13 @@ function videoPreset(videoType, model, turbo) {
     // euler/simple 6-8 steps on all modes" — where the beta_2 TURBO recipe was
     // multires (res_multistep) or er_sde. A sampler is part of a checkpoint's recipe
     // here, not a user preference, so it is read off the filename like the step count.
-    return { sampler: H3_HYBRID_RE.test(model || "") ? "euler" : "res_multistep",
+    // beta_5 moved again. Its card lists six working setups and names one as the author's
+    // own: "res_multistep/simple 6-8 steps (my go-to for best motion quality)" — and the
+    // same card now calls beta_3 and beta_4 "corrupted test versions". So euler stays only
+    // on the betas whose card said euler (≤ 4); beta_5 and anything newer or unnumbered
+    // take the current card's go-to, which is also what every non-hybrid H3 runs.
+    const hybridBeta = h3HybridBeta(model);
+    return { sampler: H3_HYBRID_RE.test(model || "") && hybridBeta > 0 && hybridBeta <= 4 ? "euler" : "res_multistep",
       scheduler: "simple", cfg: 1,
       steps: h3IsTurboWeight(model) ? h3TurboSteps(model) : 20, shift: 0,
       width: 864, height: 480, length: 124, fps: 24, fpsFixed: true,
@@ -7908,6 +7917,7 @@ async function generateComfyImage(req, res) {
       let h3Sla = false;          // this weight's recipe calls for SLA block-sparse attention
       let h3SlaUsed;              // it actually ran
       let h3SlaSkipped = false;   // recipe wanted it, the SLA node pack is not on this worker
+      let easyCacheSkipped = false; // ⚙ asked for it, the weight's card forbids it with references
       let h3LoraUsed = null;      // ⚙ H3 LoRA actually mounted
       let h3RecipeUsed = null;    // { steps, shiftVideo, shiftAudio } the LoRA implied
       let h3AnchorUsed = 0;       // continuation anchor length, in frames, after snapping
@@ -8914,9 +8924,17 @@ async function generateComfyImage(req, res) {
           }
           h3AnchorUsed = h3Anchor;
         }
+        // TenStrip's 10Eros card: "No cache or spectrum if doing reference, they cause
+        // accuracy loss." The ⚙ cache stays valid for the same weight's text-only runs, so
+        // this is decided per run from what is actually attached — not by hiding the knob.
+        let h3EasyCache = !!opts.easyCache;
+        if (h3EasyCache && /10eros/i.test(model) && (refImageNames.length || refVideoName || refAudioName)) {
+          h3EasyCache = false;
+          easyCacheSkipped = true;
+        }
         workflow = buildMiniMaxH3({ model, prompt, comp, v, seed,
           firstFrameName, lastFrameName, refImageNames, refVideoName, refAudioName,
-          refImageSize: opts.h3RefSize, easyCache: !!opts.easyCache,
+          refImageSize: opts.h3RefSize, easyCache: h3EasyCache,
           solAttn, solTau: Number(opts.solTau) || 0, solChunkFF,
           h3Lora, h3LoraStrength: Number(opts.h3LoraStrength) || 0,
           shiftVideo: h3ShiftVideo, shiftAudio: h3ShiftAudio, h3Anchor, h3Sla });
@@ -9859,7 +9877,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
-        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Sla: h3SlaUsed, h3SlaSkipped: h3SlaSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Anchor: h3AnchorUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Sla: h3SlaUsed, h3SlaSkipped: h3SlaSkipped || undefined, easyCacheSkipped: easyCacheSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Anchor: h3AnchorUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own

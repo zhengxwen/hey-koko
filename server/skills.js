@@ -210,7 +210,13 @@ async function handleCompose(req, res) {
     // told, the assistant treats references as mandatory and invents them. (Those fused
     // builds carry no task segment in their id for the same reason; their mode comes
     // from the build suffix after the colon, so the `-r2v` rule never sees them.)
-    const notes = (def.modelNotes || {})[modelId];
+    // A key that starts with ":" names a build suffix and matches by substring, the same
+    // way modeRules' idContains does — versioned ids (10eros-max-h3-beta5:hybrid-turbo)
+    // cannot be listed one by one ahead of the release that introduces them.
+    const allNotes = def.modelNotes || {};
+    const noteKey = allNotes[modelId] ? modelId
+      : Object.keys(allNotes).find((k) => k.startsWith(":") && String(modelId).includes(k));
+    const notes = noteKey ? allNotes[noteKey] : null;
     const caveats = [...(def.caveats || []), ...(notes ? [notes] : [])];
     sendJson(res, 200, { name, mode: mode || "", text, duration: def.duration || null, kind: def.kind || "", sizes: def.sizes || null, style: def.style || "", caveats: caveats.length ? caveats : null });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
