@@ -2144,13 +2144,19 @@ function initScanModal() {
     if (e.key === "Escape") { e.preventDefault(); closeModal(); }
   }
 
-  function selectUrl(url) {
+  function selectUrl(url, kind) {
     stopScan(); // selection made → abandon the rest of the scan
-    if (onSelectFn) onSelectFn(url);
+    if (onSelectFn) onSelectFn(url, kind);
     closeModal();
   }
 
-  function addResult(url) {
+  // The same two icons the model dropdown uses (see buildModelOptions): 💻 a native
+  // Ollama, 🏠 an OpenAI-compatible server. One convention, so a machine reads the same
+  // in the scan window as it will in the list it ends up in. ComfyUI gets none — that
+  // scan has only ever one kind of answer.
+  const SCAN_ICON = { ollama: "💻", openai: "🏠" };
+
+  function addResult({ url, kind }) {
     if (found.has(url)) return;
     empty.hidden = true;
     const item = document.createElement("button");
@@ -2160,11 +2166,23 @@ function initScanModal() {
     // arrives in its own event a moment later (see nameResult) and drops into place
     // without rebuilding the row the user may already be reaching for.
     const addr = document.createElement("span");
-    addr.textContent = url.replace(/^https?:\/\//, "");
+    const icon = SCAN_ICON[kind] || "";
+    addr.textContent = (icon ? `${icon} ` : "") + url.replace(/^https?:\/\//, "");
     const host = document.createElement("span");
     host.className = "scanResultHost";
     item.append(addr, host);
-    item.addEventListener("click", () => selectUrl(url));
+    // An OpenAI-compatible server is picked the same way, but it is NOT the Ollama
+    // endpoint — talking Ollama's protocol at llama.cpp would fail — so it is stored as
+    // its own backend instead (see the #scanOllama handler). Tagged, because which of
+    // the two a row is decides what choosing it does.
+    if (kind === "openai") {
+      item.title = t("scan_openaiHint");
+      const tag = document.createElement("span");
+      tag.className = "scanResultHost";
+      tag.textContent = ` · ${t("scan_openaiTag")}`;
+      item.append(tag);
+    }
+    item.addEventListener("click", () => selectUrl(url, kind));
     list.appendChild(item);
     found.set(url, host);
   }
@@ -2194,7 +2212,7 @@ function initScanModal() {
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === "found") {
-        addResult(msg.url);
+        addResult(msg);
       } else if (msg.type === "host") {
         nameResult(msg.url, msg.hostname);
       } else if (msg.type === "done") {
@@ -2458,7 +2476,24 @@ export function initOllama() {
   document.querySelector("#scanOllama").addEventListener("click", () => startScan({
     streamUrl: "/api/scan-ollama-stream",
     titleText: t("scan_title"),
-    onSelect: (url) => {
+    onSelect: (url, kind) => {
+      // Two kinds of hit, two different settings. An OpenAI-compatible server becomes
+      // the local provider (its own config file) and its models join the dropdown badged
+      // 🏠; the Ollama endpoint below is untouched, so both can be in use at once.
+      if (kind === "openai") {
+        fetch("/api/set-openai-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url })
+        }).then(r => r.json()).then(data => {
+          reloadLlmModelLists();
+          // Silence here would be indistinguishable from success: the dropdown simply
+          // would not grow. Both cases are the user's to fix, so both are said out loud.
+          if (data.envOverride) alert(t("scan_openaiEnvOverride"));
+          else if (!(data.models || []).length) alert(t("scan_openaiNoModels", { url }));
+        }).catch(() => {});
+        return;
+      }
       fetch("/api/set-ollama-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

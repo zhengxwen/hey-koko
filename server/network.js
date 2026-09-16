@@ -5,6 +5,13 @@ const os = require("os");
 const net = require("net");
 const dns = require("dns");
 
+// Where an LLM server might be listening. The port is only where we LOOK; what answers
+// decides what it IS (see identifyLlm), so an Ollama moved to 8080 is still found as an
+// Ollama and a llama.cpp on 11434 is not mistaken for one. Deliberately short: every
+// extra port multiplies a /24 sweep by another 254 probes.
+//   11434 Ollama · 1234 LM Studio · 8080 llama.cpp/LocalAI · 8000 vLLM/SGLang
+const LLM_PORTS = [11434, 1234, 8080, 8000];
+
 // Reverse-resolve the host in a URL to a hostname, so the UI can show
 // "127.0.0.1:11434 (localhost)". Only IP literals are looked up — if the URL
 // already uses a name there's nothing to add. Uses getnameinfo (lookupService)
@@ -77,10 +84,97 @@ async function checkHost(host, port, path, signal) {
   return null;
 }
 
+// GET with a deadline, returning status + body so a probe can tell "not this service"
+// apart from "no answer at all".
+async function httpGet(url, signal, timeoutMs = 2500) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  if (signal) signal.addEventListener("abort", () => controller.abort());
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    const text = await resp.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* not JSON */ }
+    return { status: resp.status, ok: resp.ok, text, json };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Is anything listening at all? A bare TCP connect is what the sweep fans out over four
+// ports × 254 hosts — far cheaper than four HTTP stacks per address, and on a live host
+// a closed port answers RST immediately, so only dead IPs cost the full timeout.
+function tcpOpen(host, port, signal, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    const sock = new net.Socket();
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+      sock.destroy();
+      resolve(v);
+    };
+    const onAbort = () => finish(false);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    if (signal) signal.addEventListener("abort", onAbort);
+    sock.once("connect", () => finish(true));
+    sock.once("error", () => finish(false));
+    sock.connect(port, String(host).replace(/^\[|\]$/g, ""));
+  });
+}
+
+// Does a 401/403 name a credential? OpenAI-shaped refusals say so in plain words
+// ("Incorrect API key provided", type "authentication_error"). Everything else that
+// answers 403 is NOT an LLM server: macOS AirPlay Receiver squats on :5000, and other
+// daemons refuse LAN callers wholesale. Reading the reason keeps those off the list.
+function looksLikeAuthError(json) {
+  if (!json) return false;
+  const text = JSON.stringify(json.error ?? json).toLowerCase();
+  return /api[-_ ]?key|authoriz|authenticat|bearer|token|unauthorized|credential/.test(text);
+}
+
+// What, if anything, is serving an LLM API at host:port? Ollama is asked FIRST because
+// it ALSO serves an OpenAI-compatible /v1 — probing that first would label every Ollama
+// "openai", and the app would then talk the wrong protocol to it.
+async function identifyLlm(host, port, signal) {
+  if (!(await tcpOpen(host, port, signal))) return null;
+  const url = `http://${host}:${port}`;
+  const version = await httpGet(url + "/api/version", signal);
+  if (version && version.ok && version.json && typeof version.json.version === "string") {
+    return { url, kind: "ollama" };
+  }
+  if (version) {
+    // Pre-/api/version Ollama, and reverse proxies that swallow unknown paths.
+    const root = await httpGet(url + "/", signal);
+    if (root && root.ok && /ollama is running/i.test(root.text)) return { url, kind: "ollama" };
+  }
+  // /v1/models is the one endpoint every OpenAI-compatible server implements — and it is
+  // exactly what server/openai.js calls to fill the dropdown once this one is chosen.
+  const models = await httpGet(url + "/v1/models", signal);
+  if (models && models.ok && models.json && Array.isArray(models.json.data)) {
+    return { url, kind: "openai" };
+  }
+  if (models && (models.status === 401 || models.status === 403) && looksLikeAuthError(models.json)) {
+    return { url, kind: "openai", needsKey: true };
+  }
+  return null;
+}
+
+// One host can run BOTH (the DGX Spark here serves Ollama on 11434 and llama.cpp on
+// 8080), so a probe answers with a list rather than a single hit.
+async function probeLlm(host, signal) {
+  const hits = await Promise.all(LLM_PORTS.map((port) => identifyLlm(host, port, signal)));
+  return hits.filter(Boolean);
+}
+
 // Stream discovered service instances over Server-Sent Events so the client can
 // show each one the moment it's found and cancel the rest by closing the
 // connection. Localhost is probed first so the local machine surfaces first.
-// `probe(host, signal)` resolves to a URL string or null.
+// `probe(host, signal)` resolves to a list of { url, kind } (empty when nothing answers).
 function streamScan(req, res, probe) {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -111,8 +205,8 @@ function streamScan(req, res, probe) {
   // an address the user can already act on must not wait for a label. The lookups are
   // collected so the scan only reports itself done once the names have had their chance.
   const naming = [];
-  const announce = (url) => {
-    send({ type: "found", url });
+  const announce = ({ url, kind, needsKey }) => {
+    send({ type: "found", url, kind, needsKey: needsKey || undefined });
     naming.push(hostnameFor(url).then((hostname) => { if (hostname) send({ type: "host", url, hostname }); }).catch(() => {}));
   };
 
@@ -127,8 +221,16 @@ function streamScan(req, res, probe) {
     const results = await Promise.all(
       LOOPBACK_HOSTS.map((host) => probe(host, abort.signal)),
     );
-    const localhost = results.find(Boolean);
-    if (localhost) announce(localhost);
+    // De-dupe per PORT rather than per host: the three names are one machine, but that
+    // machine may well be running two different servers on two different ports.
+    const byPort = new Map();
+    for (const hits of results) {
+      for (const hit of hits) {
+        const port = hit.url.replace(/^.*:/, "");
+        if (!byPort.has(port)) byPort.set(port, hit);
+      }
+    }
+    for (const hit of byPort.values()) announce(hit);
 
     // Then every /24 the host sits on (skip our own IPs — localhost covers us).
     const selfIps = new Set(getLocalIPv4s());
@@ -139,7 +241,7 @@ function streamScan(req, res, probe) {
         for (let i = 1; i <= 254; i++) {
           const ip = `${subnet}.${i}`;
           if (ip === "127.0.0.1" || selfIps.has(ip)) continue;
-          promises.push(probe(ip, abort.signal).then((r) => r && announce(r)));
+          promises.push(probe(ip, abort.signal).then((hits) => hits.forEach(announce)));
         }
       }
       await Promise.all(promises);
@@ -155,12 +257,17 @@ function streamScan(req, res, probe) {
   })();
 }
 
+// Every LLM server on this network — native Ollama and OpenAI-compatible alike. The
+// client badges them apart and routes a selection to the right setting.
 function scanOllamaStream(req, res) {
-  streamScan(req, res, (host, signal) => checkHost(host, 11434, "/", signal));
+  streamScan(req, res, probeLlm);
 }
 
 function scanComfyStream(req, res) {
-  streamScan(req, res, (host, signal) => checkHost(host, 8188, "/system_stats", signal));
+  streamScan(req, res, async (host, signal) => {
+    const url = await checkHost(host, 8188, "/system_stats", signal);
+    return url ? [{ url, kind: "comfy" }] : [];
+  });
 }
 
 module.exports = { scanOllamaStream, scanComfyStream, hostnameFor };

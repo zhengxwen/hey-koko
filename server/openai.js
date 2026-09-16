@@ -28,6 +28,12 @@ const { sendJson, describeFetchError } = require("./utils");
 
 const OPENAI_CONFIG_PATH = path.join(config.DATA_DIR, "openai.json");
 const OPENROUTER_CONFIG_PATH = path.join(config.DATA_DIR, "openrouter.json");
+// An OpenAI-compatible server on this machine or this LAN, picked in the scan window.
+// It gets its OWN file rather than a baseUrl written into openai.json: that one may
+// already hold a cloud apiKey, and adding a baseUrl there would redirect that key at a
+// llama.cpp box on the LAN — every cloud model in the dropdown would quietly stop
+// working. Two files, two providers, neither disturbs the other.
+const LOCAL_CONFIG_PATH = path.join(config.DATA_DIR, "local-openai.json");
 const DEFAULT_BASE_URL = "https://api.openai.com";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_MODELS = ["gpt-5", "gpt-4o"];
@@ -97,6 +103,10 @@ function loadProviderConfig({ file: filePath, kind, defaultBase, envKey, envBase
   // configure at all: the provider was dropped here, silently. So the key is required
   // only for the vendor's own endpoint, where a request without one is a guaranteed 401.
   if (!apiKey && !ownBase) return null;
+  // The local slot has no vendor endpoint to fall back on, so it exists only while the
+  // file names a baseUrl. Without this, an apiKey typed into local-openai.json alone
+  // would build the provider with baseUrl "" and then talk to "https://".
+  if (!ownBase && !defaultBase) return null;
   if (!apiKey) warnOnce(filePath + ":nokey", `[openai] ${filePath}: no apiKey — talking to ${ownBase} without an Authorization header (fine for a local server, a 401 from a hosted one means it wanted a key).`);
   let baseUrl = (ownBase || defaultBase).trim();
   baseUrl = baseUrl.replace(/\/+$/, "");
@@ -108,6 +118,38 @@ function loadProviderConfig({ file: filePath, kind, defaultBase, envKey, envBase
   // models it was started with, so the catalogue denoise written for api.openai.com
   // (keep only gpt-/o1-shaped names) must not be applied to it.
   return { apiKey, baseUrl, models, kind, custom: !!ownBase };
+}
+
+// The scanned local endpoint, as configured ("" when none). Read from disk so a file
+// edited by hand is reflected without a restart, exactly like the other providers.
+function getLocalBaseUrl() {
+  try {
+    return (JSON.parse(fs.readFileSync(LOCAL_CONFIG_PATH, "utf8")).baseUrl || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+// Point the local slot at an OpenAI-compatible server (the scan window's pick), or clear
+// it with "". Only baseUrl is touched — anything else the file holds (an apiKey for a
+// relay that wants one, a manual `models` allowlist) survives. Returns what the endpoint
+// then reports serving, so the caller can say whether the pick actually yielded models.
+async function setLocalBaseUrl(url) {
+  let baseUrl = String(url || "").trim().replace(/\/+$/, "");
+  if (baseUrl && !/^https?:\/\//i.test(baseUrl)) baseUrl = "http://" + baseUrl;
+  let file = {};
+  try { file = JSON.parse(fs.readFileSync(LOCAL_CONFIG_PATH, "utf8")) || {}; } catch { file = {}; }
+  if (baseUrl) file.baseUrl = baseUrl;
+  else delete file.baseUrl;
+  fs.mkdirSync(path.dirname(LOCAL_CONFIG_PATH), { recursive: true });
+  fs.writeFileSync(LOCAL_CONFIG_PATH, JSON.stringify(file, null, 2) + "\n");
+  // A previous pick at this same address may be cached from before it was restarted with
+  // a different model loaded — the user is choosing an endpoint right now, so ask again.
+  _discovered.delete(baseUrl);
+  if (!baseUrl) return { baseUrl: "", models: [] };
+  const cfg = loadProviderConfig({ file: LOCAL_CONFIG_PATH, kind: "local", defaultBase: "" });
+  const disc = cfg ? await discoverModels(cfg) : null;
+  return { baseUrl, models: disc ? disc.ids : [] };
 }
 
 // Warn at most once per key (loadProviders runs per message — don't spam the log).
@@ -142,6 +184,10 @@ async function warmLocalModels() {
 // only). Each is independent — enable either, both, or neither.
 function loadProviders() {
   const list = [];
+  // Local first: when a name is served both here and by a cloud relay, the box in the
+  // house wins — it is free, private, and the user just pointed at it by hand.
+  const local = loadProviderConfig({ file: LOCAL_CONFIG_PATH, kind: "local", defaultBase: "" });
+  if (local) list.push(local);
   const oa = loadProviderConfig({ file: OPENAI_CONFIG_PATH, kind: "openai", defaultBase: DEFAULT_BASE_URL, envKey: "OPENAI_API_KEY", envBase: "OPENAI_BASE_URL" });
   if (oa) list.push(oa);
   const or = loadProviderConfig({ file: OPENROUTER_CONFIG_PATH, kind: "openrouter", defaultBase: OPENROUTER_BASE_URL, envKey: "OPENROUTER_API_KEY", envBase: "OPENROUTER_BASE_URL" });
@@ -170,7 +216,7 @@ function resolveProvider(model) {
       // Exclude locally-installed Ollama models, which are ALSO slashed
       // (`huihui_ai/gemma-…:tag`) and must stay on local Ollama.
       if (p.kind === "openrouter" && model.includes("/") && !_localModels.has(model)) return p;
-    } else if (p.kind !== "openrouter" && !model.includes("/")
+    } else if (p.kind === "openai" && !model.includes("/")
                && !_localModels.has(model) && PREFIX_RE.test(model)) {
       // Prefix routing is a guess made from the NAME, so it must never swallow:
       //   - a model installed in Ollama. `qwen3.8:27b` matches /^qwen/ and would be
@@ -180,7 +226,10 @@ function resolveProvider(model) {
       //   - a slashed id, which belongs to OpenRouter's namespace (`deepseek/…` starts
       //     with "deepseek" but must not be sent to api.openai.com).
       // Kept for custom endpoints too: a relay (DashScope, xAI, DeepSeek) is configured
-      // by baseUrl and its catalogue really does follow these names.
+      // by baseUrl and its catalogue really does follow these names. NOT for the "local"
+      // slot though: a scanned llama.cpp must claim only what it actually answered with
+      // (the branch below), or it would swallow "gpt-5" from the cloud provider purely
+      // because it happens to be listed first.
       return p;
     } else if (p.kind !== "openrouter" && p.custom && !_localModels.has(model)) {
       // A custom endpoint's own model names follow no naming rule at all — a llama.cpp
@@ -796,4 +845,5 @@ function hasConfiguredProviders() {
 }
 
 module.exports = {
-  warmLocalModels, isOpenAIModel, contextLengthFor, listModels, injectModels, proxyChat, complete, isCloudEmbedModel, embed, listAllModels, hasConfiguredProviders };
+  warmLocalModels, isOpenAIModel, contextLengthFor, listModels, injectModels, proxyChat, complete, isCloudEmbedModel, embed, listAllModels, hasConfiguredProviders,
+  getLocalBaseUrl, setLocalBaseUrl };

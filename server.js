@@ -295,6 +295,19 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // The scan window's pick when it found an OpenAI-compatible server rather than an
+  // Ollama: store it as the local provider (server/openai.js), whose config file is
+  // re-read per request, so the models show up without a restart.
+  if (req.method === "POST" && req.url === "/api/set-openai-url") {
+    readBody(req).then(async (body) => {
+      const result = await openai.setLocalBaseUrl(body.url || "");
+      // An env var beats the file in loadProviderConfig, so say so rather than letting
+      // the user wonder why the pick they just made had no effect.
+      sendJson(res, 200, { ...result, envOverride: !!process.env.OPENAI_BASE_URL });
+    }).catch(() => sendJson(res, 400, { error: "invalid body" }));
+    return;
+  }
+
   if (req.method === "GET" && req.url === "/api/ollama-url") {
     Promise.all([
       hostnameFor(config.ollamaUrl),
