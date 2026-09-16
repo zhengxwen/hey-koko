@@ -385,6 +385,13 @@ function ollamaBinary() {
 
 const gib = (bytes) => `${Math.round((bytes / 1024 ** 3) * 10) / 10} GB`;
 
+// The same two icons the model dropdown uses (public/js/ollama.js): 💻 for a native
+// Ollama, 🏠 for an OpenAI-compatible server on this machine or this LAN. One
+// convention across app and CLI, so a row here reads like the entry it will become.
+// (The dropdown's third icon, ☁️ for a hosted provider, can't occur: everything a
+// network sweep can reach is by definition in the house.)
+const ICON = { ollama: "💻", openai: "🏠" };
+
 function printHuman(rec, opts) {
   const bits = [];
   if (rec.version) bits.push(`v${rec.version}`);
@@ -393,7 +400,10 @@ function printHuman(rec, opts) {
   else bits.push(rec.models.length === 1 ? "1 model" : `${rec.models.length} models`);
   if (rec.running.length) bits.push(`loaded: ${rec.running.map((m) => m.name).join(", ")}`);
   if (rec.hostname) bits.push(`(${rec.hostname})`);
-  process.stdout.write(`  ${rec.url.padEnd(28)}${rec.kind.padEnd(8)}${bits.join("  ")}\n`);
+  // Both icons are one surrogate pair wide and render two columns, so padding the
+  // joined string keeps the columns aligned without measuring display width.
+  const kind = `${ICON[rec.kind] || "  "} ${rec.kind}`;
+  process.stdout.write(`  ${rec.url.padEnd(28)}${kind.padEnd(11)}${bits.join("  ")}\n`);
   if (opts.models) {
     for (const m of rec.models) {
       const detail = [m.parameterSize, m.quantization].filter(Boolean).join(" ");
@@ -411,14 +421,14 @@ function printHints(found) {
   const ollama = found.find((r) => r.kind === "ollama" && r.models.length) || found.find((r) => r.kind === "ollama");
   const openai = found.find((r) => r.kind === "openai" && !r.needsKey) || found.find((r) => r.kind === "openai");
   const out = ["\npoint hey-koko at one with:\n"];
-  if (ollama) out.push(`  ollama   OLLAMA_URL=${ollama.url} npm start\n`);
+  if (ollama) out.push(`  ${ICON.ollama} ollama   OLLAMA_URL=${ollama.url} npm start\n`);
   if (openai) {
-    out.push(`  openai   OPENAI_BASE_URL=${openai.url} npm start\n`);
+    out.push(`  ${ICON.openai} openai   OPENAI_BASE_URL=${openai.url} npm start\n`);
     // Telling someone "no apiKey needed" about the one endpoint that just answered 401
     // is worse than saying nothing: they would follow it and get a silent empty dropdown.
     out.push(openai.needsKey
-      ? `           plus OPENAI_API_KEY=… — this one refused without a key\n`
-      : `           (or "baseUrl" in ~/.hey-koko/openai.json — a local endpoint needs no apiKey)\n`);
+      ? `              plus OPENAI_API_KEY=… — this one refused without a key\n`
+      : `              (or "baseUrl" in ~/.hey-koko/openai.json — a local endpoint needs no apiKey)\n`);
   }
   process.stderr.write(out.join(""));
 }
