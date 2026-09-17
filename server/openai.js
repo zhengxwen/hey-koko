@@ -470,16 +470,38 @@ function toOpenAITools(ollamaTools) {
 }
 
 // Build the OpenAI request payload shared by proxyChat and complete.
-function buildPayload({ model, messages, tools, stream, maxTokens, temperature, thinkEffort, thinkOff }) {
+function buildPayload({ model, messages, tools, stream, maxTokens, temperature, thinkEffort, thinkOff, selfHosted }) {
   const reasoning = isReasoningModel(model);
   const payload = { model, messages, stream };
+  if (selfHosted) {
+    // A server we run ourselves (vLLM / SGLang / llama.cpp, from local-openai.json).
+    // Thinking there is a switch in the model's CHAT TEMPLATE, and many serve it off by
+    // default — so ⚙ has to reach the template:
+    //   - chat_template_kwargs turns it on or off. Both names are sent because the
+    //     families disagree (DeepSeek reads `thinking`, Qwen3 `enable_thinking`), and a
+    //     Jinja template ignores a variable it never uses.
+    //   - reasoning_effort carries the depth, passed through verbatim: the whole ⚙ scale
+    //     is legal on the endpoint we target, and the template decides what each level
+    //     means. Collapsing levels here would mean asking for a step more and quietly
+    //     getting the same.
+    // Absent (the default) sends neither and leaves the server's own default alone.
+    const EFFORT_SELF_HOSTED = ["low", "medium", "high", "xhigh", "max"];
+    if (thinkOff) {
+      payload.chat_template_kwargs = { thinking: false, enable_thinking: false };
+    } else if (EFFORT_SELF_HOSTED.includes(thinkEffort)) {
+      payload.chat_template_kwargs = { thinking: true, enable_thinking: true };
+      payload.reasoning_effort = thinkEffort;
+    }
+  }
   // ⚙ "Thinking effort" → the o-series/gpt-5 knob of the same idea. Only for reasoning
   // models: a classic chat model 400s on the unknown parameter, and has nothing to spend
   // it on anyway. Absent (the default) leaves the provider's own default in place.
   // reasoning_effort tops out at "high" here — the two levels above it are Claude's
   // vocabulary, so they land on the ceiling this API actually has rather than 400.
   const EFFORT_FOR_OPENAI = { low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" };
-  if (reasoning && EFFORT_FOR_OPENAI[thinkEffort]) {
+  if (selfHosted) {
+    // handled above — the hosted-API mapping below must not overwrite it
+  } else if (reasoning && EFFORT_FOR_OPENAI[thinkEffort]) {
     payload.reasoning_effort = EFFORT_FOR_OPENAI[thinkEffort];
   } else if (reasoning && thinkOff) {
     // A reasoning model has no off switch — the lowest effort is as close as it gets.
@@ -540,7 +562,8 @@ async function proxyChat(res, body) {
   const temperature = body.options && typeof body.options.temperature === "number" ? body.options.temperature : undefined;
 
   const payload = buildPayload({ model: body.model, messages, tools, stream: wantStream, maxTokens, temperature,
-                                thinkEffort: body.thinkEffort, thinkOff: body.think === false });
+                                thinkEffort: body.thinkEffort, thinkOff: body.think === false,
+                                selfHosted: cfg.kind === "local" });
   // OpenRouter only RETURNS a reasoning model's chain-of-thought when asked — enable it
   // when the user turned on "show thinking". Gated to the OpenRouter provider: DeepSeek-
   // direct returns reasoning_content by default (no flag), and api.openai.com would 400
@@ -600,7 +623,7 @@ async function proxyChat(res, body) {
     // it as `thinking` when the show-thinking toggle is on — the frontend already
     // renders that field (claude.js does the same).
     const reasoningOut = cm.reasoning_content || cm.reasoning;
-    if (body.think && reasoningOut) message.thinking = reasoningOut;
+    if (body.showThinking && reasoningOut) message.thinking = reasoningOut;
     if (Array.isArray(cm.tool_calls) && cm.tool_calls.length) {
       message.tool_calls = cm.tool_calls.map((tc) => {
         const fn = tc.function || {};
