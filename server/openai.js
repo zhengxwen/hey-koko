@@ -634,6 +634,12 @@ async function proxyChat(res, body) {
   let buffer = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  // Why the provider stopped — only the endings that leave the user short. OpenAI's
+  // "length" is the max_tokens OUTPUT cap (an over-long prompt is a 400 up front), so it
+  // is passed on as "max_tokens", not as Ollama's context-window "length";
+  // "content_filter" means the answer was blocked. "stop" / "tool_calls" add nothing.
+  let doneReason = "";
+  const doneLine = () => ({ message: { role: "assistant", content: "" }, done: true, prompt_eval_count: inputTokens, eval_count: outputTokens, ...(doneReason ? { done_reason: doneReason } : {}) });
 
   try {
     for await (const chunk of response.body) {
@@ -655,7 +661,7 @@ async function proxyChat(res, body) {
         // on "sending/receiving". Returning here also cancels the upstream stream.
         if (dataStr === "[DONE]") {
           if (timeoutHandle) clearTimeout(timeoutHandle);
-          writeChunk({ message: { role: "assistant", content: "" }, done: true, prompt_eval_count: inputTokens, eval_count: outputTokens });
+          writeChunk(doneLine());
           res.end();
           return;
         }
@@ -678,6 +684,9 @@ async function proxyChat(res, body) {
           inputTokens = evt.usage.prompt_tokens || inputTokens;
           outputTokens = evt.usage.completion_tokens || outputTokens;
         }
+        const fr = evt.choices && evt.choices[0] && evt.choices[0].finish_reason;
+        if (fr === "length") doneReason = "max_tokens";
+        else if (fr === "content_filter") doneReason = fr;
         const delta = evt.choices && evt.choices[0] && evt.choices[0].delta;
         if (delta) {
           // Reasoning models stream their chain-of-thought before the answer, in a
@@ -694,12 +703,18 @@ async function proxyChat(res, body) {
       }
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
-    writeChunk({ message: { role: "assistant", content: "" }, done: true, prompt_eval_count: inputTokens, eval_count: outputTokens });
+    writeChunk(doneLine());
     res.end();
   } catch (error) {
     if (timeoutHandle) clearTimeout(timeoutHandle);
     if (!res.writableEnded) {
-      try { writeChunk({ message: { role: "assistant", content: "" }, done: true }); } catch { /* ignore */ }
+      // Say WHY it ended. A bare done line here was indistinguishable from a model that
+      // simply finished with nothing to say. The only abort on this controller is the
+      // reply timeout, so AbortError means exactly that.
+      const reason = error.name === "AbortError" ? "timeout" : "error";
+      // undici reports a dropped socket as a bare "terminated"; the cause says what happened.
+      const why = [error.message, error.cause?.message].filter(Boolean).join(" — ") || "stream failed";
+      try { writeChunk({ ...doneLine(), done_reason: reason, ...(reason === "error" ? { error: why } : {}) }); } catch { /* ignore */ }
       res.end();
     }
   }

@@ -9666,3 +9666,12 @@ body.isResizingComposer {
   font-size: 12px;
   line-height: 1.5;
 }
+/* The facts under the headline: model, time, context, tokens, how the stream ended.
+   Selectable, so it can be pasted into a bug report. */
+.replyCutDetail {
+  margin-top: 3px;
+  font-size: 11px;
+  opacity: 0.8;
+  user-select: text;
+  overflow-wrap: anywhere;
+}

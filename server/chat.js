@@ -108,8 +108,14 @@ async function proxyOllamaChat(req, res, preBody) {
       // it stopped, in the same shape Ollama's own done-line has, so the browser can
       // say "this was cut" instead of quietly keeping half an answer.
       const reason = error.name === "AbortError" ? (timedOut ? "timeout" : "aborted") : "error";
+      // The error's own words ride along: "error" alone told the user nothing about what
+      // broke, and this line is the only place left to say it.
+      const signOff = { model: bodyModel, done: true, done_reason: reason, message: { role: "assistant", content: "" } };
+      // undici reports a dropped socket as a bare "terminated"; what actually happened
+      // ("other side closed") is on error.cause.
+      if (reason === "error") signOff.error = [error.message, error.cause?.message].filter(Boolean).join(" — ") || "stream failed";
       try {
-        res.write(`\n${JSON.stringify({ model: bodyModel, done: true, done_reason: reason, message: { role: "assistant", content: "" } })}\n`);
+        res.write(`\n${JSON.stringify(signOff)}\n`);
       } catch { /* socket already gone — nothing to say it to */ }
       res.end();
       return;

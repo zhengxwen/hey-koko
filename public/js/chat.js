@@ -58,6 +58,84 @@ function thinkOff() {
   return dom.thinkEffort?.value === "off";
 }
 
+// ── Why a reply went wrong ─────────────────────────────────────────────────────
+// "I zoned out" used to be the whole story, and it hid very different failures behind
+// one sentence: the backend crashed, the connection dropped, the context filled up
+// while the model was still thinking, the provider refused or filtered it, a timeout,
+// or a model that genuinely produced nothing. Each needs a different fix, so the
+// stream reader keeps what the stream actually SAID, and the bubble shows it.
+function newStreamDiag() {
+  return { lines: 0, done: false, reason: "", error: "", thinkChars: 0, prompt: 0, eval: 0 };
+}
+
+function noteStreamLine(diag, data) {
+  diag.lines++;
+  if (data.error) diag.error = String(data.error);
+  if (data.done) { diag.done = true; if (data.done_reason) diag.reason = data.done_reason; }
+  // Counted even when "show thinking" is off: that is exactly the case where a model
+  // that thought the whole time and never answered looks like it did nothing at all.
+  if (data.message?.thinking) diag.thinkChars += data.message.thinking.length;
+  if (data.prompt_eval_count) diag.prompt = data.prompt_eval_count;
+  if (data.eval_count) diag.eval = data.eval_count;
+}
+
+// Null when the reply is fine. Otherwise the facts the bubble needs to explain itself;
+// stored on the message (not in its text, which goes back to the model next turn).
+function replyFailInfo(diag, content, { model, ms, numCtx }) {
+  const reason = diag.error ? "error"
+    : !diag.done ? (diag.lines ? "nodone" : "silent")
+    : (diag.reason || "stop");
+  const empty = !content.trim();
+  if (!empty && reason === "stop") return null;
+  const info = { reason, empty, model, ms, prompt: diag.prompt, eval: diag.eval, thinkChars: diag.thinkChars };
+  if (numCtx) info.numCtx = numCtx;
+  if (diag.error) info.error = diag.error;
+  return info;
+}
+
+function replyFailHeadline(f, msg) {
+  if (f.error) return t("fail_error", { error: f.error });
+  switch (f.reason) {
+    case "silent": return t("fail_silent");
+    case "nodone": return t(f.empty ? "fail_noDoneEmpty" : "fail_noDone");
+    case "length": return f.empty ? t("fail_lengthEmpty", { ctx: f.numCtx || "?" }) : t("cut_length");
+    case "max_tokens": return f.empty ? t("fail_maxTokensEmpty", { n: f.eval || "?" }) : t("cut_maxTokens");
+    case "timeout": return f.empty ? t("fail_timeoutEmpty") : t("cut_timeout");
+    case "aborted": return t("fail_aborted");
+    case "refusal": return t("fail_refusal");
+    case "content_filter": return t("fail_filtered");
+  }
+  // Ended normally, yet nothing to show.
+  if (f.thinkChars > 0) return t(msg.thinking ? "fail_thinkOnlyShown" : "fail_thinkOnly", { n: f.thinkChars });
+  if (!f.eval) return t("fail_nothing");
+  return t("fail_emptyAnswer", { n: f.eval });
+}
+
+function buildReplyFailNote(msg) {
+  const note = document.createElement("div");
+  note.className = "replyCutNote";
+  const f = msg.failInfo;
+  if (!f) {   // older messages carry only the bare reason
+    note.textContent = t(msg.cutOff === "length" ? "cut_length" : "cut_timeout");
+    return note;
+  }
+  const head = document.createElement("div");
+  head.textContent = replyFailHeadline(f, msg);
+  const detail = document.createElement("div");
+  detail.className = "replyCutDetail";
+  // numCtx is only recorded for Ollama replies — a cloud backend never sees num_ctx.
+  detail.textContent = t(f.numCtx ? "fail_details" : "fail_detailsNoCtx", {
+    model: f.model || "?",
+    sec: f.ms != null ? (f.ms / 1000).toFixed(1) : "?",
+    ctx: f.numCtx || "?",
+    in: f.prompt || 0,
+    out: f.eval || 0,
+    reason: f.reason,
+  });
+  note.append(head, detail);
+  return note;
+}
+
 // Streaming markdown re-render throttle. Ollama streams a chunk (often a single
 // token/character) at a time; re-parsing the whole message and swapping the
 // bubble's innerHTML on every chunk makes the bubble flicker. We coalesce those
@@ -1974,6 +2052,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
   let thinkingContent = "";
   let usageStats = null;
   let cutReason = "";
+  const diag = newStreamDiag();
   let aborted = false;
   const genStart = Date.now();
   const showThinking = dom.showThinkingCheckbox?.checked || false;
@@ -2014,11 +2093,14 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     function appendStreamLine(line) {
       if (!line.trim()) return;
       const data = JSON.parse(line);
+      noteStreamLine(diag, data);
       // Why the stream ended. Ollama says "stop" for a finished answer; "length" means
       // it ran out of context room, and our proxy signs off with "timeout" when the
       // model went quiet. Both of those leave a half-written answer that otherwise
-      // looks complete — record it so the bubble can say so.
+      // looks complete — record it so the bubble can say so. An `error` line (Ollama
+      // failing mid-reply, or a provider erroring part-way) is the same kind of ending.
       if (data.done && data.done_reason && data.done_reason !== "stop") cutReason = data.done_reason;
+      if (data.error) cutReason = "error";
       if (data.prompt_eval_count || data.eval_count) {
         const tps = data.eval_count && data.eval_duration
           ? (data.eval_count / (data.eval_duration / 1e9))
@@ -2119,11 +2201,13 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     if (buffer.trim()) appendStreamLine(buffer);
 
     cancelStreamRender();
+    const failInfo = replyFailInfo(diag, content, { model: fetchBody.model, ms: Date.now() - genStart, numCtx: isCloudModel() ? 0 : fetchBody.options.num_ctx });
     content = content.trim() || t("chat_zonedOut");
     state.streamingInfo = null;
     const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart };
     if (thinkingContent) reply.thinking = thinkingContent;
     if (cutReason) reply.cutOff = cutReason;
+    if (failInfo) reply.failInfo = failInfo;
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
       tab.messages.splice(insertIndex, 0, reply);
     } else {
@@ -2206,6 +2290,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
   let thinkingContent = "";
   let usageStats = null;
   let cutReason = "";
+  const diag = newStreamDiag();
   let aborted = false;
   const genStart = Date.now();
   const showThinking = dom.showThinkingCheckbox?.checked || false;
@@ -2254,11 +2339,14 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     function appendStreamLine(line) {
       if (!line.trim()) return;
       const data = JSON.parse(line);
+      noteStreamLine(diag, data);
       // Why the stream ended. Ollama says "stop" for a finished answer; "length" means
       // it ran out of context room, and our proxy signs off with "timeout" when the
       // model went quiet. Both of those leave a half-written answer that otherwise
-      // looks complete — record it so the bubble can say so.
+      // looks complete — record it so the bubble can say so. An `error` line (Ollama
+      // failing mid-reply, or a provider erroring part-way) is the same kind of ending.
       if (data.done && data.done_reason && data.done_reason !== "stop") cutReason = data.done_reason;
+      if (data.error) cutReason = "error";
       if (data.prompt_eval_count || data.eval_count) {
         const tps = data.eval_count && data.eval_duration
           ? (data.eval_count / (data.eval_duration / 1e9))
@@ -2362,6 +2450,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     if (buffer.trim()) appendStreamLine(buffer);
 
     cancelStreamRender();
+    const failInfo = replyFailInfo(diag, content, { model: fetchBody.model, ms: Date.now() - genStart, numCtx: isCloudModel() ? 0 : fetchBody.options.num_ctx });
     content = content.trim() || t("chat_zonedOut");
     if (!bg) state.streamingInfo = null;
     if (!bg && state.activeTabId === tabId) {
@@ -2371,6 +2460,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
     const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart, ...replyMeta };
     if (thinkingContent) reply.thinking = thinkingContent;
     if (cutReason) reply.cutOff = cutReason;
+    if (failInfo) reply.failInfo = failInfo;
     if (bg) {
       // Multi-message bg job (docfull/url) passes a real insertIndex (the cursor) →
       // splice there, keeping the placeholder below. Single-result job (insertIndex<0)
@@ -5111,14 +5201,10 @@ function renderMessage(role, content, displayImages, index, timestamp, generated
     }
     item.appendChild(text);
     textEl = text;
-    // The reply stopped before the model was finished — say so under it, rather than
-    // letting half an answer pass for a whole one.
-    if (_libMsg?.cutOff) {
-      const note = document.createElement("div");
-      note.className = "replyCutNote";
-      note.textContent = t(_libMsg.cutOff === "length" ? "cut_length" : "cut_timeout");
-      item.appendChild(note);
-    }
+    // The reply stopped before the model was finished, or came back empty — say so under
+    // it, with what the stream actually reported, rather than letting half an answer
+    // (or "I zoned out") pass without a reason.
+    if (_libMsg?.failInfo || _libMsg?.cutOff) item.appendChild(buildReplyFailNote(_libMsg));
     // Distill-card bubble: visualize its «§ Relations» section as a node-link relation graph
     // below the text (parsed from the card markdown; null when the card has no relations).
     if (_libMsg?.libraryKind === "card") {

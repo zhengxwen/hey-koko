@@ -178,6 +178,7 @@ function saveChatMessage(message) {
   // Why a reply stopped early ("timeout" / "length"). Kept so the "this was cut off"
   // note survives a reload — a half answer must not come back looking whole.
   if (message.cutOff) stored.cutOff = message.cutOff;
+  if (message.failInfo) stored.failInfo = message.failInfo;
   stored.content = message.content;
   if (message.folded) stored.folded = true;
   if (message.dispatched) stored.dispatched = true;   // ▶ receipt — lets the next press replace it

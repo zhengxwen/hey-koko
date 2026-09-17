@@ -445,6 +445,11 @@ async function proxyChat(res, body) {
   let buffer = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  // Anthropic's stop_reason — only the endings that leave the user short: "max_tokens"
+  // (the OUTPUT cap, not the context window, so it keeps its own name rather than
+  // Ollama's "length") and "refusal". end_turn needs no mention.
+  let doneReason = "";
+  const doneLine = () => ({ message: { role: "assistant", content: "" }, done: true, prompt_eval_count: inputTokens, eval_count: outputTokens, ...(doneReason ? { done_reason: doneReason } : {}) });
 
   try {
     for await (const chunk of response.body) {
@@ -473,16 +478,32 @@ async function proxyChat(res, body) {
           }
         } else if (evt.type === "message_delta") {
           if (evt.usage?.output_tokens) outputTokens = evt.usage.output_tokens;
+          const sr = evt.delta?.stop_reason;
+          if (sr === "max_tokens") doneReason = "max_tokens";
+          else if (sr === "refusal") doneReason = "refusal";
+        } else if (evt.type === "error") {
+          // Anthropic fails part-way through a stream with an `error` event (overloaded,
+          // api_error…). It used to fall through the ifs above, and the reply just ended.
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          const e = evt.error || {};
+          writeChunk({ ...doneLine(), done_reason: "error", error: [e.type, e.message].filter(Boolean).join(": ") || "Claude returned an error" });
+          res.end();
+          return;
         }
       }
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
-    writeChunk({ message: { role: "assistant", content: "" }, done: true, prompt_eval_count: inputTokens, eval_count: outputTokens });
+    writeChunk(doneLine());
     res.end();
   } catch (error) {
     if (timeoutHandle) clearTimeout(timeoutHandle);
     if (!res.writableEnded) {
-      try { writeChunk({ message: { role: "assistant", content: "" }, done: true }); } catch { /* ignore */ }
+      // Say WHY it ended — a bare done line looked exactly like an empty answer. The
+      // only abort on this controller is the reply timeout.
+      const reason = error.name === "AbortError" ? "timeout" : "error";
+      // undici reports a dropped socket as a bare "terminated"; the cause says what happened.
+      const why = [error.message, error.cause?.message].filter(Boolean).join(" — ") || "stream failed";
+      try { writeChunk({ ...doneLine(), done_reason: reason, ...(reason === "error" ? { error: why } : {}) }); } catch { /* ignore */ }
       res.end();
     }
   }
