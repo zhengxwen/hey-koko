@@ -6587,45 +6587,15 @@ body.isResizingComposer {
   accent-color: var(--accent);
 }
 
-/* Knowledge-library sub-toggle: its own line, indented under the master tool checkbox */
-.thinkingSetting .toolSubToggle {
-  display: flex;
-  margin: 4px 0 0 22px;
-  font-size: 12.5px;
-  color: var(--muted);
-}
-
-/* Co-browsing sub-row: checkbox label + "Open Chrome" launcher, button pinned right;
-   in the narrow panel the row wraps and the button drops to its own line. The label
-   keeps the canonical .checkboxLabel grid; min-width:0 on label AND text span defeats
-   the flex/grid auto min-size so long text wraps instead of underrunning the button. */
-.thinkingSetting .browserToolRow {
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-}
-.browserToolRow .checkboxLabel {
-  flex: 1 1 auto;
-  min-width: 0;
-  /* .thinkingSetting label sets white-space:nowrap, which would clip this longer
-     label at the panel edge — let it wrap instead. */
-  white-space: normal;
-}
-.browserToolRow .checkboxLabel > span {
-  min-width: 0;
-}
-.browserToolRow .browserLaunchBtn {
-  flex: 0 0 auto;
-  margin-left: auto;
-  font-size: 11.5px;
-  padding: 3px 10px;
-  /* the global button min-height (42px) is oversized next to a 12.5px sub-toggle row */
+/* "Choose tools… (7/9)" — opens the tools dialog; sits under the master checkbox */
+.thinkingSetting .toolsConfigBtn {
+  margin: 6px 0 0 22px;
+  font-size: 12px;
+  padding: 4px 12px;
+  /* the global button min-height (42px) is oversized for a settings sub-row */
   min-height: 28px;
 }
-.browserToolRow .browserLaunchBtn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
+.thinkingSetting .toolsConfigBtn:disabled { opacity: 0.45; cursor: default; }
 
 .themeSettingLabel {
   font-weight: 650;
@@ -7820,6 +7790,33 @@ body.isResizingComposer {
 }
 .zoteroImportGo:disabled { opacity: 0.5; cursor: default; }
 @media (max-width: 640px) { .zoteroImportCols { width: 150px; } }
+
+/* Tools dialog (tools-dialog.js) — reuses the zotero modal chrome; the list is a
+   single scrolling column of grouped .checkboxLabel rows. Height hugs the content. */
+.toolsDlg { width: min(560px, 94vw); height: auto; max-height: 88vh; }
+.toolsDlgBody { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 16px 12px; }
+.toolsDlgGroup { margin-top: 8px; }
+.toolsDlgGroupHead {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 2px; font-size: 11.5px; font-weight: 650; letter-spacing: 0.02em;
+  color: var(--muted); text-transform: uppercase;
+}
+.toolsDlgRow { padding: 4px 4px; border-radius: 8px; font-weight: 400; line-height: 1.3; }
+.toolsDlgRow:hover { background: var(--surface); }
+.toolsDlgRow input[type="checkbox"] { margin-top: 1px; }
+.toolsDlgRowText { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.toolsDlgRowName { font-size: 13.5px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.toolsDlgRowName code {
+  margin-left: 8px; font-size: 11px; font-weight: 400; color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.toolsDlgRowDesc { font-size: 12px; color: var(--muted); line-height: 1.3; }
+.toolsDlgFootBtns { display: flex; gap: 8px; }
+.toolsDlgMini {
+  font-size: 11.5px; padding: 3px 10px; min-height: 26px;
+  text-transform: none; letter-spacing: 0; font-weight: 500;
+}
+.toolsDlgMini:disabled { opacity: 0.45; cursor: default; }
 
 /* News feed subscription manager (news-feeds.md P3) — reuses the zotero modal chrome
    (.zoteroImportOverlay/.zoteroImportDialog/head/foot), adds a management list + add row. */

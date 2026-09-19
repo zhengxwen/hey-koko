@@ -208,9 +208,7 @@ export const dom = {
   showThinkingCheckbox: document.querySelector("#showThinking"),
   sendTimeToggle: document.querySelector("#sendTime"),
   toolsToggle: document.querySelector("#toolsToggle"),
-  libraryToolToggle: document.querySelector("#libraryToolToggle"),
-  browserToolToggle: document.querySelector("#browserToolToggle"),
-  browserLaunchBtn: document.querySelector("#browserLaunchBtn"),
+  toolsConfigBtn: document.querySelector("#toolsConfigBtn"),
   numCtxSelect: document.querySelector("#numCtxSelect"),
   numCtxDisplay: document.querySelector("#numCtxDisplay"),
   llmParamsBtn: document.querySelector("#llmParamsBtn"),
@@ -254,6 +252,7 @@ export const dom = {
 export const state = {
   tabs: [],
   activeTabId: null,
+  disabledTools: [],                 // tool names the user switched off in the tools dialog (tools.js / tools-dialog.js). Persisted in SETTINGS_KEY.
   customPresets: [],                 // user-authored personality presets: [{ id:"cp_…", name, text }] — see presets.js. Persisted in SETTINGS_KEY.
   currentAbortController: null,
   imageGenAbortController: null,

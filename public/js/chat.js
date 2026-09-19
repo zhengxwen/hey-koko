@@ -34,7 +34,7 @@ import { t, getPrompt, getPromptLanguage } from './i18n.js';
 import { getNumCtx, getLlmTimeout, recordContextUsage, renderContextMeter } from './context-meter.js';
 import { addMemory, getMemoryPromptBlock } from './memory.js';
 import { parseRemind, addReminder, describeReminder, markActivity } from './proactive.js';
-import { activeToolSchemas, executeTool, getToolLabel } from './tools.js';
+import { activeToolSchemas, executeTool, getToolLabel, toolsActive, toolsSystemHint } from './tools.js';
 import { applyHighlights, captureAnchor, highlightsInSelection, registerHighlightHost, resolveHighlightHost } from './highlight.js';
 
 // ⚙ "Thinking effort" (More options). "" = leave it alone, which is what every model
@@ -2827,14 +2827,10 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
 
   const genStart = Date.now();
   const messages = await hydrateOutgoingImages(buildMessages(tabId, contextEndIndex));
-  // Tell the model what tools exist and when to use them (in the prompt language).
-  // Mention search_library only when the knowledge-library tool is actually active.
+  // Tell the model what tools exist and when to use them (in the prompt language) —
+  // only the ones actually offered, see toolsSystemHint().
   if (messages[0] && messages[0].role === "system") {
-    let toolsHint = getPrompt("toolsSystem");
-    if (activeToolSchemas().some((s) => s.function.name === "search_library")) {
-      toolsHint += ` ${getPrompt("toolsSystemLibrary")}`;
-    }
-    messages[0].content += `\n\n${toolsHint}`;
+    messages[0].content += `\n\n${toolsSystemHint()}`;
   }
   setSendingImageCount(countOutgoingImages(messages));
   setSendingTrimCount((getTab(tabId) || getActiveTab())?.ctxOmittedMsgs || 0);
@@ -3022,7 +3018,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
 // otherwise the normal streaming path. Both honor insertIndex/contextEndIndex so
 // a resent bubble truncates context to itself and inserts the reply right after.
 function dispatchReply(tabId, insertIndex = -1, contextEndIndex = -1) {
-  if (dom.toolsToggle?.checked) agenticReply(tabId, insertIndex, contextEndIndex);
+  if (toolsActive()) agenticReply(tabId, insertIndex, contextEndIndex);
   else regenerateReply(tabId, insertIndex, contextEndIndex);
 }
 
@@ -3833,7 +3829,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
   if (plainVideos.length && !content && !image) return;
 
   // Tools enabled (and no image — vision + tools is unreliable on local models) → agent loop.
-  if (dom.toolsToggle?.checked && !image) {
+  if (toolsActive() && !image) {
     agenticReply(tabId);
   } else {
     regenerateReply(tabId);

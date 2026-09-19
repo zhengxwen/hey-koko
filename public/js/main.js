@@ -20,6 +20,7 @@ import { setRenderChat as translateSetRenderChat, stopTranslation } from './tran
 import { renderChat, sendMessage, setGenerating, regenerateReply, analyzeMedia, generateProactiveReply, markStopping, showSendError, initHighlightUI } from './chat.js';
 import { setDeps as urlFetchSetDeps, handleUrlCommand, handleMultiUrlCommand } from './url-fetch.js';
 import { setToolCmdDeps } from './tool-cmd.js';
+import { openToolsDialog, refreshToolsConfigBtn } from './tools-dialog.js';
 import { showCommandPopup, hideCommandPopup, moveCommandSelection, selectActiveCommand } from './commands.js';
 import { loadMentionDocs, loadMentionArchives, mentionContext, showMentionPopup, hideMentionPopup, moveMentionSelection, selectActiveMention, isMentionPopupOpen } from './mentions.js';
 import { initLightbox, initVideoLightbox, openMediaViewer } from './lightbox.js';
@@ -205,6 +206,7 @@ dom.uiLanguageSelect.addEventListener("change", () => {
   renderMemoryList();   // empty-state text is localized (memory_empty)
   renderReminderList(); // empty-state text is localized (reminder_listEmpty)
   relocalizeAvatarPicker(); // avatar tooltips are localized (avatar_*)
+  refreshToolsConfigBtn(); // label carries a count, so it's not in the static i18n bindings
   renderChat();
   saveCurrentSettings();
 });
@@ -232,42 +234,11 @@ if (dom.thinkEffort) dom.thinkEffort.addEventListener("change", saveCurrentSetti
 if (dom.sendTimeToggle) {
   dom.sendTimeToggle.addEventListener("change", saveCurrentSettings);
 }
-if (dom.toolsToggle) {
-  // The sub-options (knowledge library / co-browsing Chrome) only make sense while
-  // tool use is on, so hide their rows when the master toggle is off (and reflect
-  // the loaded state). The launch button also greys out with its own checkbox off.
-  const syncToolSubRows = () => {
-    const show = dom.toolsToggle.checked;
-    for (const cb of [dom.libraryToolToggle, dom.browserToolToggle]) {
-      const row = cb?.closest(".toolSubToggle");
-      if (row) row.style.display = show ? "" : "none";
-    }
-    if (dom.browserLaunchBtn) dom.browserLaunchBtn.disabled = !(dom.browserToolToggle?.checked ?? true);
-  };
-  dom.toolsToggle.addEventListener("change", () => { saveCurrentSettings(); syncToolSubRows(); });
-  dom.libraryToolToggle?.addEventListener("change", saveCurrentSettings);
-  dom.browserToolToggle?.addEventListener("change", () => { saveCurrentSettings(); syncToolSubRows(); });
-  syncToolSubRows();
-}
-if (dom.browserLaunchBtn) {
-  // Launch the co-browsing Chrome on the server machine; flash the outcome on the
-  // button itself, then restore. Disabled while the request is in flight and
-  // whenever the co-browsing checkbox is off.
-  dom.browserLaunchBtn.addEventListener("click", async () => {
-    const btn = dom.browserLaunchBtn;
-    btn.disabled = true;
-    let msg = "btn_browserLaunchFailed";
-    try {
-      const res = await fetch("/api/browser/launch", { method: "POST" });
-      const data = await res.json();
-      if (!data.error) msg = data.already ? "btn_browserLaunchAlready" : "btn_browserLaunched";
-    } catch { /* keep failure message */ }
-    btn.textContent = t(msg);
-    setTimeout(() => {
-      btn.textContent = t("btn_browserLaunch");
-      btn.disabled = !(dom.browserToolToggle?.checked ?? true);
-    }, 2500);
-  });
+if (dom.toolsToggle) dom.toolsToggle.addEventListener("change", () => { saveCurrentSettings(); refreshToolsConfigBtn(); });
+// Per-tool choices live in their own dialog; the button shows the enabled count.
+if (dom.toolsConfigBtn) {
+  dom.toolsConfigBtn.addEventListener("click", openToolsDialog);
+  refreshToolsConfigBtn();
 }
 if (dom.libraryDistillToggle) {
   dom.libraryDistillToggle.addEventListener("change", saveCurrentSettings);

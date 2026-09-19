@@ -151,8 +151,7 @@ export function saveCurrentSettings() {
       showThinking: dom.showThinkingCheckbox?.checked || false,
       sendTime: dom.sendTimeToggle?.checked ?? true,
       tools: dom.toolsToggle?.checked || false,
-      libraryTool: dom.libraryToolToggle?.checked ?? true,
-      browserTool: dom.browserToolToggle?.checked ?? true,
+      disabledTools: state.disabledTools || [],
       numCtx: dom.numCtxSelect?.value || "32768",
       llmMaxImages: dom.llmMaxImages?.value || "",
       llmMaxMessages: dom.llmMaxMessages?.value || "",
@@ -450,9 +449,16 @@ export function loadSavedSettings() {
   if (dom.sendTimeToggle) dom.sendTimeToggle.checked = savedSettings.sendTime !== undefined ? !!savedSettings.sendTime : true;
   // Tool calling defaults to ON; respect an explicit saved off-choice.
   if (dom.toolsToggle) dom.toolsToggle.checked = savedSettings.tools !== undefined ? !!savedSettings.tools : true;
-  // The knowledge-library tool sub-toggle: also default ON.
-  if (dom.libraryToolToggle) dom.libraryToolToggle.checked = savedSettings.libraryTool !== undefined ? !!savedSettings.libraryTool : true;
-  if (dom.browserToolToggle) dom.browserToolToggle.checked = savedSettings.browserTool !== undefined ? !!savedSettings.browserTool : true;
+  // Per-tool opt-outs (tools dialog). Profiles saved before the dialog only had the
+  // library / co-browsing sub-toggles — carry an explicit off-choice over.
+  // The co-browsing tools were once named list_browser_tabs / read_browser_page.
+  const RENAMED_TOOLS = { list_browser_tabs: "list_chrome_tabs", read_browser_page: "read_chrome_page" };
+  if (Array.isArray(savedSettings.disabledTools)) state.disabledTools = savedSettings.disabledTools.map((n) => RENAMED_TOOLS[n] || n);
+  else {
+    state.disabledTools = [];
+    if (savedSettings.libraryTool === false) state.disabledTools.push("search_library");
+    if (savedSettings.browserTool === false) state.disabledTools.push("list_chrome_tabs", "read_chrome_page");
+  }
   // Context window
   if (savedSettings.numCtx && dom.numCtxSelect) dom.numCtxSelect.value = savedSettings.numCtx;
   // Optional LLM caps — empty string means "no limit" and is the default.

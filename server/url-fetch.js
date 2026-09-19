@@ -25,7 +25,9 @@ function ytCookieArgs() {
 async function fetchUrlContent(req, res) {
   try {
     const body = await readBody(req);
-    const { url, language } = body;
+    // plain: true → treat every URL as an ordinary web page (the chat fetch_url tool):
+    // no YouTube transcript pipeline (yt-dlp / Whisper is far too slow for a tool call).
+    const { url, language, plain } = body;
     if (!url) { sendJson(res, 400, { error: "url is required" }); return; }
 
     let parsed;
@@ -33,7 +35,7 @@ async function fetchUrlContent(req, res) {
     if (!["http:", "https:"].includes(parsed.protocol)) { sendJson(res, 400, { error: "Only http/https supported" }); return; }
 
     // Check if YouTube
-    const ytMatch = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([\w-]{11})/);
+    const ytMatch = !plain && url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([\w-]{11})/);
     if (ytMatch) {
       const videoId = ytMatch[1];
       const transcript = await fetchYouTubeTranscript(videoId, language);
@@ -55,6 +57,28 @@ async function fetchUrlContent(req, res) {
         return;
       }
       // Fallback to page fetch if transcript fails
+    }
+
+    // Plain mode + YouTube: the watch page's HTML body is only site chrome, so describe
+    // the video from its player metadata (title, channel, date, description…) instead.
+    // No transcript. Falls through to the generic fetch if the page has no player JSON.
+    const plainYt = plain && url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([\w-]{11})/);
+    if (plainYt) {
+      const page = await fetchYouTubePage(plainYt[1]).catch(() => null);
+      if (page) {
+        const m = page.meta;
+        const date = m.uploadDate ? `${m.uploadDate.slice(0, 4)}-${m.uploadDate.slice(4, 6)}-${m.uploadDate.slice(6, 8)}` : "";
+        const lines = [
+          m.channel && `Channel: ${m.channel}`,
+          m.duration && `Duration: ${m.duration}`,
+          m.viewCount && `Views: ${m.viewCount}`,
+          m.category && `Category: ${m.category}`,
+          m.tags.length && `Tags: ${m.tags.join(", ")}`,
+          m.description && `\nDescription:\n${m.description}`,
+        ].filter(Boolean);
+        sendJson(res, 200, { type: "webpage", title: m.title, url, content: truncateContent(lines.join("\n"), config.URL_CONTENT_MAX_CHARS), images: [], publishedAt: date });
+        return;
+      }
     }
 
     // A bespoke news-feeds site handler pinned to this URL's host (built-in or an external
@@ -867,6 +891,71 @@ async function fetchYouTubeThumbnail(videoId) {
   return null;
 }
 
+// Fetch a YouTube watch page and pull its metadata out of the embedded
+// ytInitialPlayerResponse JSON. Shared by the transcript scraper below and the plain
+// (fetch_url tool) path of fetchUrlContent. Null when the page has no player JSON.
+async function fetchYouTubePage(videoId) {
+  const consentCookie = "SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMxMjE5LjA5X3AxGgJlbiACGgYIgJnmqwY";
+  const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
+      "Cookie": consentCookie,
+    },
+  });
+  const pageHtml = await pageRes.text();
+
+  // <title> tag text carries HTML entities (&quot; &amp; &#39;) — decode them. Only a
+  // fallback: videoDetails.title below is JSON-parsed and entity-free, prefer it.
+  const pageTitle = decodeEntities((pageHtml.match(/<title>(.*?)<\/title>/) || [])[1]?.replace(" - YouTube", "").trim() || "");
+
+  // Extract ytInitialPlayerResponse JSON using brace counting
+  let playerData = null;
+  const marker = "ytInitialPlayerResponse";
+  const startIdx = pageHtml.indexOf(marker);
+  if (startIdx === -1) return null;
+  const jsonStart = pageHtml.indexOf("{", startIdx);
+  if (jsonStart === -1) return null;
+
+  let depth = 0;
+  let jsonEnd = -1;
+  for (let i = jsonStart; i < pageHtml.length && i < jsonStart + 500000; i++) {
+    if (pageHtml[i] === "{") depth++;
+    else if (pageHtml[i] === "}") {
+      depth--;
+      if (depth === 0) { jsonEnd = i + 1; break; }
+    }
+  }
+  if (jsonEnd === -1) return null;
+
+  try { playerData = JSON.parse(pageHtml.slice(jsonStart, jsonEnd)); } catch { return null; }
+
+  // Extract metadata from videoDetails
+  const vd = playerData?.videoDetails || {};
+  const mf = playerData?.microformat?.playerMicroformatRenderer || {};
+  const title = vd.title || pageTitle;
+  const channel = vd.author || "";
+  const viewCount = vd.viewCount || "";
+  const lengthSeconds = parseInt(vd.lengthSeconds || "0", 10);
+  const duration = lengthSeconds > 0
+    ? `${Math.floor(lengthSeconds / 60)}:${String(lengthSeconds % 60).padStart(2, "0")}`
+    : "";
+  // Try microformat first, then meta tag from HTML
+  let uploadDate = (mf.publishDate || mf.uploadDate || "").slice(0, 10).replace(/-/g, "");
+  if (!uploadDate) {
+    const metaDate = pageHtml.match(/<meta[^>]*itemprop="(?:datePublished|uploadDate)"[^>]*content="([^"]+)"/);
+    if (metaDate) uploadDate = metaDate[1].slice(0, 10).replace(/-/g, "");
+  }
+  if (!uploadDate) {
+    const metaDate2 = pageHtml.match(/"publishDate"\s*:\s*"(\d{4}-\d{2}-\d{2})"/);
+    if (metaDate2) uploadDate = metaDate2[1].replace(/-/g, "");
+  }
+  const description = vd.shortDescription || "";
+  const category = mf.category || "";
+  const tags = Array.isArray(vd.keywords) ? vd.keywords : [];
+  return { pageRes, playerData, consentCookie, meta: { title, channel, duration, viewCount, uploadDate, description, category, tags } };
+}
+
 async function fetchYouTubeTranscript(videoId, language) {
   // Method 1: Try yt-dlp if available (most reliable)
   const ytdlpResult = await fetchTranscriptViaYtdlp(videoId, language);
@@ -874,64 +963,10 @@ async function fetchYouTubeTranscript(videoId, language) {
 
   // Method 2: Scrape from page HTML
   try {
-    const consentCookie = "SOCS=CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMxMjE5LjA5X3AxGgJlbiACGgYIgJnmqwY";
-    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-        "Cookie": consentCookie,
-      },
-    });
-    const pageHtml = await pageRes.text();
-
-    // <title> tag text carries HTML entities (&quot; &amp; &#39;) — decode them. Only a
-    // fallback: videoDetails.title below is JSON-parsed and entity-free, prefer it.
-    const pageTitle = decodeEntities((pageHtml.match(/<title>(.*?)<\/title>/) || [])[1]?.replace(" - YouTube", "").trim() || "");
-
-    // Extract ytInitialPlayerResponse JSON using brace counting
-    let playerData = null;
-    const marker = "ytInitialPlayerResponse";
-    const startIdx = pageHtml.indexOf(marker);
-    if (startIdx === -1) return null;
-    const jsonStart = pageHtml.indexOf("{", startIdx);
-    if (jsonStart === -1) return null;
-
-    let depth = 0;
-    let jsonEnd = -1;
-    for (let i = jsonStart; i < pageHtml.length && i < jsonStart + 500000; i++) {
-      if (pageHtml[i] === "{") depth++;
-      else if (pageHtml[i] === "}") {
-        depth--;
-        if (depth === 0) { jsonEnd = i + 1; break; }
-      }
-    }
-    if (jsonEnd === -1) return null;
-
-    try { playerData = JSON.parse(pageHtml.slice(jsonStart, jsonEnd)); } catch { return null; }
-
-    // Extract metadata from videoDetails
-    const vd = playerData?.videoDetails || {};
-    const mf = playerData?.microformat?.playerMicroformatRenderer || {};
-    const title = vd.title || pageTitle;
-    const channel = vd.author || "";
-    const viewCount = vd.viewCount || "";
-    const lengthSeconds = parseInt(vd.lengthSeconds || "0", 10);
-    const duration = lengthSeconds > 0
-      ? `${Math.floor(lengthSeconds / 60)}:${String(lengthSeconds % 60).padStart(2, "0")}`
-      : "";
-    // Try microformat first, then meta tag from HTML
-    let uploadDate = (mf.publishDate || mf.uploadDate || "").slice(0, 10).replace(/-/g, "");
-    if (!uploadDate) {
-      const metaDate = pageHtml.match(/<meta[^>]*itemprop="(?:datePublished|uploadDate)"[^>]*content="([^"]+)"/);
-      if (metaDate) uploadDate = metaDate[1].slice(0, 10).replace(/-/g, "");
-    }
-    if (!uploadDate) {
-      const metaDate2 = pageHtml.match(/"publishDate"\s*:\s*"(\d{4}-\d{2}-\d{2})"/);
-      if (metaDate2) uploadDate = metaDate2[1].replace(/-/g, "");
-    }
-    const description = vd.shortDescription || "";
-    const category = mf.category || "";
-    const tags = Array.isArray(vd.keywords) ? vd.keywords : [];
+    const page = await fetchYouTubePage(videoId);
+    if (!page) return null;
+    const { pageRes, playerData, consentCookie } = page;
+    const { title, channel, duration, viewCount, uploadDate, description, category, tags } = page.meta;
     // The video's ORIGINAL spoken language (ASR track), returned as result.language for
     // the "Language:" meta field. Kept SEPARATE from the `language` parameter (the
     // viewer's prompt-language preference) — that drives track SELECTION below.
