@@ -333,15 +333,15 @@ async function mergeScail2Segments(bufs, srcBuf, wantCodec, crf, signal) {
 // crossfade (H3_CHAIN_XFADE_S) instead. A crossfade needs the two sides to OVERLAP, and
 // the trimmed tracks do not: segment k+1's copy of the sound under the cut was trimmed
 // off with its pinned frames. That is what `extAudio` is — segment k+1's UNTRIMMED sound
-// (null for segment 1). Its first H3_CHAIN_CONTEXT frames' worth is the previous
-// segment's closing sound re-rendered in place, so starting it that crossfade's length
+// (null for segment 1), and `trims[k]` how many frames it dropped. That head covers the
+// same instant as the previous segment's tail, so starting it that crossfade's length
 // BEFORE the cut and fading across keeps every sample on the picture's timeline: nothing
 // slides, the total is still exactly the picture's length. A segment without it (older
 // graph, missing file) falls back to a plain butt join.
 //
 // The sound is joined as PCM and encoded once; stream-copying AAC across a cut would also
 // drag each file's encoder priming along. Returns { buf, codec } or null.
-async function mergeH3Segments(bufs, extAudio, signal) {
+async function mergeH3Segments(bufs, extAudio, trims, signal) {
   const id = crypto.randomUUID();
   const segPaths = bufs.map((_, i) => path.join(os.tmpdir(), `hk_h3c_${id}_${String(i).padStart(3, "0")}.mp4`));
   const extPaths = bufs.map((_, i) => (extAudio && extAudio[i] && extAudio[i].length)
@@ -376,8 +376,9 @@ async function mergeH3Segments(bufs, extAudio, signal) {
       for (let i = 0; i < n; i++) {
         const fps = probes[i].fps || 24;
         const dur = probes[i].frames > 0 ? probes[i].frames / fps : 0;
-        if (i > 0 && extPaths[i] && dur > 0) {
-          const t0 = H3_CHAIN_CONTEXT / fps - X;   // X before the cut the Trim node made
+        const cut = (trims && trims[i] > 0) ? trims[i] : 0;   // frames this segment dropped
+        if (i > 0 && extPaths[i] && cut > 0 && dur > 0) {
+          const t0 = cut / fps - X;                // X before the cut this segment made
           parts.push(`[${extIn(i)}:a]${norm},atrim=start=${t0.toFixed(6)}:end=${(t0 + X + dur).toFixed(6)},asetpts=PTS-STARTPTS,apad=whole_dur=${(X + dur).toFixed(6)}[a${i}]`);
           lead.push(true);
         } else {
@@ -4761,7 +4762,7 @@ function h3LoraInfo(name) {
 // weight files verified end-to-end, Aug 2026). "It validated" still proves nothing.
 function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
   refImageNames, refVideoName, refAudioName, refImageSize, easyCache, solAttn, solTau, solChunkFF,
-  h3Lora, h3LoraStrength, shiftVideo, shiftAudio, h3Anchor, h3Sla, h3Chain }) {
+  h3Lora, h3LoraStrength, shiftVideo, shiftAudio, h3Sla, h3Chain }) {
   const isRef = h3ReadsRefs(model);
   const refs = (Array.isArray(refImageNames) ? refImageNames : []).filter(Boolean).slice(0, H3_MAX_REF_IMAGES);
   const wf = {
@@ -4836,9 +4837,9 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     // input stays ["h3", 1] on all of them — the node reads it only for the frame count
     // and canvas size, and the sampler still consumes it directly.
     let cond = "h3";
-    if (h3Anchor > 0 && refVideoName) {
+    if (h3Chain && h3Chain.mode === "anchor" && h3Chain.trim > 0 && refVideoName) {
       wf["atail"] = { class_type: "ImageFromBatch", inputs: {
-        image: ["rgvc", 0], batch_index: -h3Anchor, length: h3Anchor } };
+        image: ["rgvc", 0], batch_index: -h3Chain.trim, length: h3Chain.trim } };
       wf["aguide"] = { class_type: "MiniMaxH3AddGuide", inputs: {
         positive: [cond, 0], latent: ["h3", 1], vae: ["vae", 0],
         image: ["atail", 0], frame_idx: 0 } };
@@ -4959,13 +4960,32 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
   }
   wf["guide"].inputs.model = [head, 0];
 
-  // ── Motion Context chain (ComfyUI-H3-Motion-Context) ──────────────────────────
-  // One segment of a multi-line /imagine, wired the way the pack's own Chain node
-  // queues it: Load <index-1> → Motion Context → sampler → Save <index>. Segment 1 loads
-  // slot 0, which reads no file, so the node passes the conditioning through and trims
-  // nothing. Slots live in one folder per chain; the latent crosses runs on disk, never
-  // as decoded pixels, so the pinned head is exactly what the model made.
-  if (h3Chain) {
+  // ── One segment of a chained multi-line /imagine ─────────────────────────────
+  // Two ways to carry the previous segment across, picked by ⚙ "chaining":
+  //
+  //   motion — ComfyUI-H3-Motion-Context, wired the way the pack's own Chain node queues
+  //            it: Load <index-1> → Motion Context → sampler → Save <index>. Segment 1
+  //            loads slot 0, which reads no file, so the node passes the conditioning
+  //            through and trims nothing. Slots live in one folder per chain; the latent
+  //            crosses runs on disk, never as decoded pixels, so the pinned head is
+  //            exactly what the model made — picture AND sound.
+  //   anchor — the previous segment's decoded tail, pinned at frame 0 with
+  //            MiniMaxH3AddGuide (the ⚙ continuation anchor, above). No node pack, but a
+  //            pixel round trip, and only the picture carries: the sound restarts. The
+  //            pinned frames come off again here rather than at the caller, so a segment
+  //            file is the piece of the finished video it will actually become.
+  //
+  // (⚙ "off" chains nothing: those segments are ordinary runs and never reach this code.)
+  if (h3Chain && h3Chain.mode === "anchor") {
+    if (h3Chain.trim > 0) {
+      wf["actrimv"] = { class_type: "ImageFromBatch", inputs: {
+        image: ["vdec", 0], batch_index: h3Chain.trim, length: IMAGE_FROM_BATCH_MAX } };
+      wf["actrima"] = { class_type: "TrimAudioDuration", inputs: {
+        audio: ["adec", 0], start_index: h3Chain.trim / v.fps, duration: Math.max(0.01, (v.length - h3Chain.trim) / v.fps) } };
+      wf["cv"].inputs.images = ["actrimv", 0];
+      wf["cv"].inputs.audio = ["actrima", 0];
+    }
+  } else if (h3Chain) {
     wf["mcload"] = { class_type: "MiniMaxH3MotionContextLoadLatent", inputs: {
       latent_path: h3Chain.dir, clip_index: h3Chain.index - 1 } };
     // LAST in the conditioning chain: the pack keeps every MiniMaxH3AddGuide anchor that
@@ -4983,13 +5003,14 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
       images: ["vdec", 0], audio: ["adec", 0], trim_frames: ["mc", 1], fps: v.fps, match_tail: true } };
     wf["cv"].inputs.images = ["mctrim", 0];
     wf["cv"].inputs.audio = ["mctrim", 1];
-    // From segment 2 on, ALSO keep the sound untrimmed, losslessly. Its head is the
-    // previous segment's closing second, re-rendered in place — real overlap, which is
-    // what lets the join crossfade across the cut without sliding the sound off the
-    // picture (see mergeH3Segments). The clip itself stays exactly as the pack trims it.
-    if (h3Chain.keepAudio) {
-      wf["mcaud"] = { class_type: "SaveAudio", inputs: { audio: ["adec", 0], filename_prefix: `${outDir(OUT_VID)}/h3chain_audio` } };
-    }
+  }
+  // From segment 2 on, ALSO keep the sound untrimmed, losslessly — whichever way the
+  // segment was chained. What the clip drops from its head is exactly the stretch that
+  // overlaps the previous segment, and that overlap is what lets the join crossfade
+  // without sliding the sound off the picture (see mergeH3Segments). The clip itself
+  // keeps the trimmed track, so it stays the piece of video it is meant to be.
+  if (h3Chain && h3Chain.keepAudio) {
+    wf["mcaud"] = { class_type: "SaveAudio", inputs: { audio: ["adec", 0], filename_prefix: `${outDir(OUT_VID)}/h3chain_audio` } };
   }
   return wf;
 }
@@ -7882,9 +7903,11 @@ async function runH3Chain(body, res) {
   const segs = [{ prompt: body.prompt, negative_prompt: body.negative_prompt, options: {} },
     ...body.h3Chain.map((x) => ({ prompt: String((x && x.prompt) || ""), negative_prompt: x && x.negative_prompt, options: (x && x.options) || {} }))];
   if (videoTypeOf(body.model) !== "minimax-h3") {
-    sendJson(res, 400, { error: "Several /imagine lines in one message join into one continuous video, and only MiniMax H3 can do that (ComfyUI-H3-Motion-Context). Pick an H3 model, or send the lines as separate messages." });
+    sendJson(res, 400, { error: "Several /imagine lines in one message join into one continuous video, and only MiniMax H3 can do that. Pick an H3 model, or send the lines as separate messages." });
     return;
   }
+  // ⚙ "chaining": how each segment picks up the one before it.
+  const mode = ["motion", "anchor", "off"].includes(base.h3ChainMode) ? base.h3ChainMode : "motion";
   for (let k = 1; k < segs.length; k++) {
     const o = segs[k].options;
     if (!segs[k].prompt.trim()) {
@@ -7902,9 +7925,21 @@ async function runH3Chain(body, res) {
     sendJson(res, 502, { error: `Cannot connect to ComfyUI (${currentComfyUrl()}). Make sure that machine is online, ComfyUI is running, and the address/IP is correct (if the IP changed, update the ComfyUI address in settings).` });
     return;
   }
-  if (!(await comfyHasNodes(H3_CHAIN_NODES))) {
-    sendJson(res, 400, { error: `Joining several /imagine lines into one continuous video needs the ComfyUI-H3-Motion-Context node pack on ${currentComfyUrl()}. Install it into custom_nodes/ and restart ComfyUI there — or send the lines as separate messages.` });
+  if (mode === "motion" && !(await comfyHasNodes(H3_CHAIN_NODES))) {
+    sendJson(res, 400, { error: `Motion-Context chaining needs the ComfyUI-H3-Motion-Context node pack on ${currentComfyUrl()}. Install it into custom_nodes/ and restart ComfyUI there, or set ⚙ "chaining" to the continuation anchor (picture only, no node pack) or Off.` });
     return;
+  }
+  if (mode === "anchor") {
+    // The anchor pins the previous clip's tail through the REFERENCE video input, which
+    // only the reference-reading weights have. On fl2va there is nowhere to put it.
+    if (!h3ReadsRefs(body.model)) {
+      sendJson(res, 400, { error: `Anchor chaining pins the previous segment's last frames through the reference-video input, which "${body.model}" does not have (it is the t2v / i2v weight). Pick an r2v / hybrid / fused H3 weight, or set ⚙ "chaining" to Motion Context.` });
+      return;
+    }
+    if (!(await comfyHasNodes(["MiniMaxH3AddGuide", "ImageFromBatch", "TrimAudioDuration"]))) {
+      sendJson(res, 400, { error: `Anchor chaining needs MiniMaxH3AddGuide and TrimAudioDuration, both core nodes of ComfyUI 0.34.0 or newer — the machine that would run this job is on an older build. Update ComfyUI there, or set ⚙ "chaining" to Motion Context.` });
+      return;
+    }
   }
   const missing = [];
   for (const tool of ["ffmpeg", "ffprobe"]) if (!(await hasLocalTool(tool))) missing.push(tool);
@@ -7913,7 +7948,11 @@ async function runH3Chain(body, res) {
     return;
   }
 
-  const dir = `h3ctx/${comfyTag()}_${crypto.randomBytes(4).toString("hex")}`;
+  // Motion Context only: the folder its numbered latent slots live in, on that box.
+  const dir = mode === "motion" ? `h3ctx/${comfyTag()}_${crypto.randomBytes(4).toString("hex")}` : "";
+  // Anchor chaining pins the same 22 frames Motion Context carries — one number, on the
+  // model's 5 / 22 / 39 / 56 clip grid, so there is nothing to tune and nothing to snap.
+  const anchorFrames = mode === "anchor" ? H3_CHAIN_CONTEXT : 0;
   const ctl = new AbortController();
   res.on("close", () => { if (!res.writableFinished) ctl.abort(); });
   const done = [];              // { buf, data } per finished segment, in order
@@ -7934,10 +7973,19 @@ async function runH3Chain(body, res) {
         }
       }
       const { h3Chain: _drop, ...rest } = body;
+      if (mode === "anchor" && k > 0) {
+        // The previous segment IS this one's reference clip: uploaded once per join, and
+        // its tail pinned at frame 0 by the ⚙ continuation anchor. It replaces whatever
+        // clip the message attached — there is one reference-video slot, and for a
+        // continuation the previous segment is the only thing that belongs in it.
+        rest.sourceVideoName = await uploadVideoBuffer(done[k - 1].buf, "video/mp4", ctl.signal);
+        rest.sourceVideo = undefined;
+      }
       const r = await loopbackGenerate({
         ...rest, prompt: seg.prompt,
         negative_prompt: seg.negative_prompt !== undefined ? seg.negative_prompt : body.negative_prompt,
-        options, noGallery: true, h3ChainSeg: { dir, index: k + 1 },
+        options, noGallery: true,
+        ...(mode === "off" ? {} : { h3ChainSeg: { mode, dir, index: k + 1 } }),
       }, ctl.signal);
       const data = r.json || {};
       if (!r.ok || !Array.isArray(data.videos) || !data.videos.length) {
@@ -7954,12 +8002,14 @@ async function runH3Chain(body, res) {
     // route is same-origin-guarded (a POST without a matching Origin gets 403), so say
     // where we are "from": the box itself, which is what its own UI would send.
     const box = currentComfyUrl();
-    fetch(`${box}/h3_motion_context/clear_latents`, {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: new URL(box).origin },
-      body: JSON.stringify({ latent_path: dir }),
-    }).then(async (r) => {
-      if (!r.ok) console.log(`[comfy] h3 chain: could not clear ${dir} (${r.status} ${(await r.text()).slice(0, 120)})`);
-    }).catch(() => { /* best-effort */ });
+    if (dir) {
+      fetch(`${box}/h3_motion_context/clear_latents`, {
+        method: "POST", headers: { "Content-Type": "application/json", Origin: new URL(box).origin },
+        body: JSON.stringify({ latent_path: dir }),
+      }).then(async (r) => {
+        if (!r.ok) console.log(`[comfy] h3 chain: could not clear ${dir} (${r.status} ${(await r.text()).slice(0, 120)})`);
+      }).catch(() => { /* best-effort */ });
+    }
   }
   if (ctl.signal.aborted || res.writableEnded) return;   // the caller is gone
   if (!done.length) {
@@ -7967,7 +8017,8 @@ async function runH3Chain(body, res) {
     return;
   }
   const merged = done.length === 1 ? { buf: done[0].buf, codec: done[0].data.videoCodec }
-    : await mergeH3Segments(done.map((d) => d.buf), done.map((d) => d.audio));
+    : await mergeH3Segments(done.map((d) => d.buf), done.map((d) => d.audio),
+      done.map((_, i) => (i === 0 ? 0 : H3_CHAIN_CONTEXT)));
   if (!merged) {
     sendJson(res, 502, { error: `All ${done.length} segments rendered, but ffmpeg could not join them. Check that ffmpeg works on the machine running hey-koko.` });
     return;
@@ -7993,6 +8044,7 @@ async function runH3Chain(body, res) {
     // Any segment may have had the cache switched off (every one after the first does).
     easyCacheSkipped: done.some((d) => d.data.easyCacheSkipped) || undefined,
     h3Chain: { segments: done.length, total: segs.length, seeds: done.map((d) => d.data.seed),
+      mode, anchor: mode === "anchor" ? anchorFrames : undefined,
       audioXfade: merged.xfades ? Math.round(H3_CHAIN_XFADE_S * 1000) : undefined },
     partial,
   });
@@ -8263,7 +8315,6 @@ async function generateComfyImage(req, res) {
       let h3ChainAudio = false;     // chain segment ≥ 2: hand the untrimmed sound back too
       let h3LoraUsed = null;      // ⚙ H3 LoRA actually mounted
       let h3RecipeUsed = null;    // { steps, shiftVideo, shiftAudio } the LoRA implied
-      let h3AnchorUsed = 0;       // continuation anchor length, in frames, after snapping
       let h3KeyframesUsed = "";   // which attachments were pinned as literal frames
       let h3ShiftVideo = 0;       // 0 = no SigmaShift node (the model's own built-in shift)
       let h3ShiftAudio = 0;
@@ -9099,9 +9150,10 @@ async function generateComfyImage(req, res) {
         // an ordinary run that also files its latent. From segment 2 on, the opening frames
         // are pinned from the previous segment, so everything else that would claim frame
         // 0 stands down: the keyframe images, the ⚙ anchor and the step cache.
-        const chainSeg = body.h3ChainSeg && H3_CHAIN_DIR_RE.test(String(body.h3ChainSeg.dir || ""))
-          && Number(body.h3ChainSeg.index) >= 1
-          ? { dir: body.h3ChainSeg.dir, index: Math.floor(Number(body.h3ChainSeg.index)),
+        const segMode = body.h3ChainSeg && body.h3ChainSeg.mode === "anchor" ? "anchor" : "motion";
+        const chainSeg = body.h3ChainSeg && Number(body.h3ChainSeg.index) >= 1
+          && (segMode === "anchor" || H3_CHAIN_DIR_RE.test(String(body.h3ChainSeg.dir || "")))
+          ? { mode: segMode, dir: body.h3ChainSeg.dir, index: Math.floor(Number(body.h3ChainSeg.index)),
               keepAudio: Number(body.h3ChainSeg.index) >= 2 && opts.h3ChainAudioXfade !== false } : null;
         const chainLater = !!chainSeg && chainSeg.index >= 2;
         // ⚙ "crossfade sound at joins" (default on) is what the untrimmed sound is for.
@@ -9241,12 +9293,8 @@ async function generateComfyImage(req, res) {
             h3RecipeUsed = { steps: v.steps, shiftVideo: info.shiftVideo, shiftAudio: info.shiftAudio };
           }
         }
-        // Continuation anchor, in frames. The node snaps a guide clip DOWN to the model's
-        // 17k+5 clip grid (5 / 22 / 39 / 56 ...) and treats anything under 5 as a single
-        // still, so snap here too: doing it silently inside ComfyUI would make a CLI
-        // "--opt h3Anchor=30" quietly become 22 with nothing said about it.
-        // Both the anchor and the keyframes are MiniMaxH3AddGuide, so they share one
-        // availability check and one conflict rule.
+        // Keyframes ride MiniMaxH3AddGuide, which landed in ComfyUI 0.34.0 — far newer
+        // than H3 support itself, so "the box runs H3" does not imply it has the node.
         const h3Kf = isRef && !chainLater ? String(opts.h3Keyframes || "").trim() : "";
         if (h3Kf && !firstFrameName && !lastFrameName) {
           sendJson(res, 400, { error: "The keyframe setting needs at least one attached image to pin — attach one, or set it back to Off." });
@@ -9254,40 +9302,17 @@ async function generateComfyImage(req, res) {
         }
         h3KeyframesUsed = [firstFrameName ? "first frame" : null, lastFrameName ? "last frame" : null].filter(Boolean).join(" + ");
         if (!isRef) h3KeyframesUsed = "";   // the t2v weight has real inputs; nothing was "pinned"
-        // A later chain segment is already anchored — on the previous latent, sound
-        // included — so a sticky ⚙ anchor stands down rather than stacking on it.
-        let h3Anchor = chainLater ? 0 : Math.max(0, Math.floor(Number(opts.h3Anchor) || 0));
-        if (h3Anchor > 0 && firstFrameName) {
-          sendJson(res, 400, { error: "The continuation anchor already pins the output's opening frames from the source clip, so a first keyframe would fight it for frame 0. Use one or the other." });
-          return;
-        }
         if ((h3Kf && (firstFrameName || lastFrameName)) && !(await comfyHasNodes(["MiniMaxH3AddGuide"]))) {
           sendJson(res, 400, { error: "Pinning a first/last frame on a reference weight needs MiniMaxH3AddGuide, added in ComfyUI 0.34.0 — the machine that would run this job is on an older build. Update ComfyUI there, or set the keyframe option back to Off." });
           return;
         }
-        if (h3Anchor > 0) {
-          if (!refVideoName) {
-            sendJson(res, 400, { error: "The continuation anchor needs the previous segment attached as the source video — it anchors that clip's last frames at the start of this one. Attach it, or clear the anchor setting." });
-            return;
-          }
-          // MiniMaxH3AddGuide landed in ComfyUI 0.34.0 (2026-08-26), which is far newer
-          // than H3 support itself — so "the box runs H3" does NOT imply it has this node.
-          // Unlike Sol-Attn, a missing anchor is not dropped quietly: it changes the OUTPUT
-          // (the segment stops being a strict continuation) and the loss would only surface
-          // at concatenation time, long after the render was paid for.
-          if (!(await comfyHasNodes(["MiniMaxH3AddGuide"]))) {
-            sendJson(res, 400, { error: "The continuation anchor needs MiniMaxH3AddGuide, added in ComfyUI 0.34.0 — the machine that would run this job is on an older build. Update ComfyUI there, or clear the anchor setting and continue by reference alone." });
-            return;
-          }
-          while (h3Anchor > 5 && h3Anchor % 17 !== 5) h3Anchor -= 1;
-          if (h3Anchor < 5) h3Anchor = 5;
-          // The guide clip has to fit inside the target with room to actually generate.
-          // Filling most of the clip with anchored frames is never what anyone meant.
-          if (h3Anchor * 2 >= v.length) {
-            sendJson(res, 400, { error: `A ${h3Anchor}-frame anchor does not leave enough of this ${v.length}-frame clip to generate. Shorten the anchor or lengthen the clip.` });
-            return;
-          }
-          h3AnchorUsed = h3Anchor;
+        // Anchor chaining (⚙ "chaining") pins the previous segment's last frames at frame
+        // 0 through the same node. Its length is fixed at the 22 frames Motion Context
+        // carries, and only a later segment of such a chain has anything to pin.
+        const h3Anchor = (chainSeg && chainSeg.mode === "anchor" && chainLater) ? H3_CHAIN_CONTEXT : 0;
+        if (h3Anchor > 0 && !refVideoName) {
+          sendJson(res, 400, { error: "Anchor chaining needs the previous segment as the reference clip, and this request arrived without one." });
+          return;
         }
         // TenStrip's 10Eros card: "No cache or spectrum if doing reference, they cause
         // accuracy loss." The ⚙ cache stays valid for the same weight's text-only runs, so
@@ -9304,7 +9329,9 @@ async function generateComfyImage(req, res) {
           refImageSize: opts.h3RefSize, easyCache: h3EasyCache,
           solAttn, solTau: Number(opts.solTau) || 0, solChunkFF,
           h3Lora, h3LoraStrength: Number(opts.h3LoraStrength) || 0,
-          shiftVideo: h3ShiftVideo, shiftAudio: h3ShiftAudio, h3Anchor, h3Sla, h3Chain: chainSeg });
+          shiftVideo: h3ShiftVideo, shiftAudio: h3ShiftAudio, h3Sla,
+          // `trim` = the frames the guide pinned, which this segment drops from its head.
+          h3Chain: chainSeg ? { ...chainSeg, trim: chainLater ? h3Anchor : 0 } : null });
         videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
       } else if (model === PANO_T2I) {
         // A recipe, not a checkpoint: it picks its own weights and forces 2:1, since
@@ -10092,8 +10119,17 @@ async function generateComfyImage(req, res) {
         if (wantCodec === "h265" && merged.codec !== "h265") videoCodecNote = "vhs-missing";
         skipNodes = new Set(segmentMerge.saveNodeIds);
       }
+      // ComfyUI 0.36 made the INPUT loaders output nodes: LoadVideo now reports the clip
+      // it read back under `gifs`, exactly like a save node. MEASURED on a 0.36.0 box —
+      // an H3 run with a reference clip came back with TWO videos, the first of them the
+      // source we had just uploaded, and the caller (which takes videos[0]) delivered the
+      // input instead of the render. Nothing we load is a result, so skip those ids.
+      const loaderNodes = new Set(Object.entries(workflow || {})
+        .filter(([, n]) => /^Load(Video|Image|Audio|ImageMask)/.test((n && n.class_type) || ""))
+        .map(([id]) => id));
       for (const nodeId of Object.keys(outputs)) {
         if (skipNodes && skipNodes.has(nodeId)) continue; // already merged above
+        if (loaderNodes.has(nodeId)) continue;            // an input we loaded, not a result
         // SaveVideo/SaveImage report under `images`; VHS_VideoCombine (⚙ H.265) reports
         // the saved file under `gifs`; SaveGLB reports under `3d` (ui={"3d": results});
         // SaveAudio/SaveAudioMP3 report under `audio` — all the same
@@ -10244,7 +10280,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
-        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Sla: h3SlaUsed, h3SlaSkipped: h3SlaSkipped || undefined, easyCacheSkipped: easyCacheSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Anchor: h3AnchorUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed, h3ChainAudio: (h3ChainAudio && outAudios[0]) || undefined });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Sla: h3SlaUsed, h3SlaSkipped: h3SlaSkipped || undefined, easyCacheSkipped: easyCacheSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed, h3ChainAudio: (h3ChainAudio && outAudios[0]) || undefined });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own

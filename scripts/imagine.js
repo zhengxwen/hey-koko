@@ -346,8 +346,13 @@ Command
                            picks up the previous one's last 22 frames and 1 s of sound
                            (ComfyUI-H3-Motion-Context on the worker). Later lines inherit
                            the first line's settings; only the first may carry Nx (repeat
-                           the whole chain) or --size. The AUDIO is crossfaded 30 ms at
-                           each join; --opt h3ChainAudioXfade=false butts the audio tracks.
+                           the whole chain) or --size. How a segment picks up the previous
+                           one: --opt h3ChainMode=motion (default: the latent, picture and
+                           sound) | anchor (the previous clip's last frames pinned through
+                           the reference-clip input — core nodes only, picture only, and
+                           only on the r2v / hybrid / fused weights) | off (independent
+                           segments, straight cuts). The AUDIO is crossfaded 30 ms at each
+                           join; --opt h3ChainAudioXfade=false butts the audio tracks.
 
 Batch
       --batch <file|->     one task per line: an "/imagine …" line, or a JSON object

@@ -1963,7 +1963,6 @@ export function updateComfyParamVisibility() {
   // The t2v/i2v file (fl2va) has no reference pipeline, so the knob would be inert there.
   setVis(dom.comfyParamH3RefSize, H3_RE.test(m) && H3_REF_RE.test(m));
   // Same gate as reference sizing: only the r2v weight takes a source clip to anchor.
-  setVis(dom.comfyParamH3Anchor, H3_RE.test(m) && H3_REF_RE.test(m));
   // Keyframes exist on the reference path precisely BECAUSE that node has no first/last
   // frame inputs — on the t2v weight those are real inputs and this would be redundant.
   setVis(dom.comfyParamH3Keyframes, H3_RE.test(m) && H3_REF_RE.test(m));
@@ -1987,7 +1986,9 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamSolAttn, h3 && !h3Sla);
   setVis(dom.comfyParamSolTau, h3 && !h3Sla && !!dom.comfyParamSolAttn?.value); // tau is meaningless with Sol off
   setVis(dom.comfyParamSolChunkFF, h3, ".comfyParamCheck");
-  setVis(dom.comfyParamH3ChainAudioXfade, h3, ".comfyParamCheck");
+  setVis(dom.comfyParamH3ChainMode, h3);
+  // Nothing overlaps across a straight cut, so there is nothing to crossfade.
+  setVis(dom.comfyParamH3ChainAudioXfade, h3 && dom.comfyParamH3ChainMode?.value !== "off", ".comfyParamCheck");
   // LTX family only (incl. Sulphur) — the optional LoRA slot. It is the one builder
   // with a user-pickable LoRA; every other model mounts its LoRAs automatically.
   // Union Control is excluded: it mounts its union IC-LoRA automatically, no user slot.
@@ -2366,6 +2367,8 @@ function initComfyParamsModal() {
   dom.comfyParamSolAttn?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
   // Picking a LoRA reveals its strength row; clearing it hides it again.
   dom.comfyParamH3Lora?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
+  // "Off" chaining leaves nothing to crossfade — the checkbox below it goes with it.
+  dom.comfyParamH3ChainMode?.addEventListener("change", () => { saveCurrentSettings(); updateComfyParamVisibility(); });
   // Ultra makes a ~17 MB GLB (measured) that then rides base64 through the response
   // and the conversation store — worth a heads-up before the first slow run, not a
   // surprise afterwards.
@@ -2414,11 +2417,11 @@ function initComfyParamsModal() {
     if (dom.comfyParamSolAttn) dom.comfyParamSolAttn.value = "";
     if (dom.comfyParamSolTau) dom.comfyParamSolTau.value = "";
     if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = true; // bit-exact, defaults ON
+    if (dom.comfyParamH3ChainMode) dom.comfyParamH3ChainMode.value = "";
     if (dom.comfyParamH3ChainAudioXfade) dom.comfyParamH3ChainAudioXfade.checked = true; // defaults ON
     if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = false;
     if (dom.comfyParamNoAudio) dom.comfyParamNoAudio.checked = false;
     if (dom.comfyParamH3RefSize) dom.comfyParamH3RefSize.value = "";
-    if (dom.comfyParamH3Anchor) dom.comfyParamH3Anchor.value = "";
     if (dom.comfyParamH3Keyframes) dom.comfyParamH3Keyframes.value = "";
     if (dom.comfyParamH3Clip) dom.comfyParamH3Clip.value = "";
     updateComfyParamVisibility();

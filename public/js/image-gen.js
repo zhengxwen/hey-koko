@@ -180,7 +180,6 @@ function comfyOverrides() {
   // MiniMax H3 reference sizing — empty means the node's own "match" default, so only a
   // deliberate "max" pick travels (the slow, high-fidelity reference pipeline).
   if (dom.comfyParamH3RefSize?.value) ov.h3RefSize = dom.comfyParamH3RefSize.value;
-  if (dom.comfyParamH3Anchor?.value) ov.h3Anchor = Number(dom.comfyParamH3Anchor.value);
   if (dom.comfyParamH3Keyframes?.value) ov.h3Keyframes = dom.comfyParamH3Keyframes.value;
   if (dom.comfyParamH3Clip?.value) ov.h3TextEncoder = dom.comfyParamH3Clip.value; // "" = auto (best installed tier)
   if (dom.comfyParamH3Lora?.value) ov.h3Lora = dom.comfyParamH3Lora.value;
@@ -192,6 +191,9 @@ function comfyOverrides() {
   // Chunking is the server's default, so only the OPT-OUT travels — sending nothing
   // when unticked would let the server default turn it straight back on.
   if (dom.comfyParamSolChunkFF && !dom.comfyParamSolChunkFF.checked) ov.solChunkFF = false;
+  // How multi-line /imagine chains on H3: Motion Context (empty = the default), the
+  // pixel anchor, or nothing at all.
+  if (dom.comfyParamH3ChainMode?.value) ov.h3ChainMode = dom.comfyParamH3ChainMode.value;
   // Same for the H3 chain's sound crossfade: on unless switched off.
   if (dom.comfyParamH3ChainAudioXfade && !dom.comfyParamH3ChainAudioXfade.checked) ov.h3ChainAudioXfade = false;
   // Wan Dancer: dance genre / motion amplitude / duration (seconds) / keyframe-quality.
@@ -1621,11 +1623,16 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     // The anchored frames are context, not output — say so on the line, because the file
     // the user gets back silently starts with N frames they already have.
     if (lastData.h3Keyframes) doneLine += `\n${t("msg_h3KeyframesUsed", { which: lastData.h3Keyframes }, plang)}`;
-    if (lastData.h3Anchor) doneLine += `\n${t("msg_h3AnchorUsed", { n: lastData.h3Anchor }, plang)}`;
     if (lastData.h3Chain) {
-      doneLine += `\n${t("msg_h3Chained", { n: lastData.h3Chain.segments,
-        seeds: (lastData.h3Chain.seeds || []).map((x, i) => `#${i + 1} ${x ?? "?"}`).join(" · ") }, plang)}`
-        + (lastData.h3Chain.audioXfade ? ` · ${t("msg_h3ChainAudioXfade", { ms: lastData.h3Chain.audioXfade }, plang)}` : "");
+      // Which mechanism carried each segment into the next one is part of reading the
+      // result: the anchor costs the sound, a straight cut costs the continuity.
+      const ch = lastData.h3Chain;
+      const how = ch.mode === "anchor" ? t("msg_h3ChainAnchor", { n: ch.anchor || 22 }, plang)
+        : ch.mode === "off" ? t("msg_h3ChainCut", {}, plang)
+        : t("msg_h3ChainMotion", {}, plang);
+      doneLine += `\n${t("msg_h3Chained", { n: ch.segments,
+        seeds: (ch.seeds || []).map((x, i) => `#${i + 1} ${x ?? "?"}`).join(" · ") }, plang)}`
+        + `\n${how}${ch.audioXfade ? ` · ${t("msg_h3ChainAudioXfade", { ms: ch.audioXfade }, plang)}` : ""}`;
     }
     if (lastData.solAttnSkipped) doneLine += `\n${t("msg_solAttnSkipped", {}, plang)}`;
     if (lastData.h3SlaSkipped) doneLine += `\n${t("msg_h3SlaSkipped", {}, plang)}`;
