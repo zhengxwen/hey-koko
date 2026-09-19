@@ -144,6 +144,23 @@ function peelTextFlags(line) {
   return out;
 }
 
+// Split a chat-style command into its /imagine lines, exactly as the composer does
+// (parseImagineCommands in public/js/image-gen.js): a line starting with "/imagine" opens
+// a new command, any other line belongs to the one above it. Text before the first
+// /imagine line is the first command (a bare prompt given to --cmd).
+function splitImagineCommands(text) {
+  const cmds = [];
+  let cur = "";
+  for (const line of String(text).split(/\r?\n/)) {
+    if (/^\/imagine(\s|$)/.test(line)) {
+      if (cur.trim()) cmds.push(cur);
+      cur = line;
+    } else cur += (cur ? "\n" : "") + line;
+  }
+  if (cur.trim()) cmds.push(cur);
+  return cmds;
+}
+
 function parseImagineLine(line) {
   let rest = String(line).replace(/^\/imagine\b\s*/, "").trim();
   const task = { prompt: "", count: 1, options: {}, negative: "", enhance: false };
@@ -233,6 +250,8 @@ const USAGE = `Terminal /imagine — batch media generation against a running he
 Usage
   imagine.js [options] <prompt words...>
   imagine.js --cmd "/imagine -m minimax-h3-r2v -s 6 a cat dances"
+  imagine.js --cmd @scene.txt                  several /imagine lines → one continuous
+                                               video (MiniMax H3; see --cmd below)
   imagine.js --batch shots.jsonl [options]
   imagine.js -m minimax-music3 -s 120 "Global Metadata: lo-fi hip-hop, 78 BPM…" \\
              --lyrics @song.txt                a song (flac); --lyrics is optional
@@ -319,6 +338,15 @@ Cutout (SAM3 open-vocabulary segmentation)
 Import
       --add <file...>      put existing media in the gallery AS-IS — no model, no render,
                            no re-encode. Images/video/audio/glb; duplicates are detected.
+
+Command
+      --cmd <text|@file>   one chat-style /imagine command. SEVERAL /imagine lines (each at
+                           the start of a line; other lines belong to the one above) make
+                           ONE continuous video on MiniMax H3 — each line is a segment that
+                           picks up the previous one's last 22 frames and 1 s of sound
+                           (ComfyUI-H3-Motion-Context on the worker). Later lines inherit
+                           the first line's settings; only the first may carry Nx (repeat
+                           the whole chain) or --size.
 
 Batch
       --batch <file|->     one task per line: an "/imagine …" line, or a JSON object
@@ -435,7 +463,13 @@ function parseArgv(argv) {
       case "--progress": o.progress = true; break;
       case "-q": case "--quiet": o.quiet = true; break;
       case "--dry-run": o.dryRun = true; break;
-      case "--cmd": o.cmd = need(i, a); i++; break;
+      case "--cmd": {
+        // Several /imagine lines are the point of a chain, and a shell is a bad place to
+        // type them — so, like --lyrics, "@file" reads the command from a file.
+        const v = need(i, a);
+        o.cmd = v.startsWith("@") ? fs.readFileSync(path.resolve(v.slice(1)), "utf8") : v;
+        i++; break;
+      }
       case "--batch": o.batch = need(i, a); i++; break;
       case "--continue-on-error": o.keepGoing = true; break;
       case "--server": o.server = need(i, a); i++; break;
@@ -874,6 +908,28 @@ async function runTask(task, cli, ctx) {
     if (r.json && r.json.enhanced) prompt = r.json.enhanced.trim();
   }
 
+  // Lines 2..N of a chained video, in the shape the browser sends (image-gen.js
+  // generateVideo): a line's --neg / --pos only when it set one, else line 1's applies.
+  let h3Chain;
+  if (task.chain && task.chain.length) {
+    h3Chain = [];
+    for (const c of task.chain) {
+      let p = c.prompt;
+      if (c.enhance && p) {
+        const llm = cli.enhanceModel || ctx.chatModel;
+        if (!llm) throw new Error("--enhance needs a chat model (--enhance-model <name>)");
+        const r = await postJson("/api/enhance-prompt", { model: llm, prompt: p, video: true, edit: false }, cli.server);
+        if (r.json && r.json.enhanced) p = r.json.enhanced.trim();
+      }
+      const pos = c.positive || task.positive;
+      h3Chain.push({
+        prompt: pos ? `${p}, ${pos}` : p,
+        negative_prompt: c.negative || undefined,
+        options: { ...(c.options || {}) },
+      });
+    }
+  }
+
   // Big media goes up as a raw body (its own request), not as base64 inside the JSON:
   // the server's own request-receive deadline applies to that JSON, and a long clip
   // would be megabytes of it.
@@ -953,6 +1009,7 @@ async function runTask(task, cli, ctx) {
       timeout,
       clientId,
       comfyUrl: cli.comfyUrl || undefined,
+      h3Chain,
       // The CLI does NOT file into the gallery unless asked: reaching for it usually
       // means iterating on a prompt, and a dozen throwaway drafts should not end up in
       // the library. `-g` opts back in, matching what the browser always does.
@@ -968,7 +1025,8 @@ async function runTask(task, cli, ctx) {
       continue;
     }
 
-    const label = count > 1 ? `${model.id} (${i + 1}/${count})` : model.id;
+    const label = (count > 1 ? `${model.id} (${i + 1}/${count})` : model.id)
+      + (h3Chain ? ` ⛓ ${h3Chain.length + 1} segments` : "");
     if (!cli.quiet && !cli.json) process.stderr.write(`▶ ${label}${prompt ? `  "${prompt.slice(0, 60)}${prompt.length > 60 ? "…" : ""}"` : ""}\n`);
     const started = Date.now();
     let r, data;
@@ -1070,6 +1128,7 @@ async function runTask(task, cli, ctx) {
         ok: true, file, model: model.id, modelFile: data.model, seed: data.seed,
         width: dims.width, height: dims.height, fps: finalFps, frames: data.length,
         precision: data.precisionUsed, mediaId: (data.mediaIds || [])[k] || null,
+        ...(data.h3Chain ? { h3Chain: data.h3Chain } : {}),
         ...(data.solAttn ? { solAttn: data.solAttn } : {}),
         ...(data.solChunkFF ? { solChunkFF: true } : {}),
         ...(codec ? { codec } : {}),
@@ -1088,6 +1147,9 @@ async function runTask(task, cli, ctx) {
         const size = rec.width ? `${rec.width}×${rec.height}` : data.audios ? "" : "?";
         const dur = rec.seconds ? `${size ? ", " : ""}${rec.seconds}s` : "";
         process.stderr.write(`✓ ${file}  (${size}${dur}, seed ${data.seed}, ${elapsed}s)\n`);
+        if (data.h3Chain) {
+          process.stderr.write(`  ⛓ ${data.h3Chain.segments} segments joined · seeds ${data.h3Chain.seeds.map((x, j) => `#${j + 1} ${x}`).join(" · ")}\n`);
+        }
       }
     }
     // Asked for sparse attention on a box without the node pack — the render is valid
@@ -1504,11 +1566,21 @@ async function main() {
   try {
     if (cli.batch) tasks = readBatch(cli.batch).map((t) => mergeTask(defaults, t));
     else if (cli.cmd) {
-      const p = parseImagineLine(cli.cmd);
-      tasks = [mergeTask(defaults, {
-        model: p.model, prompt: p.prompt, negative: p.negative, positive: p.positive,
-        count: p.count, enhance: p.enhance, options: p.options,
-      })];
+      const [head, ...more] = splitImagineCommands(cli.cmd).map(parseImagineLine);
+      const task = mergeTask(defaults, {
+        model: head.model, prompt: head.prompt, negative: head.negative, positive: head.positive,
+        count: head.count, enhance: head.enhance, options: head.options,
+      });
+      // Lines 2..N → segments of ONE continuous video (server: runH3Chain). Each keeps
+      // only what it set itself; the server fills the rest from line 1.
+      more.forEach((c, k) => {
+        const n = k + 2;
+        if (c.count > 1) throw new Error(`line ${n}: only the first /imagine line can carry Nx (it repeats the whole chain)`);
+        if (c.model && c.model !== task.model) throw new Error(`line ${n}: a chained video uses one model throughout — -m ${c.model} disagrees with ${task.model || "the default"}`);
+        if (!c.prompt) throw new Error(`line ${n}: no prompt — say what happens in that part of the video`);
+      });
+      if (more.length) task.chain = more;
+      tasks = [task];
     } else tasks = [defaults];
   } catch (e) { process.stderr.write(`${e.message}\n`); return 1; }
 

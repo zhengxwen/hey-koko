@@ -1184,7 +1184,7 @@ const scail2Window = (mult) =>
 const segmentCapFor = (m, pixelBudget, torchCompile, scailWindow) =>
   isScail2Model(m) ? scail2Window(scailWindow) : animateSegmentCap(pixelBudget, torchCompile);
 
-export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null, sink = null, comfyUrl = null, refMasks = null) {
+export async function generateVideo(parsed, model, tabId = state.activeTabId, insertIndex = -1, initImages = null, sourceVideo = null, sink = null, comfyUrl = null, refMasks = null, chainRest = null) {
   const tab = getTab(tabId);
   if (!tab) return;
   // This job's ComfyUI worker (multi-machine parallel lanes) — falls back to the
@@ -1202,6 +1202,34 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
   // the AbortController, the send-button lock, the progress bubble and where the
   // result message lands (live bubble vs. background placeholder).
   if (!sink) sink = foregroundSink({ tabId, insertIndex, setGenerating: _setGenerating, renderChat: _renderChat, saveChat, getTab });
+
+  // Several /imagine lines in one message → ONE continuous video, a segment per line
+  // (MiniMax H3 + ComfyUI-H3-Motion-Context; the server runs the chain and refuses other
+  // models). Each later line sends only what it set itself — everything else follows line
+  // 1 server-side. Its size is dropped unless typed, because the parser fills the default
+  // size into every line and a chain cannot change size; a typed one that disagrees is
+  // refused by the server rather than silently ignored.
+  const chain = Array.isArray(chainRest) && chainRest.length ? chainRest : null;
+  if (chain) {
+    const nx = chain.findIndex((c) => c.count > 1);
+    if (nx >= 0) {
+      const msg = t("img_chainNx", { n: nx + 2 });
+      sink.fail(msg);
+      sink.place({ role: "assistant", content: t("msg_commandError", { error: msg }), timestamp: Date.now() });
+      sink.cleanup();
+      return;
+    }
+  }
+  const h3Chain = chain ? chain.map((c) => {
+    const options = { ...(c.options || {}) };
+    if (!c.sizeExplicit) { delete options.width; delete options.height; }
+    // A line's --pos / --neg only when it set one; otherwise line 1's applies.
+    return {
+      prompt: comfyPositive(c.enhancedPrompt || c.prompt, c.positivePrompt || parsed.positivePrompt),
+      negative_prompt: c.negativePrompt ? comfyNegative(c.negativePrompt) : undefined,
+      options,
+    };
+  }) : null;
 
   // For Bernini i2v the output aspect must follow the reference image. Decode its
   // natural size in the browser (works for any format) and send it, so the server
@@ -1353,6 +1381,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     return Math.round(dur / 5);
   })();
   const estPasses = (() => {
+    if (h3Chain) return 1 + h3Chain.length;  // one sampler pass per chained line
     if (dancerModel) return 1 + dancerSegs; // global planning + per-segment refinement
     if (chainFrames <= 0) return 1;
     const cap = Math.max(1, segmentCapFor(model, animBudgetEta, !!reqOptions.torchCompile, reqOptions.scailWindow));
@@ -1591,6 +1620,10 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     // the user gets back silently starts with N frames they already have.
     if (lastData.h3Keyframes) doneLine += `\n${t("msg_h3KeyframesUsed", { which: lastData.h3Keyframes }, plang)}`;
     if (lastData.h3Anchor) doneLine += `\n${t("msg_h3AnchorUsed", { n: lastData.h3Anchor }, plang)}`;
+    if (lastData.h3Chain) {
+      doneLine += `\n${t("msg_h3Chained", { n: lastData.h3Chain.segments,
+        seeds: (lastData.h3Chain.seeds || []).map((x, i) => `#${i + 1} ${x ?? "?"}`).join(" · ") }, plang)}`;
+    }
     if (lastData.solAttnSkipped) doneLine += `\n${t("msg_solAttnSkipped", {}, plang)}`;
     if (lastData.h3SlaSkipped) doneLine += `\n${t("msg_h3SlaSkipped", {}, plang)}`;
     if (lastData.easyCacheSkipped) doneLine += `\n${t("msg_easyCacheSkippedRef", {}, plang)}`;
@@ -1719,6 +1752,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       timeout: videoTimeout, // scaled with the estimated chunk count (chained animate runs all chunks in one pass)
       clientId,
       comfyUrl: comfyHost || undefined, // target this job's ComfyUI worker (parallel lanes)
+      h3Chain: h3Chain || undefined,    // lines 2..N of a chained H3 video
       ...(extra || {}),
     };
     // Option B: a background video job runs on the SERVER queue (survives reload);
@@ -1758,6 +1792,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       // A long Wan Animate source is chunked SEAMLESSLY by the server in ONE ComfyUI
       // graph (chained continue_motion) → a single request returns one merged clip.
       if (willChunk) sink.label(`${t("msg_generatingVideoSeamless", { n: estPasses, sec: fullSec || "?" })}${vidSuffix}`);
+      else if (h3Chain) sink.label(`${t("msg_generatingChain", { n: estPasses })}${vidSuffix}${count > 1 ? ` (${i + 1}/${count})` : ""}`);
       else if (count > 1) sink.label(`${t("msg_generatingVideo")}${vidSuffix} (${i + 1}/${count})`);
       const resp = await requestVideo(perOptions, undefined, i === 0);
       let data = await resp.json();
@@ -2218,7 +2253,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // A selected ComfyUI VIDEO model routes to the dedicated video path. Pass the
   // sink + the worker url through so a background video job stays headless + on-target.
   if (!imageModel && comfyModel && state.comfyVideoModels && state.comfyVideoModels.has(comfyModel) && !isAnimateStill) {
-    return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages, initVideo, sink, ovComfyUrl, refMasks);
+    return generateVideo(parsedList[0], comfyModel, tabId, insertIndex, refImages, initVideo, sink, ovComfyUrl, refMasks, parsedList.slice(1));
   }
 
   // Subject cutouts, baked from the per-image masks the 🖌 button collects. Only
