@@ -192,6 +192,8 @@ function comfyOverrides() {
   // Chunking is the server's default, so only the OPT-OUT travels — sending nothing
   // when unticked would let the server default turn it straight back on.
   if (dom.comfyParamSolChunkFF && !dom.comfyParamSolChunkFF.checked) ov.solChunkFF = false;
+  // Same for the H3 chain's sound crossfade: on unless switched off.
+  if (dom.comfyParamH3ChainAudioXfade && !dom.comfyParamH3ChainAudioXfade.checked) ov.h3ChainAudioXfade = false;
   // Wan Dancer: dance genre / motion amplitude / duration (seconds) / keyframe-quality.
   if (dom.comfyParamDanceStyle?.value) ov.danceStyle = dom.comfyParamDanceStyle.value;
   if (dom.comfyParamDanceAmplitude?.value) ov.danceAmplitude = dom.comfyParamDanceAmplitude.value;
@@ -1622,7 +1624,8 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     if (lastData.h3Anchor) doneLine += `\n${t("msg_h3AnchorUsed", { n: lastData.h3Anchor }, plang)}`;
     if (lastData.h3Chain) {
       doneLine += `\n${t("msg_h3Chained", { n: lastData.h3Chain.segments,
-        seeds: (lastData.h3Chain.seeds || []).map((x, i) => `#${i + 1} ${x ?? "?"}`).join(" · ") }, plang)}`;
+        seeds: (lastData.h3Chain.seeds || []).map((x, i) => `#${i + 1} ${x ?? "?"}`).join(" · ") }, plang)}`
+        + (lastData.h3Chain.audioXfade ? ` · ${t("msg_h3ChainAudioXfade", { ms: lastData.h3Chain.audioXfade }, plang)}` : "");
     }
     if (lastData.solAttnSkipped) doneLine += `\n${t("msg_solAttnSkipped", {}, plang)}`;
     if (lastData.h3SlaSkipped) doneLine += `\n${t("msg_h3SlaSkipped", {}, plang)}`;

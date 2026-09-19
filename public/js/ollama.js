@@ -1987,6 +1987,7 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamSolAttn, h3 && !h3Sla);
   setVis(dom.comfyParamSolTau, h3 && !h3Sla && !!dom.comfyParamSolAttn?.value); // tau is meaningless with Sol off
   setVis(dom.comfyParamSolChunkFF, h3, ".comfyParamCheck");
+  setVis(dom.comfyParamH3ChainAudioXfade, h3, ".comfyParamCheck");
   // LTX family only (incl. Sulphur) — the optional LoRA slot. It is the one builder
   // with a user-pickable LoRA; every other model mounts its LoRAs automatically.
   // Union Control is excluded: it mounts its union IC-LoRA automatically, no user slot.
@@ -2413,6 +2414,7 @@ function initComfyParamsModal() {
     if (dom.comfyParamSolAttn) dom.comfyParamSolAttn.value = "";
     if (dom.comfyParamSolTau) dom.comfyParamSolTau.value = "";
     if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = true; // bit-exact, defaults ON
+    if (dom.comfyParamH3ChainAudioXfade) dom.comfyParamH3ChainAudioXfade.checked = true; // defaults ON
     if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = false;
     if (dom.comfyParamNoAudio) dom.comfyParamNoAudio.checked = false;
     if (dom.comfyParamH3RefSize) dom.comfyParamH3RefSize.value = "";

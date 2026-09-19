@@ -322,23 +322,39 @@ async function mergeScail2Segments(bufs, srcBuf, wantCodec, crf, signal) {
 
 // Join the segments of an H3 chain (runH3Chain) into one file. Unlike SCAIL-2 there is
 // no outside soundtrack to lay over the result: each segment carries its own stretch of
-// the sound, already trimmed to the frame by the Motion Context node (match_tail). The
-// audio is therefore decoded and joined as PCM and encoded once — stream-copying AAC
-// across a cut would drag each file's encoder priming along and leave a small gap or
-// click at every join, which is exactly what the chain exists to avoid. The picture is
-// stream-copied when every segment agrees (they come off the same graph at the same size,
-// so they should), and re-encoded otherwise — see mergeScail2Segments for why the check
-// cannot be left to ffmpeg. Returns { buf, codec } or null.
-async function mergeH3Segments(bufs, signal) {
+// the sound.
+//
+// PICTURE: stream-copied when every segment agrees (they come off the same graph at the
+// same size, so they should), re-encoded otherwise — see mergeScail2Segments for why the
+// check cannot be left to ffmpeg. Measured on real chains: the picture joins seamlessly.
+//
+// SOUND: butting the trimmed tracks end to end left an audible break at each join — two
+// independently decoded waveforms meeting at an arbitrary sample. So each join is a short
+// crossfade (H3_CHAIN_XFADE_S) instead. A crossfade needs the two sides to OVERLAP, and
+// the trimmed tracks do not: segment k+1's copy of the sound under the cut was trimmed
+// off with its pinned frames. That is what `extAudio` is — segment k+1's UNTRIMMED sound
+// (null for segment 1). Its first H3_CHAIN_CONTEXT frames' worth is the previous
+// segment's closing sound re-rendered in place, so starting it that crossfade's length
+// BEFORE the cut and fading across keeps every sample on the picture's timeline: nothing
+// slides, the total is still exactly the picture's length. A segment without it (older
+// graph, missing file) falls back to a plain butt join.
+//
+// The sound is joined as PCM and encoded once; stream-copying AAC across a cut would also
+// drag each file's encoder priming along. Returns { buf, codec } or null.
+async function mergeH3Segments(bufs, extAudio, signal) {
   const id = crypto.randomUUID();
   const segPaths = bufs.map((_, i) => path.join(os.tmpdir(), `hk_h3c_${id}_${String(i).padStart(3, "0")}.mp4`));
+  const extPaths = bufs.map((_, i) => (extAudio && extAudio[i] && extAudio[i].length)
+    ? path.join(os.tmpdir(), `hk_h3c_${id}_${String(i).padStart(3, "0")}_full.flac`) : null);
   const listPath = path.join(os.tmpdir(), `hk_h3c_${id}_list.txt`);
   const outPath = path.join(os.tmpdir(), `hk_h3c_${id}_out.mp4`);
   try {
     await Promise.all(bufs.map((b, i) => fsp.writeFile(segPaths[i], b)));
+    await Promise.all(extPaths.map((p, i) => p && fsp.writeFile(p, extAudio[i])));
     const n = bufs.length;
     // ⚙ "no audio" renders carry no track at all; join sound only when every piece has it.
     const hasAudio = (await Promise.all(bufs.map(audioCodecOf))).every(Boolean);
+    const probes = await Promise.all(bufs.map(probeVideo));
     const ffmpeg = (args, tag) => new Promise((resolve) => {
       const p = spawn("ffmpeg", ["-y", ...args, outPath], signal ? { signal } : undefined);
       let err = "";
@@ -349,43 +365,85 @@ async function mergeH3Segments(bufs, signal) {
       });
       p.on("error", () => resolve(false));
     });
-    const audioArgs = (first) => hasAudio
-      ? ["-filter_complex", bufs.map((_, i) => `[${first + i}:a]`).join("") + `concat=n=${n}:v=0:a=1[a]`,
-         "-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
-      : ["-an"];
+    // The audio half of the filter graph. `segIn(i)` / `extIn(i)` are the ffmpeg input
+    // indices of segment i's clip and of its untrimmed sound.
+    let xfades = 0;
+    const audioGraph = (segIn, extIn) => {
+      const X = H3_CHAIN_XFADE_S;
+      const norm = "aresample=32000,aformat=sample_fmts=fltp:channel_layouts=stereo";
+      const parts = [];
+      const lead = [];                       // does segment i open with X of overlap?
+      for (let i = 0; i < n; i++) {
+        const fps = probes[i].fps || 24;
+        const dur = probes[i].frames > 0 ? probes[i].frames / fps : 0;
+        if (i > 0 && extPaths[i] && dur > 0) {
+          const t0 = H3_CHAIN_CONTEXT / fps - X;   // X before the cut the Trim node made
+          parts.push(`[${extIn(i)}:a]${norm},atrim=start=${t0.toFixed(6)}:end=${(t0 + X + dur).toFixed(6)},asetpts=PTS-STARTPTS,apad=whole_dur=${(X + dur).toFixed(6)}[a${i}]`);
+          lead.push(true);
+        } else {
+          parts.push(`[${segIn(i)}:a]${norm}[a${i}]`);
+          lead.push(false);
+        }
+      }
+      let acc = "a0";
+      for (let i = 1; i < n; i++) {
+        const out = `j${i}`;
+        if (lead[i]) { parts.push(`[${acc}][a${i}]acrossfade=d=${X}:c1=tri:c2=tri[${out}]`); xfades++; }
+        else parts.push(`[${acc}][a${i}]concat=n=2:v=0:a=1[${out}]`);
+        acc = out;
+      }
+      return { graph: parts.join(";"), out: acc };
+    };
+    const extInputs = (first) => {
+      const args = [], idx = [];
+      let k = first;
+      for (let i = 0; i < n; i++) { if (extPaths[i]) { args.push("-i", extPaths[i]); idx[i] = k++; } }
+      return { args, idx };
+    };
     const tryCopy = async () => {
       const sigs = await Promise.all(segPaths.map(videoParamsOf));
       if (!sigs[0] || !sigs.every((x) => x === sigs[0])) return false;
       await fsp.writeFile(listPath, segPaths.map((p) => `file '${p}'`).join("\n") + "\n");
-      const inputs = ["-f", "concat", "-safe", "0", "-i", listPath];
-      if (hasAudio) for (const p of segPaths) inputs.push("-i", p);
-      return ffmpeg([...inputs, "-map", "0:v", "-c:v", "copy", ...audioArgs(1)], "stream-copy");
+      const args = ["-f", "concat", "-safe", "0", "-i", listPath];
+      if (!hasAudio) return ffmpeg([...args, "-map", "0:v", "-c:v", "copy", "-an"], "stream-copy");
+      for (const p of segPaths) args.push("-i", p);
+      const ext = extInputs(1 + n);
+      args.push(...ext.args);
+      const a = audioGraph((i) => 1 + i, (i) => ext.idx[i]);
+      return ffmpeg([...args, "-filter_complex", a.graph, "-map", "0:v", "-map", `[${a.out}]`,
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k"], "stream-copy");
     };
     const tryReencode = async () => {
       const size0 = await videoSizeOf(segPaths[0]);
-      const inputs = [];
-      for (const p of segPaths) inputs.push("-i", p);
+      const args = [];
+      for (const p of segPaths) args.push("-i", p);
+      const ext = hasAudio ? extInputs(n) : { args: [], idx: [] };
+      args.push(...ext.args);
       const scaled = bufs.map((_, i) => `[${i}:v]${size0 ? `scale=${size0.w}:${size0.h},` : ""}setsar=1[v${i}]`).join(";");
-      const joined = bufs.map((_, i) => `[v${i}]${hasAudio ? `[${i}:a]` : ""}`).join("")
-        + `concat=n=${n}:v=1:a=${hasAudio ? 1 : 0}[v]${hasAudio ? "[a]" : ""}`;
-      const args = [...inputs, "-filter_complex", `${scaled};${joined}`, "-map", "[v]"];
-      args.push(...(hasAudio ? ["-map", "[a]", "-c:a", "aac", "-b:a", "192k"] : ["-an"]));
-      args.push("-c:v", "libx264", "-crf", String(VIDEO_CRF_DEFAULT.h264), "-pix_fmt", "yuv420p");
-      return ffmpeg(args, "re-encode");
+      const vjoin = bufs.map((_, i) => `[v${i}]`).join("") + `concat=n=${n}:v=1:a=0[v]`;
+      let graph = `${scaled};${vjoin}`, amap = [];
+      if (hasAudio) {
+        const a = audioGraph((i) => i, (i) => ext.idx[i]);
+        graph += `;${a.graph}`;
+        amap = ["-map", `[${a.out}]`, "-c:a", "aac", "-b:a", "192k"];
+      }
+      return ffmpeg([...args, "-filter_complex", graph, "-map", "[v]", ...(hasAudio ? amap : ["-an"]),
+        "-c:v", "libx264", "-crf", String(VIDEO_CRF_DEFAULT.h264), "-pix_fmt", "yuv420p"], "re-encode");
     };
     let how = "stream-copied";
     let ok = await tryCopy();
-    if (!ok) { ok = await tryReencode(); how = "re-encoded"; }
+    if (!ok) { xfades = 0; ok = await tryReencode(); how = "re-encoded"; }
     if (!ok) return null;
     const buf = await fsp.readFile(outPath);
     const codec = /hevc|h265/i.test(await videoCodecOf(outPath)) ? "h265" : "h264";
-    console.log(`[comfy] h3 chain: joined ${n} segments, picture ${how} → ${(buf.length / 1048576).toFixed(1)} MB ${codec}${hasAudio ? " + joined audio" : ""}`);
-    return { buf, codec };
+    console.log(`[comfy] h3 chain: joined ${n} segments, picture ${how} → ${(buf.length / 1048576).toFixed(1)} MB ${codec}`
+      + (hasAudio ? ` + audio, ${xfades}/${n - 1} joins crossfaded (${Math.round(H3_CHAIN_XFADE_S * 1000)} ms)` : ""));
+    return { buf, codec, xfades };
   } catch (e) {
     console.log(`[comfy] h3 chain merge error: ${(e && e.message) || e}`);
     return null;
   } finally {
-    for (const f of [...segPaths, listPath, outPath]) fsp.unlink(f).catch(() => {});
+    for (const f of [...segPaths, ...extPaths.filter(Boolean), listPath, outPath]) fsp.unlink(f).catch(() => {});
   }
 }
 
@@ -4915,7 +4973,7 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     // defaults — 24 audio frames is exactly 1 s. context_length is a STRING enum.
     wf["mc"] = { class_type: "MiniMaxH3MotionContext", inputs: {
       conditioning: wf["guide"].inputs.conditioning, vae: ["vae", 0], latent: ["h3", 1],
-      context_length: "22", audio_context_length: 24, context_latent: ["mcload", 0] } };
+      context_length: String(H3_CHAIN_CONTEXT), audio_context_length: 24, context_latent: ["mcload", 0] } };
     wf["guide"].inputs.conditioning = ["mc", 0];
     wf["mcsave"] = { class_type: "MiniMaxH3MotionContextSaveLatent", inputs: {
       latent: ["ks", 0], filename_prefix: `${h3Chain.dir}/clip`, clip_index: h3Chain.index } };
@@ -4925,6 +4983,13 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
       images: ["vdec", 0], audio: ["adec", 0], trim_frames: ["mc", 1], fps: v.fps, match_tail: true } };
     wf["cv"].inputs.images = ["mctrim", 0];
     wf["cv"].inputs.audio = ["mctrim", 1];
+    // From segment 2 on, ALSO keep the sound untrimmed, losslessly. Its head is the
+    // previous segment's closing second, re-rendered in place — real overlap, which is
+    // what lets the join crossfade across the cut without sliding the sound off the
+    // picture (see mergeH3Segments). The clip itself stays exactly as the pack trims it.
+    if (h3Chain.keepAudio) {
+      wf["mcaud"] = { class_type: "SaveAudio", inputs: { audio: ["adec", 0], filename_prefix: `${outDir(OUT_VID)}/h3chain_audio` } };
+    }
   }
   return wf;
 }
@@ -7774,6 +7839,12 @@ async function waitForOutputs(promptId, signal, deadline) {
 // follows line 1. The chain is pinned to the box that runs segment 1: the latent slots
 // live on its disk.
 const H3_CHAIN_DIR_RE = /^h3ctx\/[A-Za-z0-9_-]+$/;
+// Frames of picture each later segment pins from the previous one (the pack's default;
+// the Trim node takes exactly these off again), and how long the sound crossfades at
+// each join — 30 ms, the middle of the 20–40 ms that hides a waveform discontinuity
+// without smearing a transient.
+const H3_CHAIN_CONTEXT = 22;
+const H3_CHAIN_XFADE_S = 0.03;
 const H3_CHAIN_NODES = ["MiniMaxH3MotionContext", "MiniMaxH3MotionContextTrim",
   "MiniMaxH3MotionContextSaveLatent", "MiniMaxH3MotionContextLoadLatent"];
 
@@ -7873,7 +7944,8 @@ async function runH3Chain(body, res) {
         failure = { status: r.status || 500, error: data.error || data.detail || `segment ${k + 1} returned no video` };
         break;
       }
-      done.push({ buf: Buffer.from(data.videos[0], "base64"), data });
+      done.push({ buf: Buffer.from(data.videos[0], "base64"), data,
+        audio: data.h3ChainAudio ? Buffer.from(data.h3ChainAudio, "base64") : null });
     }
   } catch (e) {
     if (!(e && e.name === "AbortError")) failure = { status: 500, error: String((e && e.message) || e) };
@@ -7895,7 +7967,7 @@ async function runH3Chain(body, res) {
     return;
   }
   const merged = done.length === 1 ? { buf: done[0].buf, codec: done[0].data.videoCodec }
-    : await mergeH3Segments(done.map((d) => d.buf));
+    : await mergeH3Segments(done.map((d) => d.buf), done.map((d) => d.audio));
   if (!merged) {
     sendJson(res, 502, { error: `All ${done.length} segments rendered, but ffmpeg could not join them. Check that ffmpeg works on the machine running hey-koko.` });
     return;
@@ -7916,11 +7988,12 @@ async function runH3Chain(body, res) {
     width: first.width, height: first.height, fps, length, partial: partial ? true : undefined,
   });
   sendJson(res, 200, {
-    ...first, videos: [b64], mediaIds, videoMime: "video/mp4", videoCodec: merged.codec,
+    ...first, h3ChainAudio: undefined, videos: [b64], mediaIds, videoMime: "video/mp4", videoCodec: merged.codec,
     fps, length,
     // Any segment may have had the cache switched off (every one after the first does).
     easyCacheSkipped: done.some((d) => d.data.easyCacheSkipped) || undefined,
-    h3Chain: { segments: done.length, total: segs.length, seeds: done.map((d) => d.data.seed) },
+    h3Chain: { segments: done.length, total: segs.length, seeds: done.map((d) => d.data.seed),
+      audioXfade: merged.xfades ? Math.round(H3_CHAIN_XFADE_S * 1000) : undefined },
     partial,
   });
 }
@@ -8187,6 +8260,7 @@ async function generateComfyImage(req, res) {
       let h3SlaUsed;              // it actually ran
       let h3SlaSkipped = false;   // recipe wanted it, the SLA node pack is not on this worker
       let easyCacheSkipped = false; // ⚙ asked for it, the weight's card forbids it with references
+      let h3ChainAudio = false;     // chain segment ≥ 2: hand the untrimmed sound back too
       let h3LoraUsed = null;      // ⚙ H3 LoRA actually mounted
       let h3RecipeUsed = null;    // { steps, shiftVideo, shiftAudio } the LoRA implied
       let h3AnchorUsed = 0;       // continuation anchor length, in frames, after snapping
@@ -9027,8 +9101,11 @@ async function generateComfyImage(req, res) {
         // 0 stands down: the keyframe images, the ⚙ anchor and the step cache.
         const chainSeg = body.h3ChainSeg && H3_CHAIN_DIR_RE.test(String(body.h3ChainSeg.dir || ""))
           && Number(body.h3ChainSeg.index) >= 1
-          ? { dir: body.h3ChainSeg.dir, index: Math.floor(Number(body.h3ChainSeg.index)) } : null;
+          ? { dir: body.h3ChainSeg.dir, index: Math.floor(Number(body.h3ChainSeg.index)),
+              keepAudio: Number(body.h3ChainSeg.index) >= 2 && opts.h3ChainAudioXfade !== false } : null;
         const chainLater = !!chainSeg && chainSeg.index >= 2;
+        // ⚙ "crossfade sound at joins" (default on) is what the untrimmed sound is for.
+        h3ChainAudio = chainLater && opts.h3ChainAudioXfade !== false;
         if (isRef && !hasRef && !h3AllModes(model)) {
           sendJson(res, 400, { error: "MiniMax H3 (r2v) needs at least one reference to work from — attach images (up to 9), a video, an audio file, or any combination, then /imagine <description>. For plain text→video or first/last-frame, pick MiniMax H3 (t2v / i2v) instead." });
           return;
@@ -10167,7 +10244,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
-        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Sla: h3SlaUsed, h3SlaSkipped: h3SlaSkipped || undefined, easyCacheSkipped: easyCacheSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Anchor: h3AnchorUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Sla: h3SlaUsed, h3SlaSkipped: h3SlaSkipped || undefined, easyCacheSkipped: easyCacheSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Anchor: h3AnchorUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed, h3ChainAudio: (h3ChainAudio && outAudios[0]) || undefined });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own

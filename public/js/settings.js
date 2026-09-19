@@ -103,6 +103,7 @@ export function saveCurrentSettings() {
         // Defaults ON (bit-exact + faster + lower peak), so store the raw state —
         // the restore side has to read absent as ticked, like paintMesh above.
         solChunkFF: dom.comfyParamSolChunkFF ? dom.comfyParamSolChunkFF.checked : true,
+        h3ChainAudioXfade: dom.comfyParamH3ChainAudioXfade ? dom.comfyParamH3ChainAudioXfade.checked : true,
         noAudio: dom.comfyParamNoAudio?.checked || false,
         h3RefSize: dom.comfyParamH3RefSize?.value || "",
         h3Anchor: dom.comfyParamH3Anchor?.value || "",
@@ -369,6 +370,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamSolAttn) dom.comfyParamSolAttn.value = cp.solAttn || "";
     if (dom.comfyParamSolTau) dom.comfyParamSolTau.value = cp.solTau || "";
     if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = cp.solChunkFF !== false;
+    if (dom.comfyParamH3ChainAudioXfade) dom.comfyParamH3ChainAudioXfade.checked = cp.h3ChainAudioXfade !== false;
     if (dom.comfyParamNoAudio) dom.comfyParamNoAudio.checked = !!cp.noAudio;
     if (dom.comfyParamH3RefSize) dom.comfyParamH3RefSize.value = cp.h3RefSize || "";
     if (dom.comfyParamH3Anchor) dom.comfyParamH3Anchor.value = cp.h3Anchor || "";

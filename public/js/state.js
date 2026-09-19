@@ -113,6 +113,7 @@ export const dom = {
   comfyParamSolTauLabel: document.querySelector("#comfyParamSolTauLabel"),
   comfyParamSolChunkFF: document.querySelector("#comfyParamSolChunkFF"),
   comfyParamSolChunkFFLabel: document.querySelector("#comfyParamSolChunkFFLabel"),
+  comfyParamH3ChainAudioXfade: document.querySelector("#comfyParamH3ChainAudioXfade"),
   comfyParamH3Clip: document.querySelector("#comfyParamH3Clip"),
   comfyParamH3ClipLabel: document.querySelector("#comfyParamH3ClipLabel"),
   comfyParamPanoModel: document.querySelector("#comfyParamPanoModel"),
