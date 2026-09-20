@@ -1198,6 +1198,16 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video, at 
   const durNote = composed.duration && composed.duration.maxSec
     ? " " + getPrompt("skillDurationNote", composed.duration.minSec, composed.duration.maxSec)
     : "";
+  // Several /imagine lines in one block → ONE continuous video (runH3Chain). Rides
+  // immediately after the duration note because it is that note's exception: the cap is
+  // still the cap per LINE, but "the model tops out at 15s, suggest splitting into
+  // shots" stops being the whole answer once the shots can be joined seamlessly.
+  // Manifest-gated — the server refuses the chain for every model but H3, so a guide
+  // that learned this for LTX would write blocks that error out on dispatch.
+  const chainNote = composed.chain
+    ? " " + getPrompt("skillChainNote", composed.chain.contextSec || 0,
+      (composed.duration && composed.duration.maxSec) || 0)
+    : "";
   // Ref2VA ground rules ride only on the ref guide: the failure modes they guard
   // against (invented subject_definitions from an unseen picture, references mapped
   // to the wrong subjects, "I meant this as the first frame") only exist when the
@@ -1223,7 +1233,7 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video, at 
   // the base wording ("assume T2VA", "image count decides I2VA/FL2VA") describes
   // modes that do not exist on the r2v weights.
   const isRef = composed.mode === "ref";
-  const stagedNote = getPrompt(cmd.prompt ? "skillStaged" : "skillStagedPending", imgCount, vidCount, isRef) + durNote + refNote + flagsNote + caveatNote;
+  const stagedNote = getPrompt(cmd.prompt ? "skillStaged" : "skillStagedPending", imgCount, vidCount, isRef) + durNote + chainNote + refNote + flagsNote + caveatNote;
 
   // The guide bubble. Header states the off switch (fold = pause); the guide itself
   // sits inside <details> — collapsed ON SCREEN, but fully part of the outgoing

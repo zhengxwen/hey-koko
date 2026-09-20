@@ -181,6 +181,7 @@
       { "token": "1376x768", "max": true },
       { "token": "768x1376", "max": true }
     ],
+    "chain": { "contextSec": 0.92 },
     "modeRules": [
       { "idContains": ":hybrid", "mode": "both" },
       { "idContains": ":fused-turbo", "mode": "both" },

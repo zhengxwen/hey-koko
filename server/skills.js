@@ -192,6 +192,15 @@ async function handleCompose(req, res) {
     // "(native max, landscape/vertical)" label. Explicitly declared, never inferred
     // from the token's shape: a future model may legitimately list a WxH literal that
     // is NOT its max. Absent from the manifest → null → --size never mentioned.
+    // `chain` — this model can render ONE continuous video from SEVERAL /imagine lines
+    // in one message (runH3Chain). Manifest-gated like `sizes`, because the server
+    // refuses the chain for every model but H3: teaching a guide whose model cannot do
+    // it would produce blocks that error out, and the trained-duration note would keep
+    // saying "cap at 15s" for the one model where that has stopped being the answer.
+    // `contextSec` is the overlap each later segment re-renders and then has trimmed off
+    // (22 frames @24fps) — the one number the prompt writer has to write against: it
+    // decides what a later segment must open on, shifts its timecodes, and shortens what
+    // that line delivers. Absent → the wrapper never mentions chaining at all.
     // `style` — what KIND of guide this is, which decides the wrapper the browser
     // puts around it. "" (default) = strong-format: named fields, section order and
     // timing notation are a spec to obey literally (H3). "prose" = the guide teaches
@@ -218,7 +227,7 @@ async function handleCompose(req, res) {
       : Object.keys(allNotes).find((k) => k.startsWith(":") && String(modelId).includes(k));
     const notes = noteKey ? allNotes[noteKey] : null;
     const caveats = [...(def.caveats || []), ...(notes ? [notes] : [])];
-    sendJson(res, 200, { name, mode: mode || "", text, duration: def.duration || null, kind: def.kind || "", sizes: def.sizes || null, style: def.style || "", caveats: caveats.length ? caveats : null });
+    sendJson(res, 200, { name, mode: mode || "", text, duration: def.duration || null, kind: def.kind || "", sizes: def.sizes || null, chain: def.chain || null, style: def.style || "", caveats: caveats.length ? caveats : null });
   } catch (e) { sendJson(res, 500, { error: e.message }); }
 }
 
