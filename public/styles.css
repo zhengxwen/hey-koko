@@ -2389,7 +2389,7 @@ button.secondary:disabled {
    background happens to be, so it needs no colour of its own in either theme. */
 .markdownBody.isClamped,
 .plainBody.isClamped {
-  max-height: 420px;          /* keep in step with CLAMP_PX in chat.js */
+  max-height: 280px;          /* keep in step with CLAMP_PX in chat.js */
   overflow: hidden;
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent 100%);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent 100%);

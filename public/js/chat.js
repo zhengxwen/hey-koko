@@ -1264,6 +1264,10 @@ async function handleSkillCommand(cmd, tab, tabId, rawContent, image, video, at 
     // Guide bubbles from before these fields existed simply won't be folded automatically.
     skillGuide: modelId,
     skillKind: composed.kind || "",
+    // Born shortened — see the clamp section. The reader asked to have this guide ON
+    // HAND, not to read it: at full height it is thousands of words of instructions for
+    // the model and the conversation goes off the screen.
+    clamped: true,
     content: `${getPrompt("skillHeader", composed.name, composed.mode)}${supersededNote}${newTabNote}\n\n` +
       // `kind` decides whether the wrapper talks about a runtime at all: an image guide that
       // asks for a DURATION and puts `--second` on the dispatch line is instructing the
@@ -4728,31 +4732,71 @@ function openEditHistory(index) {
 //
 // Shortening only ever happens because the reader ASKED for it. A long bubble renders
 // in full — the reply you just watched arrive is not taken away from you — and merely
-// offers the toggle; nothing here ever collapses a bubble on its own.
+// offers the toggle; nothing here ever collapses a bubble on its own. The one exception
+// is the /skill guide, which is BORN shortened (see the guide bubble in runSkill): it is
+// reference material written for the model, the same text every time, and at full height
+// it pushes the conversation off the screen. Its header, the only part that changes, is
+// what stays visible.
 //
-// Which bubbles the reader has collapsed lives in a WeakSet keyed by the message OBJECT,
-// not in a field on it. That survives the full re-render this app does on nearly every
-// action, while staying out of what gets persisted, whitelisted and archived — and it is
-// forgotten when the message is. A reload therefore shows every bubble whole again,
-// which is the same rule from the other side: no collapse the reader did not ask for.
-const CLAMP_PX = 420;        // ~20 lines: what a collapsed bubble keeps on screen
+// The state is `msg.clamped` on the message itself, so it is saved, archived and comes
+// back on reload — shortening a wall of text you have finished with should not have to be
+// done again every time you open the app. Only `true` is ever stored: absent means whole,
+// which is both the default and what an expand writes back.
+const CLAMP_PX = 280;        // ~13 lines: what a collapsed bubble keeps on screen
 const CLAMP_SLACK_PX = 80;   // no toggle on a bubble that would only hide two lines
-const _collapsedBubbles = new WeakSet();
+
+// Whether a bubble is long enough to shorten depends on the WINDOW: narrow it and the
+// same text re-wraps past the limit. Nothing re-renders while you are only reading, so
+// without this the toggle would be missing on exactly the bubbles that just grew — and a
+// bubble carrying a stored "shortened" would sit there at full height. Debounced: a drag
+// of the window edge fires this continuously, and each pass measures every bubble.
+let _clampResizeTimer = 0;
+window.addEventListener("resize", () => {
+  clearTimeout(_clampResizeTimer);
+  _clampResizeTimer = setTimeout(remeasureClamps, 150);
+});
+
+function remeasureClamps() {
+  const messages = getActiveTab()?.messages;
+  if (!messages || !dom.messagesEl) return;
+  for (const item of dom.messagesEl.querySelectorAll(".message[data-msg-index]")) {
+    const msg = messages[Number(item.dataset.msgIndex)];
+    const textEl = item.querySelector(":scope > .markdownBody, :scope > .plainBody");
+    if (msg && textEl) applyLengthClamp(item, textEl, msg);
+  }
+}
 
 function applyLengthClamp(item, textEl, msg) {
   if (!item || !textEl || !msg) return;
   const existing = item.querySelector(":scope > .messageMoreToggle");
-  // scrollHeight is the FULL text in both states (max-height does not shrink it), so an
-  // edited-down bubble drops its button here instead of keeping a dead one.
+  // Write the state and remember it. Editing a bubble, archiving the tab and reopening
+  // the app all read the same field, so the record and the screen cannot disagree.
+  const setClamped = (on) => {
+    if (on) msg.clamped = true;
+    else delete msg.clamped;
+    saveChat();
+  };
+  // A picture inside the body lands after this measurement — re-decide once it has. This
+  // is hooked up BEFORE the short-circuit below, because a bubble whose height is mostly
+  // picture measures short until then and would otherwise never be measured again.
+  for (const img of textEl.querySelectorAll("img")) {
+    if (!img.complete) img.addEventListener("load", () => applyLengthClamp(item, textEl, msg), { once: true });
+  }
+  // scrollHeight is the FULL text in both states (max-height does not shrink it), so a
+  // bubble that no longer runs long drops its button here instead of keeping a dead one.
+  // The STORED FLAG stays, though. Whether a bubble is long is not a property of the
+  // bubble: the same text needs the toggle in a narrow window and not in a wide one, and
+  // a picture inside has not been measured until it loads. Clearing the flag on a
+  // momentary "it fits right now" would quietly throw away a choice the reader made and
+  // cannot get back — so the flag is only ever cleared by the reader expanding.
   if (textEl.scrollHeight <= CLAMP_PX + CLAMP_SLACK_PX) {
     textEl.classList.remove("isClamped");
-    _collapsedBubbles.delete(msg);
     if (existing) existing.remove();
     return;
   }
   const btn = existing || document.createElement("button");
   const paint = () => {
-    const collapsed = _collapsedBubbles.has(msg);
+    const collapsed = !!msg.clamped;
     textEl.classList.toggle("isClamped", collapsed);
     // Collapsed, the toggle is the only way back and explains the fade, so it stays
     // visible; whole, it is a control you go looking for, and follows every other
@@ -4766,8 +4810,7 @@ function applyLengthClamp(item, textEl, msg) {
     btn.className = "messageMoreToggle";
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (_collapsedBubbles.has(msg)) _collapsedBubbles.delete(msg);
-      else _collapsedBubbles.add(msg);
+      setClamped(!msg.clamped);
       // Collapsing takes hundreds of pixels out ABOVE the button, which would throw the
       // reader somewhere else entirely. Keep the button under the pointer instead.
       const before = btn.getBoundingClientRect().top;
@@ -4775,17 +4818,21 @@ function applyLengthClamp(item, textEl, msg) {
       dom.messagesEl.scrollTop += btn.getBoundingClientRect().top - before;
     });
     textEl.after(btn);
-    // A picture inside the body lands after this measurement — re-decide once it has.
-    for (const img of textEl.querySelectorAll("img")) {
-      if (!img.complete) img.addEventListener("load", () => applyLengthClamp(item, textEl, msg), { once: true });
-    }
     // The find bar dispatches this before scrolling to a match: a hit inside the hidden
     // overflow has to be revealed first, or it scrolls to a spot showing nothing.
     textEl.addEventListener("heykoko:unclamp", () => {
-      if (!_collapsedBubbles.has(msg)) return;
-      _collapsedBubbles.delete(msg);
+      if (!msg.clamped) return;
+      setClamped(false);
       paint();
     });
+    // Opening a <details> inside (the guide's "full guide" section) asks for MORE text
+    // while the clamp is hiding text — two controls pulling opposite ways, and the one
+    // just clicked wins. Without this the click looks broken: nothing appears.
+    textEl.addEventListener("toggle", (e) => {
+      if (!e.target.open || !msg.clamped) return;
+      setClamped(false);
+      paint();
+    }, true);   // capture: toggle does not bubble
   }
   paint();
 }

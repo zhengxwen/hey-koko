@@ -181,6 +181,9 @@ function saveChatMessage(message) {
   if (message.failInfo) stored.failInfo = message.failInfo;
   stored.content = message.content;
   if (message.folded) stored.folded = true;
+  // "Show less" — a reading state, but a persisted one: a wall of text you have
+  // finished with should not come back full height every time the app opens.
+  if (message.clamped) stored.clamped = true;
   if (message.dispatched) stored.dispatched = true;   // ▶ receipt — lets the next press replace it
 
   if (message.locked) stored.locked = true;
