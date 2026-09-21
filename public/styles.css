@@ -3717,6 +3717,15 @@ button.secondary:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* Prefill / decode rates, third on the timestamp row. Quieter than the clock next to it:
+   it is a detail you look for, not one that should compete with the reply. */
+.messagePerf {
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.65;
+  cursor: help;
+}
+
 .editMessageInput {
   width: 100%;
   border: 1px solid var(--accent);

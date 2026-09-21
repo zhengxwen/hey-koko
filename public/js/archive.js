@@ -154,6 +154,7 @@ export function initArchive() {
       if (msg.cutOff) m.cutOff = msg.cutOff;                          // reply stopped early (timeout / context full)
       if (msg.failInfo) m.failInfo = msg.failInfo;                    // what the stream reported when a reply failed
       if (msg.clamped) m.clamped = true;                              // bubble was left shortened ("show less")
+      if (msg.perf) m.perf = msg.perf;                                // prefill / decode speeds
       // User text highlights / annotations — round-trip so retrieval restores them.
       if (msg.highlights && msg.highlights.length) m.highlights = msg.highlights;
       return m;

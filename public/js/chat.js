@@ -68,6 +68,90 @@ function newStreamDiag() {
   return { lines: 0, done: false, reason: "", error: "", thinkChars: 0, prompt: 0, eval: 0 };
 }
 
+// ── How fast a reply was ───────────────────────────────────────────────────────
+// Prefill (reading the prompt) and decode (writing the answer) are two different
+// speeds, and they are the two worth separating when a reply felt slow: re-reading a
+// huge prompt is a different problem from a slow generator, and the fix is different
+// too (context trimming vs a smaller model / more GPU).
+//
+// Where the numbers come from is NOT the same everywhere, so the bubble says which:
+//   - Ollama puts exact server-side nanosecond timings on its done line. Those are the
+//     model's own rates, with nothing else in them.
+//   - Everything OpenAI-compatible — vLLM, SGLang, llama.cpp, and the cloud providers —
+//     reports token COUNTS only. There the split is timed here, at the first chunk that
+//     arrives, so "prefill" is really time-to-first-token: it carries the network hop
+//     and any queueing at the server, and decode is what is left. Honest as a floor,
+//     wrong as a GPU benchmark — hence `src`, which the tooltip spells out.
+// Everything ACCUMULATES, because one bubble is not always one request: a tool-using
+// reply is several round trips and the badge is about the whole thing — all the prompt
+// re-reading it cost, and all the writing.
+function newStreamPerf() {
+  return { turnStart: Date.now(), firstAt: 0, prompt: 0, eval: 0, prefillNs: 0, decodeNs: 0, prefillMs: 0, decodeMs: 0 };
+}
+
+function notePerfTurn(perf) {   // another request goes out (tool loop)
+  perf.turnStart = Date.now();
+  perf.firstAt = 0;
+}
+
+function notePerfLine(perf, data) {
+  if (data.prompt_eval_count) perf.prompt += data.prompt_eval_count;
+  if (data.eval_count) perf.eval += data.eval_count;
+  if (data.prompt_eval_duration) perf.prefillNs += data.prompt_eval_duration;
+  if (data.eval_duration) perf.decodeNs += data.eval_duration;
+}
+
+// The first chunk of ANY kind ends prefill — a thinking token is a generated token, so
+// timing from the first visible content instead would bill the whole think to prefill.
+function notePerfChunk(perf) {
+  if (!perf.firstAt) { perf.firstAt = Date.now(); perf.prefillMs += perf.firstAt - perf.turnStart; }
+}
+
+function notePerfEnd(perf) {    // this turn's stream is finished
+  if (perf.firstAt) { perf.decodeMs += Date.now() - perf.firstAt; perf.firstAt = 0; }
+}
+
+function replyPerf(perf) {
+  if (!perf.prompt && !perf.eval) return null;
+  if (perf.prefillNs || perf.decodeNs) {
+    return { prompt: perf.prompt, eval: perf.eval, src: "server",
+             prefillMs: Math.round(perf.prefillNs / 1e6), decodeMs: Math.round(perf.decodeNs / 1e6) };
+  }
+  // No server timings and nothing was streamed either (a cloud tool-turn comes back in
+  // one piece) — there is no prefill/decode split to be had, so claim none.
+  if (!perf.prefillMs && !perf.decodeMs) return null;
+  return { prompt: perf.prompt, eval: perf.eval, src: "client",
+           prefillMs: perf.prefillMs, decodeMs: Math.max(1, perf.decodeMs) };
+}
+
+// "1.2k" / "42" / "7.5" — tokens per second at a width that fits beside a timestamp.
+function fmtRate(tokens, ms) {
+  if (!tokens || !ms) return null;
+  const r = tokens / (ms / 1000);
+  return r >= 1000 ? `${(r / 1000).toFixed(1)}k` : r >= 100 ? String(Math.round(r)) : r.toFixed(1);
+}
+
+// The two rates on the timestamp row: ↑ is the prompt going in, ↓ the answer coming out
+// — the same arrows the rest of this app uses for that direction. Everything that would
+// need explaining (token counts, the two durations, and whether the numbers are the
+// server's own or timed here) lives in the tooltip, so the row stays one glance wide.
+function attachPerfBadge(el, perf) {
+  const tsEl = el.querySelector(".messageTimestamp");
+  if (!tsEl) return;
+  const inRate = fmtRate(perf.prompt, perf.prefillMs);
+  const outRate = fmtRate(perf.eval, perf.decodeMs);
+  if (!inRate && !outRate) return;
+  const span = document.createElement("span");
+  span.className = "messagePerf";
+  span.textContent = [inRate && `↑${inRate}`, outRate && `↓${outRate}`].filter(Boolean).join(" ") + " t/s";
+  span.title = [
+    t("perf_prefill", { tok: perf.prompt, ms: formatDuration(perf.prefillMs), rate: inRate || "—" }),
+    t("perf_decode", { tok: perf.eval, ms: formatDuration(perf.decodeMs), rate: outRate || "—" }),
+    perf.src === "server" ? t("perf_srcServer") : t("perf_srcClient"),
+  ].join("\n");
+  tsEl.appendChild(span);
+}
+
 function noteStreamLine(diag, data) {
   diag.lines++;
   if (data.error) diag.error = String(data.error);
@@ -2067,6 +2151,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
   let usageStats = null;
   let cutReason = "";
   const diag = newStreamDiag();
+  const perf = newStreamPerf();
   let aborted = false;
   const genStart = Date.now();
   const showThinking = dom.showThinkingCheckbox?.checked || false;
@@ -2108,6 +2193,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
       if (!line.trim()) return;
       const data = JSON.parse(line);
       noteStreamLine(diag, data);
+      notePerfLine(perf, data);
       // Why the stream ended. Ollama says "stop" for a finished answer; "length" means
       // it ran out of context room, and our proxy signs off with "timeout" when the
       // model went quiet. Both of those leave a half-written answer that otherwise
@@ -2128,6 +2214,7 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
       const thinkChunk = data.message?.thinking || "";
       const chunk = data.message?.content || "";
       if (!thinkChunk && !chunk) return;
+      notePerfChunk(perf);
 
       if (thinkChunk && showThinking) {
         thinkingContent += thinkChunk;
@@ -2213,12 +2300,15 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     }
     buffer += decoder.decode();
     if (buffer.trim()) appendStreamLine(buffer);
+    notePerfEnd(perf);
 
     cancelStreamRender();
     const failInfo = replyFailInfo(diag, content, { model: fetchBody.model, ms: Date.now() - genStart, numCtx: isCloudModel() ? 0 : fetchBody.options.num_ctx });
     content = content.trim() || t("chat_zonedOut");
     state.streamingInfo = null;
     const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart };
+    const perfInfo = replyPerf(perf);
+    if (perfInfo) reply.perf = perfInfo;
     if (thinkingContent) reply.thinking = thinkingContent;
     if (cutReason) reply.cutOff = cutReason;
     if (failInfo) reply.failInfo = failInfo;
@@ -2237,6 +2327,8 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
       aborted = true;
       if (content.trim()) {
         const reply = { role: "assistant", content: content.trim(), timestamp: Date.now(), genMs: Date.now() - genStart };
+        const perfInfo = replyPerf(perf);
+        if (perfInfo) reply.perf = perfInfo;
         if (thinkingContent) reply.thinking = thinkingContent;
         if (cutReason) reply.cutOff = cutReason;
         if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
@@ -2305,6 +2397,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
   let usageStats = null;
   let cutReason = "";
   const diag = newStreamDiag();
+  const perf = newStreamPerf();
   let aborted = false;
   const genStart = Date.now();
   const showThinking = dom.showThinkingCheckbox?.checked || false;
@@ -2354,6 +2447,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       if (!line.trim()) return;
       const data = JSON.parse(line);
       noteStreamLine(diag, data);
+      notePerfLine(perf, data);
       // Why the stream ended. Ollama says "stop" for a finished answer; "length" means
       // it ran out of context room, and our proxy signs off with "timeout" when the
       // model went quiet. Both of those leave a half-written answer that otherwise
@@ -2374,6 +2468,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       const thinkChunk = data.message?.thinking || "";
       const chunk = data.message?.content || "";
       if (!thinkChunk && !chunk) return;
+      notePerfChunk(perf);
 
       // Handle thinking tokens
       if (thinkChunk && showThinking) {
@@ -2462,6 +2557,7 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
 
     buffer += decoder.decode();
     if (buffer.trim()) appendStreamLine(buffer);
+    notePerfEnd(perf);
 
     cancelStreamRender();
     const failInfo = replyFailInfo(diag, content, { model: fetchBody.model, ms: Date.now() - genStart, numCtx: isCloudModel() ? 0 : fetchBody.options.num_ctx });
@@ -2472,6 +2568,8 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       if (md) md.innerHTML = markdownToHtml(content);
     }
     const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart, ...replyMeta };
+    const perfInfo = replyPerf(perf);
+    if (perfInfo) reply.perf = perfInfo;
     if (thinkingContent) reply.thinking = thinkingContent;
     if (cutReason) reply.cutOff = cutReason;
     if (failInfo) reply.failInfo = failInfo;
@@ -2514,6 +2612,8 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
           if (md) md.innerHTML = markdownToHtml(content);
         }
         const reply = { role: "assistant", content: content.trim(), timestamp: Date.now(), genMs: Date.now() - genStart, ...replyMeta };
+        const perfInfo = replyPerf(perf);
+        if (perfInfo) reply.perf = perfInfo;
         if (thinkingContent) reply.thinking = thinkingContent;
         if (cutReason) reply.cutOff = cutReason;
         if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
@@ -2855,6 +2955,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
   let finalContent = "";
   let forceText = false;
   let genError = null;
+  const perf = newStreamPerf();
 
   // Run one agent turn and return an Ollama-shaped message {content, thinking,
   // tool_calls}. LOCAL Ollama streams (stream:true) so text + thinking appear
@@ -2863,6 +2964,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
   // deliver tool-turns non-streaming by design (see server backends).
   async function runAgentTurn(useTools) {
     const isCloud = isCloudModel();
+    notePerfTurn(perf);
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2880,7 +2982,13 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
       }),
     });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(cleanErrorMessage(d.error) || t("chat_requestFailed")); }
-    if (isCloud) return (await res.json()).message || {};
+    if (isCloud) {
+      // A cloud tool-turn comes back whole: the counts are usable, a prefill/decode
+      // split is not, and replyPerf drops the badge rather than invent one.
+      const whole = await res.json();
+      notePerfLine(perf, whole);
+      return whole.message || {};
+    }
 
     // Stream the local turn into the pending bubble, live.
     const reader = res.body.getReader();
@@ -2910,7 +3018,9 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
     const flush = (line) => {
       if (!line.trim()) return;
       let data; try { data = JSON.parse(line); } catch { return; }
+      notePerfLine(perf, data);
       const m = data.message || {};
+      if (m.thinking || m.content) notePerfChunk(perf);
       if (Array.isArray(m.tool_calls) && m.tool_calls.length) toolCalls.push(...m.tool_calls);
       if (m.thinking) {
         thinking += m.thinking;   // always collect (stored on the reply); render only when shown
@@ -2940,6 +3050,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
     }
     buffer += decoder.decode();
     if (buffer.trim()) flush(buffer);
+    notePerfEnd(perf);
     cancelStreamRender();
     return { content, thinking, tool_calls: toolCalls };
   }
@@ -3002,6 +3113,8 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
     }
   } else if (finalContent) {
     const reply = { role: "assistant", content: finalContent, timestamp: Date.now(), genMs: Date.now() - genStart };
+    const perfInfo = replyPerf(perf);
+    if (perfInfo) reply.perf = perfInfo;
     if (toolSteps.length) reply.toolSteps = toolSteps;
     if (thinkingContent) reply.thinking = thinkingContent;
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, reply);
@@ -5832,6 +5945,8 @@ export function renderChat() {
         tsEl.appendChild(genEl);
       }
     }
+    // …and how fast, split into reading the prompt and writing the answer.
+    if (el && message.role === "assistant" && message.perf) attachPerfBadge(el, message.perf);
     if (message.isCompactSummary && el) {
       el.classList.add("compactSummary");
     }

@@ -179,6 +179,9 @@ function saveChatMessage(message) {
   // note survives a reload — a half answer must not come back looking whole.
   if (message.cutOff) stored.cutOff = message.cutOff;
   if (message.failInfo) stored.failInfo = message.failInfo;
+  // Prefill / decode speeds — measured once, so they have to be kept or the badge
+  // would vanish on reload (and there is no way to re-measure a past reply).
+  if (message.perf) stored.perf = message.perf;
   stored.content = message.content;
   if (message.folded) stored.folded = true;
   // "Show less" — a reading state, but a persisted one: a wall of text you have
