@@ -201,6 +201,10 @@ const FILE_ID_RULES = [
   [/qwen.?image.?edit.*2511|qwen.*2511.*edit/, "qwen-image-edit-2511"],
   [/qwen.?image.?edit/, "qwen-image-edit"],
   [/qwen.?image.*2512|qwen.*2512/, "qwen-image-2512"],
+  // 2.1 is a separate architecture, not a build of the original — it must never fold into
+  // the "qwen-image" id, or the precision menu would present it as that model's bf16
+  // variant. Ahead of the bare /qwen.?image/ rule, which would otherwise claim it.
+  [/qwen.?image.?2[._-]?1(?![0-9])/, "qwen-image-2.1"],
   [/qwen.?image/, "qwen-image"],
   [/omnigen/, "omnigen2"],
   [/pix2pix|instruct.?pix/, "instruct-pix2pix"],
@@ -330,6 +334,7 @@ const ID_LABELS = {
   "boogu-turbo": "Boogu (turbo)",
   "boogu-edit": "Boogu Edit",
   "qwen-image": "Qwen-Image",
+  "qwen-image-2.1": "Qwen-Image-2.1",
   "qwen-image-edit": "Qwen-Image-Edit 2509",
   "qwen-image-edit-2511": "Qwen-Image-Edit 2511",
   "qwen-image-2512": "Qwen-Image 2512",
@@ -370,6 +375,10 @@ const ID_MAX_SIZE = [
   // the stock checkpoint (0 mismatches) — so its native envelope is H3's.
   [/^10eros-max-h3/, "1376x768"],
   [/^ltx2\.3-22b|^ltx2-sulphur/, "1920x1088"],
+  // Qwen-Image-2.1's model card publishes a table of native resolutions, all about 4 MP;
+  // 1:1 is the square one. Its widest entry is 2752x1536 (16:9), so a --size max at a
+  // non-square aspect is still inside what the card documents.
+  [/^qwen-image-2\.1/, "2048x2048"],
 ];
 
 function maxSizeForId(id) {

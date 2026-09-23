@@ -56,6 +56,10 @@ export function saveCurrentSettings() {
         controlPrep: dom.comfyParamControlPrep?.value || "",
         controlStrength: dom.comfyParamControlStrength?.value || "",
         layerCount: dom.comfyParamLayerCount?.value || "",
+        qwen21Rgba: dom.comfyParamQwen21Rgba?.checked || false,
+        qwen21RefSize: dom.comfyParamQwen21RefSize?.value || "",
+        qwen21Cache: dom.comfyParamQwen21Cache?.value || "",
+        qwen21CacheDtype: dom.comfyParamQwen21CacheDtype?.value || "",
         camStrength: dom.comfyParamCamStrength?.value || "",
         // The dial lives in state, not in an input, so persist it from there.
         camAzimuth: state.camAzimuth || "front",
@@ -335,6 +339,10 @@ export function loadSavedSettings() {
     if (dom.comfyParamControlPrep) dom.comfyParamControlPrep.value = cp.controlPrep || "canny";
     if (dom.comfyParamControlStrength) dom.comfyParamControlStrength.value = cp.controlStrength || "";
     if (dom.comfyParamLayerCount) dom.comfyParamLayerCount.value = cp.layerCount || "";
+    if (dom.comfyParamQwen21Rgba) dom.comfyParamQwen21Rgba.checked = !!cp.qwen21Rgba;
+    if (dom.comfyParamQwen21RefSize) dom.comfyParamQwen21RefSize.value = cp.qwen21RefSize || "";
+    if (dom.comfyParamQwen21Cache) dom.comfyParamQwen21Cache.value = cp.qwen21Cache || "";
+    if (dom.comfyParamQwen21CacheDtype) dom.comfyParamQwen21CacheDtype.value = cp.qwen21CacheDtype || "";
     if (dom.comfyParamCamStrength) dom.comfyParamCamStrength.value = cp.camStrength || "";
     state.camAzimuth = cp.camAzimuth || "front";
     state.camElevation = cp.camElevation || "eye";

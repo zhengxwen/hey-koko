@@ -670,7 +670,30 @@ function cameraPrompt(opts) {
   const di = CAM_DISTANCE[opts.camDistance] || CAM_DISTANCE.medium;
   return `<sks> ${az} ${el} ${di}`;
 }
-const QWEN_VAE_RE = /^(?!.*layered).*(qwen.*image.*vae|qwen[-_]?image|qwen.*vae)/i;
+// Qwen-Image-2.1 wears the family name but is a DIFFERENT architecture: a 7B single-stream
+// DiT with a Qwen3-VL-8B encoder and a 64-channel RGBA VAE, none of which the builders
+// below can drive. It needs its own route; until then its files must stay invisible to
+// every "which Qwen file do I take" selector, because ComfyUI lists filenames sorted and
+// "qwen_image_2.1_*" lands BEFORE "qwen_image_nvfp4" and "qwen_image_vae" ('2' < 'n' < 'v')
+// — so merely downloading it would re-point the whole existing Qwen family (and krea2,
+// which shares the VAE) at weights that cannot load. Third time this bug class appears:
+// the layered VAE, then the 2512 control base, now this.
+// The "2" must be followed by a separator-or-nothing and then "1", so the generation
+// numbers (2509/2511/2512) cannot match, and the trailing guard keeps a future 2.10 out.
+const QWEN21_SRC = "qwen.?image.?2[._-]?1(?![0-9])";
+const QWEN21_RE = new RegExp(QWEN21_SRC, "i");
+const QWEN_VAE_RE = new RegExp(`^(?!.*layered)(?!.*${QWEN21_SRC}).*(qwen.*image.*vae|qwen[-_]?image|qwen.*vae)`, "i");
+
+// The Qwen2.5-VL-7B encoder that the original Qwen-Image family (base, edit, 2509/2511/
+// 2512, and every control route) was trained against. The fallback stays inside the 2.5
+// family on purpose: qwen3vl_8b — boogu's encoder, and the one Qwen-Image-2.1 ships —
+// also answers a bare /qwen.*vl/, and loading a wrong-generation encoder fails deep in
+// the graph on a shape mismatch rather than at the point of choice.
+function qwen25VlClip(clips) {
+  const list = clips || [];
+  return list.find((x) => /qwen.*vl/i.test(x) && /7b/i.test(x))
+    || list.find((x) => /qwen.?2[._-]?5.?vl/i.test(x));
+}
 // The edit types that go through the shared Qwen-route dispatch rather than the generic
 // instruction-edit one. Same order as the ids above.
 const QWEN_ROUTES = new Set(["qwen-control", "qwen-control-patch", "qwen-control-lora",
@@ -1665,7 +1688,9 @@ function capsFor(name, group, type, entry) {
   if (name === BERNINI_T2I) return ["image"];
   if (name === PANO_T2I) return ["image"];
   if (name === BERNINI_IMG_EDIT || name === BERNINI_IMG_SUBJECT) return ["edit"];
-  if (group === "image") return /hidream.?o1/i.test(name) ? ["image", "edit"] : ["image"];
+  // HiDream-O1 and Qwen-Image-2.1 are both "one checkpoint, two jobs": listed with the
+  // txt2img models, and editing whatever is attached instead of ignoring it.
+  if (group === "image") return (/hidream.?o1/i.test(name) || QWEN21_RE.test(name)) ? ["image", "edit"] : ["image"];
   if (group === "edit") return ["edit"];
   // video: a source-video model is v2v; bernini also accepts a plain image (i2v).
   if (name === LTX_UNION) return ["v2v", "audio"]; // depth-driven; LTX decodes a soundtrack
@@ -1794,6 +1819,11 @@ function isModelReady(name, group, type) {
   // what this flag is for.
   if (QWEN_ROUTES.has(type)) return false;
   if (/qwen.*(2511|2512)/i.test(name)) return false;
+  // Qwen-Image-2.1: built from the official templates and checked graph-by-graph against a
+  // stubbed ComfyUI, but never rendered — and unlike the routes above, not even validated
+  // against a live /object_info yet (the model needs ComfyUI 0.37, which neither box was
+  // running when this was written).
+  if (QWEN21_RE.test(name)) return false;
   // Sentinels carry a synthetic name (not a filename) — match them by exact id.
   // 10Eros-Max — TenStrip's community graft on H3. The TURBO ref2va build is verified
   // live on the 5090 (2026-08-23). Its siblings (fl2va, and the non-turbo ref2va) run
@@ -1915,12 +1945,15 @@ async function proxyComfyModels(req, res) {
     const q = new URL(req.url, "http://x").searchParams.get("comfyUrl");
     const scanUrl = normComfyUrl(q) || config.comfyUrl;
     comfyCtx.enterWith({ comfyUrl: scanUrl });
-    const [ckpts, unets, upscaleModels, allLoras, clips, hostname] = await Promise.all([
+    const [ckpts, unets, upscaleModels, allLoras, clips, vaes, hostname] = await Promise.all([
       comfyEnum("CheckpointLoaderSimple", "ckpt_name"),
       comfyEnum("UNETLoader", "unet_name"),
       comfyEnum("UpscaleModelLoader", "model_name").catch(() => []),
       comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
       comfyEnum("CLIPLoader", "clip_name").catch(() => []),
+      // Only Qwen-Image-2.1 reads this list here (it is offered only when its own RGBA VAE
+      // is installed); every other builder resolves its VAE at generate time.
+      comfyEnum("VAELoader", "vae_name").catch(() => []),
       hostnameFor(scanUrl).catch(() => ""),
     ]);
     // H3's text encoders, offered as a ⚙ list. NOT collapsed into one entry the way the
@@ -2206,7 +2239,20 @@ async function proxyComfyModels(req, res) {
     // Qwen-Image BASE (txt2img) — a UNETLoader model, so it needs listing here just like
     // z-image/boogu. `!editTypeOf` is what separates it from Qwen-Image-EDIT, which is a
     // different model that lands in editModels.
-    const qwenImage = all.filter((n) => /qwen.?image/i.test(n) && !editTypeOf(n));
+    // `!QWEN21_RE` keeps Qwen-Image-2.1 out of THIS list: it matches /qwen.?image/ but is a
+    // different architecture with its own builder and companions (see QWEN21_SRC). It gets
+    // its own entry just below.
+    const qwenImage = all.filter((n) => /qwen.?image/i.test(n) && !editTypeOf(n) && !QWEN21_RE.test(n));
+    // Qwen-Image-2.1 — listed with the txt2img models like z-image/boogu, and it EDITS
+    // when pictures are attached (up to 10 references), the way HiDream-O1 does. Offered
+    // only once its own encoder and RGBA VAE are on disk, so the menu never carries an
+    // entry that can only fail; both are a different generation from every other Qwen
+    // file, so "the DiT is installed" is not enough to go on.
+    const qwen21Clip = clips.some((n) => /qwen3vl/i.test(n) && /(^|[_-])8b([_-]|$)/i.test(n) && !H3_CLIP_RE.test(n));
+    const qwen21Vae = vaes.some((n) => QWEN21_RE.test(n) && /vae/i.test(n));
+    const qwen21 = (qwen21Clip && qwen21Vae)
+      ? all.filter((n) => QWEN21_RE.test(n) && !/vae|text.?encoder|_pe_/i.test(n))
+      : [];
     // Krea-2 (turbo and, if installed, raw) — a UNETLoader model like z-image/boogu/qwen.
     // `!editTypeOf` is belt-and-braces: no krea2 FILENAME matches an edit pattern (the
     // style-reference route is a sentinel, added to editModels below), but the same guard
@@ -2312,7 +2358,7 @@ async function proxyComfyModels(req, res) {
     // REAL file — a saved choice must keep resolving, and generateComfyImage re-applies
     // the ⚙ preference to whatever name it receives — so the fix is to hide the token in
     // the frontend's OPTION TEXT, not to invent a fake value here.
-    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage, ...krea2], (n) => n, null);
+    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage, ...qwen21, ...krea2], (n) => n, null);
     // The image entries that stand for a COLLAPSED group, so the frontend can drop the
     // precision token from their option text. It can't work this out for itself — it
     // only ever sees the surviving representative, never the siblings it stands for.
@@ -2465,7 +2511,7 @@ async function editCompanions(editType, model) {
   }
   if (editType === "qwen" || editType === "qwen2511") {
     // Qwen-Image-Edit wants the 7B Qwen2.5-VL encoder (prefer it if present).
-    const clip = clips.find((x) => /qwen.*vl/i.test(x) && /7b/i.test(x)) || find(clips, /qwen.*vl/i);
+    const clip = qwen25VlClip(clips);
     const vae = find(vaes, QWEN_VAE_RE);
     const missing = [];
     if (!clip) missing.push("qwen_2.5_vl_7b_fp8_scaled.safetensors → text_encoders/");
@@ -2478,8 +2524,12 @@ async function editCompanions(editType, model) {
     return { clip, vae, lora: light ? light.name : null, loraSteps: light ? light.steps : 0 };
   }
   if (editType === "omnigen") {
-    // OmniGen2 wants the smaller (3B) Qwen2.5-VL encoder — AVOID the 7B one.
-    const clip = clips.find((x) => /qwen.*vl/i.test(x) && !/7b/i.test(x)) || find(clips, /omnigen|qwen.*vl/i);
+    // OmniGen2 wants the smaller (3B) Qwen2.5-VL encoder — AVOID the 7B one, and avoid
+    // qwen3vl too: boogu's 8B encoder and Qwen-Image-2.1's are both "not 7b" while being
+    // an entirely different generation, so a bare "not 7b" would pick one of them the
+    // moment OmniGen2's own file is missing.
+    const clip = clips.find((x) => /qwen.*vl/i.test(x) && !/7b/i.test(x) && !/qwen3vl/i.test(x))
+      || find(clips, /omnigen/i);
     const vae = aeVae();
     const missing = [];
     if (!clip) missing.push("OmniGen2 text encoder (qwen_2.5_vl) → text_encoders/");
@@ -2598,6 +2648,15 @@ function familyPreset(model) {
   // switches to on its own when the LoRA is installed.
   // Qwen-Image 2512 asks for 50 steps where 2508 asked for 20 — same sampler, same shift,
   // longer schedule (its own template's non-turbo branch).
+  // Qwen-Image-2.1: its own schedule, and the one Qwen that runs at cfg 1 — the model is
+  // not guided, so a higher cfg costs a second forward pass per step for a negative prompt
+  // it was not trained to use. Ahead of the generic qwen-image line, which would otherwise
+  // hand it 20 steps at cfg 4. `sd3Latent` is moot (buildQwenImage21 builds its own
+  // latent), so it states the truth: this is neither a 16-channel SD3 grid nor a 4-channel
+  // SD1.5 one.
+  if (QWEN21_RE.test(model)) {
+    return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: null, steps: 25, sd3Latent: false };
+  }
   if (/qwen.?image.*2512|qwen.*2512/i.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 4, guidance: null, steps: 50, sd3Latent: true };
   }
@@ -2715,8 +2774,10 @@ function buildHiDreamImage({ model, prompt, negative, width, height, seed, cfg, 
 // `wantEdit` keeps the two families apart: the names differ by that one word, and mounting
 // the edit LoRA on the base model (or the reverse) is worse than mounting none.
 function qwenLightning(loras, wantEdit, version) {
+  // A 2.1 LoRA carries no 2509-style generation number, so `verOf` would read it as
+  // "unversioned" and hand it to the ORIGINAL release — a different architecture entirely.
   const pool = (loras || []).filter((n) => /qwen.*image.*(lightning|turbo)/i.test(n)
-    && /edit/i.test(n) === !!wantEdit);
+    && /edit/i.test(n) === !!wantEdit && !QWEN21_RE.test(n));
   // A LoRA is trained against ONE generation of the weights, and the generation is in the
   // filename (…-2509-…, …-2511-…, …-2512-…). Mounting 2509's on 2511 is not a small
   // mismatch — so a versioned model takes a matching LoRA, or an unversioned one, and
@@ -2761,7 +2822,7 @@ async function qwenImageCompanions(model) {
   ]);
   const find = (list, re) => list.find((x) => re.test(x));
   // The 7B Qwen2.5-VL encoder, preferred if present — matches editCompanions("qwen").
-  const clip = clips.find((x) => /qwen.*vl/i.test(x) && /7b/i.test(x)) || find(clips, /qwen.*vl/i);
+  const clip = qwen25VlClip(clips);
   const vae = find(vaes, QWEN_VAE_RE);
   const light = qwenLightning(loras, false, qwenVersionOf(model));   // optional turbo (distilled)
   const missing = [];
@@ -2795,6 +2856,136 @@ function buildQwenImage({ model, prompt, negative, width, height, seed, comp, cf
   if (turbo) wf["11"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.lora, strength_model: 1 } };
   wf["7"] = { class_type: "ModelSamplingAuraFlow", inputs: { model: [turbo ? "11" : "1", 0], shift: 3.1 } };
   wf["8"] = { class_type: "KSampler", inputs: { seed, steps, cfg: guide, sampler_name: (cfg && cfg.sampler) || "euler", scheduler: (cfg && cfg.scheduler) || "simple", denoise: 1, model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0] } };
+  return wf;
+}
+
+// Qwen-Image-2.1's own encoder + VAE. Neither is shared with the rest of the family:
+// the encoder is Qwen3-VL-8B (the 2508/2509/2511/2512 line uses Qwen2.5-VL-7B) and the
+// VAE is a 64-channel RGBA one at 16x — feeding either of them to an older Qwen graph,
+// or the older files to this one, fails on a tensor shape deep inside the model.
+async function qwen21Companions() {
+  const [clips, vaes] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+  ]);
+  // Qwen3-VL at 8B. The SIZE is load-bearing: this box also carries qwen3vl_4b (Z-Image)
+  // and qwen3vl_32b (MiniMax H3), both of which match a bare /qwen3vl/ — and the 32B
+  // sorts FIRST.
+  //
+  // Then, among the 8B files, prefer the three Comfy-Org PUBLISHES FOR THIS MODEL
+  // (qwen3vl_8b_bf16 / _int8_convrot / _w4a8). boogu ships its own qwen3vl_8b_fp8_scaled,
+  // which sorts ahead of int8_convrot ('f' < 'i') and would otherwise win by alphabet —
+  // caught live on the 5090, where both are installed. It is the same base model and does
+  // run, but it is boogu's packaging: it stays a FALLBACK for a box that has boogu and not
+  // this model, and it is UNVERIFIED (if reference images seem ignored, that is the first
+  // thing to suspect).
+  const eight = (clips || []).filter((x) => /qwen3vl/i.test(x) && /(^|[_-])8b([_-]|$)/i.test(x) && !H3_CLIP_RE.test(x));
+  const clip = eight.find((x) => /qwen3vl[-_]?8b[-_]?(bf16|int8[-_]convrot|w4a8)/i.test(x)) || eight[0];
+  const vae = (vaes || []).find((x) => QWEN21_RE.test(x) && /vae/i.test(x));
+  const missing = [];
+  if (!clip) missing.push("qwen3vl_8b_int8_convrot.safetensors → text_encoders/");
+  if (!vae) missing.push("qwen_image_2.1_vae_bf16.safetensors → vae/");
+  if (missing.length) throw new Error("Missing files required by Qwen-Image-2.1:\n- " + missing.join("\n- "));
+  return { clip, vae };
+}
+
+// Transparency is not a switch on the graph — the model was trained to answer this
+// SENTENCE, so the toggle wraps the prompt with it (the template's own wording) and the
+// PNG that comes back carries the alpha channel. Model-facing text, so it lives here and
+// never in the localized UI strings.
+function qwen21RgbaPrompt(prompt) {
+  const p = String(prompt || "").trim().replace(/[.。]+$/, "");
+  return `This is an RGBA format image with transparency. ${p}. The image has an alpha channel and a transparent background.`;
+}
+
+// ⚙ "reference size" → the encoder's `resolution` input: 0 (keep each reference at its own
+// size) or a pixel budget on the node's own 32-step grid, capped at its declared 4096.
+// Empty / absent = the official 1024.
+function qwen21RefResolution(opts) {
+  const v = Number(opts && opts.qwen21RefSize);
+  if (!Number.isFinite(v) || v < 0) return 1024;
+  if (v === 0) return 0;
+  return Math.min(4096, Math.max(32, Math.round(v / 32) * 32));
+}
+
+// Qwen-Image-2.1 — one checkpoint, both jobs: no attached image = text to image, attached
+// images = edit against up to 10 references (call them out as <image1>…<image10> in the
+// prompt). Flattened from the official image_qwen_image_2_1_t2i and
+// image_qwen_image_2_1_image_edit templates.
+//
+// What is deliberately ABSENT next to every other Qwen builder: no ModelSamplingAuraFlow
+// (2.1 carries its own shift, 0.69, in the weights) and no CFGNorm. The schedule is 25
+// steps at cfg 1, and cfg 1 means the negative prompt is INERT — the node requires the
+// input, so it is wired and ignored until someone raises cfg in ⚙, exactly as the
+// template's note says. Upstream's own pipeline uses 40-50 steps; 25 is what the template
+// ships with, and ⚙ steps overrides it.
+function buildQwenImage21({ model, prompt, negative, width, height, seed, cfg, comp,
+  imageNames, refResolution, cacheDevice, cacheDtype, pinSize }) {
+  const refs = (imageNames || []).slice(0, 10);
+  const edit = refs.length > 0;
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "qwen_image", device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+  };
+  // The prefix K/V cache (text and reference tokens modulate from t=0, so their K/V never
+  // change between steps) is worth ~1.7x on edits, which is why the edit template carries
+  // this node and the t2i one does not. Same rule here: always on the edit path, and on
+  // t2i only when the user actually moved a knob — "auto" is the model's own default, so
+  // an untouched t2i graph stays byte-identical to the template.
+  const tuned = (cacheDevice && cacheDevice !== "auto") || (cacheDtype && cacheDtype !== "default");
+  if (edit || tuned) {
+    wf["5"] = { class_type: "QwenImage21Cache", inputs: { model: ["1", 0], device: cacheDevice || "auto", dtype: cacheDtype || "default" } };
+  }
+  const modelOut = wf["5"] ? ["5", 0] : ["1", 0];
+  // One LoadImage per reference, wired into the encoder's autogrow slots. The API key for
+  // an autogrow slot is the DOTTED "<group>.<slot>" path — a bare "image_1" is a runtime
+  // TypeError inside the node, not a silently ignored input, and /prompt's validation does
+  // not look at these slots at all, so nothing catches it earlier.
+  const enc = {
+    class_type: "TextEncodeQwenImage21",
+    inputs: {
+      clip: ["2", 0],
+      prompt,
+      negative_prompt: negative || "",
+      // Pixel budget each reference is resized to (a multiple of 32, aspect kept); 0 keeps
+      // it at its own size. The official default is 1024 and the EDIT template ships 0 —
+      // but the template's input is one curated small picture, while ours is whatever the
+      // user attached (photos of 2400x3100 are normal here), and a reference is billed in
+      // tokens. So 1024 is the default and ⚙ can set 0.
+      resolution: refResolution != null ? refResolution : 1024,
+    },
+  };
+  if (edit) {
+    enc.inputs.vae = ["3", 0];   // no VAE = the references would condition through the encoder alone
+    refs.forEach((name, i) => {
+      const id = String(20 + i);
+      wf[id] = { class_type: "LoadImage", inputs: { image: name } };
+      enc.inputs[`images.image_${i + 1}`] = [id, 0];
+    });
+  }
+  wf["4"] = enc;
+  // Canvas. On an edit the encoder hands back an empty latent on image_1's own grid, and
+  // the node's tooltip is explicit that sampling on any other size SHIFTS the edit — so
+  // that is the default, and an explicit ⚙ size is the only thing that overrides it (the
+  // template exposes the same choice as its custom_size switch). Text-to-image has no
+  // reference to follow, so it always builds its own: EmptyLatentImage is 4-channel at /8,
+  // which ComfyUI rescales to this model's 64-channel /16 grid because the latent is empty
+  // (fix_empty_latent_channels) — the numbers here are PIXELS either way.
+  let latent = ["4", 2];
+  if (!edit || pinSize) {
+    wf["6"] = { class_type: "EmptyLatentImage", inputs: { width, height, batch_size: 1 } };
+    latent = ["6", 0];
+  }
+  wf["7"] = { class_type: "KSampler", inputs: {
+    seed, steps: (cfg && cfg.steps) || 25, cfg: (cfg && cfg.cfg != null) ? cfg.cfg : 1,
+    sampler_name: (cfg && cfg.sampler) || "euler", scheduler: (cfg && cfg.scheduler) || "simple",
+    denoise: 1, model: modelOut, positive: ["4", 0], negative: ["4", 1], latent_image: latent,
+  } };
+  wf["8"] = { class_type: "VAEDecode", inputs: { samples: ["7", 0], vae: ["3", 0] } };
+  // SaveImage writes whatever channel count it is handed, so the alpha channel survives as
+  // a real RGBA PNG (the template uses SaveImageAdvanced only to pin png/8-bit/sRGB).
+  wf["9"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["8", 0] } };
   return wf;
 }
 
@@ -3265,10 +3456,13 @@ async function qwenRouteResolve(route) {
     comfyEnum("ModelPatchLoader", "name").catch(() => []),
   ]);
   const find = (list, re) => (list || []).find((x) => re.test(x));
-  const clip = clips.find((x) => /qwen.*vl/i.test(x) && /7b/i.test(x)) || find(clips, /qwen.*vl/i);
+  const clip = qwen25VlClip(clips);
   const vae = find(vaes, QWEN_VAE_RE);
   // The BASE model each route drives: a Qwen-Image txt2img UNET (never an edit one).
-  const bases = (unets || []).filter((n) => /qwen.?image/i.test(n) && !editTypeOf(n) && !/layered/i.test(n));
+  // 2.1 is excluded for the same reason `layered` is: it matches the family pattern but is
+  // not a base these routes can ride, and it sorts ahead of the plain file.
+  const bases = (unets || []).filter((n) => /qwen.?image/i.test(n) && !editTypeOf(n)
+    && !/layered/i.test(n) && !QWEN21_RE.test(n));
   const base2512 = bases.find((n) => /2512/i.test(n));
   // The InstantX / DiffSynth control weights were trained against the ORIGINAL
   // Qwen-Image, and pairing them with a later generation quietly wastes them — the
@@ -9899,6 +10093,33 @@ async function generateComfyImage(req, res) {
         // Z-Image-Turbo txt2img (UNET + CLIPLoader lumina2 + ae VAE).
         const comp = await zimageCompanions();
         workflow = buildZImage({ model, prompt, width, height, seed, cfg, comp });
+      } else if (QWEN21_RE.test(model)) {
+        // Qwen-Image-2.1: text→image, or an edit against up to 10 references when images
+        // are attached. Tested BEFORE the generic /qwen.?image/ branch below, which would
+        // otherwise hand it the 2508 recipe (Qwen2.5-VL encoder, 16-channel VAE, AuraFlow
+        // shift) and fail somewhere deep inside ComfyUI.
+        // A painted 🖌 mask is NOT read here: the official graph has no mask input, and the
+        // model's own way of being told "only this part" is a circle or an arrow drawn INTO
+        // the picture, which arrives as an ordinary reference. Say it in the prompt instead.
+        const comp = await qwen21Companions();
+        let imageNames = null;
+        if (isImg2Img) {
+          imageNames = [];
+          // Distinct filenames per reference — uploadImage's default name + overwrite
+          // would collapse them all down to the last image.
+          const refs = images.slice(0, 10);
+          for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `${comfyTag()}_q21ref${ri}.png`));
+        }
+        workflow = buildQwenImage21({
+          model, prompt: opts.qwen21Rgba ? qwen21RgbaPrompt(prompt) : prompt,
+          negative: negative_prompt || "", width, height, seed, cfg, comp, imageNames,
+          refResolution: qwen21RefResolution(opts),
+          cacheDevice: opts.qwen21Cache, cacheDtype: opts.qwen21CacheDtype,
+          // An edit samples on the reference's own grid unless the user asked for a size;
+          // `width`/`height` always carry a value (the 1024² default), so the ⚙ field
+          // being SET is the signal, not the numbers themselves.
+          pinSize: !!(opts.width && opts.height),
+        });
       } else if (/qwen.?image/i.test(model)) {
         // Qwen-Image txt2img. Only the BASE model reaches here — editTypeOf routes
         // anything matching /qwen.*edit/ down the edit path long before this.

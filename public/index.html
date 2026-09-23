@@ -1155,6 +1155,31 @@
             <span id="comfyParamLayerCountLabel">Layers</span>
             <input id="comfyParamLayerCount" type="number" min="2" max="6" step="1" placeholder="3" />
           </label>
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="Qwen-Image-2.1 only: ask for a transparent background. The model outputs a real alpha channel — no cut-out step — but it has to be TOLD, so this wraps your prompt in the sentence it was trained on. The result is saved as PNG with its transparency intact.">
+            <input id="comfyParamQwen21Rgba" type="checkbox" />
+            <span id="comfyParamQwen21RgbaLabel">Transparent background (RGBA)</span>
+          </label>
+          <label title="Qwen-Image-2.1 only, and only with pictures attached: the pixel budget each reference is scaled to before the model reads it. Empty = 1024, the official default. Bigger keeps more detail of the reference and costs more time and memory; 0 keeps every reference at its own size, which on a phone photo is a lot of both.">
+            <span id="comfyParamQwen21RefSizeLabel">Reference size (Qwen 2.1)</span>
+            <input id="comfyParamQwen21RefSize" type="number" min="0" max="4096" step="32" placeholder="1024" />
+          </label>
+          <label title="Qwen-Image-2.1 only: where to keep the prefix cache. The text and the references do not change between sampling steps, so their attention is computed once and reused — worth about 1.7x on an edit. Auto uses spare VRAM and falls back to RAM. Off recomputes every step: slower, and the one way to rule the cache out of a problem.">
+            <span id="comfyParamQwen21CacheLabel">Prefix cache (Qwen 2.1)</span>
+            <select id="comfyParamQwen21Cache">
+              <option value="">Auto (VRAM, then RAM)</option>
+              <option value="gpu">VRAM</option>
+              <option value="cpu">RAM</option>
+              <option value="off">Off (recompute every step)</option>
+            </select>
+          </label>
+          <label title="Qwen-Image-2.1 only: how precisely the prefix cache is stored. Default is lossless. int8 halves it at about the same accuracy; int4 quarters it but roughly doubles the per-step error. Only worth touching when an edit runs out of memory.">
+            <span id="comfyParamQwen21CacheDtypeLabel">Prefix cache precision</span>
+            <select id="comfyParamQwen21CacheDtype">
+              <option value="">Default (lossless)</option>
+              <option value="int8">int8 (half the size)</option>
+              <option value="int4">int4 (quarter, lossier)</option>
+            </select>
+          </label>
           <!-- 3D camera picker (Qwen 2511 Multiple-Angles). The LoRA knows exactly 96
                poses, so this is a PICKER over a discrete grid rather than a free orbit:
                a dial for the 8 azimuths, a side view for the 4 elevations, 3 distances.

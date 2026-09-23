@@ -1256,6 +1256,8 @@ function comfyModelHint(name) {
   if (/hidream.?i1/.test(n)) return t("oll_hint_hidreamI1");
   if (/z.?image/.test(n)) return t("oll_hint_zImage");
   if (/boogu/.test(n)) return /turbo/.test(n) ? t("oll_hint_booguTurbo") : t("oll_hint_booguBase");
+  // 2.1 before the base line: it matches the same pattern and is a different model.
+  if (/qwen.?image.?2[._-]?1(?![0-9])/.test(n)) return t("oll_hint_qwen21");
   if (/qwen.?image/.test(n)) return t("oll_hint_qwenImage");
   if (/flux/.test(n)) return t("oll_hint_flux");
   if (/pony|xl\b|sdxl/.test(n)) return t("oll_hint_sdxl");
@@ -1619,6 +1621,10 @@ function comfyModelComponents(name) {
   if (/hidream.?e1/.test(n)) return "HiDream-E1 · UNETLoader · QuadrupleCLIPLoader · VAE ae · ModelSamplingSD3 · VAEEncode · KSampler";
   // txt2img
   if (/hidream.?i1/.test(n)) return "HiDream-I1 · UNETLoader · QuadrupleCLIPLoader · VAE ae · ModelSamplingSD3 · KSampler";
+  // Qwen-Image-2.1 — a different architecture under the same family name, and it edits from
+  // this same entry when pictures are attached. Ahead of the base line below, which would
+  // otherwise claim it and describe the wrong encoder, VAE and schedule.
+  if (/qwen.?image.?2[._-]?1(?![0-9])/.test(n)) return "Qwen-Image-2.1 · UNETLoader · CLIP qwen3-vl-8b(qwen_image) · VAE qwen_image_2.1 (RGBA) · TextEncodeQwenImage21 (up to 10 references, <image1>…) · KSampler (25-step, cfg 1 — no shift node, no negative) · edits when images are attached";
   // Qwen-Image BASE. Must stay in the txt2img block, AFTER the /qwen.*edit/ line above —
   // the edit variant matches this pattern too, and describing it as a plain txt2img chain
   // would drop the whole TextEncodeQwenImageEdit half of what it runs.
@@ -2038,6 +2044,13 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamControlPrep, qwenControl);
   setVis(dom.comfyParamControlStrength, qwenControl || m === "qwen-inpaint");
   setVis(dom.comfyParamLayerCount, m === "qwen-layered");
+  // Qwen-Image-2.1's four. Gated by FILENAME, like the other per-model knobs: the entry is
+  // a real file (both builds fold into one row), not a sentinel, so there is no id to test.
+  // The reference-size field is shown with the rest even though it only bites once a
+  // picture is attached — the ⚙ modal is opened before attaching as often as after.
+  const qwen21 = /qwen.?image.?2[._-]?1(?![0-9])/i.test(m);
+  for (const el of [dom.comfyParamQwen21RefSize, dom.comfyParamQwen21Cache, dom.comfyParamQwen21CacheDtype]) setVis(el, qwen21);
+  setVis(dom.comfyParamQwen21Rgba, qwen21, ".comfyParamCheck");
   // The 3D camera dial is its own widget, not a labelled field — setVis falls back to
   // the element itself when there is no wrapping <label>.
   setVis(dom.comfyCamPicker, m === "qwen-angles");

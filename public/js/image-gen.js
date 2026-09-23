@@ -152,6 +152,15 @@ function comfyOverrides() {
   if (ctlStrength !== undefined) ov.controlStrength = ctlStrength;   // how hard the control map is enforced
   const layerCount = num(dom.comfyParamLayerCount?.value);
   if (layerCount !== undefined) ov.layerCount = layerCount;          // qwen layered: how many layers to split into
+  // Qwen-Image-2.1. The transparency toggle travels as a flag, not as text: the sentence
+  // the model answers to is the server's business (qwen21RgbaPrompt), so the UI never
+  // carries model-facing wording. Empty knobs stay home — the builder's defaults are the
+  // official template's.
+  if (dom.comfyParamQwen21Rgba?.checked) ov.qwen21Rgba = true;
+  const q21Ref = num(dom.comfyParamQwen21RefSize?.value);
+  if (q21Ref !== undefined) ov.qwen21RefSize = q21Ref;               // 0 = keep each reference's own size
+  if (dom.comfyParamQwen21Cache?.value) ov.qwen21Cache = dom.comfyParamQwen21Cache.value;
+  if (dom.comfyParamQwen21CacheDtype?.value) ov.qwen21CacheDtype = dom.comfyParamQwen21CacheDtype.value;
   // Qwen 3D Camera: the dial's three KEYS travel as-is — the server turns them into
   // the `<sks> ...` phrase the LoRA was trained on, so only one side knows that wording.
   ov.camAzimuth = state.camAzimuth || "front";
