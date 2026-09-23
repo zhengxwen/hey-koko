@@ -1819,11 +1819,11 @@ function isModelReady(name, group, type) {
   // what this flag is for.
   if (QWEN_ROUTES.has(type)) return false;
   if (/qwen.*(2511|2512)/i.test(name)) return false;
-  // Qwen-Image-2.1: built from the official templates and checked graph-by-graph against a
-  // stubbed ComfyUI, but never rendered — and unlike the routes above, not even validated
-  // against a live /object_info yet (the model needs ComfyUI 0.37, which neither box was
-  // running when this was written).
-  if (QWEN21_RE.test(name)) return false;
+  // Qwen-Image-2.1 — verified live on the 5090 (ComfyUI 0.37.0, int8_convrot, 2026-09-22):
+  // text→image at 1024² in ~6 s warm (24 s cold) with the handwriting in the prompt spelled
+  // correctly, a transparent sticker that really is 75 % clear pixels, and an edit that puts
+  // the asked-for cat on the chair while keeping the room and the note. The last one only
+  // works because the edit path guides (see qwen21Cfg).
   // Sentinels carry a synthetic name (not a filename) — match them by exact id.
   // 10Eros-Max — TenStrip's community graft on H3. The TURBO ref2va build is verified
   // live on the 5090 (2026-08-23). Its siblings (fl2va, and the non-turbo ref2va) run
@@ -2896,6 +2896,21 @@ async function qwen21Companions() {
 function qwen21RgbaPrompt(prompt) {
   const p = String(prompt || "").trim().replace(/[.。]+$/, "");
   return `This is an RGBA format image with transparency. ${p}. The image has an alpha channel and a transparent background.`;
+}
+
+// cfg 1 is what the official templates ship, and for TEXT-TO-IMAGE it is right — the
+// pictures are excellent and it costs one forward pass per step instead of two. For an
+// EDIT it is wrong, and quietly so: verified on the 5090 (2026-09-22), "add a sleeping cat
+// to the chair", "convert to black and white" and even Comfy's own background-removal
+// prompt all came back as a faithful RE-RENDER of the reference with the instruction
+// barely applied — at most a tint of it ("red plastic chair" only tinted the wood). The
+// same graph, same seed, at cfg 2.5 puts the cat on the chair with the rest of the room
+// intact; cfg 4 applies it harder and starts moving things that were not asked about.
+// So: guide for real when there are references, unless the user pinned a value in ⚙.
+// The negative prompt becomes live at the same moment (at cfg 1 it reaches nothing).
+function qwen21Cfg(cfg, opts, edit) {
+  if (!edit || (opts && opts.cfg != null)) return cfg;
+  return { ...cfg, cfg: 2.5 };
 }
 
 // ⚙ "reference size" → the encoder's `resolution` input: 0 (keep each reference at its own
@@ -10112,7 +10127,8 @@ async function generateComfyImage(req, res) {
         }
         workflow = buildQwenImage21({
           model, prompt: opts.qwen21Rgba ? qwen21RgbaPrompt(prompt) : prompt,
-          negative: negative_prompt || "", width, height, seed, cfg, comp, imageNames,
+          negative: negative_prompt || "", width, height, seed,
+          cfg: qwen21Cfg(cfg, opts, isImg2Img), comp, imageNames,
           refResolution: qwen21RefResolution(opts),
           cacheDevice: opts.qwen21Cache, cacheDtype: opts.qwen21CacheDtype,
           // An edit samples on the reference's own grid unless the user asked for a size;

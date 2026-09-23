@@ -1624,7 +1624,7 @@ function comfyModelComponents(name) {
   // Qwen-Image-2.1 — a different architecture under the same family name, and it edits from
   // this same entry when pictures are attached. Ahead of the base line below, which would
   // otherwise claim it and describe the wrong encoder, VAE and schedule.
-  if (/qwen.?image.?2[._-]?1(?![0-9])/.test(n)) return "Qwen-Image-2.1 · UNETLoader · CLIP qwen3-vl-8b(qwen_image) · VAE qwen_image_2.1 (RGBA) · TextEncodeQwenImage21 (up to 10 references, <image1>…) · KSampler (25-step, cfg 1 — no shift node, no negative) · edits when images are attached";
+  if (/qwen.?image.?2[._-]?1(?![0-9])/.test(n)) return "Qwen-Image-2.1 · UNETLoader · CLIP qwen3-vl-8b(qwen_image) · VAE qwen_image_2.1 (RGBA) · TextEncodeQwenImage21 (up to 10 references, <image1>…) · KSampler 25-step, no shift node · text→image at cfg 1; with images attached it EDITS at cfg 2.5 (cfg 1 barely applies an edit)";
   // Qwen-Image BASE. Must stay in the txt2img block, AFTER the /qwen.*edit/ line above —
   // the edit variant matches this pattern too, and describing it as a plain txt2img chain
   // would drop the whole TextEncodeQwenImageEdit half of what it runs.
