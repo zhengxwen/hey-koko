@@ -839,7 +839,10 @@ async function rerankCandidates(query, cands, model, topK, language = "") {
     const out = await llmComplete(model, [
       { role: "system", content: L.rerank },
       { role: "user", content: `${L.rerankQuery}${query}\n\n${L.rerankSnippets}\n${lines.join("\n")}` },
-    ], { timeoutMs: 30000 });
+    // think:false — Ollama thinking models think by default, and that pass alone (~1k
+    // tokens on a 27B) overruns the 30s budget, so the rerank silently fell back to
+    // vector order every time. An index list doesn't need it (27B: ~31s → ~6s).
+    ], { timeoutMs: 30000, think: false });
     const j = parseJsonLoose(out);
     const order = (j && Array.isArray(j.order) ? j.order : []).map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < cands.length);
     if (!order.length) return cands;
@@ -1910,18 +1913,22 @@ async function reparseLibrary(req, res) {
 // chat proxy uses (local Ollama / Claude / OpenAI). Also reused by retrieval rerank.
 // One automatic retry: a cold-loading local model transiently 500s / returns empty
 // (seen with MLX backends), and batch imports hit exactly that on their first doc.
-async function llmComplete(model, messages, { timeoutMs = 300000, signal = null } = {}) {
+async function llmComplete(model, messages, { timeoutMs = 300000, signal = null, think } = {}) {
   const once = async () => {
     const timeout = AbortSignal.timeout(timeoutMs);
     const sig = signal ? AbortSignal.any([signal, timeout]) : timeout;
     if (claude.isClaudeModel(model)) return claude.complete(model, messages, { signal: sig });
     if (openai.isOpenAIModel(model)) return openai.complete(model, messages, { signal: sig });
-    const r = await fetch(`${config.ollamaUrl}/api/chat`, {
+    const post = (extra) => fetch(`${config.ollamaUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, stream: false, messages, options: { temperature: 0.1, num_ctx: config.llmTaskCtx } }),
+      body: JSON.stringify({ model, stream: false, messages, options: { temperature: 0.1, num_ctx: config.llmTaskCtx }, ...extra }),
       signal: sig,
     });
+    let r = await post(typeof think === "boolean" ? { think } : {});
+    // A model whose thinking cannot be switched off (gpt-oss) rejects think:false —
+    // retry with the field dropped, same as the chat proxy (server/chat.js).
+    if (!r.ok && r.status === 400 && think === false) r = await post({});
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || `chat HTTP ${r.status}`);
     return (data.message && data.message.content) || "";

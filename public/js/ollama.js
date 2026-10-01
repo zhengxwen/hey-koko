@@ -77,6 +77,9 @@ function reloadLlmModelLists() {
 
 // Embedding and image models live in their own dropdowns — keep them out of the LLM list.
 const NON_LLM_RE = /embed|z-image|flux/i;
+// Decision models (Ollama System One, e.g. nimble) only answer /v1/systemone typed
+// questions; their tags carry a "decision" capability rather than a telltale name.
+const isDecisionModel = (m) => Array.isArray(m.capabilities) && m.capabilities.includes("decision");
 
 // ⚙ "Allow online models" (More options). Off — the default, and what a fresh profile
 // gets — means chat is local-only as far as the UI is concerned: no cloud model reaches
@@ -139,7 +142,7 @@ export async function loadModels({ force = false } = {}) {
   // server; nothing gates on it here any more.)
   // Keep the objects (not just names) so we can badge cloud vs local models.
   const entries = (data.models || [])
-    .filter((m) => m.name && !NON_LLM_RE.test(m.name));
+    .filter((m) => m.name && !NON_LLM_RE.test(m.name) && !isDecisionModel(m));
   // Merge the user's ad-hoc picks (absent from the provider allowlist).
   const known = new Set(entries.map((m) => m.name));
   for (const name of loadExtraModels()) if (!known.has(name)) entries.push({ name, model: name, cloud: true });

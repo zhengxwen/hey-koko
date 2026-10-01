@@ -103,7 +103,9 @@ const server = http.createServer((req, res) => {
         const tags = (await r.json()).models || [];
         let host = "";
         try { host = new URL(config.ollamaUrl).host; } catch { host = config.ollamaUrl; }
-        return tags.filter((m) => m.name).map((m) => ({
+        // Decision models (Ollama System One, e.g. nimble) only answer /v1/systemone
+        // typed questions — never offer them as chat models.
+        return tags.filter((m) => m.name && !(m.capabilities || []).includes("decision")).map((m) => ({
           id: m.name,
           provider: "ollama",
           local: true,
