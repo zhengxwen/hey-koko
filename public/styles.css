@@ -2394,6 +2394,19 @@ button.secondary:disabled {
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent 100%);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent 100%);
 }
+/* The pill is out of flow, so nothing in the bubble makes room for it: the ▲ fold's
+   strip is only 12px tall while the pill is 18px, so it stands up into the last line of
+   the message. The strip GROWS UPWARD to make room — it is in flow, so a taller one
+   pushes the text up, while `align-items: flex-end` keeps the ▲ glyph itself exactly
+   where it was. That is what keeps the two controls on ONE ROW. Padding the bubble
+   instead would move its floor (and the pill with it) away from the ▲ and split them.
+   Only while the pill is actually showing: folded whole, or open in the editor, the pill
+   is display:none (see below) and a 26px strip would just make that bubble taller for no
+   reason — a folded bubble is supposed to be a sliver. */
+.message.hasMoreToggle:not(.isFolded):not(:has(> .editMessageInput)) > .messageFoldToggle {
+  height: 26px;
+  min-height: 26px;
+}
 /* Bottom-LEFT, sharing the row the ▲ fold strip occupies: the fold is a 12px in-flow
    strip sitting on the bubble's 9px bottom padding, so its band runs 9-21px up from the
    bubble's edge and `bottom: 6px` on an 18px control centres the two on each other.

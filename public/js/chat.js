@@ -4904,9 +4904,13 @@ function applyLengthClamp(item, textEl, msg) {
   // cannot get back — so the flag is only ever cleared by the reader expanding.
   if (textEl.scrollHeight <= CLAMP_PX + CLAMP_SLACK_PX) {
     textEl.classList.remove("isClamped");
+    item.classList.remove("hasMoreToggle");
     if (existing) existing.remove();
     return;
   }
+  // The pill is out of flow, so the bubble has to be told to keep a band free for it
+  // (see .message.hasMoreToggle) — otherwise it lands on the last line of the text.
+  item.classList.add("hasMoreToggle");
   const btn = existing || document.createElement("button");
   const paint = () => {
     const collapsed = !!msg.clamped;
