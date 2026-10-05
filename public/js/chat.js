@@ -86,7 +86,7 @@ function newStreamDiag() {
 // reply is several round trips and the badge is about the whole thing — all the prompt
 // re-reading it cost, and all the writing.
 function newStreamPerf() {
-  return { turnStart: Date.now(), firstAt: 0, prompt: 0, eval: 0, prefillNs: 0, decodeNs: 0, prefillMs: 0, decodeMs: 0 };
+  return { turnStart: Date.now(), firstAt: 0, prompt: 0, eval: 0, prefillNs: 0, decodeNs: 0, prefillMs: 0, decodeMs: 0, wholeMs: 0 };
 }
 
 function notePerfTurn(perf) {   // another request goes out (tool loop)
@@ -111,15 +111,25 @@ function notePerfEnd(perf) {    // this turn's stream is finished
   if (perf.firstAt) { perf.decodeMs += Date.now() - perf.firstAt; perf.firstAt = 0; }
 }
 
+// A turn that was never streamed: one request, one whole answer. There is no first
+// token to split on, so all that can be said is how long the round trip took.
+function notePerfWhole(perf) {
+  perf.wholeMs += Date.now() - perf.turnStart;
+}
+
 function replyPerf(perf) {
   if (!perf.prompt && !perf.eval) return null;
   if (perf.prefillNs || perf.decodeNs) {
     return { prompt: perf.prompt, eval: perf.eval, src: "server",
              prefillMs: Math.round(perf.prefillNs / 1e6), decodeMs: Math.round(perf.decodeNs / 1e6) };
   }
-  // No server timings and nothing was streamed either (a cloud tool-turn comes back in
-  // one piece) — there is no prefill/decode split to be had, so claim none.
-  if (!perf.prefillMs && !perf.decodeMs) return null;
+  // Nothing was streamed (a tool-turn on an OpenAI-shaped backend comes back in one
+  // piece): no first token, so no split. Report the one honest number left — the whole
+  // round trip — rather than nothing, and mark it so it is not read as a decode rate.
+  if (!perf.prefillMs && !perf.decodeMs) {
+    if (!perf.wholeMs) return null;
+    return { prompt: perf.prompt, eval: perf.eval, src: "whole", totalMs: perf.wholeMs };
+  }
   return { prompt: perf.prompt, eval: perf.eval, src: "client",
            prefillMs: perf.prefillMs, decodeMs: Math.max(1, perf.decodeMs) };
 }
@@ -138,11 +148,24 @@ function fmtRate(tokens, ms) {
 function attachPerfBadge(el, perf) {
   const tsEl = el.querySelector(".messageTimestamp");
   if (!tsEl) return;
+  const span = document.createElement("span");
+  span.className = "messagePerf";
+  // Unsplit: one rate for the round trip, under an arrow that points BOTH ways so it
+  // cannot be mistaken for the ↓ decode figure the other bubbles show.
+  if (perf.src === "whole") {
+    const rate = fmtRate(perf.eval, perf.totalMs);
+    if (!rate) return;
+    span.textContent = `⇅${rate} t/s`;
+    span.title = [
+      t("perf_whole", { inTok: perf.prompt, outTok: perf.eval, ms: formatDuration(perf.totalMs), rate }),
+      t("perf_srcWhole"),
+    ].join("\n");
+    tsEl.appendChild(span);
+    return;
+  }
   const inRate = fmtRate(perf.prompt, perf.prefillMs);
   const outRate = fmtRate(perf.eval, perf.decodeMs);
   if (!inRate && !outRate) return;
-  const span = document.createElement("span");
-  span.className = "messagePerf";
   span.textContent = [inRate && `↑${inRate}`, outRate && `↓${outRate}`].filter(Boolean).join(" ") + " t/s";
   span.title = [
     t("perf_prefill", { tok: perf.prompt, ms: formatDuration(perf.prefillMs), rate: inRate || "—" }),
@@ -2987,6 +3010,7 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
       // split is not, and replyPerf drops the badge rather than invent one.
       const whole = await res.json();
       notePerfLine(perf, whole);
+      notePerfWhole(perf);
       return whole.message || {};
     }
 
