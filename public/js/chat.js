@@ -3135,8 +3135,25 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
       if (state.activeTabId === tabId) renderChat();
       showSendError(genError.message);
     }
-  } else if (finalContent) {
-    const reply = { role: "assistant", content: finalContent, timestamp: Date.now(), genMs: Date.now() - genStart };
+  } else {
+    // An agent turn that ends with no text used to produce NOTHING AT ALL — no bubble, no
+    // record of the tools that did run, no reason given. From the outside that is
+    // indistinguishable from the app crashing mid-reply, and it is a state real models
+    // reach easily: after a tool result some of them consider the job done and answer
+    // with an empty message. The plain reply path has always put up a bubble that
+    // explains itself in this case (chat_zonedOut + failInfo); this one now does too, and
+    // keeps the 🔧 steps so you can still see what it did before going quiet.
+    const empty = !finalContent.trim();
+    const reply = { role: "assistant", content: finalContent.trim() || t("chat_zonedOut"),
+                    timestamp: Date.now(), genMs: Date.now() - genStart };
+    if (empty) {
+      // reason "stop" = the turn ended normally; the headline then comes from what is
+      // missing (thought but never answered / produced no tokens at all / tokens but no
+      // text), which is exactly the question to answer here.
+      reply.failInfo = { reason: "stop", empty: true, model: dom.modelSelect.value,
+                         ms: Date.now() - genStart, prompt: perf.prompt, eval: perf.eval,
+                         thinkChars: thinkingContent.length };
+    }
     const perfInfo = replyPerf(perf);
     if (perfInfo) reply.perf = perfInfo;
     if (toolSteps.length) reply.toolSteps = toolSteps;
