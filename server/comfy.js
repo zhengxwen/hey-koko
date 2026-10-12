@@ -682,6 +682,11 @@ function cameraPrompt(opts) {
 // numbers (2509/2511/2512) cannot match, and the trailing guard keeps a future 2.10 out.
 const QWEN21_SRC = "qwen.?image.?2[._-]?1(?![0-9])";
 const QWEN21_RE = new RegExp(QWEN21_SRC, "i");
+// The 8-step distilled build of the same model (2026-10-09). Same encoder, same VAE, same
+// graph — only the schedule differs, so it rides buildQwenImage21 and needs no builder of
+// its own. It is a DIFFERENT checkpoint though, not a quantisation of the base one, so it
+// carries its own id and its own preset.
+const QWEN21_TURBO_RE = new RegExp(`${QWEN21_SRC}.*turbo|turbo.*${QWEN21_SRC}`, "i");
 const QWEN_VAE_RE = new RegExp(`^(?!.*layered)(?!.*${QWEN21_SRC}).*(qwen.*image.*vae|qwen[-_]?image|qwen.*vae)`, "i");
 
 // The Qwen2.5-VL-7B encoder that the original Qwen-Image family (base, edit, 2509/2511/
@@ -1819,6 +1824,10 @@ function isModelReady(name, group, type) {
   // what this flag is for.
   if (QWEN_ROUTES.has(type)) return false;
   if (/qwen.*(2511|2512)/i.test(name)) return false;
+  // The distilled build, verified on the 5090 the day it was installed (2026-10-12):
+  // 1024² in 1.9 s warm, transparency intact (76 % clear pixels), and an edit that lands at
+  // cfg 1 — cleaner than the base checkpoint's, which also carries an over-sharpened look
+  // this one does not.
   // Qwen-Image-2.1 — verified live on the 5090 (ComfyUI 0.37.0, int8_convrot, 2026-09-22):
   // text→image at 1024² in ~6 s warm (24 s cold) with the handwriting in the prompt spelled
   // correctly, a transparent sticker that really is 75 % clear pixels, and an edit that puts
@@ -2654,6 +2663,13 @@ function familyPreset(model) {
   // hand it 20 steps at cfg 4. `sd3Latent` is moot (buildQwenImage21 builds its own
   // latent), so it states the truth: this is neither a 16-channel SD3 grid nor a 4-channel
   // SD1.5 one.
+  // The distilled build: 8 steps, and the sigmas baked into the weights approximate
+  // ComfyUI's linear_quadratic — upstream says other schedules are untested, so this one is
+  // part of the recipe rather than a preference. Ahead of the base 2.1 line, which would
+  // hand it the 25-step schedule the distillation exists to replace.
+  if (QWEN21_TURBO_RE.test(model)) {
+    return { sampler: "euler", scheduler: "linear_quadratic", cfg: 1, guidance: null, steps: 8, sd3Latent: false };
+  }
   if (QWEN21_RE.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: null, steps: 25, sd3Latent: false };
   }
@@ -2908,8 +2924,15 @@ function qwen21RgbaPrompt(prompt) {
 // intact; cfg 4 applies it harder and starts moving things that were not asked about.
 // So: guide for real when there are references, unless the user pinned a value in ⚙.
 // The negative prompt becomes live at the same moment (at cfg 1 it reaches nothing).
-function qwen21Cfg(cfg, opts, edit) {
+function qwen21Cfg(cfg, opts, edit, model) {
   if (!edit || (opts && opts.cfg != null)) return cfg;
+  // ...except on the distilled build, which does not need it: verified on the 5090
+  // (2026-10-12), turbo puts the cat on the chair at cfg 1 — the thing the base checkpoint
+  // refuses to do without guidance — and does it in 5.5 s instead of 15. Guiding it anyway
+  // is not destructive (cfg 2.5 renders fine, with a larger, more literal edit), it just
+  // doubles the model evaluations for an edit that already applied, so ⚙ keeps the choice
+  // and the default stays at the recipe's own value.
+  if (QWEN21_TURBO_RE.test(model || "")) return cfg;
   return { ...cfg, cfg: 2.5 };
 }
 
@@ -10128,7 +10151,7 @@ async function generateComfyImage(req, res) {
         workflow = buildQwenImage21({
           model, prompt: opts.qwen21Rgba ? qwen21RgbaPrompt(prompt) : prompt,
           negative: negative_prompt || "", width, height, seed,
-          cfg: qwen21Cfg(cfg, opts, isImg2Img), comp, imageNames,
+          cfg: qwen21Cfg(cfg, opts, isImg2Img, model), comp, imageNames,
           refResolution: qwen21RefResolution(opts),
           cacheDevice: opts.qwen21Cache, cacheDtype: opts.qwen21CacheDtype,
           // An edit samples on the reference's own grid unless the user asked for a size;

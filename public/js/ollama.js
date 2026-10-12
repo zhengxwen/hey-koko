@@ -1259,6 +1259,7 @@ function comfyModelHint(name) {
   if (/hidream.?i1/.test(n)) return t("oll_hint_hidreamI1");
   if (/z.?image/.test(n)) return t("oll_hint_zImage");
   if (/boogu/.test(n)) return /turbo/.test(n) ? t("oll_hint_booguTurbo") : t("oll_hint_booguBase");
+  if (/qwen.?image.?2[._-]?1(?![0-9]).*turbo/.test(n)) return t("oll_hint_qwen21turbo");
   // 2.1 before the base line: it matches the same pattern and is a different model.
   if (/qwen.?image.?2[._-]?1(?![0-9])/.test(n)) return t("oll_hint_qwen21");
   if (/qwen.?image/.test(n)) return t("oll_hint_qwenImage");
@@ -1624,6 +1625,8 @@ function comfyModelComponents(name) {
   if (/hidream.?e1/.test(n)) return "HiDream-E1 · UNETLoader · QuadrupleCLIPLoader · VAE ae · ModelSamplingSD3 · VAEEncode · KSampler";
   // txt2img
   if (/hidream.?i1/.test(n)) return "HiDream-I1 · UNETLoader · QuadrupleCLIPLoader · VAE ae · ModelSamplingSD3 · KSampler";
+  // The distilled build, ahead of the 2.1 line that matches it too.
+  if (/qwen.?image.?2[._-]?1(?![0-9]).*turbo/.test(n)) return "Qwen-Image-2.1 Turbo · UNETLoader · CLIP qwen3-vl-8b(qwen_image) · VAE qwen_image_2.1 (RGBA) · TextEncodeQwenImage21 (up to 10 references, <image1>…) · KSampler 8-step euler/linear_quadratic at cfg 1 (distilled — do not raise cfg)";
   // Qwen-Image-2.1 — a different architecture under the same family name, and it edits from
   // this same entry when pictures are attached. Ahead of the base line below, which would
   // otherwise claim it and describe the wrong encoder, VAE and schedule.

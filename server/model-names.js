@@ -204,6 +204,11 @@ const FILE_ID_RULES = [
   // 2.1 is a separate architecture, not a build of the original — it must never fold into
   // the "qwen-image" id, or the precision menu would present it as that model's bf16
   // variant. Ahead of the bare /qwen.?image/ rule, which would otherwise claim it.
+  // The 8-step distilled build is DIFFERENT WEIGHTS, not a quantisation of the base one —
+  // without its own rule it folds into "qwen-image-2.1" and the menu presents it as that
+  // model's bf16/int8 variant (the same mistake boogu-base/boogu-turbo avoid by having two
+  // ids). Ahead of the plain 2.1 rule, which matches it too.
+  [/qwen.?image.?2[._-]?1(?![0-9]).*turbo|turbo.*qwen.?image.?2[._-]?1(?![0-9])/, "qwen-image-2.1-turbo"],
   [/qwen.?image.?2[._-]?1(?![0-9])/, "qwen-image-2.1"],
   [/qwen.?image/, "qwen-image"],
   [/omnigen/, "omnigen2"],
@@ -335,6 +340,7 @@ const ID_LABELS = {
   "boogu-edit": "Boogu Edit",
   "qwen-image": "Qwen-Image",
   "qwen-image-2.1": "Qwen-Image-2.1",
+  "qwen-image-2.1-turbo": "Qwen-Image-2.1 Turbo (8-step)",
   "qwen-image-edit": "Qwen-Image-Edit 2509",
   "qwen-image-edit-2511": "Qwen-Image-Edit 2511",
   "qwen-image-2512": "Qwen-Image 2512",
@@ -378,6 +384,7 @@ const ID_MAX_SIZE = [
   // Qwen-Image-2.1's model card publishes a table of native resolutions, all about 4 MP;
   // 1:1 is the square one. Its widest entry is 2752x1536 (16:9), so a --size max at a
   // non-square aspect is still inside what the card documents.
+  // Both builds publish the same resolution table (the turbo card repeats it verbatim).
   [/^qwen-image-2\.1/, "2048x2048"],
 ];
 
