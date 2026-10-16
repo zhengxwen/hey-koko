@@ -3728,6 +3728,7 @@ button.secondary:disabled {
 .messageGenTime {
   margin-left: 8px;
   font-variant-numeric: tabular-nums;
+  cursor: help;
 }
 
 /* Prefill / decode rates, third on the timestamp row. Quieter than the clock next to it:
@@ -3737,6 +3738,26 @@ button.secondary:disabled {
   font-variant-numeric: tabular-nums;
   opacity: 0.65;
   cursor: help;
+}
+
+/* The model name, last on the row. Clipped rather than wrapped: a long tag
+   ("qwen3-coder-30b-a3b-instruct-q4_K_M") would otherwise push a second line into the
+   bubble's header for information nobody reads twice. Full name in the tooltip. */
+.messageModelTag {
+  display: inline-block;
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  margin-left: 8px;
+  opacity: 0.55;
+  cursor: help;
+}
+/* Following the speeds, the "·" is the gap — a second 8px on top of it reads as a new
+   group rather than a continuation. */
+.messageModelTag.isAfterPerf {
+  margin-left: 4px;
 }
 
 .editMessageInput {

@@ -235,6 +235,10 @@ if (dom.sendTimeToggle) {
   dom.sendTimeToggle.addEventListener("change", saveCurrentSettings);
 }
 if (dom.toolsToggle) dom.toolsToggle.addEventListener("change", () => { saveCurrentSettings(); refreshToolsConfigBtn(); });
+// Turning it off stops RECORDING from the next reply on; bubbles that already carry the
+// figures keep showing them, because the measurement cannot be taken again and hiding
+// it would look like the data was lost.
+if (dom.recordStatsToggle) dom.recordStatsToggle.addEventListener("change", saveCurrentSettings);
 // Per-tool choices live in their own dialog; the button shows the enabled count.
 if (dom.toolsConfigBtn) {
   dom.toolsConfigBtn.addEventListener("click", openToolsDialog);

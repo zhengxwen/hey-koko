@@ -155,6 +155,7 @@ export function initArchive() {
       if (msg.failInfo) m.failInfo = msg.failInfo;                    // what the stream reported when a reply failed
       if (msg.clamped) m.clamped = true;                              // bubble was left shortened ("show less")
       if (msg.perf) m.perf = msg.perf;                                // prefill / decode speeds
+      if (msg.replyModel) m.replyModel = msg.replyModel;             // which model wrote it
       // User text highlights / annotations — round-trip so retrieval restores them.
       if (msg.highlights && msg.highlights.length) m.highlights = msg.highlights;
       return m;

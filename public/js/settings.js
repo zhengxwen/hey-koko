@@ -155,6 +155,7 @@ export function saveCurrentSettings() {
       showThinking: dom.showThinkingCheckbox?.checked || false,
       sendTime: dom.sendTimeToggle?.checked ?? true,
       tools: dom.toolsToggle?.checked || false,
+      recordStats: dom.recordStatsToggle?.checked ?? true,
       disabledTools: state.disabledTools || [],
       numCtx: dom.numCtxSelect?.value || "32768",
       llmMaxImages: dom.llmMaxImages?.value || "",
@@ -186,6 +187,7 @@ function saveChatMessage(message) {
   // Prefill / decode speeds — measured once, so they have to be kept or the badge
   // would vanish on reload (and there is no way to re-measure a past reply).
   if (message.perf) stored.perf = message.perf;
+  if (message.replyModel) stored.replyModel = message.replyModel;
   stored.content = message.content;
   if (message.folded) stored.folded = true;
   // "Show less" — a reading state, but a persisted one: a wall of text you have
@@ -463,6 +465,9 @@ export function loadSavedSettings() {
   if (dom.sendTimeToggle) dom.sendTimeToggle.checked = savedSettings.sendTime !== undefined ? !!savedSettings.sendTime : true;
   // Tool calling defaults to ON; respect an explicit saved off-choice.
   if (dom.toolsToggle) dom.toolsToggle.checked = savedSettings.tools !== undefined ? !!savedSettings.tools : true;
+  // Defaults ON: the badge was there before the switch existed, and a fresh install
+  // showing nothing would look like the feature is broken.
+  if (dom.recordStatsToggle) dom.recordStatsToggle.checked = savedSettings.recordStats !== undefined ? !!savedSettings.recordStats : true;
   // Per-tool opt-outs (tools dialog). Profiles saved before the dialog only had the
   // library / co-browsing sub-toggles — carry an explicit off-choice over.
   // The co-browsing tools were once named list_browser_tabs / read_browser_page.

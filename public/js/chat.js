@@ -117,6 +117,13 @@ function notePerfWhole(perf) {
   perf.wholeMs += Date.now() - perf.turnStart;
 }
 
+// ⚙ More → "Record reply speed and model". Defaults ON when the element is missing (older
+// saved settings, or a stripped-down page): the badge predates the switch, so silence
+// would read as a broken feature rather than a choice. It gates RECORDING, not display —
+// a bubble that already carries the figures keeps them, because a past reply cannot be
+// measured again and blanking it would look like data loss.
+function recordStatsOn() { return dom.recordStatsToggle?.checked ?? true; }
+
 function replyPerf(perf) {
   if (!perf.prompt && !perf.eval) return null;
   if (perf.prefillNs || perf.decodeNs) {
@@ -145,6 +152,30 @@ function fmtRate(tokens, ms) {
 // — the same arrows the rest of this app uses for that direction. Everything that would
 // need explaining (token counts, the two durations, and whether the numbers are the
 // server's own or timed here) lives in the tooltip, so the row stays one glance wide.
+// Only the noise comes off: a registry/org prefix ("library/qwen3") and Ollama's default
+// ":latest" tag, neither of which distinguishes one bubble from another. Everything that
+// DOES — the size, the variant, the quantisation — stays, because that is the whole
+// reason to put the name on screen. The untouched name is in the tooltip either way.
+function shortModelName(model) {
+  return String(model || "").replace(/^[^/]+\//, "").replace(/:latest$/i, "");
+}
+
+// Sits right after the speeds, separated by a "·", so the row reads as one run of facts
+// about this reply rather than three unrelated chips. On its own (speeds not recorded, or
+// none to be had) it stands alone, without a dangling separator.
+function attachModelBadge(el, model) {
+  const tsEl = el.querySelector(".messageTimestamp");
+  if (!tsEl) return;
+  const short = shortModelName(model);
+  if (!short) return;
+  const span = document.createElement("span");
+  const afterPerf = !!tsEl.querySelector(".messagePerf");
+  span.className = afterPerf ? "messageModelTag isAfterPerf" : "messageModelTag";
+  span.textContent = afterPerf ? `· ${short}` : short;
+  span.title = t("perf_modelTip", { model });
+  tsEl.appendChild(span);
+}
+
 function attachPerfBadge(el, perf) {
   const tsEl = el.querySelector(".messageTimestamp");
   if (!tsEl) return;
@@ -2177,6 +2208,8 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
   const perf = newStreamPerf();
   let aborted = false;
   const genStart = Date.now();
+  // Read now, not at reply time: the dropdown can be changed while the answer streams.
+  const replyModel = dom.modelSelect.value;
   const showThinking = dom.showThinkingCheckbox?.checked || false;
   try {
     const fetchBody = {
@@ -2330,8 +2363,9 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
     content = content.trim() || t("chat_zonedOut");
     state.streamingInfo = null;
     const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart };
-    const perfInfo = replyPerf(perf);
+    const perfInfo = recordStatsOn() ? replyPerf(perf) : null;
     if (perfInfo) reply.perf = perfInfo;
+    if (recordStatsOn() && replyModel) reply.replyModel = replyModel;
     if (thinkingContent) reply.thinking = thinkingContent;
     if (cutReason) reply.cutOff = cutReason;
     if (failInfo) reply.failInfo = failInfo;
@@ -2350,8 +2384,9 @@ async function isolatedReply(userContent, mode, tab, tabId, insertIndex) {
       aborted = true;
       if (content.trim()) {
         const reply = { role: "assistant", content: content.trim(), timestamp: Date.now(), genMs: Date.now() - genStart };
-        const perfInfo = replyPerf(perf);
+        const perfInfo = recordStatsOn() ? replyPerf(perf) : null;
         if (perfInfo) reply.perf = perfInfo;
+        if (recordStatsOn() && replyModel) reply.replyModel = replyModel;
         if (thinkingContent) reply.thinking = thinkingContent;
         if (cutReason) reply.cutOff = cutReason;
         if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
@@ -2423,6 +2458,8 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
   const perf = newStreamPerf();
   let aborted = false;
   const genStart = Date.now();
+  // Read now, not at reply time: the dropdown can be changed while the answer streams.
+  const replyModel = dom.modelSelect.value;
   const showThinking = dom.showThinkingCheckbox?.checked || false;
 
   try {
@@ -2591,8 +2628,9 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
       if (md) md.innerHTML = markdownToHtml(content);
     }
     const reply = { role: "assistant", content, timestamp: Date.now(), genMs: Date.now() - genStart, ...replyMeta };
-    const perfInfo = replyPerf(perf);
+    const perfInfo = recordStatsOn() ? replyPerf(perf) : null;
     if (perfInfo) reply.perf = perfInfo;
+    if (recordStatsOn() && replyModel) reply.replyModel = replyModel;
     if (thinkingContent) reply.thinking = thinkingContent;
     if (cutReason) reply.cutOff = cutReason;
     if (failInfo) reply.failInfo = failInfo;
@@ -2635,8 +2673,9 @@ export async function regenerateReply(tabId = state.activeTabId, insertIndex = -
           if (md) md.innerHTML = markdownToHtml(content);
         }
         const reply = { role: "assistant", content: content.trim(), timestamp: Date.now(), genMs: Date.now() - genStart, ...replyMeta };
-        const perfInfo = replyPerf(perf);
+        const perfInfo = recordStatsOn() ? replyPerf(perf) : null;
         if (perfInfo) reply.perf = perfInfo;
+        if (recordStatsOn() && replyModel) reply.replyModel = replyModel;
         if (thinkingContent) reply.thinking = thinkingContent;
         if (cutReason) reply.cutOff = cutReason;
         if (insertIndex >= 0 && insertIndex <= tab.messages.length) {
@@ -2979,6 +3018,8 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
   let forceText = false;
   let genError = null;
   const perf = newStreamPerf();
+  // Read now: the tool loop is several round trips and the dropdown can move under it.
+  const replyModel = dom.modelSelect.value;
 
   // Run one agent turn and return an Ollama-shaped message {content, thinking,
   // tool_calls}. LOCAL Ollama streams (stream:true) so text + thinking appear
@@ -3150,12 +3191,13 @@ export async function agenticReply(tabId = state.activeTabId, insertIndex = -1, 
       // reason "stop" = the turn ended normally; the headline then comes from what is
       // missing (thought but never answered / produced no tokens at all / tokens but no
       // text), which is exactly the question to answer here.
-      reply.failInfo = { reason: "stop", empty: true, model: dom.modelSelect.value,
+      reply.failInfo = { reason: "stop", empty: true, model: replyModel,
                          ms: Date.now() - genStart, prompt: perf.prompt, eval: perf.eval,
                          thinkChars: thinkingContent.length };
     }
-    const perfInfo = replyPerf(perf);
+    const perfInfo = recordStatsOn() ? replyPerf(perf) : null;
     if (perfInfo) reply.perf = perfInfo;
+    if (recordStatsOn() && replyModel) reply.replyModel = replyModel;
     if (toolSteps.length) reply.toolSteps = toolSteps;
     if (thinkingContent) reply.thinking = thinkingContent;
     if (insertIndex >= 0 && insertIndex <= tab.messages.length) tab.messages.splice(insertIndex, 0, reply);
@@ -5986,12 +6028,19 @@ export function renderChat() {
       if (tsEl) {
         const genEl = document.createElement("span");
         genEl.className = "messageGenTime";
-        genEl.textContent = `⏱ ${t("msg_genTime", { time: formatDuration(message.genMs) })}`;
+        // Bare duration: the ⏱ already says what it is, and "Generated in" / "用时" was a
+        // word of prose in the middle of a row of figures. The sentence lives in the
+        // tooltip, which is also where the ↑↓ and the model name keep theirs.
+        genEl.textContent = `⏱ ${formatDuration(message.genMs)}`;
+        genEl.title = t("msg_genTime", { time: formatDuration(message.genMs) });
         tsEl.appendChild(genEl);
       }
     }
     // …and how fast, split into reading the prompt and writing the answer.
     if (el && message.role === "assistant" && message.perf) attachPerfBadge(el, message.perf);
+    // …and which model wrote it. Last on the row because it is the longest and the least
+    // glanced at: the clock and the rates stay in the same place whether or not it is on.
+    if (el && message.role === "assistant" && message.replyModel) attachModelBadge(el, message.replyModel);
     if (message.isCompactSummary && el) {
       el.classList.add("compactSummary");
     }

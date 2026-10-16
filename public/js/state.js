@@ -212,6 +212,7 @@ export const dom = {
   showThinkingCheckbox: document.querySelector("#showThinking"),
   sendTimeToggle: document.querySelector("#sendTime"),
   toolsToggle: document.querySelector("#toolsToggle"),
+  recordStatsToggle: document.querySelector("#recordStatsToggle"),
   toolsConfigBtn: document.querySelector("#toolsConfigBtn"),
   numCtxSelect: document.querySelector("#numCtxSelect"),
   numCtxDisplay: document.querySelector("#numCtxDisplay"),
