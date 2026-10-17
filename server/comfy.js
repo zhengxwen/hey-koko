@@ -18,6 +18,7 @@ const {
 } = require("./model-names");
 const { synthToWav } = require("./tts"); // InfiniteTalk "photo speaks": prompt → local TTS → speech track
 const gallery = require("./gallery"); // every finished artifact is teed to disk before it goes back
+const { modelDataFile } = require("./model-data"); // third-party model data (e.g. FLUX 3 upsampler prompts), fetched on demand
 
 // Sniff the container from the first base64 characters — ComfyUI hands back raw
 // base64 with no mime, and the gallery names files by extension.
@@ -688,6 +689,21 @@ const QWEN21_RE = new RegExp(QWEN21_SRC, "i");
 // carries its own id and its own preset.
 const QWEN21_TURBO_RE = new RegExp(`${QWEN21_SRC}.*turbo|turbo.*${QWEN21_SRC}`, "i");
 const QWEN_VAE_RE = new RegExp(`^(?!.*layered)(?!.*${QWEN21_SRC}).*(qwen.*image.*vae|qwen[-_]?image|qwen.*vae)`, "i");
+
+// FLUX 3 Image Klein (Black Forest Labs, 2026-10). A 5.6B DiT with a Qwen3-VL-4B text
+// encoder and the FLUX.2 VAE; one checkpoint does text→image and editing against up to
+// 10 references. Two checkpoints, each in bf16 / int8-convrot / nvfp4: the distilled one
+// (16 steps, no CFG — a flow map) and "-base-" (50 steps at cfg 4, for LoRA training).
+// Different weights, so different ids and presets, but one builder.
+// Needs ComfyUI >= 0.41 (ReferenceMultiLatent, CLIPLoader type "flux3").
+const FLUX3_RE = /flux.?3.*klein/i;
+const FLUX3_BASE_RE = /flux.?3.*klein.*base/i;
+// BFL's two companions, by the names BFL publishes. Both are matched by FAMILY + SIZE,
+// never by a bare /qwen3/: this box also carries qwen3vl_4b_fp8_scaled (Krea-2's), the
+// 8B (boogu) and 32B (H3) Qwen3-VLs, and qwen_3_4b (Z-Image) — and the upsampler's own
+// name begins "qwen3.5", which sorts ahead of all of them.
+const FLUX3_CLIP_RE = /qwen3vl[-_]?4b[-_]?(bf16|int8[-_]convrot)/i;
+const FLUX3_PUP_RE = /qwen3\.?5.*flux3.*upsampler/i;
 
 // The Qwen2.5-VL-7B encoder that the original Qwen-Image family (base, edit, 2509/2511/
 // 2512, and every control route) was trained against. The fallback stays inside the 2.5
@@ -1695,7 +1711,7 @@ function capsFor(name, group, type, entry) {
   if (name === BERNINI_IMG_EDIT || name === BERNINI_IMG_SUBJECT) return ["edit"];
   // HiDream-O1 and Qwen-Image-2.1 are both "one checkpoint, two jobs": listed with the
   // txt2img models, and editing whatever is attached instead of ignoring it.
-  if (group === "image") return (/hidream.?o1/i.test(name) || QWEN21_RE.test(name)) ? ["image", "edit"] : ["image"];
+  if (group === "image") return (/hidream.?o1/i.test(name) || QWEN21_RE.test(name) || FLUX3_RE.test(name)) ? ["image", "edit"] : ["image"];
   if (group === "edit") return ["edit"];
   // video: a source-video model is v2v; bernini also accepts a plain image (i2v).
   if (name === LTX_UNION) return ["v2v", "audio"]; // depth-driven; LTX decodes a soundtrack
@@ -1738,6 +1754,7 @@ function capsFor(name, group, type, entry) {
 function imageRank(n) {
   if (n === BERNINI_T2I) return 9; // after the dedicated txt2img models
   if (n === PANO_T2I) return 10; // last: a recipe, not a checkpoint
+  if (FLUX3_RE.test(n)) return 1.5; // tested before the generic /flux/ (Flux.1) line, which matches it too
   if (/flux/i.test(n)) return 1;
   if (/pony/i.test(n)) return 2;
   if (/hidream.?i1/i.test(n)) return 3;
@@ -1906,6 +1923,16 @@ function isModelReady(name, group, type) {
     // transferring a reference's palette and shading onto a different subject. The
     // style-reference sentinel is covered by this same pattern.
     /krea2/,
+    // FLUX 3 Klein — verified on the Spark (ComfyUI 0.41.3, int8, 2026-10-17), both
+    // checkpoints, upsampler on: distilled t2i 18 s warm (7 s with the upsampler off — it
+    // costs ~11 s), a Chinese prompt rendered faithfully (the upsampler writes English),
+    // a one-reference edit that added the asked-for scarf and left the scene untouched
+    // (30 s); base t2i 50 s, base edit 113 s at cfg 4 — and at the Comfy-Org template's
+    // cfg 1 the same edit came back as a faint smudge, which is why the base preset guides.
+    // Also verified on the 5090 (Comfy Desktop, ComfyUI 0.41.0, bf16-only stack): distilled
+    // t2i 9 s warm (4 s upsampler off), edit 15 s, base 27 s / base edit 45 s, layout boxes
+    // placed exactly, a 2048×1536 edit kept at its own size in 35 s.
+    /flux.?3.*klein/,
     /omnigen/, /pix2pix|instruct.?pix/,              // instruction edit
     /animate/,                                        // animate MOVE (base unet)
     /scail/,                                          // scail replace (base unet)
@@ -2267,6 +2294,17 @@ async function proxyComfyModels(req, res) {
     // style-reference route is a sentinel, added to editModels below), but the same guard
     // on every sibling list is what keeps that true when a new edit pattern is added.
     const krea2 = all.filter((n) => KREA2_RE.test(n) && !editTypeOf(n));
+    // FLUX 3 Klein — listed with the txt2img models, and it EDITS when pictures are attached
+    // (up to 10 references), like Qwen-Image-2.1. Offered only when its encoder and VAE are
+    // on disk AND the box runs a ComfyUI that knows the architecture (CLIPLoader type
+    // "flux3" arrived in 0.41 with the model): on an older box the files load as nothing and
+    // the run fails deep in the graph. The upsampler is not part of the gate — ⚙ can turn it
+    // off, and a run that wants it and lacks it says so by name.
+    const flux3Files = all.filter((n) => FLUX3_RE.test(n) && !editTypeOf(n));
+    const flux3 = (flux3Files.length && clips.some((n) => FLUX3_CLIP_RE.test(n))
+      && vaes.some((n) => /flux2.?vae/i.test(n))
+      && (await comfyEnum("CLIPLoader", "type")).includes("flux3"))
+      ? flux3Files : [];
     // Krea-2 style reference: the same weights as the txt2img entry, so it is offered only
     // when BOTH the checkpoint and the ostris style-reference LoRA are installed — that
     // LoRA is what the route IS (without it this would be a plain generation that ignores
@@ -2367,7 +2405,7 @@ async function proxyComfyModels(req, res) {
     // REAL file — a saved choice must keep resolving, and generateComfyImage re-applies
     // the ⚙ preference to whatever name it receives — so the fix is to hide the token in
     // the frontend's OPTION TEXT, not to invent a fake value here.
-    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage, ...qwen21, ...krea2], (n) => n, null);
+    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage, ...qwen21, ...krea2, ...flux3], (n) => n, null);
     // The image entries that stand for a COLLAPSED group, so the frontend can drop the
     // precision token from their option text. It can't work this out for itself — it
     // only ever sees the surviving representative, never the siblings it stands for.
@@ -2552,8 +2590,8 @@ async function editCompanions(editType, model) {
   }
   if (editType === "boogu-edit") {
     // Same companions as boogu txt2img: qwen3vl encoder (CLIPLoader type "boogu")
-    // + the flux VAE.
-    const clip = find(clips, /qwen3vl/i) || find(clips, /qwen.*vl.*8b/i);
+    // + the flux VAE. The 8B rule is shared with boogiCompanions (see there).
+    const clip = booguClip(clips);
     const vae = find(vaes, /flux1?_?vae/i) || find(vaes, /flux/i);
     const missing = [];
     if (!clip) missing.push("qwen3vl_8b_fp8_scaled.safetensors → text_encoders/");
@@ -2678,6 +2716,18 @@ function familyPreset(model) {
   }
   if (/qwen.?image/i.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 4, guidance: null, steps: 20, sd3Latent: true };
+  }
+  // FLUX 3 Klein — BFL's own numbers (their reference pipeline's MODELS table and the
+  // KSampler titles in the workflows they ship): base 50 steps at cfg 4 (the model card's
+  // table says 3.5; the code and the workflows both say 4), distilled 16 steps with no CFG
+  // — it is a flow map, and BFL's generate() refuses any other guidance for it. euler /
+  // simple in both. Ahead of the generic /flux/ line, which would hand it Flux.1's
+  // FluxGuidance recipe. `guidance` stays null: FLUX 3 has no guidance embedding.
+  if (FLUX3_BASE_RE.test(model)) {
+    return { sampler: "euler", scheduler: "simple", cfg: 4, guidance: null, steps: 50, sd3Latent: false };
+  }
+  if (FLUX3_RE.test(model)) {
+    return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: null, steps: 16, sd3Latent: false };
   }
   if (/flux/i.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: 3.5, steps: 20, sd3Latent: true };
@@ -3027,6 +3077,218 @@ function buildQwenImage21({ model, prompt, negative, width, height, seed, cfg, c
   return wf;
 }
 
+// FLUX 3 Klein's companions, chosen to MATCH the tier of the DiT that will load — "@bf16"
+// means the whole stack at bf16, not a bf16 DiT behind an int8 encoder. Each list falls
+// back down the order when the matching build is not installed (the 5090 carries the bf16
+// files only). The upsampler order for int8 starts at int8_convrot because that is the
+// build BFL's model card names as the one to use; nvfp4 is the speed tier, so it takes the
+// smallest upsampler (w4a8 — weights 4-bit, activations 8-bit, not a token
+// precisionOf knows).
+async function flux3Companions(model, wantPup) {
+  const [clips, vaes] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+  ]);
+  const tierOf = (n) => (/w4a8/i.test(n) ? "w4a8" : precisionOf(n));
+  const pick = (list, order) => {
+    for (const t of order) { const hit = list.find((n) => tierOf(n) === t); if (hit) return hit; }
+    return list[0] || null;
+  };
+  const tier = precisionOf(model);
+  const clip = pick(clips.filter((n) => FLUX3_CLIP_RE.test(n)), tier === "bf16" ? ["bf16", "int8"] : ["int8", "bf16"]);
+  const pupOrder = tier === "bf16" ? ["bf16", "int8", "w4a8"] : tier === "nvfp4" ? ["w4a8", "int8", "bf16"] : ["int8", "w4a8", "bf16"];
+  const pup = wantPup ? pick(clips.filter((n) => FLUX3_PUP_RE.test(n)), pupOrder) : null;
+  const vae = vaes.find((n) => /flux2.?vae/i.test(n));
+  const missing = [];
+  if (!clip) missing.push("qwen3vl_4b_int8_convrot.safetensors (or _bf16) → text_encoders/");
+  if (!vae) missing.push("flux2-vae.safetensors → vae/");
+  if (wantPup && !pup) missing.push("qwen3.5_9b_flux3_prompt_upsampler_int8_convrot.safetensors → text_encoders/ (or turn off \"Prompt upsampler\" in ⚙ to send your prompt as typed)");
+  if (missing.length) throw new Error("Missing files required by FLUX 3 Klein:\n- " + missing.join("\n- "));
+  // The four system prompts the upsampler was fine-tuned against — BFL's Apache-2.0
+  // system_prompts.json, pinned in server/model-data-manifest.json and downloaded to this
+  // machine the first time it is needed (12 KB, once). Not bundled: third-party text.
+  let pupPrompts = null;
+  if (pup) {
+    try {
+      pupPrompts = JSON.parse((await modelDataFile("flux3-pup", "system_prompts.json")).toString("utf8"));
+    } catch (err) {
+      throw new Error(`FLUX 3's prompt upsampler needs its system prompts (BFL, Apache-2.0, 12 KB), which are downloaded once from Hugging Face — that failed: ${err.message}. Connect this machine to the internet once (or run "node scripts/fetch-model-data.js"), or turn off "Prompt upsampler" in ⚙ to send your prompt as typed.`);
+    }
+  }
+  return { clip, vae, pup, pupPrompts };
+}
+
+// ── FLUX 3 layout boxes ──────────────────────────────────────────────────────
+// The request carries boxes as { x0, y0, x1, y1, desc } in 0-1 canvas fractions (left-top
+// origin) — what `--box` and the ⚙ 🔲 painter both produce. BFL's model reads rows
+// { id, bbox: [y_min, x_min, y_max, x_max] on a 0-1000 grid, desc } — the exact row the
+// ComfyUI node Flux3LayoutPrompt emits, ids obj_1… in drawing order. Validated here as
+// well as in the parsers: `--opt boxes=…` and the CLI's JSON reach this unchecked.
+const FLUX3_MAX_BOXES = 20;
+function flux3BoxRows(boxes) {
+  if (boxes === undefined || boxes === null) return null;
+  if (!Array.isArray(boxes)) throw new Error("boxes must be a list of { x0, y0, x1, y1, desc }");
+  if (boxes.length > FLUX3_MAX_BOXES) throw new Error(`at most ${FLUX3_MAX_BOXES} layout boxes`);
+  const g = (v) => Math.round(Math.max(0, Math.min(1, Number(v))) * 1000);
+  const rows = boxes.map((b, i) => {
+    const [x0, y0, x1, y1] = [b && b.x0, b && b.y0, b && b.x1, b && b.y1].map(Number);
+    if (![x0, y0, x1, y1].every(Number.isFinite) || !(x1 > x0 && y1 > y0)) {
+      throw new Error(`layout box ${i + 1} is not a rectangle inside the 0-1 canvas (x0<x1, y0<y1)`);
+    }
+    return { id: `obj_${i + 1}`, bbox: [g(y0), g(x0), g(y1), g(x1)], desc: String((b && b.desc) || "").trim() };
+  });
+  return rows.length ? rows : null;
+}
+// json.dumps(rows, ensure_ascii=False) byte for byte — ", " and ": " separators, as the
+// Python node and BFL's pipeline write the table the model was trained to read.
+function pyJson(v) {
+  if (Array.isArray(v)) return `[${v.map(pyJson).join(", ")}]`;
+  if (v && typeof v === "object") return `{${Object.entries(v).map(([k, x]) => `${JSON.stringify(k)}: ${pyJson(x)}`).join(", ")}}`;
+  return JSON.stringify(v);
+}
+
+const FLUX3_MAX_REFS = 10;
+// BFL's reference pipeline (flux3/pipeline.py) samples with alpha = 16 — the timestep
+// shift, exp(mu) of the flux time shift — and so do the workflows BFL ships, each with a
+// ModelSamplingFlux whose max and base shift are both ln(alpha). ComfyUI's own default for
+// the architecture is the model's REFERENCE 6.93 (supported_models.Flux3), so leaving the
+// node out would run a different schedule from the one BFL publishes. `--opt flux3Alpha=N`
+// overrides it for experiments.
+const FLUX3_ALPHA = 16;
+
+// Output canvas of an edit when no size was asked for — BFL's own rule (pipeline.py
+// reference_canvas): the first reference's own size, shrunk (never enlarged) to at most
+// 4 MiB of pixels and 4096 px a side, at least 64, on the 16-px grid the latent needs.
+// A phone photo therefore comes back at ~4 MP, which costs about 4x a 1 MP render; that
+// is the trade BFL makes for edits that keep the source's detail ("pixel-perfect").
+const FLUX3_EDIT_MAX_PIXELS = 4 * 1024 * 1024;
+function flux3EditCanvas(dims) {
+  if (!dims || !dims.width || !dims.height) return null;
+  const s = Math.min(1, Math.sqrt(FLUX3_EDIT_MAX_PIXELS / (dims.width * dims.height)), 4096 / Math.max(dims.width, dims.height));
+  return { width: Math.max(64, Math.floor(dims.width * s / 16) * 16), height: Math.max(64, Math.floor(dims.height * s / 16) * 16) };
+}
+
+// FLUX 3 Klein — one checkpoint, both jobs: nothing attached = text to image; attached
+// pictures = an edit against up to 10 references (the n-th is <ref_image_n> in the
+// prompt, counting from 0). Flattened from the workflows BFL ships in
+// flux-3-image-klein-comfy/workflows (flux3_klein_{,base_}bf16_{t2i,i2i,mi2i}), which
+// differ from Comfy-Org's templates in two ways that matter: base edits run at cfg 4,
+// not 1, and every graph carries the alpha-16 shift node.
+//
+// The PROMPT UPSAMPLER runs first unless ⚙ turns it off. BFL is blunt that the model
+// is not meant to run without one — it was trained on full scene captions, and a short
+// prompt sent as typed gives generic output — and theirs is a Qwen3.5-9B fine-tune for
+// exactly this model (for an edit it LOOKS at the references). So unlike Krea-2's
+// optional TextGenerate branch, this one stays, and a PreviewAny exposes the caption it
+// wrote so the done-line can show what the image model actually received.
+//
+// LAYOUT BOXES (`boxRows`, see flux3BoxRows) follow BFL's workflows exactly. With the
+// upsampler, the request becomes BFL's "ORIGINAL PROMPT … LOCKED BOUNDING-BOX
+// ANNOTATIONS" scaffold under the *_bbox system prompt, and the upsampler answers with a
+// caption that cites each box as <obj_N> plus the box table. Without it, the table is
+// appended to the typed prompt as Flux3LayoutPrompt does — then cite <obj_N> yourself.
+// On an edit the boxes are drawn on the FIRST reference; the i2i_bbox upsampler decides
+// from the instruction whether each marks something there or new content to place.
+// (BFL's own Python pipeline also re-imposes the locked boxes on the upsampler's answer;
+// their ComfyUI workflows do not, and neither does this graph.)
+function buildFlux3Klein({ model, prompt, negative, width, height, seed, cfg, comp, imageNames, refDims, alpha, boxRows }) {
+  const refs = (imageNames || []).slice(0, FLUX3_MAX_REFS);
+  const edit = refs.length > 0;
+  const mu = Math.log(alpha > 0 ? alpha : FLUX3_ALPHA);
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "flux3", device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+    // max_shift == base_shift → a constant shift of mu whatever the canvas, which is what
+    // BFL's linear-in-t schedule with alpha amounts to (width/height are then inert).
+    "4": { class_type: "ModelSamplingFlux", inputs: { model: ["1", 0], max_shift: mu, base_shift: mu, width, height } },
+  };
+  refs.forEach((name, i) => { wf[String(30 + i)] = { class_type: "LoadImage", inputs: { image: name } }; });
+
+  let text = String(prompt || "").trim();
+  const table = boxRows && boxRows.length ? pyJson(boxRows) : null;
+  if (comp.pup) {
+    wf["20"] = { class_type: "CLIPLoader", inputs: { clip_name: comp.pup, type: "flux3", device: "default" } };
+    // BFL's locked-box input (pup.py upsampling_input / the workflows' two StringConcatenates).
+    const locked = table
+      ? `ORIGINAL PROMPT:\n${text}\n\nLOCKED BOUNDING-BOX ANNOTATIONS ([y_min, x_min, y_max, x_max] on a 0-1000 canvas, with (0, 0) at the top-left). This is an authoritative JSON list of dictionaries; preserve every supplied identity, provenance value, null, and coordinate exactly:\n${table}`
+      : null;
+    let request = locked || text;
+    if (edit) {
+      // What the upsampler SEES. BFL's pup.py shrinks each reference to a budget that
+      // falls with the count (1 MP for one, 724² for two, 512² for three or more) before
+      // the VLM reads it; ComfyUI's own Qwen processor would otherwise take a phone photo
+      // at up to 12.8 MP — some 12k vision tokens per picture. Never enlarged.
+      const budget = refs.length === 1 ? 1024 * 1024 : refs.length === 2 ? 724 * 724 : 512 * 512;
+      const batch = { class_type: "BatchImagesNode", inputs: {} };
+      refs.forEach((_, i) => {
+        let src = [String(30 + i), 0];
+        const d = refDims && refDims[i];
+        if (d && d.width * d.height > budget) {
+          const s = Math.sqrt(budget / (d.width * d.height));
+          wf[String(40 + i)] = scaleNode(src, Math.max(32, Math.floor(d.width * s / 32) * 32), Math.max(32, Math.floor(d.height * s / 32) * 32));
+          src = [String(40 + i), 0];
+        } else if (!d) {
+          // Size unreadable (not a PNG/JPEG header we parse): let ComfyUI scale it to the
+          // budget. This one can also enlarge a small picture — harmless, just wasted tokens.
+          wf[String(40 + i)] = { class_type: "ImageScaleToTotalPixels", inputs: { image: src, upscale_method: "lanczos", megapixels: budget / (1024 * 1024), resolution_steps: 32 } };
+          src = [String(40 + i), 0];
+        }
+        batch.inputs[`images.image${i}`] = src;
+      });
+      wf["21"] = batch;
+      // BFL's i2i scaffolds, verbatim (pup.py I2I_SCAFFOLD[False] / [True]).
+      request = locked
+        ? `Reference images follow in attachment order: ref_image_0, ref_image_1, ...\nUser editing instruction: ${locked}\nDecide the edit, imagine the target image, and output the annotation record.`
+        : `Reference images follow in order (the first image, the second image, ...).\nUser request: ${text}\nOutput the caption.`;
+    }
+    // Decoding as BFL's workflows set it: top_k 1 (greedy — the seed is inert), presence
+    // penalty 1.5 for text→image and 0 for an edit, thinking off, no MTP. A DYNAMICCOMBO's
+    // sub-inputs travel as dotted keys next to the option they belong to.
+    wf["22"] = { class_type: "TextGenerate", inputs: {
+      clip: ["20", 0], prompt: request, max_length: 3584,
+      sampling_mode: "on",
+      "sampling_mode.temperature": 1, "sampling_mode.top_k": 1, "sampling_mode.top_p": 0.95,
+      "sampling_mode.min_p": 0, "sampling_mode.repetition_penalty": 1, "sampling_mode.seed": seed,
+      "sampling_mode.presence_penalty": edit ? 0 : 1.5,
+      thinking: false, use_default_template: true, mtp: "off",
+      system_prompt: comp.pupPrompts[`${edit ? "i2i" : "t2i"}${table ? "_bbox" : ""}`],
+      ...(edit ? { image: ["21", 0] } : {}),
+    } };
+    wf["23"] = { class_type: "PreviewAny", inputs: { source: ["22", 0] } };
+    text = ["22", 0];
+  } else if (table) {
+    text = `${text} ${table}`;   // Flux3LayoutPrompt: prompt.rstrip() + " " + table
+  }
+  wf["5"] = { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text } };
+  // An empty negative is BFL's reference default for the base model (cfg 4); at the
+  // distilled model's cfg 1 ComfyUI skips the unconditional pass, so it costs nothing there.
+  wf["6"] = { class_type: "CLIPTextEncode", inputs: { clip: ["2", 0], text: negative || "" } };
+  let positive = ["5", 0], negativeRef = ["6", 0];
+  if (edit) {
+    // Every reference goes on BOTH conditionings, as BFL's pipeline packs them. Several
+    // references are each held to 1 MP (BFL's MULTI_REFERENCE_MAX_PIXELS); a single one is
+    // sized to the output canvas, so the reference latent lines up with the picture being
+    // made — BFL's single-reference path keeps it at the canvas size for the same reason.
+    const mp = refs.length === 1 ? Math.min(16, Math.max(0.01, (width * height) / (1024 * 1024))) : 1;
+    const rml = { class_type: "ReferenceMultiLatent", inputs: {
+      positive, negative: negativeRef, vae: ["3", 0],
+      resolution: "resize", "resolution.megapixels": Math.round(mp * 100) / 100,
+    } };
+    refs.forEach((_, i) => { rml.inputs[`images.image${i}`] = [String(30 + i), 0]; });
+    wf["7"] = rml;
+    positive = ["7", 0]; negativeRef = ["7", 1];
+  }
+  wf["8"] = { class_type: "EmptyFlux2LatentImage", inputs: { width, height, batch_size: 1 } };
+  wf["9"] = { class_type: "KSampler", inputs: {
+    seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: cfg.scheduler,
+    denoise: 1, model: ["4", 0], positive, negative: negativeRef, latent_image: ["8", 0],
+  } };
+  wf["10"] = { class_type: "VAEDecode", inputs: { samples: ["9", 0], vae: ["3", 0] } };
+  wf["11"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["10", 0] } };
+  return wf;
+}
+
 // Z-Image-Turbo companions: the Qwen3-4B text encoder (loaded via CLIPLoader
 // with type "lumina2") + the flux "ae" VAE.
 async function zimageCompanions() {
@@ -3037,7 +3299,11 @@ async function zimageCompanions() {
   const find = (list, re) => list.find((x) => re.test(x));
   // Qwen3-4B encoder — NOT the Qwen3-VL (vision) one. boogu's `qwen3vl_8b` also
   // matches /qwen_?3/ and sorts first, so exclude any "vl" variant explicitly.
-  const clip = clips.find((x) => /qwen_?3/i.test(x) && !/vl/i.test(x));
+  // The 4B size is required too: FLUX 3 Klein's prompt upsampler is
+  // `qwen3.5_9b_flux3_prompt_upsampler_*`, which has no "vl" in it, matches /qwen_?3/,
+  // and sorts AHEAD of qwen_3_4b ('3' < '_') — so the bare rule handed Z-Image a 9B
+  // LLM as its text encoder the day that file was installed.
+  const clip = clips.find((x) => /qwen_?3[._-]?4b/i.test(x) && !/vl/i.test(x));
   const vae = find(vaes, /^ae\b|ae\.safetensors/i) || find(vaes, /flux/i);
   const missing = [];
   if (!clip) missing.push("qwen_3_4b.safetensors → text_encoders/");
@@ -3080,7 +3346,13 @@ async function krea2Companions() {
     comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
   ]);
   const find = (list, re) => list.find((x) => re.test(x));
-  const clip = clips.find((x) => /qwen3vl/i.test(x) && /(^|[_-])4b([_-]|$)/i.test(x));
+  // Among the 4B files, the build Krea-2 ships and was verified with (fp8_scaled) comes
+  // first: FLUX 3 Klein installs qwen3vl_4b_bf16 and _int8_convrot beside it, and the bf16
+  // one sorts ahead ('b' < 'f'), so "first 4B" would quietly swap the encoder of an
+  // already-verified model. Same base model per both vendors, so the others remain a
+  // FALLBACK for a box without Krea-2's own file — unverified with Krea-2.
+  const four = clips.filter((x) => /qwen3vl/i.test(x) && /(^|[_-])4b([_-]|$)/i.test(x));
+  const clip = four.find((x) => /fp8[-_]?scaled/i.test(x)) || four[0];
   const vae = find(vaes, QWEN_VAE_RE);
   const styleRefLora = find(loras, KREA2_STYLE_REF_LORA_RE);
   const missing = [];
@@ -3197,6 +3469,17 @@ function buildKrea2StyleRef({ model, prompt, imageNames, width, height, seed, cf
   return wf;
 }
 
+// boogu's encoder is the 8B Qwen3-VL. The size is load-bearing: a bare /qwen3vl/ takes the
+// FIRST match in ComfyUI's sorted list, and on a box that also carries MiniMax H3
+// (qwen3vl_32b_*) or FLUX 3 / Krea-2 (qwen3vl_4b_*) those sort ahead of qwen3vl_8b
+// ('3' < '4' < '8') — boogu would load a 32B or 4B encoder trained for another model.
+function booguClip(clips) {
+  // Among the 8B files, boogu's own packaging (fp8_scaled) first — Qwen-Image-2.1 ships
+  // qwen3vl_8b_bf16, which would otherwise sort ahead of it.
+  const eight = (clips || []).filter((x) => /qwen3vl/i.test(x) && /(^|[_-])8b([_-]|$)/i.test(x) && !H3_CLIP_RE.test(x));
+  return eight.find((x) => /fp8[-_]?scaled/i.test(x)) || eight[0] || (clips || []).find((x) => /qwen.*vl.*8b/i.test(x));
+}
+
 // boogu needs its own text encoder (qwen3vl, loaded with CLIPLoader type "boogu")
 // and the flux VAE (flux1_vae_bf16, NOT the bare ae). Throws naming any missing
 // file so the UI can tell the user what to download.
@@ -3206,7 +3489,7 @@ async function boogiCompanions() {
     comfyEnum("VAELoader", "vae_name"),
   ]);
   const find = (list, re) => list.find((x) => re.test(x));
-  const clip = find(clips, /qwen3vl/i) || find(clips, /qwen.*vl.*8b/i);
+  const clip = booguClip(clips);
   const vae = find(vaes, /flux1?_?vae/i) || find(vaes, /flux/i);
   const missing = [];
   if (!clip) missing.push("qwen3vl_8b_fp8_scaled.safetensors → text_encoders/");
@@ -8453,6 +8736,16 @@ async function generateComfyImage(req, res) {
       sendJson(res, 400, { error: "--track only works with LTX-2.5 Motion Track. Select that model (or add -m ltx2.5-22b:track) — other models have no trajectory input." });
       return;
     }
+    // Layout boxes are FLUX 3 Klein's — the same reasoning as --track: silently dropped
+    // they would be worse than an error, since the picture would just ignore the layout.
+    if (opts.boxes !== undefined && !FLUX3_RE.test(model)) {
+      sendJson(res, 400, { error: "--box only works with FLUX 3 Klein. Select it (or add -m flux3-klein) — other models have no layout input." });
+      return;
+    }
+    let flux3Boxes = null;
+    if (FLUX3_RE.test(model)) {
+      try { flux3Boxes = flux3BoxRows(opts.boxes); } catch (err) { sendJson(res, 400, { error: `--box: ${err.message}` }); return; }
+    }
     // 3D mesh chains (Hunyuan3D / TripoSplat / MoGe) — output is a .glb/.spz FILE.
     const meshType = meshTypeOf(model);
     // Audio-only chains (MiniMax Music 3) — output is a song, no picture at all.
@@ -8504,9 +8797,12 @@ async function generateComfyImage(req, res) {
     // minutes, so the 10-min image safety cap is the wrong ceiling for it. So does audio:
     // a song costs roughly 3 s of compute per second of music, so the 5-minute maximum
     // this model supports is a ~17-minute render — well past the image cap.
+    // FLUX 3 Klein runs a 9B LLM (its prompt upsampler) before the render and, cold,
+    // loads three large files in a row — the 120 s image default is a bare render's budget.
+    const imageFloorSec = FLUX3_RE.test(model) ? 300 : 60;
     const timeoutMs = (videoType || meshType || audioType)
       ? (reqTimeout === 0 ? 0 : Math.max(60, reqTimeout || 1800) * 1000)
-      : Math.min(600, Math.max(60, reqTimeout || 120)) * 1000;
+      : Math.min(600, Math.max(imageFloorSec, reqTimeout || 120)) * 1000;
     const deadline = timeoutMs ? Date.now() + timeoutMs : Infinity;
     const controller = new AbortController();
     // On timeout (if any), stop waiting AND interrupt ComfyUI so a stuck render doesn't keep
@@ -8537,6 +8833,10 @@ async function generateComfyImage(req, res) {
       // reported because the builder APPENDS it to the prompt — a silent rewrite of what
       // the user typed has to be visible on the done-line.
       let krea2LoraInfo = null;
+      // FLUX 3 Klein: { previewNode } when the in-graph upsampler ran, so the caption it
+      // wrote can be read back off /history — the image model never saw what the user
+      // typed, and that rewrite has to be visible (same reason as krea2LoraInfo.trigger).
+      let flux3Info = null;
       let solAttnUsed = null;     // Sol-Attn mode actually applied ("bf16"/"int8_qk"/"int8_qk_pv")
       let solChunkUsed;           // MLP chunking actually applied
       let solAttnSkipped = false; // asked for, but ComfyUI-sol-attn is not on this worker
@@ -10159,6 +10459,43 @@ async function generateComfyImage(req, res) {
           // being SET is the signal, not the numbers themselves.
           pinSize: !!(opts.width && opts.height),
         });
+      } else if (FLUX3_RE.test(model)) {
+        // FLUX 3 Klein: text→image, or an edit against up to 10 references when images are
+        // attached. Tested before the generic mask / img2img branches below: this model
+        // reads pictures as REFERENCES, never as a VAE-encoded start latent, and it has no
+        // mask input — a painted 🖌 region is ignored (say it in the prompt instead; for
+        // placement BFL's own mechanism is bounding boxes, not masks).
+        const upsample = opts.flux3Upsample !== false;
+        const comp = await flux3Companions(model, upsample);
+        let imageNames = null, refDims = null;
+        let ow = snapDim(width, 16), oh = snapDim(height, 16);
+        if (isImg2Img) {
+          const refs = images.slice(0, FLUX3_MAX_REFS);
+          imageNames = [];
+          // Distinct filenames per reference — uploadImage's default name + overwrite
+          // would collapse them all down to the last image.
+          for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `${comfyTag()}_f3ref${ri}.png`));
+          refDims = refs.map((b64) => imageDims(b64));
+          if (images.length > refs.length) imagesUsed = refs.length;
+          // A size that was asked for (⚙ default or --size) was already turned into ew/eh at
+          // the input's aspect; otherwise follow the first reference, shrunk to the default
+          // budget. ew/eh is NOT used for the over-2048 case it also covers — that would
+          // render a large photo at 3+ MP and a slightly smaller one at 1 MP.
+          const canvas = (opts.width && opts.height && ew && eh) ? { width: ew, height: eh } : flux3EditCanvas(refDims[0]);
+          if (canvas) { ow = snapDim(canvas.width, 16); oh = snapDim(canvas.height, 16); }
+        }
+        // The distilled checkpoint is a flow map with no unconditional branch to guide
+        // against — BFL's generate() REFUSES any guidance for it. ⚙ CFG is one field shared
+        // by every model, so a value left over from another one is pinned back to 1 here
+        // rather than doubling the work for a different, untrained result. (The frontend
+        // hides the field on this entry; the base checkpoint keeps it.)
+        const cfgUsed = FLUX3_BASE_RE.test(model) ? cfg : { ...cfg, cfg: 1 };
+        workflow = buildFlux3Klein({
+          model, prompt, negative: negative_prompt || "", width: ow, height: oh, seed, cfg: cfgUsed, comp,
+          imageNames, refDims, alpha: Number(opts.flux3Alpha) || FLUX3_ALPHA, boxRows: flux3Boxes,
+        });
+        flux3Info = { upsampler: comp.pup, previewNode: comp.pup ? "23" : null, width: ow, height: oh, cfg: cfgUsed.cfg,
+          boxes: flux3Boxes ? flux3Boxes.length : 0 };
       } else if (/qwen.?image/i.test(model)) {
         // Qwen-Image txt2img. Only the BASE model reaches here — editTypeOf routes
         // anything matching /qwen.*edit/ down the edit path long before this.
@@ -10550,9 +10887,16 @@ async function generateComfyImage(req, res) {
           ? `pano360:${panoOutpaintUsed ? `photo(denoise=${panoOutpaintUsed})` : "text"} ${panoDims.w}x${panoDims.h}${panoLoraUsed ? `, lora=${panoLoraUsed.name}@${panoLoraUsed.strength}` : ""}${panoLoraSkipped ? `, lora SKIPPED (${panoLoraSkipped.base} is not Flux)` : ""}`
           : editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         const c = panoCfg || cfg;
-        console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${mode}, sampler=${c.sampler}/${c.scheduler}, cfg=${c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${c.steps}, images=${outImages.length}`);
-        const mediaIds = toGallery("image", outImages, null, { ...galleryMeta, width: panoDims?.w || width, height: panoDims?.h || height });
-        sendJson(res, 200, { images: outImages, mediaIds, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined, krea2Lora: krea2LoraInfo || undefined, imagesUsed: imagesUsed || undefined });
+        // FLUX 3's upsampler caption, off the PreviewAny that holds it (ui.text).
+        const expandedPrompt = (flux3Info && flux3Info.previewNode && outputs[flux3Info.previewNode]
+          && Array.isArray(outputs[flux3Info.previewNode].text))
+          ? outputs[flux3Info.previewNode].text.join("").trim() || undefined : undefined;
+        console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${flux3Info ? `${isImg2Img ? "edit:flux3" : "txt2img"} ${flux3Info.width}x${flux3Info.height}${flux3Info.boxes ? ` +${flux3Info.boxes} boxes` : ""}` : mode}${flux3Info ? `, upsampler=${flux3Info.upsampler ? `${flux3Info.upsampler}${expandedPrompt ? ` (${expandedPrompt.length} chars)` : " (no caption read back)"}` : "off"}` : ""}, sampler=${c.sampler}/${c.scheduler}, cfg=${flux3Info ? flux3Info.cfg : c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${c.steps}, images=${outImages.length}`);
+        const mediaIds = toGallery("image", outImages, null, { ...galleryMeta, expandedPrompt,
+          width: panoDims?.w || flux3Info?.width || width, height: panoDims?.h || flux3Info?.height || height });
+        sendJson(res, 200, { images: outImages, mediaIds, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined, krea2Lora: krea2LoraInfo || undefined, imagesUsed: imagesUsed || undefined,
+          expandedPrompt, flux3Upsampler: flux3Info ? (flux3Info.upsampler || false) : undefined,
+          flux3Boxes: flux3Info && flux3Info.boxes ? flux3Info.boxes : undefined });
       }
     } finally {
       clearTimeout(timeout);

@@ -39,6 +39,17 @@ function friendlyModelName(file) {
   return hit.tier ? `${hit.label} · ${hit.tier}` : hit.label;
 }
 
+// The done-lines' "model · tier": the tier ONCE. friendlyModelName already carries the tier
+// of a file it knows, and every done-line also appended the tier the server reported, so
+// any model with a quantised build read "… · int8 · int8". The server's tier wins when both
+// exist — it is what actually loaded, including a mixed "fp8+mxfp8" expert pair.
+function modelWithTier(file, fallback, tier) {
+  const hit = state.comfyModelFileLabels && state.comfyModelFileLabels[file];
+  const name = hit ? hit.label : (stripModelExt(file) || fallback || "");
+  if (!hit && !file && fallback) return fallback;   // the pre-flight label already has its tier
+  return [name, tier || (hit && hit.tier) || ""].filter(Boolean).join(" · ");
+}
+
 // The same, for a DROPDOWN entry rather than a filename: ⚙ precision decides which build
 // of the group a run will load, so the tier shown must follow that choice and not the
 // group's arbitrary representative.
@@ -161,6 +172,9 @@ function comfyOverrides() {
   if (q21Ref !== undefined) ov.qwen21RefSize = q21Ref;               // 0 = keep each reference's own size
   if (dom.comfyParamQwen21Cache?.value) ov.qwen21Cache = dom.comfyParamQwen21Cache.value;
   if (dom.comfyParamQwen21CacheDtype?.value) ov.qwen21CacheDtype = dom.comfyParamQwen21CacheDtype.value;
+  // FLUX 3 Klein's upsampler is ON unless unticked — only the opt-out travels, so a
+  // request without the key (the CLI, an old saved setting) gets BFL's default.
+  if (dom.comfyParamFlux3Upsample && !dom.comfyParamFlux3Upsample.checked) ov.flux3Upsample = false;
   // Qwen 3D Camera: the dial's three KEYS travel as-is — the server turns them into
   // the `<sks> ...` phrase the LoRA was trained on, so only one side knows that wording.
   ov.camAzimuth = state.camAzimuth || "front";
@@ -297,6 +311,40 @@ function peelTextFlags(line) {
   return out;
 }
 
+// `--box x0,y0,x1,y1 <description>` — a FLUX 3 Klein layout box, the SAME text in the
+// browser parser and the CLI (a drift test compares the two sources byte for byte).
+// Corners are 0-1 fractions of the canvas, left-top origin (as --track). The description
+// is free text and runs to the next ` --flag`, like --pos/--neg, so it is peeled before
+// the flag loop and may sit anywhere on the line. Repeatable; order = obj_1, obj_2, ….
+// parseBoxSpec reads one value (the argv form passes it whole); peelBoxFlags pulls every
+// --box out of a command line. Either returns a string describing the first bad box.
+function parseBoxSpec(value, acc) {
+  const out = Array.isArray(acc) ? acc.slice() : [];
+  const v = String(value || "").trim();
+  const m = v.match(/^(\d*\.?\d+)\s*,\s*(\d*\.?\d+)\s*,\s*(\d*\.?\d+)\s*,\s*(\d*\.?\d+)(?:\s+([\s\S]*))?$/);
+  if (!m) return `bad box "${v}" (want x0,y0,x1,y1 then a description, 0-1 coordinates)`;
+  const [x0, y0, x1, y1] = m.slice(1, 5).map(Number);
+  if (!(x1 <= 1 && y1 <= 1 && x1 > x0 && y1 > y0)) return `box "${m.slice(1, 5).join(",")}" must lie inside 0-1 with x0<x1 and y0<y1`;
+  out.push({ x0, y0, x1, y1, desc: (m[5] || "").trim() });
+  if (out.length > 20) return "at most 20 boxes";
+  return out;
+}
+
+function peelBoxFlags(line) {
+  const out = { rest: line, boxes: null, error: "" };
+  for (;;) {
+    const m = out.rest.match(/(^|\s)--box\s+/i);
+    if (!m) break;
+    const after = out.rest.slice(m.index + m[0].length);
+    const stop = after.search(/\s--[a-z]/i);
+    const parsed = parseBoxSpec(stop < 0 ? after : after.slice(0, stop), out.boxes);
+    if (typeof parsed === "string") { out.error = parsed; return out; }
+    out.boxes = parsed;
+    out.rest = (out.rest.slice(0, m.index) + (stop < 0 ? "" : after.slice(stop))).trim();
+  }
+  return out;
+}
+
 // The persistent negative prompt from the ⚙ ComfyUI params modal. A per-command
 // `--neg ...` always wins; this is the default applied to image AND video gen when
 // no `--neg` is given. Empty → undefined so the server falls back to its own default.
@@ -424,6 +472,11 @@ function parseImagineCommand(input) {
   rest = peeled.rest;
   if (peeled.pos) result.positivePrompt = peeled.pos;
   if (peeled.neg) result.negativePrompt = peeled.neg;
+  // `--box` carries free text too (the box's description), for the same reason.
+  const boxed = peelBoxFlags(rest);
+  if (boxed.error) return { error: t("img_boxInvalid", { why: boxed.error }) };
+  rest = boxed.rest;
+  if (boxed.boxes) result.options.boxes = boxed.boxes;
 
   // Long flags plus the two short ones. A short flag has to be listed HERE as well as
   // handled below — the loop is what decides whether the token is a flag at all, so a
@@ -1546,14 +1599,13 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     // sibling server-side. Naming the pre-flight value made the done-line contradict its
     // own tier suffix ("…_pruned_fp8_scaled · int8"). Falls back to the selection when an
     // older server sends no model back.
-    const usedModel = friendlyModelName(lastData.model) || vidModel;
     // The tier that actually loaded rides alongside the model name — a model can ship
     // several quantisations and they differ in both speed and fidelity, so which one
     // ran is part of reading the result. Absent for models whose filename carries no
     // precision token.
+    const usedModel = modelWithTier(lastData.model, vidModel, lastData.precisionUsed);
     let doneLine = (count > 1 ? `${sizeLine} ×${allVideos.length}${allVideos.length < count ? `/${count}` : ""}` : sizeLine)
-      + (usedModel ? ` · ${usedModel}` : "")
-      + (lastData.precisionUsed ? ` · ${lastData.precisionUsed}` : "");
+      + (usedModel ? ` · ${usedModel}` : "");
     // Seed(s) used → lets the user reproduce via --seed. Single video shows one;
     // a batch lists each video's seed in display order so any one can be reproduced.
     if (count === 1 && typeof lastData.seed === "number") {
@@ -1941,11 +1993,10 @@ export async function generateMesh(parsed, model, tabId = state.activeTabId, ins
     const plang = getPromptLanguage();
     const totalBytes = allMeshes.reduce((s, b) => s + Math.floor(b.length * 0.75), 0);
     const sizeStr = totalBytes > 1024 * 1024 ? `${(totalBytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(totalBytes / 1024)} KB`;
-    const usedModel = friendlyModelName(lastData.model) || meshModelLabel; // loaded file, not the dropdown value
+    const usedModel = modelWithTier(lastData.model, meshModelLabel, lastData.precisionUsed); // loaded file, not the dropdown value
     let doneLine = t("msg_meshDone", { size: sizeStr }, plang)
       + (count > 1 ? ` ×${allMeshes.length}${allMeshes.length < count ? `/${count}` : ""}` : "")
-      + (usedModel ? ` · ${usedModel}` : "")
-      + (lastData.precisionUsed ? ` · ${lastData.precisionUsed}` : "");
+      + (usedModel ? ` · ${usedModel}` : "");
     if (count === 1 && typeof lastData.seed === "number") {
       doneLine += `\n${t("msg_seedUsed", { seed: lastData.seed }, plang)}`;
     } else if (count > 1 && meshSeeds.some((s) => s !== null)) {
@@ -2183,13 +2234,12 @@ export async function generateMusic(parsed, model, tabId = state.activeTabId, in
         break;
       }
       const plang = getPromptLanguage();
-      const usedModel = friendlyModelName(data.model) || musicModelLabel;
+      const usedModel = modelWithTier(data.model, musicModelLabel, data.precisionUsed);
       // The model chooses where the song ends, so the length is REPORTED, never assumed.
       const dur = data.seconds ? `${data.seconds}s` : "?";
       let doneLine = t("msg_musicDone", { dur }, plang)
         + (count > 1 ? ` ${i + 1}/${count}` : "")
-        + (usedModel ? ` · ${usedModel}` : "")
-        + (data.precisionUsed ? ` · ${data.precisionUsed}` : "");
+        + (usedModel ? ` · ${usedModel}` : "");
       if (typeof data.seed === "number") doneLine += `\n${t("msg_seedUsed", { seed: data.seed }, plang)}`;
       emit({
         role: "assistant",
@@ -2363,6 +2413,11 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // The panorama LoRA was asked for but dropped, because the chosen base is not the
   // family it was trained on. Silence here would look like it had been applied.
   let panoLoraSkippedBase = null;
+  // FLUX 3 Klein: the caption its prompt upsampler wrote (the image model never saw the
+  // typed prompt, so this is shown), or `false` when ⚙ had the upsampler off.
+  const expandedPrompts = [];
+  let flux3UpsamplerOff = false;
+  let flux3BoxesUsed = 0;   // how many 🔲 layout boxes the run carried (obj_1…obj_N)
   // Seed actually used (random unless --seed was pinned) → surfaced on the done line
   // so a single result can be reproduced. Only meaningful for a single output.
   let usedSeed = null;
@@ -2399,6 +2454,13 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       const prompt = prompts[ci];
       for (let i = 0; i < parsed.count; i++) {
         const reqOptions = { ...parsed.options };
+        // 🔲 layout boxes staged in the ⚙ painter ride along for FLUX 3 Klein unless the
+        // command typed its own --box (typed wins) — the same rule as ✏️ motion tracks.
+        // Other models never get them: the button is hidden there and the server refuses.
+        if (useComfy && /flux.?3.*klein/i.test(activeModel) && !reqOptions.boxes
+          && Array.isArray(state.pendingBoxes) && state.pendingBoxes.length) {
+          reqOptions.boxes = state.pendingBoxes;
+        }
         // How far round the photo reaches — the server sizes the seam-repair band from
         // it so the repair never repaints the photo itself.
         if (panoCoverDeg) reqOptions.panoCoverDeg = panoCoverDeg;
@@ -2476,6 +2538,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 if (data.model) modelFileUsed = data.model;
                 if (data.precisionNote) precisionNoteUsed = data.precisionNote;
                 if (data.panoLoraSkipped) panoLoraSkippedBase = data.panoLoraSkipped.base;
+                if (data.expandedPrompt && !expandedPrompts.includes(data.expandedPrompt)) expandedPrompts.push(data.expandedPrompt);
+                if (data.flux3Upsampler === false) flux3UpsamplerOff = true;
+                if (data.flux3Boxes) flux3BoxesUsed = data.flux3Boxes;
                 if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
                 generatedImages.push(...storedSlots(imgs, data.mediaIds));
                 for (let k = 0; k < imgs.length; k++) seeds.push(typeof data.seed === "number" ? data.seed : null);
@@ -2539,9 +2604,8 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
         : t("msg_imageDone", dims, plang);
       // Append the model used (selected name, extension stripped) + the precision tier
       // that actually loaded. See the video done-line for why the tier is always named.
-      const usedModel = friendlyModelName(modelFileUsed) || shortModel;
+      const usedModel = modelWithTier(modelFileUsed, shortModel, precisionUsedTier);
       if (usedModel) doneLine += ` · ${usedModel}`;
-      if (precisionUsedTier) doneLine += ` · ${precisionUsedTier}`;
       // Seed used (single output only) → lets the user reproduce via --seed.
       if (usedSeed !== null) doneLine += `\n${t("msg_seedUsed", { seed: usedSeed }, plang)}`;
       // Batch: list each image's seed (grid order) so any one can be reproduced.
@@ -2562,6 +2626,17 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       if (upscaleDenoiseUsed > 0) doneLine += `\n${restoreModelUsed
         ? t("msg_denoiseModel", { pct: Math.round(upscaleDenoiseUsed * 100), model: stripModelExt(restoreModelUsed) }, plang)
         : t("msg_denoiseUsed", { pct: Math.round(upscaleDenoiseUsed * 100) }, plang)}`;
+      // FLUX 3's layout boxes — named, because they steer the picture and nothing else on
+      // the line would show they were there (a staged ⚙ set rides along invisibly).
+      if (flux3BoxesUsed) doneLine += `\n${t("msg_flux3Boxes", { n: flux3BoxesUsed }, plang)}`;
+      // FLUX 3's upsampler caption — folded, since it runs 100–350 words. It is greedy, so
+      // a batch of one prompt normally yields one caption; distinct ones are all listed.
+      if (expandedPrompts.length) {
+        const quoted = expandedPrompts.map((p) => p.split("\n").map((l) => `> ${l}`).join("\n")).join("\n\n");
+        doneLine += `\n\n<details>\n<summary>${t("msg_flux3Upsampled", {}, plang)}</summary>\n\n${quoted}\n\n</details>`;
+      } else if (flux3UpsamplerOff) {
+        doneLine += `\n${t("msg_flux3UpsamplerOff", {}, plang)}`;
+      }
     }
 
     const replyMsg = {

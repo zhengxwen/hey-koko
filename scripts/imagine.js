@@ -144,6 +144,40 @@ function peelTextFlags(line) {
   return out;
 }
 
+// `--box x0,y0,x1,y1 <description>` — a FLUX 3 Klein layout box, the SAME text in the
+// browser parser and the CLI (a drift test compares the two sources byte for byte).
+// Corners are 0-1 fractions of the canvas, left-top origin (as --track). The description
+// is free text and runs to the next ` --flag`, like --pos/--neg, so it is peeled before
+// the flag loop and may sit anywhere on the line. Repeatable; order = obj_1, obj_2, ….
+// parseBoxSpec reads one value (the argv form passes it whole); peelBoxFlags pulls every
+// --box out of a command line. Either returns a string describing the first bad box.
+function parseBoxSpec(value, acc) {
+  const out = Array.isArray(acc) ? acc.slice() : [];
+  const v = String(value || "").trim();
+  const m = v.match(/^(\d*\.?\d+)\s*,\s*(\d*\.?\d+)\s*,\s*(\d*\.?\d+)\s*,\s*(\d*\.?\d+)(?:\s+([\s\S]*))?$/);
+  if (!m) return `bad box "${v}" (want x0,y0,x1,y1 then a description, 0-1 coordinates)`;
+  const [x0, y0, x1, y1] = m.slice(1, 5).map(Number);
+  if (!(x1 <= 1 && y1 <= 1 && x1 > x0 && y1 > y0)) return `box "${m.slice(1, 5).join(",")}" must lie inside 0-1 with x0<x1 and y0<y1`;
+  out.push({ x0, y0, x1, y1, desc: (m[5] || "").trim() });
+  if (out.length > 20) return "at most 20 boxes";
+  return out;
+}
+
+function peelBoxFlags(line) {
+  const out = { rest: line, boxes: null, error: "" };
+  for (;;) {
+    const m = out.rest.match(/(^|\s)--box\s+/i);
+    if (!m) break;
+    const after = out.rest.slice(m.index + m[0].length);
+    const stop = after.search(/\s--[a-z]/i);
+    const parsed = parseBoxSpec(stop < 0 ? after : after.slice(0, stop), out.boxes);
+    if (typeof parsed === "string") { out.error = parsed; return out; }
+    out.boxes = parsed;
+    out.rest = (out.rest.slice(0, m.index) + (stop < 0 ? "" : after.slice(stop))).trim();
+  }
+  return out;
+}
+
 // Split a chat-style command into its /imagine lines, exactly as the composer does
 // (parseImagineCommands in public/js/image-gen.js): a line starting with "/imagine" opens
 // a new command, any other line belongs to the one above it. Text before the first
@@ -179,6 +213,10 @@ function parseImagineLine(line) {
   // is left. See peelTextFlags for why they are no longer greedy-to-end.
   const peeled = peelTextFlags(rest);
   rest = peeled.rest;
+  const boxed = peelBoxFlags(rest);   // --box: free-text description, peeled like --pos/--neg
+  if (boxed.error) throw new Error(`--box: ${boxed.error}`);
+  rest = boxed.rest;
+  if (boxed.boxes) task.options.boxes = boxed.boxes;
   if (peeled.pos) task.positive = peeled.pos;
   if (peeled.neg) task.negative = peeled.neg;
 
@@ -299,6 +337,9 @@ Generation
       --neg <text>         negative prompt (ignored by models without a negative branch)
       --track x,y>x,y[>…]  trajectory for LTX-2.5 Motion Track ONLY (0-1 coords, left-top
                            origin; ";" or a repeated flag adds tracks) — rejected elsewhere
+      --box "x0,y0,x1,y1 <text>"  FLUX 3 Klein ONLY: place <text> in that box (0-1 corners,
+                           left-top origin); repeat for more boxes — box N is <obj_N> in the
+                           prompt. On an edit, the box is drawn on the first reference
       --pos <text>         extra positive text appended to the prompt (style / quality
                            booster); in chat it overrides the ⚙ "positive add-on"
   -n, --count <n>          render N variations of this prompt (1-8)
@@ -423,6 +464,14 @@ function parseArgv(argv) {
         const parsedTracks = parseTrackFlag(need(i, a), o.options.tracks); i++;
         if (typeof parsedTracks === "string") throw new Error(`--track: ${parsedTracks}`);
         o.options.tracks = parsedTracks;
+        break;
+      }
+      // FLUX 3 layout boxes — FLUX 3 Klein ONLY (rejected elsewhere). One quoted token per
+      // box ("x0,y0,x1,y1 a red balloon"); repeatable, in obj_1, obj_2, … order.
+      case "--box": {
+        const parsedBoxes = parseBoxSpec(need(i, a), o.options.boxes); i++;
+        if (typeof parsedBoxes === "string") throw new Error(`--box: ${parsedBoxes}`);
+        o.options.boxes = parsedBoxes;
         break;
       }
       case "--pos": o.positive = need(i, a); i++; break;
@@ -1140,6 +1189,9 @@ async function runTask(task, cli, ctx) {
         ...(codec ? { codec } : {}),
         ...(codecNote ? { codecNote } : {}),
         prompt,
+        // FLUX 3 Klein: the caption its in-graph upsampler wrote — what the image model
+        // actually received (`prompt` stays what was typed).
+        ...(data.expandedPrompt ? { expandedPrompt: data.expandedPrompt } : {}),
         // Duration is invariant under re-timing, so it is computed from the frames and
         // the rate the MODEL produced, not from the rate the file ended up at.
         seconds: data.seconds !== undefined ? data.seconds
@@ -1153,6 +1205,10 @@ async function runTask(task, cli, ctx) {
         const size = rec.width ? `${rec.width}×${rec.height}` : data.audios ? "" : "?";
         const dur = rec.seconds ? `${size ? ", " : ""}${rec.seconds}s` : "";
         process.stderr.write(`✓ ${file}  (${size}${dur}, seed ${data.seed}, ${elapsed}s)\n`);
+        if (data.expandedPrompt) {
+          const one = data.expandedPrompt.replace(/\s+/g, " ");
+          process.stderr.write(`  ✎ upsampled: ${one.length > 160 ? one.slice(0, 157) + "…" : one}  (full text: --json)\n`);
+        }
         if (data.h3Chain) {
           process.stderr.write(`  ⛓ ${data.h3Chain.segments} segments joined · seeds ${data.h3Chain.seeds.map((x, j) => `#${j + 1} ${x}`).join(" · ")}\n`);
         }

@@ -36,6 +36,7 @@ import { loadReminders, getReminders, removeReminder, describeReminder, setRemin
 import { initPanelResize } from './panel-resize.js';
 import { openMaskModal } from './mask-paint.js';
 import { openTrackModal, refreshTrackLabel } from './track-paint.js';
+import { openBoxModal, refreshBoxLabel } from './box-paint.js';
 import { setBgDeps, restoreBgJobsOnLoad, restoreBgWorkersOnLoad, toggleBgDrawer, closeBgDrawer, enqueueBgJob } from './bg-jobs.js';
 import { connectServerQueue } from './server-queue.js';   // Option B: SSE stream of server-side gen jobs
 import { initTabGuard } from './tab-guard.js';   // warn when hey-koko is open in 2+ tabs (shared IndexedDB, last save wins)
@@ -926,6 +927,16 @@ dom.comfyMaskPointBtn?.addEventListener("click", openMaskPointModal);
 dom.comfyTrackBtn?.addEventListener("click", async () => {
   const res = await openTrackModal(maskPointSource(), state.pendingTracks);
   if (res !== null) { state.pendingTracks = res.length ? res : null; refreshTrackLabel(); }
+});
+// 🔲 layout boxes (FLUX 3 Klein): drawn over the first attached picture — the canvas an
+// edit takes its shape from — or, for text→image, a blank canvas shaped like the ⚙
+// default size. null = cancelled → keep what was staged; [] = cleared.
+dom.comfyBoxBtn?.addEventListener("click", async () => {
+  const imgs = getStagedImages();
+  const src = imgs.length ? (imgs[0].preview || (imgs[0].base64 ? `data:image/png;base64,${imgs[0].base64}` : null)) : null;
+  const [w, h] = String(dom.defaultImageSize?.value || "1024x1024").split("x").map(Number);
+  const res = await openBoxModal(src, state.pendingBoxes, { w: w > 0 ? w : 1, h: h > 0 ? h : 1 });
+  if (res !== null) { state.pendingBoxes = res.length ? res : null; refreshBoxLabel(); }
 });
 dom.maskPointClose?.addEventListener("click", closeMaskPointModal);
 dom.maskPointModal?.addEventListener("click", (e) => { if (e.target === dom.maskPointModal) closeMaskPointModal(); });

@@ -140,6 +140,7 @@ export const dom = {
   comfyParamQwen21RefSize: document.querySelector("#comfyParamQwen21RefSize"),
   comfyParamQwen21Cache: document.querySelector("#comfyParamQwen21Cache"),
   comfyParamQwen21CacheDtype: document.querySelector("#comfyParamQwen21CacheDtype"),
+  comfyParamFlux3Upsample: document.querySelector("#comfyParamFlux3Upsample"),
   comfyParamNoAudio: document.querySelector("#comfyParamNoAudio"),
   comfyParamH3RefSize: document.querySelector("#comfyParamH3RefSize"),
   comfyParamH3Keyframes: document.querySelector("#comfyParamH3Keyframes"),
@@ -177,6 +178,16 @@ export const dom = {
   trackClear: document.querySelector("#trackClear"),
   trackCancel: document.querySelector("#trackCancel"),
   trackSave: document.querySelector("#trackSave"),
+  comfyBoxBtn: document.querySelector("#comfyBoxBtn"),
+  comfyBoxLabel: document.querySelector("#comfyBoxLabel"),
+  boxModal: document.querySelector("#boxModal"),
+  boxModalClose: document.querySelector("#boxModalClose"),
+  boxCanvas: document.querySelector("#boxCanvas"),
+  boxList: document.querySelector("#boxList"),
+  boxUndo: document.querySelector("#boxUndo"),
+  boxClear: document.querySelector("#boxClear"),
+  boxCancel: document.querySelector("#boxCancel"),
+  boxSave: document.querySelector("#boxSave"),
   comfyMaskPointLabel: document.querySelector("#comfyMaskPointLabel"),
   maskPointModal: document.querySelector("#maskPointModal"),
   maskPointClose: document.querySelector("#maskPointClose"),
@@ -266,6 +277,7 @@ export const state = {
   selectedVideo: null,
   selectedAudio: null,               // staged speech audio (InfiniteTalk dubbing): { base64, mime, name, duration }
   pendingTracks: null,               // ✏️ motion trajectories for LTX-2.5 Motion Track: [[{x,y},…],…] normalized 0-1 (session-only; cleared when another model is picked)
+  pendingBoxes: null,                // 🔲 FLUX 3 layout boxes: [{x0,y0,x1,y1,desc}] normalized 0-1 (session-only; cleared when a non-FLUX-3 model is picked)
   activeSpeechButton: null,
   speechAbortController: null,
   activeTranslationAbort: null,

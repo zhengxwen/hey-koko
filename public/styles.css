@@ -9715,3 +9715,51 @@ body.isResizingComposer {
   user-select: text;
   overflow-wrap: anywhere;
 }
+
+/* 🔲 FLUX 3 layout-box editor. The description list sits BESIDE the canvas: stacked
+   under it, every new row shrank the stage and clipped the bottom of the picture while
+   the user was still drawing on it. The stage's basis is 0 so its width (and with it
+   the canvas size) never depends on what was drawn last time. */
+.boxLayout {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.boxStage {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.boxList {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 62vh;
+  overflow-y: auto;
+}
+.boxEmpty { margin: 4px 0; }
+@media (max-width: 760px) {
+  .boxLayout { flex-direction: column; align-items: stretch; }
+  .boxList { flex-basis: auto; max-height: 30vh; }
+}
+.boxRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.boxTag {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: #fff;
+  font: 600 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.boxRow .boxDesc {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+.boxRow .boxDel {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+}

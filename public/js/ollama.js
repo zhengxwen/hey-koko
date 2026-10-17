@@ -6,6 +6,7 @@ import { dom, state } from './state.js';
 import { SETTINGS_KEY } from './constants.js';
 import { t } from './i18n.js';
 import { refreshTrackLabel } from './track-paint.js';
+import { refreshBoxLabel } from './box-paint.js';
 import { saveCurrentSettings } from './settings.js';
 import { getBgWorkers, setBgWorkerStatus, MULTI_WORKERS_ENABLED } from './bg-jobs.js';
 import { updateCloudBadge } from './avatar.js';
@@ -1263,6 +1264,9 @@ function comfyModelHint(name) {
   // 2.1 before the base line: it matches the same pattern and is a different model.
   if (/qwen.?image.?2[._-]?1(?![0-9])/.test(n)) return t("oll_hint_qwen21");
   if (/qwen.?image/.test(n)) return t("oll_hint_qwenImage");
+  // FLUX 3 before the generic /flux/ line (Flux.1), which matches it too.
+  if (/flux.?3.*klein.*base/.test(n)) return t("oll_hint_flux3base");
+  if (/flux.?3.*klein/.test(n)) return t("oll_hint_flux3");
   if (/flux/.test(n)) return t("oll_hint_flux");
   if (/pony|xl\b|sdxl/.test(n)) return t("oll_hint_sdxl");
   return t("oll_hint_generic");
@@ -1315,6 +1319,7 @@ function imageFamilyOf(name) {
   if (/z.?image/.test(n)) return "zimage";
   if (/boogu/.test(n)) return /turbo/.test(n) ? "booguturbo" : "boogubase";
   if (/qwen/.test(n)) return "qwenimage";
+  if (/flux.?3.*klein/.test(n)) return "flux3";   // before /flux/, which is Flux.1's row
   if (/flux/.test(n)) return "flux";
   if (/pony/.test(n)) return "pony";
   return null;
@@ -1638,6 +1643,10 @@ function comfyModelComponents(name) {
   if (n === "krea2_style_ref") return "Krea-2 style reference · UNETLoader · LoraLoaderModelOnly(krea2_style_reference) · CLIP qwen3vl_4b(krea2) · VAE qwen_image · TextEncodeQwenImageEditPlus (1-3 style images) · FluxKontextMultiReferenceLatentMethod · ModelSamplingFlux · CFGGuider · SamplerCustomAdvanced (8-step)";
   if (/krea2/.test(n)) return "Krea-2 Turbo · UNETLoader · CLIP qwen3vl_4b(krea2) · VAE qwen_image · optional style LoRA (trigger word auto-appended) · KSampler (8-step, cfg 1)";
   if (/z.?image/.test(n)) return "Z-Image-Turbo · UNETLoader · CLIP qwen_3_4b(lumina2) · VAE ae · ModelSamplingAuraFlow · KSampler (8-step)";
+  // FLUX 3 — ahead of the generic checkpoint line at the bottom, whose /flux/ test would
+  // describe it as a Flux.1 checkpoint with FluxGuidance.
+  if (/flux.?3.*klein.*base/.test(n)) return "FLUX 3 Klein Base · UNETLoader · CLIP qwen3vl_4b(flux3) · VAE flux2 · prompt upsampler (TextGenerate, qwen3.5-9b) · ReferenceMultiLatent (up to 10 references) · ModelSamplingFlux (alpha 16) · KSampler 50-step euler/simple, cfg 4";
+  if (/flux.?3.*klein/.test(n)) return "FLUX 3 Klein · UNETLoader · CLIP qwen3vl_4b(flux3) · VAE flux2 · prompt upsampler (TextGenerate, qwen3.5-9b) · ReferenceMultiLatent (up to 10 references) · ModelSamplingFlux (alpha 16) · KSampler 16-step euler/simple, cfg 1 (distilled)";
   if (/boogu/.test(n)) return "boogu · UNETLoader · CLIP qwen3vl(boogu) · VAE flux1 · ModelSamplingAuraFlow · KSampler";
   if (!n) return "";
   return "Checkpoint · CheckpointLoaderSimple · CLIPTextEncode · KSampler" + (/flux/.test(n) ? " · FluxGuidance" : "");
@@ -1961,6 +1970,11 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyTrackBtn, isTrack);
   if (!isTrack && state.pendingTracks) state.pendingTracks = null;
   refreshTrackLabel();
+  // 🔲 layout boxes — FLUX 3 Klein (both checkpoints) ONLY; same lifetime rule as tracks.
+  const isFlux3 = /flux.?3.*klein/i.test(m);
+  setVis(dom.comfyBoxBtn, isFlux3);
+  if (!isFlux3 && state.pendingBoxes) state.pendingBoxes = null;
+  refreshBoxLabel();
   // Bernini only — turbo is otherwise forced on by the mere presence of the distill
   // LoRA, and ref_max_size is the only knob on how much reference detail survives.
   for (const el of [dom.comfyParamBerniniMode, dom.comfyParamRefMaxSize]) setVis(el, /bernini/i.test(m));
@@ -2057,6 +2071,8 @@ export function updateComfyParamVisibility() {
   const qwen21 = /qwen.?image.?2[._-]?1(?![0-9])/i.test(m);
   for (const el of [dom.comfyParamQwen21RefSize, dom.comfyParamQwen21Cache, dom.comfyParamQwen21CacheDtype]) setVis(el, qwen21);
   setVis(dom.comfyParamQwen21Rgba, qwen21, ".comfyParamCheck");
+  // FLUX 3 Klein's upsampler switch — both checkpoints (distilled and base) run it.
+  setVis(dom.comfyParamFlux3Upsample, /flux.?3.*klein/i.test(m), ".comfyParamCheck");
   // The 3D camera dial is its own widget, not a labelled field — setVis falls back to
   // the element itself when there is no wrapping <label>.
   setVis(dom.comfyCamPicker, m === "qwen-angles");
@@ -2080,7 +2096,11 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamNegative, diffusion && !mesh && !music && negTunable);
   // Guidance + img2img denoise are IMAGE-only: no video builder accepts either
   // (resolveVideoConfig doesn't even carry them).
-  for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video && !mesh && !music);
+  // FLUX 3 Klein reads neither: it has no guidance embedding (the field is Flux.1's
+  // FluxGuidance — "Flux only" on the label invites the wrong reading), and it takes
+  // pictures as references, never as a VAE-encoded start latent to denoise.
+  const flux3m = /flux.?3.*klein/i.test(m);
+  for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video && !mesh && !music && !flux3m);
   // Sampler / scheduler / steps / cfg: honoured by every image model, but only by the
   // preset-driven video models. SCAIL-2 / Wan Animate / bernini hardcode a schedule
   // bound to their distill LoRA and ignore these — so hide rather than lie. Of the
@@ -2092,7 +2112,10 @@ export function updateComfyParamVisibility() {
   // Empty set = a server too old to send the flag; don't hide cfg for every video model
   // then (that happens whenever the page is hard-refreshed before the server restarts).
   const cfgTunable = !video || !state.comfyCfgTunable?.size || state.comfyCfgTunable.has(m);
-  setVis(dom.comfyParamCfg, shows && cfgTunable);
+  // FLUX 3 Klein's DISTILLED checkpoint is a flow map: no guidance at all (the server pins
+  // cfg 1 whatever this says). Its base checkpoint guides at cfg 4 and keeps the field.
+  const flux3Distilled = /flux.?3.*klein/i.test(m) && !/flux.?3.*klein.*base/i.test(m);
+  setVis(dom.comfyParamCfg, shows && cfgTunable && !flux3Distilled);
 }
 
 export async function loadEmbedModels() {
@@ -2376,6 +2399,7 @@ function initComfyParamsModal() {
   // one also gates the mesh-detail row, so it re-runs visibility on toggle.
   dom.comfyParamKeepBackground?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamMogeSubject?.addEventListener("change", () => saveCurrentSettings());
+  dom.comfyParamFlux3Upsample?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamPanoRefine?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamPanoModel?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamPanoProj?.addEventListener("change", () => saveCurrentSettings());
@@ -2436,6 +2460,7 @@ function initComfyParamsModal() {
     if (dom.comfyParamSolAttn) dom.comfyParamSolAttn.value = "";
     if (dom.comfyParamSolTau) dom.comfyParamSolTau.value = "";
     if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = true; // bit-exact, defaults ON
+    if (dom.comfyParamFlux3Upsample) dom.comfyParamFlux3Upsample.checked = true; // BFL: always run it
     if (dom.comfyParamH3ChainMode) dom.comfyParamH3ChainMode.value = "";
     if (dom.comfyParamH3ChainAudioXfade) dom.comfyParamH3ChainAudioXfade.checked = true; // defaults ON
     if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = false;

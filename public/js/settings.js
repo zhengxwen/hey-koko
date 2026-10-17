@@ -60,6 +60,8 @@ export function saveCurrentSettings() {
         qwen21RefSize: dom.comfyParamQwen21RefSize?.value || "",
         qwen21Cache: dom.comfyParamQwen21Cache?.value || "",
         qwen21CacheDtype: dom.comfyParamQwen21CacheDtype?.value || "",
+        // Defaults ON, so an absent key must read back as true (see the restore side).
+        flux3Upsample: dom.comfyParamFlux3Upsample ? dom.comfyParamFlux3Upsample.checked : true,
         camStrength: dom.comfyParamCamStrength?.value || "",
         // The dial lives in state, not in an input, so persist it from there.
         camAzimuth: state.camAzimuth || "front",
@@ -345,6 +347,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamQwen21RefSize) dom.comfyParamQwen21RefSize.value = cp.qwen21RefSize || "";
     if (dom.comfyParamQwen21Cache) dom.comfyParamQwen21Cache.value = cp.qwen21Cache || "";
     if (dom.comfyParamQwen21CacheDtype) dom.comfyParamQwen21CacheDtype.value = cp.qwen21CacheDtype || "";
+    if (dom.comfyParamFlux3Upsample) dom.comfyParamFlux3Upsample.checked = cp.flux3Upsample !== false;
     if (dom.comfyParamCamStrength) dom.comfyParamCamStrength.value = cp.camStrength || "";
     state.camAzimuth = cp.camAzimuth || "front";
     state.camElevation = cp.camElevation || "eye";

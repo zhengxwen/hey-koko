@@ -182,6 +182,11 @@ const SENTINEL_IDS = {
 // These must cover the RESOLVED filenames too, not just what the dropdown lists — the
 // gallery records what actually ran, and a sentinel has become a real filename by then.
 const FILE_ID_RULES = [
+  // FLUX 3 Image Klein: the distilled checkpoint and "-base-" are DIFFERENT WEIGHTS (a flow
+  // map at 16 steps vs the undistilled model at 50), so two ids — base first, since the
+  // plain rule matches it too. No parameter count: BFL's name for it carries none.
+  [/flux.?3.*klein.*base/, "flux3-klein-base"],
+  [/flux.?3.*klein/, "flux3-klein"],
   [/flux.*kontext/, "flux1-kontext"],
   [/flux1?.?dev/, "flux1-dev"],
   [/pony/, "pony-v6-xl"],
@@ -327,6 +332,8 @@ const ID_LABELS = {
   "infinitetalk:speak": "InfiniteTalk (photo speaks)",
   "flux1-dev": "Flux.1 dev",
   "flux1-kontext": "Flux.1 Kontext",
+  "flux3-klein": "FLUX 3 Klein",
+  "flux3-klein-base": "FLUX 3 Klein Base",
   "pony-v6-xl": "Pony Diffusion V6 XL",
   "hidream-i1": "HiDream-I1",
   "hidream-o1": "HiDream-O1",
@@ -386,6 +393,10 @@ const ID_MAX_SIZE = [
   // non-square aspect is still inside what the card documents.
   // Both builds publish the same resolution table (the turbo card repeats it verbatim).
   [/^qwen-image-2\.1/, "2048x2048"],
+  // FLUX 3 Klein: BFL's reference pipeline caps an output canvas at 4 MiB of pixels
+  // (MATCH_MAX_PIXELS = 4 * 1024 * 1024, "native 4K" in their launch post) and the
+  // workflows they ship default to 4.0 MP — the square of that is 2048².
+  [/^flux3-klein/, "2048x2048"],
 ];
 
 function maxSizeForId(id) {

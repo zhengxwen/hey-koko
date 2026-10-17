@@ -1187,6 +1187,11 @@
               <option value="int4">int4 (quarter, lossier)</option>
             </select>
           </label>
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="FLUX 3 Klein only: before rendering, BFL's own prompt upsampler (a Qwen3.5-9B fine-tune) rewrites your request into the full scene caption the model was trained on — with pictures attached it looks at them and writes the edit around what is in them. BFL's advice is to always run it: a short prompt sent as typed gives generic output. The caption it wrote is shown under the result. Turn it off to send your own detailed caption exactly as typed.">
+            <input id="comfyParamFlux3Upsample" type="checkbox" checked />
+            <span id="comfyParamFlux3UpsampleLabel">Prompt upsampler (FLUX 3)</span>
+          </label>
+          <button id="comfyBoxBtn" type="button" class="secondary" title="FLUX 3 Klein only: drag boxes where things should go and say what each one is (over the first attached picture for an edit, or a blank canvas). Same as the --box flag.">🔲 <span id="comfyBoxLabel">Draw layout boxes</span></button>
           <!-- 3D camera picker (Qwen 2511 Multiple-Angles). The LoRA knows exactly 96
                poses, so this is a PICKER over a discrete grid rather than a free orbit:
                a dial for the 8 azimuths, a side view for the 4 elevations, 3 distances.
@@ -1441,6 +1446,30 @@
             <span class="maskSpacer"></span>
             <button id="trackCancel" type="button" class="secondary">Cancel</button>
             <button id="trackSave" type="button" class="primary maskSaveBtn">Use these tracks</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="boxModal" class="scanModalBackdrop" hidden>
+      <div class="scanModal maskModal" role="dialog" aria-modal="true" aria-labelledby="boxModalTitle">
+        <div class="scanModalHeader">
+          <h3 id="boxModalTitle" class="scanModalTitle">Draw layout boxes</h3>
+          <button id="boxModalClose" type="button" class="scanModalClose" aria-label="Close">✕</button>
+        </div>
+        <div class="maskBody">
+          <p class="hint" id="boxHint">Drag a box where something should go, then say what it is. Box N is &lt;obj_N&gt; — cite it in the prompt if you like. Boxes guide placement and size; they are not a hard mask. Esc cancels, ⌘/Ctrl+Z undoes.</p>
+          <div class="boxLayout">
+            <div class="maskStageScroll trackStage boxStage">
+              <canvas id="boxCanvas"></canvas>
+            </div>
+            <div id="boxList" class="boxList"></div>
+          </div>
+          <div class="maskControls">
+            <button id="boxUndo" type="button" class="secondary">Undo</button>
+            <button id="boxClear" type="button" class="secondary">Clear</button>
+            <span class="maskSpacer"></span>
+            <button id="boxCancel" type="button" class="secondary">Cancel</button>
+            <button id="boxSave" type="button" class="primary maskSaveBtn">Use these boxes</button>
           </div>
         </div>
       </div>

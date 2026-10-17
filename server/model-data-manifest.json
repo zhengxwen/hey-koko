@@ -1,0 +1,14 @@
+{
+  "flux3-pup": {
+    "about": "FLUX 3 Image Klein prompt upsampler: the four system prompts it was fine-tuned against (t2i, i2i, t2i_bbox, i2i_bbox). Read by buildFlux3Klein in server/comfy.js.",
+    "source": "https://huggingface.co/black-forest-labs/flux-3-image-klein-pup",
+    "license": "Apache-2.0 (Copyright Black Forest Labs)",
+    "files": {
+      "system_prompts.json": {
+        "url": "https://huggingface.co/black-forest-labs/flux-3-image-klein-pup/resolve/3f3edb52b2c55de0d49feab28598b68f7f8e4830/system_prompts.json",
+        "sha256": "b5da3ed8bc04ab59dbdb747930f7dbff847e868903fed8028f85ee1a4ac82fb4",
+        "bytes": 12602
+      }
+    }
+  }
+}

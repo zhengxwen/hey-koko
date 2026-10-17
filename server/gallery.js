@@ -204,6 +204,9 @@ function record({ kind, mime, b64, buffer, meta = {} }) {
     model: meta.model,          // the exact file that ran — for reproduction / forensics
     modelId: meta.modelId,      // canonical identity — what the UI groups and filters by
     prompt: meta.prompt,
+    // The caption the image model ACTUALLY received, when an in-graph upsampler rewrote the
+    // prompt (FLUX 3 Klein). `prompt` stays what the user typed.
+    expandedPrompt: meta.expandedPrompt,
     negative: meta.negative,
     seed: meta.seed,
     width: meta.width,
