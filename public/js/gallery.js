@@ -1300,10 +1300,15 @@ function renderDetail() {
         if (tag === "video") { try { media.pause(); } catch { /* not playable anyway */ } }
         const run = items
           .filter((x) => x.kind === "image" || x.kind === "video")
-          .map((x) => ({ kind: x.kind, src: fileUrl(x.path), poster: galleryThumbUrl(x.path), name: fileLabel(x) }));
+          .map((x) => ({ kind: x.kind, src: fileUrl(x.path), poster: galleryThumbUrl(x.path), name: fileLabel(x), id: x.path }));
         const at = run.findIndex((m) => m.src === url);
-        state.openMediaViewer(run.length ? run : [{ kind: e.kind, src: url, name: fileLabel(e) }],
-                              at >= 0 ? at : 0);
+        state.openMediaViewer(run.length ? run : [{ kind: e.kind, src: url, name: fileLabel(e), id: e.path }],
+                              at >= 0 ? at : 0,
+                              // Browsing ‹ › in the viewer IS browsing the gallery: come back
+                              // to the file you ended on, not the one you went in on. Only when
+                              // it actually moved — re-selecting the same tile would scroll and
+                              // pulse it for nothing.
+                              (last) => { if (last.id && last.id !== e.path) selectItem(last.id, { reveal: true }); });
       });
       wrap.appendChild(fs);
       pane.appendChild(wrap);

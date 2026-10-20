@@ -21,6 +21,7 @@ import { mediaSrc } from './utils.js';
 // ---------------------------------------------------------------------------
 let mixed = null;        // [{ kind, src, poster, name }] while a mixed run is open
 let mixedIndex = -1;
+let mixedOnClose = null; // caller's "you ended on this one" hook, see openMediaViewer
 let imgViewer = null;    // { open, close }, filled in by initLightbox
 let vidViewer = null;    // …and by initVideoLightbox
 
@@ -39,16 +40,34 @@ function openMixedAt(i) {
   }
 }
 
-/** Open a mixed image+video run at `index`. `list` items: {kind, src, poster, name}. */
-export function openMediaViewer(list, index = 0) {
+/**
+ * Open a mixed image+video run at `index`. `list` items: {kind, src, poster, name}.
+ * `onClose` is handed the item the run ENDED on — the user walks ‹ › to somewhere and
+ * closes, and the caller usually wants to be left sitting on that file rather than on
+ * whichever one the viewer was opened from. Items may carry extra fields (the gallery
+ * puts its `id` there); they are passed back untouched.
+ */
+export function openMediaViewer(list, index = 0, onClose = null) {
   if (!list || !list.length) return;
   mixed = [...list];
+  mixedOnClose = typeof onClose === "function" ? onClose : null;
   openMixedAt(index);
 }
 
 // Leaving either viewer ends the run — otherwise the next single-file open would still
 // be wired to a stale playlist.
-function endMixedRun() { mixed = null; mixedIndex = -1; }
+function endMixedRun() {
+  const last = mixedIndex >= 0 && mixed ? mixed[mixedIndex] : null;
+  const notify = mixedOnClose;
+  // Clear FIRST: the callback is free to open a new run (or anything else), and must not
+  // have its state torn down a line later.
+  mixed = null;
+  mixedIndex = -1;
+  mixedOnClose = null;
+  if (notify && last) {
+    try { notify(last); } catch { /* a caller's bookkeeping must never block closing */ }
+  }
+}
 
 export function initLightbox() {
   const lightbox = document.createElement("div");

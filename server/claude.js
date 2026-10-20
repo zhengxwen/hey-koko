@@ -165,6 +165,11 @@ async function listModels(res) {
   } catch {
     models = [];
   }
+  // Same reason as the cloud entries below: the dropdown names each model's source,
+  // and for a local model that is whichever Ollama the LLM address points at.
+  let ollamaHost = "";
+  try { ollamaHost = new URL(config.ollamaUrl).host; } catch { ollamaHost = config.ollamaUrl; }
+  for (const m of models) if (m && !m.host) m.host = ollamaHost;
   const cfg = loadConfig();
   if (cfg) {
     let claudeIds;
@@ -175,9 +180,11 @@ async function listModels(res) {
       claudeIds = disc ? disc.ids : DEFAULT_MODELS; // fallback if /v1/models unavailable
     }
     const existing = new Set(models.map((m) => m.name));
+    let claudeHost = "";
+    try { claudeHost = new URL(cfg.baseUrl).host; } catch { claudeHost = cfg.baseUrl; }
     for (const name of claudeIds) {
       // cloud:true lets the frontend badge these (☁️) apart from local models.
-      if (!existing.has(name)) models.push({ name, model: name, cloud: true });
+      if (!existing.has(name)) models.push({ name, model: name, cloud: true, host: claudeHost });
     }
   }
   // Sibling cloud provider: append any configured OpenAI models too, so a single

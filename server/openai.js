@@ -341,6 +341,16 @@ function isLocalEndpoint(baseUrl) {
   try { h = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, ""); } catch { return false; }
   if (h === "localhost" || h === "::1") return true;
   if (/\.(local|lan|home|internal)$/.test(h)) return true;          // mDNS + common LAN suffixes
+  // A WireGuard mesh (Tailscale/Headscale) is the user's own machines reached over an
+  // encrypted tunnel, so it belongs here even though the address is not RFC 1918: the
+  // 100.64/10 range is carrier-NAT space no vendor endpoint can live in, and MagicDNS
+  // names end in .ts.net. Without this, the same vLLM box is "LAN" on 192.168.x and
+  // "online" on its tailnet address — hidden behind "allow online models" and badged ☁️.
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return true;   // 100.64/10 CGNAT
+  if (/\.ts\.net$/.test(h)) return true;                            // MagicDNS
+  // A single-label name resolves only through something local (MagicDNS, mDNS, /etc/hosts,
+  // the router's DNS) — a hosted vendor endpoint always has dots.
+  if (!h.includes(".")) return true;
   if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h)) return true;
   if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;             // 172.16/12
   if (/^169\.254\./.test(h) || /^fe80:/.test(h) || /^f[cd]/.test(h)) return true;  // link-local + ULA
@@ -368,8 +378,13 @@ async function injectModels(models) {
       }
     }
     const lan = isLocalEndpoint(cfg.baseUrl);
+    // The endpoint this model actually runs on. The dropdown shows it as the model's
+    // source, and the host is the only honest answer: `kind:"openai"` just means
+    // "configured in openai.json", which may be DeepSeek or a vLLM on the LAN.
+    let host = "";
+    try { host = new URL(cfg.baseUrl).host; } catch { host = cfg.baseUrl; }
     for (const name of ids) {
-      if (!existing.has(name)) { models.push({ name, model: name, cloud: true, lan }); existing.add(name); }
+      if (!existing.has(name)) { models.push({ name, model: name, cloud: true, lan, host }); existing.add(name); }
     }
   }
 }
@@ -802,6 +817,13 @@ async function listAllModels() {
       clearTimeout(to);
       if (!r.ok) continue;
       data = await r.json();
+      // Opening the browse dialog IS the user asking to look again, and this answer is
+      // newer than whatever discoverModels cached for the dropdown (5-minute TTL). Drop
+      // that entry so the next /api/models poll re-reads the endpoint: otherwise the
+      // dialog shows what a self-hosted server has loaded right now while the dropdown
+      // still offers the model it was serving before it was restarted. Only on success —
+      // a cached list beats an empty one when the endpoint merely hiccuped.
+      _discovered.delete(cfg.baseUrl);
     } catch { clearTimeout(to); continue; }
 
     for (const m of data.data || []) {

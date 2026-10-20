@@ -132,6 +132,60 @@ export function relocalizeBrowseOption() {
   // next poll would be the most visible untranslated string in the app.
   const none = dom.modelSelect?.querySelector('option[data-empty="1"]');
   if (none) none.textContent = t("model_none");
+  // The optgroup labels are localized ("自建端点", "在线") and built in JS, so applyI18n's
+  // static-DOM pass never sees them — repaint from the cached list. Model NAMES are not
+  // translatable, so only the group headers actually change.
+  if (_lastModelList) paintModelOptions(_lastModelList);
+}
+
+// Models bucketed by WHERE THEY RUN, as optgroups: this machine's Ollama first, then
+// anything self-hosted on your own network, then one group per online vendor. The group
+// label is what makes the source visible — macOS draws the open popup itself and renders
+// optgroup labels, but not per-option tooltips. The host is the honest half of the label:
+// `kind:"openai"` only means "configured in openai.json", which may be DeepSeek or a vLLM
+// two rooms away.
+function groupModelsBySource(listed) {
+  const groups = new Map();   // label -> { rank, items } — insertion order within a rank
+  for (const m of listed) {
+    // Dropdown rows flag cloud entries, not local ones. A cloud row with no host at all
+    // is an ad-hoc pick remembered in localStorage, routed by model id alone.
+    const isOllama = !m.cloud;
+    const rank = isOllama ? 0 : m.lan ? 1 : 2;
+    const label = `${isOllama ? "💻" : m.lan ? "🏠" : "☁️"} ${sourceLabel(m, isOllama)}`;
+    if (!groups.has(label)) groups.set(label, { rank, items: [] });
+    groups.get(label).items.push(m);
+  }
+  // Array sort is stable, so same-rank groups keep the order they first appeared in.
+  return [...groups.entries()].sort((a, b) => a[1].rank - b[1].rank);
+}
+
+// Last list painted into the dropdown, kept so a UI-language switch can rebuild the
+// optgroup labels without a network round-trip (same reason _lastComfyData exists).
+let _lastModelList = null;
+
+// Build the dropdown's options. Separate from loadModels so a language switch can
+// repaint without re-polling; the caller owns the selection (this only preserves it).
+function paintModelOptions(listed) {
+  const keep = dom.modelSelect.value;
+  dom.modelSelect.innerHTML = "";
+  for (const [label, g] of groupModelsBySource(listed)) {
+    const group = document.createElement("optgroup");
+    group.label = label;
+    for (const m of g.items) {
+      const option = document.createElement("option");
+      option.value = m.name;  // raw name — this is what /api/chat receives
+      // The symbol stays on the option too: the CLOSED control shows only the selected
+      // option's text, so without it the kind cue would vanish with the popup.
+      option.textContent = (m.cloud ? (m.lan ? "🏠 " : "☁️ ") : "💻 ") + m.name;
+      option.dataset.model = "1";               // a real model, as opposed to a placeholder
+      if (m.cloud) option.dataset.cloud = "1";  // lets the send-status pill badge cloud requests
+      if (m.lan) option.dataset.lan = "1";      // …but it is not "online" — see updateCloudBadge
+      group.appendChild(option);
+    }
+    dom.modelSelect.appendChild(group);
+  }
+  appendBrowseOption();   // last entry, outside every group — opens the full-catalog picker
+  if (keep) dom.modelSelect.value = keep;
 }
 
 export async function loadModels({ force = false } = {}) {
@@ -161,6 +215,7 @@ export async function loadModels({ force = false } = {}) {
     const hasRealOptions = [...dom.modelSelect.options].some((o) => o.dataset.model === "1");
     if (!force && hasRealOptions) return;
     dom.modelSelect.innerHTML = "";
+    _lastModelList = null;   // nothing to repaint on a language switch but the placeholder
     const opt = document.createElement("option");
     opt.value = "";
     opt.textContent = t("model_none");
@@ -176,19 +231,8 @@ export async function loadModels({ force = false } = {}) {
   const names = listed.map((m) => m.name);
   const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
   const current = saved.model || dom.modelSelect.value;
-  dom.modelSelect.innerHTML = "";
-  for (const m of listed) {
-    const option = document.createElement("option");
-    option.value = m.name;  // raw name — this is what /api/chat receives
-    // Symbol prefix only in the label: ☁️ online, 🏠 your own network (a self-hosted
-    // OpenAI-compatible server), 💻 this machine's Ollama.
-    option.textContent = (m.cloud ? (m.lan ? "🏠 " : "☁️ ") : "💻 ") + m.name;
-    option.dataset.model = "1";               // a real model, as opposed to a placeholder
-    if (m.cloud) option.dataset.cloud = "1";  // lets the send-status pill badge cloud requests
-    if (m.lan) option.dataset.lan = "1";      // …but it is not "online" — see updateCloudBadge
-    dom.modelSelect.appendChild(option);
-  }
-  appendBrowseOption();   // last entry — opens the full-catalog picker (local + cloud)
+  _lastModelList = listed;
+  paintModelOptions(listed);
 
   if (current && names.includes(current)) {
     dom.modelSelect.value = current;
@@ -215,11 +259,24 @@ const PROVIDER_LABELS = {
   "api.groq.com": "Groq",
   "api.mistral.ai": "Mistral",
 };
-function providerLabel(m) {
-  if (m.local) return t("mb_local");   // installed in Ollama, not a cloud catalogue entry
+// Where a model runs, in words — shared by the dropdown's optgroup headers and the
+// browse dialog's source chip so both name a node the same way. Local models name their
+// endpoint too: with several Ollama boxes on the network, "Local" does not say WHICH,
+// and that is exactly what you need to know when two of them serve the same model name.
+// `isOllama` is passed in because the two callers carry different shapes: the dropdown
+// marks cloud entries with `cloud:true`, the browse dialog marks local ones with
+// `local:true`, and neither sets the other's flag.
+function sourceLabel(m, isOllama) {
   const host = String(m.host || "").replace(/^www\./, "");
+  if (isOllama) return host ? `Ollama · ${host}` : "Ollama";
+  if (m.lan) return host ? `${t("model_srcSelfHosted")} · ${host}` : t("model_srcSelfHosted");
   return PROVIDER_LABELS[host] || host
-    || (m.provider === "openrouter" ? "OpenRouter" : m.provider === "claude" ? "Claude" : "OpenAI");
+    || (m.provider === "openrouter" ? "OpenRouter" : m.provider === "claude" ? "Claude"
+        : m.provider === "openai" ? "OpenAI" : t("model_srcCloud"));
+}
+
+function providerLabel(m) {
+  return sourceLabel(m, !!m.local);   // browse rows flag Ollama models with local:true
 }
 
 // Full-catalog model picker: every model installed locally in Ollama PLUS every
@@ -272,6 +329,13 @@ export async function openModelBrowser() {
     listEl.textContent = t("mb_failed", { error: (e && e.message) || "?" });
     return;
   }
+  // That one request re-queried every endpoint — Ollama, the clouds, and the
+  // OpenAI-compatible server named in local-openai.json — and the server dropped its
+  // discovery cache for each one that answered. Rebuild the dropdown from the same
+  // fresh truth, so 🔍 and the dropdown cannot disagree about what a self-hosted
+  // endpoint is serving. Runs even when the list came back empty: an endpoint that
+  // now serves nothing should leave the dropdown too.
+  reloadLlmModelLists();
   if (!all.length) { listEl.textContent = t("mb_empty"); return; }
 
   const render = () => {
