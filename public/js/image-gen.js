@@ -129,6 +129,9 @@ function comfyOverrides() {
   // Texture quality tier; "standard" is the server's own default so it needn't travel.
   const paintQuality = dom.comfyParamPaintQuality?.value;
   if (paintQuality && paintQuality !== "standard") ov.paintQuality = paintQuality;
+  // TRELLIS.2 / Pixal3D texture size; 4096 is the template's (and the server's) default.
+  const meshTexSize = dom.comfyParamMeshTexSize?.value;
+  if (meshTexSize && meshTexSize !== "4096") ov.meshTexSize = Number(meshTexSize);
   const meshGaussians = num(dom.comfyParamMeshGaussians?.value);
   if (meshGaussians !== undefined) ov.meshGaussians = meshGaussians; // TripoSplat num_gaussians
   if (dom.comfyParamMogeSubject?.checked) ov.mogeSubjectOnly = true; // MoGe: cut the subject out instead of the whole scene

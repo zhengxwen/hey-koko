@@ -97,6 +97,7 @@ export function saveCurrentSettings() {
         // the restore side below has to read it as "absent means ticked".
         paintMesh: dom.comfyParamPaintMesh ? dom.comfyParamPaintMesh.checked : true,
         paintQuality: dom.comfyParamPaintQuality?.value || "standard",
+        meshTexSize: dom.comfyParamMeshTexSize?.value || "4096",
         videoCodec: dom.comfyParamVideoCodec?.value || "h264",
         videoCrf: dom.comfyParamVideoCrf?.value || "",
         berniniMode: dom.comfyParamBerniniMode?.value || "",
@@ -377,6 +378,7 @@ export function loadSavedSettings() {
     // and !! would silently turn texturing off for everyone who had ever saved once.
     if (dom.comfyParamPaintMesh) dom.comfyParamPaintMesh.checked = cp.paintMesh !== false;
     if (dom.comfyParamPaintQuality) dom.comfyParamPaintQuality.value = cp.paintQuality || "standard";
+    if (dom.comfyParamMeshTexSize) dom.comfyParamMeshTexSize.value = cp.meshTexSize || "4096";
     if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = cp.videoCodec || "h264";
     if (dom.comfyParamVideoCrf) dom.comfyParamVideoCrf.value = cp.videoCrf || "";
     // berniniMode replaced the two separate checkboxes — fall back to the old keys so

@@ -976,6 +976,14 @@
               <option id="optPaintQUltra" value="ultra">Ultra · 4096 map · ~17 MB · ~5× slower</option>
             </select>
           </label>
+          <label>
+            <span id="comfyParamMeshTexSizeLabel" title="TRELLIS.2 / Pixal3D only. Size of the colour, metal/roughness and normal maps baked onto the model. The ~700k-face mesh itself is about 27 MB at every setting, so this only trims the rest. Measured on one model: 4096 → 52 MB (the official recipe) · 2048 → 37 MB · 1024 → 30 MB, render time about the same. Zoomed in on the viewer, 2048 is hard to tell from 4096; 1024 is visibly softer on fine patterns. Large models make the conversation slower to save and reload.">Texture size (TRELLIS.2 / Pixal3D)</span>
+            <select id="comfyParamMeshTexSize">
+              <option id="optMeshTex4096" value="4096">4096 · ~52 MB (official)</option>
+              <option id="optMeshTex2048" value="2048">2048 · ~37 MB</option>
+              <option id="optMeshTex1024" value="1024">1024 · ~30 MB</option>
+            </select>
+          </label>
           <label class="checkboxLabel comfyParamCheck" title="Hunyuan3D only. Normally the subject is cut out of the photo and placed on white before the model sees it — otherwise the background is reconstructed too and comes out as a big flat slab behind the object. Tick this to skip that and feed the photo as-is: useful only when the automatic cut-out grabs the wrong thing, or when your image is already cut out.">
             <input id="comfyParamKeepBackground" type="checkbox" />
             <span id="comfyParamKeepBackgroundLabel">Keep photo background (Hunyuan3D)</span>

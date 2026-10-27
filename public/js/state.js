@@ -99,6 +99,7 @@ export const dom = {
   comfyParamShapeTokens: document.querySelector("#comfyParamShapeTokens"),
   comfyParamPaintMesh: document.querySelector("#comfyParamPaintMesh"),
   comfyParamPaintQuality: document.querySelector("#comfyParamPaintQuality"),
+  comfyParamMeshTexSize: document.querySelector("#comfyParamMeshTexSize"),
   comfyParamKeepBackground: document.querySelector("#comfyParamKeepBackground"),
   comfyParamMeshGaussians: document.querySelector("#comfyParamMeshGaussians"),
   comfyParamMogeDetail: document.querySelector("#comfyParamMogeDetail"),

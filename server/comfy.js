@@ -863,6 +863,13 @@ const MOGE_MESH = "moge-mesh";
 // auto-detect on aspect ratio — a 2:1 crop of an ordinary photo is not a panorama,
 // and guessing wrong wastes a minute of merging.
 const MOGE_PANORAMA = "moge-panorama";
+// TRELLIS.2 (Microsoft) and Pixal3D (Tsinghua + Tencent ARC, built on TRELLIS.2's
+// backbone, VAEs and DINOv3 encoder) — photo → PBR-textured mesh, native in ComfyUI
+// core. Real UNET files, so real dropdown entries like Hunyuan3D. Both share a pair of
+// trellis_2_*_vae files, hence the /vae/ guard. Pixal3D's multi-view build takes four
+// views through a different conditioning node and is not wired — kept out.
+const TRELLIS2_RE = /trellis[._-]?2/i;
+const PIXAL3D_RE = /pixal[._-]?3d/i;
 
 // Third classifier next to videoTypeOf/editTypeOf: models whose output is a 3D FILE
 // (.glb/.spz), not pixels. Hunyuan3D is a real checkpoint file; the other two are
@@ -881,6 +888,9 @@ function meshTypeOf(model) {
   if (model === MOGE_PANORAMA) return "moge-pano";
   // hunyuan_3d_v2.1.safetensors — disjoint from videoTypeOf's /hunyuan.?video/.
   if (/hunyuan[._-]?3d/i.test(model)) return "hunyuan3d";
+  if (/vae/i.test(model)) return null;
+  if (PIXAL3D_RE.test(model)) return /multi.?view/i.test(model) ? null : "pixal3d";
+  if (TRELLIS2_RE.test(model)) return "trellis2";
   return null;
 }
 
@@ -1821,6 +1831,8 @@ function videoRank(n) {
 }
 function meshRank(n) {
   if (meshTypeOf(n) === "hunyuan3d") return 1; // the "real" 3D generator first
+  if (meshTypeOf(n) === "pixal3d") return 1.2;
+  if (meshTypeOf(n) === "trellis2") return 1.4;
   if (n === TRIPOSPLAT) return 2;
   if (n === MOGE_MESH) return 3;
   if (n === MOGE_PANORAMA) return 4;
@@ -1897,6 +1909,12 @@ function isModelReady(name, group, type) {
   // Before the READY list: /hunyuan/ there would wrongly claim the 3D checkpoint
   // for HunyuanVideo's entry — match it explicitly instead.
   if (/hunyuan[._-]?3d/i.test(b)) return true;
+  // Pixal3D / TRELLIS.2 — verified live on the Spark (ComfyUI 0.41.3, bf16, 2026-10-26):
+  // one zebra-finch photo, a textured PBR GLB from each in ~3.3 min, plumage faithful to
+  // the photo and a plausible back; Pixal3D's comes out in the photo's own camera frame.
+  // Both remesh branches have run: "udf" on 0.41.3, "solid" after the box went to 0.43.0
+  // (same photo and seed: shape all but identical, 139 s / 166 s, 48 / 52 MB).
+  if (meshTypeOf(name) === "pixal3d" || meshTypeOf(name) === "trellis2") return true;
   // fun_vace is surfaced via the generic /wan/ branch but has NO VACE-specific
   // builder (buildWan14B would run it as a plain t2v, ignoring the control/ref
   // inputs) — treat as not-yet-wired until a real VACE graph exists.
@@ -2181,6 +2199,17 @@ async function proxyComfyModels(req, res) {
       // paint = the texturing wrapper is installed, so the ⚙ "texture the model"
       // box is worth showing. Without it the chain still runs, just white.
       meshModels.push({ name: hunyuan3dCkpt, type: "hunyuan3d", needsImages: 1, paint: await comfyHasNodes(PAINT_NODES) });
+    }
+    // TRELLIS.2 / Pixal3D: one graph, two DiTs. Companions (two VAEs, DINOv3-L, MoGe
+    // for Pixal3D's FOV) are resolved at generation time with a named-file error — the
+    // TripoSplat policy. Precision builds of one DiT collapse in dedupePrecision.
+    const trellisUnets = unets.filter((n) => meshTypeOf(n) === "pixal3d" || meshTypeOf(n) === "trellis2");
+    if (trellisUnets.length && await comfyHasNodes(TRELLIS2_NODES)) {
+      const pixalOk = await comfyHasNodes(PIXAL3D_NODES);
+      for (const n of trellisUnets) {
+        if (meshTypeOf(n) === "pixal3d" && !pixalOk) continue;
+        meshModels.push({ name: n, type: meshTypeOf(n), needsImages: 1 });
+      }
     }
     if (unets.some((n) => /triposplat/i.test(n)) && await comfyHasNodes(["TripoSplatPreprocessImage", "TripoSplatConditioning", "VAEDecodeTripoSplat", "SplatToMesh", "SaveGLB"])) {
       meshModels.push({ name: TRIPOSPLAT, type: "triposplat", needsImages: 1, precFrom: unets.find((n) => /triposplat/i.test(n)) });
@@ -7924,6 +7953,109 @@ function buildTripoSplat({ imageName, comp, seed, steps = 20, cfg = 3, sampler =
   return g;
 }
 
+// TRELLIS.2 / Pixal3D image → PBR-textured mesh. Flattened from the official
+// `3d_pixal3d_trellis2_image_to_model` template, where a Boolean picks the DiT: the two
+// differ ONLY in the diffusion model and the conditioning node. Pixal3D is pixel-
+// aligned, so it also takes the photo's horizontal FOV, which the template estimates
+// with MoGe-2. Node ids are the template's own, so a diff against it stays readable.
+//
+// Three cascaded stages share one DiT: a 32³ structure pass (shift 5, guidance dropped
+// for the last third, RescaleCFG 0.7), a shape pass plus a 1536 upsample pass (guidance
+// dropped for the last 23%, rescale 0.5), then the texture pass at cfg 1. The template's
+// own note: "CFG override and rescaleCFG are to match the original default pipeline
+// behaviour" — copied, not tuned. It pins seeds 56/42/42/43 on the four samplers; any
+// value is as good as another, so one seed drives all four and a rerun reproduces.
+//
+// Then plain mesh processing: remesh at 768 → decimate to 700k faces → smooth
+// normals → UV unwrap → base colour / metallic / roughness baked from the texture
+// voxels, normal + AO maps baked from the high-poly remesh → one GLB. Core SaveGLB
+// writes UVs and every map (mesh_item_to_glb_bytes, the same writer as MeshToFile3D),
+// so it stands in for the template's Save3DAdvanced and reports under `3d` like the
+// other chains. The template's PreviewImage / MaskPreview / GetMeshInfo are editor-only
+// pass-throughs and are wired around.
+//
+// Input prep is the template's: the subject is cut out and cropped to a centred 1024²
+// square composited on BLACK (ImageCropToMask = img·mask). The mask is the painted 🖌
+// one, else BiRefNet, else the image's own alpha — the TripoSplat ladder.
+// ⚙ texture size (texSize): the template's "Texture Resolution" primitive drives the UV
+// atlas and the colour/metal/roughness bake together; the normal (2048) and AO (1024)
+// bakes are fixed in the template and are capped to it here so a small tier stays small.
+const TRELLIS2_TEX_SIZES = [4096, 2048, 1024];
+function buildTrellis2({ variant, unet, comp, imageName, seed, maskName = null, texSize = 4096 }) {
+  const cond = variant === "pixal3d" ? "298" : "299";
+  const sampler = (model, positive, latent, steps, cfg, scheduler = "normal") => ({ class_type: "KSampler",
+    inputs: { model, positive: [positive, 0], negative: [positive, 1], latent_image: latent, seed, steps, cfg, sampler_name: "euler", scheduler, denoise: 1 } });
+  const g = {
+    "122": { class_type: "LoadImage", inputs: { image: imageName } },
+    "312": { class_type: "ImageCropToMask", inputs: { images: ["122", 0], masks: ["192", 0], width: 1024, height: 1024, pad_factor: 1.1, grow_mask: 0, background: "#000000" } },
+    "15": { class_type: "CLIPVisionLoader", inputs: { clip_name: comp.dino } },
+    "319": { class_type: "UNETLoader", inputs: { unet_name: unet, weight_dtype: "default" } },
+    "117": { class_type: "VAELoader", inputs: { vae_name: comp.shapeVae } },
+    "118": { class_type: "VAELoader", inputs: { vae_name: comp.textureVae } },
+    // Structure: 32³ occupancy.
+    "199": { class_type: "CFGOverride", inputs: { model: ["319", 0], cfg: 1, start_percent: 0.667, end_percent: 1 } },
+    "125": { class_type: "RescaleCFG", inputs: { model: ["199", 0], multiplier: 0.7 } },
+    "108": { class_type: "ModelSamplingSD3", inputs: { model: ["125", 0], shift: 5 } },
+    "87": { class_type: "EmptyTrellis2LatentStructure", inputs: { batch_size: 1 } },
+    "3": sampler(["108", 0], cond, ["87", 0], 12, 7.5),
+    "119": { class_type: "VaeDecodeStructureTrellis2", inputs: { samples: ["3", 0], vae: ["117", 0], resolution: "32" } },
+    // Shape, then the upsample to the 1536 grid.
+    "91": { class_type: "Trellis2ShapeStage", inputs: { positive: [cond, 0], negative: [cond, 1], voxel: ["119", 0] } },
+    "279": { class_type: "CFGOverride", inputs: { model: ["319", 0], cfg: 1, start_percent: 0.769, end_percent: 1 } },
+    "126": { class_type: "RescaleCFG", inputs: { model: ["279", 0], multiplier: 0.5 } },
+    "18": sampler(["126", 0], "91", ["91", 2], 20, 7.5),
+    "94": { class_type: "Trellis2UpsampleStage", inputs: { positive: ["91", 0], negative: ["91", 1], shape_latent: ["18", 0], vae: ["117", 0], target_resolution: 1536 } },
+    "23": sampler(["126", 0], "94", ["94", 2], 12, 7.5, "simple"),
+    "92": { class_type: "VaeDecodeShapeTrellis", inputs: { samples: ["23", 0], vae: ["117", 0] } },
+    // Texture (PBR material voxels).
+    "98": { class_type: "Trellis2TextureStage", inputs: { positive: ["94", 0], negative: ["94", 1], shape_latent: ["23", 0] } },
+    "12": sampler(["319", 0], "98", ["98", 2], 12, 1),
+    "93": { class_type: "VaeDecodeTextureTrellis", inputs: { samples: ["12", 0], vae: ["118", 0], shape_subdivides: ["92", 1] } },
+    // Mesh post-processing and baking. The 0.42 template remeshes in "solid" mode; that
+    // option is new in 0.42, and 0.41's template (same graph otherwise) uses "udf".
+    // An unknown DynamicCombo key passes /prompt validation and only fails at run time
+    // ("missing ... 'sign_mode'"), so the mode follows what the box's node offers.
+    "241": { class_type: "RemeshMesh", inputs: { mesh: ["92", 0], resolution: 768,
+      ...(comp.remeshSolid
+        ? { sign_mode: "solid", "sign_mode.fill": 20, "sign_mode.qef": false }
+        : { sign_mode: "udf", "sign_mode.qef": false, "sign_mode.drop_inverted_components": false, "sign_mode.drop_enclosed_components": false }),
+      band: 1, project_back: 0, fix_poles: false, smooth_iters: 20, drop_small_components: 0.01, precluster_max_verts: 20000000 } },
+    "186": { class_type: "DecimateMesh", inputs: { mesh: ["241", 0], target_face_count: 700000, placement_mode: "midpoint" } },
+    "238": { class_type: "MeshSmoothNormals", inputs: { mesh: ["186", 0], crease_angle: 180 } },
+    "196": { class_type: "UnwrapMesh", inputs: { mesh: ["238", 0], segmenter: "pec", resolution: texSize, padding: 1, weld_distance: 0.0002 } },
+    "147": { class_type: "BakeTextureFromVoxel", inputs: { mesh: ["196", 0], voxel_colors: ["93", 0], reference_mesh: ["92", 0], texture_size: texSize } },
+    "224": { class_type: "BakeNormalMapFromMesh", inputs: { low_poly: ["196", 0], high_poly: ["241", 0], resolution: Math.min(2048, texSize), cage_distance: 0.05, ignore_backfaces: true } },
+    "233": { class_type: "BakeAmbientOcclusion", inputs: { low_poly: ["196", 0], high_poly: ["241", 0], resolution: Math.min(1024, texSize), samples: 64, max_distance: 0.71, strength: 1, bias: 0.01 } },
+    "210": { class_type: "ApplyTextureToMesh", inputs: { mesh: ["196", 0], base_color: ["147", 0], metallic: ["147", 1], roughness: ["147", 2], occlusion: ["233", 0], normal_map: ["224", 0] } },
+    "260": { class_type: "MeshSmoothNormals", inputs: { mesh: ["210", 0], crease_angle: 180 } },
+    "285": { class_type: "SaveGLB", inputs: { mesh: ["260", 0], filename_prefix: `${outDir(OUT_3D)}/mesh` } },
+  };
+  if (variant === "pixal3d") {
+    g["55"] = { class_type: "LoadMoGeModel", inputs: { model_name: comp.mogeModel } };
+    g["56"] = { class_type: "MoGeInference", inputs: { moge_model: ["55", 0], image: ["312", 0], resolution_level: 9, fov_x_degrees: 0, batch_size: 4, force_projection: true, apply_mask: true, refine_steps: 3 } };
+    g["242"] = { class_type: "MoGeGeometryToFOV", inputs: { moge_geometry: ["56", 0], axis: "horizontal", unit: "degrees" } };
+    g["298"] = { class_type: "Pixal3DConditioning", inputs: { clip_vision_model: ["15", 0], image: ["312", 0], camera_angle_x: ["242", 0] } };
+  } else {
+    g["299"] = { class_type: "Trellis2Conditioning", inputs: { clip_vision_model: ["15", 0], image: ["312", 0] } };
+  }
+  if (maskName) {
+    g["192"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "red" } };
+  } else if (comp.birefnet) {
+    g["193"] = { class_type: "LoadBackgroundRemovalModel", inputs: { bg_removal_name: comp.birefnet } };
+    g["192"] = { class_type: "RemoveBackground", inputs: { bg_removal_model: ["193", 0], image: ["122", 0] } };
+  } else {
+    // LoadImage's mask is 1 − alpha; a photo with no alpha comes out all-subject.
+    g["192"] = { class_type: "InvertMask", inputs: { mask: ["122", 1] } };
+  }
+  return g;
+}
+
+const TRELLIS2_NODES = ["EmptyTrellis2LatentStructure", "Trellis2ShapeStage", "Trellis2UpsampleStage", "Trellis2TextureStage",
+  "VaeDecodeStructureTrellis2", "VaeDecodeShapeTrellis", "VaeDecodeTextureTrellis", "Trellis2Conditioning", "CFGOverride",
+  "RescaleCFG", "ImageCropToMask", "RemeshMesh", "DecimateMesh", "MeshSmoothNormals", "UnwrapMesh", "BakeTextureFromVoxel",
+  "BakeNormalMapFromMesh", "BakeAmbientOcclusion", "ApplyTextureToMesh", "SaveGLB"];
+const PIXAL3D_NODES = ["Pixal3DConditioning", "LoadMoGeModel", "MoGeInference", "MoGeGeometryToFOV"];
+
 // Hunyuan3D's PBR texturing chain. ComfyUI ships only the shape model, so these all
 // come from the ComfyUI-Hunyuan3DWrapper custom node plus the paint weights
 // (hunyuan3d-paintpbr-v2-1) — absent on a stock install, which is why every use is
@@ -7979,7 +8111,9 @@ async function meshCompanions(meshType) {
       comfyEnum("LoadBackgroundRemovalModel", "bg_removal_name").catch(() => []),
     ]);
     const unet = unets.find((n) => /triposplat/i.test(n));
-    const dino = clips.find((n) => /dino_v3/i.test(n));
+    // ViT-H only. TRELLIS.2/Pixal3D put a DINOv3 ViT-L in the same folder, and
+    // "dino_v3_L_naf…" sorts before "dino_v3_vit_h" — a bare /dino_v3/ would load it.
+    const dino = clips.find((n) => /dino[._-]?v3[._-]?vit[._-]?h(?=[._-]|$)/i.test(n));
     const splatVae = vaes.find((n) => /triposplat.*vae|triposplat_vae_decoder/i.test(n));
     const flux2Vae = vaes.find((n) => /flux2.?vae/i.test(n));
     const missing = [];
@@ -7990,6 +8124,32 @@ async function meshCompanions(meshType) {
     if (missing.length) throw new Error(`Missing TripoSplat files (huggingface.co/VAST-AI/TripoSplat):\n- ${missing.join("\n- ")}`);
     // birefnet is optional — absent, the input image's own alpha is the mask.
     return { unet, dino, splatVae, flux2Vae, birefnet: bgs.find((n) => /birefnet/i.test(n)) || null };
+  }
+  if (meshType === "trellis2" || meshType === "pixal3d") {
+    const [clips, vaes, bgs, moges, signModes] = await Promise.all([
+      comfyEnum("CLIPVisionLoader", "clip_name").catch(() => []),
+      comfyEnum("VAELoader", "vae_name").catch(() => []),
+      comfyEnum("LoadBackgroundRemovalModel", "bg_removal_name").catch(() => []),
+      meshType === "pixal3d" ? comfyEnum("LoadMoGeModel", "model_name").catch(() => []) : [],
+      // A DynamicCombo's options come back as { key, inputs } objects.
+      comfyEnum("RemeshMesh", "sign_mode").catch(() => []),
+    ]);
+    const shapeVae = vaes.find((n) => TRELLIS2_RE.test(n) && /shape/i.test(n));
+    const textureVae = vaes.find((n) => TRELLIS2_RE.test(n) && /texture/i.test(n));
+    // DINOv3 ViT-L: the template's NAF build, or the plain one Comfy-Org ships beside
+    // TRELLIS.2 ("also works", per the docs). Never TripoSplat's ViT-H.
+    const dino = clips.find((n) => /dino[._-]?v3[._-]?l[._-]?naf/i.test(n))
+      || clips.find((n) => /dino[._-]?v3[._-]?vit[._-]?l(?=[._-]|$)/i.test(n));
+    const mogeModel = moges.find((n) => /moge_2.*normal/i.test(n)) || moges[0];
+    const missing = [];
+    if (!shapeVae) missing.push("vae/trellis_2_shape_vae_bf16.safetensors");
+    if (!textureVae) missing.push("vae/trellis_2_texture_vae_bf16.safetensors");
+    if (!dino) missing.push("clip_vision/dino_v3_L_naf_fp32.safetensors");
+    if (meshType === "pixal3d" && !mogeModel) missing.push("geometry_estimation/moge_2_vitl_normal_fp16.safetensors (huggingface.co/Comfy-Org/MoGe)");
+    if (missing.length) throw new Error(`Missing ${meshType === "pixal3d" ? "Pixal3D" : "TRELLIS.2"} files (huggingface.co/Comfy-Org/Pixal3D):\n- ${missing.join("\n- ")}`);
+    // birefnet is optional — absent, the input image's own alpha is the mask.
+    return { shapeVae, textureVae, dino, mogeModel, birefnet: bgs.find((n) => /birefnet/i.test(n)) || null,
+      remeshSolid: signModes.some((o) => (o && o.key) === "solid") };
   }
   return {};
 }
@@ -10118,6 +10278,11 @@ async function generateComfyImage(req, res) {
             sampler: opts.sampler || "dpmpp_2m", scheduler: opts.scheduler || "simple",
             numGaussians: opts.meshGaussians || 262144,
             meshDetail, maskName: meshMaskName });
+        } else if (meshType === "trellis2" || meshType === "pixal3d") {
+          const comp = await meshCompanions(meshType);
+          const texSize = Number(opts.meshTexSize);
+          workflow = buildTrellis2({ variant: meshType, unet: model, comp, imageName, seed, maskName: meshMaskName,
+            texSize: TRELLIS2_TEX_SIZES.includes(texSize) ? texSize : 4096 });
         } else {
           sendJson(res, 400, { error: `3D chain "${meshType}" is not wired yet.` });
           return;

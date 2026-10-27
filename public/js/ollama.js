@@ -1269,6 +1269,8 @@ function comfyModelHint(name) {
   if (/video-enhance/.test(n)) return t("oll_hint_videoEnhance");
   // 3D chains — hunyuan_3d BEFORE the generic /hunyuan/ (HunyuanVideo) test.
   if (/hunyuan[._-]?3d/.test(n)) return t("oll_hint_hunyuan3d");
+  if (/pixal[._-]?3d/.test(n)) return t("oll_hint_pixal3d");
+  if (/trellis[._-]?2/.test(n)) return t("oll_hint_trellis2");
   if (n === "triposplat") return t("oll_hint_triposplat");
   if (n === "moge-mesh") return t("oll_hint_mogeMesh");
   if (n === "moge-panorama") return t("oll_hint_mogePano");
@@ -1663,6 +1665,17 @@ function comfyModelComponents(name) {
   // Video
   if (/image-upscale/.test(n)) return t("oll_comp_imageUpscale");
   if (/video-enhance/.test(n)) return t("oll_comp_videoEnhance");
+  // 3D — ahead of the /hunyuan/ video line below, which would call Hunyuan3D HunyuanVideo,
+  // and of the generic checkpoint line the rest would otherwise fall through to.
+  if (/pixal[._-]?3d|trellis[._-]?2/.test(n)) {
+    const pixal = /pixal/.test(n);
+    return `${pixal ? "Pixal3D (keeps the photo's camera view)" : "TRELLIS.2"} · UNETLoader · CLIPVision DINOv3 ViT-L · BiRefNet cut-out`
+      + `${pixal ? " · MoGe-2 → camera FOV · Pixal3DConditioning" : " · Trellis2Conditioning"}`
+      + " · KSampler ×4 (structure → shape → 1536 upsample → texture) · RemeshMesh → DecimateMesh 700k → UnwrapMesh → PBR bake · SaveGLB";
+  }
+  if (/hunyuan[._-]?3d/.test(n)) return "Hunyuan3D 2.1 · ImageOnlyCheckpointLoader · BiRefNet cut-out · Hunyuan3Dv2Conditioning · KSampler · VAEDecodeHunyuan3D → VoxelToMesh · SaveGLB · optional PBR paint (Hy3D21 multi-view bake)";
+  if (n === "triposplat") return "TripoSplat · UNETLoader · CLIPVision DINOv3 ViT-H · TripoSplatConditioning · KSampler · VAEDecodeTripoSplat → SplatToMesh · SaveGLB";
+  if (/^moge/.test(n)) return "MoGe-2 · MoGeInference → MoGePointMapToMesh · SaveGLB";
   // scail BEFORE animate: the "scail-2 (animate)" sentinel is literally
   // "scail2_animate", so a bare /animate/ test claimed it ran Wan Animate's pipeline.
   if (/scail/.test(n)) return "SCAIL-2 (character animation) · UNETLoader + lightx2v + DPO LoRA · SAM3 open-vocabulary subject tracking (no DWPose) · WanSCAILToVideo · reference_image batch + mask, paired by batch index";
@@ -2001,6 +2014,7 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamPaintMesh, paintable, ".comfyParamCheck");
   // Quality only means something while texturing is actually on.
   setVis(dom.comfyParamPaintQuality, paintable && !!dom.comfyParamPaintMesh?.checked);
+  setVis(dom.comfyParamMeshTexSize, mesh && /pixal[._-]?3d|trellis[._-]?2/i.test(m));
   setVis(dom.comfyParamKeepBackground, mesh && /hunyuan[._-]?3d/i.test(m), ".comfyParamCheck");
   setVis(dom.comfyParamMeshGaussians, m === "triposplat");
   setVis(dom.comfyParamMogeDetail, m === "moge-mesh" || m === "moge-panorama");
@@ -2485,6 +2499,8 @@ function initComfyParamsModal() {
     }
     saveCurrentSettings();
   });
+  // Not in `fields`: its default is "4096", not empty, so Reset sets it explicitly.
+  dom.comfyParamMeshTexSize?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamBerniniMode?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamBerniniTask?.addEventListener("change", () => saveCurrentSettings());
   for (const el of [dom.comfyParamDanceStyle, dom.comfyParamDanceAmplitude, dom.comfyParamDanceDuration, dom.comfyParamDanceQuality]) el?.addEventListener("change", () => saveCurrentSettings());
@@ -2515,6 +2531,7 @@ function initComfyParamsModal() {
     if (dom.comfyParamInterpMethod) dom.comfyParamInterpMethod.value = "rife";
     if (dom.comfyParamVideoCodec) dom.comfyParamVideoCodec.value = "h264"; // default codec, not empty
     if (dom.comfyParamPaintQuality) dom.comfyParamPaintQuality.value = "standard";
+    if (dom.comfyParamMeshTexSize) dom.comfyParamMeshTexSize.value = "4096";
     if (dom.comfyParamPaintMesh) dom.comfyParamPaintMesh.checked = true;   // texturing defaults ON
     // H3 / Sol-Attn controls. None of these are in `fields` (that loop only clears
     // text+select values), so without these lines Reset silently left the whole H3

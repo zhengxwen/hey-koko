@@ -1202,7 +1202,10 @@ async function runTask(task, cli, ctx) {
       results.push(rec);
       if (cli.json) process.stdout.write(JSON.stringify(rec) + "\n");
       else if (!cli.quiet) {
-        const size = rec.width ? `${rec.width}×${rec.height}` : data.audios ? "" : "?";
+        // A mesh has no pixel size; its weight is the useful number (a textured
+        // TRELLIS.2 / Pixal3D GLB runs ~55 MB).
+        const size = rec.width ? `${rec.width}×${rec.height}` : data.audios ? ""
+          : data.meshes ? `${(bytes.length / 1e6).toFixed(1)} MB` : "?";
         const dur = rec.seconds ? `${size ? ", " : ""}${rec.seconds}s` : "";
         process.stderr.write(`✓ ${file}  (${size}${dur}, seed ${data.seed}, ${elapsed}s)\n`);
         if (data.expandedPrompt) {
