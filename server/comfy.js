@@ -5594,12 +5594,21 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
   //     -> re-join the ORIGINAL audio latent -> pass 2 (3 fixed sigmas) -> decode
   //
   // Three things in that chain are deliberate and easy to get wrong:
-  //   • the upscaler is handed slot 1 (denoised_output), not slot 0. Slot 0 of a
-  //     truncated schedule still carries noise, and the node takes clean latents only.
-  //   • only the video latent is upscaled. The audio latent rides through untouched and
-  //     is concatenated back, so the soundtrack is never resampled — H3's picture and
-  //     sound come out of one latent, and re-rolling the audio at 4x the video tokens
-  //     would cost a fortune to change nothing.
+  //   • pass 1 runs its FULL schedule, where the reference graph truncates it at half
+  //     and lets pass 2 finish the job. Measured on the box, that truncation costs the
+  //     SOUND: the audio latent is never upscaled, so the only sampling it gets is those
+  //     half-steps plus pass 2's three, and the result came out 10.6 dB quieter than the
+  //     same seed rendered in one pass. Running pass 1 whole makes it byte-identical to
+  //     the single-pass graph we already verified — the picture is then refined on top,
+  //     and the sound is the one we know is good. The cost is four low-res steps.
+  //   • only the video latent is upscaled; the audio latent rides through at its own
+  //     size and is concatenated back. But pass 2 samples the JOINT latent, so it
+  //     re-rolls that audio too — measured on the box, three steps from sigma 0.9 leave
+  //     a soundtrack uncorrelated with pass 1's and 10.6 dB quieter. So the sound is
+  //     decoded from the latent as it goes IN to pass 2, not as it comes out: same
+  //     effect as the lock_audio switch on the -Plus fork's refine node, with no extra
+  //     node and nothing third-party. Pass 2 still sees the audio channel, which is how
+  //     the reference graph has it — it is only the OUTPUT that is taken from upstream.
   //   • the second pass reuses the FIRST pass's conditioning. No re-encode: the text
   //     encoder runs inside the MiniMaxH3*ToVideo node, and running it again would be
   //     minutes of Qwen3-VL for an identical tensor.
@@ -5609,12 +5618,7 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
   // top of a flow that is verified at one. The caller reports the skip rather than
   // quietly rendering something else.
   if (h3Upscale && !h3Chain) {
-    // Half the schedule, the way the reference graph splits its 8 steps at 4. The total
-    // step budget is unchanged; what moves is where the steps are spent.
-    const half = Math.max(1, Math.floor((v.steps || 2) / 2));
-    wf["usplit"] = { class_type: "SplitSigmas", inputs: { sigmas: ["sig", 0], step: half } };
-    wf["ks"].inputs.sigmas = ["usplit", 0];   // slot 0 = high_sigmas
-    wf["usep"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["ks", 1] } };
+    wf["usep"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["ks", 0] } };
     // `mode` is a COMFY_DYNAMICCOMBO_V3: the chosen key goes in `mode` and its parameter
     // travels as the DOTTED path "mode.<param>", the same shape as the reference slots.
     wf["uup"] = { class_type: "MinimaxH3LatentUpscaler3D", inputs: {
@@ -5633,7 +5637,7 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
       noise: ["noise", 0], guider: ["guide", 0], sampler: ["samp", 0],
       sigmas: ["usig", 0], latent_image: ["ucat", 0] } };
     wf["vdec"].inputs.samples = ["uks", 0];
-    wf["adec"].inputs.samples = ["uks", 0];
+    wf["adec"].inputs.samples = ["ucat", 0];   // see above: pass 1's sound, not pass 2's
   }
 
   // ── One segment of a chained multi-line /imagine ─────────────────────────────
