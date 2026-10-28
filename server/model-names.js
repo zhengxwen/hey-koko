@@ -54,25 +54,55 @@
 // packaging prefix: ltx-2.5-…-comfy-int8-convrot). Without it only the bare "int8"
 // would match, leaving "-comfy…-convrot" glued to the base — so the int8 build would
 // not collapse with its nvfp4/bf16 siblings and would show as a second model.
-const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8mixed|fp8_mixed|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|comfy[-_]int8[-_]convrot|int8[-_]convrot|int8|fp16|bf16";
-// "pruned" is an OPTIONAL PREFIX on the quantisation token, not a token of its own.
-// MiniMax H3 ships the same tier both ways (…_pruned_int8_convrot, …_pruned_fp8_scaled,
-// and community …_pruned_nvfp4): pruning only replaces the modulation weights (~40% of
-// the parameters) with an equivalent lookup table, so it is the same model at the same
-// precision. Treating it as a prefix is what makes every H3 variant collapse to one
-// base; writing it into the token list instead only ever fixes the ONE spelling listed
-// there, and the next variant silently splits into a second identical dropdown entry.
+// w4a8 (4-bit weights, 8-bit activations) is the aggressive end of the ladder and the one
+// the community quantisers now reach for: TenStrip ships "…_beta5_w4a8_14gb_optimized"
+// beside the int8 build, and both beta_6 community quants are w4a8 too. Listed here so
+// those collapse into their beta's ONE picker row instead of standing up a second,
+// identically labelled one — the split this comment block warns about, one token later.
+const PRECISION_TOKENS = "fp8_e4m3fn_scaled|fp8_e4m3fn_fast|fp8_e4m3fn|fp8_e5m2|fp8_scaled|fp8mixed|fp8_mixed|fp8|mxfp8|nvfp4_mxpf8_mix|nvfp4|comfy[-_]int8[-_]convrot|int8[-_]convrot|int8[-_]?hq|int8|w4a8[-_]convrot|w4a8|fp16|bf16|pruned";
+// "pruned" is an OPTIONAL PREFIX on the quantisation token — and, when it stands alone,
+// a token in its own right. MiniMax H3 ships the same tier both ways
+// (…_pruned_int8_convrot, …_pruned_fp8_scaled, community …_pruned_nvfp4): pruning only
+// replaces the modulation weights (~40% of the parameters) with an equivalent lookup
+// table, so it is the same model at the same precision. Treating it as a prefix is what
+// makes every H3 variant collapse to one base.
+// The standalone spelling is 10Eros's: beta_6 ships "…_beta6_bf16" (61.7 GiB),
+// "…_beta6_pruned" (37.5 GiB) and "…_beta6_int8" (20.2 GiB), where the middle one is the
+// pruned BF16 build with no tier word at all. Left out of the token list it keeps
+// "pruned" in its precision base and stands up a SECOND row carrying the same id and the
+// same label as the bf16 one — two picker rows nothing can tell apart, which is the whole
+// failure this collapsing exists to prevent. It is last in the alternation so the
+// prefixed forms still match their real tier first.
+// "int8HQ" is beta_7's spelling, glued on with no separator. The token list is matched
+// with a `(?=[_.-]|$)` lookahead — that lookahead is what stops "int8" matching inside an
+// unrelated word — so a bare "int8" alternative sees the "H" and fails, the file carries
+// no recognised tier, and it lands on its own base beside its sibling. Spelled out here
+// rather than loosening the lookahead for everyone.
 const PRECISION_RE = new RegExp(`(?:^|[_-])(?:pruned_)?(${PRECISION_TOKENS})(?=[_.-]|$)`, "i");
+// A 10Eros H3 UNET with NO precision word at all is the vendor's pruned 16-bit build. Not
+// a guess: every file in the line that omits the word is the same 37.46 GiB
+// (…_TURBO-hybrid_beta5, …_hybrid_beta5, …_8stepTURBO_beta7 — byte-for-byte the size of
+// beta_6's explicit "…_beta6_pruned"), while the quantised ones always say so. Without
+// this the beta_7 pair cannot both be reached: the bare 37 GiB file would carry no tier,
+// so "auto" would take the int8HQ sibling and NO ⚙ precision setting could ask for the
+// other one — a downloaded weight with no way to select it.
+const EROS_BARE_BF16_RE = /10eros.*h3/i;
 const PRECISION_RE_G = new RegExp(`(?:^|[_-])(?:pruned_)?(?:${PRECISION_TOKENS})(?=[_.-]|$)`, "ig");
 
 function precisionOf(name) {
   const m = PRECISION_RE.exec(name || "");
-  if (!m) return null;
+  if (!m) return EROS_BARE_BF16_RE.test(name || "") ? "bf16" : null;
   const tok = m[1].toLowerCase();
   if (tok.startsWith("nvfp4")) return "nvfp4";
   if (tok === "mxfp8") return "mxfp8";
   if (tok.startsWith("fp8")) return "fp8";
   if (tok.includes("int8")) return "int8"; // includes, not startsWith — "pruned_int8_convrot"
+  if (tok.startsWith("w4a8")) return "w4a8"; // before the 16-bit tail, which is the fallthrough
+  // A bare "pruned" names no tier because it IS the 16-bit build (10Eros beta_6: 37.5 GiB
+  // pruned beside 61.7 GiB bf16 — the same weights with the modulation table swapped in).
+  // Reported as bf16 so it collapses onto its sibling instead of inventing a tier the ⚙
+  // menu does not offer.
+  if (tok === "pruned") return "bf16";
   // bf16 and fp16 are SEPARATE tiers even though both are unquantised 16-bit. They were
   // folded together while the distinction looked cosmetic, and that made "@bf16" an
   // invalid token for a file literally named …_bf16.safetensors — the one spelling that
@@ -113,7 +143,10 @@ function pickPrecision(all, name, pref) {
 // because the most aggressive one should be asked for, not handed out by default.
 // bf16 sits ahead of fp16: when a model ships both unquantised builds, bf16 is the one
 // upstream trains and publishes in, and fp16 is usually a converted afterthought.
-const PREC_AUTO_ORDER = ["fp8", "mxfp8", "int8", "nvfp4", "bf16", "fp16"];
+// w4a8 sits LAST: it is the lossiest tier on the ladder and nobody has measured what it
+// costs these weights, so "auto" must never reach for it while another build is on disk.
+// bestTier still falls back to it when it is the only thing installed.
+const PREC_AUTO_ORDER = ["fp8", "mxfp8", "int8", "nvfp4", "bf16", "fp16", "w4a8"];
 function bestTier(list, nameOf = (x) => x) {
   const arr = list || [];
   for (const tier of PREC_AUTO_ORDER) {
@@ -260,14 +293,26 @@ const FILE_ID_RULES = [
   // label: two indistinguishable picker rows, an `-m` that matched both and refused, and
   // one gallery group for both. Derived from the filename so the next beta needs no edit.
   // TURBO vs non-TURBO also splits: beta_5 ships both, and they sample differently.
-  [/10eros(?=.*h3)(?=.*hybrid)/, (b) => {
+  // ONE rule for the whole line, because the vendor's spelling keeps moving while the
+  // identity does not. "TURBO-hybrid_beta5" became "8stepTURBO_beta6" became
+  // "FastH3_VSAgates_UNSTABLE_beta6-int8_HQ", and all three run every mode; only beta_2
+  // is genuinely partitioned, and it says so ("…_ref2va_beta2", "…_fl2va_beta2"). So the
+  // task segment is used ONLY when the filename names a partition, and the build suffix
+  // after the colon states CAPABILITY rather than whatever the file is called this month.
+  // A build with no task word is all-mode → ":hybrid", which is also the token /skill's
+  // manifest modeRules and the H3 model note match on.
+  [/10eros(?=.*h3)/, (b) => {
     const beta = (b.match(/beta[-_]?(\d+)/) || [])[1];
-    return `10eros-max-h3${beta ? "-beta" + beta : ""}:hybrid${/turbo/.test(b) ? "-turbo" : ""}`;
+    const v = beta ? `-beta${beta}` : "";
+    const turbo = /turbo|fast.?h3|fastv2|vsa.?gates/.test(b);
+    // The author's own VSA-gated attempt at the Fastv2 target ships marked UNSTABLE
+    // ("multiple issues but looks and sounds perfect at 8 steps"). It gets its own row so
+    // choosing it is deliberate and a gallery entry says which build made the clip.
+    if (/unstable|vsa.?gates/.test(b)) return `10eros-max-h3${v}:hybrid-vsa-unstable`;
+    if (/ref2va/.test(b)) return `10eros-max-h3${v}-r2v${turbo ? ":turbo" : ""}`;
+    if (/fl2va/.test(b)) return `10eros-max-h3${v}-t2v${turbo ? ":turbo" : ""}`;
+    return `10eros-max-h3${v}:hybrid${turbo ? "-turbo" : ""}`;
   }],
-  [/10eros(?=.*h3)(?=.*turbo)(?=.*ref2va)/, "10eros-max-h3-r2v:turbo"],
-  [/10eros(?=.*h3)(?=.*turbo)/, "10eros-max-h3-t2v:turbo"],
-  [/10eros(?=.*h3)(?=.*ref2va)/, "10eros-max-h3-r2v"],
-  [/10eros(?=.*h3)/, "10eros-max-h3-t2v"],
   [/phantom.*14b/, "phantom-14b"],
   [/phantom/, "phantom-1.3b"],
   [/hunyuan[._-]?3d/, "hunyuan3d-2.1"],
@@ -450,10 +495,20 @@ function galleryModelId(requested, resolved) {
 // Display name for an id (or for a raw name, via its id).
 function labelForId(id) {
   if (ID_LABELS[id]) return ID_LABELS[id];
-  // Versioned 10Eros hybrids — the id is built from the filename (see FILE_ID_RULES), so
-  // the label is too.
-  const eros = /^10eros-max-h3(?:-beta(\d+))?:hybrid(-turbo)?$/.exec(String(id || ""));
-  if (eros) return `10Eros-Max H3${eros[1] ? " beta" + eros[1] : ""}${eros[2] ? " TURBO" : ""} hybrid (all modes)`;
+  // Versioned 10Eros builds — the id is built from the filename (see FILE_ID_RULES), so
+  // the label is too. This is the text the model picker shows (modelMeta.label), and with
+  // several betas installed it is the only thing telling the rows apart, so it spells out
+  // the beta, the step class and the ⚠ on the author's unstable build.
+  const eros = /^10eros-max-h3(?:-beta(\d+))?(?:-(r2v|t2v))?(?::([a-z0-9-]+))?$/.exec(String(id || ""));
+  if (eros) {
+    const [, beta, task, build = ""] = eros;
+    const out = ["10Eros-Max H3"];
+    if (beta) out.push(`beta${beta}`);
+    if (/turbo/.test(build)) out.push("TURBO");
+    if (/unstable/.test(build)) out.push("VSA ⚠ unstable");
+    out.push(build.startsWith("hybrid") ? "hybrid (all modes)" : task === "r2v" ? "(r2v)" : "(t2v / i2v)");
+    return out.join(" ");
+  }
   if (String(id || "").startsWith("ltx2.5-22b:fx-")) {
     const fx = id.slice(14).replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
     return `LTX-2.5 22B ${fx}`;

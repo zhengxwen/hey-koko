@@ -943,7 +943,13 @@ const H3_MODEL_RE = /minimax.?h3|10eros.*h3/i;
 // The TURBO builds are step-distilled into the WEIGHTS — no LoRA involved. That makes
 // them a different sampling recipe (6 steps, not 20), and it makes stacking a turbo
 // LoRA on top a double distillation.
-const h3IsTurboWeight = (n) => H3_MODEL_RE.test(n || "") && /turbo/i.test(n || "");
+// …and the Fastv2 class is step-distilled too without ever saying "turbo": FastVideo's
+// "FastH3" checkpoint is an 8-step distillation, and 10Eros's beta_6 line chases the same
+// target ("a custom turbo meant to mimic how Fastv2 looks and sounds", and its VSA-gated
+// build is named FastH3_VSAgates_…). Missing them here would run an 8-step weight on the
+// 20-step path and re-arm the turbo-LoRA guard the wrong way round.
+const H3_FASTV2_RE = /fast.?h3|fastv2|vsa.?gates/i;
+const h3IsTurboWeight = (n) => H3_MODEL_RE.test(n || "") && (/turbo/i.test(n || "") || H3_FASTV2_RE.test(n || ""));
 // 10Eros-Max "hybrid" builds fuse the ref2va and fl2va weights into ONE checkpoint (the
 // delta1024 merge), so their filenames carry NEITHER task word: "10Eros_Max_h3_TURBO-
 // hybrid_beta4_...". Left to the plain /ref2va/ test they read as fl2va and lose the whole
@@ -951,9 +957,25 @@ const h3IsTurboWeight = (n) => H3_MODEL_RE.test(n || "") && /turbo/i.test(n || "
 // here because that is the superset: MiniMaxH3ReferenceToVideo's reference slots are all
 // optional, so a hybrid with nothing attached still runs as plain t2v.
 const H3_HYBRID_RE = /hybrid/i;
-// The beta a 10Eros hybrid was cut from (0 when the filename carries none). TenStrip
-// re-derives the merge between betas and the sampling advice moves with it.
-const h3HybridBeta = (n) => Number((String(n || "").match(/beta[-_]?(\d+)/i) || [])[1] || 0);
+// The beta a 10Eros build was cut from (0 when the filename carries none). TenStrip
+// re-derives the merge between betas and the sampling advice moves with it, so this is
+// identity, not decoration: beta_5 is "built with a different normalization technique",
+// beta_6 is "a built mostly-reference hybrid with a custom turbo" wanting 8-12 steps
+// where beta_5 wants 6-8. Every 10Eros id carries it (see model-names.js) so two betas
+// installed side by side are two pickable rows with two recipes.
+const h3ErosBeta = (n) => Number((String(n || "").match(/beta[-_]?(\d+)/i) || [])[1] || 0);
+// FOURTH spelling of the reference-capability trap, and the first one that is an absence
+// rather than a word. 10Eros's all-mode builds stopped saying "hybrid": beta_5 shipped as
+// "10Eros_Max_h3_TURBO-hybrid_beta5", beta_6 as "10Eros_Max_h3_8stepTURBO_beta6" and
+// "10Eros_Max_FastH3_VSAgates_UNSTABLE_beta6" — yet TenStrip's card calls beta_6 "a built
+// mostly-reference hybrid", so the one build whose whole point is references carries no
+// word any of the tests above can see.
+// The invariant that DOES hold across the line: a build that is genuinely PARTITIONED
+// says so. beta_2 ships "…_ref2va_beta2" and "…_fl2va_beta2"; nothing else names a task.
+// So for 10Eros, no task word means an all-mode build. Scoped to 10Eros deliberately —
+// a stock MiniMax file with no task word is the plain fl2va weight, the opposite reading.
+const H3_TASK_WORD_RE = /ref2va|fl2va/i;
+const h3ErosAllModes = (n) => /10eros/i.test(n || "") && !H3_TASK_WORD_RE.test(n || "");
 // Third spelling of the same trap: the Ref-Delta line ships the reference capability as a
 // rank-1024 SVD of the ref2va weight delta baked onto the fl2va base, so its filenames say
 // "refdelta" / "Ref-Delta" ("minimax_h3_fused_refdelta_r1024_turbo8_…", xmarre's
@@ -962,11 +984,14 @@ const h3HybridBeta = (n) => Number((String(n || "").match(/beta[-_]?(\d+)/i) || 
 // appears, check this test FIRST: a miss here is silent — the weight loads, samples and
 // saves, it just never sees the reference images.
 const H3_REFDELTA_RE = /ref[-_]?delta/i;
-const h3ReadsRefs = (n) =>
-  /ref2va/i.test(n || "") || H3_HYBRID_RE.test(n || "") || H3_REFDELTA_RE.test(n || "");
-// Fused builds run EVERY H3 mode from one file, so nothing attached is a legitimate plain
-// text-to-video run on them. Only the stock ref2va partition genuinely needs a reference.
-const h3AllModes = (n) => H3_HYBRID_RE.test(n || "") || H3_REFDELTA_RE.test(n || "");
+// Fused / all-mode builds run EVERY H3 mode from one file, so nothing attached is a
+// legitimate plain text-to-video run on them. Only the stock ref2va partition genuinely
+// needs a reference.
+const h3AllModes = (n) =>
+  H3_HYBRID_RE.test(n || "") || H3_REFDELTA_RE.test(n || "") || h3ErosAllModes(n);
+// An all-mode build reads references by definition, so this is the superset of the above
+// plus the one partition that is reference-only.
+const h3ReadsRefs = (n) => /ref2va/i.test(n || "") || h3AllModes(n);
 // How many steps a distilled checkpoint was distilled FOR — part of the weights, read off
 // the filename like the sampler. Every publisher picked a different ladder and running past
 // it over-denoises. TenStrip's beta_4 card: "euler/simple 6-8 steps on all modes". The
@@ -974,7 +999,19 @@ const h3AllModes = (n) => H3_HYBRID_RE.test(n || "") || H3_REFDELTA_RE.test(n ||
 // and its ladder (1152x640 x 243 frames) measures 4 -> 76 s, 6 -> 80 s, 8 -> 103 s, so 4 is
 // both the recommended and the cheapest. Only consulted for turbo weights; an undistilled
 // checkpoint (xmarre's plain Ref-Delta base) still takes the 20-step path.
-const h3TurboSteps = (n) => (H3_REFDELTA_RE.test(n || "") ? 4 : 6);
+// 10Eros now states its own ladder IN the filename — "10Eros_Max_h3_8stepTURBO_beta6" —
+// and its card backs that number up ("a slow 8-12 step reference model"), while the
+// VSA build carries no number but the same card calls it "perfect at 8 steps". So the
+// order is: Ref-Delta's measured 4, then an explicit "<N>step" in the name, then 8 for
+// the Fastv2 class, then the older TURBO ladder's 6. Reading it off the filename is the
+// same move as the sampler — a new beta that renames itself needs no edit here.
+const h3TurboSteps = (n) => {
+  const s = String(n || "");
+  if (H3_REFDELTA_RE.test(s)) return 4;
+  const named = Number((s.match(/(\d+)\s*step/i) || [])[1] || 0);
+  if (named >= 1 && named <= 50) return named;
+  return H3_FASTV2_RE.test(s) ? 8 : 6;
+};
 // Weights that follow the Ref-Delta Fused Turbo card. That card specifies more than a
 // sampler and a step count: SLA block-sparse attention with five fixed values, and the
 // int8 video VAE by name. None of it is a tuning knob — same category as the sampler, so
@@ -1801,7 +1838,15 @@ function videoRank(n) {
     const ref = h3ReadsRefs(n);
     // Community grafts sort right after the official pair they descend from, so the
     // stock weights stay the first thing in the group.
-    if (/10eros/i.test(n)) return ref ? 6.62 : 6.52;
+    // Newest beta FIRST inside the graft group. With several betas installed the rows are
+    // otherwise ordered by whatever the disk scan returned, and the one you just
+    // downloaded to try is the one that should be on top. The nudge is /10000 so the whole
+    // beta ladder still fits between this slot and the next model's rank (6.52x stays
+    // below the stock r2v's 6.6) — a coarser step would reorder the two families.
+    if (/10eros/i.test(n)) {
+      const beta = h3ErosBeta(n);
+      return (ref ? 6.62 : 6.52) + (beta ? (99 - Math.min(beta, 99)) / 10000 : 0.0099);
+    }
     return ref ? 6.6 : 6.5;
   }
   if (n === LTX25_INGREDIENTS) return 6.91;
@@ -2086,13 +2131,19 @@ async function proxyComfyModels(req, res) {
         // it reads (motion / camera / editing rhythm). videoOptional because it is only
         // one of four kinds — images or audio alone are equally valid — so unlike the
         // real video-edit models it must not reject a request that brings no clip.
-        const task = H3_HYBRID_RE.test(n) ? "hybrid (r2v / t2v)" : isRef ? "(r2v)" : "(t2v / i2v)";
+        const task = h3AllModes(n) ? "hybrid (r2v / t2v)" : isRef ? "(r2v)" : "(t2v / i2v)";
+        const erosBeta = h3ErosBeta(n);
         videoModels.push({ name: n, type: vt,
           // A graft must not share the stock weight's label — dedupePrecision keeps them
           // as separate entries (different precisionBase), so identical labels would put
-          // two indistinguishable "MiniMax H3 (r2v)" rows in the picker.
+          // two indistinguishable "MiniMax H3 (r2v)" rows in the picker. Two BETAS of the
+          // graft are the same problem one level down: they are separate entries with
+          // separate recipes, so the beta has to be in the text or the user cannot tell
+          // which row is which. (The picker itself labels from modelMeta → labelForId;
+          // this is the fallback label, kept in step with it on purpose.)
           label: /10eros/i.test(n)
-            ? `10Eros-Max H3${h3IsTurboWeight(n) ? " TURBO" : ""} ${task}`
+            ? `10Eros-Max H3${erosBeta ? ` beta${erosBeta}` : ""}${h3IsTurboWeight(n) ? " TURBO" : ""}`
+              + `${/unstable/i.test(n) ? " ⚠ UNSTABLE" : ""} ${task}`
             : `MiniMax H3 ${task}`,
           // A fused / hybrid weight runs every mode, plain text→video included, so only the
           // stock ref2va partition truly needs a reference (the same rule the handler uses).
@@ -4578,8 +4629,24 @@ function videoPreset(videoType, model, turbo) {
     // same card now calls beta_3 and beta_4 "corrupted test versions". So euler stays only
     // on the betas whose card said euler (≤ 4); beta_5 and anything newer or unnumbered
     // take the current card's go-to, which is also what every non-hybrid H3 runs.
-    const hybridBeta = h3HybridBeta(model);
-    return { sampler: H3_HYBRID_RE.test(model || "") && hybridBeta > 0 && hybridBeta <= 4 ? "euler" : "res_multistep",
+    // Per-beta sampler, each entry from that beta's own card. This was a threshold
+    // ("<= 4 → euler") until beta_7 went BACK to euler: a threshold encodes "newer means
+    // the newer sampler", which was never what the cards said, and it also quietly moved
+    // beta_2 — whose TURBO card says "multires/simple 6 steps, er_sde/simple 6 steps" —
+    // onto euler. A table says only what is written down:
+    //   beta_2  res_multistep  "For TURBO model use multires/simple 6 steps"
+    //   beta_3/4 euler         "use euler/simple 6-8 steps on all modes" (card now calls
+    //                          both corrupted test versions)
+    //   beta_5  res_multistep  "res_multistep/simple 6-8 steps (my go-to…)"
+    //   beta_6  res_multistep  same go-to; card now says to avoid beta_6 entirely
+    //   beta_7  euler          "for optimal quality Euler/Simple or Er_sde/SGM_uniform
+    //                          are reliable" — euler/simple is the one it names first and
+    //                          the one whose scheduler this preset already runs
+    // A beta nobody has carded yet keeps the family default instead of inheriting
+    // whichever neighbour happens to sit next to it in a comparison.
+    const EROS_SAMPLER = { 2: "res_multistep", 3: "euler", 4: "euler", 5: "res_multistep", 6: "res_multistep", 7: "euler" };
+    const erosBeta = h3ErosBeta(model);
+    return { sampler: EROS_SAMPLER[erosBeta] || "res_multistep",
       scheduler: "simple", cfg: 1,
       steps: h3IsTurboWeight(model) ? h3TurboSteps(model) : 20, shift: 0,
       width: 864, height: 480, length: 124, fps: 24, fpsFixed: true,
