@@ -5320,6 +5320,21 @@ const H3_CLIP_RE = /qwen3vl.*minimax|minimax.*qwen3vl/i;
 // reverse) loads without complaint and renders garbage, so the task is parsed out of the
 // filename and enforced rather than left to the user.
 const H3_LORA_RE = /minimax.?h3/i;
+// The learned latent upscaler for H3's 24-channel latent space. It is keyed to the VAE's
+// latent LAYOUT, not to the DiT, so one weight serves every H3-family checkpoint — the
+// 10Eros grafts included, and their own model card asks for this pass by name, saying the
+// 3D spatial upscale is what removes the latent flicker their single-pass runs show.
+//
+// Matched by name rather than taken off the top of the enum: model_name lists everything
+// in latent_upscale_models/, and LTX's three upscalers sort FIRST alphabetically.
+const H3_UPSCALER_RE = /minimax.*h3.*latent.*upscal/i;
+// The refine schedule, lifted from the two example workflows that ship inside the HF
+// weight repo (the upscaler author's own graphs). It is NOT a low-denoise touch-up: it
+// re-noises to 0.9035 and finishes in three steps, which is why the first pass only has
+// to establish composition and can stop halfway — see the SplitSigmas below.
+const H3_UPSCALE_SIGMAS = "0.9035, 0.6316, 0.3158, 0.0000";
+// Pixel-space alignment the upscaler node wants ("32 is strictly recommended").
+const H3_UPSCALE_ALIGN = 32;
 // What a Turbo LoRA implies about the sampling schedule. It is NOT free-standing: the
 // distillation, the step count and the sigma shift are one recipe, and getting any of
 // the three wrong produces a valid-looking render that is simply wrong — the same failure
@@ -5373,7 +5388,7 @@ function h3LoraInfo(name) {
 // weight files verified end-to-end, Aug 2026). "It validated" still proves nothing.
 function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
   refImageNames, refVideoName, refAudioName, refImageSize, easyCache, solAttn, solTau, solChunkFF,
-  h3Lora, h3LoraStrength, shiftVideo, shiftAudio, h3Sla, h3Chain }) {
+  h3Lora, h3LoraStrength, shiftVideo, shiftAudio, h3Sla, h3Chain, h3Upscale }) {
   const isRef = h3ReadsRefs(model);
   const refs = (Array.isArray(refImageNames) ? refImageNames : []).filter(Boolean).slice(0, H3_MAX_REF_IMAGES);
   const wf = {
@@ -5570,6 +5585,56 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
     head = "ec";
   }
   wf["guide"].inputs.model = [head, 0];
+
+  // ── Optional second pass: learned latent upscale, then a short refine ────────
+  // Wired one-for-one from the example workflows in the weight repo:
+  //
+  //   pass 1 (low res, HALF the schedule) -> denoised_output -> split off the audio
+  //     -> MinimaxH3LatentUpscaler3D on the VIDEO latent alone
+  //     -> re-join the ORIGINAL audio latent -> pass 2 (3 fixed sigmas) -> decode
+  //
+  // Three things in that chain are deliberate and easy to get wrong:
+  //   • the upscaler is handed slot 1 (denoised_output), not slot 0. Slot 0 of a
+  //     truncated schedule still carries noise, and the node takes clean latents only.
+  //   • only the video latent is upscaled. The audio latent rides through untouched and
+  //     is concatenated back, so the soundtrack is never resampled — H3's picture and
+  //     sound come out of one latent, and re-rolling the audio at 4x the video tokens
+  //     would cost a fortune to change nothing.
+  //   • the second pass reuses the FIRST pass's conditioning. No re-encode: the text
+  //     encoder runs inside the MiniMaxH3*ToVideo node, and running it again would be
+  //     minutes of Qwen3-VL for an identical tensor.
+  //
+  // Not combined with chaining: a chain's context latent crosses segments at the
+  // GENERATION resolution, and a per-segment resolution change is a second variable on
+  // top of a flow that is verified at one. The caller reports the skip rather than
+  // quietly rendering something else.
+  if (h3Upscale && !h3Chain) {
+    // Half the schedule, the way the reference graph splits its 8 steps at 4. The total
+    // step budget is unchanged; what moves is where the steps are spent.
+    const half = Math.max(1, Math.floor((v.steps || 2) / 2));
+    wf["usplit"] = { class_type: "SplitSigmas", inputs: { sigmas: ["sig", 0], step: half } };
+    wf["ks"].inputs.sigmas = ["usplit", 0];   // slot 0 = high_sigmas
+    wf["usep"] = { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: ["ks", 1] } };
+    // `mode` is a COMFY_DYNAMICCOMBO_V3: the chosen key goes in `mode` and its parameter
+    // travels as the DOTTED path "mode.<param>", the same shape as the reference slots.
+    wf["uup"] = { class_type: "MinimaxH3LatentUpscaler3D", inputs: {
+      latent: ["usep", 0], model_name: h3Upscale.model,
+      mode: "scale by multiplier", "mode.scale": h3Upscale.scale,
+      align: H3_UPSCALE_ALIGN,
+      // The node's own tooltip gives two reasons for this: VRAM on long clips, and it
+      // "fixes end-frame flickering" — which is the exact artefact this pass is here for.
+      enable_temporal_chunking: true,
+      force_unload: true,
+      device: "cuda", precision: h3Upscale.precision } };
+    wf["ucat"] = { class_type: "LTXVConcatAVLatent", inputs: {
+      video_latent: ["uup", 0], audio_latent: ["usep", 1] } };
+    wf["usig"] = { class_type: "ManualSigmas", inputs: { sigmas: H3_UPSCALE_SIGMAS } };
+    wf["uks"] = { class_type: "SamplerCustomAdvanced", inputs: {
+      noise: ["noise", 0], guider: ["guide", 0], sampler: ["samp", 0],
+      sigmas: ["usig", 0], latent_image: ["ucat", 0] } };
+    wf["vdec"].inputs.samples = ["uks", 0];
+    wf["adec"].inputs.samples = ["uks", 0];
+  }
 
   // ── One segment of a chained multi-line /imagine ─────────────────────────────
   // Two ways to carry the previous segment across, picked by ⚙ "chaining":
@@ -9070,6 +9135,8 @@ async function generateComfyImage(req, res) {
       let h3Sla = false;          // this weight's recipe calls for SLA block-sparse attention
       let h3SlaUsed;              // it actually ran
       let h3SlaSkipped = false;   // recipe wanted it, the SLA node pack is not on this worker
+      let h3UpscaleUsed;          // ⚙ latent-upscale second pass: the factor it ran at
+      let h3UpscaleSkipped = "";  // asked for, but "node" / "weight" / "chain" says no
       let easyCacheSkipped = false; // ⚙ asked for it, the weight's card forbids it with references
       let h3ChainAudio = false;     // chain segment ≥ 2: hand the untrimmed sound back too
       let h3LoraUsed = null;      // ⚙ H3 LoRA actually mounted
@@ -10011,6 +10078,26 @@ async function generateComfyImage(req, res) {
         solAttnUsed = solAttn || null;
         solChunkUsed = solChunkFF || undefined;
 
+        // ⚙ Latent-upscale second pass. Gated on the node AND on a weight that belongs to
+        // it, because model_name offers every file in latent_upscale_models/ — LTX's three
+        // included, and they sort first.
+        let h3Upscale = null;
+        const h3UpScale = Number(opts.h3Upscale) || 0;
+        if (h3UpScale > 1) {
+          if (chainSeg) h3UpscaleSkipped = "chain";
+          else if (!(await comfyHasNodes(["MinimaxH3LatentUpscaler3D"]))) h3UpscaleSkipped = "node";
+          else {
+            const ups = (await comfyEnum("MinimaxH3LatentUpscaler3D", "model_name").catch(() => []))
+              .filter((n) => H3_UPSCALER_RE.test(n));
+            // Match the node's precision to the file's so the weights are not cast on load.
+            const pick = ups.find((n) => /bf16/i.test(n)) || ups.find((n) => /fp16/i.test(n)) || ups[0];
+            if (!pick) h3UpscaleSkipped = "weight";
+            else h3Upscale = { model: pick, scale: h3UpScale,
+              precision: /bf16/i.test(pick) ? "bf16" : /fp32/i.test(pick) ? "fp32" : "fp16" };
+          }
+        }
+        h3UpscaleUsed = h3Upscale ? h3UpScale : undefined;
+
         // ⚙ H3 LoRA. The Turbo distillations are task-bound, and picking the wrong one is
         // NOT an error anyone would notice: ComfyUI loads it, sampling runs, and 16
         // minutes later you have a ruined clip. So a mismatch is refused up front rather
@@ -10090,8 +10177,14 @@ async function generateComfyImage(req, res) {
           h3Lora, h3LoraStrength: Number(opts.h3LoraStrength) || 0,
           shiftVideo: h3ShiftVideo, shiftAudio: h3ShiftAudio, h3Sla,
           // `trim` = the frames the guide pinned, which this segment drops from its head.
-          h3Chain: chainSeg ? { ...chainSeg, trim: chainLater ? h3Anchor : 0 } : null });
-        videoDims = { width: v.width, height: v.height, length: v.length, fps: v.fps };
+          h3Chain: chainSeg ? { ...chainSeg, trim: chainLater ? h3Anchor : 0 } : null,
+          h3Upscale });
+        // With the second pass the file is bigger than the generation size, so the
+        // done-line has to report where it landed, not where it started.
+        const uAlign = (n) => Math.round(n * (h3Upscale ? h3Upscale.scale : 1) / H3_UPSCALE_ALIGN) * H3_UPSCALE_ALIGN;
+        videoDims = h3Upscale
+          ? { width: uAlign(v.width), height: uAlign(v.height), length: v.length, fps: v.fps }
+          : { width: v.width, height: v.height, length: v.length, fps: v.fps };
       } else if (model === PANO_T2I) {
         // A recipe, not a checkpoint: it picks its own weights and forces 2:1, since
         // an equirectangular panorama is 360° across and 180° tall by definition.
@@ -11109,7 +11202,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
-        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Sla: h3SlaUsed, h3SlaSkipped: h3SlaSkipped || undefined, easyCacheSkipped: easyCacheSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed, h3ChainAudio: (h3ChainAudio && outAudios[0]) || undefined });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Sla: h3SlaUsed, h3SlaSkipped: h3SlaSkipped || undefined, h3Upscale: h3UpscaleUsed, h3UpscaleSkipped: h3UpscaleSkipped || undefined, easyCacheSkipped: easyCacheSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed, h3ChainAudio: (h3ChainAudio && outAudios[0]) || undefined });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own

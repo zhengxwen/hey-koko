@@ -2087,6 +2087,7 @@ export function updateComfyParamVisibility() {
   // MLP chunking stays: it is a memory patch, not an attention backend, and the server
   // keeps it on under SLA too.
   const h3Sla = h3 && h3RefDeltaTurbo(m);
+  setVis(dom.comfyParamH3Upscale, h3);
   setVis(dom.comfyParamSolAttn, h3 && !h3Sla);
   setVis(dom.comfyParamSolTau, h3 && !h3Sla && !!dom.comfyParamSolAttn?.value); // tau is meaningless with Sol off
   setVis(dom.comfyParamSolChunkFF, h3, ".comfyParamCheck");

@@ -211,6 +211,8 @@ function comfyOverrides() {
   if (dom.comfyParamH3Lora?.value) ov.h3Lora = dom.comfyParamH3Lora.value;
   const h3LoraStrength = num(dom.comfyParamH3LoraStrength?.value);
   if (h3LoraStrength !== undefined) ov.h3LoraStrength = h3LoraStrength;
+  // Latent-upscale second pass: "" = off, otherwise the factor.
+  if (dom.comfyParamH3Upscale?.value) ov.h3Upscale = dom.comfyParamH3Upscale.value;
   if (dom.comfyParamSolAttn?.value) ov.solAttn = dom.comfyParamSolAttn.value;     // "" = off
   const solTau = num(dom.comfyParamSolTau?.value);
   if (solTau !== undefined) ov.solTau = solTau;                                   // empty = the node's 1.3
@@ -1700,6 +1702,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     }
     if (lastData.solAttnSkipped) doneLine += `\n${t("msg_solAttnSkipped", {}, plang)}`;
     if (lastData.h3SlaSkipped) doneLine += `\n${t("msg_h3SlaSkipped", {}, plang)}`;
+    if (lastData.h3Upscale) doneLine += `\n${t("msg_h3UpscaleUsed", { scale: lastData.h3Upscale }, plang)}`;
+    else if (lastData.h3UpscaleSkipped) {
+      doneLine += `\n${t(lastData.h3UpscaleSkipped === "chain" ? "msg_h3UpscaleNoChain"
+        : lastData.h3UpscaleSkipped === "weight" ? "msg_h3UpscaleNoWeight" : "msg_h3UpscaleNoNode", {}, plang)}`;
+    }
     if (lastData.easyCacheSkipped) doneLine += `\n${t("msg_easyCacheSkippedRef", {}, plang)}`;
     else if (lastData.solAttn) {
       doneLine += `\n${t("msg_solAttnUsed", { mode: lastData.solAttn }, plang)}`

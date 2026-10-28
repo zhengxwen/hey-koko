@@ -108,6 +108,8 @@ export const dom = {
   comfyParamH3LoraLabel: document.querySelector("#comfyParamH3LoraLabel"),
   comfyParamH3LoraStrength: document.querySelector("#comfyParamH3LoraStrength"),
   comfyParamH3LoraStrengthLabel: document.querySelector("#comfyParamH3LoraStrengthLabel"),
+  comfyParamH3Upscale: document.querySelector("#comfyParamH3Upscale"),
+  comfyParamH3UpscaleLabel: document.querySelector("#comfyParamH3UpscaleLabel"),
   comfyParamSolAttn: document.querySelector("#comfyParamSolAttn"),
   comfyParamSolAttnLabel: document.querySelector("#comfyParamSolAttnLabel"),
   comfyParamSolTau: document.querySelector("#comfyParamSolTau"),
