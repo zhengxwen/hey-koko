@@ -1,8 +1,10 @@
+<p align="center"><img src="docs/koko.png" alt="Koko, the zebra finch behind Hey-Koko" width="200"></p>
+
 # Hey-Koko
 
-A lightweight, privacy-first AI companion that runs entirely on your machine. Powered by [Ollama](https://ollama.com) — no cloud, no accounts, no telemetry.
+**A local AI studio** — chat with local models, turn a single prompt into images or video through 30+ curated ComfyUI models, and build a searchable knowledge library. Everything runs on your machine: no cloud, no accounts, no telemetry — and no third-party code in the tree ([zero npm dependencies, no build step](#tech-stack)).
 
-Hey-Koko gives you a personal AI chat experience without sending a single byte to the cloud. It talks to your local Ollama instance and adds file understanding, vision analysis, web & YouTube reading, web search, image & video generation, local text-to-speech, long-term memory, proactive messages, and a background task queue — all through a clean browser UI (or a native macOS app) with **zero build steps**. Make it yours: name it, shape its personality, pick its voice.
+Powered by [Ollama](https://ollama.com) for language and (optionally) [ComfyUI](docs/comfyui.md) for media, through a clean browser UI or a native macOS app. Chat is the interface; the point is what it lets you do locally — understand files and videos, generate images and video, ask your own library and get cited answers, speak replies aloud — with a background queue so long jobs never block the conversation. Make it yours: name it, shape its personality, pick its voice.
 
 
 ## Demo
@@ -14,23 +16,37 @@ Hey-Koko gives you a personal AI chat experience without sending a single byte t
 
 ## Features
 
+Three pillars. Chat and the knowledge library run on any machine with Ollama — a laptop is enough. A machine running [ComfyUI](docs/comfyui.md) (dedicated GPU) additionally unlocks the media studio.
+
+### 🎬 Create — the media studio
+
+- **One prompt in, media out** — `/imagine` drives [ComfyUI](docs/comfyui.md) through 30+ curated local models with verified defaults: text-to-image, instruction editing, multi-image composition, text/image-to-video, pose transfer, lip-sync, video editing, 360° panoramas. No workflow wrangling — pick a model, type a prompt.
+- **A deployment list that actually works** — [docs/comfyui-setup.md](docs/comfyui-setup.md) pins the exact node packs and model files for every supported workflow.
+- **No ComfyUI?** `/imagine` still generates images with local Ollama image models.
+- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file ([Kokoro](docs/local-python.md), or macOS system voices). Optional auto-speak reads replies aloud.
+- **Background task queue** — generation and other long jobs run detached with progress bars and live previews, so you can keep chatting; see [Background Jobs](#background-jobs).
+
+### 📚 Know — the knowledge library
+
+- **Import anything** — web pages, YouTube videos, papers (with Zotero sync), slide decks, news feeds, and local files into a searchable library with auto-distilled summary cards.
+- **Ask with citations** — semantic search and `/ask` answers grounded in your own documents, with sources cited.
+- **See your knowledge** — star-map, timeline, and entity-graph views over the whole library.
+- **Conversation archive** — save, revisit, and **semantically search** past conversations; export any chat to Markdown.
+
+### 💬 Chat — the companion
+
 - **Local & private** — conversations, memory, and archives stay on your device. Nothing leaves your machine.
-- **Customizable companion** — set the name, personality (system prompt), and default voice.
+- **Customizable** — set the name, personality (system prompt), and default voice; **long-term memory & proactive messages** — it remembers facts about you and can greet, nudge, or remind you on its own.
 - **Multi-tab chats** — run several independent conversations side by side, each with its own context.
 - **File understanding** — drag in PDF, DOCX, PPTX, EML, images, or plain text; they're parsed and fed to the model. PDFs can use a selectable local engine — [MinerU](docs/optional-tools.md#mineru) — falling back to fast built-in text extraction.
 - **Vision analysis** — `/analyze` an attached image or video (sampled into frames) with a local vision model.
-- **Web & YouTube** — `/url` fetches and summarizes a web page, or transcribes and tidies up a YouTube video.
-- **Web search** — `/search` queries DuckDuckGo, optionally reading the top results in depth.
-- **Image & video generation** — `/imagine` with local Ollama image models; optionally connect [ComfyUI](docs/comfyui.md) for advanced text-to-image, instruction editing, multi-image composition, and video.
-- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file ([Kokoro](docs/local-python.md), or macOS system voices). Optional auto-speak reads replies aloud.
-- **Long-term memory & proactive messages** — remembers facts about you, and can greet, nudge, or remind you on its own.
+- **Web & YouTube** — `/url` fetches and summarizes a web page, or transcribes and tidies up a YouTube video; `/search` queries DuckDuckGo, optionally reading the top results in depth.
 - **Agentic tools** — an optional tool-use loop (date/time, calculator, web search, knowledge-library search, recall memory, set reminders, remember facts).
+- **Makes and edits Office files** — `/doc new pptx` turns a summary you already have into a real deck: one slide per point, laid out by the template, bullets in the body placeholder, the detail in the speaker notes. Point `/doc` at an existing `.docx` / `.pptx` / `.xlsx` instead and it shows you the document's structure and edits it from plain instructions — rewrite that title, drop slide 4, add a summary table, leave a comment, set a header. Every change is a block you approve with ▶, applied to a copy you download. No Word, no PowerPoint, no LibreOffice required — see [officecli](docs/optional-tools.md#officecli).
+
 - **Reads what you're working on** — `/tool @chrome` reads the page in a co-browsing Chrome (logged-in pages, your text selection, a screenshot when needed), `@clip` whatever you just copied; on macOS `@word` / `@excel` / `@ppt` / `@outlook` read the live document, cell range, slide, or email. See [docs/tool.md](docs/tool.md).
-- **Knowledge library (RAG)** — import web pages, YouTube videos, papers (with Zotero sync), slide decks, news feeds, and local files into a searchable library: auto-distilled summary cards, semantic search, `/ask` with cited answers, and star-map / timeline / entity-graph views.
-- **Background task queue** — long-running jobs run detached so you can keep chatting; see [Background Jobs](#background-jobs).
-- **Conversation archive** — save, revisit, and **semantically search** past conversations; export any chat to Markdown.
-- **Rich markdown** — LaTeX math (KaTeX), Mermaid diagrams, inline SVG rendering, tables, syntax-highlighted code, and a live context/token usage meter.
 - **Multi-model** — switch between any installed Ollama model on the fly; optionally add [cloud models](docs/cloud-models.md) (Claude / OpenAI / DeepSeek / …).
+- **Rich markdown** — LaTeX math (KaTeX), Mermaid diagrams, inline SVG rendering, tables, syntax-highlighted code, and a live context/token usage meter.
 - **Trilingual UI** — English, Simplified Chinese, Traditional Chinese.
 
 
@@ -65,7 +81,7 @@ macOS steps below — for **Linux** and **Windows** see [docs/install.md](docs/i
    node server.js
    ```
 
-   Or run `./start.sh` / double-click `start.command` — both start the server and open the browser automatically, and on first run download the six pinned UI libraries (~7 MB, sha256-verified) into `public/vendor/` so the app works **fully offline** afterwards. Skip that with `HEYKOKO_NO_VENDOR=1` (missing files then load from the CDN at runtime).
+   Or run `./start.command` (double-click it in macOS Finder) — it starts the server and opens the browser automatically, and on first run download the six pinned UI libraries (~7 MB, sha256-verified) into `public/vendor/` so the app works **fully offline** afterwards. Skip that with `HEYKOKO_NO_VENDOR=1` (missing files then load from the CDN at runtime).
 
 6. Open your browser at:
 
@@ -141,7 +157,8 @@ Type `/` in the chat box to open the command palette. The main commands:
 | `/ask [@doc \| #archive …] <question>` | Ask the knowledge library — retrieves relevant docs (read in full by default) and answers with cited sources. `-n K` doc count, `-a` agentic auto-retrieval, `-s` short answer. |
 | `/clear` | Clear the current chat. |
 | `/compact` | Summarize and compress the conversation context. |
-| `/imagine <prompt>` | Generate an image (or a **video** when a ComfyUI video model is selected). Attach an image to edit/extend it. Flags: batch `4x`, `--enhance`/`-e`, `--size WxH` or `480p`/`720p`/`1080p` (`-portrait` for vertical), `--steps N`, `--seed N`, `--quality high/medium/low`, `--no <negative>`. |
+| `/doc [file] [instruction]` | **Turn a summary into slides**, or edit an existing **Word / PowerPoint / Excel** file by conversation. `/doc new pptx make slides from the summary above` builds a deck (one properly laid-out slide per point, with speaker notes); attach a `.docx`/`.pptx`/`.xlsx` (or give a path) to edit one. The reply is an `officecli` block — press ▶ to apply it. Works on a copy, so your original is never touched. Needs [officecli](docs/optional-tools.md#officecli). |
+| `/imagine <prompt>` | Generate an image (or a **video** when a ComfyUI video model is selected). Attach an image to edit/extend it. Flags: batch `4x`, `--enhance`/`-e`, `--size WxH` or `480p`/`720p`/`1080p` (`-portrait` for vertical) / `ultrawide`(`-small`), `-m <model-id>` (pick the model; type `-m ` for a completion list), `-s N` / `--second N` (video length in seconds), `--steps N`, `--seed N`, `--quality high/medium/low`, `--no <negative>`. |
 | `/memory <fact>` | Remember a fact about you long-term. |
 | `/note <text>` | Record a note (no AI reply). |
 | `/remind <when> <text>` | Set a reminder, e.g. `/remind 30m drink water`. |
@@ -206,6 +223,7 @@ Heavier setups (dedicated GPU / large installs) for specific needs:
 | ComfyUI deployment list (node packs + model files) | ComfyUI | [docs/comfyui-setup.md](docs/comfyui-setup.md) |
 | Local GPU PDF OCR (scans) | Unlimited-OCR | [optional-tools.md → Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) |
 | Whole-slide page images for decks | LibreOffice | [optional-tools.md → LibreOffice](docs/optional-tools.md#libreoffice) |
+| Word/Excel/PowerPoint **writing**, Word page images, deck images without LibreOffice | officecli | [optional-tools.md → officecli](docs/optional-tools.md#officecli) |
 
 
 ## Environment Variables
