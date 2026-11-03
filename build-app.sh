@@ -23,17 +23,9 @@ mkdir -p "${MACOS}" "${RESOURCES}" "${APP_FILES}"
 ICONSET="${RESOURCES}/icon.iconset"
 mkdir -p "${ICONSET}"
 
-# Convert SVG to PNG using sips (needs intermediate PNG via /usr/bin/qlmanage or python)
-ICON_SVG="${SRC_DIR}/public/app-icon.svg"
-ICON_PNG="/tmp/${APP_NAME}_icon_1024.png"
-
-# Use python3 to render SVG to PNG (available on macOS by default via cairosvg or we use a simpler method)
-if command -v rsvg-convert &>/dev/null; then
-  rsvg-convert -w 1024 -h 1024 "${ICON_SVG}" -o "${ICON_PNG}"
-elif command -v python3 &>/dev/null; then
-  # Use qlmanage as fallback for SVG to PNG
-  qlmanage -t -s 1024 -o /tmp "${ICON_SVG}" 2>/dev/null && mv "/tmp/app-icon.svg.png" "${ICON_PNG}"
-fi
+# Source is a 1024px RGBA PNG on the macOS icon grid (824px squircle, transparent
+# corners) — macOS 26+ boxes any non-squircle icon in a grey tile.
+ICON_PNG="${SRC_DIR}/public/app-icon.png"
 
 if [[ -f "${ICON_PNG}" ]]; then
   # Generate all required sizes
@@ -48,11 +40,10 @@ if [[ -f "${ICON_PNG}" ]]; then
   sips -z 1024 1024 "${ICON_PNG}" --out "${ICONSET}/icon_512x512@2x.png" >/dev/null 2>&1
 
   iconutil -c icns "${ICONSET}" -o "${RESOURCES}/icon.icns"
-  rm -rf "${ICONSET}" "${ICON_PNG}"
+  rm -rf "${ICONSET}"
   echo "  ✓ Icon generated"
 else
-  echo "  ⚠ Could not render SVG to PNG. App will use default icon."
-  echo "    Install librsvg (brew install librsvg) for better icon support."
+  echo "  ⚠ public/app-icon.png not found. App will use default icon."
   rm -rf "${ICONSET}"
 fi
 

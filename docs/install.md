@@ -102,7 +102,7 @@ On macOS you can package Hey-Koko into a native `.app` (a Swift/WebKit wrapper t
 
 This produces `hey-koko.app` in the project root. The script:
 
-- Renders `app-icon.svg` into an `.icns` icon (uses `rsvg-convert` if installed, otherwise falls back to `qlmanage`; install with `brew install librsvg` for the best result).
+- Builds the `.icns` icon from `public/app-icon.png` (1024px, macOS icon grid) with `sips` + `iconutil`.
 - Copies `server.js`, `server/`, and `public/` into the bundle.
 - Compiles `AppMain.swift` (requires the Xcode command-line tools: `xcode-select --install`).
 - Writes `Info.plist`.
