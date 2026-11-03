@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/koko.png" alt="Koko, the zebra finch behind Hey-Koko" width="200"></p>
+<p align="center"><img src="docs/koko.png" alt="Koko, the zebra finch behind Hey-Koko" width="160"></p>
 
 # Hey-Koko
 
