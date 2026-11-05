@@ -18,6 +18,7 @@ const {
 } = require("./model-names");
 const { synthToWav } = require("./tts"); // InfiniteTalk "photo speaks": prompt → local TTS → speech track
 const gallery = require("./gallery"); // every finished artifact is teed to disk before it goes back
+const { tapComfy } = require("./comfy-tap"); // one ws per client id — ComfyUI allows no more
 const { modelDataFile } = require("./model-data"); // third-party model data (e.g. FLUX 3 upsampler prompts), fetched on demand
 
 // Sniff the container from the first base64 characters — ComfyUI hands back raw
@@ -8551,23 +8552,15 @@ function comfyExecError(status) {
 // recover. Preview frames arrive as binary and are skipped.
 function watchComfyExecuted(clientId, wanted) {
   const seen = new Map(); // nodeId → { filename, subfolder, type }
-  let ws = null;
-  try {
-    const url = currentComfyUrl().replace(/^http/i, "ws") + `/ws?clientId=${encodeURIComponent(clientId)}`;
-    ws = new WebSocket(url);
-    ws.onmessage = (e) => {
-      if (typeof e.data !== "string") return; // binary = live preview frame
-      let m; try { m = JSON.parse(e.data); } catch { return; }
-      if (m.type !== "executed" || !m.data) return;
-      const nid = String(m.data.node ?? "");
-      if (!wanted.has(nid)) return;
-      const out = m.data.output || {};
-      const f = [...(out.images || []), ...(out.gifs || [])].find((x) => x && x.type !== "temp");
-      if (f) seen.set(nid, f);
-    };
-    ws.onerror = () => {};
-  } catch { /* no socket → no recovery, everything else proceeds */ }
-  return { seen, close() { try { ws && ws.close(); } catch { /* already gone */ } } };
+  const close = tapComfy(currentComfyUrl(), clientId, (m) => {
+    if (m.type !== "executed" || !m.data) return;
+    const nid = String(m.data.node ?? "");
+    if (!wanted.has(nid)) return;
+    const out = m.data.output || {};
+    const f = [...(out.images || []), ...(out.gifs || [])].find((x) => x && x.type !== "temp");
+    if (f) seen.set(nid, f);
+  });
+  return { seen, close };
 }
 
 // Salvage a render that died partway: join the segments that DID finish.

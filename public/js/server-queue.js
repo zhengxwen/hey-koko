@@ -19,7 +19,16 @@ const awaiters = new Map();           // serverJobId -> { resolve, reject }
 const lastJobs = new Map();           // serverJobId -> latest public job (from snapshot/update/done)
 let _persist = () => {};              // injected: persist state.bgJobs (so serverJobId survives reload)
 let _onProgress = () => {};           // injected: mid-run progress (server job → bgJob.progress/label → drawer)
-export function setServerQueueDeps({ persist, onProgress }) { if (persist) _persist = persist; if (onProgress) _onProgress = onProgress; }
+// Injected: kind "cli" jobs (scripts/imagine.js). Nothing here submitted them and nothing
+// awaits them, so they bypass the awaiter bookkeeping and go straight to the drawer.
+let _onCliJob = () => {}, _onCliGone = () => {}, _onCliSnapshot = () => {};
+export function setServerQueueDeps({ persist, onProgress, onCliJob, onCliGone, onCliSnapshot }) {
+  if (persist) _persist = persist;
+  if (onProgress) _onProgress = onProgress;
+  if (onCliJob) _onCliJob = onCliJob;
+  if (onCliGone) _onCliGone = onCliGone;
+  if (onCliSnapshot) _onCliSnapshot = onCliSnapshot;
+}
 
 // ---- shared SSE connection --------------------------------------------------
 export function connectServerQueue() {
@@ -27,9 +36,9 @@ export function connectServerQueue() {
   try { _es = new EventSource('/api/jobs/events'); } catch { _es = null; return; }
   _es.onmessage = (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
-    if (msg.type === 'snapshot') { for (const j of (msg.jobs || [])) ingest(j); }
+    if (msg.type === 'snapshot') { _onCliSnapshot(msg.jobs || []); for (const j of (msg.jobs || [])) ingest(j); }
     else if (msg.type === 'update' || msg.type === 'done') ingest(msg.job);
-    else if (msg.type === 'removed') settle(msg.id, null, new Error('canceled'));
+    else if (msg.type === 'removed') { settle(msg.id, null, new Error('canceled')); _onCliGone(msg.id); }
   };
   _es.onerror = () => { /* EventSource auto-reconnects (server sends retry:) */ };
 }
@@ -37,6 +46,7 @@ export function connectServerQueue() {
 // Record a job's latest state + settle any awaiter on a terminal status.
 function ingest(job) {
   if (!job || !job.id) return;
+  if (job.kind === 'cli') { _onCliJob(job); return; }
   lastJobs.set(job.id, job);
   if (job.status === 'running') _onProgress(job);   // mid-run progress/label → drawer (no settle)
   else if (job.status === 'done') settle(job.id, job.result, null);

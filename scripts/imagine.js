@@ -6,9 +6,11 @@
 // programs can drive batch generation without a browser.
 //
 // It speaks the same contract the browser does: resolve "-m <canonical-id>" against
-// /api/comfy-models, POST /api/generate-comfy, write what comes back. Every recipe
-// decision (companions, sizing, frame-grid snapping, precision swap, gallery filing)
-// stays server-side, exactly as it is for the UI — this file adds no model knowledge.
+// /api/comfy-models, submit to the server's queue (POST /api/jobs/run), write what comes
+// back. Every recipe decision (companions, sizing, frame-grid snapping, precision swap,
+// gallery filing) stays server-side, exactly as it is for the UI — this file adds no
+// model knowledge. Going through the queue is what puts a render in line with the app's
+// own and shows it in the app's background-jobs drawer.
 //
 // Requires: the hey-koko server running (npm start) and ComfyUI reachable from it.
 //
@@ -30,9 +32,8 @@ const SERVER = process.env.HEYKOKO_URL
 // One request. node:http rather than fetch on purpose: undici caps headers/body at
 // 300 s by default, and a video render legitimately holds the response open for far
 // longer than that — the browser has no such cap, and neither may we.
-function request(method, urlPath, { body, headers, server } = {}) {
+function connection(method, urlPath, { body, headers, server } = {}) {
   const base = new URL(server || SERVER);
-  const lib = base.protocol === "https:" ? https : http;
   const opts = {
     method,
     hostname: base.hostname,
@@ -41,6 +42,11 @@ function request(method, urlPath, { body, headers, server } = {}) {
     headers: { ...(headers || {}) },
   };
   if (body != null) opts.headers["Content-Length"] = Buffer.byteLength(body);
+  return { lib: base.protocol === "https:" ? https : http, opts };
+}
+
+function request(method, urlPath, { body, headers, server } = {}) {
+  const { lib, opts } = connection(method, urlPath, { body, headers, server });
   return new Promise((resolve, reject) => {
     const req = lib.request(opts, (res) => {
       const chunks = [];
@@ -365,7 +371,8 @@ Output
       --json               machine-readable: one JSON object per line on stdout (results,
                            --add records, --list-models rows); logs stay on stderr
       --progress           progress as plain lines on stderr (works in a pipe / log, and
-                           alongside --json): "[progress] <model> 45% (9/20) 37s"
+                           alongside --json): "[progress] <model> 45% (9/20) 37s",
+                           and "[queued] <model> 2 ahead" while waiting behind other jobs
   -q, --quiet              no progress output
       --dry-run            print the request that would be sent, generate nothing
 
@@ -695,35 +702,133 @@ function taskToOptions(task) {
   return o;
 }
 
-// ── progress (ComfyUI's own websocket, same clientId the render is queued with) ─
+// ── progress ─────────────────────────────────────────────────────────────────
 
 // `plain` = one self-contained line per update instead of a \r-redrawn bar, so progress
 // survives a pipe or a log file. That is what --progress asks for; the bar itself needs
 // a real terminal, since in a log it would become one unreadable line per sampler step.
-function attachProgress(comfyUrl, clientId, label, { plain = false } = {}) {
-  if (!comfyUrl || typeof WebSocket === "undefined") return () => {};
-  if (!plain && !process.stderr.isTTY) return () => {};
-  const host = String(comfyUrl).replace(/^https?:\/\//, "").replace(/\/$/, "");
-  let ws = null, closed = false, retry = null, last = "";
-  let lastPct = -1, lastAt = 0;
-  const started = Date.now();
-  const draw = (value, max) => {
-    const pct = max ? Math.round((value / max) * 100) : 0;
-    const secs = Math.round((Date.now() - started) / 1000);
-    if (plain) {
-      // Throttled: a 1000-step render must not write 1000 lines. Every 5% or 5 s,
-      // and always the last step — a consumer polling this should see it finish.
-      const now = Date.now();
-      if (pct !== 100 && pct - lastPct < 5 && now - lastAt < 5000) return;
-      lastPct = pct; lastAt = now;
-      process.stderr.write(`[progress] ${label} ${pct}% (${value}/${max}) ${secs}s\n`);
-      return;
-    }
-    const line = `  ${label} ${String(pct).padStart(3)}%  ${value}/${max}  ${secs}s`;
+function progressPrinter(label, { plain = false } = {}) {
+  let last = "", lastPct = -1, lastAt = 0;
+  let started = Date.now();
+  const paint = (line) => {
     if (line === last) return;
     last = line;
     process.stderr.write(`\r${line.padEnd(72)}`);
   };
+  return {
+    // The clock counts the render, not the wait in line for it.
+    start() { started = Date.now(); },
+    queued(ahead) {
+      const where = ahead ? `${ahead} ahead` : "next";
+      if (plain) process.stderr.write(`[queued] ${label} ${where}\n`);
+      else paint(`  ${label} queued (${where})`);
+    },
+    draw(value, max) {
+      const pct = max ? Math.round((value / max) * 100) : 0;
+      const secs = Math.round((Date.now() - started) / 1000);
+      if (plain) {
+        // Throttled: a 1000-step render must not write 1000 lines. Every 5% or 5 s,
+        // and always the last step — a consumer polling this should see it finish.
+        const now = Date.now();
+        if (pct !== 100 && pct - lastPct < 5 && now - lastAt < 5000) return;
+        lastPct = pct; lastAt = now;
+        process.stderr.write(`[progress] ${label} ${pct}% (${value}/${max}) ${secs}s\n`);
+        return;
+      }
+      paint(`  ${label} ${String(pct).padStart(3)}%  ${value}/${max}  ${secs}s`);
+    },
+    clear() { if (last) process.stderr.write(`\r${" ".repeat(74)}\r`); last = ""; },
+  };
+}
+const NO_PROGRESS = { start() {}, queued() {}, draw() {}, clear() {} };
+
+// --progress asks for it explicitly (pipes, logs, --json runs); otherwise the bar appears
+// in an interactive terminal. --quiet always wins.
+function pickProgress(cli, label) {
+  if (cli.quiet) return NO_PROGRESS;
+  if (cli.progress) return progressPrinter(label, { plain: true });
+  if (cli.json || !process.stderr.isTTY) return NO_PROGRESS;
+  return progressPrinter(label);
+}
+
+// ── submitting one render ────────────────────────────────────────────────────
+
+// The server's queue: one connection, held open for the whole render, one JSON object
+// per line. Resolves in postJson's shape so the caller cannot tell the paths apart — or
+// with null when the server predates this route. It has to be a route of its own for
+// that: an older server answers 404/405 here and nothing has started.
+function postQueued(body, { label, server, ui, onRunning }) {
+  const data = JSON.stringify({ label, clientId: body.clientId, payload: body });
+  const { lib, opts } = connection("POST", "/api/jobs/run",
+    { body: data, headers: { "Content-Type": "application/json" }, server });
+  return new Promise((resolve, reject) => {
+    const req = lib.request(opts, (res) => {
+      if (!/ndjson/i.test(res.headers["content-type"] || "")) {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          if (res.statusCode === 404 || res.statusCode === 405) { resolve(null); return; }
+          const text = Buffer.concat(chunks).toString("utf8");
+          let json = null;
+          try { json = JSON.parse(text); } catch { /* not JSON */ }
+          resolve({ status: res.statusCode, json, text });
+        });
+        return;
+      }
+      let outcome = null;
+      const onLine = (line) => {
+        let m; try { m = JSON.parse(line); } catch { return; }
+        if (m.type === "queued") ui.queued(m.ahead);
+        else if (m.type === "running") { ui.start(); onRunning(); }
+        else if (m.type === "progress") ui.draw(m.value, m.max);
+        else if (m.type === "done") outcome = { status: 200, json: m.result, text: "" };
+        else if (m.type === "error") outcome = { status: 500, json: { error: m.error, canceled: !!m.canceled }, text: "" };
+      };
+      // By bytes, not by string: the last line carries the whole render as base64.
+      let parts = [];
+      res.on("data", (c) => {
+        let from = 0, nl;
+        while ((nl = c.indexOf(10, from)) >= 0) {
+          parts.push(c.subarray(from, nl));
+          onLine(Buffer.concat(parts).toString("utf8"));
+          parts = [];
+          from = nl + 1;
+        }
+        if (from < c.length) parts.push(c.subarray(from));
+      });
+      res.on("close", () => {
+        if (outcome) resolve(outcome);
+        else reject(new Error("lost the connection to the hey-koko server mid-render"));
+      });
+    });
+    req.setTimeout(0);             // a render may run for hours; no client-side deadline
+    req.on("error", reject);
+    req.end(data);
+  });
+}
+
+// An older server has no queue route, and that is not worth failing over: the hey-koko
+// app bundles its own copy of the server, so this script can easily be the newer of the
+// two. The direct route still works; the render just stays out of the drawer.
+let queueRouteMissing = false;
+async function submit(body, { label, cli, ctx, ui, onRunning }) {
+  if (!queueRouteMissing) {
+    const r = await postQueued(body, { label, server: cli.server, ui, onRunning });
+    if (r) return r;
+    queueRouteMissing = true;
+    if (!cli.quiet && !cli.json) process.stderr.write("ℹ this server has no queue route yet — running outside the app's queue, so the render will not show in its drawer\n");
+  }
+  const stop = attachProgress(ctx.comfyUrl, body.clientId, ui);
+  try { return await postJson("/api/generate-comfy", body, cli.server); }
+  finally { stop(); }
+}
+
+// Only for that direct route, where nobody relays ComfyUI's numbers: its own websocket,
+// on the clientId the render is queued with.
+function attachProgress(comfyUrl, clientId, ui) {
+  if (ui === NO_PROGRESS || !comfyUrl || typeof WebSocket === "undefined") return () => {};
+  const host = String(comfyUrl).replace(/^https?:\/\//, "").replace(/\/$/, "");
+  let ws = null, closed = false, retry = null;
   const connect = () => {
     if (closed) return;
     try { ws = new WebSocket(`ws://${host}/ws?clientId=${encodeURIComponent(clientId)}`); }
@@ -732,7 +837,7 @@ function attachProgress(comfyUrl, clientId, label, { plain = false } = {}) {
       if (typeof ev.data !== "string") return;      // preview frames: nothing to show in a terminal
       try {
         const msg = JSON.parse(ev.data);
-        if (msg.type === "progress" && msg.data) draw(msg.data.value, msg.data.max);
+        if (msg.type === "progress" && msg.data) ui.draw(msg.data.value, msg.data.max);
       } catch { /* non-JSON */ }
     };
     ws.onerror = () => {};
@@ -745,7 +850,6 @@ function attachProgress(comfyUrl, clientId, label, { plain = false } = {}) {
     closed = true;
     if (retry) clearTimeout(retry);
     try { ws && ws.close(); } catch { /* already gone */ }
-    if (last) process.stderr.write(`\r${" ".repeat(74)}\r`);
   };
 }
 
@@ -1083,21 +1187,20 @@ async function runTask(task, cli, ctx) {
     const label = (count > 1 ? `${model.id} (${i + 1}/${count})` : model.id)
       + (h3Chain ? ` ⛓ ${h3Chain.length + 1} segments` : "");
     if (!cli.quiet && !cli.json) process.stderr.write(`▶ ${label}${prompt ? `  "${prompt.slice(0, 60)}${prompt.length > 60 ? "…" : ""}"` : ""}\n`);
-    const started = Date.now();
+    let started = Date.now();
     let r, data;
     for (let attempt = 0; ; attempt++) {
-      // --progress asks for it explicitly (pipes, logs, --json runs); otherwise the bar
-      // appears in an interactive terminal. --quiet always wins.
-      const stop = cli.quiet ? () => {}
-        : cli.progress ? attachProgress(ctx.comfyUrl, clientId, label, { plain: true })
-        : cli.json ? () => {}
-        : attachProgress(ctx.comfyUrl, clientId, label);
-      try { r = await postJson("/api/generate-comfy", body, cli.server); }
-      finally { stop(); }
+      const ui = pickProgress(cli, label);
+      const queueLabel = task._pos ? `${label} · ${task._pos}` : label;
+      try {
+        r = await submit(body, { label: queueLabel, cli, ctx, ui, onRunning: () => { started = Date.now(); } });
+      } finally { ui.clear(); }
       data = r.json;
       if (!data) throw new Error(`server returned non-JSON (${r.status}): ${r.text.slice(0, 300)}`);
       if (data.noop || (r.status === 200 && (data.videos || data.images || data.meshes || data.audios))) break;
       const msg = data.error || data.detail || `generation failed (${r.status})`;
+      // Someone pressed × in the app's drawer: a decision, not a fault — never retried.
+      if (data.canceled) throw Object.assign(new Error(msg), { canceled: true });
       // VRAM exhaustion often outlives the failed job (back-to-back renders leave the
       // card fragmented), so ONE automatic ComfyUI /free + retry heals it — and costs
       // the healthy path nothing. "Fault failed: 2" is DynamicVRAM's weight pager
@@ -1659,10 +1762,10 @@ async function main() {
       if (tasks.length > 1 && !cli.quiet && !cli.json) {
         process.stderr.write(`\n── ${where} of ${tasks.length} ──\n`);
       }
-      await runTask(t, cli, ctx);
+      await runTask(tasks.length > 1 ? { ...t, _pos: `${i + 1}/${tasks.length}` } : t, cli, ctx);
     } catch (e) {
       failed++;
-      const rec = { ok: false, task: where, error: e.message, prompt: t.prompt, model: t.model };
+      const rec = { ok: false, task: where, error: e.message, ...(e.canceled ? { canceled: true } : {}), prompt: t.prompt, model: t.model };
       if (cli.json) process.stdout.write(JSON.stringify(rec) + "\n");
       else process.stderr.write(`✗ ${where}: ${e.message}\n`);
       if (!cli.keepGoing) return 2;

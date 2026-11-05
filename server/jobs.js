@@ -15,6 +15,11 @@
 // Lanes: one per ComfyUI endpoint (job.comfyUrl) + a shared 'local' lane (audio /
 // Ollama image) + a 'lib' lane (library imports — a bulk import batch must never
 // block image/video/TTS, and vice versa). Serial within a lane, parallel across.
+//
+// kind "cli" = a render submitted by scripts/imagine.js over POST /api/jobs/run. Same
+// lanes and the same runner, but its life is tied to that one HTTP connection instead of
+// to the browser: the result goes back down the connection, the job is never persisted,
+// and the connection closing cancels it. See runCliJob().
 
 const crypto = require("crypto");
 const http = require("http");
@@ -27,6 +32,7 @@ const library = require("./library");
 const zotero = require("./zotero");
 const feeds = require("./feeds");
 const renderSlides = require("./render-slides");
+const { tapComfy } = require("./comfy-tap");
 
 const JOBS_FILE = path.join(config.JOBS_DIR, "jobs.json");
 // Library file imports spool their raw file here (payload carries the path) so N
@@ -37,6 +43,7 @@ let jobs = [];                  // see job shape in submitJob()
 const controllers = new Map();  // jobId -> AbortController (runtime only)
 const activeLanes = new Set();  // laneId currently draining
 const sseClients = new Set();   // SSE res objects
+const cliWaiters = new Map();   // kind "cli" jobId -> { res, ahead } — the open /api/jobs/run connection
 
 const laneOf = (job) => (job.kind === "libimport" || job.kind === "starmap") ? "lib" : (job.comfyUrl || "local");
 function normUrl(u) { if (!u) return ""; return /^https?:\/\//i.test(u) ? u.replace(/\/+$/, "") : "http://" + u.replace(/\/+$/, ""); }
@@ -51,7 +58,9 @@ function persist() {
     _persistTimer = null;
     try {
       fs.mkdirSync(config.JOBS_DIR, { recursive: true });
-      const clean = jobs.map(({ result, ...j }) => j);   // drop heavy result from disk
+      // A cli job dies with its connection, so a restart must not bring it back: nobody
+      // would be there to receive the render.
+      const clean = jobs.filter((j) => j.kind !== "cli").map(({ result, ...j }) => j);   // drop heavy result from disk
       fs.writeFileSync(JOBS_FILE, JSON.stringify(clean));
     } catch (e) { console.warn("[jobs] persist failed:", e.message); }
   }, 200);
@@ -122,7 +131,13 @@ function dropSpool(job) {
 }
 
 // ---- SSE broadcast ----------------------------------------------------------
-function publicJob(j) { const { _ctrl, ...rest } = j; return rest; }
+function publicJob(j) {
+  const { _ctrl, ...rest } = j;
+  // A cli job ticks once a second and its payload carries inline base64 references — that
+  // must not ride along on every tick. Its result goes down its own connection anyway.
+  if (j.kind === "cli") { const { payload, result, ...lean } = rest; return lean; }
+  return rest;
+}
 function broadcast(event) {
   const data = `data: ${JSON.stringify(event)}\n\n`;
   for (const res of sseClients) { try { res.write(data); } catch {} }
@@ -222,6 +237,8 @@ async function pumpLane(laneId) {
       job.status = "running";
       job.startedAt = Date.now();
       persist(); emitUpdate(job);
+      cliSend(job, { type: "running" });
+      updateCliQueue();
       try {
         job.result = await runJob(job);
         if (job.status === "running") { job.status = "done"; job.finishedAt = Date.now(); }
@@ -230,9 +247,11 @@ async function pumpLane(laneId) {
       }
       controllers.delete(job.id);
       if (!jobs.includes(job)) continue;        // canceled mid-run (already removed + broadcast)
+      if (job.kind === "cli") { settleCliJob(job); continue; }
       if (job.status === "done") saveResult(job);   // durable until the client acks
       persist();
       broadcast(job.status === "done" ? { type: "done", job: publicJob(job) } : { type: "update", job: publicJob(job) });
+      updateCliQueue();
     }
   } finally {
     activeLanes.delete(laneId);
@@ -324,7 +343,10 @@ async function runJob(job) {
     return { images: out.images, mediaIds: out.mediaIds, model: out.model };
   }
 
-  const r = await loopbackPost("/api/generate-comfy", body, ctrl.signal);   // self-contained JSON result
+  const stopRelay = job.kind === "cli" ? relayCliProgress(job) : null;
+  let r;
+  try { r = await loopbackPost("/api/generate-comfy", body, ctrl.signal); }   // self-contained JSON result
+  finally { if (stopRelay) stopRelay(); }
   let d = {}; try { d = JSON.parse(r.text); } catch {}
   if (!r.ok) throw new Error(d.error || `gen failed (${r.status})`);
   return d;   // { images|videos, videoMime, width, height, fps, length, model, segments, ... }
@@ -657,10 +679,102 @@ function doCancel(job) {
   const ctrl = controllers.get(job.id);
   if (ctrl) { try { ctrl.abort(); } catch {} controllers.delete(job.id); }
   if (job.status === "running" && job.comfyUrl) { try { fetch(`${normUrl(job.comfyUrl)}/interrupt`, { method: "POST" }).catch(() => {}); } catch {} }
+  // Still connected = this came from the drawer's ×, so the CLI has to be told. (When the
+  // CLI itself went away, runCliJob dropped the waiter before calling here.)
+  cliFinish(job, { type: "error", canceled: true, error: "canceled in the app" });
   removeJob(job);
   persist();
   updateSleepGuard(); // canceling the last job → drop the wake guard
   broadcast({ type: "removed", id: job.id });
+  updateCliQueue();
+}
+
+// ---- kind "cli": scripts/imagine.js -----------------------------------------
+// Every line down the connection is one JSON object:
+//   {type:"queued",ahead:N}  {type:"running"}  {type:"progress",value,max}
+//   {type:"done",result}     {type:"error",error,canceled?}
+function cliWrite(res, msg) { try { res.write(`${JSON.stringify(msg)}\n`); } catch { /* connection already gone */ } }
+function cliSend(job, msg) { const w = cliWaiters.get(job.id); if (w) cliWrite(w.res, msg); }
+function cliFinish(job, msg) {
+  const w = cliWaiters.get(job.id);
+  if (!w) return;
+  cliWaiters.delete(job.id);
+  cliWrite(w.res, msg);
+  try { w.res.end(); } catch { /* connection already gone */ }
+}
+
+// Tell each waiting CLI how many jobs stand between it and the GPU, when that changes.
+function updateCliQueue() {
+  for (const [id, w] of cliWaiters) {
+    const job = jobs.find((j) => j.id === id);
+    if (!job || job.status !== "queued") continue;
+    const lane = laneOf(job), mine = jobs.indexOf(job);
+    const ahead = jobs.filter((j, i) => laneOf(j) === lane && (j.status === "running" || (j.status === "queued" && i < mine))).length;
+    if (ahead !== w.ahead) { w.ahead = ahead; cliWrite(w.res, { type: "queued", ahead }); }
+  }
+}
+
+// ComfyUI's numbers for this job, relayed down the CLI's connection (every step — it
+// does its own throttling) and to the drawer (at most once a second).
+function relayCliProgress(job) {
+  let lastEmit = 0;
+  return tapComfy(job.comfyUrl, job.clientId, (m) => {
+    if (m.type !== "progress" || !m.data) return;
+    const { value, max } = m.data;
+    job.progress = { value, max };
+    cliSend(job, { type: "progress", value, max });
+    const now = Date.now();
+    if (value === max || now - lastEmit >= 1000) { lastEmit = now; emitUpdate(job); }
+  });
+}
+
+function settleCliJob(job) {
+  cliFinish(job, job.status === "done"
+    ? { type: "done", result: job.result }
+    : { type: "error", error: job.error || "job failed" });
+  job.result = null;
+  removeJob(job);
+  broadcast({ type: "update", job: publicJob(job) });   // the drawer shows the outcome briefly, then drops the row
+  updateCliQueue();
+}
+
+// POST /api/jobs/run — body { label, clientId, payload }. Runs in the same lane as the
+// browser's renders, holding the connection open until the job ends. A separate route
+// rather than a flag on /api/jobs, so that a server without it answers 404/405 and the
+// CLI can tell — a flag would be ignored and the job would run with nobody to collect it.
+async function runCliJob(req, res) {
+  let body; try { body = await readBody(req); } catch { sendJson(res, 400, { error: "bad body" }); return; }
+  const { label, payload, clientId } = body;
+  if (!payload) { sendJson(res, 400, { error: "payload required" }); return; }
+  if (req.socket.destroyed) return;   // gave up during the upload: "close" has already been and gone
+  const job = {
+    id: crypto.randomUUID(),
+    // No conversation — and left empty rather than given a marker, because runJob copies
+    // it into the gallery ledger for a -g render.
+    conversationId: "", msgId: "",
+    kind: "cli", engine: "comfy", label: label || "",
+    hint: String(payload.prompt || "").slice(0, 120),   // what the drawer row shows
+    payload,
+    // Always resolved: an empty URL means the 'local' lane, which would run beside the
+    // browser's renders on this same box instead of in line with them.
+    comfyUrl: normUrl(payload.comfyUrl || config.comfyUrl || ""),
+    clientId: clientId || crypto.randomUUID(),
+    status: "queued", progress: null, result: null, error: "",
+    createdAt: Date.now(), startedAt: 0, finishedAt: 0, deliveredAt: 0,
+  };
+  res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-cache" });
+  cliWaiters.set(job.id, { res, ahead: -1 });
+  // The CLI went away (Ctrl-C, killed) = the render is cancelled, exactly as when it held
+  // /api/generate-comfy open directly.
+  res.on("close", () => {
+    if (res.writableFinished) return;
+    cliWaiters.delete(job.id);
+    if (jobs.includes(job)) doCancel(job);
+  });
+  jobs.push(job);
+  emitUpdate(job);
+  updateCliQueue();
+  pumpLanes();
 }
 
 // ---- HTTP endpoints ---------------------------------------------------------
@@ -798,4 +912,4 @@ async function resumeJob(req, res, id) {
 load();
 setTimeout(() => pumpLanes(), 800);   // resume queued jobs on boot
 
-module.exports = { submitJob, uploadSpool, streamEvents, cancelJob, cancelConversation, ackJobs, reorderJobs, pauseJob, resumeJob };
+module.exports = { submitJob, runCliJob, uploadSpool, streamEvents, cancelJob, cancelConversation, ackJobs, reorderJobs, pauseJob, resumeJob };

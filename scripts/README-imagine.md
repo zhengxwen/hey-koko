@@ -255,6 +255,13 @@ run keeps going, so a stream can mix both kinds:
 {"ok":false,"task":"line 3","error":"minimax-h3-r2v needs at least one reference (-i image / --video / --audio)","prompt":"…","model":"minimax-h3-r2v"}
 ```
 
+A task someone cancelled from the app's drawer is a failed task with `canceled: true`, and
+is never retried. `error` is `"canceled in the app"`:
+
+```json
+{"ok":false,"task":"task 1","error":"canceled in the app","canceled":true,"prompt":"…","model":"minimax-h3-r2v"}
+```
+
 **`--add` records** — `deduped: true` means those exact bytes were already filed and the
 returned `mediaId` is the existing entry (no second copy was made):
 
@@ -290,11 +297,37 @@ update on stderr, no redraws, and it works alongside `--json` (stdout stays pure
 [progress] minimax-h3-r2v 45% (9/20) 37s
 ```
 
+While the render waits behind other jobs on the same ComfyUI, the same stream carries one
+line each time its place changes (`next` once nothing is left ahead):
+
+```
+[queued] minimax-h3-r2v 2 ahead
+```
+
 Throttled to one line per 5 % or 5 seconds, plus the final one at 100 % — a 1000-step
 render will not write 1000 lines. The numbers come from ComfyUI's sampler, so expect the
 line to **reach 100 % and then go quiet for a while**: VAE decode, encode and file writing
 report no progress, and on a long video that tail is a real part of the wall clock.
 `--quiet` overrides `--progress`.
+
+### The queue
+
+Renders go through the server's queue, the same one the app uses: one at a time per
+ComfyUI, in line with whatever the app is running, and listed in the app's background-jobs
+drawer with their progress. What that means for a caller:
+
+- **The process still blocks until the file is written.** Waiting in line just makes the
+  wall clock longer; `elapsedSec` counts the render only, not the wait.
+- **Ending the process cancels the render**, whether it is running or still in line.
+- **A person can cancel it from the drawer.** That ends the task as failed (`canceled: true`
+  above): exit code `2`, and a batch stops unless `--continue-on-error` is set.
+- **Nothing outlives the connection.** If the server restarts, the render is lost and the
+  task fails; it does not resume by itself.
+
+A server too old to have the queue route is used directly instead, with nothing else
+changing — the render simply does not appear in the drawer, and in human mode a one-line
+note says so. This happens when this script is newer than the copy of the server inside
+hey-koko.app.
 
 ### Recipe for a calling program
 

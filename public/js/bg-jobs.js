@@ -89,11 +89,36 @@ function persist() {
   const clean = state.bgJobs.map(({ preview, seg, _fired, _inflight, _runLabel, _submitWait, _submitRelease, _failReason, thinkingMd, thinkingFrames, liveImages, ...j }) => j);
   dbSaveJobs(clean).catch((e) => console.warn('[bg-jobs] persist failed:', e));
 }
+// Renders submitted by scripts/imagine.js. Deliberately NOT state.bgJobs: that list assumes
+// a local payload and a placeholder bubble, and re-fires what it finds after a reload. These
+// belong to a terminal — the drawer only shows them, and can cancel them. The server's SSE
+// stream is the whole truth, so nothing here is persisted.
+const cliJobs = new Map();                                // server job id → public job
+const CLI_ROW_LINGER_MS = { done: 4000, error: 8000 };    // an outcome stays this long, then the row goes
+const cliCount = (status) => [...cliJobs.values()].filter((j) => j.status === status).length;
+function onCliJob(sjob) {
+  cliJobs.set(sjob.id, sjob);
+  const linger = CLI_ROW_LINGER_MS[sjob.status];
+  if (linger) setTimeout(() => onCliGone(sjob.id), linger);
+  else if (sjob.status === 'running') startElapsedTicker();
+  renderDrawer();
+}
+function onCliGone(id) { if (cliJobs.delete(id)) renderDrawer(); }
+// After a reconnect: a job that ended while the stream was down never reports it, so
+// anything the snapshot no longer lists is over. Rows showing an outcome expire by themselves.
+function onCliSnapshot(liveJobs) {
+  const live = new Set(liveJobs.map((j) => j.id));
+  for (const [id, j] of cliJobs) if (!live.has(id) && !CLI_ROW_LINGER_MS[j.status]) onCliGone(id);
+}
+
 // Let the server-queue client persist a job's serverJobId (so a reload can reconnect),
 // and feed mid-run progress for server-side jobs (e.g. /url youtube) back onto the local
 // job → drawer/placeholder repaint (the live-progress channel non-ComfyUI jobs lacked).
 setServerQueueDeps({
   persist,
+  onCliJob,
+  onCliGone,
+  onCliSnapshot,
   onProgress: (sjob) => {
     const job = state.bgJobs.find((j) => j.serverJobId === sjob.id);
     if (!job) return;
@@ -178,7 +203,8 @@ export function cancelTabJobs(tabId) {
 }
 
 function unfinishedCount() {
-  return state.bgJobs.filter((j) => j.status === 'queued' || j.status === 'running' || j.status === 'paused').length;
+  return state.bgJobs.filter((j) => j.status === 'queued' || j.status === 'running' || j.status === 'paused').length
+    + cliCount('queued') + cliCount('running');
 }
 
 // Locate a message by its stable id across all tabs.
@@ -1039,7 +1065,7 @@ export function jumpToJob(jobId) {
 
 // ---- drawer UI -------------------------------------------------------------
 
-const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', mesh: '🧊', music: '🎵', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄', vedit: '✂️' };
+const KIND_ICON = { image: '🖼', video: '🎬', audio: '🔊', mesh: '🧊', music: '🎵', analyze: '🔍', url: '🔗', doc: '📄', docfull: '📄', vedit: '✂️', cli: '⌨️' };
 
 export function openBgDrawer(flashJobId) {
   state.bgDrawerOpen = true;
@@ -1099,7 +1125,7 @@ function startElapsedTicker() {
   if (_elapsedTimer) return;
   _elapsedTimer = setInterval(() => {
     const running = state.bgJobs.filter((j) => j.status === 'running');
-    if (!running.length) { clearInterval(_elapsedTimer); _elapsedTimer = null; return; }
+    if (!running.length && !cliCount('running')) { clearInterval(_elapsedTimer); _elapsedTimer = null; return; }
     renderDrawer();   // drawer rows show elapsed in their status text
     for (const job of running) {
       const found = findMsg(job.msgId);
@@ -1194,7 +1220,7 @@ export function renderDrawer() {
   if (bgDrag) return;
   list.innerHTML = '';
   if (MULTI_WORKERS_ENABLED) list.appendChild(buildWorkersBar());   // ComfyUI worker endpoints (parallel lanes) manager — hidden while the feature is off
-  if (!state.bgJobs.length) {
+  if (!state.bgJobs.length && !cliJobs.size) {
     const empty = document.createElement('div');
     empty.className = 'bgJobsEmpty';
     empty.textContent = t('bg_empty');
@@ -1212,7 +1238,8 @@ export function renderDrawer() {
   }
   const summary = buildJobsSummary();
   if (summary) list.appendChild(summary);
-  list.appendChild(buildJobsActions());
+  if (state.bgJobs.length) list.appendChild(buildJobsActions());   // those buttons act on bgJobs only
+  for (const job of sortLaneForDisplay([...cliJobs.values()])) list.appendChild(buildCliRow(job));
   const showHeaders = lanes.length > 1;
   for (const wid of lanes) {
     if (showHeaders) list.appendChild(buildLaneHeader(wid, byLane.get(wid)));
@@ -1223,8 +1250,8 @@ export function renderDrawer() {
 // One-line tally at the top of the list: "N running · M queued · K paused" (only the
 // non-zero parts). Returns null when nothing is pending (only finished/failed rows left).
 function buildJobsSummary() {
-  const running = state.bgJobs.filter((j) => j.status === 'running').length;
-  const queued = state.bgJobs.filter((j) => j.status === 'queued').length;
+  const running = state.bgJobs.filter((j) => j.status === 'running').length + cliCount('running');
+  const queued = state.bgJobs.filter((j) => j.status === 'queued').length + cliCount('queued');
   const paused = state.bgJobs.filter((j) => j.status === 'paused').length;
   const parts = [];
   if (running) parts.push(t('bg_sumRunning', { n: running }));
@@ -1433,6 +1460,63 @@ function jobDetail(job) {
   return '';
 }
 
+// The row's text block: context + submission time, label, status, bar, preview.
+function jobRowHtml(job, ctx) {
+  const icon = `<span class="bgJobIcon">${KIND_ICON[job.kind] || '⚙'}</span>`;
+  // Top line: source/detail context (left, truncates) + submission time (right, always
+  // shown so the user can see WHEN each queued task was submitted).
+  const sub = bgSubmitTime(job);
+  const ctxText = ctx.text ? `<span class="bgJobCtxText" title="${escapeText(ctx.tip)}">${escapeText(ctx.text)}</span>` : '<span class="bgJobCtxText"></span>';
+  const timeEl = sub.short ? `<span class="bgJobTime" title="${escapeText(t('bg_submittedAt', { time: sub.full }))}">${escapeText(sub.short)}</span>` : '';
+  const ctxLine = `<div class="bgJobCtx">${ctxText}${timeEl}</div>`;
+  const label = `<span class="bgJobLabel">${escapeText(job.label || job.kind)}</span>`;
+  // Failed/interrupted: append WHY (job.error) after the status, with the full text on
+  // hover (it truncates with an ellipsis if long).
+  const errReason = (job.status === 'error' || job.status === 'interrupted') && job.error ? job.error : '';
+  const statusStr = errReason ? `${statusText(job)} · ${errReason}` : statusText(job);
+  const status = `<span class="bgJobStatus"${errReason ? ` title="${escapeText(errReason)}"` : ''}>${escapeText(statusStr)}</span>`;
+  let bar = '';
+  if (job.status === 'running') {
+    if (job.progress && job.progress.max && !job.indeterminate) {
+      const pct = Math.min(100, Math.round(job.progress.value / job.progress.max * 100));
+      bar = `<div class="bgJobBar"><div class="bgJobBarFill" style="width:${pct}%"></div></div>`;
+    } else {
+      // No numeric progress yet (ComfyUI queue/startup, parse/analyze phases) → animated
+      // indeterminate bar so the row reads as "working", not frozen.
+      bar = `<div class="bgJobBar indeterminate"><div class="bgJobBarFill"></div></div>`;
+    }
+  }
+  // Live ComfyUI preview frame while the job renders (same stream the foreground
+  // bubble uses). job.preview is a blob: URL maintained by the background sink.
+  let preview = '';
+  if (job.status === 'running' && job.preview) {
+    preview = `<img class="bgJobPreview" src="${job.preview}" alt="preview">`;
+  }
+  return `${ctxLine}<div class="bgJobTop">${icon}${label}</div>${status}${bar}${preview}`;
+}
+
+// A render from the terminal: same look, but it has no bubble to jump to and nothing to
+// retry or pause from here. × cancels it — imagine.js then reports that and moves on.
+function buildCliRow(job) {
+  const row = document.createElement('div');
+  row.className = `bgJobRow bgJob-${job.status}`;
+  row.dataset.jobId = job.id;
+  const main = document.createElement('div');
+  main.className = 'bgJobMain isStatic';
+  main.title = job.comfyUrl ? `${t('bg_cliTip')} · ${job.comfyUrl}` : t('bg_cliTip');
+  main.innerHTML = jobRowHtml(job, { text: job.hint, tip: job.hint });
+  row.appendChild(main);
+  const active = job.status === 'running' || job.status === 'queued';
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'messageAction deleteMessage bgJobCancel';
+  del.textContent = '×';
+  del.title = active ? t('bg_cancel') : t('bg_remove');
+  del.addEventListener('click', () => { if (active) cancelServerJob(job.id); else onCliGone(job.id); });
+  row.appendChild(del);
+  return row;
+}
+
 function buildJobRow(job) {
   {
     const row = document.createElement('div');
@@ -1492,38 +1576,7 @@ function buildJobRow(job) {
       ? `${t('bg_jumpTitle')} · ${jobMachine(job)}`
       : t('bg_jumpTitle');
     main.addEventListener('click', () => jumpToJob(job.id));
-    const icon = `<span class="bgJobIcon">${KIND_ICON[job.kind] || '⚙'}</span>`;
-    // Top line: source/detail context (left, truncates) + submission time (right, always
-    // shown so the user can see WHEN each queued task was submitted).
-    const ctx = jobContext(job);   // { text, tip } — tip carries the full source URL
-    const sub = bgSubmitTime(job);
-    const ctxText = ctx.text ? `<span class="bgJobCtxText" title="${escapeText(ctx.tip)}">${escapeText(ctx.text)}</span>` : '<span class="bgJobCtxText"></span>';
-    const timeEl = sub.short ? `<span class="bgJobTime" title="${escapeText(t('bg_submittedAt', { time: sub.full }))}">${escapeText(sub.short)}</span>` : '';
-    const ctxLine = `<div class="bgJobCtx">${ctxText}${timeEl}</div>`;
-    const label = `<span class="bgJobLabel">${escapeText(job.label || job.kind)}</span>`;
-    // Failed/interrupted: append WHY (job.error) after the status, with the full text on
-    // hover (it truncates with an ellipsis if long).
-    const errReason = (job.status === 'error' || job.status === 'interrupted') && job.error ? job.error : '';
-    const statusStr = errReason ? `${statusText(job)} · ${errReason}` : statusText(job);
-    const status = `<span class="bgJobStatus"${errReason ? ` title="${escapeText(errReason)}"` : ''}>${escapeText(statusStr)}</span>`;
-    let bar = '';
-    if (job.status === 'running') {
-      if (job.progress && job.progress.max && !job.indeterminate) {
-        const pct = Math.min(100, Math.round(job.progress.value / job.progress.max * 100));
-        bar = `<div class="bgJobBar"><div class="bgJobBarFill" style="width:${pct}%"></div></div>`;
-      } else {
-        // No numeric progress yet (ComfyUI queue/startup, parse/analyze phases) → animated
-        // indeterminate bar so the row reads as "working", not frozen.
-        bar = `<div class="bgJobBar indeterminate"><div class="bgJobBarFill"></div></div>`;
-      }
-    }
-    // Live ComfyUI preview frame while the job renders (same stream the foreground
-    // bubble uses). job.preview is a blob: URL maintained by the background sink.
-    let preview = '';
-    if (job.status === 'running' && job.preview) {
-      preview = `<img class="bgJobPreview" src="${job.preview}" alt="preview">`;
-    }
-    main.innerHTML = `${ctxLine}<div class="bgJobTop">${icon}${label}</div>${status}${bar}${preview}`;
+    main.innerHTML = jobRowHtml(job, jobContext(job));   // { text, tip } — tip carries the full source URL
 
     // Control buttons (retry / pause / resume) go on the LEFT — right after the drag
     // handle — so they never sit under the × (which is pinned to the top-right corner
