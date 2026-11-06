@@ -717,13 +717,29 @@ function updateCliQueue() {
 // ComfyUI's numbers for this job, relayed down the CLI's connection (every step — it
 // does its own throttling) and to the drawer (at most once a second).
 function relayCliProgress(job) {
+  // A chain runs one ComfyUI prompt per line, all on this client id, so counting prompt
+  // ids says exactly which line is rendering. execution_start carries one too, which
+  // turns the row over as a segment begins rather than at its first sampler step.
+  const total = Array.isArray(job.payload.h3Chain) ? job.payload.h3Chain.length + 1 : 1;
+  if (total > 1) job.pass = { n: 1, total };
+  const prompts = new Set();
   let lastEmit = 0;
   return tapComfy(job.comfyUrl, job.clientId, (m) => {
+    const now = Date.now();
+    const promptId = m.data && m.data.prompt_id;
+    if (total > 1 && promptId && !prompts.has(promptId)) {
+      prompts.add(promptId);
+      job.pass = { n: Math.min(prompts.size, total), total };
+      // Back to zero: the drawer adds this onto the segments already finished, so the
+      // previous segment's last step would read as a whole segment too many.
+      if (job.progress) job.progress = { value: 0, max: job.progress.max };
+      lastEmit = now;
+      emitUpdate(job);
+    }
     if (m.type !== "progress" || !m.data) return;
     const { value, max } = m.data;
     job.progress = { value, max };
     cliSend(job, { type: "progress", value, max });
-    const now = Date.now();
     if (value === max || now - lastEmit >= 1000) { lastEmit = now; emitUpdate(job); }
   });
 }

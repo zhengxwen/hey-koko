@@ -97,6 +97,12 @@ const cliJobs = new Map();                                // server job id → p
 const CLI_ROW_LINGER_MS = { done: 4000, error: 8000 };    // an outcome stays this long, then the row goes
 const cliCount = (status) => [...cliJobs.values()].filter((j) => j.status === status).length;
 function onCliJob(sjob) {
+  // A chained render: the server sends which segment and its sampler numbers; the row
+  // shows the same badge and the same across-all-segments bar as one started in the chat.
+  if (sjob.pass) {
+    sjob.seg = t('msg_chunkBadge', { seg: sjob.pass.n, total: sjob.pass.total });
+    if (sjob.progress) sjob.progress = { value: (sjob.pass.n - 1) * sjob.progress.max + sjob.progress.value, max: sjob.pass.total * sjob.progress.max };
+  }
   cliJobs.set(sjob.id, sjob);
   const linger = CLI_ROW_LINGER_MS[sjob.status];
   if (linger) setTimeout(() => onCliGone(sjob.id), linger);

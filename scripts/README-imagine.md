@@ -314,7 +314,8 @@ report no progress, and on a long video that tail is a real part of the wall clo
 
 Renders go through the server's queue, the same one the app uses: one at a time per
 ComfyUI, in line with whatever the app is running, and listed in the app's background-jobs
-drawer with their progress. What that means for a caller:
+drawer with their progress (a chain of several `/imagine` lines shows which segment it is
+on). What that means for a caller:
 
 - **The process still blocks until the file is written.** Waiting in line just makes the
   wall clock longer; `elapsedSec` counts the render only, not the wait.
