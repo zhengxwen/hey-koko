@@ -393,16 +393,16 @@
         <div class="tabBar" aria-label="Chat tabs">
           <div class="tabBarTools">
             <button id="addTab" type="button" class="addTab" aria-label="New chat">+</button>
-            <button id="bgJobsBtn" type="button" class="bgJobsBtn" title="后台任务" aria-label="后台任务"><span class="bgJobsIcon">☰</span><span id="bgJobsBadge" class="bgJobsBadge" hidden></span></button>
+            <button id="bgJobsBtn" type="button" class="bgJobsBtn" title="Background jobs" aria-label="Background jobs"><span class="bgJobsIcon">☰</span><span id="bgJobsBadge" class="bgJobsBadge" hidden></span></button>
           </div>
           <div id="chatTabs" class="chatTabs" role="tablist"></div>
         </div>
 
         <!-- Background Jobs drawer (slides in from the right) -->
-        <aside id="bgJobsDrawer" class="bgJobsDrawer" aria-label="后台任务">
+        <aside id="bgJobsDrawer" class="bgJobsDrawer" aria-label="Background jobs">
           <div class="bgJobsHeader">
-            <span class="bgJobsTitle">后台任务</span>
-            <button id="bgJobsCloseBtn" type="button" class="bgJobsCloseBtn" aria-label="关闭">×</button>
+            <span class="bgJobsTitle">Background jobs</span>
+            <button id="bgJobsCloseBtn" type="button" class="bgJobsCloseBtn" aria-label="Close">×</button>
           </div>
           <div id="bgJobsList" class="bgJobsList"></div>
           <!-- Wait overlay for a slow bulk delete (cancelling many server jobs + removing
