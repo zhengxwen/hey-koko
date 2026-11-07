@@ -9,9 +9,9 @@ Powered by [Ollama](https://ollama.com) for language and (optionally) [ComfyUI](
 
 ## Demo
 
-<p align="center"><img src="docs/demo.gif" alt="Hey-Koko in action — natural chat, image understanding, email &amp; YouTube summaries, video analysis, a knowledge star map and relation graph, image generation, and ComfyUI video generation" width="100%"></p>
+<p align="center"><img src="docs/demo.webp" alt="Hey-Koko in action — choosing MiniMax H3 from the ComfyUI model list and generating a video, editing a photo with FLUX 3 Klein, batching images in the background while chatting, the gallery, a knowledge star map, cited answers from the library, and chat about an image" width="100%"></p>
 
-<p align="center"><em>One local companion — chat naturally · understand images, emails &amp; YouTube videos · analyze a video · explore your knowledge as a star map &amp; relation graph · generate images and video with ComfyUI.</em></p>
+<p align="center"><em>One local studio — prompt to video on your own GPU · edit images with words · batch in the background and keep chatting · see your knowledge as a star map · ask your library for cited answers.</em></p>
 
 
 ## Features
