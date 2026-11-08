@@ -11,21 +11,15 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const config = require("./config");
-const { sendJson, readBody, cleanSpeechText, findCommand } = require("./utils");
+const { sendJson, readBody, cleanSpeechText } = require("./utils");
+const { findTool } = require("./find-tool");
 const gallery = require("./gallery");   // /voice clips are filed like any other artifact
 
-// Resolve ffmpeg once (used to transcode the engine's wav → AAC). null if absent.
-let ffmpegPath; // undefined = not probed yet, null = absent, string = path
-function findFfmpeg() {
-  if (ffmpegPath !== undefined) return Promise.resolve(ffmpegPath);
-  return findCommand("ffmpeg").then((p) => (ffmpegPath = p));
-}
-
-// Transcode an audio file (wav/aiff) to AAC (ADTS .aac). Resolves the output
+// Transcode an audio file (wav) to AAC (ADTS .aac). Resolves the output
 // path, or null if ffmpeg is unavailable / fails (caller falls back to source).
 function transcodeToAac(inPath) {
-  return new Promise(async (resolve) => {
-    const ff = await findFfmpeg();
+  return new Promise((resolve) => {
+    const ff = findTool("ffmpeg");
     if (!ff) { resolve(null); return; }
     const aacPath = inPath.replace(/\.[^.]+$/, "") + ".aac";
     const proc = spawn(ff, ["-i", inPath, "-c:a", "aac", "-b:a", "128k", "-f", "adts", "-y", aacPath]);
@@ -34,20 +28,25 @@ function transcodeToAac(inPath) {
   });
 }
 
-// Synthesize via macOS `say` to a temp AIFF file (used by /voice when a "say:"
-// voice is selected). Resolves the aiff path (caller deletes it).
-function sayToAiff(voice, text, rate) {
+// Synthesize via macOS `say` to a temp WAV. Shared by /voice (synthesize below) and the
+// reader (server/speech.js). WAV, not say's default AIFF: browsers can't play AIFF, and
+// that is exactly what /voice would hand them when ffmpeg is missing. LEI16@22050 is
+// lossless here — every installed voice, Premium included, renders at 22050 Hz mono.
+// `signal` aborts synthesis (the reader passes one tied to the client disconnecting).
+// Resolves the wav path (caller deletes it).
+function sayToWav({ voice, text, rate, signal } = {}) {
   return new Promise((resolve, reject) => {
-    const out = path.join(os.tmpdir(), `hk_say_${process.pid}_${nextId++}.aiff`);
-    const args = [];
+    const out = path.join(os.tmpdir(), `hk_say_${process.pid}_${nextId++}.wav`);
+    const args = ["--data-format=LEI16@22050", "-o", out];
     if (voice) args.push("-v", voice);
     if (rate) args.push("-r", String(Math.round(Number(rate) * 175)));
-    args.push("-o", out);
-    const proc = spawn("say", args);
-    proc.on("error", reject);
+    const proc = spawn("say", args, signal ? { signal } : undefined);
+    const fail = (e) => { fs.unlink(out, () => {}); reject(e); };
+    proc.on("error", fail);
+    proc.stdin.on("error", () => { /* say died before reading — reported via close/error */ });
     proc.stdin.write(text);
     proc.stdin.end();
-    proc.on("close", (code) => (code === 0 ? resolve(out) : reject(new Error(`say exited ${code}`))));
+    proc.on("close", (code) => (code === 0 ? resolve(out) : fail(new Error(`say exited ${code}`))));
   });
 }
 
@@ -197,7 +196,7 @@ async function listTtsVoices(res) {
 }
 
 // POST /api/tts { text, voice, rate } → { audio: base64, mime }. Output is AAC
-// (ffmpeg) regardless of engine; falls back to the raw wav/aiff if ffmpeg is
+// (ffmpeg) regardless of engine; falls back to the raw wav if ffmpeg is
 // missing. Routes by the voice's engine prefix: "say:" → macOS say, otherwise
 // the neural daemon (kokoro).
 async function synthesize(req, res) {
@@ -215,10 +214,8 @@ async function synthesize(req, res) {
     const voice = known ? voiceVal.slice(voiceVal.indexOf(":") + 1)
                         : (sep > 0 ? voiceVal.slice(sep + 1) : voiceVal);
 
-    let fallbackMime = "audio/wav";
     if (engine === "say") {
-      srcPath = await sayToAiff(voice, text, rate);
-      fallbackMime = "audio/aiff";
+      srcPath = await sayToWav({ voice, text, rate });
     } else {
       const engines = await ensureDaemon();
       if (!engines.has(engine)) {
@@ -236,7 +233,7 @@ async function synthesize(req, res) {
     // base64'd into the persisted chat). Fall back to the source if ffmpeg fails.
     aacPath = await transcodeToAac(srcPath);
     const b64 = fs.readFileSync(aacPath || srcPath).toString("base64");
-    const mime = aacPath ? "audio/aac" : fallbackMime;
+    const mime = aacPath ? "audio/aac" : "audio/wav";
     // File it in the gallery like an image or a clip: it is a generated artifact, and
     // keeping it out of the chat store is the whole point. Best-effort as everywhere.
     let mediaIds;
@@ -255,4 +252,4 @@ async function synthesize(req, res) {
   }
 }
 
-module.exports = { listTtsVoices, synthesize, synthToWav };
+module.exports = { listTtsVoices, synthesize, synthToWav, sayToWav };

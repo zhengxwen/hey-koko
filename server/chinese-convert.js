@@ -14,7 +14,8 @@
 //      zero-dependency fallback. Traditional->Simplified is near-lossless; Simplified->
 //      Traditional is char-level best-effort (picks each char's default target).
 
-const { spawn, execFile } = require("child_process");
+const { spawn } = require("child_process");
+const { checkTool } = require("./find-tool");
 const { T2S_PAIRS, S2T_PAIRS } = require("./chinese-convert-data");
 
 // ---- embedded char maps (built lazily from the packed pair strings) ---------
@@ -34,26 +35,12 @@ function charConvert(text, map) {
 // ---- opencc CLI detection (best-effort, cached) -----------------------------
 let _openccPath = null;      // resolved path once detected, or "" if unavailable
 let _detectPromise = null;
-function findOpencc() {
-  const candidates = ["/opt/homebrew/bin/opencc", "/usr/local/bin/opencc", "/usr/bin/opencc", "opencc"];
-  return new Promise((resolve) => {
-    let i = 0;
-    const tryNext = () => {
-      if (i >= candidates.length) return resolve("");
-      const cmd = candidates[i++];
-      execFile(cmd, ["--version"], { timeout: 5000 }, (err) => {
-        // opencc --version prints to stderr and may exit non-zero on some builds; treat
-        // "spawned at all" (no ENOENT) as available.
-        if (err && (err.code === "ENOENT" || err.code === "EACCES")) return tryNext();
-        resolve(cmd);
-      });
-    };
-    tryNext();
-  });
-}
 function ensureDetect() {
   if (_detectPromise) return _detectPromise;
-  _detectPromise = findOpencc().then((p) => {
+  // opencc --version prints to stderr and may exit non-zero on some builds; treat
+  // "spawned at all" as available.
+  _detectPromise = checkTool("opencc", { timeoutMs: 5000, anyExit: true }).then((found) => {
+    const p = found || "";
     _openccPath = p;
     // Startup visibility, same spirit as parse-file/url-fetch: the "not found" line
     // carries the install hint so the console answers "how do I upgrade S/T conversion?".

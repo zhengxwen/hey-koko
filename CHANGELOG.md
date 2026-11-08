@@ -8,6 +8,14 @@
 - `MINERU_BACKEND` env var to choose MinerU's backend (defaults to the dependency-light `pipeline`).
 - `scripts/imagine.js` renders now go through the server's queue: they wait in line with the app's own jobs and show in the background-jobs drawer with live progress, and × there cancels them. Calling it from a program is unchanged apart from that wait and the new `canceled` failure; see [the CLI docs](scripts/README-imagine.md#the-queue).
 
+### Removed
+- PowerPoint (AppleScript) as a slide page-image backend — recent PowerPoint builds silently drop the export, so it never produced images. LibreOffice and officecli are unchanged.
+- ImageMagick as an image re-encoder for imported web images (`HEYKOKO_IMAGE_TOOL=imagemagick`). `sips` (macOS) and ffmpeg cover every platform.
+
+### Fixed
+- Read-aloud with a system (`say`) voice now stops synthesizing when the browser skips or stops a sentence; before, every abandoned sentence ran to completion on the server.
+- `/voice` with a system voice and no ffmpeg returns playable WAV instead of AIFF, which browsers can't play.
+
 ## v0.1.0 (2026-06-11)
 
 ### Added

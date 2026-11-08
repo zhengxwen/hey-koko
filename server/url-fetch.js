@@ -5,7 +5,8 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { execFile, spawn } = require("child_process");
-const { sendJson, readBody, findCommand } = require("./utils");
+const { sendJson, readBody } = require("./utils");
+const { findTool } = require("./find-tool");
 const config = require("./config");
 const claude = require("./claude");
 const openai = require("./openai");
@@ -328,7 +329,7 @@ function extractMainContentHtml(html) {
 // (matches the project's existing optional-CLI pattern: yt-dlp/whisper/ffmpeg),
 // otherwise falls back to a built-in lightweight converter.
 async function htmlToMarkdown(html) {
-  const pandoc = await findCommand("pandoc");
+  const pandoc = findTool("pandoc");
   if (pandoc) {
     const md = await new Promise((resolve) => {
       const proc = execFile(pandoc,
@@ -421,22 +422,20 @@ function markdownImagesToPlaceholders(md) {
 const IMG_EXT = { "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif", "image/avif": "avif" };
 
 // Image re-encoder backend — ZERO npm (no image library), uses whatever CLI is present:
-//   • macOS      → `sips` (built in, like the app's caffeinate/afplay/AppleScript use)
-//   • Linux/DGX  → `ffmpeg` (already a project dep for youtube/whisper) → ImageMagick
-// Env HEYKOKO_IMAGE_TOOL=sips|ffmpeg|imagemagick|none forces one (or disables). Detected once;
+//   • macOS          → `sips` (built in, like the app's caffeinate/afplay/AppleScript use)
+//   • Linux/Windows  → `ffmpeg` (already required by every video feature)
+// Env HEYKOKO_IMAGE_TOOL=sips|ffmpeg|none forces one (or disables). Detected once;
 // absent → caller keeps the original bytes (image import is an opt-in enhancement, not core).
 let _imgBackend;   // undefined = not probed; { tool, cmd } or null
 async function imageBackend() {
   if (_imgBackend !== undefined) return _imgBackend;
   const forced = (process.env.HEYKOKO_IMAGE_TOOL || "").toLowerCase();
-  const sips = () => (fs.existsSync("/usr/bin/sips") ? { tool: "sips", cmd: "/usr/bin/sips" } : null);
-  const ff = async () => { const c = await findCommand("ffmpeg"); return c ? { tool: "ffmpeg", cmd: c } : null; };
-  const im = async () => { const c = (await findCommand("magick")) || (await findCommand("convert")); return c ? { tool: "imagemagick", cmd: c } : null; };
+  const sips = () => { const c = findTool("sips"); return c ? { tool: "sips", cmd: c } : null; };
+  const ff = () => { const c = findTool("ffmpeg"); return c ? { tool: "ffmpeg", cmd: c } : null; };
   if (forced === "none") _imgBackend = null;
   else if (forced === "sips") _imgBackend = sips();
-  else if (forced === "ffmpeg") _imgBackend = await ff();
-  else if (forced === "imagemagick") _imgBackend = await im();
-  else _imgBackend = (process.platform === "darwin" && sips()) || (await ff()) || (await im()) || null;   // auto
+  else if (forced === "ffmpeg") _imgBackend = ff();
+  else _imgBackend = (process.platform === "darwin" && sips()) || ff() || null;   // auto
   if (_imgBackend) console.log(`[url-fetch] image re-encoder: ${_imgBackend.tool} (${_imgBackend.cmd})`);
   return _imgBackend;
 }
@@ -454,15 +453,11 @@ async function reencodeToJpeg(buf, mime, { quality = 75, maxDim = 0 } = {}) {
     args = ["-s", "format", "jpeg", "-s", "formatOptions", String(quality)];
     if (maxDim > 0) args.push("-Z", String(maxDim));                      // -Z: longest side ≤ maxDim
     args.push(inp, "--out", outp);
-  } else if (be.tool === "ffmpeg") {
+  } else {   // ffmpeg
     const qv = Math.min(31, Math.max(2, Math.round(31 - quality * 0.29)));   // 0–100 → mjpeg -q:v 2(best)–31(worst)
     args = ["-y", "-loglevel", "error", "-i", inp];
     if (maxDim > 0) args.push("-vf", `scale=${maxDim}:${maxDim}:force_original_aspect_ratio=decrease:force_divisible_by=2`);
     args.push("-q:v", String(qv), outp);
-  } else {   // imagemagick (magick or legacy convert): same arg order, input→ops→output
-    args = [inp];
-    if (maxDim > 0) args.push("-resize", `${maxDim}x${maxDim}>`);         // '>' = shrink only, never upscale
-    args.push("-quality", String(quality), outp);
   }
   return new Promise((resolve) => {
     execFile(be.cmd, args, { timeout: 20000 }, (err) => {
@@ -486,7 +481,7 @@ async function optimizeImage(buf, mime) {
   const huge = buf.length > 1500 * 1024, big = buf.length > 500 * 1024;
   if (!isPng && (isGif || !big)) return { buf, ct: mime };   // no shrink needed: reasonable non-PNG, or any GIF
   const be = await imageBackend();
-  if (!be) { const e = new Error("Image compression backend missing (install ffmpeg or ImageMagick, or set HEYKOKO_IMAGE_TOOL)"); e.name = "ImageBackendMissing"; throw e; }
+  if (!be) { const e = new Error("Image compression backend missing (install ffmpeg, or set HEYKOKO_IMAGE_TOOL)"); e.name = "ImageBackendMissing"; throw e; }
   const opt = await reencodeToJpeg(buf, mime, { quality: huge ? 62 : big ? 72 : 82, maxDim: huge ? 1600 : 0 });
   if (!opt) { const e = new Error(`Image compression failed (${be.tool}): ${Math.round(buf.length / 1024)}KB ${mime}`); e.name = "ImageOptimizeError"; throw e; }
   if (isPng || opt.length < buf.length) return { buf: opt, ct: "image/jpeg" };   // PNG always converts; else only if smaller
@@ -1041,146 +1036,144 @@ function fetchTranscriptViaYtdlp(videoId, language) {
   const url = `https://www.youtube.com/watch?v=${videoId}`;
   return new Promise((resolve) => {
     // Check if yt-dlp is available
-    findCommand("yt-dlp").then((ytdlp) => {
-      if (!ytdlp) { resolve(null); return; }
+    if (!findTool("yt-dlp")) { resolve(null); return; }
 
-      // Step 1: list available subtitles to pick the best language. `--encoding UTF-8`
-      // keeps yt-dlp's stdout UTF-8 on Windows (the frozen exe otherwise emits the ANSI
-      // code page and mangles any non-ASCII).
-      execFile("yt-dlp", ["--encoding", "UTF-8", "--list-subs", "--skip-download", ...ytCookieArgs(), url],
-        { timeout: 30000 }, (err2, stdout) => {
-          if (err2 || !stdout) { resolve(null); return; }
+    // Step 1: list available subtitles to pick the best language. `--encoding UTF-8`
+    // keeps yt-dlp's stdout UTF-8 on Windows (the frozen exe otherwise emits the ANSI
+    // code page and mangles any non-ASCII).
+    execFile("yt-dlp", ["--encoding", "UTF-8", "--list-subs", "--skip-download", ...ytCookieArgs(), url],
+      { timeout: 30000 }, (err2, stdout) => {
+        if (err2 || !stdout) { resolve(null); return; }
 
-          // Parse output: separate "Available subtitles" from auto-generated translations
-          const lines = stdout.split("\n");
-          const availableIdx = lines.findIndex(l => /Available subtitles/.test(l));
-          const subSection = availableIdx >= 0 ? lines.slice(availableIdx + 1) : lines;
-          const langLines = subSection.filter(l => /^\s*[\w-]+\s+/.test(l) && /vtt|srt|srv3/.test(l));
-          const realLangs = langLines.map(l => l.trim().split(/\s+/)[0]);
+        // Parse output: separate "Available subtitles" from auto-generated translations
+        const lines = stdout.split("\n");
+        const availableIdx = lines.findIndex(l => /Available subtitles/.test(l));
+        const subSection = availableIdx >= 0 ? lines.slice(availableIdx + 1) : lines;
+        const langLines = subSection.filter(l => /^\s*[\w-]+\s+/.test(l) && /vtt|srt|srv3/.test(l));
+        const realLangs = langLines.map(l => l.trim().split(/\s+/)[0]);
 
-          const autoSection = availableIdx >= 0 ? lines.slice(0, availableIdx) : [];
-          const autoLangLines = autoSection.filter(l => /^\s*[\w-]+\s+/.test(l) && /vtt|srt|srv3/.test(l));
-          const autoLangs = autoLangLines.map(l => l.trim().split(/\s+/)[0]);
+        const autoSection = availableIdx >= 0 ? lines.slice(0, availableIdx) : [];
+        const autoLangLines = autoSection.filter(l => /^\s*[\w-]+\s+/.test(l) && /vtt|srt|srv3/.test(l));
+        const autoLangs = autoLangLines.map(l => l.trim().split(/\s+/)[0]);
 
-          if (realLangs.length === 0 && autoLangs.length === 0) { resolve(null); return; }
+        if (realLangs.length === 0 && autoLangs.length === 0) { resolve(null); return; }
 
-          // Pick the caption track. The VIEWER's prompt language comes FIRST — so an
-          // English user gets English captions (a machine auto-translation when the
-          // video isn't in English) whenever such a track exists — then the video's
-          // ORIGINAL spoken language (verbatim; yt-dlp marks it "xx-orig"), then a small
-          // fallback set. Language is the primary key; within one language a MANUAL track
-          // (cleaner) beats an auto caption/translation. Matching is by prefix so "en"
-          // also matches "en-US" / "en-orig".
-          const origAuto = autoLangs.find(l => /-orig$/.test(l));
-          const origLang = origAuto ? origAuto.replace(/-orig$/, "") : "";
-          const userPref = (language === "zh" || language === "zh-Hans") ? ["zh-Hans", "zh-Hant", "zh"]
-            : language === "zh-Hant" ? ["zh-Hant", "zh-Hans", "zh"]
-            : language ? [language] : [];
-          const ranked = [...new Set([...userPref, origLang, "en", "zh-Hans", "zh-Hant", "zh", "ja"].filter(Boolean))];
-          const matches = (l, pref) => l === pref || l.startsWith(pref + "-");
-          let selectedLang = null;
-          for (const pref of ranked) {
-            const m = realLangs.find(l => matches(l, pref));   // manual first
-            if (m) { selectedLang = m; break; }
-            const a = autoLangs.find(l => matches(l, pref));   // then auto/translation
-            if (a) { selectedLang = a; break; }
-          }
-          if (!selectedLang) selectedLang = realLangs[0] || autoLangs[0];
-
-          // Step 2: download the selected subtitle
-          const tmpDir = path.join(os.tmpdir(), `yt-${videoId}-${Date.now()}`);
-          fs.mkdirSync(tmpDir, { recursive: true });
-
-          execFile("yt-dlp", [
-            "--write-subs", "--write-auto-sub",
-            "--sub-lang", selectedLang,
-            "--sub-format", "vtt",
-            "--skip-download",
-            "-o", path.join(tmpDir, "%(id)s"),
-            ...ytCookieArgs(),
-            url,
-          ], { timeout: 60000 }, (err3) => {
-            try {
-              const files = fs.readdirSync(tmpDir).filter(f => f.endsWith(".vtt") || f.endsWith(".srv3") || f.endsWith(".srt"));
-              if (files.length === 0) { cleanupDir(tmpDir); resolve(null); return; }
-
-              const content = fs.readFileSync(path.join(tmpDir, files[0]), "utf-8");
-
-              // Parse VTT: extract timestamped segments
-              const segments = [];
-              const vttLines = content.split("\n");
-              let currentTime = "";
-              for (let i = 0; i < vttLines.length; i++) {
-                const trimmed = vttLines[i].trim();
-                if (!trimmed || trimmed.startsWith("WEBVTT") || trimmed.startsWith("Kind:") ||
-                    trimmed.startsWith("Language:") || trimmed.startsWith("NOTE") ||
-                    /^\d+$/.test(trimmed)) continue;
-                const tsMatch = trimmed.match(/^(\d{2}:\d{2}:\d{2})\.\d+ --> /);
-                if (tsMatch) {
-                  currentTime = tsMatch[1];
-                  continue;
-                }
-                const clean = trimmed.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&")
-                  .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-                  .replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
-                // Rolling auto-captions repeat the previous cue's line — drop CONSECUTIVE
-                // repeats only (a global set would also delete legitimate repeated lines
-                // spoken minutes apart).
-                if (clean && clean !== (segments.length ? segments[segments.length - 1].text : "")) {
-                  segments.push({ time: currentTime, text: clean });
-                }
-              }
-
-              cleanupDir(tmpDir);
-
-              if (segments.length === 0) { resolve(null); return; }
-
-              const plainText = segments.map(s => s.text).join("\n");
-
-              // Get video metadata. `--encoding UTF-8` forces UTF-8 stdout (else the frozen
-              // yt-dlp.exe on Windows drops every CJK char from the title/description);
-              // `youtube:lang` picks the localized-title language so a zh video isn't served
-              // its English title. %(...)j fields (categories/tags) print JSON arrays;
-              // description stays LAST because its .500s value may contain newlines.
-              const metaLang = ytdlpLangArg(language);
-              const metaArgs = ["--encoding", "UTF-8"];
-              if (metaLang) metaArgs.push("--extractor-args", `youtube:lang=${metaLang}`);
-              metaArgs.push(
-                "--print", "%(title)s",
-                "--print", "%(channel)s",
-                "--print", "%(duration_string)s",
-                "--print", "%(view_count)s",
-                "--print", "%(upload_date)s",
-                "--print", "%(categories)j",
-                "--print", "%(tags)j",
-                "--print", "%(language)s",
-                "--print", "%(description).500s",
-                "--skip-download", ...ytCookieArgs(), url,
-              );
-              execFile("yt-dlp", metaArgs, { timeout: 15000 }, (e, metaOut) => {
-                  const metaLines = (metaOut || "").split("\n");
-                  const parseArr = (s) => { try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } };
-                  const title = metaLines[0]?.trim() || "";
-                  const channel = metaLines[1]?.trim() || "";
-                  const duration = metaLines[2]?.trim() || "";
-                  const viewCount = metaLines[3]?.trim() || "";
-                  const uploadDate = metaLines[4]?.trim() || "";
-                  const category = parseArr(metaLines[5])[0] || "";
-                  const tags = parseArr(metaLines[6]);
-                  let language = (metaLines[7] || "").trim();
-                  if (language === "NA") language = "";   // yt-dlp prints NA for a missing field
-                  const description = metaLines.slice(8).join("\n").trim() || "";
-                  resolve({ title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: plainText });
-                }
-              );
-            } catch (e) {
-              cleanupDir(tmpDir);
-              resolve(null);
-            }
-          });
+        // Pick the caption track. The VIEWER's prompt language comes FIRST — so an
+        // English user gets English captions (a machine auto-translation when the
+        // video isn't in English) whenever such a track exists — then the video's
+        // ORIGINAL spoken language (verbatim; yt-dlp marks it "xx-orig"), then a small
+        // fallback set. Language is the primary key; within one language a MANUAL track
+        // (cleaner) beats an auto caption/translation. Matching is by prefix so "en"
+        // also matches "en-US" / "en-orig".
+        const origAuto = autoLangs.find(l => /-orig$/.test(l));
+        const origLang = origAuto ? origAuto.replace(/-orig$/, "") : "";
+        const userPref = (language === "zh" || language === "zh-Hans") ? ["zh-Hans", "zh-Hant", "zh"]
+          : language === "zh-Hant" ? ["zh-Hant", "zh-Hans", "zh"]
+          : language ? [language] : [];
+        const ranked = [...new Set([...userPref, origLang, "en", "zh-Hans", "zh-Hant", "zh", "ja"].filter(Boolean))];
+        const matches = (l, pref) => l === pref || l.startsWith(pref + "-");
+        let selectedLang = null;
+        for (const pref of ranked) {
+          const m = realLangs.find(l => matches(l, pref));   // manual first
+          if (m) { selectedLang = m; break; }
+          const a = autoLangs.find(l => matches(l, pref));   // then auto/translation
+          if (a) { selectedLang = a; break; }
         }
-      );
-    });
+        if (!selectedLang) selectedLang = realLangs[0] || autoLangs[0];
+
+        // Step 2: download the selected subtitle
+        const tmpDir = path.join(os.tmpdir(), `yt-${videoId}-${Date.now()}`);
+        fs.mkdirSync(tmpDir, { recursive: true });
+
+        execFile("yt-dlp", [
+          "--write-subs", "--write-auto-sub",
+          "--sub-lang", selectedLang,
+          "--sub-format", "vtt",
+          "--skip-download",
+          "-o", path.join(tmpDir, "%(id)s"),
+          ...ytCookieArgs(),
+          url,
+        ], { timeout: 60000 }, (err3) => {
+          try {
+            const files = fs.readdirSync(tmpDir).filter(f => f.endsWith(".vtt") || f.endsWith(".srv3") || f.endsWith(".srt"));
+            if (files.length === 0) { cleanupDir(tmpDir); resolve(null); return; }
+
+            const content = fs.readFileSync(path.join(tmpDir, files[0]), "utf-8");
+
+            // Parse VTT: extract timestamped segments
+            const segments = [];
+            const vttLines = content.split("\n");
+            let currentTime = "";
+            for (let i = 0; i < vttLines.length; i++) {
+              const trimmed = vttLines[i].trim();
+              if (!trimmed || trimmed.startsWith("WEBVTT") || trimmed.startsWith("Kind:") ||
+                  trimmed.startsWith("Language:") || trimmed.startsWith("NOTE") ||
+                  /^\d+$/.test(trimmed)) continue;
+              const tsMatch = trimmed.match(/^(\d{2}:\d{2}:\d{2})\.\d+ --> /);
+              if (tsMatch) {
+                currentTime = tsMatch[1];
+                continue;
+              }
+              const clean = trimmed.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&")
+                .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+                .replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
+              // Rolling auto-captions repeat the previous cue's line — drop CONSECUTIVE
+              // repeats only (a global set would also delete legitimate repeated lines
+              // spoken minutes apart).
+              if (clean && clean !== (segments.length ? segments[segments.length - 1].text : "")) {
+                segments.push({ time: currentTime, text: clean });
+              }
+            }
+
+            cleanupDir(tmpDir);
+
+            if (segments.length === 0) { resolve(null); return; }
+
+            const plainText = segments.map(s => s.text).join("\n");
+
+            // Get video metadata. `--encoding UTF-8` forces UTF-8 stdout (else the frozen
+            // yt-dlp.exe on Windows drops every CJK char from the title/description);
+            // `youtube:lang` picks the localized-title language so a zh video isn't served
+            // its English title. %(...)j fields (categories/tags) print JSON arrays;
+            // description stays LAST because its .500s value may contain newlines.
+            const metaLang = ytdlpLangArg(language);
+            const metaArgs = ["--encoding", "UTF-8"];
+            if (metaLang) metaArgs.push("--extractor-args", `youtube:lang=${metaLang}`);
+            metaArgs.push(
+              "--print", "%(title)s",
+              "--print", "%(channel)s",
+              "--print", "%(duration_string)s",
+              "--print", "%(view_count)s",
+              "--print", "%(upload_date)s",
+              "--print", "%(categories)j",
+              "--print", "%(tags)j",
+              "--print", "%(language)s",
+              "--print", "%(description).500s",
+              "--skip-download", ...ytCookieArgs(), url,
+            );
+            execFile("yt-dlp", metaArgs, { timeout: 15000 }, (e, metaOut) => {
+                const metaLines = (metaOut || "").split("\n");
+                const parseArr = (s) => { try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } };
+                const title = metaLines[0]?.trim() || "";
+                const channel = metaLines[1]?.trim() || "";
+                const duration = metaLines[2]?.trim() || "";
+                const viewCount = metaLines[3]?.trim() || "";
+                const uploadDate = metaLines[4]?.trim() || "";
+                const category = parseArr(metaLines[5])[0] || "";
+                const tags = parseArr(metaLines[6]);
+                let language = (metaLines[7] || "").trim();
+                if (language === "NA") language = "";   // yt-dlp prints NA for a missing field
+                const description = metaLines.slice(8).join("\n").trim() || "";
+                resolve({ title, channel, duration, viewCount, uploadDate, description, category, tags, language, text: plainText });
+              }
+            );
+          } catch (e) {
+            cleanupDir(tmpDir);
+            resolve(null);
+          }
+        });
+      }
+    );
   });
 }
 
@@ -1215,11 +1208,9 @@ function findWhisperModel() {
 // one tool installed by hand (no package manager on Windows — the README's manual
 // unzip to %LOCALAPPDATA%\whisper-cpp), and hand-added PATH entries have proven
 // unreliable across launch environments — so never depend on PATH alone for it.
-async function findWhisperCli() {
-  const onPath = await findCommand("whisper-cli");
-  if (onPath) return onPath;
+function findWhisperCli() {
   const home = os.homedir();
-  const guesses = process.platform === "win32"
+  const candidates = process.platform === "win32"
     ? [
         // ~/.local/share/whisper-cpp mirrors the model search path — and unlike
         // %LOCALAPPDATA% it is never subject to MSIX filesystem virtualization,
@@ -1233,10 +1224,7 @@ async function findWhisperCli() {
         "/usr/local/bin/whisper-cli",
         path.join(home, "whisper.cpp", "build", "bin", "whisper-cli"),
       ];
-  for (const g of guesses) {
-    try { if (fs.existsSync(g)) return g; } catch { /* keep looking */ }
-  }
-  return null;
+  return findTool("whisper-cli", { candidates });
 }
 
 // Transcribe YouTube audio via whisper.cpp
@@ -1251,11 +1239,11 @@ function whisperLangCode(raw) {
 
 // Verify the CLI tools + whisper model are present (throws a user-facing message if not).
 async function ensureWhisperDeps() {
-  const whisperCmd = await findWhisperCli();
+  const whisperCmd = findWhisperCli();
   if (!whisperCmd) throw new Error("whisper-cli is not installed. Run: brew install whisper-cpp");
-  const ytdlpCmd = await findCommand("yt-dlp");
+  const ytdlpCmd = findTool("yt-dlp");
   if (!ytdlpCmd) throw new Error("yt-dlp is not installed. Run: brew install yt-dlp");
-  const ffmpegCmd = await findCommand("ffmpeg");
+  const ffmpegCmd = findTool("ffmpeg");
   if (!ffmpegCmd) throw new Error("ffmpeg is not installed. Run: brew install ffmpeg");
   const modelPath = findWhisperModel();
   if (!modelPath) throw new Error("whisper model file not found. Download: curl -L -o ~/.local/share/whisper-cpp/ggml-medium.bin --create-dirs https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin");
@@ -1787,7 +1775,7 @@ async function expandYoutubeUrls(req, res) {
     const body = await readBody(req);
     const urls = Array.isArray(body.urls) ? body.urls : [];
     const lang = ytdlpLangArg(body.language);  // localized-title language (follows the UI)
-    const ytdlpCmd = await findCommand("yt-dlp");
+    const ytdlpCmd = findTool("yt-dlp");
     if (!ytdlpCmd) { sendJson(res, 200, { videos: [], errors: [{ url: "", error: "yt-dlp is not installed. Run: brew install yt-dlp" }] }); return; }
 
     // Members-only detection: every channel has an auto-generated members playlist
@@ -1844,30 +1832,19 @@ async function expandYoutubeUrls(req, res) {
   } catch (e) { sendJson(res, 500, { error: (e && e.message) || "youtube-expand failed" }); }
 }
 
-// Startup visibility: log which optional YouTube/ASR tools are reachable (async,
-// non-blocking — mirrors parse-file's pandoc/mineru lines). Runs after config's
-// Windows PATH refresh, so a "not found" here means genuinely missing, and the
-// server console answers "why does whisper say not installed?" at a glance.
-(async function detectYoutubeTools() {
+// Startup visibility: log which optional YouTube/ASR tools are reachable (mirrors
+// parse-file's pandoc/mineru lines). Runs after config's Windows PATH refresh, so a
+// "not found" here means genuinely missing, and the server console answers "why does
+// whisper say not installed?" at a glance.
+(function detectYoutubeTools() {
   for (const cmd of ["yt-dlp", "ffmpeg"]) {
-    const p = await findCommand(cmd);
+    const p = findTool(cmd);
     console.log(p ? `[url-fetch] ${cmd} detected at ${p}` : `[url-fetch] ${cmd} not found`);
   }
   // whisper-cli goes through the same PATH+conventional-dirs lookup the deps check
   // uses, so this line reflects what transcription will actually do.
-  const w = await findWhisperCli();
-  if (w) console.log(`[url-fetch] whisper-cli detected at ${w}`);
-  else {
-    console.log("[url-fetch] whisper-cli not found");
-    // Deep diagnostic: WHY is the conventional location unreachable from this
-    // process? ENOENT = invisible/absent in this view; EPERM/EACCES = blocked.
-    if (process.platform === "win32") {
-      const guess = path.join(process.env.LOCALAPPDATA || "(LOCALAPPDATA unset)", "whisper-cpp", "Release", "whisper-cli.exe");
-      try { fs.statSync(guess); console.log(`[url-fetch]   probe ${guess} -> statSync OK (unexpected)`); }
-      catch (e) { console.log(`[url-fetch]   probe ${guess} -> ${e.code}`); }
-      console.log(`[url-fetch]   LOCALAPPDATA=${process.env.LOCALAPPDATA || "(unset)"} USERPROFILE=${process.env.USERPROFILE || "(unset)"}`);
-    }
-  }
+  const w = findWhisperCli();
+  console.log(w ? `[url-fetch] whisper-cli detected at ${w}` : "[url-fetch] whisper-cli not found");
   const model = findWhisperModel();
   console.log(model ? `[url-fetch] whisper model: ${model}` : "[url-fetch] whisper model not found");
 })();

@@ -77,7 +77,7 @@ winget install TheDocumentFoundation.LibreOffice   # Windows
 
 Optional tuning: `HEYKOKO_SLIDES_RENDER_SCALE` (default `2.0` — raise for sharper small text at the cost of file size) and `HEYKOKO_SLIDES_RENDER_MAXPAGES` (default `80`).
 
-> **macOS note.** Hey-Koko also has a PowerPoint fallback (driven via AppleScript), but recent PowerPoint builds silently drop the export under the app sandbox, so it usually produces nothing. LibreOffice is the reliable path — install it rather than relying on PowerPoint.
+> **macOS note.** Having Microsoft PowerPoint installed does not help here: recent PowerPoint builds silently drop AppleScript exports under the app sandbox, so Hey-Koko does not use it. Install LibreOffice or officecli.
 
 **Why LibreOffice is still preferred over [officecli](#officecli)** (measured on one real 4-slide deck, Apple silicon): LibreOffice reproduces PowerPoint's own layout — autofit titles stay on one line, nested bullets keep their indent levels — and converts a whole deck in a single ~3.7 s call. officecli re-implements layout in its own HTML engine: good enough to feed a vision model, but it drops autofit and list indentation, and costs ~2.6 s **per page**, so a 60-slide deck is minutes rather than seconds. Install LibreOffice when you render decks often; install officecli when 800 MB is too much to pay.
 

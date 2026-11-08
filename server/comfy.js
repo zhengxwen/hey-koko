@@ -10,6 +10,7 @@ const fsp = require("fs/promises");
 const { AsyncLocalStorage } = require("async_hooks");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
+const { checkTool } = require("./find-tool");
 const { hostnameFor } = require("./network");
 const {
   PRECISION_RE_G, PREC_AUTO_ORDER,
@@ -187,21 +188,10 @@ async function makeSourceDecodable(buf) {
   finally { for (const f of [inP, outP]) if (f) fsp.unlink(f).catch(() => {}); }
 }
 
-// Is a command-line tool actually runnable here? Probed by RUNNING it rather than by
-// looking for a path — a binary that exists but can't execute is the same as absent.
-// The promise (not the boolean) is cached, so concurrent callers share one spawn and a
-// tool is probed once per process.
-const _toolCache = new Map(); // name → Promise<boolean>
-function hasLocalTool(name) {
-  if (!_toolCache.has(name)) {
-    _toolCache.set(name, new Promise((resolve) => {
-      const p = spawn(name, ["-version"]);
-      p.on("close", (code) => resolve(code === 0));
-      p.on("error", () => resolve(false)); // ENOENT — not installed / not on PATH
-    }));
-  }
-  return _toolCache.get(name);
-}
+// Is ffmpeg / ffprobe actually runnable here? Probed by RUNNING it (checkTool) rather
+// than by looking for a path — a binary that exists but can't execute is the same as
+// absent. Both spell their version flag with a single dash.
+const hasLocalTool = (name) => checkTool(name, { args: ["-version"] }).then(Boolean);
 
 // Stitch SCAIL-2's per-segment clips back into one video and lay the source soundtrack
 // over the result. See the buildScail2 header for WHY the graph now emits N silent clips

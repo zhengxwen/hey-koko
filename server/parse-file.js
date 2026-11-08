@@ -4,8 +4,9 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execFile, execFileSync, spawn } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const { sendJson } = require("./utils");
+const { checkTool } = require("./find-tool");
 const config = require("./config");
 const { parsePptx } = require("./pptx");
 const mailImages = require("./mail-images");   // shared email-image policy (with @outlook)
@@ -22,59 +23,24 @@ let mineruPath = "mineru";
 // the wrapper both exist — a cheap file check, no slow torch import at startup.
 const unlimitedOcrScript = path.join(__dirname, "unlimited_ocr.py");
 
-// Find executable in PATH or common locations
-function findExecutable(name) {
-  const commonPaths = [
-    `/opt/homebrew/bin/${name}`,
-    `/usr/local/bin/${name}`,
-    `/usr/bin/${name}`,
-    `/bin/${name}`,
-  ];
-
-  for (const fullPath of commonPaths) {
-    try {
-      fs.accessSync(fullPath, fs.constants.X_OK);
-      return fullPath;
-    } catch {}
-  }
-
-  // Try the platform's command locator: `where` on Windows, `which` elsewhere.
-  try {
-    const finder = process.platform === "win32" ? "where" : "which";
-    const result = execFileSync(finder, [name], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const first = result.trim().split(/\r?\n/)[0].trim();
-    if (first) return first;
-  } catch {}
-
-  return name; // fallback to just the name (resolved via PATH at spawn time)
-}
-
 (async function detectTools() {
-  try {
-    pandocPath = findExecutable("pandoc");
-    execFileSync(pandocPath, ["--version"], { stdio: "ignore", timeout: 5000 });
-    hasPandoc = true;
+  // Both are run once (--version) rather than just located: a mineru launcher whose venv
+  // is gone exists on PATH but cannot run. MinerU is a Python app, hence the long timeout.
+  // pandoc answers in milliseconds; don't make it wait for MinerU's Python startup.
+  const mineruProbe = checkTool("mineru", { candidates: config.mineruCandidates });
+  const pandoc = await checkTool("pandoc", { timeoutMs: 5000 });
+  if (pandoc) {
+    pandocPath = pandoc; hasPandoc = true;
     console.log(`[parse-file] pandoc detected at ${pandocPath}`);
-  } catch (err) {
-    console.log(`[parse-file] pandoc not found (${err.message}), DOCX will use client-side fallback`);
+  } else {
+    console.log("[parse-file] pandoc not found (or failed to run), DOCX will use client-side fallback");
   }
-
-  // Check mineru asynchronously to avoid blocking server startup
-  try {
-    mineruPath = findExecutable("mineru");
-    await new Promise((resolve, reject) => {
-      const proc = spawn(mineruPath, ["--version"], { stdio: "ignore" });
-      const timer = setTimeout(() => { proc.kill(); reject(new Error("timeout")); }, 15000);
-      proc.on("close", (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`exit code ${code}`)); });
-      proc.on("error", (err) => { clearTimeout(timer); reject(err || new Error("spawn failed")); });
-    });
-    hasMinerU = true;
+  const mineru = await mineruProbe;
+  if (mineru) {
+    mineruPath = mineru; hasMinerU = true;
     console.log(`[parse-file] MinerU detected at ${mineruPath}`);
-  } catch (err) {
-    console.log(`[parse-file] MinerU not found (${err && err.message ? err.message : err}), PDF will use client-side fallback`);
+  } else {
+    console.log("[parse-file] MinerU not found (or failed to run), PDF will use client-side fallback");
   }
 
   try {

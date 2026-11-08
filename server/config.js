@@ -5,6 +5,7 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const { execFileSync } = require("child_process");
+const { findTool } = require("./find-tool");
 
 // Windows: the shell / Explorer / IDE that launched us may hold a STALE PATH
 // snapshot — tools installed AFTER that parent process started (yt-dlp, whisper-cli,
@@ -61,6 +62,14 @@ function resolveOcrPython() {
   return "";
 }
 
+// Where `mineru` lives when it is not on PATH: pip's per-user script dir and the
+// dedicated venv the docs install it into. Shared by PDF parsing (parse-file.js) and the
+// slide renderer's python lookup below, so the two can never disagree about MinerU.
+const MINERU_CANDIDATES = [
+  path.join(os.homedir(), "local", "bin", "mineru"),
+  path.join(os.homedir(), "venv", "mineru", "bin", "mineru"),
+];
+
 // Python for slide page-rendering (P3 visual layer): needs pypdfium2 + Pillow, which
 // MinerU's own venv already ships (it renders PDFs to raster). SLIDES_PYTHON overrides;
 // else derive from the `mineru` launcher's shebang (its venv python); else the OCR venv;
@@ -68,18 +77,11 @@ function resolveOcrPython() {
 function resolveSlidesPython() {
   if (process.env.SLIDES_PYTHON) return process.env.SLIDES_PYTHON;
   // The `mineru` console-script's first line is `#!/path/to/venv/bin/python3`.
-  for (const dir of ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), "local", "bin"), path.join(os.homedir(), "venv", "mineru", "bin")]) {
-    try {
-      const exe = path.join(dir, "mineru");
-      if (!fs.existsSync(exe)) continue;
-      const first = fs.readFileSync(exe, "utf8").split(/\r?\n/)[0] || "";
-      if (first.startsWith("#!")) { const py = first.slice(2).trim().split(/\s+/)[0]; if (py && fs.existsSync(py)) return py; }
-    } catch { /* keep looking */ }
-  }
   try {
-    const which = execFileSync(process.platform === "win32" ? "where" : "which", ["mineru"], { encoding: "utf8" }).trim().split(/\r?\n/)[0];
-    if (which) { const first = fs.readFileSync(which, "utf8").split(/\r?\n/)[0] || ""; if (first.startsWith("#!")) { const py = first.slice(2).trim().split(/\s+/)[0]; if (py && fs.existsSync(py)) return py; } }
-  } catch { /* ignore */ }
+    const exe = findTool("mineru", { candidates: MINERU_CANDIDATES });
+    const first = exe ? fs.readFileSync(exe, "utf8").split(/\r?\n/)[0] || "" : "";
+    if (first.startsWith("#!")) { const py = first.slice(2).trim().split(/\s+/)[0]; if (py && fs.existsSync(py)) return py; }
+  } catch { /* unreadable launcher — fall through */ }
   return process.env.UNLIMITED_OCR_PYTHON ? resolveOcrPython() : "";
 }
 
@@ -128,6 +130,7 @@ const config = {
   // JIT-compiles CUDA and requires python3-dev headers + a supported GPU — set
   // MINERU_BACKEND=hybrid-engine (etc.) to opt into it. "" → let MinerU pick.
   mineruBackend: process.env.MINERU_BACKEND || "pipeline",
+  mineruCandidates: MINERU_CANDIDATES,
   // P3 slides visual layer — render each slide page to a whole-page JPEG (q80) stored on
   // the page block, so /ask can feed a vision model the actual page (charts/layout), not
   // just the terse text. Always attempted for slide imports; it's best-effort, so it just

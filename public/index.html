@@ -354,16 +354,14 @@
 
           <hr class="settingDivider" />
 
+          <!-- The list, add row and "Extract from chat" live in a dialog (memory-dialog.js);
+               the button label (with the count) is set by refreshMemoryManageBtn(). -->
           <div id="memoryLabel" class="memorySetting">
             <div class="memoryHeader">
               <span id="memoryLabelText">Long-term memory</span>
-              <button id="memoryExtractBtn" type="button" class="secondary memoryExtractBtn" title="Let the model extract key facts from the current chat into memory">Extract from chat</button>
+              <button id="memoryManageBtn" type="button" class="secondary memoryManageBtn" aria-haspopup="dialog">Manage…</button>
             </div>
-            <div id="memoryList" class="memoryList"></div>
-            <div class="memoryAddRow">
-              <input id="memoryInput" type="text" placeholder="Add something to remember…" autocomplete="off" />
-              <button id="memoryAddBtn" type="button" class="secondary">Add</button>
-            </div>
+            <p class="hint" id="memoryHint">Facts about you that every chat keeps in mind.</p>
           </div>
 
           <hr class="settingDivider" />
