@@ -48,20 +48,6 @@ function resolveVenvPython(envVar) {
   return win ? "python" : "python3";
 }
 
-// Baidu Unlimited-OCR runs in its OWN venv (Python 3.12 / torch cu130 / CUDA 13 —
-// incompatible with the 3.11 heykoko/tts venv, so never shared). UNLIMITED_OCR_PYTHON
-// overrides; else auto-detect ~/venv/unlimited-ocr. Returns "" when absent so the PDF
-// OCR engine reports unavailable (option hidden) rather than falling back to a python
-// that can't import torch.
-function resolveOcrPython() {
-  if (process.env.UNLIMITED_OCR_PYTHON) return process.env.UNLIMITED_OCR_PYTHON;
-  const win = process.platform === "win32";
-  const sub = win ? ["Scripts", "python.exe"] : ["bin", "python"];
-  const guess = path.join(os.homedir(), "venv", "unlimited-ocr", ...sub);
-  try { if (fs.existsSync(guess)) return guess; } catch { /* ignore */ }
-  return "";
-}
-
 // Where `mineru` lives when it is not on PATH: pip's per-user script dir and the
 // dedicated venv the docs install it into. Shared by PDF parsing (parse-file.js) and the
 // slide renderer's python lookup below, so the two can never disagree about MinerU.
@@ -72,8 +58,8 @@ const MINERU_CANDIDATES = [
 
 // Python for slide page-rendering (P3 visual layer): needs pypdfium2 + Pillow, which
 // MinerU's own venv already ships (it renders PDFs to raster). SLIDES_PYTHON overrides;
-// else derive from the `mineru` launcher's shebang (its venv python); else the OCR venv;
-// else "" (PDF page-render unavailable → slides keep text + crop figures only).
+// else derive from the `mineru` launcher's shebang (its venv python); else "" (PDF
+// page-render unavailable → slides keep text + crop figures only).
 function resolveSlidesPython() {
   if (process.env.SLIDES_PYTHON) return process.env.SLIDES_PYTHON;
   // The `mineru` console-script's first line is `#!/path/to/venv/bin/python3`.
@@ -82,7 +68,7 @@ function resolveSlidesPython() {
     const first = exe ? fs.readFileSync(exe, "utf8").split(/\r?\n/)[0] || "" : "";
     if (first.startsWith("#!")) { const py = first.slice(2).trim().split(/\s+/)[0]; if (py && fs.existsSync(py)) return py; }
   } catch { /* unreadable launcher — fall through */ }
-  return process.env.UNLIMITED_OCR_PYTHON ? resolveOcrPython() : "";
+  return "";
 }
 
 // App data home: everything the server persists (chat archives, knowledge library,
@@ -123,8 +109,6 @@ const config = {
   // is probed at runtime (import trafilatura) — when absent, news import reports the
   // feature unavailable rather than falling back to the weaker built-in HTML heuristics.
   newsPython: resolveVenvPython("TRAFILATURA_PYTHON"),
-  // Local PDF OCR engine (baidu/Unlimited-OCR) interpreter; "" when not installed.
-  ocrPython: resolveOcrPython(),
   // MinerU backend passed as `-b`. Default "pipeline" (ONNX/torch, dependency-light,
   // works without vLLM). MinerU's own default (hybrid-engine/VLM) needs vLLM, which
   // JIT-compiles CUDA and requires python3-dev headers + a supported GPU — set

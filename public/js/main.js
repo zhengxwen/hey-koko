@@ -1553,7 +1553,7 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
 const DOC_EXTENSIONS = [".pdf", ".docx", ".pptx", ".eml", ".txt", ".md", ".markdown"];
 
 // Server-side parsing capabilities (detected at startup)
-let serverCapabilities = { pandoc: false, mineru: false, unlimitedOcr: false };
+let serverCapabilities = { pandoc: false, mineru: false };
 async function fetchCapabilities() {
   try {
     const r = await fetch("/api/parse-file/capabilities");
@@ -1568,39 +1568,31 @@ async function fetchCapabilities() {
 }
 fetchCapabilities();
 
-// Show the "PDF import engine" picker only when a server-side PDF engine exists, and
-// reveal each engine option per capability. With no server engine there's only pdf.js
-// (client fallback) → nothing to choose, so the whole control stays hidden.
+// Show the "PDF import engine" picker only when MinerU is available. Without it there's
+// only pdf.js (client fallback) → nothing to choose, so the whole control stays hidden.
 function syncPdfEngineOptions() {
-  const m = !!serverCapabilities.mineru, u = !!serverCapabilities.unlimitedOcr;
+  const m = !!serverCapabilities.mineru;
   if (dom.pdfEngineOptMineru) dom.pdfEngineOptMineru.hidden = !m;
-  if (dom.pdfEngineOptUnlimited) dom.pdfEngineOptUnlimited.hidden = !u;
-  if (dom.pdfEngineLabel) dom.pdfEngineLabel.hidden = !(m || u);
+  if (dom.pdfEngineLabel) dom.pdfEngineLabel.hidden = !m;
   // Resolve the effective selection. The intended default is MinerU, but in WKWebView
   // the `selected hidden` MinerU <option> falls through to the first VISIBLE option
   // (pdf.js) at load — so the value can't be trusted as a deliberate choice. Unless the
-  // user EXPLICITLY picked an engine (flag set in the change handler), default to the
-  // best available SERVER engine; otherwise a chat-attached PDF would silently use
+  // user EXPLICITLY picked an engine (flag set in the change handler), default to
+  // MinerU when it's available; otherwise a chat-attached PDF would silently use
   // text-only pdf.js and never call MinerU. A still-valid explicit choice is honored.
   if (dom.pdfEngineSelect) {
-    const valid = (e) => (e === "mineru" && m) || (e === "unlimited" && u) || e === "pdfjs";
+    const valid = (e) => (e === "mineru" && m) || e === "pdfjs";
     let userPicked = false;
     try { userPicked = localStorage.getItem(PDF_ENGINE_PICKED_KEY) === "1"; } catch {}
     const v = dom.pdfEngineSelect.value;
-    if (!(userPicked && valid(v))) dom.pdfEngineSelect.value = m ? "mineru" : (u ? "unlimited" : "pdfjs");
+    if (!(userPicked && valid(v))) dom.pdfEngineSelect.value = m ? "mineru" : "pdfjs";
   }
 }
 
 // Resolve the user's PDF-engine preference against what the server actually offers.
 // Default (and unknown prefs, e.g. a legacy "auto") behave as MinerU.
 function pickPdfEngine(pref, caps) {
-  const m = !!caps.mineru, u = !!caps.unlimitedOcr;
-  switch (pref) {
-    case "unlimited": return u ? "unlimited" : "pdfjs";
-    case "pdfjs":     return "pdfjs";
-    case "mineru":
-    default:          return m ? "mineru" : "pdfjs";
-  }
+  return pref !== "pdfjs" && caps.mineru ? "mineru" : "pdfjs";
 }
 function currentPdfEngine() {
   return pickPdfEngine(dom.pdfEngineSelect?.value || "mineru", serverCapabilities);
@@ -2254,14 +2246,11 @@ async function selectMultipleFiles(files) {
   }
 }
 
-async function tryServerParse(file, onProgress = null, pdfEngine = null) {
+async function tryServerParse(file, onProgress = null) {
   try {
     const formData = new FormData();
     formData.append("file", file);
-    // Tell the server which PDF engine to use (mineru | unlimited); absent → server default.
-    const headers = (pdfEngine === "mineru" || pdfEngine === "unlimited")
-      ? { "x-pdf-engine": pdfEngine } : {};
-    const response = await fetch("/api/parse-file", { method: "POST", body: formData, headers });
+    const response = await fetch("/api/parse-file", { method: "POST", body: formData });
 
     const contentType = response.headers.get("content-type") || "";
 
@@ -2382,19 +2371,18 @@ async function parseAndSendFile(content, fileInfo) {
       let serverResult = null;
 
       if (ext === ".pdf") {
-        // pdfjs → client text-only fallback below; mineru/unlimited → server parse.
+        // pdfjs → client text-only fallback below; mineru → server parse.
         const engine = currentPdfEngine();
-        if (engine === "mineru" || engine === "unlimited") {
-          serverResult = await tryServerParse(rawFile, null, engine);
-          // The user explicitly chose an OCR engine (MinerU / Unlimited-OCR). On failure
+        if (engine === "mineru") {
+          serverResult = await tryServerParse(rawFile);
+          // The user explicitly chose an OCR engine (MinerU). On failure
           // or timeout, DON'T silently fall back to pdf.js text-only — that drops every
           // figure and hides the failure. Surface the error and stop.
           if (!serverResult) {
             pending.remove();
-            const label = engine === "mineru" ? "MinerU" : "Unlimited-OCR";
             const msgEl = document.createElement("div");
             msgEl.className = "message system";
-            msgEl.textContent = t("msg_ocrFailed", { label });
+            msgEl.textContent = t("msg_ocrFailed", { label: "MinerU" });
             dom.messagesEl.appendChild(msgEl);
             dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
             return;
@@ -2537,9 +2525,9 @@ async function parseDocumentHeadless(fileB64, name, ext, content, onProgress) {
     let chosenOcr = "";
     if (ext === ".pdf") {
       const engine = currentPdfEngine();
-      if (engine === "mineru" || engine === "unlimited") {
-        chosenOcr = engine === "mineru" ? "MinerU" : "Unlimited-OCR";
-        serverResult = await tryServerParse(rawFile, onProgress, engine);
+      if (engine === "mineru") {
+        chosenOcr = "MinerU";
+        serverResult = await tryServerParse(rawFile, onProgress);
       }
     } else if ((ext === ".docx" || ext === ".pptx") && serverCapabilities.pandoc) {
       serverResult = await tryServerParse(rawFile, onProgress);

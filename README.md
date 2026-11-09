@@ -143,9 +143,6 @@ On first PDF parse, MinerU downloads ~2 GB of models. If behind a corporate prox
 
 The server **auto-detects** both venvs at startup — no env vars needed. Just run `node server.js`.
 
-> **Note:** Unlimited-OCR requires an NVIDIA GPU and is not available on Apple Silicon. See [optional-tools.md](docs/optional-tools.md#unlimited-ocr) for Linux/CUDA setup.
-
-
 ## Commands
 
 Type `/` in the chat box to open the command palette. The main commands:
@@ -221,7 +218,6 @@ Heavier setups (dedicated GPU / large installs) for specific needs:
 |------------|--------|-------------|
 | Advanced image & video generation | ComfyUI | [docs/comfyui.md](docs/comfyui.md) |
 | ComfyUI deployment list (node packs + model files) | ComfyUI | [docs/comfyui-setup.md](docs/comfyui-setup.md) |
-| Local GPU PDF OCR (scans) | Unlimited-OCR | [optional-tools.md → Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) |
 | Whole-slide page images for decks | LibreOffice | [optional-tools.md → LibreOffice](docs/optional-tools.md#libreoffice) |
 | Word/Excel/PowerPoint **writing**, Word page images, deck images without LibreOffice | officecli | [optional-tools.md → officecli](docs/optional-tools.md#officecli) |
 

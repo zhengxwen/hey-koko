@@ -244,7 +244,6 @@ export const dom = {
   pdfEngineLabel: document.querySelector("#pdfEngineLabel"),
   pdfEngineSelect: document.querySelector("#pdfEngineSelect"),
   pdfEngineOptMineru: document.querySelector("#pdfEngineOptMineru"),
-  pdfEngineOptUnlimited: document.querySelector("#pdfEngineOptUnlimited"),
   embedModelSelect: document.querySelector("#embedModelSelect"),
   libraryDistillToggle: document.querySelector("#libraryDistillToggle"),
   libraryRerankToggle: document.querySelector("#libraryRerankToggle"),

@@ -14,14 +14,9 @@ const mailImages = require("./mail-images");   // shared email-image policy (wit
 // Detect tool availability (async, non-blocking)
 let hasPandoc = false;
 let hasMinerU = false;
-let hasUnlimitedOcr = false;
 let detectDone = false;
 let pandocPath = "pandoc";
 let mineruPath = "mineru";
-// Baidu Unlimited-OCR: a local GPU PDF→markdown engine, spawned like MinerU via a
-// thin Python wrapper we ship. Available when its venv python (config.ocrPython) and
-// the wrapper both exist — a cheap file check, no slow torch import at startup.
-const unlimitedOcrScript = path.join(__dirname, "unlimited_ocr.py");
 
 (async function detectTools() {
   // Both are run once (--version) rather than just located: a mineru launcher whose venv
@@ -43,20 +38,11 @@ const unlimitedOcrScript = path.join(__dirname, "unlimited_ocr.py");
     console.log("[parse-file] MinerU not found (or failed to run), PDF will use client-side fallback");
   }
 
-  try {
-    if (config.ocrPython && fs.existsSync(config.ocrPython) && fs.existsSync(unlimitedOcrScript)) {
-      hasUnlimitedOcr = true;
-      console.log(`[parse-file] Unlimited-OCR available (python ${config.ocrPython})`);
-    } else {
-      console.log(`[parse-file] Unlimited-OCR not configured (set UNLIMITED_OCR_PYTHON or install ~/venv/unlimited-ocr)`);
-    }
-  } catch { /* leave hasUnlimitedOcr false */ }
-
   detectDone = true;
 })();
 
 function getCapabilities(res) {
-  sendJson(res, 200, { pandoc: hasPandoc, mineru: hasMinerU, unlimitedOcr: hasUnlimitedOcr, ready: detectDone });
+  sendJson(res, 200, { pandoc: hasPandoc, mineru: hasMinerU, ready: detectDone });
 }
 
 // Parse multipart form data (simple single-file parser)
@@ -127,16 +113,9 @@ async function parseFile(req, res) {
     } else if (ext === ".pdf") {
       // The kill timer follows the caller's ⚙ timeout (x-parse-timeout-s, seconds),
       // floored at 5 min — the chat slider bottoms out at 60s, which would kill any
-      // real PDF; long/OCR-heavy papers (and Unlimited-OCR's ~2 min model load) need
-      // the headroom.
+      // real PDF; long/OCR-heavy papers need the headroom.
       const timeoutMs = Math.max(parseInt(req.headers["x-parse-timeout-s"], 10) || 0, 300) * 1000;
-      // Engine chosen client-side (x-pdf-engine); default MinerU preserves prior behavior.
-      const engine = String(req.headers["x-pdf-engine"] || "mineru").toLowerCase();
-      if (engine === "unlimited") {
-        await parseUnlimitedOcr(inputPath, tmpDir, res, timeoutMs);
-      } else {
-        await parsePdf(inputPath, tmpDir, res, timeoutMs, slides);
-      }
+      await parsePdf(inputPath, tmpDir, res, timeoutMs, slides);
     }
   } catch (error) {
     sendJson(res, 500, { error: error.message });
@@ -225,10 +204,9 @@ function parseDocx(inputPath, tmpDir, res) {
   });
 }
 
-// PDF → Markdown via a local, GPU-backed model spawned as a subprocess. MinerU and
-// Unlimited-OCR both fit this shape (spawn a tool, stream progress, read a result.md +
-// images/ from an output dir), so they share this core; only the command and label
-// differ. Streams ndjson progress and a final {text, images, tool}.
+// PDF → Markdown via MinerU, spawned as a subprocess: stream its progress, then read the
+// .md + images/ it left in the output dir. Streams ndjson progress and a final
+// {text, images, tool}.
 function runPdfTool({ cmd, args, tool, label, outputDir, res, timeoutMs, slides = false }) {
   return new Promise((resolve) => {
     // Use spawn for streaming progress
@@ -340,7 +318,7 @@ function collectMarkdownOutput(mdFile) {
   const seenHashes = new Map();
   let imageCounter = 0;
 
-  // Images live in an "images" subfolder next to the .md (MinerU and Unlimited-OCR both).
+  // Images live in an "images" subfolder next to the .md.
   const imagesDir = path.join(path.dirname(mdFile), "images");
   if (fs.existsSync(imagesDir)) {
     // First pass: find all image filenames referenced in the markdown (in order of appearance)
@@ -492,24 +470,6 @@ function findFileEndingWith(dir, suffix) {
     else if (entry.name.endsWith(suffix)) return full;
   }
   return null;
-}
-
-// Baidu Unlimited-OCR via the shipped Python wrapper (server/unlimited_ocr.py), which
-// rasterizes the PDF and runs the local model, writing result.md + images/ into outputDir.
-function parseUnlimitedOcr(inputPath, tmpDir, res, timeoutMs = 300000) {
-  return new Promise((resolve) => {
-    if (!hasUnlimitedOcr) {
-      sendJson(res, 501, { error: "unlimited_ocr_unavailable", fallback: true });
-      resolve();
-      return;
-    }
-    const outputDir = path.join(tmpDir, "output");
-    fs.mkdirSync(outputDir, { recursive: true });
-    runPdfTool({
-      cmd: config.ocrPython, args: [unlimitedOcrScript, "-p", inputPath, "-o", outputDir],
-      tool: "unlimited-ocr", label: "Unlimited-OCR", outputDir, res, timeoutMs,
-    }).then(resolve);
-  });
 }
 
 // Recursively collect image files from a directory
