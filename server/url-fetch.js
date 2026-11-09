@@ -1384,8 +1384,11 @@ async function transcribeYouTubeAudio(req, res) {
   const { videoId } = body;
   if (!videoId || !/^[\w-]{11}$/.test(videoId)) { sendJson(res, 400, { error: "invalid videoId" }); return; }
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
+  // Client gone mid-run → kill yt-dlp/ffmpeg/whisper and stop formatting. Watch `res`,
+  // not `req`: readBody already consumed the body, so `req` is closed and its "close"
+  // never fires again. The guard skips the "close" that follows a normal res.end().
   const ctrl = new AbortController();
-  req.on("close", () => ctrl.abort());
+  res.on("close", () => { if (!res.writableFinished) ctrl.abort(); });
   const send = (obj) => { try { res.write(JSON.stringify(obj) + "\n"); } catch {} };
   try {
     const text = await transcribeYouTubeAudioCore(videoId, { onProgress: send, signal: ctrl.signal });
@@ -1544,8 +1547,11 @@ async function youtubeJob(req, res) {
   try { body = await readBody(req); } catch { body = {}; }
   const { url, language, model, prefetch } = body || {};
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
+  // Client gone mid-run → kill yt-dlp/ffmpeg/whisper and stop formatting. Watch `res`,
+  // not `req`: readBody already consumed the body, so `req` is closed and its "close"
+  // never fires again. The guard skips the "close" that follows a normal res.end().
   const ctrl = new AbortController();
-  req.on("close", () => ctrl.abort());
+  res.on("close", () => { if (!res.writableFinished) ctrl.abort(); });
   const send = (obj) => { try { res.write(JSON.stringify(obj) + "\n"); } catch {} };
   // Normalize both progress sources to {type:'progress', stage, progress:{value,max}?}.
   const onProgress = (p) => {

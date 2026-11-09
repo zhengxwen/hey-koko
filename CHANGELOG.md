@@ -14,6 +14,8 @@
 
 ### Fixed
 - Read-aloud with a system (`say`) voice now stops synthesizing when the browser skips or stops a sentence; before, every abandoned sentence ran to completion on the server.
+- YouTube transcription stops when it is abandoned: closing the browser during a `/url` whisper transcription, or cancelling (×) a YouTube background job, now kills yt-dlp/ffmpeg/whisper and stops subtitle formatting. Before, they ran to completion on the server.
+- Cancelling (×) a video-editor export now stops it: ffmpeg and the AI enhance pass are killed and nothing is added to the gallery. Before, the export ran to completion and was saved anyway.
 - `/voice` with a system voice and no ffmpeg returns playable WAV instead of AIFF, which browsers can't play.
 
 ## v0.1.0 (2026-06-11)
