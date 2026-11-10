@@ -9760,3 +9760,56 @@ body.isResizingComposer {
   flex: 0 0 auto;
   padding: 4px 10px;
 }
+
+/* ===== Touch screens (iPad) =====================================================
+   No pointer can hover there, so every control that waits for :hover above would stay
+   invisible until the user happened to tap its container first. Show those controls in
+   their hovered state instead — each selector below is a hover rule above with :hover
+   taken out, and keeps that rule's value (state classes such as .isLocked/.isCopied that
+   already raise opacity are excluded). Only opacity/display is set, so the rules that
+   hide a control outright (folded or locked bubbles) still win. A device whose primary
+   pointer can hover (mouse, trackpad) does not match this block and keeps the desktop
+   behavior. */
+@media (hover: none) {
+  .chatTab .tabLockBtn:not(.isLocked) { opacity: 0.5; }
+  .message .messageFoldToggle { opacity: 0.6; }
+  .message .messageLockToggle:not(.isLocked) { opacity: 0.55; }
+  .message > .messageMoreToggle { opacity: 0.75; }
+  .mdBlockWrap .mdCopyBtn:not(.isCopied),
+  .mdBlockWrap .mdImagineBtn { opacity: 0.75; }
+  .message .messageActions { opacity: 1; }
+  .imageWrapper .mediaRateBtn,
+  .imageWrapper .mediaGalleryBtn,
+  .imageWrapper .mediaFileBtn,
+  .videoWrapper .mediaRateBtn,
+  .videoWrapper .mediaGalleryBtn,
+  .videoWrapper .mediaFileBtn,
+  .videoWrapper .mediaCutBtn { opacity: 1; }
+  .previewThumb .previewThumbRemove { opacity: 1; }
+  #archivePreviewTitle .archiveRetitleBtn { opacity: 1; }
+  .imageWrapper .imageDeleteBtn,
+  .imageWrapper .imageDownloadBtn,
+  .imageWrapper .messageReplaceBtn,
+  .imageWrapper .messageMaskBtn { opacity: 1; }
+  .videoWrapper .videoDownloadBtn,
+  .videoWrapper .videoDeleteBtn,
+  .videoWrapper .videoFullscreenBtn,
+  .videoWrapper .videoPipBtn,
+  .videoWrapper .videoVolume { opacity: 1; }
+  .galleryDetailMedia .videoFullscreenBtn { opacity: 1; }
+  .meshWrapper .meshHudBar,
+  .meshWrapper .meshDownloadBtn,
+  .meshWrapper .meshDeleteBtn { opacity: 1; }
+  .userNameDropdown .userNameHistoryItem .deleteHistoryBtn { opacity: 1; }
+  .libraryUrlHistoryItem .libraryUrlHistoryDel { opacity: 1; }
+  .galleryStripCell .galleryStripAdd { display: flex; }
+  .galleryTile .galleryTileCheck { opacity: 1; }
+  .veditPreviewWrap .veditFsBtn { opacity: 1; }
+}
+
+/* Drag surfaces driven by pointer events: without this a finger or Apple Pencil drag
+   starts a page scroll and the browser cancels the pointer stream mid-stroke. (The mask,
+   track and mesh canvases, composer resizer and clip handles already set it.) */
+#boxCanvas,
+.panelResizer,
+.veditSplit { touch-action: none; }

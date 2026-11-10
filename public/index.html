@@ -6,6 +6,18 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Hey-Koko</title>
+    <!-- Tab icon = the app icon. The home-screen icons are a full-bleed, opaque cut of it:
+         iOS paints transparent pixels black and applies its own rounded mask. -->
+    <link rel="icon" type="image/png" sizes="128x128" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- "Add to Home Screen" (iPad over `tailscale serve`): open as a standalone app. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Hey-Koko" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="theme-color" content="#f8fafb" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1a1b1e" media="(prefers-color-scheme: dark)" />
     <script>
       // Anti-FOUC: apply theme before CSS loads to prevent flash
       (function() {

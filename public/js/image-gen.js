@@ -1024,23 +1024,22 @@ export function extractKeyFrames(src, count = 8, quality = 0.72, maxSide = 1280)
   });
 }
 
-// Tell ComfyUI to actually STOP — aborting our fetch only stops us waiting; the
-// queued workflow keeps running on the GPU. /interrupt kills the running prompt
-// and clearing the queue drops anything still pending (e.g. a batch). comfyHost
-// is "host:port" (no protocol). Best-effort.
 // How long Stop waits for the server to hand back the salvaged part of a chunked render
 // before the connection is cut for real. Long enough to fetch the finished segments and
 // stream-copy them together; short enough that a truly stuck server still releases the UI.
 const SALVAGE_GRACE_MS = 45000;
 
+// Tell ComfyUI to actually STOP — aborting our fetch only stops us waiting; the
+// queued workflow keeps running on the GPU. /interrupt kills the running prompt (a
+// batch is a client-side loop, so nothing else of ours is left queued). comfyHost is
+// "host:port" (no protocol). Sent by the server (server/comfy-relay.js), which reaches
+// ComfyUI from wherever this page is opened — an iPad over https included. Best-effort.
 function interruptComfy(comfyHost) {
   if (!comfyHost) return;
-  const proto = location.protocol === "https:" ? "https:" : "http:";
-  fetch(`${proto}//${comfyHost}/interrupt`, { method: "POST" }).catch(() => {});
-  fetch(`${proto}//${comfyHost}/queue`, {
+  fetch("/api/comfy-interrupt", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ clear: true }),
+    body: JSON.stringify({ host: comfyHost }),
   }).catch(() => {});
 }
 
@@ -1086,9 +1085,12 @@ function subscribeComfyProgress(comfyHost, clientId, { onProgress, onPreview }) 
   // freezing the progress bar (the render keeps going server-side). So AUTO-RECONNECT
   // with the SAME clientId until unsubscribe — ComfyUI keeps broadcasting to that id,
   // so progress/preview resume. Also reconnect eagerly when the tab returns to view.
+  // The socket is relayed by our own server (server/comfy-relay.js) rather than opened on
+  // ComfyUI directly: an https page (iPad over `tailscale serve`) cannot open ws:// to it,
+  // and "127.0.0.1:8188" would mean the iPad, not the machine running ComfyUI.
   let ws = null, closed = false, retryTimer = null;
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const url = `${proto}//${comfyHost}/ws?clientId=${encodeURIComponent(clientId)}`;
+  const url = `${proto}//${location.host}/api/comfy-ws?host=${encodeURIComponent(comfyHost)}&clientId=${encodeURIComponent(clientId)}`;
 
   const onMessage = (ev) => {
     if (typeof ev.data === "string") {
