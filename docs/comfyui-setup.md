@@ -53,9 +53,9 @@ Eleven packs. **The directory name is the identifier** — after installing, `cu
 
 | `custom_nodes/` directory | Nodes provided | Needed by |
 |---|---|---|
-| **ComfyUI-KJNodes** | `ImageResizeKJv2` `GetImageSizeAndCount` `GetImageRangeFromBatch` `ImageCropByMaskAndResize` `DrawMaskOnImage` `BlockifyMask` `TorchCompileModelAdvanced` `LTX2_NAG` | SCAIL-2, Wan Animate, InfiniteTalk, LTX MSR, all 3D chains |
+| **ComfyUI-KJNodes** | `ImageResizeKJv2` `GetImageSizeAndCount` `GetImageRangeFromBatch` `ImageCropByMaskAndResize` `DrawMaskOnImage` `BlockifyMask` `TorchCompileModelAdvanced` `LTX2_NAG` | SCAIL-2, Wan Animate, InfiniteTalk, LongCat-Avatar, LTX MSR, all 3D chains |
 | **ComfyUI-VideoHelperSuite** | `VHS_LoadVideo` `VHS_VideoCombine` | SCAIL-2; ⚙ H.265 output (all video workflows) |
-| **ComfyUI-WanVideoWrapper** | `WanVideoModelLoader` `WanVideoSampler` `MultiTalkModelLoader` `Wav2VecModelLoader` + 9 more | InfiniteTalk (lip-sync / talking photo) |
+| **ComfyUI-WanVideoWrapper** | `WanVideoModelLoader` `WanVideoSampler` `MultiTalkModelLoader` `Wav2VecModelLoader` `LongCatAvatarWhisperEmbeds` + more | InfiniteTalk (lip-sync / talking photo), LongCat-Avatar 1.5 (needs a wrapper new enough to have `LongCatAvatarWhisperEmbeds`) |
 | **ComfyUI-segment-anything-2** | `DownloadAndLoadSAM2Model` `Sam2Segmentation` | Wan Animate (Move / Replace) |
 | **comfyui_controlnet_aux** | `DWPreprocessor` `PixelPerfectResolution` | Wan Animate (pose extraction) |
 | **ComfyUI-LTXVideo** | `LTXICLoRALoaderModelOnly` `LTXAddVideoICLoRAGuide` | LTX MSR V2 |
@@ -91,7 +91,7 @@ Used by several workflows — **install these first**.
 ### `models/text_encoders/`
 | File | Used by |
 |---|---|
-| `umt5_xxl_fp8_e4m3fn_scaled.safetensors` | Every Wan family model (t2v/i2v, Animate, SCAIL-2, Bernini, Dancer, InfiniteTalk) |
+| `umt5_xxl_fp8_e4m3fn_scaled.safetensors` | Every Wan family model (t2v/i2v, Animate, SCAIL-2, Bernini, Dancer, InfiniteTalk), LongCat-Avatar |
 | `clip_l.safetensors` | Flux, Kontext, HunyuanVideo |
 | `t5xxl_fp8_e4m3fn_scaled.safetensors` | Flux, Kontext, HiDream |
 | `qwen_2.5_vl_7b_fp8_scaled.safetensors` | Qwen-Image, Qwen-Image-Edit |
@@ -105,7 +105,7 @@ Used by several workflows — **install these first**.
 | File | Used by |
 |---|---|
 | `wan_2.1_vae.safetensors` | Wan 2.1 family, Bernini |
-| `Wan2_1_VAE_bf16.safetensors` | SCAIL-2, InfiniteTalk |
+| `Wan2_1_VAE_bf16.safetensors` | SCAIL-2, InfiniteTalk, LongCat-Avatar |
 | `wan2.2_vae.safetensors` | Wan 2.2 14B, TI2V-5B |
 | `ae.safetensors` | Flux, Kontext, HiDream, Z-Image, OmniGen2 |
 | `flux1_vae_bf16.safetensors` | boogu |
@@ -199,6 +199,7 @@ Used by several workflows — **install these first**.
 | Workflow | Main model | Also needs | Node packs |
 |---|---|---|---|
 | **InfiniteTalk**<br>(re-dub a video / talking photo) | `diffusion_models/Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors`<br>`diffusion_models/wan2.1_infiniteTalk_single_fp16.safetensors`<br>(`_multi_fp16` for multiple speakers) | **`models/wav2vec2/wav2vec2-chinese-base_fp16.safetensors`**<br>umt5 · Wan2_1_VAE_bf16 · clip_vision_h<br>`loras/lightx2v_I2V_14B_480p…` | WanVideoWrapper · KJNodes |
+| **LongCat-Video-Avatar 1.5**<br>(talking photo, long speech) | `diffusion_models/LongCat-Avatar-15_bf16.safetensors` (31.7 GB)<br>`loras/LongCat-Avatar-15_dmd_distill_lora_rank128_bf16.safetensors`<br>(both from `Kijai/WanVideo_comfy` → `LongCat/`) | **`audio_encoders/whisper_large_v3_encoder_fp16.safetensors`** (`Kijai/WanVideo_comfy` → `HuMo/`)<br>umt5 · Wan2_1_VAE_bf16<br>ffmpeg + ffprobe on the hey-koko machine (joins the windows) | WanVideoWrapper · KJNodes |
 | **Wan-Dancer** (photo + music → dance) | `diffusion_models/wan2.2_dancer_14b_global_fp8_scaled.safetensors`<br>`diffusion_models/wan2.2_dancer_14b_local_fp8_scaled.safetensors`<br>(**both experts required**) | umt5 · wan_2.1_vae · clip_vision_h<br>`loras/lightx2v_I2V_14B_480p…` | all core |
 
 ### 4.6 3D

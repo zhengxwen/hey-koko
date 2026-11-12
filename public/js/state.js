@@ -303,6 +303,7 @@ export const state = {
   comfyVideoInModels: new Set(),     // ComfyUI video models that need a SOURCE video (fps follows source)
   comfyVideoOptionalModels: new Set(), // …of those, the ones a source video is OPTIONAL for (bernini: image alone → i2v)
   comfyAudioInModels: new Set(),     // …video-in models that ALSO need a SPEECH AUDIO file (InfiniteTalk dubbing)
+  comfySpeakModels: new Set(),       // "photo speaks" models: no audio attached → the raw prompt is read by the TTS
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
   comfyRefMaskModels: new Set(),     // models whose attachments are REFERENCES → each staged image gets a 🖌 subject cutout
   foldNextCommandBubble: false,      // set by the ▶ chip on a ```imagine block: the command bubble the next send creates is a RECEIPT of a prompt already on screen (the draft right above it), so it arrives folded — collapsed, and out of the LLM context. One-shot: consumed by the next sendMessage

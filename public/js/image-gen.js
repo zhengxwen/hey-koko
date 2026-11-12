@@ -609,7 +609,7 @@ function parseImagineCommand(input) {
       rawOpts[key] = val;
       rest = rest.replace(/^--opt\s+\S+\s*/, "").trim();
     } else if (/^--voice\s/.test(rest)) {
-      // TTS voice for "photo speaks" (InfiniteTalk): a Kokoro voice id, e.g.
+      // TTS voice for "photo speaks" (InfiniteTalk / LongCat-Avatar): a Kokoro voice id, e.g.
       // zf_xiaoxiao / zm_yunxi / af_heart. Validated server-side; other models ignore it.
       const voiceFlag = rest.match(/^--voice\s+(\S+)/);
       if (!voiceFlag) return { error: t("img_voiceNeedsArg") };
@@ -1828,7 +1828,7 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       sourceAudioDuration: sourceAudioDuration || undefined,
       // "Photo speaks": the RAW prompt is the text to READ — sent apart from `prompt`
       // so ⚙ prompt-decoration / --enhance can't leak into the synthesized speech.
-      speechText: model === "infinitetalk_speak" ? ((parsed.prompt || "").trim() || undefined) : undefined,
+      speechText: state.comfySpeakModels?.has(model) ? ((parsed.prompt || "").trim() || undefined) : undefined,
       // Bernini i2v: reference image's natural size → source-aspect output.
       refImageWidth: refImageDims?.w || undefined,
       refImageHeight: refImageDims?.h || undefined,

@@ -615,6 +615,9 @@ function applyComfyModels(data) {
     state.comfyVideoInModels = new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name));
     // Of the video-in models, the ones that ALSO need a speech audio file (InfiniteTalk dubbing).
     state.comfyAudioInModels = new Set(videoModels.filter((m) => m.needsAudio).map((m) => m.name));
+    // "Photo speaks" models (InfiniteTalk, LongCat-Avatar): with no audio attached the RAW
+    // prompt is the text the server's TTS reads, so it travels apart as speechText.
+    state.comfySpeakModels = new Set(videoModels.filter((m) => m.speaks).map((m) => m.name));
     // …of which some (bernini) also run WITHOUT a source video (image→video), where
     // fps/length are the request's own again rather than the source's.
     state.comfyVideoOptionalModels = new Set(videoModels.filter((m) => m.videoOptional).map((m) => m.name));
@@ -1277,6 +1280,7 @@ function comfyModelHint(name) {
   // Video, needs a source clip. scail BEFORE animate — see above.
   if (n === "infinitetalk") return t("oll_hint_infinitetalk");
   if (n === "infinitetalk_speak") return t("oll_hint_infinitetalkSpeak");
+  if (n === "longcat_avatar") return t("oll_hint_longcatAvatar");
   if (/scail/.test(n)) return /animate/.test(n) ? t("oll_hint_scail2Animate") : t("oll_hint_scail2Replace");
   if (/animate/.test(n)) return /replace/.test(n) ? t("oll_hint_animateReplace") : t("oll_hint_animateMove");
   // Bernini image tasks BEFORE the generic bernini branch — their sentinels all
@@ -1361,6 +1365,7 @@ export function syncComfyModelPickLabel() {
 function videoFamilyOf(name) {
   const n = (name || "").toLowerCase();
   if (/infinitetalk/.test(n)) return "infinitetalk";
+  if (/longcat/.test(n)) return "longcat";
   if (/scail/.test(n)) return "scail";
   if (/animate/.test(n)) return "animate";
   if (/phantom/.test(n)) return "phantom";

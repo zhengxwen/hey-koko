@@ -1044,6 +1044,9 @@ function videoTypeOf(model) {
   // MultiTalkModelLoader scans there) and the Kijai Wan2.1-I2V-480p UNET is the
   // wrapper's base model, not a standalone hey-koko entry.
   if (/infinitetalk|multitalk/i.test(model)) return (model === INFINITETALK || model === INFINITETALK_SPEAK) ? "infinitetalk" : null;
+  // LongCat-Avatar: same split — the sentinel is the entry, the real files on disk (the
+  // DiT in diffusion_models/) are components the wrapper's loader reads.
+  if (/longcat/i.test(model)) return model === LONGCAT_AVATAR ? "longcat-avatar" : null;
   if (/wan2[._]1-i2v/i.test(model)) return null; // Kijai Wan2_1-I2V-14B-480p_…_KJ — wrapper component
   if (/bernini/i.test(model)) return "bernini";
   if (/scail/i.test(model)) return "scail2";
@@ -1358,6 +1361,13 @@ const INFINITETALK = "infinitetalk";
 // stack as the V2V entry; graph differences: no source-video latents (nothing to
 // preserve → full 6-step denoise from step 0), LoadImage instead of LoadVideo, 25 fps.
 const INFINITETALK_SPEAK = "infinitetalk_speak";
+// Sentinel for LongCat-Video-Avatar 1.5 (MeiGen-AI / Meituan, MIT): the same job as
+// INFINITETALK_SPEAK — person photo + speech (attached, or the prompt read by the local
+// TTS) → talking video — on InfiniteTalk's successor. Own 13.6B DiT (not a Wan patch),
+// Whisper-large-v3 audio features, an 8-step DMD distill LoRA, trained at 25 fps on
+// 93-frame windows. Long speech is chained IN-GRAPH window by window (buildLongCatAvatar).
+// The name must stay clear of every videoTypeOf keyword (wan / animate / scail / …).
+const LONGCAT_AVATAR = "longcat_avatar";
 
 // Everything MSR needs, or null when a piece is absent (the entry is then hidden rather than
 // offered broken). Two routes, both end-to-end verified:
@@ -1661,6 +1671,49 @@ async function infinitetalkCompanions() {
   throw new Error("Missing pieces required by InfiniteTalk V2V:\n- ComfyUI-WanVideoWrapper custom node (git clone into custom_nodes/)\n- diffusion_models/Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors\n- diffusion_models/wan2.1_infiniteTalk_single_fp16.safetensors (copy of the model_patches file)\n- models/wav2vec2/wav2vec2-chinese-base_fp16.safetensors\n- vae/Wan2_1_VAE_bf16.safetensors · text_encoders/umt5_xxl…scaled · clip_vision_h · loras/lightx2v_I2V_14B_480p…");
 }
 
+// Everything LongCat-Video-Avatar 1.5 needs (Kijai's WanVideoWrapper ports, all from
+// huggingface.co/Kijai/WanVideo_comfy). LongCatAvatarWhisperEmbeds is the version gate:
+// it landed in the same wrapper commit that gave WanVideoLongCatAvatarExtendEmbeds its
+// v1.5 `prev_images`/`vae` inputs. An older wrapper has the extend node WITHOUT them,
+// and ComfyUI drops undeclared inputs silently — the chain would quietly fall back to
+// v1.0's latent slicing, which 1.5 was not trained on. Text encoding reuses the native
+// CLIPLoader + bridge, same reason as InfiniteTalk (the scaled-fp8 umt5 on disk).
+const LONGCAT_AVATAR_NODES = [
+  "WanVideoModelLoader", "WanVideoLoraSelect", "WanVideoBlockSwap", "WanVideoVAELoader",
+  "WanVideoEncode", "WanVideoDecode", "WanVideoSampler", "WanVideoTextEmbedBridge",
+  "WanVideoLongCatAvatarExtendEmbeds", "LongCatAvatarWhisperEmbeds", "WhisperModelLoader",
+  "ImageResizeKJv2", "GetImageRangeFromBatch", "ManualSigmas",
+];
+async function longcatAvatarParts() {
+  const [wrapModels, loras, whispers, clips, wrapVaes, nodes] = await Promise.all([
+    comfyEnum("WanVideoModelLoader", "model").catch(() => []),
+    comfyEnum("WanVideoLoraSelect", "lora").catch(() => []),
+    comfyEnum("WhisperModelLoader", "model").catch(() => []),
+    comfyEnum("CLIPLoader", "clip_name").catch(() => []),
+    comfyEnum("WanVideoVAELoader", "model_name").catch(() => []),
+    comfyHasNodes(LONGCAT_AVATAR_NODES),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  const parts = {
+    // 1.5 ONLY ("LongCat-Avatar-15_…"). The 1.0 DiT ("LongCat-Avatar_bf16") reads
+    // wav2vec2 features through a different audio projection — this graph cannot drive it.
+    model: find(wrapModels, /longcat.?avatar.?1[._]?5/i),
+    // The 8-step schedule below belongs to this LoRA — required, not optional. 1.0's
+    // distill LoRAs are a different (and, per Kijai, extension-hostile) recipe.
+    lora: find(loras, /longcat.?avatar.?1[._]?5.*(dmd|distill)/i),
+    // audio_encoders/ also holds InfiniteTalk's wav2vec2 — pick Whisper by name.
+    whisper: find(whispers, /whisper.?large.?v3/i) || find(whispers, /whisper/i),
+    clip: find(clips, /umt5/i),
+    vae: find(wrapVaes, /wan.?2[._]1.*vae/i) || find(wrapVaes, /wan.*vae/i),
+  };
+  return nodes && parts.model && parts.lora && parts.whisper && parts.clip && parts.vae ? parts : null;
+}
+async function longcatAvatarCompanions() {
+  const parts = await longcatAvatarParts();
+  if (parts) return parts;
+  throw new Error("Missing pieces required by LongCat-Video-Avatar 1.5 (all from huggingface.co/Kijai/WanVideo_comfy):\n- ComfyUI-WanVideoWrapper new enough to have the LongCatAvatarWhisperEmbeds node\n- diffusion_models/LongCat-Avatar-15_bf16.safetensors (LongCat/)\n- loras/LongCat-Avatar-15_dmd_distill_lora_rank128_bf16.safetensors (LongCat/)\n- audio_encoders/whisper_large_v3_encoder_fp16.safetensors (HuMo/)\n- vae/Wan2_1_VAE_bf16.safetensors · text_encoders/umt5_xxl…scaled");
+}
+
 // Everything Wan-Dancer needs beyond the selected GLOBAL expert (the dropdown entry),
 // or a THROW with the shopping list. All-native stack (the WanDancer* nodes ship with
 // ComfyUI ≥ 0.29): the LOCAL expert twin, the lightx2v I2V distill LoRA (global turbo
@@ -1763,6 +1816,7 @@ function capsFor(name, group, type, entry) {
   if (name === LTX25_TRACK) return ["t2v", "i2v", "audio"]; // trajectories + optional still; generates sound
   if (name === INFINITETALK) return ["v2v", "audio"]; // audio-DRIVEN dubbing (lip re-sync to a speech file)
   if (name === INFINITETALK_SPEAK) return ["i2v", "audio"]; // photo + speech/TTS → talking video
+  if (name === LONGCAT_AVATAR) return ["i2v", "audio"];     // same job, InfiniteTalk's successor
   if (type === "dancer") return ["i2v", "audio"]; // reference photo + MUSIC → dance video synced to it
   // MiniMax H3 generates its soundtrack in the same forward pass as the picture (one
   // latent, two VAEs at decode) — the same "audio" claim LTX gets. ref2va takes images
@@ -1854,6 +1908,7 @@ function videoRank(n) {
   // generic /animate/ test would otherwise claim it (same ordering trap as videoTypeOf).
   if (n === LTX_MSR) return 7.5;
   if (n === INFINITETALK_SPEAK) return 7.6; // photo→talking video, lives in the gen group
+  if (n === LONGCAT_AVATAR) return 7.65;    // its successor, right beside it
   if (/dancer/i.test(n)) return 7.7;        // photo+music→dance video, same neighbourhood
   if (n === SCAIL2_ANIMATE) return 10;
   if (/scail/i.test(n)) return 11;
@@ -1927,6 +1982,12 @@ function isModelReady(name, group, type) {
   if (name === ANIMATE_REPLACE) return true; // Replace verified end-to-end (scene kept, person swapped)
   if (name === INFINITETALK) return true;    // V2V dub recipe verified live (92-frame lip re-sync, trim tail exact)
   if (name === INFINITETALK_SPEAK) return true; // I2V talking-photo recipe verified live (see buildInfiniteTalk)
+  // LongCat-Avatar — verified live on the 5090 (2026-11-12, ComfyUI 0.44.0): a Z-Image
+  // portrait + 9.2 s of Kokoro Chinese speech → 3 chained windows, 544×736 @ 25 fps, 476 s
+  // (~160 s per window, model already resident). Identity held across both seams with no
+  // visible jump; mouth closed in the pauses and open on speech. An earlier run that was
+  // interrupted mid-window-1 came back as the salvaged first window with its audio.
+  if (name === LONGCAT_AVATAR) return true;
   if (name === BERNINI_INSERT) return false;  // ads2v — wired but never live-verified
   // Bernini image side (i2i / r2i / t2i) — all three VERIFIED end-to-end on the live
   // box: t2i 11s, i2i relight 7s (identity held: shape/colour/position untouched),
@@ -2011,7 +2072,7 @@ function isModelReady(name, group, type) {
 // would put a white background in the video itself:
 //   • plain i2v / FLF (wan, ltx keyframes, hunyuan, ltx-2.3 t2v)
 //   • LTX Union Control  — the still IS frame 0 (LTXVImgToVideoInplace)
-//   • InfiniteTalk "photo speaks" — the photo IS the shot, animated in place
+//   • InfiniteTalk "photo speaks" / LongCat-Avatar — the photo IS the shot, animated in place
 // Bernini's merged entry is the one ambiguous case (an image alone = i2v start frame,
 // an image WITH a source clip = a reference); the frontend resolves it by whether a
 // clip is staged, so it is listed here and gated there.
@@ -2077,7 +2138,7 @@ async function proxyComfyModels(req, res) {
     // mess). Everything installed here is a video LoRA except the panorama one, so
     // this is an exclusion rather than a match — a new image LoRA should show up
     // without anyone having to add a pattern for it.
-    const VIDEO_LORA_RE = /ltx|sulphur|wan|bernini|animate|lightx2v|scail|phantom|hunyuan.?video|infinitetalk|dancer|vace/i;
+    const VIDEO_LORA_RE = /ltx|sulphur|wan|bernini|animate|lightx2v|scail|phantom|hunyuan.?video|infinitetalk|longcat|dancer|vace/i;
     // krea2's LoRAs are image LoRAs, so the exclusion above lets them through — but they
     // were trained on Krea-2's own 12B DiT and match almost no keys on the Flux checkpoint
     // the panorama recipe generates with. They'd be ten entries that quietly do nothing.
@@ -2225,7 +2286,13 @@ async function proxyComfyModels(req, res) {
       videoModels.push({ name: INFINITETALK, type: "infinitetalk", label: "InfiniteTalk (dub / lip-sync)", needsVideo: true, needsAudio: true });
       // "Photo speaks": person photo + audio (or the prompt read out by the local TTS)
       // → talking video. No source video, so it joins the text/image→video group.
-      videoModels.push({ name: INFINITETALK_SPEAK, type: "infinitetalk", label: "InfiniteTalk (photo → talking video)", needsImages: 1 });
+      videoModels.push({ name: INFINITETALK_SPEAK, type: "infinitetalk", label: "InfiniteTalk (photo → talking video)", needsImages: 1, speaks: true });
+    }
+    // LongCat-Video-Avatar 1.5: the same photo + speech job on InfiniteTalk's successor.
+    // `speaks` = with no audio attached, the raw /imagine prompt is the text the local
+    // TTS reads (the frontend sends it apart as speechText).
+    if (await longcatAvatarParts()) {
+      videoModels.push({ name: LONGCAT_AVATAR, type: "longcat-avatar", label: "LongCat-Video-Avatar 1.5 (photo → talking video)", needsImages: 1, speaks: true });
     }
     // 3D mesh models — a fourth group next to image/edit/video. Output is a FILE
     // (.glb/.spz), so these must never fall into the pixel pipelines. Each chain is
@@ -2296,13 +2363,18 @@ async function proxyComfyModels(req, res) {
       // ⚙ "Smooth to FPS", which DOES interpolate. Two frame-rate boxes that mean opposite
       // things is how "where is the interpolation setting?" happens; the resampling one is
       // the one nobody wants here.
-      m.fpsTunable = !(preset && preset.fpsFixed) && m.name !== VIDEO_ENHANCE;
+      // LongCat-Avatar likewise: 25 fps is what it was trained at, and its Whisper features
+      // are laid out one per frame at that rate (audio_stride 1) — another rate would only
+      // change how fast everyone moves.
+      m.fpsTunable = !(preset && preset.fpsFixed) && m.name !== VIDEO_ENHANCE && m.name !== LONGCAT_AVATAR;
       // Whether a negative prompt reaches the graph at all. MiniMax H3 guides with a
       // BasicGuider — ONE conditioning branch — so there is nowhere to put it: both the
       // ⚙ field and /imagine's `--neg …` are discarded. Everything the user wants
       // suppressed has to be said positively in the prompt instead, which is also where
       // the soundtrack is directed.
-      m.negativeTunable = m.type !== "minimax-h3";
+      // LongCat-Avatar's distilled recipe guides at text AND audio cfg 1.0 — there is no
+      // unconditional pass for a negative to steer, so the box would be a dead control.
+      m.negativeTunable = m.type !== "minimax-h3" && m.type !== "longcat-avatar";
       // The frame grid the ⚙ length field should offer, derived from the SAME preset the
       // server snaps against (snapLength) so the field can't advertise a range the
       // generator would then move. `max: null` = no trained ceiling declared; the field
@@ -4753,6 +4825,7 @@ function videoPreset(videoType, model, turbo) {
 function videoRateFor(videoType, model, opts, srcFps) {
   const p = videoPreset(videoType, model, true);
   if (p) return p.fpsFixed ? p.fps : (Number(opts.fps) || p.fps);
+  if (videoType === "longcat-avatar") return 25; // fixed — see fpsTunable
   const fallback = (videoType === "infinitetalk" || videoType === "ltx-union") ? 25 : 16;
   return Number(srcFps) || Number(opts.fps) || fallback;
 }
@@ -7052,6 +7125,120 @@ function buildInfiniteTalk({ prompt, negative, comp, videoName, imageName, audio
   };
 }
 
+// LongCat-Video-Avatar 1.5 "photo speaks": person photo + speech → talking video.
+// RECIPE from the official meituan-longcat/LongCat-Video run_demo_avatar_single_audio_to_video.py
+// (model_type avatar-v1.5 + --use_distill); WIRING from Kijai's
+// LongCatAvatar_audio_image_to_video_example_01 — a 1.0 workflow — moved to 1.5:
+//   • Whisper-large-v3 features (LongCatAvatarWhisperEmbeds, audio_stride 1, 25 fps)
+//     instead of 1.0's wav2vec2 at stride 2 / 16 fps.
+//   • 8 steps with text AND audio guidance 1.0 — one forward per step. The DMD LoRA goes
+//     on at 1.0 (the official multiplier); Kijai's conversion carries alpha 64 on every
+//     layer, so 1.0 here is the same rank-128/alpha-64 scale the reference loads.
+//   • SIGMAS: the official 1.5 distill grid — 8 evenly spaced points from 1 down to 0.124
+//     on the 1000-step table, then the 1.5 checkpoint scheduler's shift 7 — handed in via
+//     ManualSigmas + plain "euler" (which takes custom sigmas as given). The wrapper's
+//     `longcat_distill_euler` builds 1.0's 50-step grid instead, so at 8 steps it ends at
+//     0.533 rather than 0.498.
+//   • bf16 base precision only (Kijai: LongCat does not run otherwise) and sdpa attention
+//     (Kijai: sageattention 1.0.6 is broken on LongCat). quantization "disabled" + 25 of
+//     the 48 blocks swapped (Kijai's example value): the bf16 DiT is 31.7 GB, more than a
+//     32 GB card holds next to its activations.
+// LONG SPEECH = the official segment loop, in ONE graph. Window 0 is ai2v: 93 frames
+// growing out of the photo's latent. Every later window continues from the previous one's
+// LAST 13 decoded frames, re-encoded through the VAE (1.5's use_vcond=False path — the
+// extend node's prev_images + vae), keeps the photo latent as identity reference
+// (ref_frame_index 10 / mask range 3, official defaults), and reads the speech 80 frames
+// further on. Each window drops its 13 regenerated frames and is saved ON ITS OWN, silent —
+// SCAIL-2's incremental save — and the app joins the clips and lays the ORIGINAL speech
+// file over the result (mergeScail2Segments). So a minute of video never holds every
+// decoded frame at once, and a failure late in the chain still returns the finished
+// prefix. Every window renders the full 93 frames like the reference; the last one's
+// surplus (audio padded past its end) is cut off in-graph.
+const LONGCAT_WIN = 93;                            // official num_frames per window
+const LONGCAT_OVERLAP = 13;                        // official num_cond_frames
+const LONGCAT_STRIDE = LONGCAT_WIN - LONGCAT_OVERLAP; // 80 new frames per later window
+const LONGCAT_FPS = 25;
+// Longest speech one request renders: ~38 windows. A guard against a stray hour-long
+// attachment turning into a day of GPU time, not a model limit.
+const LONGCAT_MAX_SECONDS = 120;
+const LONGCAT_SIGMAS = "1.0, 0.9800, 0.9545, 0.9209, 0.8748, 0.8073, 0.6992, 0.4980, 0";
+const LONGCAT_NEGATIVE = "Close-up, Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards";
+// Window k's nodes are base+0 … base+5 — 10 apart, so windows can never overwrite each
+// other (SCAIL-2 shipped that bug once with a stride smaller than its node count).
+const longcatSegBase = (k) => 100 + k * 10;
+const longcatSaveNodeId = (k) => String(longcatSegBase(k) + 5);
+
+// Window plan for `total` output frames: how many frames precede window k (the extend
+// node's frames_processed — it reads the speech from (processed − 13) on), how many of
+// its leading frames are the regenerated overlap, and how many it contributes.
+function longcatWindows(total) {
+  const n = total <= LONGCAT_WIN ? 1 : 1 + Math.ceil((total - LONGCAT_WIN) / LONGCAT_STRIDE);
+  const wins = [];
+  for (let k = 0; k < n; k++) {
+    const processed = k === 0 ? 0 : LONGCAT_WIN + LONGCAT_STRIDE * (k - 1);
+    wins.push({
+      processed,
+      drop: k === 0 ? 0 : LONGCAT_OVERLAP,
+      keep: Math.min(k === 0 ? LONGCAT_WIN : LONGCAT_STRIDE, total - processed),
+    });
+  }
+  return wins;
+}
+
+function buildLongCatAvatar({ prompt, negative, comp, imageName, audioName, width, height, totalFrames, seed }) {
+  const wins = longcatWindows(totalFrames);
+  const genFrames = LONGCAT_WIN + LONGCAT_STRIDE * (wins.length - 1);
+  const pos = prompt || "A person is talking to the camera, natural speech, lips moving in sync with the audio, natural head movement and facial expression.";
+  const wf = {
+    "1": { class_type: "WanVideoModelLoader", inputs: { model: comp.model, base_precision: "bf16", quantization: "disabled", load_device: "offload_device", attention_mode: "sdpa", block_swap_args: ["2", 0], lora: ["3", 0] } },
+    "2": { class_type: "WanVideoBlockSwap", inputs: { blocks_to_swap: 25, offload_img_emb: false, offload_txt_emb: false, use_non_blocking: true, vace_blocks_to_swap: 0, prefetch_blocks: 1, block_swap_debug: false } },
+    "3": { class_type: "WanVideoLoraSelect", inputs: { lora: comp.lora, strength: 1.0, low_mem_load: false, merge_loras: false } },
+    "5": { class_type: "WanVideoVAELoader", inputs: { model_name: comp.vae, precision: "bf16" } },
+    // Photo → output size → its latent: window 0's start frame AND every later window's
+    // identity reference.
+    "7": { class_type: "LoadImage", inputs: { image: imageName } },
+    "9": { class_type: "ImageResizeKJv2", inputs: { image: ["7", 0], width, height, upscale_method: "lanczos", keep_proportion: "crop", pad_color: "0, 0, 0", crop_position: "center", divisible_by: 16, device: "cpu" } },
+    "11": { class_type: "WanVideoEncode", inputs: { vae: ["5", 0], image: ["9", 0], enable_vae_tiling: false, tile_x: 272, tile_y: 272, tile_stride_x: 144, tile_stride_y: 128, noise_aug_strength: 0.0, latent_strength: 1.0 } },
+    "23": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
+    "24": { class_type: "CLIPTextEncode", inputs: { clip: ["23", 0], text: pos } },
+    "25": { class_type: "CLIPTextEncode", inputs: { clip: ["23", 0], text: negative || LONGCAT_NEGATIVE } },
+    "13": { class_type: "WanVideoTextEmbedBridge", inputs: { positive: ["24", 0], negative: ["25", 0] } },
+    // Speech → Whisper features for the WHOLE chain at once; each window slices its own.
+    // num_frames only bounds how much audio is read — the features stop where it ends.
+    "14": { class_type: "WhisperModelLoader", inputs: { model: comp.whisper, base_precision: "fp16", load_device: "main_device" } },
+    "16": { class_type: "LoadAudio", inputs: { audio: audioName } },
+    "15": { class_type: "LongCatAvatarWhisperEmbeds", inputs: { whisper_model: ["14", 0], audio_1: ["16", 0], normalize_loudness: true, num_frames: genFrames, fps: LONGCAT_FPS, audio_scale: 1.0, audio_cfg_scale: 1.0, multi_audio_type: "para" } },
+    "19": { class_type: "ManualSigmas", inputs: { sigmas: LONGCAT_SIGMAS } },
+  };
+  const saveNodeIds = [];
+  let prevS = null, prevD = null;
+  wins.forEach((w, k) => {
+    const b = longcatSegBase(k);
+    const E = String(b), S = String(b + 1), D = String(b + 2), T = String(b + 3), CV = String(b + 4), SV = String(b + 5);
+    // Window 0 continues from the photo alone (overlap 1 = its single latent frame).
+    const ei = {
+      prev_latents: k === 0 ? ["11", 0] : [prevS, 0], audio_embeds: ["15", 0],
+      num_frames: LONGCAT_WIN, overlap: k === 0 ? 1 : LONGCAT_OVERLAP, frames_processed: w.processed,
+      if_not_enough_audio: "pad_with_start", ref_frame_index: 10, ref_mask_frame_range: 3,
+    };
+    if (k > 0) Object.assign(ei, { ref_latent: ["11", 0], prev_images: [prevD, 0], vae: ["5", 0] });
+    wf[E] = { class_type: "WanVideoLongCatAvatarExtendEmbeds", inputs: ei };
+    // seed + k: one noise draw per window, still reproducible from the request's seed.
+    wf[S] = { class_type: "WanVideoSampler", inputs: { model: ["1", 0], image_embeds: [E, 0], text_embeds: ["13", 0], steps: 8, cfg: 1.0, shift: 7.0, seed: seed + k, force_offload: true, scheduler: "euler", riflex_freq_index: 0, denoise_strength: 1.0, batched_cfg: false, rope_function: "comfy", start_step: 0, end_step: -1, add_noise_to_samples: false, sigmas: ["19", 0] } };
+    wf[D] = { class_type: "WanVideoDecode", inputs: { vae: ["5", 0], samples: [S, 0], enable_vae_tiling: false, tile_x: 272, tile_y: 272, tile_stride_x: 144, tile_stride_y: 128 } };
+    let out = [D, 0];
+    if (w.drop > 0 || w.keep < LONGCAT_WIN) {
+      wf[T] = { class_type: "GetImageRangeFromBatch", inputs: { images: [D, 0], start_index: w.drop, num_frames: w.keep } };
+      out = [T, 0];
+    }
+    wf[CV] = { class_type: "CreateVideo", inputs: { images: out, fps: LONGCAT_FPS } };
+    wf[SV] = { class_type: "SaveVideo", inputs: { video: [CV, 0], filename_prefix: `${comfyTag()}_longcat`, format: "auto", codec: "auto" } };
+    saveNodeIds.push(SV);
+    prevS = S; prevD = D;
+  });
+  return { workflow: wf, saveNodeIds };
+}
+
 // Wan-Dancer (music → dance): reference photo + MUSIC file → the character dances to
 // the track. Flattened from the official video_wan_dancer template (2026-07-14), whose
 // two-stage hierarchy runs in ONE graph:
@@ -8406,6 +8593,43 @@ async function probeAudioDuration(buf) {
   finally { if (tmp) fsp.unlink(tmp).catch(() => {}); }
 }
 
+// The speech track of a "photo speaks" entry (InfiniteTalk / LongCat-Avatar): the
+// attached audio file (pre-uploaded name, else inline base64), or — none attached — `text`
+// synthesized by the local TTS daemon (Kokoro, same engine as /voice). Voice: ⚙/--voice
+// (accepts "kokoro:zf_xiaoxiao" or a bare id), else auto-picked by script (CJK → Mandarin
+// female, otherwise US female). Returns { audioName, duration } — duration in seconds, 0
+// when unknown; `needDuration` makes an attachment the client didn't measure get probed
+// (ffprobe) — or { error } when the TTS fails.
+async function resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text, voice, needDuration = false, signal }) {
+  let duration = Number(sourceAudioDuration) || 0;
+  if (sourceAudioName || sourceAudio) {
+    let buf = null;
+    if (!sourceAudioName) {
+      const clean = typeof sourceAudio === "string" && sourceAudio.startsWith("data:") ? sourceAudio.split(",")[1] : sourceAudio;
+      buf = Buffer.from(clean, "base64");
+    }
+    const audioName = sourceAudioName || await uploadAudioBuffer(buf, sourceAudioMime || "audio/wav", signal);
+    if (!duration && needDuration) {
+      buf = buf || await fetchComfyInputFile(audioName, signal);
+      if (buf) duration = await probeAudioDuration(buf);
+    }
+    return { audioName, duration };
+  }
+  const vPref = String(voice || "").trim();
+  const engine = vPref.includes(":") ? vPref.split(":")[0] : "kokoro";
+  const vId = (vPref.includes(":") ? vPref.split(":")[1] : vPref)
+    || (/[぀-ヿ一-鿿]/.test(text) ? "zf_xiaoxiao" : "af_heart");
+  let wavPath;
+  try {
+    wavPath = await synthToWav({ engine, voice: vId, text, speed: 1 });
+  } catch (e) {
+    return { error: `Local TTS failed (${String((e && e.message) || e)}). Attach an audio file instead, or check the TTS setup used by /voice.` };
+  }
+  const wavBuf = await fsp.readFile(wavPath);
+  duration = (await probeAudioDuration(wavBuf)) || duration;
+  return { audioName: await uploadAudioBuffer(wavBuf, "audio/wav", signal), duration };
+}
+
 // Upload a speech/audio file to ComfyUI's input dir (same /upload/image endpoint — it
 // accepts audio too; LoadAudio reads from the input dir). Content-hashed filename, same
 // dedupe/no-collision rationale as uploadVideoBuffer.
@@ -8603,7 +8827,7 @@ async function mergeFinishedPrefix(watcher, merge, promptId, wantCodec, crf, sig
     } catch { break; }
   }
   if (!bufs.length) return null;
-  const srcBuf = await fetchComfyInputFile(merge.sourceName, signal);
+  const srcBuf = merge.mute ? null : await fetchComfyInputFile(merge.sourceName, signal);
   const merged = await mergeScail2Segments(bufs, srcBuf, wantCodec, crf, signal);
   if (!merged) return null;
   console.log(`[comfy] ${merge.label}: salvaged ${bufs.length}/${merge.saveNodeIds.length} finished segments after an interrupted render`);
@@ -9637,28 +9861,10 @@ async function generateComfyImage(req, res) {
         // clip, the tail extends from the last frame.
         const iFps = speak ? (opts.fps || 25) : (Number(sourceVideoFps) || opts.fps || 25);
         const maxFrames = opts.length ? Math.max(5, Math.round(opts.length)) : (speak ? 500 : 1000);
-        let audioName;
-        let audioDur = Number(sourceAudioDuration) || 0;
-        if (sourceAudioName) audioName = sourceAudioName;
-        else if (sourceAudio) audioName = await uploadAudio(sourceAudio, controller.signal, sourceAudioMime);
-        else {
-          // speak + text → local TTS. Voice: ⚙/--voice (accepts "kokoro:zf_xiaoxiao" or a
-          // bare id), else auto-picked by script (CJK → Mandarin female, otherwise US female).
-          const vPref = String(opts.ttsVoice || "").trim();
-          const engine = vPref.includes(":") ? vPref.split(":")[0] : "kokoro";
-          const vId = (vPref.includes(":") ? vPref.split(":")[1] : vPref)
-            || (/[぀-ヿ一-鿿]/.test(speechText) ? "zf_xiaoxiao" : "af_heart");
-          let wavPath;
-          try {
-            wavPath = await synthToWav({ engine, voice: vId, text: speechText, speed: 1 });
-          } catch (e) {
-            sendJson(res, 502, { error: `Local TTS failed (${String((e && e.message) || e)}). Attach an audio file instead, or check the TTS setup used by /voice.` });
-            return;
-          }
-          const wavBuf = await fsp.readFile(wavPath);
-          audioDur = (await probeAudioDuration(wavBuf)) || audioDur;
-          audioName = await uploadAudioBuffer(wavBuf, "audio/wav", controller.signal);
-        }
+        // Attached audio, or (speak + text) the local TTS reading speechText.
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, signal: controller.signal });
+        if (track.error) { sendJson(res, 502, { error: track.error }); return; }
+        const { audioName, duration: audioDur } = track;
         let videoName = null, imageName = null;
         if (speak) { imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_itref.png`); imagesUsed = 1; }
         else videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
@@ -9669,6 +9875,59 @@ async function generateComfyImage(req, res) {
         videoDims = { width: iw, height: ih, fps: iFps };
         const audioFrames = audioDur > 0 ? Math.round(audioDur * iFps) : 0;
         if (audioFrames) videoDims.length = Math.min(audioFrames, maxFrames);
+      } else if (videoType === "longcat-avatar") {
+        // LongCat-Video-Avatar 1.5 "photo speaks": PERSON PHOTO + speech — an attached audio
+        // file, or speechText read by the local TTS (InfiniteTalk speak's contract). The
+        // window chain is laid out HERE from the speech length, so that length must be
+        // known before queueing (InfiniteTalk's sampler discovers it at run time).
+        const hasAud = !!(sourceAudio || sourceAudioName);
+        const speechText = String(body.speechText || prompt || "").trim();
+        if (!hasImgInput) { sendJson(res, 400, { error: "LongCat-Avatar needs a person photo. Attach one, then /imagine <text to read> (or attach an audio file instead of text)." }); return; }
+        if (!hasAud && !speechText) { sendJson(res, 400, { error: "LongCat-Avatar needs the speech: /imagine <text to read> (synthesized locally), or attach an audio file." }); return; }
+        const comp = await longcatAvatarCompanions();
+        // FAIL FAST (SCAIL-2's reason): the windows are joined HERE after the render, so a
+        // missing ffmpeg would surface after the GPU time instead of now; ffprobe also
+        // measures attached speech and finds the soundtrack the merge lays on.
+        {
+          const missing = [];
+          for (const tool of ["ffmpeg", "ffprobe"]) if (!(await hasLocalTool(tool))) missing.push(tool);
+          if (missing.length) {
+            sendJson(res, 400, { error: `LongCat-Avatar needs ${missing.join(" and ")} on this machine (the one running hey-koko, not the ComfyUI box) to join the rendered windows and lay the speech over them. Install it (macOS: brew install ffmpeg).` });
+            return;
+          }
+        }
+        // The photo's aspect at the 480p budget (832×480, or the ⚙/--size budget). Dims /32,
+        // the grid of the reference's own resolution buckets.
+        let aspW = Number(refImageWidth), aspH = Number(refImageHeight);
+        if (!(aspW > 0 && aspH > 0)) {
+          const d = imageDims(images[0]);
+          if (d) { aspW = d.width; aspH = d.height; }
+        }
+        const aspect = (aspW > 0 && aspH > 0) ? aspW / aspH : 832 / 480;
+        const budget = (opts.width && opts.height) ? opts.width * opts.height : 832 * 480;
+        const lw = snapDim(Math.sqrt(budget * aspect), 32), lh = snapDim(Math.sqrt(budget / aspect), 32);
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, needDuration: true, signal: controller.signal });
+        if (track.error) { sendJson(res, 502, { error: track.error }); return; }
+        if (!(track.duration > 0)) { sendJson(res, 502, { error: "LongCat-Avatar could not measure the speech length (it plans its windows from it). Is ffprobe installed? Otherwise convert the audio to WAV or MP3 and attach it again." }); return; }
+        // Output length = speech length; ⚙ length lowers it (quick tests render the start).
+        let totalFrames = Math.round(track.duration * LONGCAT_FPS);
+        if (opts.length) totalFrames = Math.min(totalFrames, Math.max(5, Math.round(opts.length)));
+        if (totalFrames < 5) { sendJson(res, 400, { error: "The speech is too short for LongCat-Avatar (under 0.2 s)." }); return; }
+        if (totalFrames > LONGCAT_MAX_SECONDS * LONGCAT_FPS) {
+          sendJson(res, 400, { error: `The speech is ${track.duration.toFixed(1)} s; LongCat-Avatar renders at most ${LONGCAT_MAX_SECONDS} s per clip. Split the text or audio into shorter parts, or set ⚙ length to render only the start.` });
+          return;
+        }
+        const imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_lcref.png`);
+        imagesUsed = 1;
+        // With TTS the prompt is what gets READ, so the scene falls back to the generic default.
+        const built = buildLongCatAvatar({ prompt: hasAud ? prompt : "", negative: negative_prompt || "", comp, imageName, audioName: track.audioName, width: lw, height: lh, totalFrames, seed });
+        workflow = built.workflow;
+        // The speech file is the soundtrack donor: the merge lays it, unsliced and at its
+        // original quality, over the joined windows (-shortest trims it to the picture).
+        // singleFile false: unlike SCAIL-2 / Animate there is no ⚙ "Long-clip memory" Off
+        // path to point the failure messages at.
+        segmentMerge = { label: "LongCat-Avatar", saveNodeIds: built.saveNodeIds, sourceName: track.audioName, singleFile: false };
+        videoDims = { width: lw, height: lh, fps: LONGCAT_FPS, length: totalFrames };
       } else if (videoType === "dancer") {
         // Wan-Dancer: reference PHOTO + MUSIC file → the character dances to the track.
         // Both are hard requirements — the audio is the driving signal (the global
@@ -10949,6 +11208,9 @@ async function generateComfyImage(req, res) {
       // subscription would otherwise never be recorded, and it is exactly the early
       // segments that survive an interrupted render.
       if (segmentMerge) {
+        // ⚙ "silent video": the clips are silent already, so honouring it means the merge
+        // must not lay the soundtrack back on (applyMuteAudio only reaches CreateVideo).
+        segmentMerge.mute = !!opts.noAudio;
         salvageCodec = opts.videoCodec === "h265" ? "h265" : "h264";
         salvageCrf = Number(opts.videoCrf) || 0;
         execWatcher = watchComfyExecuted(clientId, new Set(segmentMerge.saveNodeIds));
@@ -11010,14 +11272,14 @@ async function generateComfyImage(req, res) {
         // A hole in the middle would splice the clip together across a gap and put the
         // rest of it out of sync with the audio — refuse rather than ship that silently.
         if (missing.length || segBufs.length !== segmentMerge.saveNodeIds.length) {
-          sendJson(res, 502, { error: `${segmentMerge.label} rendered ${segBufs.length} of ${segmentMerge.saveNodeIds.length} segments — nothing came back from save node(s) ${missing.join(", ") || "?"}. The finished segments are in ComfyUI's output folder (${outDir(OUT_VID)}/) and can be joined by hand; set ⚙ "Long-clip memory" to Off to go back to the single-file path.` });
+          sendJson(res, 502, { error: `${segmentMerge.label} rendered ${segBufs.length} of ${segmentMerge.saveNodeIds.length} segments — nothing came back from save node(s) ${missing.join(", ") || "?"}. The finished segments are in ComfyUI's output folder (${outDir(OUT_VID)}/) and can be joined by hand${segmentMerge.singleFile === false ? "." : "; set ⚙ \"Long-clip memory\" to Off to go back to the single-file path."}` });
           return;
         }
         const wantCodec = opts.videoCodec === "h265" ? "h265" : "h264";
-        const srcBuf = await fetchComfyInputFile(segmentMerge.sourceName, controller.signal);
+        const srcBuf = segmentMerge.mute ? null : await fetchComfyInputFile(segmentMerge.sourceName, controller.signal);
         const merged = await mergeScail2Segments(segBufs, srcBuf, wantCodec, Number(opts.videoCrf) || 0, controller.signal);
         if (!merged) {
-          sendJson(res, 502, { error: `${segmentMerge.label} rendered all ${segBufs.length} segments but ffmpeg could not join them (is ffmpeg installed and on PATH?). The segments are in ComfyUI's output folder (${outDir(OUT_VID)}/) — nothing was lost. Set ⚙ "Long-clip memory" to Off to have ComfyUI write one file instead.` });
+          sendJson(res, 502, { error: `${segmentMerge.label} rendered all ${segBufs.length} segments but ffmpeg could not join them (is ffmpeg installed and on PATH?). The segments are in ComfyUI's output folder (${outDir(OUT_VID)}/) — nothing was lost.${segmentMerge.singleFile === false ? "" : " Set ⚙ \"Long-clip memory\" to Off to have ComfyUI write one file instead."}` });
           return;
         }
         firstVideoBuf = merged.buf;
