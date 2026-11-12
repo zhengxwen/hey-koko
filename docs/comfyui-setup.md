@@ -200,6 +200,7 @@ Used by several workflows — **install these first**.
 |---|---|---|---|
 | **InfiniteTalk**<br>(re-dub a video / talking photo) | `diffusion_models/Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors`<br>`diffusion_models/wan2.1_infiniteTalk_single_fp16.safetensors`<br>(`_multi_fp16` for multiple speakers) | **`models/wav2vec2/wav2vec2-chinese-base_fp16.safetensors`**<br>umt5 · Wan2_1_VAE_bf16 · clip_vision_h<br>`loras/lightx2v_I2V_14B_480p…` | WanVideoWrapper · KJNodes |
 | **LongCat-Video-Avatar 1.5**<br>(talking photo, long speech) | `diffusion_models/LongCat-Avatar-15_bf16.safetensors` (31.7 GB)<br>`loras/LongCat-Avatar-15_dmd_distill_lora_rank128_bf16.safetensors`<br>(both from `Kijai/WanVideo_comfy` → `LongCat/`) | **`audio_encoders/whisper_large_v3_encoder_fp16.safetensors`** (`Kijai/WanVideo_comfy` → `HuMo/`)<br>umt5 · Wan2_1_VAE_bf16<br>ffmpeg + ffprobe on the hey-koko machine (joins the windows) | WanVideoWrapper · KJNodes |
+| **LTX-2.3 talking photo** (ia2v)<br>⚠️ LTX-2 Community License | `checkpoints/ltx-2.3-22b-dev-fp8.safetensors` | the LTX-2.3 cascade set: distilled LoRA · `latent_upscale_models/ltx-2.3-spatial-upscaler-x2…` · Gemma-3 12B text encoder | all core |
 | **Wan-Dancer** (photo + music → dance) | `diffusion_models/wan2.2_dancer_14b_global_fp8_scaled.safetensors`<br>`diffusion_models/wan2.2_dancer_14b_local_fp8_scaled.safetensors`<br>(**both experts required**) | umt5 · wan_2.1_vae · clip_vision_h<br>`loras/lightx2v_I2V_14B_480p…` | all core |
 
 ### 4.6 3D

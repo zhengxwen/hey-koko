@@ -1238,6 +1238,7 @@ function videoAutoDefaults(modelName) {
   if (m === "ltx25-upscale" || m.startsWith("ltx25-fx-")) return { fps: 24, length: 121, steps: 8, cfg: 1 };
   if (m === "ltx25-outpaint" || m === "ltx25-inpaint") return { fps: 24, length: 121, cfg: 1 };
   if (m === "ltx-foley") return { fps: 24, length: 89, steps: 30, cfg: 6 };
+  if (m === "ltx-ia2v") return { fps: 24, cfg: 1 }; // length follows the speech
   if (m === "ltx25-track") return { fps: 24, length: 121, steps: 8, cfg: 1 };
   // LTX-2.5 BEFORE the generic LTX test (its filenames match both): 24 fps, 5 s → 121
   // frames, always cfg 1 (distilled transformer). Steps still flip with the unseen
@@ -1308,6 +1309,7 @@ function comfyModelHint(name) {
   if (n === "ltx25-outpaint") return t("oll_hint_ltx25Outpaint");
   if (n === "ltx25-inpaint") return t("oll_hint_ltx25Inpaint");
   if (n === "ltx-foley") return t("oll_hint_ltxFoley");
+  if (n === "ltx-ia2v") return t("oll_hint_ltxIa2v");
   if (n === "ltx25-track") return t("oll_hint_ltx25Track");
   if (LTX_RE.test(n)) return t("oll_hint_ltx");
   // Image edit (needs a reference image + an instruction).
@@ -1372,6 +1374,7 @@ function videoFamilyOf(name) {
   if (/bernini/.test(n)) return "bernini";
   if (/union/.test(n)) return "ltxunion";            // before the generic /ltx/
   if (/msr/.test(n)) return "ltxmsr";                // before the generic /ltx/
+  if (/ia2v/.test(n)) return "ltxia2v";              // before the generic /ltx/
   if (/ltx|sulphur/.test(n)) return "ltx";
   if (/hunyuan/.test(n)) return "hunyuan";
   if (/fun.?vace/.test(n)) return "funvace";
@@ -1698,6 +1701,7 @@ function comfyModelComponents(name) {
   if (n === "ltx25-outpaint") return "LTX-2.5 Outpaint · in-outpainting IC-LoRA · source fitted into the target canvas, padding = mask · two-stage: 8-step half-size → pixel blend → ×2 re-encode → 2-step refine · source audio frozen";
   if (n === "ltx25-inpaint") return "LTX-2.5 Inpaint · in-outpainting IC-LoRA · SAM2 tracks the 🎯 object → dilated mask · two-stage: 8-step half-size → pixel blend → ×2 re-encode → 2-step refine · source audio frozen";
   if (n === "ltx25-track") return "LTX-2.5 Motion Track · UNETLoader(distilled) + LTXICLoRALoader(motion-track) · --track trajectories → LTXVDrawTracks dot video → LTXAddVideoICLoRAGuide · optional start still (0.7) · 8-step single-stage (+audio)";
+  if (n === "ltx-ia2v") return "LTX-2.3 ia2v · CheckpointLoader(dev) + distilled LoRA 0.5 · speech → LTXVAudioVAEEncode, frozen by SetLatentNoiseMask(0) · photo → LTXVImgToVideoInplace 0.7/1.0 · two-stage: 8-step half-size → latent ×2 → 3-step refine";
   if (n === "ltx-foley") return "LTX-2.3 Foley V2A · CheckpointLoader(dev) + foley LoRA · video latent frozen, audio denoised (LTXVSetAudioVideoMaskByTime) · MultimodalGuider cfg 6 / STG block 29 · 30 steps";
   if (n === "ltx25-union") return "LTX-2.5 Union Control · UNETLoader(distilled) + LTXICLoRALoader(union-control) · LoadVideo→MoGe depth · LTXAddVideoICLoRAGuide · two-stage: 8-step at depth size → latent ×2 → 3-step refine (+audio)";
   if (n === "ltx25-ingredients") return "LTX-2.5 Ingredients · UNETLoader(distilled) + LTXICLoRALoader(ingredients) · references stitched into one sheet → LTXAddVideoICLoRAGuide (sheet on every frame) · 8-step single-stage (+audio)";
@@ -2106,7 +2110,7 @@ export function updateComfyParamVisibility() {
   // trained on the 2.3 architecture, and the server ignores the field for 2.5 —
   // showing it would be a dead control. The union/ingredients IC-LoRAs mount
   // automatically server-side, same policy as 2.3's MSR/union.
-  const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union" && m.toLowerCase() !== "ltx-foley" && !/ltx.?2[._]5|ltx25/.test(m.toLowerCase());
+  const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union" && m.toLowerCase() !== "ltx-foley" && m.toLowerCase() !== "ltx-ia2v" && !/ltx.?2[._]5|ltx25/.test(m.toLowerCase());
   for (const el of [dom.comfyParamLtxLora, dom.comfyParamLtxLoraStrength]) setVis(el, ltx);
   if (ltx) syncLtxLoraOptions(m);
   // Krea-2 — the style LoRA slot and its strength. The LoRA picker is hidden on the

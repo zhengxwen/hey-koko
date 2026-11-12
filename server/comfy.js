@@ -817,6 +817,12 @@ const LTX25_INPAINT = "ltx25-inpaint";
 // Foley V2A rides the 2.3 DEV stack (its recipe is real CFG 6 over 30 steps — not a
 // distilled schedule), freezing the video latent and denoising only the audio.
 const LTX_FOLEY = "ltx-foley";
+// LTX-2.3 ia2v ("talking photo"): person photo + speech → video, lips following the
+// speech. Official video_ltx2_3_ia2v template = the plain 2.3 cascade with the EMPTY audio
+// latent swapped for the ENCODED speech, frozen by an all-zero noise mask. ⚠️ LTX-2
+// Community License (revenue threshold + use restrictions) — kept out of the
+// digital-human product, here for comparison.
+const LTX_IA2V = "ltx-ia2v";
 // Motion Track Control (official LTX-2.5_ICLoRA_Motion_Track workflow): sparse point
 // TRAJECTORIES drawn over the canvas are rendered into a dot-trail video
 // (LTXVDrawTracks) and injected as the IC-LoRA guide — whatever sits under a dot
@@ -1068,6 +1074,7 @@ function videoTypeOf(model) {
   if (model === LTX25_OUTPAINT) return "ltx25-outpaint";
   if (model === LTX25_INPAINT) return "ltx25-inpaint";
   if (model === LTX_FOLEY) return "ltx-foley";
+  if (model === LTX_IA2V) return "ltx-ia2v";
   if (model === LTX25_TRACK) return "ltx25-track";
   // LTX-2.5 BEFORE the generic LTX tests: its filenames match LTX_MODEL_RE too, but it
   // loads via UNETLoader + separate VAE/encoder files, so it must not reach the 2.3
@@ -1622,6 +1629,33 @@ async function ltxFoleyParts() {
   return nodes && parts.ckpt && parts.lora && parts.encoder ? parts : null;
 }
 
+// LTX-2.3 ia2v — the 2.3 DEV checkpoint (the template's) plus everything the two-stage
+// cascade needs (Gemma-3 encoder, distilled LoRA, spatial upscaler), and the four core
+// nodes that turn a speech file into a frozen audio latent.
+const LTX_IA2V_NODES = [
+  "LTXAVTextEncoderLoader", "LTXVAudioVAELoader", "LTXVAudioVAEEncode", "SetLatentNoiseMask", "SolidMask",
+  "TrimAudioDuration", "LTXVConcatAVLatent", "LTXVSeparateAVLatent", "LTXVCropGuides", "LTXVImgToVideoInplace",
+  "LTXVPreprocess", "LTXVLatentUpsampler", "LatentUpscaleModelLoader", "EmptyLTXVLatentVideo", "ManualSigmas",
+  "CFGGuider", "SamplerCustomAdvanced", "ImageScale",
+];
+async function ltxIa2vParts() {
+  const [ckpts, loras, clips, ups, nodes] = await Promise.all([
+    comfyEnum("CheckpointLoaderSimple", "ckpt_name").catch(() => []),
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyEnum("LTXAVTextEncoderLoader", "text_encoder").catch(() => []),
+    comfyEnum("LatentUpscaleModelLoader", "model_name").catch(() => []),
+    comfyHasNodes(LTX_IA2V_NODES),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  const parts = {
+    ckpt: find(ckpts, /ltx.?2[._]3.*dev/i),
+    distill: find(loras, /ltx.*distill/i),
+    upscaler: find((ups || []).filter((n) => !LTX25_RE.test(n)), /ltx.*upscal/i),
+    encoder: find(clips.filter((n) => !LTX25_RE.test(n)), /gemma.*12b/i) || find(clips, /gemma_?3/i),
+  };
+  return nodes && parts.ckpt && parts.distill && parts.upscaler && parts.encoder ? parts : null;
+}
+
 // Everything InfiniteTalk V2V needs. Wrapper-based (WanVideoWrapper node family), so the
 // loaders are the wrapper's own: WanVideoModelLoader scans diffusion_models/,
 // MultiTalkModelLoader too (hence the patch copies there), Wav2VecModelLoader scans
@@ -1817,6 +1851,7 @@ function capsFor(name, group, type, entry) {
   if (name === INFINITETALK) return ["v2v", "audio"]; // audio-DRIVEN dubbing (lip re-sync to a speech file)
   if (name === INFINITETALK_SPEAK) return ["i2v", "audio"]; // photo + speech/TTS → talking video
   if (name === LONGCAT_AVATAR) return ["i2v", "audio"];     // same job, InfiniteTalk's successor
+  if (name === LTX_IA2V) return ["i2v", "audio"];           // same job on the LTX-2.3 stack
   if (type === "dancer") return ["i2v", "audio"]; // reference photo + MUSIC → dance video synced to it
   // MiniMax H3 generates its soundtrack in the same forward pass as the picture (one
   // latent, two VAEs at decode) — the same "audio" claim LTX gets. ref2va takes images
@@ -1909,6 +1944,7 @@ function videoRank(n) {
   if (n === LTX_MSR) return 7.5;
   if (n === INFINITETALK_SPEAK) return 7.6; // photo→talking video, lives in the gen group
   if (n === LONGCAT_AVATAR) return 7.65;    // its successor, right beside it
+  if (n === LTX_IA2V) return 7.66;          // same job on LTX, for comparison
   if (/dancer/i.test(n)) return 7.7;        // photo+music→dance video, same neighbourhood
   if (n === SCAIL2_ANIMATE) return 10;
   if (/scail/i.test(n)) return 11;
@@ -1988,6 +2024,11 @@ function isModelReady(name, group, type) {
   // visible jump; mouth closed in the pauses and open on speech. An earlier run that was
   // interrupted mid-window-1 came back as the salvaged first window with its audio.
   if (name === LONGCAT_AVATAR) return true;
+  // LTX-2.3 ia2v — verified live on the 5090 (2026-11-12): the same upper-body photo and
+  // 9.2 s Kokoro speech as LongCat's run → 832×1088 @ 24 fps, 225 frames, 79 s cold
+  // (≈6× faster than LongCat at 2.3× its pixels). Mouth closed in the pauses, open on
+  // speech; the body stays almost still (no hand gestures, unlike LongCat).
+  if (name === LTX_IA2V) return true;
   if (name === BERNINI_INSERT) return false;  // ads2v — wired but never live-verified
   // Bernini image side (i2i / r2i / t2i) — all three VERIFIED end-to-end on the live
   // box: t2i 11s, i2i relight 7s (identity held: shape/colour/position untouched),
@@ -2291,6 +2332,11 @@ async function proxyComfyModels(req, res) {
     // LongCat-Video-Avatar 1.5: the same photo + speech job on InfiniteTalk's successor.
     // `speaks` = with no audio attached, the raw /imagine prompt is the text the local
     // TTS reads (the frontend sends it apart as speechText).
+    // LTX-2.3 ia2v: the same photo + speech job on the LTX stack (license-restricted, see
+    // LTX_IA2V). `speaks` as above.
+    if (await ltxIa2vParts()) {
+      videoModels.push({ name: LTX_IA2V, type: "ltx-ia2v", label: "LTX-2.3 (photo → talking video)", needsImages: 1, speaks: true });
+    }
     if (await longcatAvatarParts()) {
       videoModels.push({ name: LONGCAT_AVATAR, type: "longcat-avatar", label: "LongCat-Video-Avatar 1.5 (photo → talking video)", needsImages: 1, speaks: true });
     }
@@ -2366,7 +2412,7 @@ async function proxyComfyModels(req, res) {
       // LongCat-Avatar likewise: 25 fps is what it was trained at, and its Whisper features
       // are laid out one per frame at that rate (audio_stride 1) — another rate would only
       // change how fast everyone moves.
-      m.fpsTunable = !(preset && preset.fpsFixed) && m.name !== VIDEO_ENHANCE && m.name !== LONGCAT_AVATAR;
+      m.fpsTunable = !(preset && preset.fpsFixed) && m.name !== VIDEO_ENHANCE && m.name !== LONGCAT_AVATAR && m.name !== LTX_IA2V;
       // Whether a negative prompt reaches the graph at all. MiniMax H3 guides with a
       // BasicGuider — ONE conditioning branch — so there is nowhere to put it: both the
       // ⚙ field and /imagine's `--neg …` are discarded. Everything the user wants
@@ -2374,7 +2420,8 @@ async function proxyComfyModels(req, res) {
       // the soundtrack is directed.
       // LongCat-Avatar's distilled recipe guides at text AND audio cfg 1.0 — there is no
       // unconditional pass for a negative to steer, so the box would be a dead control.
-      m.negativeTunable = m.type !== "minimax-h3" && m.type !== "longcat-avatar";
+      // LTX ia2v: cfg 1 on both cascade stages (CFGGuider skips the uncond pass at 1).
+      m.negativeTunable = m.type !== "minimax-h3" && m.type !== "longcat-avatar" && m.type !== "ltx-ia2v";
       // The frame grid the ⚙ length field should offer, derived from the SAME preset the
       // server snaps against (snapLength) so the field can't advertise a range the
       // generator would then move. `max: null` = no trained ceiling declared; the field
@@ -4826,6 +4873,7 @@ function videoRateFor(videoType, model, opts, srcFps) {
   const p = videoPreset(videoType, model, true);
   if (p) return p.fpsFixed ? p.fps : (Number(opts.fps) || p.fps);
   if (videoType === "longcat-avatar") return 25; // fixed — see fpsTunable
+  if (videoType === "ltx-ia2v") return LTX_IA2V_FPS;
   const fallback = (videoType === "infinitetalk" || videoType === "ltx-union") ? 25 : 16;
   return Number(srcFps) || Number(opts.fps) || fallback;
 }
@@ -6090,6 +6138,43 @@ function buildLtxCascade({ model, prompt, negative, comp, imageName, imageNames,
   wf["24"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["93", 1], audio_vae: ["20", 0] } };
   wf["12"] = { class_type: "CreateVideo", inputs: { images: ["11", 0], fps: v.fps, audio: ["24", 0] } };
   wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } };
+  return wf;
+}
+
+// LTX-2.3 ia2v ("talking photo"), per ComfyUI's official video_ltx2_3_ia2v template.
+// Its subgraph is the plain 2.3 i2v cascade above with ONE substitution: the audio latent
+// is not LTXVEmptyLatentAudio but the speech itself — LoadAudio → TrimAudioDuration →
+// LTXVAudioVAEEncode → SetLatentNoiseMask(SolidMask 0) — so the model is handed a
+// soundtrack it may not touch and animates the picture to it. The mask rides inside the
+// latent dict through SamplerCustomAdvanced and LTXVSeparateAVLatent, which is why the
+// template feeds stage 2 the stage-1 audio latent without re-masking it. So this patches
+// buildLtxCascade's graph instead of forking it:
+//   • node 21 (empty audio) → the frozen encoded speech (40–44)
+//   • the photo is cropped to the output aspect first (template: ResizeImageMaskNode
+//     "scale dimensions", centre crop) — the cascade's own i2v path skips that because
+//     its preset already fixes the frame
+//   • the soundtrack muxed into the file is the ORIGINAL trimmed speech, not the
+//     audio-VAE round trip the template decodes (node 24 dropped): the same samples the
+//     model was conditioned on, minus a lossy codec pass.
+// Not ported: the template's optional Gemma prompt rewriter (TextGenerateLTX2Prompt +
+// abliterated LoRA); the prompt goes in as written, like every other LTX entry here.
+const LTX_IA2V_FPS = 24;          // the template's frame rate (its t2v/i2v siblings run 25)
+const LTX_IA2V_MAX_SECONDS = 60;  // the template's TrimAudioDuration ceiling
+const LTX_IA2V_NEGATIVE = "pc game, console game, video game, cartoon, childish, ugly";
+const LTX_IA2V_PROMPT = "The person in the image is speaking directly to the camera, lips moving in sync with the speech, natural facial expressions and subtle head movement. Static camera.";
+function buildLtxIa2v({ model, prompt, negative, comp, imageName, audioName, audioSeconds, seed, v }) {
+  const wf = buildLtxCascade({ model, prompt: prompt || LTX_IA2V_PROMPT, negative: negative || LTX_IA2V_NEGATIVE, comp, imageName, seed, v });
+  wf["17"] = { class_type: "ImageScale", inputs: { image: ["14", 0], upscale_method: "lanczos", width: v.width, height: v.height, crop: "center" } };
+  wf["15"].inputs.image = ["17", 0];
+  wf["40"] = { class_type: "LoadAudio", inputs: { audio: audioName } };
+  wf["41"] = { class_type: "TrimAudioDuration", inputs: { audio: ["40", 0], start_index: 0, duration: audioSeconds } };
+  wf["42"] = { class_type: "LTXVAudioVAEEncode", inputs: { audio: ["41", 0], audio_vae: ["20", 0] } };
+  wf["43"] = { class_type: "SolidMask", inputs: { value: 0, width: v.width, height: v.height } };
+  wf["44"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["42", 0], mask: ["43", 0] } };
+  delete wf["21"];
+  wf["22"].inputs.audio_latent = ["44", 0];
+  delete wf["24"];
+  wf["12"].inputs.audio = ["41", 0];
   return wf;
 }
 
@@ -9928,6 +10013,47 @@ async function generateComfyImage(req, res) {
         // path to point the failure messages at.
         segmentMerge = { label: "LongCat-Avatar", saveNodeIds: built.saveNodeIds, sourceName: track.audioName, singleFile: false };
         videoDims = { width: lw, height: lh, fps: LONGCAT_FPS, length: totalFrames };
+      } else if (videoType === "ltx-ia2v") {
+        // LTX-2.3 ia2v: PERSON PHOTO + speech (attached, or speechText via the local TTS —
+        // the same contract as the other "photo speaks" entries). One pass, no windows:
+        // the clip is as long as the speech, up to the template's 60 s.
+        const hasAud = !!(sourceAudio || sourceAudioName);
+        const speechText = String(body.speechText || prompt || "").trim();
+        if (!hasImgInput) { sendJson(res, 400, { error: "LTX-2.3 talking photo needs a person photo. Attach one, then /imagine <text to read> (or attach an audio file instead of text)." }); return; }
+        if (!hasAud && !speechText) { sendJson(res, 400, { error: "LTX-2.3 talking photo needs the speech: /imagine <text to read> (synthesized locally), or attach an audio file." }); return; }
+        const parts = await ltxIa2vParts();
+        if (!parts) throw new Error("Missing pieces required by LTX-2.3 talking photo:\n- checkpoints/ltx-2.3-22b-dev-fp8.safetensors\n- loras/ltx-2.3 distilled LoRA · latent_upscale_models/ltx-2.3-spatial-upscaler-x2 · text_encoders/gemma_3_12B_it…");
+        // The plain LTX entry's own picks (distilled LoRA, upscaler, encoder, base recipe) —
+        // no ⚙ "LTX LoRA": that slot is hidden for this entry.
+        const comp = await videoCompanions("ltx", parts.ckpt, {});
+        if (!comp.distillLora || !comp.upscaler) throw new Error("LTX-2.3 talking photo needs the distilled LoRA and the spatial upscaler (the template's two-stage cascade).");
+        // The photo's aspect at the LTX budget (1280×704, or the ⚙/--size budget). /64: the
+        // cascade samples at half size, which must stay on the /32 latent grid.
+        let aspW = Number(refImageWidth), aspH = Number(refImageHeight);
+        if (!(aspW > 0 && aspH > 0)) {
+          const d = imageDims(images[0]);
+          if (d) { aspW = d.width; aspH = d.height; }
+        }
+        const aspect = (aspW > 0 && aspH > 0) ? aspW / aspH : 1280 / 704;
+        const budget = (opts.width && opts.height) ? opts.width * opts.height : 1280 * 704;
+        const xw = snapDim(Math.sqrt(budget * aspect), 64), xh = snapDim(Math.sqrt(budget / aspect), 64);
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, needDuration: true, signal: controller.signal });
+        if (track.error) { sendJson(res, 502, { error: track.error }); return; }
+        if (!(track.duration > 0)) { sendJson(res, 502, { error: "LTX-2.3 talking photo could not measure the speech length (it sizes the clip from it). Is ffprobe installed? Otherwise convert the audio to WAV or MP3 and attach it again." }); return; }
+        // ⚙ length (frames) shortens the clip — the speech is trimmed to match.
+        let seconds = track.duration;
+        if (opts.length) seconds = Math.min(seconds, Math.max(9, Math.round(opts.length)) / LTX_IA2V_FPS);
+        if (seconds > LTX_IA2V_MAX_SECONDS) {
+          sendJson(res, 400, { error: `The speech is ${track.duration.toFixed(1)} s; LTX-2.3 talking photo renders at most ${LTX_IA2V_MAX_SECONDS} s in one pass. Split the text or audio, or set ⚙ length to render only the start.` });
+          return;
+        }
+        // Frames on LTX's 8n+1 grid, rounded UP so the picture never stops before the speech.
+        const length = 8 * Math.ceil((seconds * LTX_IA2V_FPS) / 8) + 1;
+        const imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_ia2v.png`);
+        imagesUsed = 1;
+        const v = { width: xw, height: xh, length, fps: LTX_IA2V_FPS, cfg: 1 };
+        workflow = buildLtxIa2v({ model: parts.ckpt, prompt: hasAud ? prompt : "", negative: negative_prompt || "", comp, imageName, audioName: track.audioName, audioSeconds: Number(seconds.toFixed(3)), seed, v });
+        videoDims = { width: xw, height: xh, fps: LTX_IA2V_FPS, length };
       } else if (videoType === "dancer") {
         // Wan-Dancer: reference PHOTO + MUSIC file → the character dances to the track.
         // Both are hard requirements — the audio is the driving signal (the global
