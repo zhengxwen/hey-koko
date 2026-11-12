@@ -23,7 +23,7 @@ Three pillars. Chat and the knowledge library run on any machine with Ollama —
 - **One prompt in, media out** — `/imagine` drives [ComfyUI](docs/comfyui.md) through 30+ curated local models with verified defaults: text-to-image, instruction editing, multi-image composition, text/image-to-video, pose transfer, lip-sync, video editing, 360° panoramas. No workflow wrangling — pick a model, type a prompt.
 - **A deployment list that actually works** — [docs/comfyui-setup.md](docs/comfyui-setup.md) pins the exact node packs and model files for every supported workflow.
 - **No ComfyUI?** `/imagine` still generates images with local Ollama image models.
-- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file ([Kokoro](docs/local-python.md), or macOS system voices). Optional auto-speak reads replies aloud.
+- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file ([Kokoro](docs/local-python.md), [Qwen3-TTS designed voices](docs/local-python.md#optional--qwen3-tts-designed-voices-qwen3), or macOS system voices). Optional auto-speak reads replies aloud.
 - **Background task queue** — generation and other long jobs run detached with progress bars and live previews, so you can keep chatting; see [Background Jobs](#background-jobs).
 
 ### 📚 Know — the knowledge library

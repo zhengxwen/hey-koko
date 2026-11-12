@@ -48,6 +48,16 @@ function resolveVenvPython(envVar) {
   return win ? "python" : "python3";
 }
 
+// Like resolveVenvPython, but for an OPTIONAL dedicated venv: the env var, else
+// ~/venv/<name> if it exists, else null (no system-python fallback — the feature is off).
+function resolveOptionalVenvPython(envVar, name) {
+  if (process.env[envVar]) return process.env[envVar];
+  const win = process.platform === "win32";
+  const guess = path.join(os.homedir(), "venv", name, ...(win ? ["Scripts", "python.exe"] : ["bin", "python"]));
+  try { if (fs.existsSync(guess)) return guess; } catch { /* ignore */ }
+  return null;
+}
+
 // Where `mineru` lives when it is not on PATH: pip's per-user script dir and the
 // dedicated venv the docs install it into. Shared by PDF parsing (parse-file.js) and the
 // slide renderer's python lookup below, so the two can never disagree about MinerU.
@@ -101,6 +111,13 @@ const config = {
   // path; the system python may be too new for those ML wheels. Engines that fail
   // to import are reported unavailable rather than breaking the daemon.
   ttsPython: resolveVenvPython("TTS_PYTHON"),
+  // Qwen3-TTS gets its OWN venv (~/venv/qwen3tts, `uv pip install qwen-tts`): the package
+  // pins transformers 4.57, which would downgrade the shared heykoko venv above. null =
+  // not installed → the qwen3 engine is simply absent. QWEN_TTS_PYTHON overrides.
+  qwenTtsPython: resolveOptionalVenvPython("QWEN_TTS_PYTHON", "qwen3tts"),
+  // Pre-downloaded Qwen3-TTS weights: <dir>/Qwen3-TTS-12Hz-1.7B-{VoiceDesign,Base}/. Used
+  // when present, else the engine pulls the HF repos into the HF cache itself.
+  qwenTtsModels: process.env.QWEN3_TTS_DIR || path.join(os.homedir(), "models", "qwen3-tts"),
   umapPython: resolveVenvPython("UMAP_PYTHON"),
   // News-feed article extraction (server/extract-article.py) runs `trafilatura` — a
   // site-agnostic main-content + metadata extractor that drops nav/related/boilerplate
