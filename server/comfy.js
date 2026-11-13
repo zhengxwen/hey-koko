@@ -546,16 +546,21 @@ function animateSegmentCap(pixelBudget, torchCompile = false, vramGib = null) {
 // static for a machine, but an IP can be reassigned, so a 10-min TTL re-probes. Returns
 // { gib:null, gpuName:null } when unreachable / no CUDA device → cap callers fall back to
 // the 32GB reference table (no scaling) and the UI shows nothing.
-const _vramCache = new Map(); // url → { gib, gpuName, ts }
+// `sage`: ComfyUI was launched with --use-sage-attention. It refuses to start with that
+// flag unless the sageattention package imports, so the flag doubles as proof that
+// WanVideoWrapper's attention_mode "sageattn" will load too (that mode is not tied to
+// the flag — it imports the package itself — but nothing else here can see the package).
+const _vramCache = new Map(); // url → { gib, gpuName, sage, ts }
 async function comfyGpuInfo() {
   const url = currentComfyUrl();
   const hit = _vramCache.get(url);
-  if (hit && Date.now() - hit.ts < 600000) return { gib: hit.gib, gpuName: hit.gpuName };
-  let gib = null, gpuName = null;
+  if (hit && Date.now() - hit.ts < 600000) return { gib: hit.gib, gpuName: hit.gpuName, sage: hit.sage };
+  let gib = null, gpuName = null, sage = false;
   try {
     const r = await fetch(`${url}/system_stats`, { signal: AbortSignal.timeout(5000) });
     if (r.ok) {
       const data = await r.json();
+      sage = Array.isArray(data.system?.argv) && data.system.argv.includes("--use-sage-attention");
       const cuda = (data.devices || []).filter((d) => d.type === "cuda" && d.vram_total > 0);
       if (cuda.length) {
         // Pick the biggest device (the one a job would run on). Clean the ComfyUI label
@@ -566,8 +571,8 @@ async function comfyGpuInfo() {
       }
     }
   } catch { /* unreachable → nulls → no scaling, no UI badge */ }
-  _vramCache.set(url, { gib, gpuName, ts: Date.now() });
-  return { gib, gpuName };
+  _vramCache.set(url, { gib, gpuName, sage, ts: Date.now() });
+  return { gib, gpuName, sage };
 }
 // Back-compat shim for the animateSegmentCap call site (only needs the number).
 async function comfyVramGib() { return (await comfyGpuInfo()).gib; }
@@ -7224,10 +7229,23 @@ function buildInfiniteTalk({ prompt, negative, comp, videoName, imageName, audio
 //     ManualSigmas + plain "euler" (which takes custom sigmas as given). The wrapper's
 //     `longcat_distill_euler` builds 1.0's 50-step grid instead, so at 8 steps it ends at
 //     0.533 rather than 0.498.
-//   • bf16 base precision only (Kijai: LongCat does not run otherwise) and sdpa attention
-//     (Kijai: sageattention 1.0.6 is broken on LongCat). quantization "disabled" + 25 of
-//     the 48 blocks swapped (Kijai's example value): the bf16 DiT is 31.7 GB, more than a
-//     32 GB card holds next to its activations.
+//   • bf16 base precision only (Kijai: LongCat does not run otherwise) and quantization
+//     "disabled" + 25 of the 48 blocks swapped (Kijai's example value): the bf16 DiT is
+//     31.7 GB, more than a 32 GB card holds next to its activations.
+// SPEED (measured 2026-11-13, RTX 5090, 544×736, 8 steps, warm windows; same seed):
+//   • attention "sageattn" (SageAttention 2.2): 18.25 → 9.71 s/step, 153 → 83 s per
+//     window (1.84×), output frame-for-frame the same as sdpa (flicker 1.388/1.380,
+//     sharpness 4.207/4.211). Kijai's warning was about sage 1.0.6; his own LongCat example
+//     runs sageattn. Used whenever the ComfyUI box was started with --use-sage-attention
+//     (comfyGpuInfo().sage), else sdpa.
+//   • torch.compile (⚙, WanVideoTorchCompileSettings): 9.71 → 8.89 s/step on top of sage,
+//     but ~30 s of compiling (window 0, then again for window 1's different shape) — a
+//     net win only past ~5 windows (~15 s of speech). Needs Triton on the ComfyUI box.
+//   • Tried and REJECTED: fp8_e4m3fn_fast (6.9 s/step but the picture collapses into a
+//     grey blur; it also refuses unmerged LoRAs), plain fp8 + no block swap (no faster —
+//     the swap is fully hidden by prefetch — and 28% more flicker), fp16_fast (6.6 s/step,
+//     black frames: fp16 overflows), merging the LoRA (−2% per step, +23 s at load).
+//     After sage the step is bound by the bf16 linear layers, not attention or memory.
 // LONG SPEECH = the official segment loop, in ONE graph. Window 0 is ai2v: 93 frames
 // growing out of the photo's latent. Every later window continues from the previous one's
 // LAST 13 decoded frames, re-encoded through the VAE (1.5's use_vcond=False path — the
@@ -7270,12 +7288,12 @@ function longcatWindows(total) {
   return wins;
 }
 
-function buildLongCatAvatar({ prompt, negative, comp, imageName, audioName, width, height, totalFrames, seed }) {
+function buildLongCatAvatar({ prompt, negative, comp, imageName, audioName, width, height, totalFrames, seed, attention = "sdpa", torchCompile = false }) {
   const wins = longcatWindows(totalFrames);
   const genFrames = LONGCAT_WIN + LONGCAT_STRIDE * (wins.length - 1);
   const pos = prompt || "A person is talking to the camera, natural speech, lips moving in sync with the audio, natural head movement and facial expression.";
   const wf = {
-    "1": { class_type: "WanVideoModelLoader", inputs: { model: comp.model, base_precision: "bf16", quantization: "disabled", load_device: "offload_device", attention_mode: "sdpa", block_swap_args: ["2", 0], lora: ["3", 0] } },
+    "1": { class_type: "WanVideoModelLoader", inputs: { model: comp.model, base_precision: "bf16", quantization: "disabled", load_device: "offload_device", attention_mode: attention, block_swap_args: ["2", 0], lora: ["3", 0] } },
     "2": { class_type: "WanVideoBlockSwap", inputs: { blocks_to_swap: 25, offload_img_emb: false, offload_txt_emb: false, use_non_blocking: true, vace_blocks_to_swap: 0, prefetch_blocks: 1, block_swap_debug: false } },
     "3": { class_type: "WanVideoLoraSelect", inputs: { lora: comp.lora, strength: 1.0, low_mem_load: false, merge_loras: false } },
     "5": { class_type: "WanVideoVAELoader", inputs: { model_name: comp.vae, precision: "bf16" } },
@@ -7295,6 +7313,11 @@ function buildLongCatAvatar({ prompt, negative, comp, imageName, audioName, widt
     "15": { class_type: "LongCatAvatarWhisperEmbeds", inputs: { whisper_model: ["14", 0], audio_1: ["16", 0], normalize_loudness: true, num_frames: genFrames, fps: LONGCAT_FPS, audio_scale: 1.0, audio_cfg_scale: 1.0, multi_audio_type: "para" } },
     "19": { class_type: "ManualSigmas", inputs: { sigmas: LONGCAT_SIGMAS } },
   };
+  // Transformer blocks only, static shapes — the settings of Kijai's LongCat example.
+  if (torchCompile) {
+    wf["30"] = { class_type: "WanVideoTorchCompileSettings", inputs: { backend: "inductor", fullgraph: false, mode: "default", dynamic: false, dynamo_cache_size_limit: 64, compile_transformer_blocks_only: true, dynamo_recompile_limit: 128, force_parameter_static_shapes: false, allow_unmerged_lora_compile: false } };
+    wf["1"].inputs.compile_args = ["30", 0];
+  }
   const saveNodeIds = [];
   let prevS = null, prevD = null;
   wins.forEach((w, k) => {
@@ -10005,7 +10028,11 @@ async function generateComfyImage(req, res) {
         const imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_lcref.png`);
         imagesUsed = 1;
         // With TTS the prompt is what gets READ, so the scene falls back to the generic default.
-        const built = buildLongCatAvatar({ prompt: hasAud ? prompt : "", negative: negative_prompt || "", comp, imageName, audioName: track.audioName, width: lw, height: lh, totalFrames, seed });
+        // sageattn halves the step time (see buildLongCatAvatar) — only where the box proves
+        // the package is there; ⚙ torch.compile only where the wrapper has its settings node.
+        const attention = (await comfyGpuInfo()).sage ? "sageattn" : "sdpa";
+        const torchCompile = !!opts.torchCompile && await comfyHasNodes(["WanVideoTorchCompileSettings"]);
+        const built = buildLongCatAvatar({ prompt: hasAud ? prompt : "", negative: negative_prompt || "", comp, imageName, audioName: track.audioName, width: lw, height: lh, totalFrames, seed, attention, torchCompile });
         workflow = built.workflow;
         // The speech file is the soundtrack donor: the merge lays it, unsliced and at its
         // original quality, over the joined windows (-shortest trims it to the picture).

@@ -2043,10 +2043,10 @@ export function updateComfyParamVisibility() {
   // Video codec + its CRF: every video model (the tail rewrite is builder-agnostic).
   for (const el of [dom.comfyParamVideoCodec, dom.comfyParamVideoCrf]) setVis(el, video);
   if (video) syncVideoCrfPlaceholder();
-  // torch.compile: Wan Animate (both modes) AND SCAIL-2 — both chain segments, which is
-  // what makes the one-time compile pay off. Relight strength stays Wan-Animate-only
-  // (SCAIL-2 has no relight LoRA).
-  setVis(dom.comfyParamTorchCompile, animate || scail2);
+  // torch.compile: Wan Animate (both modes), SCAIL-2 and LongCat-Avatar — all chain
+  // segments/windows, which is what makes the one-time compile pay off. Relight strength
+  // stays Wan-Animate-only (SCAIL-2 has no relight LoRA).
+  setVis(dom.comfyParamTorchCompile, animate || scail2 || m === "longcat_avatar");
   setVis(dom.comfyParamRelight, animate);
   // Replace only: which person in the source to swap out.
   // Inpaint picks its object the same way Replace does: one 🎯 click on the source.
