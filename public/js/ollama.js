@@ -2047,6 +2047,7 @@ export function updateComfyParamVisibility() {
   // segments/windows, which is what makes the one-time compile pay off. Relight strength
   // stays Wan-Animate-only (SCAIL-2 has no relight LoRA).
   setVis(dom.comfyParamTorchCompile, animate || scail2 || m === "longcat_avatar");
+  setVis(dom.comfyParamLongcatRefAll, m === "longcat_avatar", ".comfyParamCheck");
   setVis(dom.comfyParamRelight, animate);
   // Replace only: which person in the source to swap out.
   // Inpaint picks its object the same way Replace does: one 🎯 click on the source.
@@ -2466,6 +2467,7 @@ function initComfyParamsModal() {
     el?.addEventListener("change", () => saveCurrentSettings());
   }
   dom.comfyParamTorchCompile?.addEventListener("change", () => saveCurrentSettings());
+  dom.comfyParamLongcatRefAll?.addEventListener("change", () => saveCurrentSettings());
   // The window-size caution depends on the chosen multiplier, so it has to re-evaluate on
   // change — open() alone would only catch it when the panel is reopened.
   dom.comfyParamScailWindow?.addEventListener("change", updateScailWindowWarning);
@@ -2532,6 +2534,7 @@ function initComfyParamsModal() {
   dom.comfyParamsReset?.addEventListener("click", () => {
     for (const el of fields) if (el) el.value = "";
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = false;
+    if (dom.comfyParamLongcatRefAll) dom.comfyParamLongcatRefAll.checked = true; // default on (1-minute test)
     if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = "";
     if (dom.comfyParamBerniniTask) dom.comfyParamBerniniTask.value = "";
     if (dom.comfyParamDanceStyle) dom.comfyParamDanceStyle.value = "";

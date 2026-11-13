@@ -187,6 +187,7 @@ function comfyOverrides() {
   if (camStrength !== undefined) ov.camStrength = camStrength;       // angle LoRA strength (upstream: 0.8-1.0)
   if (dom.comfyParamUpscaleTarget?.value) ov.upscaleTarget = Number(dom.comfyParamUpscaleTarget.value); // long side, px (empty = 2x capped)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
+  if (dom.comfyParamLongcatRefAll && !dom.comfyParamLongcatRefAll.checked) ov.longcatRefAll = false; // LongCat-Avatar: on by default (ref mask 0); off = official mask 3
   if (dom.comfyParamVideoCodec?.value) ov.videoCodec = dom.comfyParamVideoCodec.value; // video: h264 (default) | h265, via VHS_VideoCombine
   const videoCrf = num(dom.comfyParamVideoCrf?.value);
   if (videoCrf !== undefined) ov.videoCrf = videoCrf; // CRF for the selected codec (empty = codec default)

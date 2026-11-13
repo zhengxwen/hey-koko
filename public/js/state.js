@@ -131,6 +131,7 @@ export const dom = {
   comfyParamUpscaleDenoise: document.querySelector("#comfyParamUpscaleDenoise"),
   comfyParamUpscaleModel: document.querySelector("#comfyParamUpscaleModel"),
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),
+  comfyParamLongcatRefAll: document.querySelector("#comfyParamLongcatRefAll"),
   comfyParamScailMemory: document.querySelector("#comfyParamScailMemory"),
   comfyParamVideoCodec: document.querySelector("#comfyParamVideoCodec"),
   comfyParamVideoCrf: document.querySelector("#comfyParamVideoCrf"),

@@ -74,6 +74,7 @@ export function saveCurrentSettings() {
         upscaleDenoise: dom.comfyParamUpscaleDenoise?.value || "",
         upscaleModel: dom.comfyParamUpscaleModel?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
+        longcatIdentityHold: dom.comfyParamLongcatRefAll ? dom.comfyParamLongcatRefAll.checked : true,
         lyrics: dom.comfyParamLyrics?.value || "",
         musicSeconds: dom.comfyParamMusicSeconds?.value || "",
         musicCfg: dom.comfyParamMusicCfg?.value || "",
@@ -357,6 +358,9 @@ export function loadSavedSettings() {
     // Best-effort — applyComfyModels re-applies this once the option list has loaded.
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
+    // Default ON. Stored under a new key: the opt-in build saved `longcatRefAll: false` on
+    // every settings save, which would otherwise pin it off.
+    if (dom.comfyParamLongcatRefAll) dom.comfyParamLongcatRefAll.checked = cp.longcatIdentityHold !== false;
     if (dom.comfyParamLyrics) dom.comfyParamLyrics.value = cp.lyrics || "";
     if (dom.comfyParamMusicSeconds) dom.comfyParamMusicSeconds.value = cp.musicSeconds || "";
     if (dom.comfyParamMusicCfg) dom.comfyParamMusicCfg.value = cp.musicCfg || "";

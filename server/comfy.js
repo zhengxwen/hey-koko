@@ -7257,6 +7257,19 @@ function buildInfiniteTalk({ prompt, negative, comp, videoName, imageName, audio
 // decoded frame at once, and a failure late in the chain still returns the finished
 // prefix. Every window renders the full 93 frames like the reference; the last one's
 // surplus (audio padded past its end) is cut off in-graph.
+// IDENTITY DRIFT (measured 2026-11-13, same seed/photo/speech, first 23 s): on long clips
+// the face drifts — heavier eye makeup, redder lips, thinner brows — from ~10 s on. It is
+// the chaining itself: each window paints on from the last 13 frames and the photo is one
+// latent of reference. Ruled out: sageattn (sdpa drifts identically), the VAE re-encode
+// (slicing the previous latents instead drifts the same, skin even darker), and the
+// prompt (describing a bare face changed nothing; cfg 1 makes the negative inert).
+// What helps: ⚙ "stronger identity hold" (opts.longcatRefAll, ON unless sent as false)
+// sets ref_mask_frame_range to 0, so no frame is kept from attending to the photo. Over a
+// full minute (same seed) the drift stops accumulating: lip redness 30–52 s 100–111 vs
+// 112–123 with the official 3 (photo 92), eye makeup and brows far closer at 32/49 s,
+// seams unchanged. The price, accepted by the user after watching both: ~30% less motion
+// in the second half and five 0.1–0.4 s moments that settle into the photo's own pose
+// (the repeated-motion effect the official mask exists to prevent). Off = official 3.
 const LONGCAT_WIN = 93;                            // official num_frames per window
 const LONGCAT_OVERLAP = 13;                        // official num_cond_frames
 const LONGCAT_STRIDE = LONGCAT_WIN - LONGCAT_OVERLAP; // 80 new frames per later window
@@ -7288,7 +7301,7 @@ function longcatWindows(total) {
   return wins;
 }
 
-function buildLongCatAvatar({ prompt, negative, comp, imageName, audioName, width, height, totalFrames, seed, attention = "sdpa", torchCompile = false }) {
+function buildLongCatAvatar({ prompt, negative, comp, imageName, audioName, width, height, totalFrames, seed, attention = "sdpa", torchCompile = false, refEveryFrame = true }) {
   const wins = longcatWindows(totalFrames);
   const genFrames = LONGCAT_WIN + LONGCAT_STRIDE * (wins.length - 1);
   const pos = prompt || "A person is talking to the camera, natural speech, lips moving in sync with the audio, natural head movement and facial expression.";
@@ -7327,7 +7340,7 @@ function buildLongCatAvatar({ prompt, negative, comp, imageName, audioName, widt
     const ei = {
       prev_latents: k === 0 ? ["11", 0] : [prevS, 0], audio_embeds: ["15", 0],
       num_frames: LONGCAT_WIN, overlap: k === 0 ? 1 : LONGCAT_OVERLAP, frames_processed: w.processed,
-      if_not_enough_audio: "pad_with_start", ref_frame_index: 10, ref_mask_frame_range: 3,
+      if_not_enough_audio: "pad_with_start", ref_frame_index: 10, ref_mask_frame_range: refEveryFrame ? 0 : 3,
     };
     if (k > 0) Object.assign(ei, { ref_latent: ["11", 0], prev_images: [prevD, 0], vae: ["5", 0] });
     wf[E] = { class_type: "WanVideoLongCatAvatarExtendEmbeds", inputs: ei };
@@ -10032,7 +10045,7 @@ async function generateComfyImage(req, res) {
         // the package is there; ⚙ torch.compile only where the wrapper has its settings node.
         const attention = (await comfyGpuInfo()).sage ? "sageattn" : "sdpa";
         const torchCompile = !!opts.torchCompile && await comfyHasNodes(["WanVideoTorchCompileSettings"]);
-        const built = buildLongCatAvatar({ prompt: hasAud ? prompt : "", negative: negative_prompt || "", comp, imageName, audioName: track.audioName, width: lw, height: lh, totalFrames, seed, attention, torchCompile });
+        const built = buildLongCatAvatar({ prompt: hasAud ? prompt : "", negative: negative_prompt || "", comp, imageName, audioName: track.audioName, width: lw, height: lh, totalFrames, seed, attention, torchCompile, refEveryFrame: opts.longcatRefAll !== false });
         workflow = built.workflow;
         // The speech file is the soundtrack donor: the merge lays it, unsliced and at its
         // original quality, over the joined windows (-shortest trims it to the picture).
