@@ -131,6 +131,9 @@ export const dom = {
   comfyParamUpscaleDenoise: document.querySelector("#comfyParamUpscaleDenoise"),
   comfyParamUpscaleModel: document.querySelector("#comfyParamUpscaleModel"),
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),
+  comfyParamLongcatRefAll: document.querySelector("#comfyParamLongcatRefAll"),
+  comfyParamTtsSpeed: document.querySelector("#comfyParamTtsSpeed"),
+  comfyParamLongcatAudioScale: document.querySelector("#comfyParamLongcatAudioScale"),
   comfyParamScailMemory: document.querySelector("#comfyParamScailMemory"),
   comfyParamVideoCodec: document.querySelector("#comfyParamVideoCodec"),
   comfyParamVideoCrf: document.querySelector("#comfyParamVideoCrf"),
@@ -144,6 +147,7 @@ export const dom = {
   comfyParamQwen21Cache: document.querySelector("#comfyParamQwen21Cache"),
   comfyParamQwen21CacheDtype: document.querySelector("#comfyParamQwen21CacheDtype"),
   comfyParamFlux3Upsample: document.querySelector("#comfyParamFlux3Upsample"),
+  comfyParamH3ImagePe: document.querySelector("#comfyParamH3ImagePe"),
   comfyParamNoAudio: document.querySelector("#comfyParamNoAudio"),
   comfyParamH3RefSize: document.querySelector("#comfyParamH3RefSize"),
   comfyParamH3Keyframes: document.querySelector("#comfyParamH3Keyframes"),
@@ -244,7 +248,6 @@ export const dom = {
   pdfEngineLabel: document.querySelector("#pdfEngineLabel"),
   pdfEngineSelect: document.querySelector("#pdfEngineSelect"),
   pdfEngineOptMineru: document.querySelector("#pdfEngineOptMineru"),
-  pdfEngineOptUnlimited: document.querySelector("#pdfEngineOptUnlimited"),
   embedModelSelect: document.querySelector("#embedModelSelect"),
   libraryDistillToggle: document.querySelector("#libraryDistillToggle"),
   libraryRerankToggle: document.querySelector("#libraryRerankToggle"),
@@ -254,10 +257,7 @@ export const dom = {
   libraryAskTopK: document.querySelector("#libraryAskTopK"),
   libraryAskImages: document.querySelector("#libraryAskImages"),
   libraryAskBudget: document.querySelector("#libraryAskBudget"),
-  memoryList: document.querySelector("#memoryList"),
-  memoryInput: document.querySelector("#memoryInput"),
-  memoryAddBtn: document.querySelector("#memoryAddBtn"),
-  memoryExtractBtn: document.querySelector("#memoryExtractBtn"),
+  memoryManageBtn: document.querySelector("#memoryManageBtn"),
   dailyGreetingToggle: document.querySelector("#dailyGreetingToggle"),
   dailyGreetingTime: document.querySelector("#dailyGreetingTime"),
   idleNudgeToggle: document.querySelector("#idleNudgeToggle"),
@@ -307,6 +307,7 @@ export const state = {
   comfyVideoInModels: new Set(),     // ComfyUI video models that need a SOURCE video (fps follows source)
   comfyVideoOptionalModels: new Set(), // …of those, the ones a source video is OPTIONAL for (bernini: image alone → i2v)
   comfyAudioInModels: new Set(),     // …video-in models that ALSO need a SPEECH AUDIO file (InfiniteTalk dubbing)
+  comfySpeakModels: new Set(),       // "photo speaks" models: no audio attached → the raw prompt is read by the TTS
   comfyMultiImageModels: new Set(),  // ComfyUI edit models that accept 2-3 reference images
   comfyRefMaskModels: new Set(),     // models whose attachments are REFERENCES → each staged image gets a 🖌 subject cutout
   foldNextCommandBubble: false,      // set by the ▶ chip on a ```imagine block: the command bubble the next send creates is a RECEIPT of a prompt already on screen (the draft right above it), so it arrives folded — collapsed, and out of the LLM context. One-shot: consumed by the next sendMessage

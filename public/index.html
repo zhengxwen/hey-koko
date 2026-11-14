@@ -6,6 +6,18 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Hey-Koko</title>
+    <!-- Tab icon = the app icon. The home-screen icons are a full-bleed, opaque cut of it:
+         iOS paints transparent pixels black and applies its own rounded mask. -->
+    <link rel="icon" type="image/png" sizes="128x128" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- "Add to Home Screen" (iPad over `tailscale serve`): open as a standalone app. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Hey-Koko" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="theme-color" content="#f8fafb" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1a1b1e" media="(prefers-color-scheme: dark)" />
     <script>
       // Anti-FOUC: apply theme before CSS loads to prevent flash
       (function() {
@@ -267,7 +279,6 @@
             <span id="pdfEngineLabelText">PDF import</span>
             <select id="pdfEngineSelect">
               <option value="mineru" id="pdfEngineOptMineru" selected hidden>MinerU</option>
-              <option value="unlimited" id="pdfEngineOptUnlimited" hidden>Unlimited-OCR</option>
               <option value="pdfjs" id="pdfEngineOptPdfjs">Fast (text only)</option>
             </select>
           </label>
@@ -354,16 +365,14 @@
 
           <hr class="settingDivider" />
 
+          <!-- The list, add row and "Extract from chat" live in a dialog (memory-dialog.js);
+               the button label (with the count) is set by refreshMemoryManageBtn(). -->
           <div id="memoryLabel" class="memorySetting">
             <div class="memoryHeader">
               <span id="memoryLabelText">Long-term memory</span>
-              <button id="memoryExtractBtn" type="button" class="secondary memoryExtractBtn" title="Let the model extract key facts from the current chat into memory">Extract from chat</button>
+              <button id="memoryManageBtn" type="button" class="secondary memoryManageBtn" aria-haspopup="dialog">Manage…</button>
             </div>
-            <div id="memoryList" class="memoryList"></div>
-            <div class="memoryAddRow">
-              <input id="memoryInput" type="text" placeholder="Add something to remember…" autocomplete="off" />
-              <button id="memoryAddBtn" type="button" class="secondary">Add</button>
-            </div>
+            <p class="hint" id="memoryHint">Facts about you that every chat keeps in mind.</p>
           </div>
 
           <hr class="settingDivider" />
@@ -1075,7 +1084,7 @@
             <span id="comfyParamH3ChainAudioXfadeLabel" title="MiniMax H3, several /imagine lines joined into one video only. Crossfades the AUDIO over 30 ms at every join, using the overlap the next segment re-renders, so the sound never shifts against the picture. Off = the trimmed audio tracks are butted end to end. The picture is joined the same way either way.">Audio crossfade at joins (H3 chain)</span>
           </label>
           <label>
-            <span id="comfyParamH3ClipLabel" title="MiniMax H3 only. Which build of the Qwen3-VL-32B text encoder reads your prompt. The three tiers are 15.7 GB (nvfp4_awq), 27.1 GB (int8_convrot) and 51.5 GB (bf16) — on a box where that budget competes with the 21-40 GB diffusion model, this is a real choice, and it is independent of the model precision above (bf16 model + nvfp4 encoder is a legitimate mix). Auto prefers a quantised build over the unquantised one.">H3 text encoder</span>
+            <span id="comfyParamH3ClipLabel" title="MiniMax H3 and MiniMax H3 Image only. Which build of the Qwen3-VL-32B text encoder reads your prompt. The three tiers are 15.7 GB (nvfp4_awq), 27.1 GB (int8_convrot) and 51.5 GB (bf16) — on a box where that budget competes with the 21-40 GB diffusion model, this is a real choice, and it is independent of the model precision above (bf16 model + nvfp4 encoder is a legitimate mix). Auto prefers a quantised build over the unquantised one, and the official encoder for MiniMax's own weights and H3 Image; for the uncensored 10Eros grafts it prefers the heretic (refusals-removed) build. Any build can still be picked here by hand.">H3 text encoder</span>
             <select id="comfyParamH3Clip"></select>
           </label>
           <label>
@@ -1208,6 +1217,10 @@
             <input id="comfyParamFlux3Upsample" type="checkbox" checked />
             <span id="comfyParamFlux3UpsampleLabel">Prompt upsampler (FLUX 3)</span>
           </label>
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="MiniMax H3 Image only: before rendering, a Qwen3.5-9B language model rewrites your request into the detailed English description of the whole picture that MiniMax-H3-Image expects, using MiniMax's own expander prompts (any language in, English out; quoted text you want in the picture stays as written). With nothing attached it also picks the aspect ratio when you have not set a size; with pictures attached it looks at them and writes the edit around what is in them. It thinks before answering: on a DGX Spark that adds about a minute to text→image and up to two minutes to an edit. The description it wrote is shown under the result. Turn it off to send your own detailed description exactly as typed.">
+            <input id="comfyParamH3ImagePe" type="checkbox" checked />
+            <span id="comfyParamH3ImagePeLabel">Prompt expander (H3 Image)</span>
+          </label>
           <button id="comfyBoxBtn" type="button" class="secondary" title="FLUX 3 Klein only: drag boxes where things should go and say what each one is (over the first attached picture for an edit, or a blank canvas). Same as the --box flag.">🔲 <span id="comfyBoxLabel">Draw layout boxes</span></button>
           <!-- 3D camera picker (Qwen 2511 Multiple-Angles). The LoRA knows exactly 96
                poses, so this is a PICKER over a discrete grid rather than a free orbit:
@@ -1265,9 +1278,21 @@
             <input id="comfyParamPhantomTurbo" type="checkbox" />
             <span id="comfyParamPhantomTurboLabel">Phantom turbo (8 steps, drops dual-CFG subject guidance)</span>
           </label>
-          <label class="checkboxLabel isMultiline comfyParamCheck" title="Wan Animate & SCAIL-2: compile the sampler (inductor). DON'T EXPECT A SPEED-UP — on SCAIL-2 it measured 1.01x, i.e. nothing. Controlled measurement (DGX Spark GB10, 432x768, 3 chained segments, 3 runs per config with the first discarded): 410s uncompiled, 404s compiled. Compiling WITHOUT also disabling ComfyUI's weight paging measured 414s — 1% SLOWER than not compiling at all, so the compile overhead is real while the gain is not. An earlier version of this tooltip claimed 1.5–2x; that came from comparing a cold first run against a warmed-up one and does not survive a controlled test. Why there is nothing to win: SCAIL-2's time is dominated by attention, which this does not touch — cost scales as roughly pixels^1.45, so the linear layers compilation can reach are a shrinking minority as resolution rises. The costs are real though: a one-time compile per SHAPE, and the short LAST segment of a clip has a different shape so it recompiles for just a few frames. Kept as an option because that measurement is SCAIL-2 on torch 2.13 only — Wan Animate was never measured, and another torch / ComfyUI / GPU combination may behave differently; if you benchmark it on yours, trust your numbers over this text. VRAM: enabling it also disables ComfyUI's on-demand weight paging (that paging is what breaks compilation), so the model stays fully resident — fine on a big-memory box, but on a tight card this can OOM where the same job otherwise fits. Needs the KJNodes pack; without it the run proceeds uncompiled instead of failing. Wan Animate additionally auto-shortens its segments when this is on.">
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="Wan Animate, SCAIL-2 & LongCat-Avatar: compile the sampler (inductor). DON'T EXPECT A SPEED-UP — on SCAIL-2 it measured 1.01x, i.e. nothing. Controlled measurement (DGX Spark GB10, 432x768, 3 chained segments, 3 runs per config with the first discarded): 410s uncompiled, 404s compiled. Compiling WITHOUT also disabling ComfyUI's weight paging measured 414s — 1% SLOWER than not compiling at all, so the compile overhead is real while the gain is not. An earlier version of this tooltip claimed 1.5–2x; that came from comparing a cold first run against a warmed-up one and does not survive a controlled test. Why there is nothing to win: SCAIL-2's time is dominated by attention, which this does not touch — cost scales as roughly pixels^1.45, so the linear layers compilation can reach are a shrinking minority as resolution rises. The costs are real though: a one-time compile per SHAPE, and the short LAST segment of a clip has a different shape so it recompiles for just a few frames. Kept as an option because that measurement is SCAIL-2 on torch 2.13 only — Wan Animate was never measured, and another torch / ComfyUI / GPU combination may behave differently; if you benchmark it on yours, trust your numbers over this text. VRAM: enabling it also disables ComfyUI's on-demand weight paging (that paging is what breaks compilation), so the model stays fully resident — fine on a big-memory box, but on a tight card this can OOM where the same job otherwise fits. Needs the KJNodes pack; without it the run proceeds uncompiled instead of failing. Wan Animate additionally auto-shortens its segments when this is on. LongCat-Avatar is the exception where it measurably helps: on an RTX 5090 (with SageAttention) each step went 9.71s → 8.89s (about 8%), against roughly 30s of one-time compiling — a net gain from about 15s of speech up, around 2 minutes saved on a 1-minute clip. LongCat uses the WanVideoWrapper's own compile settings and needs Triton on the ComfyUI machine.">
             <input id="comfyParamTorchCompile" type="checkbox" />
-            <span id="comfyParamTorchCompileLabel">torch.compile speedup (Wan Animate / SCAIL-2)</span>
+            <span id="comfyParamTorchCompileLabel">torch.compile the sampler (Wan Animate / SCAIL-2 / LongCat)</span>
+          </label>
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="LongCat-Avatar only, ON by default. On long clips the face slowly drifts away from the photo (typically heavier-looking eye makeup, redder lips, thinner brows), because each 3.2-second window is painted on from the end of the previous one. This lets every frame see the photo; the official recipe instead keeps a few frames in every window from looking at it, so the model does not copy the photo's pose and repeat the same motion. Measured on a 1-minute clip, same seed: with it on, the drift stops building up (lip colour stays far closer to the photo through the end, eye makeup and brows clearly closer at 32 s and 49 s; some eye makeup still shows by the end). The price: about 30% less movement in the second half of the minute, and a few brief moments (0.1-0.4 s) where the face settles back into the photo's own pose. Turn it off for the official behaviour and livelier motion on long clips. No cost in speed or VRAM.">
+            <input id="comfyParamLongcatRefAll" type="checkbox" checked />
+            <span id="comfyParamLongcatRefAllLabel">Stronger identity hold (LongCat)</span>
+          </label>
+          <label title="Talking-photo models (InfiniteTalk, LTX-2.3, LongCat-Avatar), when the text is read by the local TTS: how fast it speaks. Empty = 1.0, the voice's own pace; 0.9 = 10% slower, 1.1 = 10% faster (0.5–2). The video follows the speech, so slower speech also means a longer clip and a longer render. Pitch stays the same. Has no effect when you attach an audio file — that is used as recorded.">
+            <span id="comfyParamTtsSpeedLabel">Speech speed (talking photo)</span>
+            <input id="comfyParamTtsSpeed" type="number" min="0.5" max="2" step="0.05" placeholder="1.0" />
+          </label>
+          <label title="LongCat-Avatar only: how strongly the speech drives the picture. Empty = 1.0 (the official value). Lower it a little when the person moves too much. Measured on a 9-second clip, same seed: 0.7 gave about 8% less body movement and 15% less head sway with the lip sync intact; 0.5 about the same movement as 0.7, the pose staying a bit closer to the photo, the lips following the speech slightly less. Below 0.5 it breaks: at 0.3 the mouth kept moving during pauses and the body did not calm down. Range 0.5–1.5 (above 1.0 untested). Expect a modest effect — the photo matters far more: the same speech on a photo with open hands in view gave about twice the body movement of one with the hands clasped.">
+            <span id="comfyParamLongcatAudioScaleLabel">Audio drive strength (LongCat)</span>
+            <input id="comfyParamLongcatAudioScale" type="number" min="0.5" max="1.5" step="0.05" placeholder="1.0" />
           </label>
           <label title="All video models: the codec the saved mp4 is encoded with (VideoHelperSuite, straight from frames — no re-encode). H.264 (libx264) is the default and plays in every browser and device. H.265/HEVC (libx265) is smaller for the same look on detailed / higher-resolution footage, but needs HEVC support to play: it works in Safari, and in Chrome/Edge on systems with a hardware HEVC decoder (common on recent machines) — but NOT in Firefox or where there's no decoder. This app checks YOUR current browser and asks before using H.265 if it can't play it — so it isn't Mac-only. Either way the audio track is kept, and the file is downloadable from the bubble even if it can't preview here.">
             <span id="comfyParamVideoCodecLabel">Video codec</span>

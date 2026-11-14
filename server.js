@@ -63,6 +63,7 @@ const gallery = require("./server/gallery"); // on-disk home for generated/uploa
 const { handleVideoEdit, handleGrabFrame } = require("./server/video-edit"); // trim/concat gallery clips locally (ffmpeg)
 const skills = require("./server/skills");   // model prompt-writing guides for /skill
 const feeds = require("./server/feeds");    // news-feeds.md: news subscription library
+const comfyRelay = require("./server/comfy-relay"); // ComfyUI progress socket + Stop, bridged same-origin
 
 console.log("[hey-koko] All modules loaded, starting server...");
 
@@ -629,6 +630,9 @@ const server = http.createServer((req, res) => {
   // One still out of one clip (first / playhead / last), filed into the gallery.
   if (req.method === "POST" && req.url === "/api/video-edit/frame") { handleGrabFrame(req, res); return; }
 
+  // The Stop button's ComfyUI /interrupt, sent from here (server/comfy-relay.js).
+  if (req.method === "POST" && req.url === "/api/comfy-interrupt") { comfyRelay.handleInterrupt(req, res); return; }
+
   if (req.method === "GET" && req.url.startsWith("/vendor/")) {
     vendor.serveVendor(req, res);   // disk first, else checksum-verified CDN fallback
     return;
@@ -642,6 +646,10 @@ const server = http.createServer((req, res) => {
   res.writeHead(405);
   res.end("Method not allowed");
 });
+
+// WebSocket upgrades: the page's ComfyUI progress/preview socket (/api/comfy-ws) is relayed
+// to ComfyUI from here; every other upgrade is refused.
+server.on("upgrade", comfyRelay.handleUpgrade);
 
 server.listen(config.PORT, "127.0.0.1", () => {
   console.log(`Local AI companion: http://127.0.0.1:${config.PORT}`);

@@ -615,6 +615,9 @@ function applyComfyModels(data) {
     state.comfyVideoInModels = new Set(videoModels.filter((m) => m.needsVideo).map((m) => m.name));
     // Of the video-in models, the ones that ALSO need a speech audio file (InfiniteTalk dubbing).
     state.comfyAudioInModels = new Set(videoModels.filter((m) => m.needsAudio).map((m) => m.name));
+    // "Photo speaks" models (InfiniteTalk, LongCat-Avatar): with no audio attached the RAW
+    // prompt is the text the server's TTS reads, so it travels apart as speechText.
+    state.comfySpeakModels = new Set(videoModels.filter((m) => m.speaks).map((m) => m.name));
     // …of which some (bernini) also run WITHOUT a source video (image→video), where
     // fps/length are the request's own again rather than the source's.
     state.comfyVideoOptionalModels = new Set(videoModels.filter((m) => m.videoOptional).map((m) => m.name));
@@ -1070,8 +1073,11 @@ export function resolveModelToken(token) {
 // "minimax" here does not misroute anything — it silently DROPS the model out of every
 // H3-gated branch, so the ⚙ panel loses its H3 knobs and the hint falls through to the
 // generic Stable-Diffusion line. The trailing "h3" requirement keeps TenStrip's separate
-// LTX-2.3 10Eros line (no "h3" in its filenames) out of this test.
-const H3_RE = /minimax.?h3|10eros.*h3/i;
+// LTX-2.3 10Eros line (no "h3" in its filenames) out of this test. The "(?!.?image)"
+// keeps MiniMax-H3-Image (a separate image model) out, same as the server.
+const H3_RE = /minimax.?h3(?!.?image)|10eros.*h3/i;
+// MiniMax-H3-Image — mirrors H3IMG_RE in server/comfy.js. Display-side only.
+const H3IMG_RE = /minimax.?h3.?image/i;
 // Twin of h3ReadsRefs in server/comfy.js. A 10Eros "hybrid" build fuses ref2va and fl2va
 // into one file, so its name carries neither task word — matching only /ref2va/ here hides
 // every reference control for exactly the weight that has the most of them. "ref-delta" is
@@ -1235,6 +1241,7 @@ function videoAutoDefaults(modelName) {
   if (m === "ltx25-upscale" || m.startsWith("ltx25-fx-")) return { fps: 24, length: 121, steps: 8, cfg: 1 };
   if (m === "ltx25-outpaint" || m === "ltx25-inpaint") return { fps: 24, length: 121, cfg: 1 };
   if (m === "ltx-foley") return { fps: 24, length: 89, steps: 30, cfg: 6 };
+  if (m === "ltx-ia2v") return { fps: 24, cfg: 1 }; // length follows the speech
   if (m === "ltx25-track") return { fps: 24, length: 121, steps: 8, cfg: 1 };
   // LTX-2.5 BEFORE the generic LTX test (its filenames match both): 24 fps, 5 s → 121
   // frames, always cfg 1 (distilled transformer). Steps still flip with the unseen
@@ -1277,6 +1284,7 @@ function comfyModelHint(name) {
   // Video, needs a source clip. scail BEFORE animate — see above.
   if (n === "infinitetalk") return t("oll_hint_infinitetalk");
   if (n === "infinitetalk_speak") return t("oll_hint_infinitetalkSpeak");
+  if (n === "longcat_avatar") return t("oll_hint_longcatAvatar");
   if (/scail/.test(n)) return /animate/.test(n) ? t("oll_hint_scail2Animate") : t("oll_hint_scail2Replace");
   if (/animate/.test(n)) return /replace/.test(n) ? t("oll_hint_animateReplace") : t("oll_hint_animateMove");
   // Bernini image tasks BEFORE the generic bernini branch — their sentinels all
@@ -1304,6 +1312,7 @@ function comfyModelHint(name) {
   if (n === "ltx25-outpaint") return t("oll_hint_ltx25Outpaint");
   if (n === "ltx25-inpaint") return t("oll_hint_ltx25Inpaint");
   if (n === "ltx-foley") return t("oll_hint_ltxFoley");
+  if (n === "ltx-ia2v") return t("oll_hint_ltxIa2v");
   if (n === "ltx25-track") return t("oll_hint_ltx25Track");
   if (LTX_RE.test(n)) return t("oll_hint_ltx");
   // Image edit (needs a reference image + an instruction).
@@ -1330,6 +1339,7 @@ function comfyModelHint(name) {
   // 2.1 before the base line: it matches the same pattern and is a different model.
   if (/qwen.?image.?2[._-]?1(?![0-9])/.test(n)) return t("oll_hint_qwen21");
   if (/qwen.?image/.test(n)) return t("oll_hint_qwenImage");
+  if (H3IMG_RE.test(n)) return t("oll_hint_h3image");
   // FLUX 3 before the generic /flux/ line (Flux.1), which matches it too.
   if (/flux.?3.*klein.*base/.test(n)) return t("oll_hint_flux3base");
   if (/flux.?3.*klein/.test(n)) return t("oll_hint_flux3");
@@ -1361,12 +1371,14 @@ export function syncComfyModelPickLabel() {
 function videoFamilyOf(name) {
   const n = (name || "").toLowerCase();
   if (/infinitetalk/.test(n)) return "infinitetalk";
+  if (/longcat/.test(n)) return "longcat";
   if (/scail/.test(n)) return "scail";
   if (/animate/.test(n)) return "animate";
   if (/phantom/.test(n)) return "phantom";
   if (/bernini/.test(n)) return "bernini";
   if (/union/.test(n)) return "ltxunion";            // before the generic /ltx/
   if (/msr/.test(n)) return "ltxmsr";                // before the generic /ltx/
+  if (/ia2v/.test(n)) return "ltxia2v";              // before the generic /ltx/
   if (/ltx|sulphur/.test(n)) return "ltx";
   if (/hunyuan/.test(n)) return "hunyuan";
   if (/fun.?vace/.test(n)) return "funvace";
@@ -1386,6 +1398,7 @@ function imageFamilyOf(name) {
   if (/boogu/.test(n)) return /turbo/.test(n) ? "booguturbo" : "boogubase";
   if (/qwen/.test(n)) return "qwenimage";
   if (/flux.?3.*klein/.test(n)) return "flux3";   // before /flux/, which is Flux.1's row
+  if (H3IMG_RE.test(n)) return "h3image";
   if (/flux/.test(n)) return "flux";
   if (/pony/.test(n)) return "pony";
   return null;
@@ -1693,6 +1706,7 @@ function comfyModelComponents(name) {
   if (n === "ltx25-outpaint") return "LTX-2.5 Outpaint · in-outpainting IC-LoRA · source fitted into the target canvas, padding = mask · two-stage: 8-step half-size → pixel blend → ×2 re-encode → 2-step refine · source audio frozen";
   if (n === "ltx25-inpaint") return "LTX-2.5 Inpaint · in-outpainting IC-LoRA · SAM2 tracks the 🎯 object → dilated mask · two-stage: 8-step half-size → pixel blend → ×2 re-encode → 2-step refine · source audio frozen";
   if (n === "ltx25-track") return "LTX-2.5 Motion Track · UNETLoader(distilled) + LTXICLoRALoader(motion-track) · --track trajectories → LTXVDrawTracks dot video → LTXAddVideoICLoRAGuide · optional start still (0.7) · 8-step single-stage (+audio)";
+  if (n === "ltx-ia2v") return "LTX-2.3 ia2v · CheckpointLoader(dev) + distilled LoRA 0.5 · speech → LTXVAudioVAEEncode, frozen by SetLatentNoiseMask(0) · photo → LTXVImgToVideoInplace 0.7/1.0 · two-stage: 8-step half-size → latent ×2 → 3-step refine";
   if (n === "ltx-foley") return "LTX-2.3 Foley V2A · CheckpointLoader(dev) + foley LoRA · video latent frozen, audio denoised (LTXVSetAudioVideoMaskByTime) · MultimodalGuider cfg 6 / STG block 29 · 30 steps";
   if (n === "ltx25-union") return "LTX-2.5 Union Control · UNETLoader(distilled) + LTXICLoRALoader(union-control) · LoadVideo→MoGe depth · LTXAddVideoICLoRAGuide · two-stage: 8-step at depth size → latent ×2 → 3-step refine (+audio)";
   if (n === "ltx25-ingredients") return "LTX-2.5 Ingredients · UNETLoader(distilled) + LTXICLoRALoader(ingredients) · references stitched into one sheet → LTXAddVideoICLoRAGuide (sheet on every frame) · 8-step single-stage (+audio)";
@@ -1722,6 +1736,7 @@ function comfyModelComponents(name) {
   if (/z.?image/.test(n)) return "Z-Image-Turbo · UNETLoader · CLIP qwen_3_4b(lumina2) · VAE ae · ModelSamplingAuraFlow · KSampler (8-step)";
   // FLUX 3 — ahead of the generic checkpoint line at the bottom, whose /flux/ test would
   // describe it as a Flux.1 checkpoint with FluxGuidance.
+  if (H3IMG_RE.test(n)) return "MiniMax H3 Image · UNETLoader · CLIP qwen3vl_32b(minimax) · VAE minimax_h3_image · prompt expander (TextGenerateV2, qwen3.5-9b, MiniMax's PE prompts; separate pass that also picks the aspect ratio) · MiniMaxH3ImageConditioning (pictures = <Picture 1>…) · KSampler 6-step euler/simple, cfg 1 (distilled) · 4 MP default, 16 MP native";
   if (/flux.?3.*klein.*base/.test(n)) return "FLUX 3 Klein Base · UNETLoader · CLIP qwen3vl_4b(flux3) · VAE flux2 · prompt upsampler (TextGenerate, qwen3.5-9b) · ReferenceMultiLatent (up to 10 references) · ModelSamplingFlux (alpha 16) · KSampler 50-step euler/simple, cfg 4";
   if (/flux.?3.*klein/.test(n)) return "FLUX 3 Klein · UNETLoader · CLIP qwen3vl_4b(flux3) · VAE flux2 · prompt upsampler (TextGenerate, qwen3.5-9b) · ReferenceMultiLatent (up to 10 references) · ModelSamplingFlux (alpha 16) · KSampler 16-step euler/simple, cfg 1 (distilled)";
   if (/boogu/.test(n)) return "boogu · UNETLoader · CLIP qwen3vl(boogu) · VAE flux1 · ModelSamplingAuraFlow · KSampler";
@@ -2034,10 +2049,13 @@ export function updateComfyParamVisibility() {
   // Video codec + its CRF: every video model (the tail rewrite is builder-agnostic).
   for (const el of [dom.comfyParamVideoCodec, dom.comfyParamVideoCrf]) setVis(el, video);
   if (video) syncVideoCrfPlaceholder();
-  // torch.compile: Wan Animate (both modes) AND SCAIL-2 — both chain segments, which is
-  // what makes the one-time compile pay off. Relight strength stays Wan-Animate-only
-  // (SCAIL-2 has no relight LoRA).
-  setVis(dom.comfyParamTorchCompile, animate || scail2);
+  // torch.compile: Wan Animate (both modes), SCAIL-2 and LongCat-Avatar — all chain
+  // segments/windows, which is what makes the one-time compile pay off. Relight strength
+  // stays Wan-Animate-only (SCAIL-2 has no relight LoRA).
+  setVis(dom.comfyParamTorchCompile, animate || scail2 || m === "longcat_avatar");
+  setVis(dom.comfyParamLongcatRefAll, m === "longcat_avatar", ".comfyParamCheck");
+  setVis(dom.comfyParamTtsSpeed, !!state.comfySpeakModels?.has(m));   // TTS pace for talking-photo models
+  setVis(dom.comfyParamLongcatAudioScale, m === "longcat_avatar");
   setVis(dom.comfyParamRelight, animate);
   // Replace only: which person in the source to swap out.
   // Inpaint picks its object the same way Replace does: one 🎯 click on the source.
@@ -2072,7 +2090,8 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamH3Keyframes, H3_RE.test(m) && H3_REF_RE.test(m));
   // The H3 text-encoder picker applies to BOTH weights (they share the encoder). Hidden
   // when only one build is installed — a menu whose sole entry equals Auto is noise.
-  setVis(dom.comfyParamH3Clip, H3_RE.test(m) && (state.comfyH3Encoders || 0) > 1);
+  // MiniMax H3 Image reads prompts through the same encoder, so it gets the picker too.
+  setVis(dom.comfyParamH3Clip, (H3_RE.test(m) || H3IMG_RE.test(m)) && (state.comfyH3Encoders || 0) > 1);
   // Sol-Attn: only the H3 builder wires it, same gate as EasyCache. Whether the node pack
   // is actually installed is NOT checked here — with several workers it can be present on
   // one and missing on another, and only the server knows which box a job lands on. It
@@ -2101,7 +2120,7 @@ export function updateComfyParamVisibility() {
   // trained on the 2.3 architecture, and the server ignores the field for 2.5 —
   // showing it would be a dead control. The union/ingredients IC-LoRAs mount
   // automatically server-side, same policy as 2.3's MSR/union.
-  const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union" && m.toLowerCase() !== "ltx-foley" && !/ltx.?2[._]5|ltx25/.test(m.toLowerCase());
+  const ltx = video && LTX_RE.test(m.toLowerCase()) && m.toLowerCase() !== "ltx-union" && m.toLowerCase() !== "ltx-foley" && m.toLowerCase() !== "ltx-ia2v" && !/ltx.?2[._]5|ltx25/.test(m.toLowerCase());
   for (const el of [dom.comfyParamLtxLora, dom.comfyParamLtxLoraStrength]) setVis(el, ltx);
   if (ltx) syncLtxLoraOptions(m);
   // Krea-2 — the style LoRA slot and its strength. The LoRA picker is hidden on the
@@ -2152,12 +2171,17 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamQwen21Rgba, qwen21, ".comfyParamCheck");
   // FLUX 3 Klein's upsampler switch — both checkpoints (distilled and base) run it.
   setVis(dom.comfyParamFlux3Upsample, /flux.?3.*klein/i.test(m), ".comfyParamCheck");
+  setVis(dom.comfyParamH3ImagePe, H3IMG_RE.test(m), ".comfyParamCheck");
+  // MiniMax H3 Image is distilled to 6 steps with no guidance and no negative prompt (the
+  // official server rejects all three, and the server pins them): nothing in the sampler
+  // block reaches its graph.
+  const h3img = H3IMG_RE.test(m);
   // The 3D camera dial is its own widget, not a labelled field — setVis falls back to
   // the element itself when there is no wrapping <label>.
   setVis(dom.comfyCamPicker, m === "qwen-angles");
   setVis(dom.comfyParamCamStrength, m === "qwen-angles");
   // Image-edit / txt2img only.
-  setVis(dom.comfyParamImageCfg, diffusion && !video && !mesh && !music);
+  setVis(dom.comfyParamImageCfg, diffusion && !video && !mesh && !music && !h3img);
   // Quantisation preference — diffusion models only (the upscale pipelines load an
   // upscale model, which has no precision variants; the mesh chains ship one file each).
   setVis(dom.comfyParamPrecision, diffusion && !mesh);
@@ -2172,20 +2196,20 @@ export function updateComfyParamVisibility() {
   // model then (same guard as cfg / fps above).
   const negTunable = !video || !state.comfyNegativeTunable?.size || state.comfyNegativeTunable.has(m);
   // Music 3 has no negative branch either — its negative IS the zeroed positive.
-  setVis(dom.comfyParamNegative, diffusion && !mesh && !music && negTunable);
+  setVis(dom.comfyParamNegative, diffusion && !mesh && !music && negTunable && !h3img);
   // Guidance + img2img denoise are IMAGE-only: no video builder accepts either
   // (resolveVideoConfig doesn't even carry them).
   // FLUX 3 Klein reads neither: it has no guidance embedding (the field is Flux.1's
   // FluxGuidance — "Flux only" on the label invites the wrong reading), and it takes
   // pictures as references, never as a VAE-encoded start latent to denoise.
   const flux3m = /flux.?3.*klein/i.test(m);
-  for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video && !mesh && !music && !flux3m);
+  for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video && !mesh && !music && !flux3m && !h3img);
   // Sampler / scheduler / steps / cfg: honoured by every image model, but only by the
   // preset-driven video models. SCAIL-2 / Wan Animate / bernini hardcode a schedule
   // bound to their distill LoRA and ignore these — so hide rather than lie. Of the
   // mesh chains only Hunyuan3D runs a real KSampler.
   const samplerTunable = !video || !!(state.comfySamplerTunable && state.comfySamplerTunable.has(m));
-  const shows = (diffusion && samplerTunable && !mesh) || meshSampler;
+  const shows = ((diffusion && samplerTunable && !mesh) || meshSampler) && !h3img;
   for (const el of [dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps]) setVis(el, shows);
   // cfg additionally requires the model to actually have a guidance scale (see above).
   // Empty set = a server too old to send the flag; don't hide cfg for every video model
@@ -2367,6 +2391,8 @@ function initComfyParamsModal() {
   initCamPicker(dom, state, saveCurrentSettings);
   if (!modal) return;
   const fields = [
+    dom.comfyParamTtsSpeed,
+    dom.comfyParamLongcatAudioScale,
     dom.comfyParamPositive,
     dom.comfyParamNegative,
     dom.comfyParamSampler,
@@ -2457,6 +2483,7 @@ function initComfyParamsModal() {
     el?.addEventListener("change", () => saveCurrentSettings());
   }
   dom.comfyParamTorchCompile?.addEventListener("change", () => saveCurrentSettings());
+  dom.comfyParamLongcatRefAll?.addEventListener("change", () => saveCurrentSettings());
   // The window-size caution depends on the chosen multiplier, so it has to re-evaluate on
   // change — open() alone would only catch it when the panel is reopened.
   dom.comfyParamScailWindow?.addEventListener("change", updateScailWindowWarning);
@@ -2479,6 +2506,7 @@ function initComfyParamsModal() {
   dom.comfyParamKeepBackground?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamMogeSubject?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamFlux3Upsample?.addEventListener("change", () => saveCurrentSettings());
+  dom.comfyParamH3ImagePe?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamPanoRefine?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamPanoModel?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamPanoProj?.addEventListener("change", () => saveCurrentSettings());
@@ -2523,6 +2551,7 @@ function initComfyParamsModal() {
   dom.comfyParamsReset?.addEventListener("click", () => {
     for (const el of fields) if (el) el.value = "";
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = false;
+    if (dom.comfyParamLongcatRefAll) dom.comfyParamLongcatRefAll.checked = true; // default on (1-minute test)
     if (dom.comfyParamBerniniMode) dom.comfyParamBerniniMode.value = "";
     if (dom.comfyParamBerniniTask) dom.comfyParamBerniniTask.value = "";
     if (dom.comfyParamDanceStyle) dom.comfyParamDanceStyle.value = "";
@@ -2543,6 +2572,7 @@ function initComfyParamsModal() {
     if (dom.comfyParamSolTau) dom.comfyParamSolTau.value = "";
     if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = true; // bit-exact, defaults ON
     if (dom.comfyParamFlux3Upsample) dom.comfyParamFlux3Upsample.checked = true; // BFL: always run it
+    if (dom.comfyParamH3ImagePe) dom.comfyParamH3ImagePe.checked = true;           // both official templates run it
     if (dom.comfyParamH3ChainMode) dom.comfyParamH3ChainMode.value = "";
     if (dom.comfyParamH3ChainAudioXfade) dom.comfyParamH3ChainAudioXfade.checked = true; // defaults ON
     if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = false;

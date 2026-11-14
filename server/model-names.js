@@ -182,9 +182,11 @@ const SENTINEL_IDS = {
   "ltx25-outpaint": "ltx2.5-22b:outpaint",
   "ltx25-inpaint": "ltx2.5-22b:inpaint",
   "ltx-foley": "ltx2.3-22b:foley",
+  "ltx-ia2v": "ltx2.3-22b:ia2v",
   "ltx25-track": "ltx2.5-22b:track",
   infinitetalk: "infinitetalk:dub",
   infinitetalk_speak: "infinitetalk:speak",
+  longcat_avatar: "longcat-avatar-1.5:speak",
   "video-enhance": "video-enhance",
   "image-upscale": "image-upscale",
   triposplat: "triposplat",
@@ -260,6 +262,13 @@ const FILE_ID_RULES = [
   // model. The DiT is the only file that reaches an id: its text encoder and audio VAE
   // are companions resolved off disk, never dropdown entries.
   [/minimax.?music.?3/, "minimax-music3"],
+  // MiniMax-H3-Image BEFORE every H3 video rule: "minimax_h3_image_pruned_int8_convrot"
+  // matches the bare /minimax.?h3/ below and would take the "minimax-h3-t2v" id — the same
+  // id and the same precision as the stock fl2va int8 weight, so the two would fold into
+  // one picker row and the precision menu could hand the video graph an image DiT.
+  // The h3-prompt-writing skill lists this id under excludeModels: its "minimax-h3"
+  // prefix would otherwise inject the VIDEO prompt guide for an image model.
+  [/minimax.?h3.?image/, "minimax-h3-image"],
   // Ref-Delta BEFORE the task-word rules: these builds carry the ref2va capability as a
   // rank-1024 SVD of the reference delta baked onto the fl2va base, so the filename says
   // "refdelta" / "Ref-Delta" and never "ref2va" — left to the rules below they take the
@@ -354,6 +363,7 @@ const ID_LABELS = {
   "phantom-14b": "Phantom-Wan 14B",
   "phantom-1.3b": "Phantom-Wan 1.3B",
   "minimax-music3": "MiniMax Music 3 (text → song)",
+  "minimax-h3-image": "MiniMax H3 Image",
   "minimax-h3-t2v": "MiniMax H3 (t2v / i2v)",
   "minimax-h3-r2v": "MiniMax H3 (r2v)",
   "minimax-h3:refdelta": "MiniMax H3 Ref-Delta Fused (all modes)",
@@ -370,6 +380,7 @@ const ID_LABELS = {
   "ltx2.5-22b:outpaint": "LTX-2.5 22B Outpaint",
   "ltx2.5-22b:inpaint": "LTX-2.5 22B Inpaint",
   "ltx2.3-22b:foley": "LTX-2.3 22B Foley (video → sound)",
+  "ltx2.3-22b:ia2v": "LTX-2.3 22B (photo speaks)",
   "ltx2.5-22b:track": "LTX-2.5 22B Motion Track",
   "ltx2.3-22b:msr": "LTX-2.3 22B MSR",
   "ltx2.3-22b:union": "LTX-2.3 22B Union",
@@ -381,6 +392,7 @@ const ID_LABELS = {
   trellis2: "TRELLIS.2",
   "infinitetalk:dub": "InfiniteTalk (dub / lip-sync)",
   "infinitetalk:speak": "InfiniteTalk (photo speaks)",
+  "longcat-avatar-1.5:speak": "LongCat-Video-Avatar 1.5 (photo speaks)",
   "flux1-dev": "Flux.1 dev",
   "flux1-kontext": "Flux.1 Kontext",
   "flux3-klein": "FLUX 3 Klein",
@@ -434,7 +446,13 @@ const ID_LABELS = {
 // is a single line, but the number has to come from the model card or a measured run,
 // not from what looks plausible.
 const ID_MAX_SIZE = [
-  [/^minimax-h3/, "1376x768"],
+  // Not minimax-h3-image: a separate image model whose envelope (4-20 MP per the official
+  // ComfyUI templates) is nothing like the video model's.
+  [/^minimax-h3(?!-image)/, "1376x768"],
+  // MiniMax-H3-Image's model card: "It generates images of about 16 megapixels at every
+  // aspect ratio, from 4096x4096 (1:1) to 6272x2688 (21:9)" and "generally gives the best
+  // results at around 16 MP" (working range about 4-20 MP).
+  [/^minimax-h3-image/, "4096x4096"],
   // The graft changes no tensor shape — verified by diffing all 532 shared tensors against
   // the stock checkpoint (0 mismatches) — so its native envelope is H3's.
   [/^10eros-max-h3/, "1376x768"],

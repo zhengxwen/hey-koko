@@ -6,48 +6,39 @@
 // backends are best-effort (a failure returns [] → the deck keeps its text + crop figures).
 //   PDF  → pypdfium2 (server/render_slides.py, run with config.slidesPython — MinerU's venv).
 //   pptx → LibreOffice `soffice --convert-to pdf` then the SAME pypdfium2 path, then
-//          officecli, then PowerPoint. That order is measured, not assumed (one real
-//          4-slide research deck, M-series Mac): LibreOffice matches PowerPoint's layout
-//          (autofit titles, nested bullet indents) and converts a whole deck in one ~3.7s
-//          call, while officecli re-implements layout in its own HTML engine — good enough
-//          to feed a vision model, but it drops autofit and list indentation, and costs
-//          ~2.6s PER PAGE. So LibreOffice stays preferred where installed; officecli is the
-//          19 MB zero-install fallback that turns "no page images at all" into "usable page
+//          officecli. That order is measured, not assumed (one real 4-slide research
+//          deck, M-series Mac): LibreOffice matches PowerPoint's layout (autofit titles,
+//          nested bullet indents) and converts a whole deck in one ~3.7s call, while
+//          officecli re-implements layout in its own HTML engine — good enough to feed a
+//          vision model, but it drops autofit and list indentation, and costs ~2.6s PER
+//          PAGE. So LibreOffice stays preferred where installed; officecli is the 19 MB
+//          zero-install fallback that turns "no page images at all" into "usable page
 //          images" (LibreOffice is an 800 MB download).
-//          PowerPoint via AppleScript stays last: on recent macOS builds its sandbox
-//          silently drops `save`/export (verified: open+read work, JPG/PDF/copy saves write
-//          nothing), so it usually yields nothing.
+//          There is no PowerPoint path: on recent macOS builds its sandbox silently drops
+//          AppleScript `save`/export (verified: open+read work, JPG/PDF/copy saves write
+//          nothing), so it only ever produced nothing.
 //   docx → officecli only. There was no Word page-image path before it.
 // Runs automatically for slide imports; no-ops when no backend is present. See P3 in the plan.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFile, spawn, execFileSync } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const config = require("./config");
+const { findTool } = require("./find-tool");
 const officecli = require("./officecli");   // zero-install pptx fallback + the only docx renderer
 
 const renderScript = path.join(__dirname, "render_slides.py");
-const POWERPOINT_APP = "/Applications/Microsoft PowerPoint.app";
 
-function findSoffice() {
-  const candidates = [
-    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
-    "/opt/homebrew/bin/soffice", "/usr/local/bin/soffice", "/usr/bin/soffice",
-    "/opt/libreoffice/program/soffice",
-  ];
-  for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch {} }
-  try {
-    const finder = process.platform === "win32" ? "where" : "which";
-    const first = execFileSync(finder, ["soffice"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().split(/\r?\n/)[0];
-    if (first) return first;
-  } catch {}
-  return "";
-}
+// LibreOffice's installers don't put soffice on PATH (the Homebrew cask does, as a
+// wrapper script), so look inside the app bundles too.
+const SOFFICE_CANDIDATES = [
+  "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+  "/opt/libreoffice/program/soffice",
+];
 
 let hasPdfRender = false;
 let hasPptxRender = false;
 let sofficePath = "";
-let hasPowerPoint = false;
 let detectDone = false;
 
 (async function detect() {
@@ -66,16 +57,13 @@ let detectDone = false;
       console.log(`[render-slides] PDF page-render unavailable (${err && err.message}); pypdfium2/PIL not importable`);
     }
   }
-  // pptx: LibreOffice (reliable, preferred) → PowerPoint (fallback). Both ultimately need
-  // the PDF renderer (LibreOffice makes a PDF; PowerPoint would export images directly but
-  // usually can't — see header). So pptx render also requires hasPdfRender for the LO path.
-  sofficePath = findSoffice();
-  hasPowerPoint = process.platform === "darwin" && fs.existsSync(POWERPOINT_APP);
-  hasPptxRender = (!!sofficePath && hasPdfRender) || officecli.available() || hasPowerPoint;
+  // pptx: LibreOffice (preferred) → officecli (fallback). LibreOffice only makes a PDF, so
+  // its path also needs hasPdfRender.
+  sofficePath = findTool("soffice", { candidates: SOFFICE_CANDIDATES }) || "";
+  hasPptxRender = (!!sofficePath && hasPdfRender) || officecli.available();
   if (sofficePath && hasPdfRender) console.log(`[render-slides] pptx page-render available (LibreOffice ${sofficePath} → PDF → pypdfium2)`);
   else if (officecli.available()) console.log(`[render-slides] pptx page-render available (officecli fallback — install LibreOffice for closer-to-PowerPoint layout on long decks)`);
-  else if (hasPowerPoint) console.log(`[render-slides] pptx page-render: only PowerPoint found — its AppleScript export is unreliable on recent macOS; install LibreOffice or officecli for reliable pptx rendering`);
-  else console.log(`[render-slides] pptx page-render unavailable (no LibreOffice; no officecli; PowerPoint absent)`);
+  else console.log(`[render-slides] pptx page-render unavailable (no LibreOffice; no officecli)`);
   console.log(`[render-slides] docx page-render ${officecli.available() ? "available (officecli)" : "unavailable (needs officecli)"}`);
   detectDone = true;
 })();
@@ -143,8 +131,7 @@ function renderPdfPages(buf, { scale, quality, maxPages, timeoutMs = 300000 } = 
 }
 
 // Convert a pptx buffer to a PDF buffer via LibreOffice headless. Returns null on any
-// failure. LibreOffice is NOT sandboxed, so it reads/writes our temp dir freely (unlike
-// PowerPoint). --convert-to writes "<basename>.pdf" into --outdir.
+// failure. --convert-to writes "<basename>.pdf" into --outdir.
 function pptxToPdfViaLibreOffice(buf, timeoutMs) {
   return new Promise((resolve) => {
     if (!sofficePath) return resolve(null);
@@ -165,38 +152,6 @@ function pptxToPdfViaLibreOffice(buf, timeoutMs) {
       else console.log(`[render-slides] LibreOffice pptx→pdf failed: ${err.message}`);
       cleanup();
       resolve(pdf);
-    });
-  });
-}
-
-// Drive PowerPoint via AppleScript to export slides as JPGs (macOS fallback). On recent
-// PowerPoint builds the sandbox silently drops the save (verified: nothing is written),
-// so this usually returns [] — LibreOffice is the real backend. Kept as a best-effort
-// last resort for setups where it does work. Uses the correct EPPSaveAsFileType enum.
-function renderPptxViaPowerPoint(buf, { maxPages, timeoutMs = 300000 } = {}) {
-  return new Promise((resolve) => {
-    if (!hasPowerPoint) return resolve([]);
-    let tmp;
-    try { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "slides-render-")); } catch { return resolve([]); }
-    const inPath = path.join(tmp, "in.pptx");
-    const outDir = path.join(tmp, "out");
-    const cleanup = () => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} };
-    try { fs.writeFileSync(inPath, buf); fs.mkdirSync(outDir); } catch { cleanup(); return resolve([]); }
-    const script = [
-      'on run argv',
-      '  tell application "Microsoft PowerPoint"',
-      '    open (POSIX file (item 1 of argv))',
-      '    save active presentation in (item 2 of argv) as save as JPG',
-      '    close active presentation saving no',
-      '  end tell',
-      'end run',
-    ].join("\n");
-    execFile("osascript", ["-e", script, inPath, outDir], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err) => {
-      let images = [];
-      if (!err) { try { images = collectPageImages(outDir, maxPages || config.slidesRenderMaxPages); } catch { images = []; } }
-      else console.log(`[render-slides] PowerPoint render failed: ${err.message}`);
-      cleanup();
-      resolve(images);
     });
   });
 }
@@ -223,8 +178,7 @@ function renderViaOfficecli(buf, ext, { scale, maxPages, timeoutMs = 300000 } = 
 
 // Render a pptx buffer → [{page, base64, mime}]. LibreOffice→PDF→pypdfium2 first (best
 // layout fidelity, one conversion for the whole deck), then officecli (zero-install, but
-// per-page cost and weaker text layout), then PowerPoint (usually a no-op on recent
-// macOS). [] on any failure.
+// per-page cost and weaker text layout). [] on any failure.
 async function renderPptxPages(buf, opts = {}) {
   if (sofficePath && hasPdfRender) {
     const pdf = await pptxToPdfViaLibreOffice(buf, opts.timeoutMs || 300000);
@@ -233,9 +187,7 @@ async function renderPptxPages(buf, opts = {}) {
       if (imgs.length) return imgs;
     }
   }
-  const viaOfficecli = await renderViaOfficecli(buf, ".pptx", opts);
-  if (viaOfficecli.length) return viaOfficecli;
-  return renderPptxViaPowerPoint(buf, opts);
+  return renderViaOfficecli(buf, ".pptx", opts);
 }
 
 // Render a docx buffer → [{page, base64, mime}]. officecli is the only backend: LibreOffice

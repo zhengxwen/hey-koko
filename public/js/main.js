@@ -31,7 +31,8 @@ import { renderPersonalityOptions, saveCurrentPersonaAsPreset, renameCurrentPres
 import { DEFAULT_AI_NAME } from './constants.js';
 import { applyUILanguage, t, getPrompt, composerAiName } from './i18n.js';
 import { refreshModelMaxContext, renderContextMeter, getLlmTimeout } from './context-meter.js';
-import { loadMemories, getMemories, addMemory, updateMemory, removeMemory, setMemoryChangeHandler } from './memory.js';
+import { loadMemories } from './memory.js';
+import { initMemoryUI, refreshMemoryManageBtn } from './memory-dialog.js';
 import { loadReminders, getReminders, removeReminder, describeReminder, setReminderChangeHandler, setDeliverHandler, startScheduler } from './proactive.js';
 import { initPanelResize } from './panel-resize.js';
 import { openMaskModal } from './mask-paint.js';
@@ -204,7 +205,7 @@ dom.uiLanguageSelect.addEventListener("change", () => {
   relocalizeComfyModels(); // rebuild ComfyUI dropdown so its i18n labels (optgroups + image-upscale) follow the switch
   relocalizeBrowseOption(); // re-label the "browse all models" option (dynamically added, so applyI18n misses it)
   updateComfyMultiHint(); // model hint line / option tooltips / ⚙ placeholders are localized
-  renderMemoryList();   // empty-state text is localized (memory_empty)
+  refreshMemoryManageBtn(); // label carries a count, so it's not in the static i18n bindings
   renderReminderList(); // empty-state text is localized (reminder_listEmpty)
   relocalizeAvatarPicker(); // avatar tooltips are localized (avatar_*)
   refreshToolsConfigBtn(); // label carries a count, so it's not in the static i18n bindings
@@ -558,87 +559,10 @@ if (dom.embedModelSelect) {
   });
 }
 
-// --- Long-term memory manager ---
-function renderMemoryList() {
-  const list = dom.memoryList;
-  if (!list) return;
-  const mems = getMemories();
-  list.innerHTML = "";
-  if (!mems.length) {
-    const empty = document.createElement("div");
-    empty.className = "memoryEmpty";
-    empty.textContent = t("memory_empty");
-    list.appendChild(empty);
-    return;
-  }
-  for (const m of mems) {
-    const row = document.createElement("div");
-    row.className = "memoryItem";
+// --- Long-term memory: the panel carries only a "Manage… (N)" button; the list, the
+// add row and "Extract from chat" live in the dialog it opens (js/memory-dialog.js).
+initMemoryUI();
 
-    const span = document.createElement("span");
-    span.className = "memoryItemText";
-    span.textContent = m.text;
-    span.title = t("memory_editHint");
-    span.addEventListener("click", () => {
-      const next = prompt(t("memory_editPrompt"), m.text);
-      if (next !== null) updateMemory(m.id, next);
-    });
-
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "memoryItemDelete";
-    del.title = t("memory_deleteTitle");
-    del.textContent = "×";
-    del.addEventListener("click", () => removeMemory(m.id));
-
-    row.appendChild(span);
-    row.appendChild(del);
-    list.appendChild(row);
-  }
-}
-
-// Re-render the list whenever memories change (add/edit/delete, incl. /memory)
-setMemoryChangeHandler(renderMemoryList);
-renderMemoryList();
-
-if (dom.memoryAddBtn && dom.memoryInput) {
-  const addFromInput = () => {
-    const text = dom.memoryInput.value.trim();
-    if (!text) return;
-    addMemory(text);
-    dom.memoryInput.value = "";
-    dom.memoryInput.focus();
-  };
-  dom.memoryAddBtn.addEventListener("click", addFromInput);
-  dom.memoryInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      addFromInput();
-    }
-  });
-}
-
-// Fuzzy similarity for catching near-duplicate memories (not just exact matches)
-function memoryNormalize(s) {
-  return s.replace(/[\s，。、,.;:!?！？「」“”"'()（）]/g, "").toLowerCase();
-}
-function memoryBigrams(s) {
-  const g = new Set();
-  if (s.length === 1) { g.add(s); return g; }
-  for (let i = 0; i < s.length - 1; i++) g.add(s.slice(i, i + 2));
-  return g;
-}
-function memoryIsSimilar(a, b) {
-  const na = memoryNormalize(a), nb = memoryNormalize(b);
-  if (!na || !nb) return false;
-  if (na === nb || na.includes(nb) || nb.includes(na)) return true;
-  const ga = memoryBigrams(na), gb = memoryBigrams(nb);
-  let inter = 0;
-  for (const x of ga) if (gb.has(x)) inter++;
-  return inter / (ga.size + gb.size - inter) >= 0.5;
-}
-
-// Extract durable facts from the current tab's conversation into memory
 // The gallery overlay: everything ever generated, read off disk (js/gallery.js).
 import("./gallery.js").then((g) => {
   g.setGalleryDeps({
@@ -669,101 +593,6 @@ import("./video-edit.js").then((ve) => ve.initVideoEditor());
 // Cmd+F find bar for the macOS app shell (WKWebView has none). Browsers keep
 // their own — this only exposes window.__hkOpenFind for the app menu to call.
 import("./find-bar.js").then((fb) => fb.initFindBar());
-
-if (dom.memoryExtractBtn) {
-  let extracting = false;
-  dom.memoryExtractBtn.addEventListener("click", async () => {
-    if (extracting) return;
-    const tab = getActiveTab();
-
-    // Build a plain transcript of the real conversation (skip commands/previews/summaries)
-    const transcript = (tab?.messages || [])
-      .filter((m) => (m.role === "user" || m.role === "assistant")
-        && !m.isFilePreview && !m.isCompactSummary
-        && m.content && !/^\/(memory|compact|title|clear|note|url|imagine|[01])(\s|$)/.test(m.content))
-      .slice(-40)
-      .map((m) => `${m.role === "user" ? "User" : "AI"}: ${m.content.slice(0, 600)}`)
-      .join("\n");
-
-    const flash = (key) => {
-      dom.memoryExtractBtn.textContent = t(key);
-      setTimeout(() => { dom.memoryExtractBtn.textContent = t("memory_extract"); }, 2500);
-    };
-
-    if (!transcript.trim()) {
-      flash("memory_extractEmpty");
-      return;
-    }
-
-    extracting = true;
-    dom.memoryExtractBtn.disabled = true;
-    dom.memoryExtractBtn.textContent = t("memory_extracting");
-
-    const existing = getMemories().map((m) => `- ${m.text}`).join("\n");
-    try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: dom.modelSelect.value,
-          messages: [
-            { role: "system", content: getPrompt("memoryExtract") },
-            { role: "user", content: getPrompt("memoryExtractUser", existing, transcript) },
-          ],
-          options: { temperature: 0.3 },
-          timeout: getLlmTimeout(),
-        }),
-      });
-      if (!response.ok) throw new Error("request failed");
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let full = "";
-      const consume = (line) => {
-        if (!line.trim()) return;
-        try { full += JSON.parse(line).message?.content || ""; } catch {}
-      };
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) consume(line);
-      }
-      buffer += decoder.decode();
-      if (buffer.trim()) consume(buffer);
-
-      // Strip any <think> reasoning, then parse one fact per line
-      const cleaned = full.replace(/<think>[\s\S]*?<\/think>/gi, "");
-      const facts = cleaned
-        .split("\n")
-        .map((l) => l.replace(/^[-*•\d.)\s]+/, "").trim())
-        .filter((l) => l.length > 1 && l.length < 300);
-
-      let added = 0;
-      for (const f of facts) {
-        const current = getMemories();
-        if (current.some((m) => m.text === f)) continue; // exact dup — skip silently
-        const similar = current.find((m) => memoryIsSimilar(m.text, f));
-        if (similar && !confirm(t("memory_dupConfirm", { existing: similar.text, fact: f }))) continue;
-        if (addMemory(f)) added++;
-      }
-      if (added > 0) {
-        dom.memoryExtractBtn.textContent = t("memory_extractDone", { count: added });
-        setTimeout(() => { dom.memoryExtractBtn.textContent = t("memory_extract"); }, 2500);
-      } else {
-        flash("memory_extractNone");
-      }
-    } catch {
-      flash("memory_extractNone");
-    } finally {
-      extracting = false;
-      dom.memoryExtractBtn.disabled = false;
-    }
-  });
-}
 
 // --- Proactive messages: reminder list + settings wiring + scheduler ---
 function renderReminderList() {
@@ -1724,7 +1553,7 @@ document.querySelector("#importChat").addEventListener("change", async (event) =
 const DOC_EXTENSIONS = [".pdf", ".docx", ".pptx", ".eml", ".txt", ".md", ".markdown"];
 
 // Server-side parsing capabilities (detected at startup)
-let serverCapabilities = { pandoc: false, mineru: false, unlimitedOcr: false };
+let serverCapabilities = { pandoc: false, mineru: false };
 async function fetchCapabilities() {
   try {
     const r = await fetch("/api/parse-file/capabilities");
@@ -1739,39 +1568,31 @@ async function fetchCapabilities() {
 }
 fetchCapabilities();
 
-// Show the "PDF import engine" picker only when a server-side PDF engine exists, and
-// reveal each engine option per capability. With no server engine there's only pdf.js
-// (client fallback) → nothing to choose, so the whole control stays hidden.
+// Show the "PDF import engine" picker only when MinerU is available. Without it there's
+// only pdf.js (client fallback) → nothing to choose, so the whole control stays hidden.
 function syncPdfEngineOptions() {
-  const m = !!serverCapabilities.mineru, u = !!serverCapabilities.unlimitedOcr;
+  const m = !!serverCapabilities.mineru;
   if (dom.pdfEngineOptMineru) dom.pdfEngineOptMineru.hidden = !m;
-  if (dom.pdfEngineOptUnlimited) dom.pdfEngineOptUnlimited.hidden = !u;
-  if (dom.pdfEngineLabel) dom.pdfEngineLabel.hidden = !(m || u);
+  if (dom.pdfEngineLabel) dom.pdfEngineLabel.hidden = !m;
   // Resolve the effective selection. The intended default is MinerU, but in WKWebView
   // the `selected hidden` MinerU <option> falls through to the first VISIBLE option
   // (pdf.js) at load — so the value can't be trusted as a deliberate choice. Unless the
-  // user EXPLICITLY picked an engine (flag set in the change handler), default to the
-  // best available SERVER engine; otherwise a chat-attached PDF would silently use
+  // user EXPLICITLY picked an engine (flag set in the change handler), default to
+  // MinerU when it's available; otherwise a chat-attached PDF would silently use
   // text-only pdf.js and never call MinerU. A still-valid explicit choice is honored.
   if (dom.pdfEngineSelect) {
-    const valid = (e) => (e === "mineru" && m) || (e === "unlimited" && u) || e === "pdfjs";
+    const valid = (e) => (e === "mineru" && m) || e === "pdfjs";
     let userPicked = false;
     try { userPicked = localStorage.getItem(PDF_ENGINE_PICKED_KEY) === "1"; } catch {}
     const v = dom.pdfEngineSelect.value;
-    if (!(userPicked && valid(v))) dom.pdfEngineSelect.value = m ? "mineru" : (u ? "unlimited" : "pdfjs");
+    if (!(userPicked && valid(v))) dom.pdfEngineSelect.value = m ? "mineru" : "pdfjs";
   }
 }
 
 // Resolve the user's PDF-engine preference against what the server actually offers.
 // Default (and unknown prefs, e.g. a legacy "auto") behave as MinerU.
 function pickPdfEngine(pref, caps) {
-  const m = !!caps.mineru, u = !!caps.unlimitedOcr;
-  switch (pref) {
-    case "unlimited": return u ? "unlimited" : "pdfjs";
-    case "pdfjs":     return "pdfjs";
-    case "mineru":
-    default:          return m ? "mineru" : "pdfjs";
-  }
+  return pref !== "pdfjs" && caps.mineru ? "mineru" : "pdfjs";
 }
 function currentPdfEngine() {
   return pickPdfEngine(dom.pdfEngineSelect?.value || "mineru", serverCapabilities);
@@ -2425,14 +2246,11 @@ async function selectMultipleFiles(files) {
   }
 }
 
-async function tryServerParse(file, onProgress = null, pdfEngine = null) {
+async function tryServerParse(file, onProgress = null) {
   try {
     const formData = new FormData();
     formData.append("file", file);
-    // Tell the server which PDF engine to use (mineru | unlimited); absent → server default.
-    const headers = (pdfEngine === "mineru" || pdfEngine === "unlimited")
-      ? { "x-pdf-engine": pdfEngine } : {};
-    const response = await fetch("/api/parse-file", { method: "POST", body: formData, headers });
+    const response = await fetch("/api/parse-file", { method: "POST", body: formData });
 
     const contentType = response.headers.get("content-type") || "";
 
@@ -2553,19 +2371,18 @@ async function parseAndSendFile(content, fileInfo) {
       let serverResult = null;
 
       if (ext === ".pdf") {
-        // pdfjs → client text-only fallback below; mineru/unlimited → server parse.
+        // pdfjs → client text-only fallback below; mineru → server parse.
         const engine = currentPdfEngine();
-        if (engine === "mineru" || engine === "unlimited") {
-          serverResult = await tryServerParse(rawFile, null, engine);
-          // The user explicitly chose an OCR engine (MinerU / Unlimited-OCR). On failure
+        if (engine === "mineru") {
+          serverResult = await tryServerParse(rawFile);
+          // The user explicitly chose an OCR engine (MinerU). On failure
           // or timeout, DON'T silently fall back to pdf.js text-only — that drops every
           // figure and hides the failure. Surface the error and stop.
           if (!serverResult) {
             pending.remove();
-            const label = engine === "mineru" ? "MinerU" : "Unlimited-OCR";
             const msgEl = document.createElement("div");
             msgEl.className = "message system";
-            msgEl.textContent = t("msg_ocrFailed", { label });
+            msgEl.textContent = t("msg_ocrFailed", { label: "MinerU" });
             dom.messagesEl.appendChild(msgEl);
             dom.messagesEl.scrollTop = dom.messagesEl.scrollHeight;
             return;
@@ -2708,9 +2525,9 @@ async function parseDocumentHeadless(fileB64, name, ext, content, onProgress) {
     let chosenOcr = "";
     if (ext === ".pdf") {
       const engine = currentPdfEngine();
-      if (engine === "mineru" || engine === "unlimited") {
-        chosenOcr = engine === "mineru" ? "MinerU" : "Unlimited-OCR";
-        serverResult = await tryServerParse(rawFile, onProgress, engine);
+      if (engine === "mineru") {
+        chosenOcr = "MinerU";
+        serverResult = await tryServerParse(rawFile, onProgress);
       }
     } else if ((ext === ".docx" || ext === ".pptx") && serverCapabilities.pandoc) {
       serverResult = await tryServerParse(rawFile, onProgress);

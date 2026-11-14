@@ -25,7 +25,8 @@ const path = require("path");
 const crypto = require("crypto");
 const { execFile } = require("child_process");
 const config = require("./config");
-const { sendJson, readBody, findCommand } = require("./utils");
+const { sendJson, readBody } = require("./utils");
+const { findTool } = require("./find-tool");
 
 const GALLERY_DIR = path.join(config.DATA_DIR, "gallery");
 const INDEX_FILE = path.join(GALLERY_DIR, "index.jsonl");
@@ -543,12 +544,6 @@ function setDisplayName(id, name) {
 
 // ---------------------------------------------------------------- backfill
 
-let ffprobePath;   // undefined = unprobed, null = absent, string = path
-function ffprobe() {
-  if (ffprobePath !== undefined) return Promise.resolve(ffprobePath);
-  return findCommand("ffprobe").then((p) => (ffprobePath = p));
-}
-
 // What an entry SHOULD know about itself. Pixel size for everything; a clip also has a
 // frame rate and a length. Anything missing is what backfill goes looking for.
 function missingSpecs(e) {
@@ -569,7 +564,7 @@ function missingSpecs(e) {
 // Returns {} when ffprobe is absent or the file is unreadable; callers treat that as
 // "still unknown", never as an error.
 async function probeSpecs(absPath) {
-  const bin = await ffprobe();
+  const bin = findTool("ffprobe");
   if (!bin) return {};
   const out = await new Promise((resolve) => {
     execFile(bin, ["-v", "error", "-select_streams", "v:0",
@@ -735,12 +730,6 @@ function archiveRefs() {
 
 // ---------------------------------------------------------------- thumbnails
 
-let ffmpegPath;   // undefined = unprobed, null = absent, string = path
-function ffmpeg() {
-  if (ffmpegPath !== undefined) return Promise.resolve(ffmpegPath);
-  return findCommand("ffmpeg").then((p) => (ffmpegPath = p));
-}
-
 const THUMB_EDGE = 360;
 const SCALE_FILTER = `scale='if(gt(iw,ih),${THUMB_EDGE},-2)':'if(gt(iw,ih),-2,${THUMB_EDGE})'`;
 
@@ -802,7 +791,7 @@ async function makeThumb(id) {
   const out = thumbPathOf(id);
   if (!entry || !abs || !out || !fs.existsSync(abs)) return false;
   if (entry.kind === "mesh" || entry.kind === "audio") return false;   // nothing to draw
-  const bin = await ffmpeg();
+  const bin = findTool("ffmpeg");
   if (!bin) return false;
   const tmp = `${out}.tmp-${process.pid}.jpg`;
   const common = ["-frames:v", "1", "-vf", SCALE_FILTER, "-q:v", "5", "-y", tmp];
@@ -824,7 +813,7 @@ async function makeThumbVariant(id, variant) {
   const out = thumbPathOf(id, variant);
   if (!box || !src || !out) return false;
   if (!fs.existsSync(src) && !(await makeThumb(id))) return false;
-  const bin = await ffmpeg();
+  const bin = findTool("ffmpeg");
   if (!bin) return false;
   const tmp = `${out}.tmp-${process.pid}.jpg`;
   const run = (vf) => runFfmpeg(bin, ["-i", src, "-frames:v", "1", "-vf", vf, ...SWS_FLAGS, "-q:v", "5", "-y", tmp]);

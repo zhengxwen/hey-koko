@@ -62,6 +62,7 @@ export function saveCurrentSettings() {
         qwen21CacheDtype: dom.comfyParamQwen21CacheDtype?.value || "",
         // Defaults ON, so an absent key must read back as true (see the restore side).
         flux3Upsample: dom.comfyParamFlux3Upsample ? dom.comfyParamFlux3Upsample.checked : true,
+        h3ImagePe: dom.comfyParamH3ImagePe ? dom.comfyParamH3ImagePe.checked : true,
         camStrength: dom.comfyParamCamStrength?.value || "",
         // The dial lives in state, not in an input, so persist it from there.
         camAzimuth: state.camAzimuth || "front",
@@ -74,6 +75,9 @@ export function saveCurrentSettings() {
         upscaleDenoise: dom.comfyParamUpscaleDenoise?.value || "",
         upscaleModel: dom.comfyParamUpscaleModel?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
+        longcatIdentityHold: dom.comfyParamLongcatRefAll ? dom.comfyParamLongcatRefAll.checked : true,
+        ttsSpeed: dom.comfyParamTtsSpeed?.value || "",
+        longcatAudioScale: dom.comfyParamLongcatAudioScale?.value || "",
         lyrics: dom.comfyParamLyrics?.value || "",
         musicSeconds: dom.comfyParamMusicSeconds?.value || "",
         musicCfg: dom.comfyParamMusicCfg?.value || "",
@@ -350,6 +354,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamQwen21Cache) dom.comfyParamQwen21Cache.value = cp.qwen21Cache || "";
     if (dom.comfyParamQwen21CacheDtype) dom.comfyParamQwen21CacheDtype.value = cp.qwen21CacheDtype || "";
     if (dom.comfyParamFlux3Upsample) dom.comfyParamFlux3Upsample.checked = cp.flux3Upsample !== false;
+    if (dom.comfyParamH3ImagePe) dom.comfyParamH3ImagePe.checked = cp.h3ImagePe !== false;
     if (dom.comfyParamCamStrength) dom.comfyParamCamStrength.value = cp.camStrength || "";
     state.camAzimuth = cp.camAzimuth || "front";
     state.camElevation = cp.camElevation || "eye";
@@ -357,6 +362,11 @@ export function loadSavedSettings() {
     // Best-effort — applyComfyModels re-applies this once the option list has loaded.
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
+    // Default ON. Stored under a new key: the opt-in build saved `longcatRefAll: false` on
+    // every settings save, which would otherwise pin it off.
+    if (dom.comfyParamLongcatRefAll) dom.comfyParamLongcatRefAll.checked = cp.longcatIdentityHold !== false;
+    if (dom.comfyParamTtsSpeed) dom.comfyParamTtsSpeed.value = cp.ttsSpeed || "";
+    if (dom.comfyParamLongcatAudioScale) dom.comfyParamLongcatAudioScale.value = cp.longcatAudioScale || "";
     if (dom.comfyParamLyrics) dom.comfyParamLyrics.value = cp.lyrics || "";
     if (dom.comfyParamMusicSeconds) dom.comfyParamMusicSeconds.value = cp.musicSeconds || "";
     if (dom.comfyParamMusicCfg) dom.comfyParamMusicCfg.value = cp.musicCfg || "";

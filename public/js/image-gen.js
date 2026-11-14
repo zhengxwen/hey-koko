@@ -178,6 +178,8 @@ function comfyOverrides() {
   // FLUX 3 Klein's upsampler is ON unless unticked — only the opt-out travels, so a
   // request without the key (the CLI, an old saved setting) gets BFL's default.
   if (dom.comfyParamFlux3Upsample && !dom.comfyParamFlux3Upsample.checked) ov.flux3Upsample = false;
+  // MiniMax H3 Image's expander: same opt-out-only rule.
+  if (dom.comfyParamH3ImagePe && !dom.comfyParamH3ImagePe.checked) ov.h3ImagePe = false;
   // Qwen 3D Camera: the dial's three KEYS travel as-is — the server turns them into
   // the `<sks> ...` phrase the LoRA was trained on, so only one side knows that wording.
   ov.camAzimuth = state.camAzimuth || "front";
@@ -187,6 +189,11 @@ function comfyOverrides() {
   if (camStrength !== undefined) ov.camStrength = camStrength;       // angle LoRA strength (upstream: 0.8-1.0)
   if (dom.comfyParamUpscaleTarget?.value) ov.upscaleTarget = Number(dom.comfyParamUpscaleTarget.value); // long side, px (empty = 2x capped)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
+  if (dom.comfyParamLongcatRefAll && !dom.comfyParamLongcatRefAll.checked) ov.longcatRefAll = false; // LongCat-Avatar: on by default (ref mask 0); off = official mask 3
+  const ttsSpeed = num(dom.comfyParamTtsSpeed?.value);
+  if (ttsSpeed > 0 && ttsSpeed !== 1) ov.ttsSpeed = ttsSpeed;      // talking photo: TTS pace (server clamps 0.5–2)
+  const lcAudio = num(dom.comfyParamLongcatAudioScale?.value);
+  if (lcAudio > 0 && lcAudio !== 1) ov.longcatAudioScale = lcAudio; // LongCat-Avatar: audio drive (server clamps 0.5–1.5)
   if (dom.comfyParamVideoCodec?.value) ov.videoCodec = dom.comfyParamVideoCodec.value; // video: h264 (default) | h265, via VHS_VideoCombine
   const videoCrf = num(dom.comfyParamVideoCrf?.value);
   if (videoCrf !== undefined) ov.videoCrf = videoCrf; // CRF for the selected codec (empty = codec default)
@@ -609,7 +616,7 @@ function parseImagineCommand(input) {
       rawOpts[key] = val;
       rest = rest.replace(/^--opt\s+\S+\s*/, "").trim();
     } else if (/^--voice\s/.test(rest)) {
-      // TTS voice for "photo speaks" (InfiniteTalk): a Kokoro voice id, e.g.
+      // TTS voice for "photo speaks" (InfiniteTalk / LongCat-Avatar): a Kokoro voice id, e.g.
       // zf_xiaoxiao / zm_yunxi / af_heart. Validated server-side; other models ignore it.
       const voiceFlag = rest.match(/^--voice\s+(\S+)/);
       if (!voiceFlag) return { error: t("img_voiceNeedsArg") };
@@ -1024,23 +1031,22 @@ export function extractKeyFrames(src, count = 8, quality = 0.72, maxSide = 1280)
   });
 }
 
-// Tell ComfyUI to actually STOP — aborting our fetch only stops us waiting; the
-// queued workflow keeps running on the GPU. /interrupt kills the running prompt
-// and clearing the queue drops anything still pending (e.g. a batch). comfyHost
-// is "host:port" (no protocol). Best-effort.
 // How long Stop waits for the server to hand back the salvaged part of a chunked render
 // before the connection is cut for real. Long enough to fetch the finished segments and
 // stream-copy them together; short enough that a truly stuck server still releases the UI.
 const SALVAGE_GRACE_MS = 45000;
 
+// Tell ComfyUI to actually STOP — aborting our fetch only stops us waiting; the
+// queued workflow keeps running on the GPU. /interrupt kills the running prompt (a
+// batch is a client-side loop, so nothing else of ours is left queued). comfyHost is
+// "host:port" (no protocol). Sent by the server (server/comfy-relay.js), which reaches
+// ComfyUI from wherever this page is opened — an iPad over https included. Best-effort.
 function interruptComfy(comfyHost) {
   if (!comfyHost) return;
-  const proto = location.protocol === "https:" ? "https:" : "http:";
-  fetch(`${proto}//${comfyHost}/interrupt`, { method: "POST" }).catch(() => {});
-  fetch(`${proto}//${comfyHost}/queue`, {
+  fetch("/api/comfy-interrupt", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ clear: true }),
+    body: JSON.stringify({ host: comfyHost }),
   }).catch(() => {});
 }
 
@@ -1086,9 +1092,12 @@ function subscribeComfyProgress(comfyHost, clientId, { onProgress, onPreview }) 
   // freezing the progress bar (the render keeps going server-side). So AUTO-RECONNECT
   // with the SAME clientId until unsubscribe — ComfyUI keeps broadcasting to that id,
   // so progress/preview resume. Also reconnect eagerly when the tab returns to view.
+  // The socket is relayed by our own server (server/comfy-relay.js) rather than opened on
+  // ComfyUI directly: an https page (iPad over `tailscale serve`) cannot open ws:// to it,
+  // and "127.0.0.1:8188" would mean the iPad, not the machine running ComfyUI.
   let ws = null, closed = false, retryTimer = null;
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const url = `${proto}//${comfyHost}/ws?clientId=${encodeURIComponent(clientId)}`;
+  const url = `${proto}//${location.host}/api/comfy-ws?host=${encodeURIComponent(comfyHost)}&clientId=${encodeURIComponent(clientId)}`;
 
   const onMessage = (ev) => {
     if (typeof ev.data === "string") {
@@ -1826,7 +1835,11 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       sourceAudioDuration: sourceAudioDuration || undefined,
       // "Photo speaks": the RAW prompt is the text to READ — sent apart from `prompt`
       // so ⚙ prompt-decoration / --enhance can't leak into the synthesized speech.
-      speechText: model === "infinitetalk_speak" ? ((parsed.prompt || "").trim() || undefined) : undefined,
+      speechText: state.comfySpeakModels?.has(model) ? ((parsed.prompt || "").trim() || undefined) : undefined,
+      // …and the SCENE for those models is --pos / the ⚙ positive add-on alone (the
+      // server only uses it when the text is read by the TTS; with an attached audio
+      // file `prompt` itself describes the scene).
+      scenePrompt: state.comfySpeakModels?.has(model) ? (comfyPositive("", parsed.positivePrompt) || undefined) : undefined,
       // Bernini i2v: reference image's natural size → source-aspect output.
       refImageWidth: refImageDims?.w || undefined,
       refImageHeight: refImageDims?.h || undefined,
@@ -2427,6 +2440,8 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // typed prompt, so this is shown), or `false` when ⚙ had the upsampler off.
   const expandedPrompts = [];
   let flux3UpsamplerOff = false;
+  // MiniMax H3 Image's expander: "on" | "off" | "failed" from the server (last one wins).
+  let h3ImagePeState = null;
   let flux3BoxesUsed = 0;   // how many 🔲 layout boxes the run carried (obj_1…obj_N)
   // Seed actually used (random unless --seed was pinned) → surfaced on the done line
   // so a single result can be reproduced. Only meaningful for a single output.
@@ -2550,6 +2565,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 if (data.panoLoraSkipped) panoLoraSkippedBase = data.panoLoraSkipped.base;
                 if (data.expandedPrompt && !expandedPrompts.includes(data.expandedPrompt)) expandedPrompts.push(data.expandedPrompt);
                 if (data.flux3Upsampler === false) flux3UpsamplerOff = true;
+                if (data.h3ImagePe) h3ImagePeState = data.h3ImagePe;
                 if (data.flux3Boxes) flux3BoxesUsed = data.flux3Boxes;
                 if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
                 generatedImages.push(...storedSlots(imgs, data.mediaIds));
@@ -2641,12 +2657,15 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       if (flux3BoxesUsed) doneLine += `\n${t("msg_flux3Boxes", { n: flux3BoxesUsed }, plang)}`;
       // FLUX 3's upsampler caption — folded, since it runs 100–350 words. It is greedy, so
       // a batch of one prompt normally yields one caption; distinct ones are all listed.
+      // MiniMax H3 Image's expander caption goes in the same fold, under its own title.
       if (expandedPrompts.length) {
         const quoted = expandedPrompts.map((p) => p.split("\n").map((l) => `> ${l}`).join("\n")).join("\n\n");
-        doneLine += `\n\n<details>\n<summary>${t("msg_flux3Upsampled", {}, plang)}</summary>\n\n${quoted}\n\n</details>`;
+        doneLine += `\n\n<details>\n<summary>${t(h3ImagePeState ? "msg_h3ImagePe" : "msg_flux3Upsampled", {}, plang)}</summary>\n\n${quoted}\n\n</details>`;
       } else if (flux3UpsamplerOff) {
         doneLine += `\n${t("msg_flux3UpsamplerOff", {}, plang)}`;
       }
+      if (h3ImagePeState === "off") doneLine += `\n${t("msg_h3ImagePeOff", {}, plang)}`;
+      else if (h3ImagePeState === "failed") doneLine += `\n${t("msg_h3ImagePeFailed", {}, plang)}`;
     }
 
     const replyMsg = {

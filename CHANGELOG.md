@@ -4,9 +4,19 @@
 
 ### Added
 - Offline UI libraries: the six third-party frontend libraries (KaTeX, Mermaid, highlight.js, pdf.js, mammoth.js, JSZip) are now pinned to exact versions with sha256 checksums in `server/vendor-manifest.json`. `start.sh`/`start.bat`/`build-app.sh` download them once (~7 MB) into `public/vendor/` via `scripts/fetch-vendor.js`, after which the app runs fully offline; if not downloaded (`HEYKOKO_NO_VENDOR=1` or no network at install time), the server transparently proxies them from the pinned CDN URLs with checksum verification. No third-party code is committed to the repository.
-- Selectable local PDF import engine (settings → **PDF import**): MinerU (default), Baidu [Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) (local GPU, strong on scans), or fast built-in text extraction. See [Optional Tools](docs/optional-tools.md).
+- Selectable local PDF import engine (settings → **PDF import**): MinerU (default) or fast built-in text extraction. See [Optional Tools](docs/optional-tools.md).
 - `MINERU_BACKEND` env var to choose MinerU's backend (defaults to the dependency-light `pipeline`).
 - `scripts/imagine.js` renders now go through the server's queue: they wait in line with the app's own jobs and show in the background-jobs drawer with live progress, and × there cancels them. Calling it from a program is unchanged apart from that wait and the new `canceled` failure; see [the CLI docs](scripts/README-imagine.md#the-queue).
+
+### Removed
+- PowerPoint (AppleScript) as a slide page-image backend — recent PowerPoint builds silently drop the export, so it never produced images. LibreOffice and officecli are unchanged.
+- ImageMagick as an image re-encoder for imported web images (`HEYKOKO_IMAGE_TOOL=imagemagick`). `sips` (macOS) and ffmpeg cover every platform.
+
+### Fixed
+- Read-aloud with a system (`say`) voice now stops synthesizing when the browser skips or stops a sentence; before, every abandoned sentence ran to completion on the server.
+- YouTube transcription stops when it is abandoned: closing the browser during a `/url` whisper transcription, or cancelling (×) a YouTube background job, now kills yt-dlp/ffmpeg/whisper and stops subtitle formatting. Before, they ran to completion on the server.
+- Cancelling (×) a video-editor export now stops it: ffmpeg and the AI enhance pass are killed and nothing is added to the gallery. Before, the export ran to completion and was saved anyway.
+- `/voice` with a system voice and no ffmpeg returns playable WAV instead of AIFF, which browsers can't play.
 
 ## v0.1.0 (2026-06-11)
 

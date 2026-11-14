@@ -373,20 +373,17 @@ body.isResizingPanel {
    A horizontal bar can appear here even though only overflow-y is set: per spec, when
    one axis is `auto` the other's `visible` computes to `auto` too. It is left scrollable
    (rather than hidden) so an over-wide control stays reachable — just not visible. */
-.panelTabContent.isActive,
-.memoryList {
+.panelTabContent.isActive {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
 }
 
-.panelTabContent.isActive::-webkit-scrollbar,
-.memoryList::-webkit-scrollbar {
+.panelTabContent.isActive::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-.panelTabContent.isActive::-webkit-scrollbar-thumb,
-.memoryList::-webkit-scrollbar-thumb {
+.panelTabContent.isActive::-webkit-scrollbar-thumb {
   background: transparent;
   border-radius: 4px;
   /* Inset the thumb so it reads as a slim overlay rather than a full-width bar. */
@@ -394,13 +391,11 @@ body.isResizingPanel {
   background-clip: padding-box;
 }
 
-.panel:hover .panelTabContent.isActive,
-.panel:hover .memoryList {
+.panel:hover .panelTabContent.isActive {
   scrollbar-color: var(--line) transparent;
 }
 
-.panel:hover .panelTabContent.isActive::-webkit-scrollbar-thumb,
-.panel:hover .memoryList::-webkit-scrollbar-thumb {
+.panel:hover .panelTabContent.isActive::-webkit-scrollbar-thumb {
   background: var(--line);
   background-clip: padding-box;
 }
@@ -3828,7 +3823,9 @@ button.secondary:disabled {
   margin: 14px 0;
 }
 
-/* Long-term memory manager */
+/* Long-term memory: the panel shows a header + "Manage… (N)"; the list lives in the
+   dialog (memory-dialog.js, .memoryDlg* below). .memoryEmpty / .memoryItem* are shared
+   by that dialog, and .memoryEmpty / .memoryItemDelete by the reminder list too. */
 .memorySetting {
   display: flex;
   flex-direction: column;
@@ -3849,19 +3846,15 @@ button.secondary:disabled {
   font-size: 15px;
 }
 
-.memoryExtractBtn {
+.memoryManageBtn {
   flex: 0 0 auto;
   min-height: 0;
   font-size: 12px;
   padding: 4px 10px;
 }
 
-.memoryList {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 160px;
-  overflow-y: auto;
+.memorySetting .hint {
+  margin: 0;
 }
 
 .memoryEmpty {
@@ -3906,26 +3899,6 @@ button.secondary:disabled {
 .memoryItemDelete:hover {
   background: var(--rose, #f5d78e);
   color: #fff;
-}
-
-.memoryAddRow {
-  display: flex;
-  gap: 6px;
-  align-items: stretch;
-}
-
-.memoryAddRow input {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 10px;
-  font-size: 13px;
-}
-
-.memoryAddRow button {
-  flex: 0 0 auto;
-  min-height: 0;
-  padding: 6px 14px;
-  font-size: 13px;
 }
 
 /* Proactive messages */
@@ -7862,6 +7835,29 @@ body.isResizingComposer {
 }
 .toolsDlgMini:disabled { opacity: 0.45; cursor: default; }
 
+/* Long-term memory dialog (memory-dialog.js) — reuses the zotero modal chrome; add row
+   on top, one scrolling list, count + "Extract from chat" in the footer. Rows reuse
+   .memoryItem / .memoryItemText / .memoryItemDelete. Height hugs the content. */
+.memoryDlg { width: min(560px, 94vw); height: auto; max-height: 86vh; }
+.memoryDlgAdd { display: flex; gap: 8px; padding: 12px 16px 0; }
+/* class beats the global `input{width:100%}` element rule → sizes cleanly inside the flex row */
+.memoryDlgInput { width: auto; flex: 1; min-width: 0; padding: 7px 10px; font-size: 13px; }
+.memoryDlgAddBtn { flex: 0 0 auto; min-height: 0; padding: 0 16px; font-size: 13px; }
+.memoryDlgHint { margin: 8px 16px 4px; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.memoryDlgBody { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 16px 14px; }
+.memoryDlgList { display: flex; flex-direction: column; gap: 5px; }
+.memoryDlg .memoryItem { align-items: flex-start; padding: 5px 6px 5px 10px; font-size: 13.5px; line-height: 1.45; }
+.memoryDlg .memoryItemText { padding: 1px 0; border-radius: 4px; }
+.memoryDlg .memoryItemText:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.memoryDlg .memoryItemDelete { margin-top: 1px; }
+/* Inline editor: sits exactly where the text was, so editing doesn't jump the row. */
+.memoryItemEdit {
+  flex: 1; min-width: 0; resize: none; overflow: hidden;
+  padding: 1px 4px; margin: 0 -4px; border-radius: 4px;
+  font: inherit; line-height: inherit; background: var(--input-bg);
+}
+.memoryDlg .zoteroImportFoot .toolsDlgMini { white-space: nowrap; }
+
 /* News feed subscription manager (news-feeds.md P3) — reuses the zotero modal chrome
    (.zoteroImportOverlay/.zoteroImportDialog/head/foot), adds a management list + add row. */
 .feedMgrDialog { width: min(720px, 94vw); height: min(600px, 88vh); }
@@ -9764,3 +9760,56 @@ body.isResizingComposer {
   flex: 0 0 auto;
   padding: 4px 10px;
 }
+
+/* ===== Touch screens (iPad) =====================================================
+   No pointer can hover there, so every control that waits for :hover above would stay
+   invisible until the user happened to tap its container first. Show those controls in
+   their hovered state instead — each selector below is a hover rule above with :hover
+   taken out, and keeps that rule's value (state classes such as .isLocked/.isCopied that
+   already raise opacity are excluded). Only opacity/display is set, so the rules that
+   hide a control outright (folded or locked bubbles) still win. A device whose primary
+   pointer can hover (mouse, trackpad) does not match this block and keeps the desktop
+   behavior. */
+@media (hover: none) {
+  .chatTab .tabLockBtn:not(.isLocked) { opacity: 0.5; }
+  .message .messageFoldToggle { opacity: 0.6; }
+  .message .messageLockToggle:not(.isLocked) { opacity: 0.55; }
+  .message > .messageMoreToggle { opacity: 0.75; }
+  .mdBlockWrap .mdCopyBtn:not(.isCopied),
+  .mdBlockWrap .mdImagineBtn { opacity: 0.75; }
+  .message .messageActions { opacity: 1; }
+  .imageWrapper .mediaRateBtn,
+  .imageWrapper .mediaGalleryBtn,
+  .imageWrapper .mediaFileBtn,
+  .videoWrapper .mediaRateBtn,
+  .videoWrapper .mediaGalleryBtn,
+  .videoWrapper .mediaFileBtn,
+  .videoWrapper .mediaCutBtn { opacity: 1; }
+  .previewThumb .previewThumbRemove { opacity: 1; }
+  #archivePreviewTitle .archiveRetitleBtn { opacity: 1; }
+  .imageWrapper .imageDeleteBtn,
+  .imageWrapper .imageDownloadBtn,
+  .imageWrapper .messageReplaceBtn,
+  .imageWrapper .messageMaskBtn { opacity: 1; }
+  .videoWrapper .videoDownloadBtn,
+  .videoWrapper .videoDeleteBtn,
+  .videoWrapper .videoFullscreenBtn,
+  .videoWrapper .videoPipBtn,
+  .videoWrapper .videoVolume { opacity: 1; }
+  .galleryDetailMedia .videoFullscreenBtn { opacity: 1; }
+  .meshWrapper .meshHudBar,
+  .meshWrapper .meshDownloadBtn,
+  .meshWrapper .meshDeleteBtn { opacity: 1; }
+  .userNameDropdown .userNameHistoryItem .deleteHistoryBtn { opacity: 1; }
+  .libraryUrlHistoryItem .libraryUrlHistoryDel { opacity: 1; }
+  .galleryStripCell .galleryStripAdd { display: flex; }
+  .galleryTile .galleryTileCheck { opacity: 1; }
+  .veditPreviewWrap .veditFsBtn { opacity: 1; }
+}
+
+/* Drag surfaces driven by pointer events: without this a finger or Apple Pencil drag
+   starts a page scroll and the browser cancels the pointer stream mid-stroke. (The mask,
+   track and mesh canvases, composer resizer and clip handles already set it.) */
+#boxCanvas,
+.panelResizer,
+.veditSplit { touch-action: none; }

@@ -10,6 +10,7 @@ const fsp = require("fs/promises");
 const { AsyncLocalStorage } = require("async_hooks");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
+const { checkTool } = require("./find-tool");
 const { hostnameFor } = require("./network");
 const {
   PRECISION_RE_G, PREC_AUTO_ORDER,
@@ -187,21 +188,10 @@ async function makeSourceDecodable(buf) {
   finally { for (const f of [inP, outP]) if (f) fsp.unlink(f).catch(() => {}); }
 }
 
-// Is a command-line tool actually runnable here? Probed by RUNNING it rather than by
-// looking for a path — a binary that exists but can't execute is the same as absent.
-// The promise (not the boolean) is cached, so concurrent callers share one spawn and a
-// tool is probed once per process.
-const _toolCache = new Map(); // name → Promise<boolean>
-function hasLocalTool(name) {
-  if (!_toolCache.has(name)) {
-    _toolCache.set(name, new Promise((resolve) => {
-      const p = spawn(name, ["-version"]);
-      p.on("close", (code) => resolve(code === 0));
-      p.on("error", () => resolve(false)); // ENOENT — not installed / not on PATH
-    }));
-  }
-  return _toolCache.get(name);
-}
+// Is ffmpeg / ffprobe actually runnable here? Probed by RUNNING it (checkTool) rather
+// than by looking for a path — a binary that exists but can't execute is the same as
+// absent. Both spell their version flag with a single dash.
+const hasLocalTool = (name) => checkTool(name, { args: ["-version"] }).then(Boolean);
 
 // Stitch SCAIL-2's per-segment clips back into one video and lay the source soundtrack
 // over the result. See the buildScail2 header for WHY the graph now emits N silent clips
@@ -556,16 +546,21 @@ function animateSegmentCap(pixelBudget, torchCompile = false, vramGib = null) {
 // static for a machine, but an IP can be reassigned, so a 10-min TTL re-probes. Returns
 // { gib:null, gpuName:null } when unreachable / no CUDA device → cap callers fall back to
 // the 32GB reference table (no scaling) and the UI shows nothing.
-const _vramCache = new Map(); // url → { gib, gpuName, ts }
+// `sage`: ComfyUI was launched with --use-sage-attention. It refuses to start with that
+// flag unless the sageattention package imports, so the flag doubles as proof that
+// WanVideoWrapper's attention_mode "sageattn" will load too (that mode is not tied to
+// the flag — it imports the package itself — but nothing else here can see the package).
+const _vramCache = new Map(); // url → { gib, gpuName, sage, ts }
 async function comfyGpuInfo() {
   const url = currentComfyUrl();
   const hit = _vramCache.get(url);
-  if (hit && Date.now() - hit.ts < 600000) return { gib: hit.gib, gpuName: hit.gpuName };
-  let gib = null, gpuName = null;
+  if (hit && Date.now() - hit.ts < 600000) return { gib: hit.gib, gpuName: hit.gpuName, sage: hit.sage };
+  let gib = null, gpuName = null, sage = false;
   try {
     const r = await fetch(`${url}/system_stats`, { signal: AbortSignal.timeout(5000) });
     if (r.ok) {
       const data = await r.json();
+      sage = Array.isArray(data.system?.argv) && data.system.argv.includes("--use-sage-attention");
       const cuda = (data.devices || []).filter((d) => d.type === "cuda" && d.vram_total > 0);
       if (cuda.length) {
         // Pick the biggest device (the one a job would run on). Clean the ComfyUI label
@@ -576,8 +571,8 @@ async function comfyGpuInfo() {
       }
     }
   } catch { /* unreachable → nulls → no scaling, no UI badge */ }
-  _vramCache.set(url, { gib, gpuName, ts: Date.now() });
-  return { gib, gpuName };
+  _vramCache.set(url, { gib, gpuName, sage, ts: Date.now() });
+  return { gib, gpuName, sage };
 }
 // Back-compat shim for the animateSegmentCap call site (only needs the number).
 async function comfyVramGib() { return (await comfyGpuInfo()).gib; }
@@ -706,6 +701,38 @@ const FLUX3_BASE_RE = /flux.?3.*klein.*base/i;
 const FLUX3_CLIP_RE = /qwen3vl[-_]?4b[-_]?(bf16|int8[-_]convrot)/i;
 const FLUX3_PUP_RE = /qwen3\.?5.*flux3.*upsampler/i;
 
+// MiniMax-H3-Image (2026-11). A text→image + editing DiT from the H3 family: it shares
+// the Qwen3-VL-32B text encoder (CLIPLoader type "minimax") with the video model, but has
+// its own VAE and its own conditioning node (MiniMaxH3ImageConditioning, ComfyUI 0.45).
+// One checkpoint per tier (bf16 / int8_convrot / w4a8). Distilled to SIX steps with no
+// guidance: the checkpoint carries one output head per step (PDD) and ComfyUI's model
+// sampling lays the "simple" schedule onto exactly that grid, so the official server
+// rejects any other step count or guidance scale — this builder pins both.
+// The VAE test is the DiT test plus "vae"; the DiT list excludes it explicitly.
+const H3IMG_RE = /minimax.?h3.?image/i;
+const H3IMG_VAE_RE = /minimax.?h3.?image.*vae/i;
+// The prompt expander. Comfy-Org's templates run a generic Qwen3.5-9B (w4a8 GPTQ) through
+// TextGenerateV2 with MiniMax's released PE prompts; MiniMax's own PE is a Qwen3.8-27B
+// fine-tune that has no ComfyUI build. FLUX 3's upsampler is ALSO a Qwen3.5-9B file but a
+// fine-tune for a different model, so it is excluded by name.
+const H3IMG_PE_RE = /qwen3\.?5[-_]?9b/i;
+const H3IMG_PE_EXCLUDE_RE = /flux|upsampler/i;
+const H3IMG_STEPS = 6;
+// The node's canvas grid (CANVAS_MULTIPLE in nodes_minimax_h3.py).
+const H3IMG_GRID = 32;
+// The model card: "The effective working range of MiniMax-H3-Image is about 4 MP to 20 MP".
+// The official server never samples below 2048² (`min_generation_area`): a smaller size is
+// generated at the same aspect on a 4 MP canvas and LANCZOS-resized back. Same rule here.
+const H3IMG_MIN_AREA = 2048 * 2048;
+// What a run renders when no size was asked for: the official templates' 4 MP default
+// (the node's own default is 2048²). `--size max` reaches the card's 16 MP sweet spot.
+const H3IMG_DEFAULT_AREA = 2048 * 2048;
+// The node accepts up to 100 references; ten is where every other multi-reference model
+// here stops, and each one costs a VAE encode plus vision tokens for the expander.
+const H3IMG_MAX_REFS = 10;
+// The official API accepts aspect ratios up to 3:1 either way.
+const H3IMG_MAX_ASPECT = 3;
+
 // The Qwen2.5-VL-7B encoder that the original Qwen-Image family (base, edit, 2509/2511/
 // 2512, and every control route) was trained against. The fallback stays inside the 2.5
 // family on purpose: qwen3vl_8b — boogu's encoder, and the one Qwen-Image-2.1 ships —
@@ -827,6 +854,12 @@ const LTX25_INPAINT = "ltx25-inpaint";
 // Foley V2A rides the 2.3 DEV stack (its recipe is real CFG 6 over 30 steps — not a
 // distilled schedule), freezing the video latent and denoising only the audio.
 const LTX_FOLEY = "ltx-foley";
+// LTX-2.3 ia2v ("talking photo"): person photo + speech → video, lips following the
+// speech. Official video_ltx2_3_ia2v template = the plain 2.3 cascade with the EMPTY audio
+// latent swapped for the ENCODED speech, frozen by an all-zero noise mask. ⚠️ LTX-2
+// Community License (revenue threshold + use restrictions) — kept out of the
+// digital-human product, here for comparison.
+const LTX_IA2V = "ltx-ia2v";
 // Motion Track Control (official LTX-2.5_ICLoRA_Motion_Track workflow): sparse point
 // TRAJECTORIES drawn over the canvas are rendered into a dot-trail video
 // (LTXVDrawTracks) and injected as the IC-LoRA guide — whatever sits under a dot
@@ -940,7 +973,13 @@ async function music3Companions() {
 // The vendor alternative REQUIRES a following "h3": TenStrip also ships an LTX-2.3
 // 10Eros line, whose filenames carry no "h3" and must keep falling through to the LTX
 // branch below.
-const H3_MODEL_RE = /minimax.?h3|10eros.*h3/i;
+// The "(?!.?image)" carves out MiniMax-H3-Image ("minimax_h3_image_pruned_…"): a
+// separate text-to-image / edit DiT with its own VAE and its own conditioning node
+// (MiniMaxH3ImageConditioning, ComfyUI 0.45). It shares the vendor prefix and the
+// Qwen3-VL-32B text encoder with the video model, but nothing else — matched here it
+// would take the video id, fold into the stock fl2va row as an "int8 variant", and the
+// precision menu could load an image DiT into the video graph.
+const H3_MODEL_RE = /minimax.?h3(?!.?image)|10eros.*h3/i;
 // The TURBO builds are step-distilled into the WEIGHTS — no LoRA involved. That makes
 // them a different sampling recipe (6 steps, not 20), and it makes stacking a turbo
 // LoRA on top a double distillation.
@@ -1054,6 +1093,9 @@ function videoTypeOf(model) {
   // MultiTalkModelLoader scans there) and the Kijai Wan2.1-I2V-480p UNET is the
   // wrapper's base model, not a standalone hey-koko entry.
   if (/infinitetalk|multitalk/i.test(model)) return (model === INFINITETALK || model === INFINITETALK_SPEAK) ? "infinitetalk" : null;
+  // LongCat-Avatar: same split — the sentinel is the entry, the real files on disk (the
+  // DiT in diffusion_models/) are components the wrapper's loader reads.
+  if (/longcat/i.test(model)) return model === LONGCAT_AVATAR ? "longcat-avatar" : null;
   if (/wan2[._]1-i2v/i.test(model)) return null; // Kijai Wan2_1-I2V-14B-480p_…_KJ — wrapper component
   if (/bernini/i.test(model)) return "bernini";
   if (/scail/i.test(model)) return "scail2";
@@ -1075,6 +1117,7 @@ function videoTypeOf(model) {
   if (model === LTX25_OUTPAINT) return "ltx25-outpaint";
   if (model === LTX25_INPAINT) return "ltx25-inpaint";
   if (model === LTX_FOLEY) return "ltx-foley";
+  if (model === LTX_IA2V) return "ltx-ia2v";
   if (model === LTX25_TRACK) return "ltx25-track";
   // LTX-2.5 BEFORE the generic LTX tests: its filenames match LTX_MODEL_RE too, but it
   // loads via UNETLoader + separate VAE/encoder files, so it must not reach the 2.3
@@ -1368,6 +1411,13 @@ const INFINITETALK = "infinitetalk";
 // stack as the V2V entry; graph differences: no source-video latents (nothing to
 // preserve → full 6-step denoise from step 0), LoadImage instead of LoadVideo, 25 fps.
 const INFINITETALK_SPEAK = "infinitetalk_speak";
+// Sentinel for LongCat-Video-Avatar 1.5 (MeiGen-AI / Meituan, MIT): the same job as
+// INFINITETALK_SPEAK — person photo + speech (attached, or the prompt read by the local
+// TTS) → talking video — on InfiniteTalk's successor. Own 13.6B DiT (not a Wan patch),
+// Whisper-large-v3 audio features, an 8-step DMD distill LoRA, trained at 25 fps on
+// 93-frame windows. Long speech is chained IN-GRAPH window by window (buildLongCatAvatar).
+// The name must stay clear of every videoTypeOf keyword (wan / animate / scail / …).
+const LONGCAT_AVATAR = "longcat_avatar";
 
 // Everything MSR needs, or null when a piece is absent (the entry is then hidden rather than
 // offered broken). Two routes, both end-to-end verified:
@@ -1622,6 +1672,33 @@ async function ltxFoleyParts() {
   return nodes && parts.ckpt && parts.lora && parts.encoder ? parts : null;
 }
 
+// LTX-2.3 ia2v — the 2.3 DEV checkpoint (the template's) plus everything the two-stage
+// cascade needs (Gemma-3 encoder, distilled LoRA, spatial upscaler), and the four core
+// nodes that turn a speech file into a frozen audio latent.
+const LTX_IA2V_NODES = [
+  "LTXAVTextEncoderLoader", "LTXVAudioVAELoader", "LTXVAudioVAEEncode", "SetLatentNoiseMask", "SolidMask",
+  "TrimAudioDuration", "LTXVConcatAVLatent", "LTXVSeparateAVLatent", "LTXVCropGuides", "LTXVImgToVideoInplace",
+  "LTXVPreprocess", "LTXVLatentUpsampler", "LatentUpscaleModelLoader", "EmptyLTXVLatentVideo", "ManualSigmas",
+  "CFGGuider", "SamplerCustomAdvanced", "ImageScale",
+];
+async function ltxIa2vParts() {
+  const [ckpts, loras, clips, ups, nodes] = await Promise.all([
+    comfyEnum("CheckpointLoaderSimple", "ckpt_name").catch(() => []),
+    comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []),
+    comfyEnum("LTXAVTextEncoderLoader", "text_encoder").catch(() => []),
+    comfyEnum("LatentUpscaleModelLoader", "model_name").catch(() => []),
+    comfyHasNodes(LTX_IA2V_NODES),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  const parts = {
+    ckpt: find(ckpts, /ltx.?2[._]3.*dev/i),
+    distill: find(loras, /ltx.*distill/i),
+    upscaler: find((ups || []).filter((n) => !LTX25_RE.test(n)), /ltx.*upscal/i),
+    encoder: find(clips.filter((n) => !LTX25_RE.test(n)), /gemma.*12b/i) || find(clips, /gemma_?3/i),
+  };
+  return nodes && parts.ckpt && parts.distill && parts.upscaler && parts.encoder ? parts : null;
+}
+
 // Everything InfiniteTalk V2V needs. Wrapper-based (WanVideoWrapper node family), so the
 // loaders are the wrapper's own: WanVideoModelLoader scans diffusion_models/,
 // MultiTalkModelLoader too (hence the patch copies there), Wav2VecModelLoader scans
@@ -1669,6 +1746,49 @@ async function infinitetalkCompanions() {
   const parts = await infinitetalkParts();
   if (parts) return parts;
   throw new Error("Missing pieces required by InfiniteTalk V2V:\n- ComfyUI-WanVideoWrapper custom node (git clone into custom_nodes/)\n- diffusion_models/Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors\n- diffusion_models/wan2.1_infiniteTalk_single_fp16.safetensors (copy of the model_patches file)\n- models/wav2vec2/wav2vec2-chinese-base_fp16.safetensors\n- vae/Wan2_1_VAE_bf16.safetensors · text_encoders/umt5_xxl…scaled · clip_vision_h · loras/lightx2v_I2V_14B_480p…");
+}
+
+// Everything LongCat-Video-Avatar 1.5 needs (Kijai's WanVideoWrapper ports, all from
+// huggingface.co/Kijai/WanVideo_comfy). LongCatAvatarWhisperEmbeds is the version gate:
+// it landed in the same wrapper commit that gave WanVideoLongCatAvatarExtendEmbeds its
+// v1.5 `prev_images`/`vae` inputs. An older wrapper has the extend node WITHOUT them,
+// and ComfyUI drops undeclared inputs silently — the chain would quietly fall back to
+// v1.0's latent slicing, which 1.5 was not trained on. Text encoding reuses the native
+// CLIPLoader + bridge, same reason as InfiniteTalk (the scaled-fp8 umt5 on disk).
+const LONGCAT_AVATAR_NODES = [
+  "WanVideoModelLoader", "WanVideoLoraSelect", "WanVideoBlockSwap", "WanVideoVAELoader",
+  "WanVideoEncode", "WanVideoDecode", "WanVideoSampler", "WanVideoTextEmbedBridge",
+  "WanVideoLongCatAvatarExtendEmbeds", "LongCatAvatarWhisperEmbeds", "WhisperModelLoader",
+  "ImageResizeKJv2", "GetImageRangeFromBatch", "ManualSigmas",
+];
+async function longcatAvatarParts() {
+  const [wrapModels, loras, whispers, clips, wrapVaes, nodes] = await Promise.all([
+    comfyEnum("WanVideoModelLoader", "model").catch(() => []),
+    comfyEnum("WanVideoLoraSelect", "lora").catch(() => []),
+    comfyEnum("WhisperModelLoader", "model").catch(() => []),
+    comfyEnum("CLIPLoader", "clip_name").catch(() => []),
+    comfyEnum("WanVideoVAELoader", "model_name").catch(() => []),
+    comfyHasNodes(LONGCAT_AVATAR_NODES),
+  ]);
+  const find = (list, re) => (list || []).find((n) => re.test(n)) || null;
+  const parts = {
+    // 1.5 ONLY ("LongCat-Avatar-15_…"). The 1.0 DiT ("LongCat-Avatar_bf16") reads
+    // wav2vec2 features through a different audio projection — this graph cannot drive it.
+    model: find(wrapModels, /longcat.?avatar.?1[._]?5/i),
+    // The 8-step schedule below belongs to this LoRA — required, not optional. 1.0's
+    // distill LoRAs are a different (and, per Kijai, extension-hostile) recipe.
+    lora: find(loras, /longcat.?avatar.?1[._]?5.*(dmd|distill)/i),
+    // audio_encoders/ also holds InfiniteTalk's wav2vec2 — pick Whisper by name.
+    whisper: find(whispers, /whisper.?large.?v3/i) || find(whispers, /whisper/i),
+    clip: find(clips, /umt5/i),
+    vae: find(wrapVaes, /wan.?2[._]1.*vae/i) || find(wrapVaes, /wan.*vae/i),
+  };
+  return nodes && parts.model && parts.lora && parts.whisper && parts.clip && parts.vae ? parts : null;
+}
+async function longcatAvatarCompanions() {
+  const parts = await longcatAvatarParts();
+  if (parts) return parts;
+  throw new Error("Missing pieces required by LongCat-Video-Avatar 1.5 (all from huggingface.co/Kijai/WanVideo_comfy):\n- ComfyUI-WanVideoWrapper new enough to have the LongCatAvatarWhisperEmbeds node\n- diffusion_models/LongCat-Avatar-15_bf16.safetensors (LongCat/)\n- loras/LongCat-Avatar-15_dmd_distill_lora_rank128_bf16.safetensors (LongCat/)\n- audio_encoders/whisper_large_v3_encoder_fp16.safetensors (HuMo/)\n- vae/Wan2_1_VAE_bf16.safetensors · text_encoders/umt5_xxl…scaled");
 }
 
 // Everything Wan-Dancer needs beyond the selected GLOBAL expert (the dropdown entry),
@@ -1759,7 +1879,7 @@ function capsFor(name, group, type, entry) {
   if (name === BERNINI_IMG_EDIT || name === BERNINI_IMG_SUBJECT) return ["edit"];
   // HiDream-O1 and Qwen-Image-2.1 are both "one checkpoint, two jobs": listed with the
   // txt2img models, and editing whatever is attached instead of ignoring it.
-  if (group === "image") return (/hidream.?o1/i.test(name) || QWEN21_RE.test(name) || FLUX3_RE.test(name)) ? ["image", "edit"] : ["image"];
+  if (group === "image") return (/hidream.?o1/i.test(name) || QWEN21_RE.test(name) || FLUX3_RE.test(name) || H3IMG_RE.test(name)) ? ["image", "edit"] : ["image"];
   if (group === "edit") return ["edit"];
   // video: a source-video model is v2v; bernini also accepts a plain image (i2v).
   if (name === LTX_UNION) return ["v2v", "audio"]; // depth-driven; LTX decodes a soundtrack
@@ -1773,6 +1893,8 @@ function capsFor(name, group, type, entry) {
   if (name === LTX25_TRACK) return ["t2v", "i2v", "audio"]; // trajectories + optional still; generates sound
   if (name === INFINITETALK) return ["v2v", "audio"]; // audio-DRIVEN dubbing (lip re-sync to a speech file)
   if (name === INFINITETALK_SPEAK) return ["i2v", "audio"]; // photo + speech/TTS → talking video
+  if (name === LONGCAT_AVATAR) return ["i2v", "audio"];     // same job, InfiniteTalk's successor
+  if (name === LTX_IA2V) return ["i2v", "audio"];           // same job on the LTX-2.3 stack
   if (type === "dancer") return ["i2v", "audio"]; // reference photo + MUSIC → dance video synced to it
   // MiniMax H3 generates its soundtrack in the same forward pass as the picture (one
   // latent, two VAEs at decode) — the same "audio" claim LTX gets. ref2va takes images
@@ -1803,6 +1925,7 @@ function imageRank(n) {
   if (n === BERNINI_T2I) return 9; // after the dedicated txt2img models
   if (n === PANO_T2I) return 10; // last: a recipe, not a checkpoint
   if (FLUX3_RE.test(n)) return 1.5; // tested before the generic /flux/ (Flux.1) line, which matches it too
+  if (H3IMG_RE.test(n)) return 1.6;
   if (/flux/i.test(n)) return 1;
   if (/pony/i.test(n)) return 2;
   if (/hidream.?i1/i.test(n)) return 3;
@@ -1864,6 +1987,8 @@ function videoRank(n) {
   // generic /animate/ test would otherwise claim it (same ordering trap as videoTypeOf).
   if (n === LTX_MSR) return 7.5;
   if (n === INFINITETALK_SPEAK) return 7.6; // photo→talking video, lives in the gen group
+  if (n === LONGCAT_AVATAR) return 7.65;    // its successor, right beside it
+  if (n === LTX_IA2V) return 7.66;          // same job on LTX, for comparison
   if (/dancer/i.test(n)) return 7.7;        // photo+music→dance video, same neighbourhood
   if (n === SCAIL2_ANIMATE) return 10;
   if (/scail/i.test(n)) return 11;
@@ -1937,6 +2062,17 @@ function isModelReady(name, group, type) {
   if (name === ANIMATE_REPLACE) return true; // Replace verified end-to-end (scene kept, person swapped)
   if (name === INFINITETALK) return true;    // V2V dub recipe verified live (92-frame lip re-sync, trim tail exact)
   if (name === INFINITETALK_SPEAK) return true; // I2V talking-photo recipe verified live (see buildInfiniteTalk)
+  // LongCat-Avatar — verified live on the 5090 (2026-11-12, ComfyUI 0.44.0): a Z-Image
+  // portrait + 9.2 s of Kokoro Chinese speech → 3 chained windows, 544×736 @ 25 fps, 476 s
+  // (~160 s per window, model already resident). Identity held across both seams with no
+  // visible jump; mouth closed in the pauses and open on speech. An earlier run that was
+  // interrupted mid-window-1 came back as the salvaged first window with its audio.
+  if (name === LONGCAT_AVATAR) return true;
+  // LTX-2.3 ia2v — verified live on the 5090 (2026-11-12): the same upper-body photo and
+  // 9.2 s Kokoro speech as LongCat's run → 832×1088 @ 24 fps, 225 frames, 79 s cold
+  // (≈6× faster than LongCat at 2.3× its pixels). Mouth closed in the pauses, open on
+  // speech; the body stays almost still (no hand gestures, unlike LongCat).
+  if (name === LTX_IA2V) return true;
   if (name === BERNINI_INSERT) return false;  // ads2v — wired but never live-verified
   // Bernini image side (i2i / r2i / t2i) — all three VERIFIED end-to-end on the live
   // box: t2i 11s, i2i relight 7s (identity held: shape/colour/position untouched),
@@ -2006,7 +2142,11 @@ function isModelReady(name, group, type) {
     // also settles the autogrow question: a wrong slot key reaches execute() as a stray
     // kwarg and raises TypeError, so a run that COMPLETES is proof the references were
     // handed to the node — they cannot be silently dropped.
-    /minimax.?h3/,
+    // MiniMax-H3-Image is a different model — see H3_MODEL_RE — with its own line below.
+    /minimax.?h3(?!.?image)/,
+    // MiniMax-H3-Image — bf16 on the Spark (2026-11-13): text→image with and without the
+    // expander, single- and multi-picture edits, the sub-4 MP downscale path.
+    /minimax.?h3.?image/,
   ];
   return READY.some((re) => re.test(b));
 }
@@ -2021,7 +2161,7 @@ function isModelReady(name, group, type) {
 // would put a white background in the video itself:
 //   • plain i2v / FLF (wan, ltx keyframes, hunyuan, ltx-2.3 t2v)
 //   • LTX Union Control  — the still IS frame 0 (LTXVImgToVideoInplace)
-//   • InfiniteTalk "photo speaks" — the photo IS the shot, animated in place
+//   • InfiniteTalk "photo speaks" / LongCat-Avatar — the photo IS the shot, animated in place
 // Bernini's merged entry is the one ambiguous case (an image alone = i2v start frame,
 // an image WITH a source clip = a reference); the frontend resolves it by whether a
 // clip is staged, so it is listed here and gated there.
@@ -2061,9 +2201,11 @@ async function proxyComfyModels(req, res) {
     // that budget competes with the DiT, so picking the encoder is a decision the user
     // makes independently of the ⚙ precision tier — mixing (bf16 DiT + nvfp4 encoder) is
     // a legitimate configuration, not a fallback. Sorted best-tier-first so the list reads
-    // in the same order the "auto" rule would choose.
+    // in the same order the "auto" rule would choose — for the official weights: within a
+    // tier the official build ahead of the heretic one (h3TextEncoderFor).
     const h3TextEncoders = clips.filter((n) => H3_CLIP_RE.test(n))
-      .sort((a, b) => PREC_AUTO_ORDER.indexOf(precisionOf(a)) - PREC_AUTO_ORDER.indexOf(precisionOf(b)));
+      .sort((a, b) => (PREC_AUTO_ORDER.indexOf(precisionOf(a)) - PREC_AUTO_ORDER.indexOf(precisionOf(b)))
+        || (H3_HERETIC_RE.test(a) - H3_HERETIC_RE.test(b)));
     // LTX is the only family with a user-pickable LoRA slot (⚙ "LTX LoRA"), so the
     // list is filtered to LTX-family files by the same name test the checkpoints use.
     // Other builders mount their LoRAs automatically and take no input here.
@@ -2087,7 +2229,7 @@ async function proxyComfyModels(req, res) {
     // mess). Everything installed here is a video LoRA except the panorama one, so
     // this is an exclusion rather than a match — a new image LoRA should show up
     // without anyone having to add a pattern for it.
-    const VIDEO_LORA_RE = /ltx|sulphur|wan|bernini|animate|lightx2v|scail|phantom|hunyuan.?video|infinitetalk|dancer|vace/i;
+    const VIDEO_LORA_RE = /ltx|sulphur|wan|bernini|animate|lightx2v|scail|phantom|hunyuan.?video|infinitetalk|longcat|dancer|vace/i;
     // krea2's LoRAs are image LoRAs, so the exclusion above lets them through — but they
     // were trained on Krea-2's own 12B DiT and match almost no keys on the Flux checkpoint
     // the panorama recipe generates with. They'd be ten entries that quietly do nothing.
@@ -2235,7 +2377,18 @@ async function proxyComfyModels(req, res) {
       videoModels.push({ name: INFINITETALK, type: "infinitetalk", label: "InfiniteTalk (dub / lip-sync)", needsVideo: true, needsAudio: true });
       // "Photo speaks": person photo + audio (or the prompt read out by the local TTS)
       // → talking video. No source video, so it joins the text/image→video group.
-      videoModels.push({ name: INFINITETALK_SPEAK, type: "infinitetalk", label: "InfiniteTalk (photo → talking video)", needsImages: 1 });
+      videoModels.push({ name: INFINITETALK_SPEAK, type: "infinitetalk", label: "InfiniteTalk (photo → talking video)", needsImages: 1, speaks: true });
+    }
+    // LongCat-Video-Avatar 1.5: the same photo + speech job on InfiniteTalk's successor.
+    // `speaks` = with no audio attached, the raw /imagine prompt is the text the local
+    // TTS reads (the frontend sends it apart as speechText).
+    // LTX-2.3 ia2v: the same photo + speech job on the LTX stack (license-restricted, see
+    // LTX_IA2V). `speaks` as above.
+    if (await ltxIa2vParts()) {
+      videoModels.push({ name: LTX_IA2V, type: "ltx-ia2v", label: "LTX-2.3 (photo → talking video)", needsImages: 1, speaks: true });
+    }
+    if (await longcatAvatarParts()) {
+      videoModels.push({ name: LONGCAT_AVATAR, type: "longcat-avatar", label: "LongCat-Video-Avatar 1.5 (photo → talking video)", needsImages: 1, speaks: true });
     }
     // 3D mesh models — a fourth group next to image/edit/video. Output is a FILE
     // (.glb/.spz), so these must never fall into the pixel pipelines. Each chain is
@@ -2306,13 +2459,19 @@ async function proxyComfyModels(req, res) {
       // ⚙ "Smooth to FPS", which DOES interpolate. Two frame-rate boxes that mean opposite
       // things is how "where is the interpolation setting?" happens; the resampling one is
       // the one nobody wants here.
-      m.fpsTunable = !(preset && preset.fpsFixed) && m.name !== VIDEO_ENHANCE;
+      // LongCat-Avatar likewise: 25 fps is what it was trained at, and its Whisper features
+      // are laid out one per frame at that rate (audio_stride 1) — another rate would only
+      // change how fast everyone moves.
+      m.fpsTunable = !(preset && preset.fpsFixed) && m.name !== VIDEO_ENHANCE && m.name !== LONGCAT_AVATAR && m.name !== LTX_IA2V;
       // Whether a negative prompt reaches the graph at all. MiniMax H3 guides with a
       // BasicGuider — ONE conditioning branch — so there is nowhere to put it: both the
       // ⚙ field and /imagine's `--neg …` are discarded. Everything the user wants
       // suppressed has to be said positively in the prompt instead, which is also where
       // the soundtrack is directed.
-      m.negativeTunable = m.type !== "minimax-h3";
+      // LongCat-Avatar's distilled recipe guides at text AND audio cfg 1.0 — there is no
+      // unconditional pass for a negative to steer, so the box would be a dead control.
+      // LTX ia2v: cfg 1 on both cascade stages (CFGGuider skips the uncond pass at 1).
+      m.negativeTunable = m.type !== "minimax-h3" && m.type !== "longcat-avatar" && m.type !== "ltx-ia2v";
       // The frame grid the ⚙ length field should offer, derived from the SAME preset the
       // server snaps against (snapLength) so the field can't advertise a range the
       // generator would then move. `max: null` = no trained ceiling declared; the field
@@ -2386,6 +2545,16 @@ async function proxyComfyModels(req, res) {
       && vaes.some((n) => /flux2.?vae/i.test(n))
       && (await comfyEnum("CLIPLoader", "type")).includes("flux3"))
       ? flux3Files : [];
+    // MiniMax-H3-Image — text→image, and an edit when pictures are attached. Offered only
+    // when its own VAE and the shared H3 text encoder are on disk AND the box runs a
+    // ComfyUI with the conditioning node (0.45): on an older box the checkpoint loads but
+    // nothing can condition it. The prompt expander is not part of the gate — ⚙ can turn
+    // it off, and a run that wants it and lacks it says so by name.
+    const h3ImageFiles = all.filter((n) => H3IMG_RE.test(n) && !H3IMG_VAE_RE.test(n));
+    const h3Image = (h3ImageFiles.length && clips.some((n) => H3_CLIP_RE.test(n))
+      && vaes.some((n) => H3IMG_VAE_RE.test(n))
+      && await comfyHasNodes(["MiniMaxH3ImageConditioning"]))
+      ? h3ImageFiles : [];
     // Krea-2 style reference: the same weights as the txt2img entry, so it is offered only
     // when BOTH the checkpoint and the ostris style-reference LoRA are installed — that
     // LoRA is what the route IS (without it this would be a plain generation that ignores
@@ -2486,7 +2655,7 @@ async function proxyComfyModels(req, res) {
     // REAL file — a saved choice must keep resolving, and generateComfyImage re-applies
     // the ⚙ preference to whatever name it receives — so the fix is to hide the token in
     // the frontend's OPTION TEXT, not to invent a fake value here.
-    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage, ...qwen21, ...krea2, ...flux3], (n) => n, null);
+    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage, ...qwen21, ...krea2, ...flux3, ...h3Image], (n) => n, null);
     // The image entries that stand for a COLLAPSED group, so the frontend can drop the
     // precision token from their option text. It can't work this out for itself — it
     // only ever sees the surviving representative, never the siblings it stands for.
@@ -2806,6 +2975,12 @@ function familyPreset(model) {
   // FluxGuidance recipe. `guidance` stays null: FLUX 3 has no guidance embedding.
   if (FLUX3_BASE_RE.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 4, guidance: null, steps: 50, sd3Latent: false };
+  }
+  // MiniMax-H3-Image: the official templates' KSampler (euler / simple, 6 steps, cfg 1).
+  // The step count and cfg are part of the distillation — the dispatch pins them whatever
+  // ⚙ says (see H3IMG_STEPS).
+  if (H3IMG_RE.test(model)) {
+    return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: null, steps: H3IMG_STEPS, sd3Latent: false };
   }
   if (FLUX3_RE.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: null, steps: 16, sd3Latent: false };
@@ -3367,6 +3542,232 @@ function buildFlux3Klein({ model, prompt, negative, width, height, seed, cfg, co
   } };
   wf["10"] = { class_type: "VAEDecode", inputs: { samples: ["9", 0], vae: ["3", 0] } };
   wf["11"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["10", 0] } };
+  return wf;
+}
+
+// ── MiniMax-H3-Image ─────────────────────────────────────────────────────────────
+// Companions: the shared H3 text encoder (same ⚙ pick as the video model), the image
+// model's own VAE, and — unless ⚙ turns it off — the prompt expander plus MiniMax's
+// released PE prompts. The prompts are MiniMax's text (MiniMax-H3-Image-PE, under the
+// MiniMax-H3-Image licence), so like FLUX 3's they are pinned in
+// server/model-data-manifest.json and fetched on first use rather than committed.
+async function h3ImageCompanions(wantPe, opts = {}) {
+  const [clips, vaes] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+  ]);
+  const clip = h3TextEncoderFor(clips, opts, "minimax-h3-image");
+  const vae = vaes.find((n) => H3IMG_VAE_RE.test(n));
+  // The template's own build first (w4a8 GPTQ); bestTier would rank it last.
+  const peFiles = clips.filter((n) => H3IMG_PE_RE.test(n) && !H3IMG_PE_EXCLUDE_RE.test(n));
+  const pe = wantPe ? (peFiles.find((n) => precisionOf(n) === "w4a8") || bestTier(peFiles)) : null;
+  const missing = [];
+  if (!clip) missing.push("qwen3vl_32b_minimax_h3_int8_convrot.safetensors (or _nvfp4_awq) → text_encoders/");
+  if (!vae) missing.push("minimax_h3_image_vae_fp16.safetensors → vae/");
+  if (wantPe && !pe) missing.push("qwen3.5_9b_w4a8_gptq.safetensors → text_encoders/ (or turn off \"Prompt expander\" in ⚙ to send your prompt as typed)");
+  if (missing.length) throw new Error("Missing files required by MiniMax H3 Image:\n- " + missing.join("\n- "));
+  if (wantPe && !(await comfyHasNodes(["TextGenerateV2", "PreviewAny"]))) {
+    throw new Error("MiniMax H3 Image's prompt expander needs ComfyUI's TextGenerateV2 node, which this ComfyUI does not have. Update ComfyUI, or turn off \"Prompt expander\" in ⚙ to send your prompt as typed.");
+  }
+  let pePrompts = null;
+  if (pe) {
+    try {
+      const read = async (rel) => (await modelDataFile("h3image-pe", rel)).toString("utf8");
+      pePrompts = {
+        system: (await read("prompt/t2i/system_prompt.txt")).replace(/\n+$/, ""),
+        t2i: await read("prompt/t2i/task_prompt.txt"),
+        edit: await read("prompt/edit/task_prompt.txt"),
+        params: JSON.parse(await read("prompt/t2i/request_params.json")),
+      };
+    } catch (err) {
+      throw new Error(`MiniMax H3 Image's prompt expander needs MiniMax's PE prompts (about 55 KB), which are downloaded once from Hugging Face — that failed: ${err.message}. Connect this machine to the internet once (or run "node scripts/fetch-model-data.js"), or turn off "Prompt expander" in ⚙ to send your prompt as typed.`);
+    }
+  }
+  return { clip, vae, pe, pePrompts };
+}
+
+const h3Gcd = (a, b) => (b ? h3Gcd(b, a % b) : a);
+// "W:H" in lowest terms — what the edit PE wants for each picture ("the caller has already
+// reduced the image's original display width and height to their exact lowest integer
+// ratio"). null when the size is unknown.
+function h3ImageRatio(dims) {
+  if (!dims || !(dims.width > 0) || !(dims.height > 0)) return null;
+  const g = h3Gcd(Math.round(dims.width), Math.round(dims.height)) || 1;
+  return `${Math.round(dims.width) / g}:${Math.round(dims.height) / g}`;
+}
+// A "W:H" string → [w, h], or null when it is not one, or is wider than the model takes.
+function h3ImageParseRatio(s) {
+  const m = String(s || "").trim().match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
+  if (!m) return null;
+  const w = Number(m[1]), h = Number(m[2]);
+  if (!(w > 0) || !(h > 0) || Math.max(w / h, h / w) > H3IMG_MAX_ASPECT) return null;
+  return [w, h];
+}
+// A canvas of about `area` pixels at aspect w:h on the node's 32-px grid — the same
+// arithmetic as MiniMax's own size_for() in examples/context_ir.py.
+function h3ImageCanvas(aw, ah, area) {
+  const side = (a, b) => Math.max(H3IMG_GRID, Math.round(Math.sqrt(area * a / b) / H3IMG_GRID) * H3IMG_GRID);
+  return { width: side(aw, ah), height: side(ah, aw) };
+}
+
+// The expander's answer → { caption, ratio }. The answer is meant to be one JSON object
+// ({"expanded_caption": …, "aspect_ratio": …}; the edit prompt names the ratio
+// "target_aspect_ratio"), but an LLM's JSON is not guaranteed: the prompt itself spends a
+// paragraph begging for escaped quotes. A strict parse of the first complete object is
+// tried first; then the caption is cut out between its key and the end of the object, so
+// one stray quote does not throw away a 300-word description. null = nothing usable — the
+// caller then sends the prompt as typed and says so (ComfyUI's own JsonExtractString
+// returns "" there, which would render an image from an empty prompt).
+function h3ImageReadPe(text) {
+  const s = String(text || "");
+  const ratioOf = (o) => (o && typeof o === "object" ? (o.aspect_ratio || o.target_aspect_ratio) : null);
+  for (let i = s.indexOf("{"); i !== -1; i = s.indexOf("{", i + 1)) {
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let j = i; j < s.length && end < 0; j++) {
+      const c = s[j];
+      if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === "\"") inStr = false; continue; }
+      if (c === "\"") inStr = true;
+      else if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) end = j;
+    }
+    if (end < 0) continue;
+    try {
+      const o = JSON.parse(s.slice(i, end + 1));
+      if (o && typeof o.expanded_caption === "string" && o.expanded_caption.trim()) {
+        return { caption: o.expanded_caption.trim(), ratio: ratioOf(o) || null };
+      }
+    } catch { /* not this one — try the next "{" */ }
+  }
+  const k = s.search(/"expanded_caption"\s*:\s*"/);
+  if (k < 0) return null;
+  const from = s.indexOf("\"", s.indexOf(":", k) + 1) + 1;
+  const tail = s.slice(from);
+  // Up to the ratio key when it follows the caption, else up to the LAST `"}` — the
+  // caption is the one field that may hold stray quotes and braces.
+  let stop = tail.search(/"\s*,\s*"(?:target_)?aspect_ratio"/);
+  if (stop < 0) { const ends = [...tail.matchAll(/"\s*\}/g)]; stop = ends.length ? ends[ends.length - 1].index : -1; }
+  const raw = stop >= 0 ? tail.slice(0, stop) : null;
+  if (!raw || !raw.trim()) return null;
+  let caption;
+  try { caption = JSON.parse(`"${raw.replace(/(^|[^\\])"/g, "$1\\\"")}"`); } catch { caption = raw.replace(/\\"/g, "\"").replace(/\\n/g, "\n"); }
+  const r = s.match(/"(?:target_)?aspect_ratio"\s*:\s*"([^"]*)"/);
+  return caption.trim() ? { caption: caption.trim(), ratio: r ? r[1] : null } : null;
+}
+
+// The prompt-expander pass, run as its OWN ComfyUI prompt ahead of the render. The
+// official templates wire it in-graph, but then the expander's other output — the aspect
+// ratio it picks for the picture (MiniMax: "When your aspect-ratio selection is auto, use
+// the aspect_ratio returned by the model") — has nowhere to go, since a graph cannot size
+// its canvas from a string. Running it first also lets a malformed answer fall back to
+// the typed prompt instead of an empty one.
+//
+// Text→image follows MiniMax's scripts/expand_prompt.py exactly: system prompt +
+// task_prompt.format(prompt), the released sampling parameters, thinking on. An edit
+// follows the PE README's message assembly — task prompt, picture count, each picture's
+// label and source ratio, then the instruction (as a JSON string) and the ratio selection.
+// TextGenerateV2 takes the pictures as one ordered set and cannot interleave them with
+// text, so the per-picture lines are listed together; the labels still say which is which.
+// `max_length` is the template's 8192, not the request's 4096: the budget includes the
+// thinking, which ran to ~17k characters on a one-line prompt.
+function buildH3ImagePe({ comp, prompt, refNames, refDims, ratioSel, seed }) {
+  const P = comp.pePrompts;
+  const sp = P.params || {};
+  const edit = refNames.length > 0;
+  const wf = { "1": { class_type: "CLIPLoader", inputs: { clip_name: comp.pe, type: "minimax", device: "default" } } };
+  let text;
+  if (edit) {
+    const n = refNames.length;
+    const parts = [P.edit, `Reference Image Count:\n${n} input image(s), labeled <Picture 1> through <Picture ${n}>.`];
+    refNames.forEach((_, i) => {
+      const r = h3ImageRatio(refDims[i]);
+      parts.push(`Reference Media:\n- <Picture ${i + 1}> [${r ? `aspect_ratio ${r}` : "aspect_ratio unavailable"}]`);
+    });
+    text = parts.join("\n\n")
+      + "\n\nUser Editing Instruction (JSON string):\n" + JSON.stringify(String(prompt || ""))
+      + `\n\nUser Aspect Ratio Selection:\n${ratioSel || "adaptive"}`
+      + "\n\nApply the instructions above to the supplied inputs and reference images. Output only the required two-field JSON object.";
+  } else {
+    // Python str.format with one positional field: "{}" → the prompt, "{{" / "}}" → braces.
+    text = P.t2i.replace(/\{\{|\}\}|\{\}/g, (m) => (m === "{{" ? "{" : m === "}}" ? "}" : String(prompt || "")));
+  }
+  const gen = { class_type: "TextGenerateV2", inputs: {
+    clip: ["1", 0], prompt: text, max_length: 8192,
+    sampling_mode: "on",
+    "sampling_mode.temperature": sp.temperature ?? 1, "sampling_mode.top_k": sp.top_k ?? 20,
+    "sampling_mode.top_p": sp.top_p ?? 0.95, "sampling_mode.min_p": sp.min_p ?? 0,
+    "sampling_mode.repetition_penalty": sp.repetition_penalty ?? 1,
+    "sampling_mode.presence_penalty": sp.presence_penalty ?? 0, "sampling_mode.seed": seed,
+    thinking: true, use_default_template: true, mtp: "auto",
+    // The released edit assembly is a single user message with no system turn.
+    ...(edit ? {} : { system_prompt: P.system }),
+  } };
+  // What the expander SEES of each picture: at most 1 MP (the expander only reads them; a
+  // phone photo at full size would be ~12k vision tokens). Never enlarged.
+  refNames.forEach((name, i) => {
+    wf[String(10 + i)] = { class_type: "LoadImage", inputs: { image: name } };
+    let src = [String(10 + i), 0];
+    const d = refDims[i];
+    if (!d || d.width * d.height > 1024 * 1024) {
+      wf[String(30 + i)] = { class_type: "ImageScaleToTotalPixels", inputs: { image: src, upscale_method: "lanczos", megapixels: 1, resolution_steps: 32 } };
+      src = [String(30 + i), 0];
+    }
+    gen.inputs[`images.image${i + 1}`] = src;
+  });
+  wf["2"] = gen;
+  wf["3"] = { class_type: "PreviewAny", inputs: { source: ["2", 0] } };
+  return wf;
+}
+
+// Queue a helper graph and wait for it — the pre-pass above. Same deadline and abort
+// signal as the render it serves, and the same client id, so a Stop reaches it.
+async function runComfyAux(workflow, clientId, signal, deadline) {
+  const r = await fetch(`${currentComfyUrl()}/prompt`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: workflow, client_id: clientId }), signal,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.prompt_id || (j.node_errors && Object.keys(j.node_errors).length)) {
+    throw new Error(`ComfyUI refused the prompt-expander graph: ${JSON.stringify(j.node_errors || j.error || j).slice(0, 600)}`);
+  }
+  return waitForOutputs(j.prompt_id, signal, deadline);
+}
+
+// MiniMax-H3-Image — one checkpoint, both jobs: nothing attached = text to image; attached
+// pictures = an edit, the n-th being <Picture n> in the prompt (image_1 is the picture to
+// edit). The official templates' graph: MiniMaxH3ImageConditioning makes the positive
+// conditioning AND the empty latent, ConditioningZeroOut stands in for a negative the
+// model does not have, and a 6-step / cfg-1 KSampler runs on the PDD grid. The node sizes
+// every reference itself (a ≤1024-px-short-edge copy for the encoder, a 1024–2048 one for
+// the VAE), so uploads go in untouched. `out` differs from `gen` only when the asked size
+// is under the 4 MP floor: the render is then made at 4 MP and LANCZOS-resized down, as
+// the official server's min_generation_area does.
+function buildH3Image({ model, caption, comp, imageNames, gen, out, seed }) {
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "minimax", device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+  };
+  const cond = { class_type: "MiniMaxH3ImageConditioning", inputs: {
+    clip: ["2", 0], vae: ["3", 0], prompt: caption, width: gen.width, height: gen.height,
+  } };
+  // Autogrow slots travel as "<group>.<slot>" (see the H3 video builder's reference slots).
+  (imageNames || []).forEach((name, i) => {
+    wf[String(30 + i)] = { class_type: "LoadImage", inputs: { image: name } };
+    cond.inputs[`images.image_${i + 1}`] = [String(30 + i), 0];
+  });
+  wf["5"] = cond;
+  wf["6"] = { class_type: "ConditioningZeroOut", inputs: { conditioning: ["5", 0] } };
+  wf["7"] = { class_type: "KSampler", inputs: {
+    seed, steps: H3IMG_STEPS, cfg: 1, sampler_name: "euler", scheduler: "simple", denoise: 1,
+    model: ["1", 0], positive: ["5", 0], negative: ["6", 0], latent_image: ["5", 1],
+  } };
+  wf["8"] = { class_type: "VAEDecode", inputs: { samples: ["7", 0], vae: ["3", 0] } };
+  let img = ["8", 0];
+  if (out.width !== gen.width || out.height !== gen.height) {
+    wf["9"] = { class_type: "ImageScale", inputs: { image: img, upscale_method: "lanczos", width: out.width, height: out.height, crop: "disabled" } };
+    img = ["9", 0];
+  }
+  wf["11"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: img } };
   return wf;
 }
 
@@ -4420,12 +4821,7 @@ async function videoCompanions(videoType, model, opts = {}) {
     // "auto" goes through bestTier so a downloaded bf16 doesn't win just by sorting first
     // (plain enum order put "bf16" ahead of "int8_convrot", silently swapping a 27 GB
     // encoder for a 51.5 GB one the moment the file landed).
-    const clipGroup = clips.filter((x) => H3_CLIP_RE.test(x));
-    const wantClip = String(opts.h3TextEncoder || "").trim();
-    const clip = (wantClip && clipGroup.find((x) => x === wantClip))
-      || (opts.precision && opts.precision !== "auto" && clipGroup.find((x) => precisionOf(x) === opts.precision))
-      || bestTier(clipGroup)
-      || find(clips, /minimax/i);
+    const clip = h3TextEncoderFor(clips, opts, model) || find(clips, /minimax/i);
     // The Ref-Delta Fused Turbo card names the int8 video VAE explicitly. Left to the
     // generic match it would get the fp16 one instead — not because fp16 is wrong, but
     // because "f" sorts before "i" and first-match decides. Falls back to the generic
@@ -4763,6 +5159,8 @@ function videoPreset(videoType, model, turbo) {
 function videoRateFor(videoType, model, opts, srcFps) {
   const p = videoPreset(videoType, model, true);
   if (p) return p.fpsFixed ? p.fps : (Number(opts.fps) || p.fps);
+  if (videoType === "longcat-avatar") return 25; // fixed — see fpsTunable
+  if (videoType === "ltx-ia2v") return LTX_IA2V_FPS;
   const fallback = (videoType === "infinitetalk" || videoType === "ltx-union") ? 25 : 16;
   return Number(srcFps) || Number(opts.fps) || fallback;
 }
@@ -5315,12 +5713,43 @@ const H3_MAX_REF_IMAGES = 9;
 // The H3 text encoders on disk. Shared by videoCompanions (which loads one) and
 // proxyComfyModels (which offers the list to ⚙) so the two cannot drift apart.
 const H3_CLIP_RE = /qwen3vl.*minimax|minimax.*qwen3vl/i;
+// The abliterated ("heretic") community rebuild of the H3 encoder — same architecture and
+// tiers, refusals removed. Auto never gives it to the official weights, and gives it FIRST
+// to the uncensored community grafts, which were built to be driven without the refusals
+// (user decision, 2026-11-13). Add a graft to H3_UNCENSORED_RE to move it to that side.
+const H3_HERETIC_RE = /heretic/i;
+const H3_UNCENSORED_RE = /10eros/i;
+// Which H3 text encoder a run loads — shared by the video model and MiniMax-H3-Image, which
+// read prompts through the same Qwen3-VL-32B, so the one ⚙ pick serves both. The named ⚙
+// choice wins outright (the heretic build stays pickable for any model). Otherwise the
+// flavour comes first — official encoder for the official weights and MiniMax-H3-Image,
+// heretic for an uncensored graft, the other flavour only when the right one is not
+// installed — and within it a build matching the ⚙ precision tier, then bestTier (never
+// plain enum order, which would put a 51.5 GB bf16 ahead of the 27 GB int8 the moment it
+// lands, and which used to hand the official weights the heretic build on a box where the
+// two share a tier, because "heretic" sorts ahead of "minimax").
+function h3TextEncoderFor(clips, opts = {}, model = "") {
+  const group = clips.filter((x) => H3_CLIP_RE.test(x));
+  const want = String(opts.h3TextEncoder || "").trim();
+  if (want && group.includes(want)) return want;
+  const heretic = H3_UNCENSORED_RE.test(model || "");
+  const preferred = group.filter((x) => H3_HERETIC_RE.test(x) === heretic);
+  const other = group.filter((x) => H3_HERETIC_RE.test(x) !== heretic);
+  for (const pool of [preferred, other]) {
+    if (!pool.length) continue;
+    return (opts.precision && opts.precision !== "auto" && pool.find((x) => precisionOf(x) === opts.precision))
+      || bestTier(pool);
+  }
+  return null;
+}
 
 // H3 LoRAs on disk. lightx2v's Turbo distillations are the only ones that exist today,
 // and every one of them is TASK-SPECIFIC: a fl2v LoRA on the ref2va weight (or the
 // reverse) loads without complaint and renders garbage, so the task is parsed out of the
 // filename and enforced rather than left to the user.
-const H3_LORA_RE = /minimax.?h3/i;
+// A MiniMax-H3-Image LoRA is an image-DiT LoRA and must never be offered on the video
+// weights, so the same carve-out as H3_MODEL_RE applies.
+const H3_LORA_RE = /minimax.?h3(?!.?image)/i;
 // The learned latent upscaler for H3's 24-channel latent space. It is keyed to the VAE's
 // latent LAYOUT, not to the DiT, so one weight serves every H3-family checkpoint — the
 // 10Eros grafts included, and their own model card asks for this pass by name, saying the
@@ -6027,6 +6456,43 @@ function buildLtxCascade({ model, prompt, negative, comp, imageName, imageNames,
   wf["24"] = { class_type: "LTXVAudioVAEDecode", inputs: { samples: ["93", 1], audio_vae: ["20", 0] } };
   wf["12"] = { class_type: "CreateVideo", inputs: { images: ["11", 0], fps: v.fps, audio: ["24", 0] } };
   wf["13"] = { class_type: "SaveVideo", inputs: { video: ["12", 0], filename_prefix: `${comfyTag()}_vid`, format: "mp4", codec: "h264" } };
+  return wf;
+}
+
+// LTX-2.3 ia2v ("talking photo"), per ComfyUI's official video_ltx2_3_ia2v template.
+// Its subgraph is the plain 2.3 i2v cascade above with ONE substitution: the audio latent
+// is not LTXVEmptyLatentAudio but the speech itself — LoadAudio → TrimAudioDuration →
+// LTXVAudioVAEEncode → SetLatentNoiseMask(SolidMask 0) — so the model is handed a
+// soundtrack it may not touch and animates the picture to it. The mask rides inside the
+// latent dict through SamplerCustomAdvanced and LTXVSeparateAVLatent, which is why the
+// template feeds stage 2 the stage-1 audio latent without re-masking it. So this patches
+// buildLtxCascade's graph instead of forking it:
+//   • node 21 (empty audio) → the frozen encoded speech (40–44)
+//   • the photo is cropped to the output aspect first (template: ResizeImageMaskNode
+//     "scale dimensions", centre crop) — the cascade's own i2v path skips that because
+//     its preset already fixes the frame
+//   • the soundtrack muxed into the file is the ORIGINAL trimmed speech, not the
+//     audio-VAE round trip the template decodes (node 24 dropped): the same samples the
+//     model was conditioned on, minus a lossy codec pass.
+// Not ported: the template's optional Gemma prompt rewriter (TextGenerateLTX2Prompt +
+// abliterated LoRA); the prompt goes in as written, like every other LTX entry here.
+const LTX_IA2V_FPS = 24;          // the template's frame rate (its t2v/i2v siblings run 25)
+const LTX_IA2V_MAX_SECONDS = 60;  // the template's TrimAudioDuration ceiling
+const LTX_IA2V_NEGATIVE = "pc game, console game, video game, cartoon, childish, ugly";
+const LTX_IA2V_PROMPT = "The person in the image is speaking directly to the camera, lips moving in sync with the speech, natural facial expressions and subtle head movement. Static camera.";
+function buildLtxIa2v({ model, prompt, negative, comp, imageName, audioName, audioSeconds, seed, v }) {
+  const wf = buildLtxCascade({ model, prompt: prompt || LTX_IA2V_PROMPT, negative: negative || LTX_IA2V_NEGATIVE, comp, imageName, seed, v });
+  wf["17"] = { class_type: "ImageScale", inputs: { image: ["14", 0], upscale_method: "lanczos", width: v.width, height: v.height, crop: "center" } };
+  wf["15"].inputs.image = ["17", 0];
+  wf["40"] = { class_type: "LoadAudio", inputs: { audio: audioName } };
+  wf["41"] = { class_type: "TrimAudioDuration", inputs: { audio: ["40", 0], start_index: 0, duration: audioSeconds } };
+  wf["42"] = { class_type: "LTXVAudioVAEEncode", inputs: { audio: ["41", 0], audio_vae: ["20", 0] } };
+  wf["43"] = { class_type: "SolidMask", inputs: { value: 0, width: v.width, height: v.height } };
+  wf["44"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["42", 0], mask: ["43", 0] } };
+  delete wf["21"];
+  wf["22"].inputs.audio_latent = ["44", 0];
+  delete wf["24"];
+  wf["12"].inputs.audio = ["41", 0];
   return wf;
 }
 
@@ -7060,6 +7526,151 @@ function buildInfiniteTalk({ prompt, negative, comp, videoName, imageName, audio
     "21": { class_type: "CreateVideo", inputs: { images: ["26", 0], fps, audio: ["17", 1] } },
     "22": { class_type: "SaveVideo", inputs: { video: ["21", 0], filename_prefix: `${comfyTag()}_infinitetalk`, format: "auto", codec: "auto" } },
   };
+}
+
+// LongCat-Video-Avatar 1.5 "photo speaks": person photo + speech → talking video.
+// RECIPE from the official meituan-longcat/LongCat-Video run_demo_avatar_single_audio_to_video.py
+// (model_type avatar-v1.5 + --use_distill); WIRING from Kijai's
+// LongCatAvatar_audio_image_to_video_example_01 — a 1.0 workflow — moved to 1.5:
+//   • Whisper-large-v3 features (LongCatAvatarWhisperEmbeds, audio_stride 1, 25 fps)
+//     instead of 1.0's wav2vec2 at stride 2 / 16 fps.
+//   • 8 steps with text AND audio guidance 1.0 — one forward per step. The DMD LoRA goes
+//     on at 1.0 (the official multiplier); Kijai's conversion carries alpha 64 on every
+//     layer, so 1.0 here is the same rank-128/alpha-64 scale the reference loads.
+//   • SIGMAS: the official 1.5 distill grid — 8 evenly spaced points from 1 down to 0.124
+//     on the 1000-step table, then the 1.5 checkpoint scheduler's shift 7 — handed in via
+//     ManualSigmas + plain "euler" (which takes custom sigmas as given). The wrapper's
+//     `longcat_distill_euler` builds 1.0's 50-step grid instead, so at 8 steps it ends at
+//     0.533 rather than 0.498.
+//   • bf16 base precision only (Kijai: LongCat does not run otherwise) and quantization
+//     "disabled" + 25 of the 48 blocks swapped (Kijai's example value): the bf16 DiT is
+//     31.7 GB, more than a 32 GB card holds next to its activations.
+// SPEED (measured 2026-11-13, RTX 5090, 544×736, 8 steps, warm windows; same seed):
+//   • attention "sageattn" (SageAttention 2.2): 18.25 → 9.71 s/step, 153 → 83 s per
+//     window (1.84×), output frame-for-frame the same as sdpa (flicker 1.388/1.380,
+//     sharpness 4.207/4.211). Kijai's warning was about sage 1.0.6; his own LongCat example
+//     runs sageattn. Used whenever the ComfyUI box was started with --use-sage-attention
+//     (comfyGpuInfo().sage), else sdpa.
+//   • torch.compile (⚙, WanVideoTorchCompileSettings): 9.71 → 8.89 s/step on top of sage,
+//     but ~30 s of compiling (window 0, then again for window 1's different shape) — a
+//     net win only past ~5 windows (~15 s of speech). Needs Triton on the ComfyUI box.
+//   • Tried and REJECTED: fp8_e4m3fn_fast (6.9 s/step but the picture collapses into a
+//     grey blur; it also refuses unmerged LoRAs), plain fp8 + no block swap (no faster —
+//     the swap is fully hidden by prefetch — and 28% more flicker), fp16_fast (6.6 s/step,
+//     black frames: fp16 overflows), merging the LoRA (−2% per step, +23 s at load).
+//     After sage the step is bound by the bf16 linear layers, not attention or memory.
+// LONG SPEECH = the official segment loop, in ONE graph. Window 0 is ai2v: 93 frames
+// growing out of the photo's latent. Every later window continues from the previous one's
+// LAST 13 decoded frames, re-encoded through the VAE (1.5's use_vcond=False path — the
+// extend node's prev_images + vae), keeps the photo latent as identity reference
+// (ref_frame_index 10 / mask range 3, official defaults), and reads the speech 80 frames
+// further on. Each window drops its 13 regenerated frames and is saved ON ITS OWN, silent —
+// SCAIL-2's incremental save — and the app joins the clips and lays the ORIGINAL speech
+// file over the result (mergeScail2Segments). So a minute of video never holds every
+// decoded frame at once, and a failure late in the chain still returns the finished
+// prefix. Every window renders the full 93 frames like the reference; the last one's
+// surplus (audio padded past its end) is cut off in-graph.
+// IDENTITY DRIFT (measured 2026-11-13, same seed/photo/speech, first 23 s): on long clips
+// the face drifts — heavier eye makeup, redder lips, thinner brows — from ~10 s on. It is
+// the chaining itself: each window paints on from the last 13 frames and the photo is one
+// latent of reference. Ruled out: sageattn (sdpa drifts identically), the VAE re-encode
+// (slicing the previous latents instead drifts the same, skin even darker), and the
+// prompt (describing a bare face changed nothing; cfg 1 makes the negative inert).
+// What helps: ⚙ "stronger identity hold" (opts.longcatRefAll, ON unless sent as false)
+// sets ref_mask_frame_range to 0, so no frame is kept from attending to the photo. Over a
+// full minute (same seed) the drift stops accumulating: lip redness 30–52 s 100–111 vs
+// 112–123 with the official 3 (photo 92), eye makeup and brows far closer at 32/49 s,
+// seams unchanged. The price, accepted by the user after watching both: ~30% less motion
+// in the second half and five 0.1–0.4 s moments that settle into the photo's own pose
+// (the repeated-motion effect the official mask exists to prevent). Off = official 3.
+const LONGCAT_WIN = 93;                            // official num_frames per window
+const LONGCAT_OVERLAP = 13;                        // official num_cond_frames
+const LONGCAT_STRIDE = LONGCAT_WIN - LONGCAT_OVERLAP; // 80 new frames per later window
+const LONGCAT_FPS = 25;
+// Longest speech one request renders: ~38 windows. A guard against a stray hour-long
+// attachment turning into a day of GPU time, not a model limit.
+const LONGCAT_MAX_SECONDS = 120;
+const LONGCAT_SIGMAS = "1.0, 0.9800, 0.9545, 0.9209, 0.8748, 0.8073, 0.6992, 0.4980, 0";
+const LONGCAT_NEGATIVE = "Close-up, Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards";
+// Window k's nodes are base+0 … base+5 — 10 apart, so windows can never overwrite each
+// other (SCAIL-2 shipped that bug once with a stride smaller than its node count).
+const longcatSegBase = (k) => 100 + k * 10;
+const longcatSaveNodeId = (k) => String(longcatSegBase(k) + 5);
+
+// Window plan for `total` output frames: how many frames precede window k (the extend
+// node's frames_processed — it reads the speech from (processed − 13) on), how many of
+// its leading frames are the regenerated overlap, and how many it contributes.
+function longcatWindows(total) {
+  const n = total <= LONGCAT_WIN ? 1 : 1 + Math.ceil((total - LONGCAT_WIN) / LONGCAT_STRIDE);
+  const wins = [];
+  for (let k = 0; k < n; k++) {
+    const processed = k === 0 ? 0 : LONGCAT_WIN + LONGCAT_STRIDE * (k - 1);
+    wins.push({
+      processed,
+      drop: k === 0 ? 0 : LONGCAT_OVERLAP,
+      keep: Math.min(k === 0 ? LONGCAT_WIN : LONGCAT_STRIDE, total - processed),
+    });
+  }
+  return wins;
+}
+
+function buildLongCatAvatar({ prompt, negative, comp, imageName, audioName, width, height, totalFrames, seed, attention = "sdpa", torchCompile = false, refEveryFrame = true, audioScale = 1.0 }) {
+  const wins = longcatWindows(totalFrames);
+  const genFrames = LONGCAT_WIN + LONGCAT_STRIDE * (wins.length - 1);
+  const pos = prompt || "A person is talking to the camera, natural speech, lips moving in sync with the audio, natural head movement and facial expression.";
+  const wf = {
+    "1": { class_type: "WanVideoModelLoader", inputs: { model: comp.model, base_precision: "bf16", quantization: "disabled", load_device: "offload_device", attention_mode: attention, block_swap_args: ["2", 0], lora: ["3", 0] } },
+    "2": { class_type: "WanVideoBlockSwap", inputs: { blocks_to_swap: 25, offload_img_emb: false, offload_txt_emb: false, use_non_blocking: true, vace_blocks_to_swap: 0, prefetch_blocks: 1, block_swap_debug: false } },
+    "3": { class_type: "WanVideoLoraSelect", inputs: { lora: comp.lora, strength: 1.0, low_mem_load: false, merge_loras: false } },
+    "5": { class_type: "WanVideoVAELoader", inputs: { model_name: comp.vae, precision: "bf16" } },
+    // Photo → output size → its latent: window 0's start frame AND every later window's
+    // identity reference.
+    "7": { class_type: "LoadImage", inputs: { image: imageName } },
+    "9": { class_type: "ImageResizeKJv2", inputs: { image: ["7", 0], width, height, upscale_method: "lanczos", keep_proportion: "crop", pad_color: "0, 0, 0", crop_position: "center", divisible_by: 16, device: "cpu" } },
+    "11": { class_type: "WanVideoEncode", inputs: { vae: ["5", 0], image: ["9", 0], enable_vae_tiling: false, tile_x: 272, tile_y: 272, tile_stride_x: 144, tile_stride_y: 128, noise_aug_strength: 0.0, latent_strength: 1.0 } },
+    "23": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "wan", device: "default" } },
+    "24": { class_type: "CLIPTextEncode", inputs: { clip: ["23", 0], text: pos } },
+    "25": { class_type: "CLIPTextEncode", inputs: { clip: ["23", 0], text: negative || LONGCAT_NEGATIVE } },
+    "13": { class_type: "WanVideoTextEmbedBridge", inputs: { positive: ["24", 0], negative: ["25", 0] } },
+    // Speech → Whisper features for the WHOLE chain at once; each window slices its own.
+    // num_frames only bounds how much audio is read — the features stop where it ends.
+    "14": { class_type: "WhisperModelLoader", inputs: { model: comp.whisper, base_precision: "fp16", load_device: "main_device" } },
+    "16": { class_type: "LoadAudio", inputs: { audio: audioName } },
+    "15": { class_type: "LongCatAvatarWhisperEmbeds", inputs: { whisper_model: ["14", 0], audio_1: ["16", 0], normalize_loudness: true, num_frames: genFrames, fps: LONGCAT_FPS, audio_scale: audioScale, audio_cfg_scale: 1.0, multi_audio_type: "para" } },
+    "19": { class_type: "ManualSigmas", inputs: { sigmas: LONGCAT_SIGMAS } },
+  };
+  // Transformer blocks only, static shapes — the settings of Kijai's LongCat example.
+  if (torchCompile) {
+    wf["30"] = { class_type: "WanVideoTorchCompileSettings", inputs: { backend: "inductor", fullgraph: false, mode: "default", dynamic: false, dynamo_cache_size_limit: 64, compile_transformer_blocks_only: true, dynamo_recompile_limit: 128, force_parameter_static_shapes: false, allow_unmerged_lora_compile: false } };
+    wf["1"].inputs.compile_args = ["30", 0];
+  }
+  const saveNodeIds = [];
+  let prevS = null, prevD = null;
+  wins.forEach((w, k) => {
+    const b = longcatSegBase(k);
+    const E = String(b), S = String(b + 1), D = String(b + 2), T = String(b + 3), CV = String(b + 4), SV = String(b + 5);
+    // Window 0 continues from the photo alone (overlap 1 = its single latent frame).
+    const ei = {
+      prev_latents: k === 0 ? ["11", 0] : [prevS, 0], audio_embeds: ["15", 0],
+      num_frames: LONGCAT_WIN, overlap: k === 0 ? 1 : LONGCAT_OVERLAP, frames_processed: w.processed,
+      if_not_enough_audio: "pad_with_start", ref_frame_index: 10, ref_mask_frame_range: refEveryFrame ? 0 : 3,
+    };
+    if (k > 0) Object.assign(ei, { ref_latent: ["11", 0], prev_images: [prevD, 0], vae: ["5", 0] });
+    wf[E] = { class_type: "WanVideoLongCatAvatarExtendEmbeds", inputs: ei };
+    // seed + k: one noise draw per window, still reproducible from the request's seed.
+    wf[S] = { class_type: "WanVideoSampler", inputs: { model: ["1", 0], image_embeds: [E, 0], text_embeds: ["13", 0], steps: 8, cfg: 1.0, shift: 7.0, seed: seed + k, force_offload: true, scheduler: "euler", riflex_freq_index: 0, denoise_strength: 1.0, batched_cfg: false, rope_function: "comfy", start_step: 0, end_step: -1, add_noise_to_samples: false, sigmas: ["19", 0] } };
+    wf[D] = { class_type: "WanVideoDecode", inputs: { vae: ["5", 0], samples: [S, 0], enable_vae_tiling: false, tile_x: 272, tile_y: 272, tile_stride_x: 144, tile_stride_y: 128 } };
+    let out = [D, 0];
+    if (w.drop > 0 || w.keep < LONGCAT_WIN) {
+      wf[T] = { class_type: "GetImageRangeFromBatch", inputs: { images: [D, 0], start_index: w.drop, num_frames: w.keep } };
+      out = [T, 0];
+    }
+    wf[CV] = { class_type: "CreateVideo", inputs: { images: out, fps: LONGCAT_FPS } };
+    wf[SV] = { class_type: "SaveVideo", inputs: { video: [CV, 0], filename_prefix: `${comfyTag()}_longcat`, format: "auto", codec: "auto" } };
+    saveNodeIds.push(SV);
+    prevS = S; prevD = D;
+  });
+  return { workflow: wf, saveNodeIds };
 }
 
 // Wan-Dancer (music → dance): reference photo + MUSIC file → the character dances to
@@ -8416,6 +9027,44 @@ async function probeAudioDuration(buf) {
   finally { if (tmp) fsp.unlink(tmp).catch(() => {}); }
 }
 
+// The speech track of a "photo speaks" entry (InfiniteTalk / LongCat-Avatar): the
+// attached audio file (pre-uploaded name, else inline base64), or — none attached — `text`
+// synthesized by the local TTS daemon (Kokoro, same engine as /voice). Voice: ⚙/--voice
+// (accepts "kokoro:zf_xiaoxiao" or a bare id), else auto-picked by script (CJK → Mandarin
+// female, otherwise US female). Returns { audioName, duration } — duration in seconds, 0
+// when unknown; `needDuration` makes an attachment the client didn't measure get probed
+// (ffprobe) — or { error } when the TTS fails. `speed` (⚙ speech speed, 0.5–2, 1 = as
+// the voice speaks) applies to the TTS only; an attached file is used as recorded.
+async function resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text, voice, speed = 1, needDuration = false, signal }) {
+  let duration = Number(sourceAudioDuration) || 0;
+  if (sourceAudioName || sourceAudio) {
+    let buf = null;
+    if (!sourceAudioName) {
+      const clean = typeof sourceAudio === "string" && sourceAudio.startsWith("data:") ? sourceAudio.split(",")[1] : sourceAudio;
+      buf = Buffer.from(clean, "base64");
+    }
+    const audioName = sourceAudioName || await uploadAudioBuffer(buf, sourceAudioMime || "audio/wav", signal);
+    if (!duration && needDuration) {
+      buf = buf || await fetchComfyInputFile(audioName, signal);
+      if (buf) duration = await probeAudioDuration(buf);
+    }
+    return { audioName, duration };
+  }
+  const vPref = String(voice || "").trim();
+  const engine = vPref.includes(":") ? vPref.split(":")[0] : "kokoro";
+  const vId = (vPref.includes(":") ? vPref.split(":")[1] : vPref)
+    || (/[぀-ヿ一-鿿]/.test(text) ? "zf_xiaoxiao" : "af_heart");
+  let wavPath;
+  try {
+    wavPath = await synthToWav({ engine, voice: vId, text, speed: Math.min(2, Math.max(0.5, Number(speed) || 1)) });
+  } catch (e) {
+    return { error: `Local TTS failed (${String((e && e.message) || e)}). Attach an audio file instead, or check the TTS setup used by /voice.` };
+  }
+  const wavBuf = await fsp.readFile(wavPath);
+  duration = (await probeAudioDuration(wavBuf)) || duration;
+  return { audioName: await uploadAudioBuffer(wavBuf, "audio/wav", signal), duration };
+}
+
 // Upload a speech/audio file to ComfyUI's input dir (same /upload/image endpoint — it
 // accepts audio too; LoadAudio reads from the input dir). Content-hashed filename, same
 // dedupe/no-collision rationale as uploadVideoBuffer.
@@ -8613,7 +9262,7 @@ async function mergeFinishedPrefix(watcher, merge, promptId, wantCodec, crf, sig
     } catch { break; }
   }
   if (!bufs.length) return null;
-  const srcBuf = await fetchComfyInputFile(merge.sourceName, signal);
+  const srcBuf = merge.mute ? null : await fetchComfyInputFile(merge.sourceName, signal);
   const merged = await mergeScail2Segments(bufs, srcBuf, wantCodec, crf, signal);
   if (!merged) return null;
   console.log(`[comfy] ${merge.label}: salvaged ${bufs.length}/${merge.saveNodeIds.length} finished segments after an interrupted render`);
@@ -9088,7 +9737,10 @@ async function generateComfyImage(req, res) {
     // this model supports is a ~17-minute render — well past the image cap.
     // FLUX 3 Klein runs a 9B LLM (its prompt upsampler) before the render and, cold,
     // loads three large files in a row — the 120 s image default is a bare render's budget.
-    const imageFloorSec = FLUX3_RE.test(model) ? 300 : 60;
+    // MiniMax-H3-Image runs its expander (a 9B LLM that thinks first — 80 s cold on a DGX
+    // Spark) as a separate pass, then loads a 37 GB DiT plus the 27 GB H3 encoder, and a
+    // 16 MP render is over a minute on its own: the whole image cap, not a slice of it.
+    const imageFloorSec = H3IMG_RE.test(model) ? 600 : FLUX3_RE.test(model) ? 300 : 60;
     const timeoutMs = (videoType || meshType || audioType)
       ? (reqTimeout === 0 ? 0 : Math.max(60, reqTimeout || 1800) * 1000)
       : Math.min(600, Math.max(imageFloorSec, reqTimeout || 120)) * 1000;
@@ -9126,7 +9778,10 @@ async function generateComfyImage(req, res) {
       // wrote can be read back off /history — the image model never saw what the user
       // typed, and that rewrite has to be visible (same reason as krea2LoraInfo.trigger).
       let flux3Info = null;
-      let solAttnUsed = null;     // Sol-Attn mode actually applied ("bf16"/"int8_qk"/"int8_qk_pv")
+      // MiniMax-H3-Image: { pe: "on" | "off" | "failed", caption, ratio, gen, out } — what
+      // the expander wrote (the done-line shows it) and the canvas that came out of it.
+      let h3ImageInfo = null;
+      let solAttnUsed = null;    // Sol-Attn mode actually applied ("bf16"/"int8_qk"/"int8_qk_pv")
       let solChunkUsed;           // MLP chunking actually applied
       let solAttnSkipped = false; // asked for, but ComfyUI-sol-attn is not on this worker
       let h3Sla = false;          // this weight's recipe calls for SLA block-sparse attention
@@ -9647,38 +10302,126 @@ async function generateComfyImage(req, res) {
         // clip, the tail extends from the last frame.
         const iFps = speak ? (opts.fps || 25) : (Number(sourceVideoFps) || opts.fps || 25);
         const maxFrames = opts.length ? Math.max(5, Math.round(opts.length)) : (speak ? 500 : 1000);
-        let audioName;
-        let audioDur = Number(sourceAudioDuration) || 0;
-        if (sourceAudioName) audioName = sourceAudioName;
-        else if (sourceAudio) audioName = await uploadAudio(sourceAudio, controller.signal, sourceAudioMime);
-        else {
-          // speak + text → local TTS. Voice: ⚙/--voice (accepts "kokoro:zf_xiaoxiao" or a
-          // bare id), else auto-picked by script (CJK → Mandarin female, otherwise US female).
-          const vPref = String(opts.ttsVoice || "").trim();
-          const engine = vPref.includes(":") ? vPref.split(":")[0] : "kokoro";
-          const vId = (vPref.includes(":") ? vPref.split(":")[1] : vPref)
-            || (/[぀-ヿ一-鿿]/.test(speechText) ? "zf_xiaoxiao" : "af_heart");
-          let wavPath;
-          try {
-            wavPath = await synthToWav({ engine, voice: vId, text: speechText, speed: 1 });
-          } catch (e) {
-            sendJson(res, 502, { error: `Local TTS failed (${String((e && e.message) || e)}). Attach an audio file instead, or check the TTS setup used by /voice.` });
-            return;
-          }
-          const wavBuf = await fsp.readFile(wavPath);
-          audioDur = (await probeAudioDuration(wavBuf)) || audioDur;
-          audioName = await uploadAudioBuffer(wavBuf, "audio/wav", controller.signal);
-        }
+        // Attached audio, or (speak + text) the local TTS reading speechText.
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, signal: controller.signal });
+        if (track.error) { sendJson(res, 502, { error: track.error }); return; }
+        const { audioName, duration: audioDur } = track;
         let videoName = null, imageName = null;
         if (speak) { imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_itref.png`); imagesUsed = 1; }
         else videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         // Scene prompt: dub (and speak-with-audio) keep the user prompt; speak-with-TTS
-        // reads the prompt ALOUD, so the scene falls back to the builder's generic default.
-        const scenePrompt = (speak && !hasAud) ? "" : prompt;
+        // reads the prompt ALOUD, so the scene is `scenePrompt` (--pos / ⚙ positive, sent
+        // apart) or, without one, the builder's generic default.
+        const scenePrompt = (speak && !hasAud) ? String(body.scenePrompt || "").trim() : prompt;
         workflow = buildInfiniteTalk({ prompt: scenePrompt, negative: negative_prompt || "", comp, videoName, imageName, audioName, width: iw, height: ih, fps: iFps, maxFrames, seed });
         videoDims = { width: iw, height: ih, fps: iFps };
         const audioFrames = audioDur > 0 ? Math.round(audioDur * iFps) : 0;
         if (audioFrames) videoDims.length = Math.min(audioFrames, maxFrames);
+      } else if (videoType === "longcat-avatar") {
+        // LongCat-Video-Avatar 1.5 "photo speaks": PERSON PHOTO + speech — an attached audio
+        // file, or speechText read by the local TTS (InfiniteTalk speak's contract). The
+        // window chain is laid out HERE from the speech length, so that length must be
+        // known before queueing (InfiniteTalk's sampler discovers it at run time).
+        const hasAud = !!(sourceAudio || sourceAudioName);
+        const speechText = String(body.speechText || prompt || "").trim();
+        if (!hasImgInput) { sendJson(res, 400, { error: "LongCat-Avatar needs a person photo. Attach one, then /imagine <text to read> (or attach an audio file instead of text)." }); return; }
+        if (!hasAud && !speechText) { sendJson(res, 400, { error: "LongCat-Avatar needs the speech: /imagine <text to read> (synthesized locally), or attach an audio file." }); return; }
+        const comp = await longcatAvatarCompanions();
+        // FAIL FAST (SCAIL-2's reason): the windows are joined HERE after the render, so a
+        // missing ffmpeg would surface after the GPU time instead of now; ffprobe also
+        // measures attached speech and finds the soundtrack the merge lays on.
+        {
+          const missing = [];
+          for (const tool of ["ffmpeg", "ffprobe"]) if (!(await hasLocalTool(tool))) missing.push(tool);
+          if (missing.length) {
+            sendJson(res, 400, { error: `LongCat-Avatar needs ${missing.join(" and ")} on this machine (the one running hey-koko, not the ComfyUI box) to join the rendered windows and lay the speech over them. Install it (macOS: brew install ffmpeg).` });
+            return;
+          }
+        }
+        // The photo's aspect at the 480p budget (832×480, or the ⚙/--size budget). Dims /32,
+        // the grid of the reference's own resolution buckets.
+        let aspW = Number(refImageWidth), aspH = Number(refImageHeight);
+        if (!(aspW > 0 && aspH > 0)) {
+          const d = imageDims(images[0]);
+          if (d) { aspW = d.width; aspH = d.height; }
+        }
+        const aspect = (aspW > 0 && aspH > 0) ? aspW / aspH : 832 / 480;
+        const budget = (opts.width && opts.height) ? opts.width * opts.height : 832 * 480;
+        const lw = snapDim(Math.sqrt(budget * aspect), 32), lh = snapDim(Math.sqrt(budget / aspect), 32);
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, needDuration: true, signal: controller.signal });
+        if (track.error) { sendJson(res, 502, { error: track.error }); return; }
+        if (!(track.duration > 0)) { sendJson(res, 502, { error: "LongCat-Avatar could not measure the speech length (it plans its windows from it). Is ffprobe installed? Otherwise convert the audio to WAV or MP3 and attach it again." }); return; }
+        // Output length = speech length; ⚙ length lowers it (quick tests render the start).
+        let totalFrames = Math.round(track.duration * LONGCAT_FPS);
+        if (opts.length) totalFrames = Math.min(totalFrames, Math.max(5, Math.round(opts.length)));
+        if (totalFrames < 5) { sendJson(res, 400, { error: "The speech is too short for LongCat-Avatar (under 0.2 s)." }); return; }
+        if (totalFrames > LONGCAT_MAX_SECONDS * LONGCAT_FPS) {
+          sendJson(res, 400, { error: `The speech is ${track.duration.toFixed(1)} s; LongCat-Avatar renders at most ${LONGCAT_MAX_SECONDS} s per clip. Split the text or audio into shorter parts, or set ⚙ length to render only the start.` });
+          return;
+        }
+        const imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_lcref.png`);
+        imagesUsed = 1;
+        // With TTS the prompt is what gets READ, so the scene is `scenePrompt` (--pos / ⚙
+        // positive, sent apart) or, without one, the builder's generic default.
+        // sageattn halves the step time (see buildLongCatAvatar) — only where the box proves
+        // the package is there; ⚙ torch.compile only where the wrapper has its settings node.
+        const attention = (await comfyGpuInfo()).sage ? "sageattn" : "sdpa";
+        const torchCompile = !!opts.torchCompile && await comfyHasNodes(["WanVideoTorchCompileSettings"]);
+        const built = buildLongCatAvatar({ prompt: hasAud ? prompt : String(body.scenePrompt || "").trim(), negative: negative_prompt || "", comp, imageName, audioName: track.audioName, width: lw, height: lh, totalFrames, seed, attention, torchCompile, refEveryFrame: opts.longcatRefAll !== false,
+          // ⚙ audio drive: scales the audio cross-attention residual in every block (the
+          // node's audio_scale). Measured 2026-11-13 (9 s, same seed, hands-clasped photo):
+          // 0.7 → body motion -8%, head sway -15%, lips intact; 0.5 ≈ 0.7 with the lips a
+          // little looser; 0.3 BREAKS (mouth moves in pauses, body no calmer) → floor 0.5.
+          // A modest knob: the photo dominated (open hands in view ≈ 2× the body motion).
+          audioScale: Number(opts.longcatAudioScale) > 0 ? Math.min(1.5, Math.max(0.5, Number(opts.longcatAudioScale))) : 1.0 });
+        workflow = built.workflow;
+        // The speech file is the soundtrack donor: the merge lays it, unsliced and at its
+        // original quality, over the joined windows (-shortest trims it to the picture).
+        // singleFile false: unlike SCAIL-2 / Animate there is no ⚙ "Long-clip memory" Off
+        // path to point the failure messages at.
+        segmentMerge = { label: "LongCat-Avatar", saveNodeIds: built.saveNodeIds, sourceName: track.audioName, singleFile: false };
+        videoDims = { width: lw, height: lh, fps: LONGCAT_FPS, length: totalFrames };
+      } else if (videoType === "ltx-ia2v") {
+        // LTX-2.3 ia2v: PERSON PHOTO + speech (attached, or speechText via the local TTS —
+        // the same contract as the other "photo speaks" entries). One pass, no windows:
+        // the clip is as long as the speech, up to the template's 60 s.
+        const hasAud = !!(sourceAudio || sourceAudioName);
+        const speechText = String(body.speechText || prompt || "").trim();
+        if (!hasImgInput) { sendJson(res, 400, { error: "LTX-2.3 talking photo needs a person photo. Attach one, then /imagine <text to read> (or attach an audio file instead of text)." }); return; }
+        if (!hasAud && !speechText) { sendJson(res, 400, { error: "LTX-2.3 talking photo needs the speech: /imagine <text to read> (synthesized locally), or attach an audio file." }); return; }
+        const parts = await ltxIa2vParts();
+        if (!parts) throw new Error("Missing pieces required by LTX-2.3 talking photo:\n- checkpoints/ltx-2.3-22b-dev-fp8.safetensors\n- loras/ltx-2.3 distilled LoRA · latent_upscale_models/ltx-2.3-spatial-upscaler-x2 · text_encoders/gemma_3_12B_it…");
+        // The plain LTX entry's own picks (distilled LoRA, upscaler, encoder, base recipe) —
+        // no ⚙ "LTX LoRA": that slot is hidden for this entry.
+        const comp = await videoCompanions("ltx", parts.ckpt, {});
+        if (!comp.distillLora || !comp.upscaler) throw new Error("LTX-2.3 talking photo needs the distilled LoRA and the spatial upscaler (the template's two-stage cascade).");
+        // The photo's aspect at the LTX budget (1280×704, or the ⚙/--size budget). /64: the
+        // cascade samples at half size, which must stay on the /32 latent grid.
+        let aspW = Number(refImageWidth), aspH = Number(refImageHeight);
+        if (!(aspW > 0 && aspH > 0)) {
+          const d = imageDims(images[0]);
+          if (d) { aspW = d.width; aspH = d.height; }
+        }
+        const aspect = (aspW > 0 && aspH > 0) ? aspW / aspH : 1280 / 704;
+        const budget = (opts.width && opts.height) ? opts.width * opts.height : 1280 * 704;
+        const xw = snapDim(Math.sqrt(budget * aspect), 64), xh = snapDim(Math.sqrt(budget / aspect), 64);
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, needDuration: true, signal: controller.signal });
+        if (track.error) { sendJson(res, 502, { error: track.error }); return; }
+        if (!(track.duration > 0)) { sendJson(res, 502, { error: "LTX-2.3 talking photo could not measure the speech length (it sizes the clip from it). Is ffprobe installed? Otherwise convert the audio to WAV or MP3 and attach it again." }); return; }
+        // ⚙ length (frames) shortens the clip — the speech is trimmed to match.
+        let seconds = track.duration;
+        if (opts.length) seconds = Math.min(seconds, Math.max(9, Math.round(opts.length)) / LTX_IA2V_FPS);
+        if (seconds > LTX_IA2V_MAX_SECONDS) {
+          sendJson(res, 400, { error: `The speech is ${track.duration.toFixed(1)} s; LTX-2.3 talking photo renders at most ${LTX_IA2V_MAX_SECONDS} s in one pass. Split the text or audio, or set ⚙ length to render only the start.` });
+          return;
+        }
+        // Frames on LTX's 8n+1 grid, rounded UP so the picture never stops before the speech.
+        const length = 8 * Math.ceil((seconds * LTX_IA2V_FPS) / 8) + 1;
+        const imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_ia2v.png`);
+        imagesUsed = 1;
+        const v = { width: xw, height: xh, length, fps: LTX_IA2V_FPS, cfg: 1 };
+        workflow = buildLtxIa2v({ model: parts.ckpt, prompt: hasAud ? prompt : String(body.scenePrompt || "").trim(), negative: negative_prompt || "", comp, imageName, audioName: track.audioName, audioSeconds: Number(seconds.toFixed(3)), seed, v });
+        videoDims = { width: xw, height: xh, fps: LTX_IA2V_FPS, length };
       } else if (videoType === "dancer") {
         // Wan-Dancer: reference PHOTO + MUSIC file → the character dances to the track.
         // Both are hard requirements — the audio is the driving signal (the global
@@ -10781,6 +11524,70 @@ async function generateComfyImage(req, res) {
           // being SET is the signal, not the numbers themselves.
           pinSize: !!(opts.width && opts.height),
         });
+      } else if (H3IMG_RE.test(model)) {
+        // MiniMax-H3-Image: text→image, or an edit of the attached pictures (<Picture 1>…).
+        // Like FLUX 3 it reads pictures as references, never as a start latent, and has no
+        // mask input — a painted 🖌 region is ignored. No negative prompt either (the
+        // official server rejects one); the graph's negative is the zeroed positive.
+        const wantPe = opts.h3ImagePe !== false;
+        const comp = await h3ImageCompanions(wantPe, opts);
+        let imageNames = [], refDims = [];
+        if (isImg2Img) {
+          const refs = images.slice(0, H3IMG_MAX_REFS);
+          // Distinct filenames per reference — uploadImage's default name + overwrite
+          // would collapse them all down to the last image.
+          for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `${comfyTag()}_h3iref${ri}.png`));
+          refDims = refs.map((b64) => imageDims(b64));
+          if (images.length > refs.length) imagesUsed = refs.length;
+        }
+        // The size asked for (⚙ or --size), and the shape it implies. An edit keeps the
+        // first picture's shape at the asked pixel budget — the rule every edit model here
+        // follows — so only the AREA of an asked size carries over to it.
+        const asked = (opts.width && opts.height) ? { width: Number(opts.width), height: Number(opts.height) } : null;
+        const srcShape = refDims[0] && refDims[0].width && refDims[0].height ? [refDims[0].width, refDims[0].height] : null;
+        // true = the output takes the picture's shape and only the asked AREA.
+        const keepSrcShape = !!(asked && isImg2Img && srcShape);
+        const askedShape = asked ? (keepSrcShape ? srcShape : [asked.width, asked.height]) : null;
+        let caption = String(prompt || "").trim();
+        let peState = comp.pe ? "on" : "off";
+        let peRatio = null;
+        if (comp.pe) {
+          // An edit tells the expander which canvas it is writing for: the asked shape, or
+          // "adaptive" to let it choose (and the render then follows its choice).
+          const ratioSel = isImg2Img
+            ? (askedShape ? h3ImageRatio({ width: askedShape[0], height: askedShape[1] }) : "adaptive")
+            : null;
+          const peOut = await runComfyAux(buildH3ImagePe({ comp, prompt: caption, refNames: imageNames, refDims, ratioSel, seed }),
+            clientId, controller.signal, deadline);
+          const peText = peOut && peOut["3"] && Array.isArray(peOut["3"].text) ? peOut["3"].text.join("") : "";
+          const read = h3ImageReadPe(peText);
+          if (read) { caption = read.caption; peRatio = h3ImageParseRatio(read.ratio); }
+          else {
+            peState = "failed";
+            console.warn(`[comfy-gen] MiniMax H3 Image: the prompt expander's answer had no readable caption (${peText.length} chars) — rendering the prompt as typed`);
+          }
+        }
+        if (!caption) { sendJson(res, 400, { error: "MiniMax H3 Image needs a prompt — for an edit, say what to change in <Picture 1>." }); return; }
+        let gen, out;
+        if (asked) {
+          // Text→image returns exactly the asked size; an edit returns the asked area at
+          // the picture's shape, on the grid.
+          out = keepSrcShape
+            ? h3ImageCanvas(srcShape[0], srcShape[1], asked.width * asked.height)
+            : { width: Math.round(asked.width), height: Math.round(asked.height) };
+          const outArea = out.width * out.height;
+          gen = outArea < H3IMG_MIN_AREA
+            ? h3ImageCanvas(out.width, out.height, H3IMG_MIN_AREA)
+            : { width: Math.max(H3IMG_GRID, Math.round(out.width / H3IMG_GRID) * H3IMG_GRID), height: Math.max(H3IMG_GRID, Math.round(out.height / H3IMG_GRID) * H3IMG_GRID) };
+        } else {
+          // No size asked: the expander's ratio when it gave one, else the picture's own
+          // shape for an edit, else square — at the 4 MP default.
+          const shape = peRatio || srcShape || [1, 1];
+          gen = out = h3ImageCanvas(shape[0], shape[1], H3IMG_DEFAULT_AREA);
+        }
+        workflow = buildH3Image({ model, caption, comp, imageNames, gen, out, seed });
+        h3ImageInfo = { pe: peState, peModel: comp.pe, caption: peState === "on" ? caption : null,
+          ratio: peRatio ? peRatio.join(":") : null, gen, out };
       } else if (FLUX3_RE.test(model)) {
         // FLUX 3 Klein: text→image, or an edit against up to 10 references when images are
         // attached. Tested before the generic mask / img2img branches below: this model
@@ -10959,6 +11766,9 @@ async function generateComfyImage(req, res) {
       // subscription would otherwise never be recorded, and it is exactly the early
       // segments that survive an interrupted render.
       if (segmentMerge) {
+        // ⚙ "silent video": the clips are silent already, so honouring it means the merge
+        // must not lay the soundtrack back on (applyMuteAudio only reaches CreateVideo).
+        segmentMerge.mute = !!opts.noAudio;
         salvageCodec = opts.videoCodec === "h265" ? "h265" : "h264";
         salvageCrf = Number(opts.videoCrf) || 0;
         execWatcher = watchComfyExecuted(clientId, new Set(segmentMerge.saveNodeIds));
@@ -11020,14 +11830,14 @@ async function generateComfyImage(req, res) {
         // A hole in the middle would splice the clip together across a gap and put the
         // rest of it out of sync with the audio — refuse rather than ship that silently.
         if (missing.length || segBufs.length !== segmentMerge.saveNodeIds.length) {
-          sendJson(res, 502, { error: `${segmentMerge.label} rendered ${segBufs.length} of ${segmentMerge.saveNodeIds.length} segments — nothing came back from save node(s) ${missing.join(", ") || "?"}. The finished segments are in ComfyUI's output folder (${outDir(OUT_VID)}/) and can be joined by hand; set ⚙ "Long-clip memory" to Off to go back to the single-file path.` });
+          sendJson(res, 502, { error: `${segmentMerge.label} rendered ${segBufs.length} of ${segmentMerge.saveNodeIds.length} segments — nothing came back from save node(s) ${missing.join(", ") || "?"}. The finished segments are in ComfyUI's output folder (${outDir(OUT_VID)}/) and can be joined by hand${segmentMerge.singleFile === false ? "." : "; set ⚙ \"Long-clip memory\" to Off to go back to the single-file path."}` });
           return;
         }
         const wantCodec = opts.videoCodec === "h265" ? "h265" : "h264";
-        const srcBuf = await fetchComfyInputFile(segmentMerge.sourceName, controller.signal);
+        const srcBuf = segmentMerge.mute ? null : await fetchComfyInputFile(segmentMerge.sourceName, controller.signal);
         const merged = await mergeScail2Segments(segBufs, srcBuf, wantCodec, Number(opts.videoCrf) || 0, controller.signal);
         if (!merged) {
-          sendJson(res, 502, { error: `${segmentMerge.label} rendered all ${segBufs.length} segments but ffmpeg could not join them (is ffmpeg installed and on PATH?). The segments are in ComfyUI's output folder (${outDir(OUT_VID)}/) — nothing was lost. Set ⚙ "Long-clip memory" to Off to have ComfyUI write one file instead.` });
+          sendJson(res, 502, { error: `${segmentMerge.label} rendered all ${segBufs.length} segments but ffmpeg could not join them (is ffmpeg installed and on PATH?). The segments are in ComfyUI's output folder (${outDir(OUT_VID)}/) — nothing was lost.${segmentMerge.singleFile === false ? "" : " Set ⚙ \"Long-clip memory\" to Off to have ComfyUI write one file instead."}` });
           return;
         }
         firstVideoBuf = merged.buf;
@@ -11210,15 +12020,24 @@ async function generateComfyImage(req, res) {
           : editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         const c = panoCfg || cfg;
         // FLUX 3's upsampler caption, off the PreviewAny that holds it (ui.text).
+        // MiniMax-H3-Image's comes from its pre-pass, already read.
         const expandedPrompt = (flux3Info && flux3Info.previewNode && outputs[flux3Info.previewNode]
           && Array.isArray(outputs[flux3Info.previewNode].text))
-          ? outputs[flux3Info.previewNode].text.join("").trim() || undefined : undefined;
-        console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${flux3Info ? `${isImg2Img ? "edit:flux3" : "txt2img"} ${flux3Info.width}x${flux3Info.height}${flux3Info.boxes ? ` +${flux3Info.boxes} boxes` : ""}` : mode}${flux3Info ? `, upsampler=${flux3Info.upsampler ? `${flux3Info.upsampler}${expandedPrompt ? ` (${expandedPrompt.length} chars)` : " (no caption read back)"}` : "off"}` : ""}, sampler=${c.sampler}/${c.scheduler}, cfg=${flux3Info ? flux3Info.cfg : c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${c.steps}, images=${outImages.length}`);
+          ? outputs[flux3Info.previewNode].text.join("").trim() || undefined
+          : (h3ImageInfo && h3ImageInfo.caption) || undefined;
+        const h3Mode = h3ImageInfo
+          ? `${isImg2Img ? "edit:h3image" : "txt2img"} ${h3ImageInfo.out.width}x${h3ImageInfo.out.height}${h3ImageInfo.gen.width !== h3ImageInfo.out.width || h3ImageInfo.gen.height !== h3ImageInfo.out.height ? ` (rendered ${h3ImageInfo.gen.width}x${h3ImageInfo.gen.height})` : ""}, expander=${h3ImageInfo.pe === "on" ? `${h3ImageInfo.peModel} (${expandedPrompt ? expandedPrompt.length : 0} chars${h3ImageInfo.ratio ? `, ratio ${h3ImageInfo.ratio}` : ""})` : h3ImageInfo.pe}`
+          : null;
+        console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${h3Mode || (flux3Info ? `${isImg2Img ? "edit:flux3" : "txt2img"} ${flux3Info.width}x${flux3Info.height}${flux3Info.boxes ? ` +${flux3Info.boxes} boxes` : ""}` : mode)}${flux3Info ? `, upsampler=${flux3Info.upsampler ? `${flux3Info.upsampler}${expandedPrompt ? ` (${expandedPrompt.length} chars)` : " (no caption read back)"}` : "off"}` : ""}, sampler=${h3ImageInfo ? "euler/simple" : `${c.sampler}/${c.scheduler}`}, cfg=${h3ImageInfo ? 1 : flux3Info ? flux3Info.cfg : c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${h3ImageInfo ? H3IMG_STEPS : c.steps}, images=${outImages.length}`);
         const mediaIds = toGallery("image", outImages, null, { ...galleryMeta, expandedPrompt,
-          width: panoDims?.w || flux3Info?.width || width, height: panoDims?.h || flux3Info?.height || height });
+          width: panoDims?.w || flux3Info?.width || h3ImageInfo?.out.width || width, height: panoDims?.h || flux3Info?.height || h3ImageInfo?.out.height || height });
         sendJson(res, 200, { images: outImages, mediaIds, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined, krea2Lora: krea2LoraInfo || undefined, imagesUsed: imagesUsed || undefined,
           expandedPrompt, flux3Upsampler: flux3Info ? (flux3Info.upsampler || false) : undefined,
-          flux3Boxes: flux3Info && flux3Info.boxes ? flux3Info.boxes : undefined });
+          flux3Boxes: flux3Info && flux3Info.boxes ? flux3Info.boxes : undefined,
+          // "on" (expandedPrompt is its caption) | "off" (⚙) | "failed" (unreadable answer —
+          // the prompt went in as typed), plus the canvas it rendered.
+          h3ImagePe: h3ImageInfo ? h3ImageInfo.pe : undefined,
+          width: h3ImageInfo ? h3ImageInfo.out.width : undefined, height: h3ImageInfo ? h3ImageInfo.out.height : undefined });
       }
     } finally {
       clearTimeout(timeout);

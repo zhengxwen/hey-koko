@@ -26,6 +26,7 @@ const path = require("path");
 const { execFile } = require("child_process");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
+const { findTool } = require("./find-tool");
 const { guideFor, FORMAT_NAMES } = require("./office-guide");   // the authoring guide /doc loads into a conversation
 
 const EXTS = new Set([".docx", ".xlsx", ".pptx"]);
@@ -41,20 +42,11 @@ function findBin() {
     console.log(`[officecli] OFFICECLI_BIN=${process.env.OFFICECLI_BIN} does not exist — ignoring`);
     return "";
   }
-  const candidates = [
-    "/opt/homebrew/bin/officecli", "/usr/local/bin/officecli", "/usr/bin/officecli",
+  // Its install script drops the binary in ~/.officecli/bin without touching PATH.
+  return findTool("officecli", { candidates: [
     path.join(os.homedir(), ".officecli", "bin", "officecli"),
     path.join(os.homedir(), ".local", "bin", "officecli"),
-  ];
-  for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch { /* keep looking */ } }
-  try {
-    const { execFileSync } = require("child_process");
-    const finder = process.platform === "win32" ? "where" : "which";
-    const first = execFileSync(finder, ["officecli"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
-      .trim().split(/\r?\n/)[0];
-    if (first) return first;
-  } catch { /* not on PATH */ }
-  return "";
+  ] }) || "";
 }
 
 let binPath = findBin();

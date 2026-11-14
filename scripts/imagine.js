@@ -1159,6 +1159,10 @@ async function runTask(task, cli, ctx) {
       // the same thing. There is no ⚙ out here to override — localStorage is the
       // browser's — so the flag simply IS the add-on.
       prompt: task.positive ? (prompt ? `${prompt}, ${task.positive}` : task.positive) : prompt,
+      // "Photo speaks" models: the bare prompt is what the TTS reads and --pos is the
+      // scene — sent apart, as the browser does, or the add-on would be read aloud.
+      speechText: model.spec.speaks ? (prompt || undefined) : undefined,
+      scenePrompt: model.spec.speaks ? (task.positive || undefined) : undefined,
       negative_prompt: task.negative || "",
       options: perOptions,
       images: images.length ? images : undefined,

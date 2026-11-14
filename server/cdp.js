@@ -16,7 +16,7 @@
 // dedicated profile is not just hygiene — it is the only way the port opens.)
 
 const path = require("path");
-const fs = require("fs");
+const { findTool } = require("./find-tool");
 const { spawn, execFileSync } = require("child_process");
 const config = require("./config");
 const { sendJson, readBody } = require("./utils");
@@ -242,15 +242,16 @@ async function browserRead(req, res) {
 // Chrome/Chromium executable on non-mac platforms; "" when none found.
 function findChromeExe() {
   if (process.platform === "win32") {
-    const cands = [
+    // Chrome's installer never puts chrome.exe on PATH.
+    return findTool("chrome", { candidates: [
       path.join(process.env["ProgramFiles"] || "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
       path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
       path.join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "Application", "chrome.exe"),
-    ];
-    return cands.find((p) => { try { return fs.existsSync(p); } catch { return false; } }) || "";
+    ] }) || "";
   }
   for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
-    try { execFileSync("which", [name], { stdio: "ignore" }); return name; } catch { /* keep looking */ }
+    const p = findTool(name);
+    if (p) return p;
   }
   return "";
 }

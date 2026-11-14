@@ -11,7 +11,7 @@ or inline with `--use`/`-u`:
 
 | Engine | Strength | Preset voices |
 |--------|----------|---------------|
-| **Kokoro** | light & fast | Chinese `kokoro:zf_xiaoxiao` (女) / `kokoro:zm_yunxi` (男); English `kokoro:af_heart` (US ♀) / `kokoro:bm_george` (UK ♂) … |
+| **Kokoro** | light & fast | Chinese `kokoro:zf_xiaoxiao` (♀) / `kokoro:zm_yunxi` (♂); English `kokoro:af_heart` (US ♀) / `kokoro:bm_george` (UK ♂) … |
 
 These need PyTorch wheels installed into a **dedicated venv (Python 3.10–3.11)**
 — the newest Python may not have matching wheels yet, and keeping these ML deps in
@@ -76,6 +76,41 @@ $vpy = "$env:USERPROFILE\venv\heykoko\Scripts\python.exe"
 winget install eSpeak-NG.eSpeak-NG
 ```
 
+## Optional — Qwen3-TTS designed voices (`qwen3:`)
+
+[Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) (Apache-2.0) speaks in a voice
+**described in words** rather than picked from a list — useful for AI-generated
+presenters, where the voice should belong to nobody real. hey-koko designs each
+persona once (Qwen3-TTS VoiceDesign speaks a fixed reference sentence in it), keeps
+that clip in `~/.hey-koko/tts-voices/`, and voices every later line by cloning it
+with Qwen3-TTS Base — so the same persona sounds the same across clips.
+
+It needs its **own venv**: `qwen-tts` pins `transformers` 4.57, which must not
+replace the shared venv's newer one.
+
+```bash
+uv venv --python 3.11 ~/venv/qwen3tts
+uv pip install --python ~/venv/qwen3tts/bin/python qwen-tts
+```
+
+The two 1.7B models (VoiceDesign + Base, ~9 GB) download into the Hugging Face cache
+on first use — or put them in `~/models/qwen3-tts/Qwen3-TTS-12Hz-1.7B-{VoiceDesign,Base}/`
+(`QWEN3_TTS_DIR` overrides the folder) and they are used from there. Runs on CUDA,
+Apple MPS, or (slowly) CPU.
+
+Built-in personas: `qwen3:anchor_f` / `qwen3:anchor_m` (Mandarin news anchor ♀/♂),
+`qwen3:host_en_f` / `qwen3:host_en_m` (US English presenter ♀/♂). Add your own in
+`~/.hey-koko/tts-voices.json`:
+
+```json
+{ "my_host": { "label": "My host · Female", "language": "Chinese", "gender": "female",
+               "description": "A female host around thirty with a bright, energetic voice, speaking slightly fast." } }
+```
+
+Editing a description re-designs that voice on its next use. The personas work
+everywhere a voice is chosen: `/voice -u qwen3:anchor_f …`, the Settings dropdown,
+and `--voice qwen3:anchor_f` on the "photo speaks" video models.
+
 ## News feed extraction — `trafilatura`
 
 The 📰 **news feed subscriptions** feature (poll company/official blogs and backfill
@@ -121,9 +156,9 @@ encoding uses
 
 The engine is hidden from the voice dropdown if it fails to import. (On macOS the
 built-in `say` voices are always available too; on Windows only the Kokoro voices
-are offered.) Usage: `/voice 你好世界`,
-`/voice --use kokoro:zm_yunxi --speed 1.1 早上好` (`-u`/`-s` short forms).
+are offered.) Usage: `/voice Hello world`,
+`/voice --use kokoro:bm_george --speed 1.1 Good morning` (`-u`/`-s` short forms).
 
 Examples:
-- `/voice 今天天气不错` → uses the default voice from settings
-- `/voice -u kokoro:zm_yunxi 大家好` → specific Kokoro male voice
+- `/voice Nice weather today` → uses the default voice from settings
+- `/voice -u kokoro:bm_george Hello everyone` → specific Kokoro male voice

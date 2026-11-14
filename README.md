@@ -23,7 +23,7 @@ Three pillars. Chat and the knowledge library run on any machine with Ollama —
 - **One prompt in, media out** — `/imagine` drives [ComfyUI](docs/comfyui.md) through 30+ curated local models with verified defaults: text-to-image, instruction editing, multi-image composition, text/image-to-video, pose transfer, lip-sync, video editing, 360° panoramas. No workflow wrangling — pick a model, type a prompt.
 - **A deployment list that actually works** — [docs/comfyui-setup.md](docs/comfyui-setup.md) pins the exact node packs and model files for every supported workflow.
 - **No ComfyUI?** `/imagine` still generates images with local Ollama image models.
-- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file ([Kokoro](docs/local-python.md), or macOS system voices). Optional auto-speak reads replies aloud.
+- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file ([Kokoro](docs/local-python.md), [Qwen3-TTS designed voices](docs/local-python.md#optional--qwen3-tts-designed-voices-qwen3), or macOS system voices). Optional auto-speak reads replies aloud.
 - **Background task queue** — generation and other long jobs run detached with progress bars and live previews, so you can keep chatting; see [Background Jobs](#background-jobs).
 
 ### 📚 Know — the knowledge library
@@ -143,9 +143,6 @@ On first PDF parse, MinerU downloads ~2 GB of models. If behind a corporate prox
 
 The server **auto-detects** both venvs at startup — no env vars needed. Just run `node server.js`.
 
-> **Note:** Unlimited-OCR requires an NVIDIA GPU and is not available on Apple Silicon. See [optional-tools.md](docs/optional-tools.md#unlimited-ocr) for Linux/CUDA setup.
-
-
 ## Commands
 
 Type `/` in the chat box to open the command palette. The main commands:
@@ -221,7 +218,6 @@ Heavier setups (dedicated GPU / large installs) for specific needs:
 |------------|--------|-------------|
 | Advanced image & video generation | ComfyUI | [docs/comfyui.md](docs/comfyui.md) |
 | ComfyUI deployment list (node packs + model files) | ComfyUI | [docs/comfyui-setup.md](docs/comfyui-setup.md) |
-| Local GPU PDF OCR (scans) | Unlimited-OCR | [optional-tools.md → Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) |
 | Whole-slide page images for decks | LibreOffice | [optional-tools.md → LibreOffice](docs/optional-tools.md#libreoffice) |
 | Word/Excel/PowerPoint **writing**, Word page images, deck images without LibreOffice | officecli | [optional-tools.md → officecli](docs/optional-tools.md#officecli) |
 
