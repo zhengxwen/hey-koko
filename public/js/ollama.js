@@ -2055,6 +2055,7 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyParamTorchCompile, animate || scail2 || m === "longcat_avatar");
   setVis(dom.comfyParamLongcatRefAll, m === "longcat_avatar", ".comfyParamCheck");
   setVis(dom.comfyParamTtsSpeed, !!state.comfySpeakModels?.has(m));   // TTS pace for talking-photo models
+  setVis(dom.comfyParamLongcatAudioScale, m === "longcat_avatar");
   setVis(dom.comfyParamRelight, animate);
   // Replace only: which person in the source to swap out.
   // Inpaint picks its object the same way Replace does: one 🎯 click on the source.
@@ -2391,6 +2392,7 @@ function initComfyParamsModal() {
   if (!modal) return;
   const fields = [
     dom.comfyParamTtsSpeed,
+    dom.comfyParamLongcatAudioScale,
     dom.comfyParamPositive,
     dom.comfyParamNegative,
     dom.comfyParamSampler,

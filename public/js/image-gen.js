@@ -192,6 +192,8 @@ function comfyOverrides() {
   if (dom.comfyParamLongcatRefAll && !dom.comfyParamLongcatRefAll.checked) ov.longcatRefAll = false; // LongCat-Avatar: on by default (ref mask 0); off = official mask 3
   const ttsSpeed = num(dom.comfyParamTtsSpeed?.value);
   if (ttsSpeed > 0 && ttsSpeed !== 1) ov.ttsSpeed = ttsSpeed;      // talking photo: TTS pace (server clamps 0.5–2)
+  const lcAudio = num(dom.comfyParamLongcatAudioScale?.value);
+  if (lcAudio > 0 && lcAudio !== 1) ov.longcatAudioScale = lcAudio; // LongCat-Avatar: audio drive (server clamps 0.5–1.5)
   if (dom.comfyParamVideoCodec?.value) ov.videoCodec = dom.comfyParamVideoCodec.value; // video: h264 (default) | h265, via VHS_VideoCombine
   const videoCrf = num(dom.comfyParamVideoCrf?.value);
   if (videoCrf !== undefined) ov.videoCrf = videoCrf; // CRF for the selected codec (empty = codec default)
@@ -1834,6 +1836,10 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
       // "Photo speaks": the RAW prompt is the text to READ — sent apart from `prompt`
       // so ⚙ prompt-decoration / --enhance can't leak into the synthesized speech.
       speechText: state.comfySpeakModels?.has(model) ? ((parsed.prompt || "").trim() || undefined) : undefined,
+      // …and the SCENE for those models is --pos / the ⚙ positive add-on alone (the
+      // server only uses it when the text is read by the TTS; with an attached audio
+      // file `prompt` itself describes the scene).
+      scenePrompt: state.comfySpeakModels?.has(model) ? (comfyPositive("", parsed.positivePrompt) || undefined) : undefined,
       // Bernini i2v: reference image's natural size → source-aspect output.
       refImageWidth: refImageDims?.w || undefined,
       refImageHeight: refImageDims?.h || undefined,

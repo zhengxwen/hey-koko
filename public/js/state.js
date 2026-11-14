@@ -133,6 +133,7 @@ export const dom = {
   comfyParamTorchCompile: document.querySelector("#comfyParamTorchCompile"),
   comfyParamLongcatRefAll: document.querySelector("#comfyParamLongcatRefAll"),
   comfyParamTtsSpeed: document.querySelector("#comfyParamTtsSpeed"),
+  comfyParamLongcatAudioScale: document.querySelector("#comfyParamLongcatAudioScale"),
   comfyParamScailMemory: document.querySelector("#comfyParamScailMemory"),
   comfyParamVideoCodec: document.querySelector("#comfyParamVideoCodec"),
   comfyParamVideoCrf: document.querySelector("#comfyParamVideoCrf"),

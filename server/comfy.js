@@ -7594,7 +7594,7 @@ function longcatWindows(total) {
   return wins;
 }
 
-function buildLongCatAvatar({ prompt, negative, comp, imageName, audioName, width, height, totalFrames, seed, attention = "sdpa", torchCompile = false, refEveryFrame = true }) {
+function buildLongCatAvatar({ prompt, negative, comp, imageName, audioName, width, height, totalFrames, seed, attention = "sdpa", torchCompile = false, refEveryFrame = true, audioScale = 1.0 }) {
   const wins = longcatWindows(totalFrames);
   const genFrames = LONGCAT_WIN + LONGCAT_STRIDE * (wins.length - 1);
   const pos = prompt || "A person is talking to the camera, natural speech, lips moving in sync with the audio, natural head movement and facial expression.";
@@ -7616,7 +7616,7 @@ function buildLongCatAvatar({ prompt, negative, comp, imageName, audioName, widt
     // num_frames only bounds how much audio is read — the features stop where it ends.
     "14": { class_type: "WhisperModelLoader", inputs: { model: comp.whisper, base_precision: "fp16", load_device: "main_device" } },
     "16": { class_type: "LoadAudio", inputs: { audio: audioName } },
-    "15": { class_type: "LongCatAvatarWhisperEmbeds", inputs: { whisper_model: ["14", 0], audio_1: ["16", 0], normalize_loudness: true, num_frames: genFrames, fps: LONGCAT_FPS, audio_scale: 1.0, audio_cfg_scale: 1.0, multi_audio_type: "para" } },
+    "15": { class_type: "LongCatAvatarWhisperEmbeds", inputs: { whisper_model: ["14", 0], audio_1: ["16", 0], normalize_loudness: true, num_frames: genFrames, fps: LONGCAT_FPS, audio_scale: audioScale, audio_cfg_scale: 1.0, multi_audio_type: "para" } },
     "19": { class_type: "ManualSigmas", inputs: { sigmas: LONGCAT_SIGMAS } },
   };
   // Transformer blocks only, static shapes — the settings of Kijai's LongCat example.
@@ -10290,8 +10290,9 @@ async function generateComfyImage(req, res) {
         if (speak) { imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_itref.png`); imagesUsed = 1; }
         else videoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
         // Scene prompt: dub (and speak-with-audio) keep the user prompt; speak-with-TTS
-        // reads the prompt ALOUD, so the scene falls back to the builder's generic default.
-        const scenePrompt = (speak && !hasAud) ? "" : prompt;
+        // reads the prompt ALOUD, so the scene is `scenePrompt` (--pos / ⚙ positive, sent
+        // apart) or, without one, the builder's generic default.
+        const scenePrompt = (speak && !hasAud) ? String(body.scenePrompt || "").trim() : prompt;
         workflow = buildInfiniteTalk({ prompt: scenePrompt, negative: negative_prompt || "", comp, videoName, imageName, audioName, width: iw, height: ih, fps: iFps, maxFrames, seed });
         videoDims = { width: iw, height: ih, fps: iFps };
         const audioFrames = audioDur > 0 ? Math.round(audioDur * iFps) : 0;
@@ -10340,12 +10341,19 @@ async function generateComfyImage(req, res) {
         }
         const imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_lcref.png`);
         imagesUsed = 1;
-        // With TTS the prompt is what gets READ, so the scene falls back to the generic default.
+        // With TTS the prompt is what gets READ, so the scene is `scenePrompt` (--pos / ⚙
+        // positive, sent apart) or, without one, the builder's generic default.
         // sageattn halves the step time (see buildLongCatAvatar) — only where the box proves
         // the package is there; ⚙ torch.compile only where the wrapper has its settings node.
         const attention = (await comfyGpuInfo()).sage ? "sageattn" : "sdpa";
         const torchCompile = !!opts.torchCompile && await comfyHasNodes(["WanVideoTorchCompileSettings"]);
-        const built = buildLongCatAvatar({ prompt: hasAud ? prompt : "", negative: negative_prompt || "", comp, imageName, audioName: track.audioName, width: lw, height: lh, totalFrames, seed, attention, torchCompile, refEveryFrame: opts.longcatRefAll !== false });
+        const built = buildLongCatAvatar({ prompt: hasAud ? prompt : String(body.scenePrompt || "").trim(), negative: negative_prompt || "", comp, imageName, audioName: track.audioName, width: lw, height: lh, totalFrames, seed, attention, torchCompile, refEveryFrame: opts.longcatRefAll !== false,
+          // ⚙ audio drive: scales the audio cross-attention residual in every block (the
+          // node's audio_scale). Measured 2026-11-13 (9 s, same seed, hands-clasped photo):
+          // 0.7 → body motion -8%, head sway -15%, lips intact; 0.5 ≈ 0.7 with the lips a
+          // little looser; 0.3 BREAKS (mouth moves in pauses, body no calmer) → floor 0.5.
+          // A modest knob: the photo dominated (open hands in view ≈ 2× the body motion).
+          audioScale: Number(opts.longcatAudioScale) > 0 ? Math.min(1.5, Math.max(0.5, Number(opts.longcatAudioScale))) : 1.0 });
         workflow = built.workflow;
         // The speech file is the soundtrack donor: the merge lays it, unsliced and at its
         // original quality, over the joined windows (-shortest trims it to the picture).
@@ -10392,7 +10400,7 @@ async function generateComfyImage(req, res) {
         const imageName = await uploadImage(images[0], controller.signal, `${comfyTag()}_ia2v.png`);
         imagesUsed = 1;
         const v = { width: xw, height: xh, length, fps: LTX_IA2V_FPS, cfg: 1 };
-        workflow = buildLtxIa2v({ model: parts.ckpt, prompt: hasAud ? prompt : "", negative: negative_prompt || "", comp, imageName, audioName: track.audioName, audioSeconds: Number(seconds.toFixed(3)), seed, v });
+        workflow = buildLtxIa2v({ model: parts.ckpt, prompt: hasAud ? prompt : String(body.scenePrompt || "").trim(), negative: negative_prompt || "", comp, imageName, audioName: track.audioName, audioSeconds: Number(seconds.toFixed(3)), seed, v });
         videoDims = { width: xw, height: xh, fps: LTX_IA2V_FPS, length };
       } else if (videoType === "dancer") {
         // Wan-Dancer: reference PHOTO + MUSIC file → the character dances to the track.

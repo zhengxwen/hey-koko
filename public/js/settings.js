@@ -77,6 +77,7 @@ export function saveCurrentSettings() {
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
         longcatIdentityHold: dom.comfyParamLongcatRefAll ? dom.comfyParamLongcatRefAll.checked : true,
         ttsSpeed: dom.comfyParamTtsSpeed?.value || "",
+        longcatAudioScale: dom.comfyParamLongcatAudioScale?.value || "",
         lyrics: dom.comfyParamLyrics?.value || "",
         musicSeconds: dom.comfyParamMusicSeconds?.value || "",
         musicCfg: dom.comfyParamMusicCfg?.value || "",
@@ -365,6 +366,7 @@ export function loadSavedSettings() {
     // every settings save, which would otherwise pin it off.
     if (dom.comfyParamLongcatRefAll) dom.comfyParamLongcatRefAll.checked = cp.longcatIdentityHold !== false;
     if (dom.comfyParamTtsSpeed) dom.comfyParamTtsSpeed.value = cp.ttsSpeed || "";
+    if (dom.comfyParamLongcatAudioScale) dom.comfyParamLongcatAudioScale.value = cp.longcatAudioScale || "";
     if (dom.comfyParamLyrics) dom.comfyParamLyrics.value = cp.lyrics || "";
     if (dom.comfyParamMusicSeconds) dom.comfyParamMusicSeconds.value = cp.musicSeconds || "";
     if (dom.comfyParamMusicCfg) dom.comfyParamMusicCfg.value = cp.musicCfg || "";

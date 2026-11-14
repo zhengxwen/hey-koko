@@ -1290,6 +1290,10 @@
             <span id="comfyParamTtsSpeedLabel">Speech speed (talking photo)</span>
             <input id="comfyParamTtsSpeed" type="number" min="0.5" max="2" step="0.05" placeholder="1.0" />
           </label>
+          <label title="LongCat-Avatar only: how strongly the speech drives the picture. Empty = 1.0 (the official value). Lower it a little when the person moves too much. Measured on a 9-second clip, same seed: 0.7 gave about 8% less body movement and 15% less head sway with the lip sync intact; 0.5 about the same movement as 0.7, the pose staying a bit closer to the photo, the lips following the speech slightly less. Below 0.5 it breaks: at 0.3 the mouth kept moving during pauses and the body did not calm down. Range 0.5–1.5 (above 1.0 untested). Expect a modest effect — the photo matters far more: the same speech on a photo with open hands in view gave about twice the body movement of one with the hands clasped.">
+            <span id="comfyParamLongcatAudioScaleLabel">Audio drive strength (LongCat)</span>
+            <input id="comfyParamLongcatAudioScale" type="number" min="0.5" max="1.5" step="0.05" placeholder="1.0" />
+          </label>
           <label title="All video models: the codec the saved mp4 is encoded with (VideoHelperSuite, straight from frames — no re-encode). H.264 (libx264) is the default and plays in every browser and device. H.265/HEVC (libx265) is smaller for the same look on detailed / higher-resolution footage, but needs HEVC support to play: it works in Safari, and in Chrome/Edge on systems with a hardware HEVC decoder (common on recent machines) — but NOT in Firefox or where there's no decoder. This app checks YOUR current browser and asks before using H.265 if it can't play it — so it isn't Mac-only. Either way the audio track is kept, and the file is downloadable from the bubble even if it can't preview here.">
             <span id="comfyParamVideoCodecLabel">Video codec</span>
             <select id="comfyParamVideoCodec">
