@@ -1073,8 +1073,9 @@ export function resolveModelToken(token) {
 // "minimax" here does not misroute anything — it silently DROPS the model out of every
 // H3-gated branch, so the ⚙ panel loses its H3 knobs and the hint falls through to the
 // generic Stable-Diffusion line. The trailing "h3" requirement keeps TenStrip's separate
-// LTX-2.3 10Eros line (no "h3" in its filenames) out of this test.
-const H3_RE = /minimax.?h3|10eros.*h3/i;
+// LTX-2.3 10Eros line (no "h3" in its filenames) out of this test. The "(?!.?image)"
+// keeps MiniMax-H3-Image (a separate image model) out, same as the server.
+const H3_RE = /minimax.?h3(?!.?image)|10eros.*h3/i;
 // Twin of h3ReadsRefs in server/comfy.js. A 10Eros "hybrid" build fuses ref2va and fl2va
 // into one file, so its name carries neither task word — matching only /ref2va/ here hides
 // every reference control for exactly the weight that has the most of them. "ref-delta" is

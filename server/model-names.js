@@ -262,6 +262,13 @@ const FILE_ID_RULES = [
   // model. The DiT is the only file that reaches an id: its text encoder and audio VAE
   // are companions resolved off disk, never dropdown entries.
   [/minimax.?music.?3/, "minimax-music3"],
+  // MiniMax-H3-Image BEFORE every H3 video rule: "minimax_h3_image_pruned_int8_convrot"
+  // matches the bare /minimax.?h3/ below and would take the "minimax-h3-t2v" id — the same
+  // id and the same precision as the stock fl2va int8 weight, so the two would fold into
+  // one picker row and the precision menu could hand the video graph an image DiT.
+  // The h3-prompt-writing skill lists this id under excludeModels: its "minimax-h3"
+  // prefix would otherwise inject the VIDEO prompt guide for an image model.
+  [/minimax.?h3.?image/, "minimax-h3-image"],
   // Ref-Delta BEFORE the task-word rules: these builds carry the ref2va capability as a
   // rank-1024 SVD of the reference delta baked onto the fl2va base, so the filename says
   // "refdelta" / "Ref-Delta" and never "ref2va" — left to the rules below they take the
@@ -356,6 +363,7 @@ const ID_LABELS = {
   "phantom-14b": "Phantom-Wan 14B",
   "phantom-1.3b": "Phantom-Wan 1.3B",
   "minimax-music3": "MiniMax Music 3 (text → song)",
+  "minimax-h3-image": "MiniMax H3 Image",
   "minimax-h3-t2v": "MiniMax H3 (t2v / i2v)",
   "minimax-h3-r2v": "MiniMax H3 (r2v)",
   "minimax-h3:refdelta": "MiniMax H3 Ref-Delta Fused (all modes)",
@@ -438,7 +446,9 @@ const ID_LABELS = {
 // is a single line, but the number has to come from the model card or a measured run,
 // not from what looks plausible.
 const ID_MAX_SIZE = [
-  [/^minimax-h3/, "1376x768"],
+  // Not minimax-h3-image: a separate image model whose envelope (4-20 MP per the official
+  // ComfyUI templates) is nothing like the video model's.
+  [/^minimax-h3(?!-image)/, "1376x768"],
   // The graft changes no tensor shape — verified by diffing all 532 shared tensors against
   // the stock checkpoint (0 mismatches) — so its native envelope is H3's.
   [/^10eros-max-h3/, "1376x768"],

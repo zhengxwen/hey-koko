@@ -941,7 +941,13 @@ async function music3Companions() {
 // The vendor alternative REQUIRES a following "h3": TenStrip also ships an LTX-2.3
 // 10Eros line, whose filenames carry no "h3" and must keep falling through to the LTX
 // branch below.
-const H3_MODEL_RE = /minimax.?h3|10eros.*h3/i;
+// The "(?!.?image)" carves out MiniMax-H3-Image ("minimax_h3_image_pruned_…"): a
+// separate text-to-image / edit DiT with its own VAE and its own conditioning node
+// (MiniMaxH3ImageConditioning, ComfyUI 0.45). It shares the vendor prefix and the
+// Qwen3-VL-32B text encoder with the video model, but nothing else — matched here it
+// would take the video id, fold into the stock fl2va row as an "int8 variant", and the
+// precision menu could load an image DiT into the video graph.
+const H3_MODEL_RE = /minimax.?h3(?!.?image)|10eros.*h3/i;
 // The TURBO builds are step-distilled into the WEIGHTS — no LoRA involved. That makes
 // them a different sampling recipe (6 steps, not 20), and it makes stacking a turbo
 // LoRA on top a double distillation.
@@ -2103,7 +2109,8 @@ function isModelReady(name, group, type) {
     // also settles the autogrow question: a wrong slot key reaches execute() as a stray
     // kwarg and raises TypeError, so a run that COMPLETES is proof the references were
     // handed to the node — they cannot be silently dropped.
-    /minimax.?h3/,
+    // MiniMax-H3-Image is a different model and has never been run here — see H3_MODEL_RE.
+    /minimax.?h3(?!.?image)/,
   ];
   return READY.some((re) => re.test(b));
 }
@@ -5436,7 +5443,9 @@ const H3_CLIP_RE = /qwen3vl.*minimax|minimax.*qwen3vl/i;
 // and every one of them is TASK-SPECIFIC: a fl2v LoRA on the ref2va weight (or the
 // reverse) loads without complaint and renders garbage, so the task is parsed out of the
 // filename and enforced rather than left to the user.
-const H3_LORA_RE = /minimax.?h3/i;
+// A MiniMax-H3-Image LoRA is an image-DiT LoRA and must never be offered on the video
+// weights, so the same carve-out as H3_MODEL_RE applies.
+const H3_LORA_RE = /minimax.?h3(?!.?image)/i;
 // The learned latent upscaler for H3's 24-channel latent space. It is keyed to the VAE's
 // latent LAYOUT, not to the DiT, so one weight serves every H3-family checkpoint — the
 // 10Eros grafts included, and their own model card asks for this pass by name, saying the
