@@ -366,8 +366,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === "GET" && req.url === "/api/tts-voices") {
-    listTtsVoices(res);
+  if (req.method === "GET" && (req.url === "/api/tts-voices" || req.url.startsWith("/api/tts-voices?"))) {
+    listTtsVoices(req, res);
     return;
   }
 

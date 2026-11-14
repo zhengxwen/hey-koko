@@ -111,6 +111,31 @@ Editing a description re-designs that voice on its next use. The personas work
 everywhere a voice is chosen: `/voice -u qwen3:anchor_f …`, the Settings dropdown,
 and `--voice qwen3:anchor_f` on the "photo speaks" video models.
 
+## Optional — Breeze TTS 2 designed voices (`breeze:`)
+
+[Breeze TTS 2](https://huggingface.co/BreezeBlue/Breeze-TTS-2) (3B, Mandarin + English)
+designs voices from a description too, but it runs on a **ComfyUI box** rather than in a
+local venv. Install the [ComfyUI-Breeze-TTS-2](https://github.com/Saganaki22/ComfyUI-Breeze-TTS-2)
+node pack there (ComfyUI Manager or `git clone` into `custom_nodes/`) and restart
+ComfyUI. The weights (~6 GB in bf16) download into `models/breezetts2/` the first time
+they are used.
+
+> **Licence:** the pack's code is Apache-2.0, but the model weights **and the audio they
+> generate** fall under the BreezeBlue Research & Non-Commercial License. Do not use
+> Breeze voices in anything commercial.
+
+When any of your ComfyUI endpoints (the current one or a background worker) has the
+pack, the Settings dropdown shows a **Breeze TTS 2** group. It uses the same personas
+as Qwen3-TTS (`breeze:anchor_f`, `breeze:host_en_m`, … plus your `tts-voices.json`
+entries). Each persona is designed once on the ComfyUI box from its description and
+kept as `~/.hey-koko/tts-voices/breeze_<id>-<hash>.flac`. Every later line is cloned
+from that clip, so the voice stays the same. Text longer than about a minute is split at
+sentence ends and joined back into one clip. The speech-speed setting is applied
+afterwards with ffmpeg, the same way as for Qwen3-TTS.
+
+The first line on a cold box takes about a minute while the model loads and the persona
+is designed.
+
 ## News feed extraction — `trafilatura`
 
 The 📰 **news feed subscriptions** feature (poll company/official blogs and backfill

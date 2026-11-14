@@ -9056,7 +9056,7 @@ async function resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMim
     || (/[぀-ヿ一-鿿]/.test(text) ? "zf_xiaoxiao" : "af_heart");
   let wavPath;
   try {
-    wavPath = await synthToWav({ engine, voice: vId, text, speed: Math.min(2, Math.max(0.5, Number(speed) || 1)) });
+    wavPath = await synthToWav({ engine, voice: vId, text, speed: Math.min(2, Math.max(0.5, Number(speed) || 1)), comfyUrl: currentComfyUrl() });
   } catch (e) {
     return { error: `Local TTS failed (${String((e && e.message) || e)}). Attach an audio file instead, or check the TTS setup used by /voice.` };
   }
@@ -9084,6 +9084,156 @@ async function uploadAudioBuffer(buf, mime, signal) {
 async function uploadAudio(b64, signal, mime = "audio/wav") {
   const clean = typeof b64 === "string" && b64.startsWith("data:") ? b64.split(",")[1] : b64;
   return uploadAudioBuffer(Buffer.from(clean, "base64"), mime, signal);
+}
+
+// ── Breeze TTS 2 as a speech engine (ComfyUI-Breeze-TTS-2 node pack) ────────────
+// Unlike Kokoro / Qwen3 this engine does not run in a local daemon: it runs on a
+// ComfyUI box that has the pack, and server/tts.js calls in here for each line. Same
+// persona scheme as Qwen3 (tts.js owns it): the voice is DESIGNED once from its
+// description, speaking a fixed reference sentence, and every line after that is a
+// CLONE of that reference — so a persona sounds the same from clip to clip (designing
+// per line gives a slightly different person each time). Output is 24 kHz mono FLAC.
+//
+// Licence: weights and generated audio are research / non-commercial only (BreezeBlue
+// licence); the pack's code is Apache-2.0.
+const BREEZE_NODES = ["BreezeTTS2LoadModel", "BreezeTTS2VoiceDesign", "BreezeTTS2VoiceClone"];
+// bf16 is the variant verified on GB10; eager decode because cuda_graphs pins the whole
+// model in VRAM, which a box that also renders video cannot spare.
+const BREEZE_LOADER = { model: "bf16 (best quality)", dtype: "auto", device: "auto", attention: "auto",
+  decode_mode: "eager", download_if_missing: true };
+const BREEZE_SAMPLING = { temperature: 0.9, top_k: 50, top_p: 1.0, repetition_penalty: 1.1,
+  depth_temperature: 0.9, depth_top_k: 50, depth_top_p: 1.0 };
+const BREEZE_FPS = 12.5;            // audio frames per second of speech (max_new_tokens unit)
+const BREEZE_MAX_FRAMES = 3000;     // the node's ceiling = 240 s per generate call
+const BREEZE_CHUNK_SECONDS = 60;    // longer text is cut at sentence ends into ~1-minute pieces
+const BREEZE_DESIGN_SEED = 42;      // a persona is designed reproducibly
+
+// Which endpoints have the pack. One /object_info/<class> probe per node with a short
+// timeout (an offline worker must not stall the voice list); cached for a minute.
+const breezeProbeCache = new Map(); // url → { ok, at }
+async function breezeAvailableAt(url) {
+  const base = normComfyUrl(url);
+  if (!base) return false;
+  const hit = breezeProbeCache.get(base);
+  if (hit && Date.now() - hit.at < 60000) return hit.ok;
+  const found = await Promise.all(BREEZE_NODES.map(async (n) => {
+    try {
+      const r = await fetch(`${base}/object_info/${n}`, { signal: AbortSignal.timeout(4000) });
+      const d = r.ok ? await r.json() : null;
+      return !!(d && d[n]);
+    } catch { return false; }
+  }));
+  const ok = found.every(Boolean);
+  breezeProbeCache.set(base, { ok, at: Date.now() });
+  return ok;
+}
+
+// The first of `urls` (in order) that has the pack, or null.
+async function findBreezeEndpoint(urls) {
+  const list = [...new Set((urls || []).map(normComfyUrl).filter(Boolean))];
+  const oks = await Promise.all(list.map(breezeAvailableAt));
+  const i = oks.findIndex(Boolean);
+  return i >= 0 ? list[i] : null;
+}
+
+// Rough speaking time of a text: ~4.5 CJK characters or ~14 Latin characters a second.
+function breezeEstSeconds(text) {
+  const cjk = (String(text).match(/[぀-ヿ㐀-鿿豈-﫿]/g) || []).length;
+  return cjk / 4.5 + (String(text).length - cjk) / 14;
+}
+
+// Cut text at sentence ends into pieces of at most ~BREEZE_CHUNK_SECONDS each. A single
+// over-long sentence stays whole (it still fits the 240 s ceiling unless absurd).
+function breezeChunks(text) {
+  const sentences = String(text).match(/[^。！？!?；;\n]+[。！？!?；;\n]*|[。！？!?；;\n]+/g) || [String(text)];
+  const out = [];
+  let cur = "";
+  for (const s of sentences) {
+    if (cur && breezeEstSeconds(cur + s) > BREEZE_CHUNK_SECONDS) { out.push(cur.trim()); cur = ""; }
+    cur += s;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out.length ? out : [String(text).trim()];
+}
+
+// Frame budget for one piece: twice the estimate plus headroom (the model stops at EOS
+// by itself; the cap only guards against a run-on), within the node's limits.
+function breezeFrames(text) {
+  return Math.min(BREEZE_MAX_FRAMES, Math.max(256, Math.ceil(breezeEstSeconds(text) * 2 * BREEZE_FPS) + 64));
+}
+
+// Design graph: speak `refText` in the voice `instruct` describes.
+function buildBreezeDesign({ instruct, refText }) {
+  return {
+    "1": { class_type: "BreezeTTS2LoadModel", inputs: { ...BREEZE_LOADER } },
+    "2": { class_type: "BreezeTTS2VoiceDesign", inputs: { breeze_model: ["1", 0], text: refText, instruction: instruct,
+      cfg_scale: 4.0, max_new_tokens: breezeFrames(refText), seed: BREEZE_DESIGN_SEED, ...BREEZE_SAMPLING } },
+    "3": { class_type: "SaveAudio", inputs: { audio: ["2", 0], filename_prefix: `${comfyTag()}_tts/design` } },
+  };
+}
+
+// Clone graph: each piece is cloned from the reference clip (cfg 1 = as-is) and the
+// pieces are joined in order with AudioConcat, so a long text is still ONE run / file.
+function buildBreezeClone({ refName, refText, chunks, seed }) {
+  const wf = {
+    "1": { class_type: "BreezeTTS2LoadModel", inputs: { ...BREEZE_LOADER } },
+    "2": { class_type: "LoadAudio", inputs: { audio: refName } },
+  };
+  let last = null;
+  chunks.forEach((piece, i) => {
+    const id = String(10 + i);
+    wf[id] = { class_type: "BreezeTTS2VoiceClone", inputs: { breeze_model: ["1", 0], text: piece,
+      reference_audio: ["2", 0], reference_text: refText, cfg_scale: 1.0, max_new_tokens: breezeFrames(piece),
+      seed: (seed + i) % 2147483647 || 1, ...BREEZE_SAMPLING } };
+    if (!last) { last = [id, 0]; return; }
+    const cat = String(100 + i);
+    wf[cat] = { class_type: "AudioConcat", inputs: { audio1: last, audio2: [id, 0], direction: "after" } };
+    last = [cat, 0];
+  });
+  wf["9"] = { class_type: "SaveAudio", inputs: { audio: last, filename_prefix: `${comfyTag()}_tts/speech` } };
+  return wf;
+}
+
+// Queue a Breeze graph and bring its single audio file back as a Buffer.
+async function runBreezeGraph(wf, signal, deadline) {
+  const r = await fetch(`${currentComfyUrl()}/prompt`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: wf, client_id: crypto.randomUUID() }), signal,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.prompt_id || (j.node_errors && Object.keys(j.node_errors).length)) {
+    throw new Error(`ComfyUI refused the Breeze TTS graph: ${JSON.stringify(j.node_errors || j.error || j).slice(0, 600)}`);
+  }
+  const outputs = await waitForOutputs(j.prompt_id, signal, deadline);
+  const f = (outputs["9"]?.audio || outputs["3"]?.audio || [])[0];
+  if (!f) throw new Error("Breeze TTS finished without an audio file");
+  const params = new URLSearchParams({ filename: f.filename, subfolder: f.subfolder || "", type: f.type || "output" });
+  const v = await fetch(`${currentComfyUrl()}/view?${params}`, { signal });
+  if (!v.ok) throw new Error(`fetching the Breeze TTS clip failed (${v.status})`);
+  return Buffer.from(await v.arrayBuffer());
+}
+
+// One line of speech on Breeze TTS 2 → FLAC Buffer. `refPath` is the persona's local
+// reference clip: designed (and written there) on first use, reused after. `comfyUrl`
+// = the box with the pack (tts.js resolves it). Runs in its own comfyCtx so a call made
+// from inside another render (photo speaks) targets the Breeze box, not that render's.
+async function breezeSpeech({ comfyUrl, text, instruct, refText, refPath, timeoutMs = 900000, signal }) {
+  const sig = signal || new AbortController().signal;
+  const deadline = Date.now() + timeoutMs;
+  return comfyCtx.run({ comfyUrl: normComfyUrl(comfyUrl) || config.comfyUrl }, async () => {
+    let ref = await fsp.readFile(refPath).catch(() => null);
+    if (!ref) {
+      ref = await runBreezeGraph(buildBreezeDesign({ instruct, refText }), sig, deadline);
+      await fsp.mkdir(path.dirname(refPath), { recursive: true });
+      const tmp = `${refPath}.tmp${process.pid}`;
+      await fsp.writeFile(tmp, ref);
+      await fsp.rename(tmp, refPath);   // atomic: a half-written reference is never reused
+      console.log(`[tts] breeze: designed persona reference → ${path.basename(refPath)}`);
+    }
+    const refName = await uploadAudioBuffer(ref, "audio/flac", sig);
+    const seed = crypto.randomInt(1, 2147483647);
+    return runBreezeGraph(buildBreezeClone({ refName, refText, chunks: breezeChunks(text), seed }), sig, deadline);
+  });
 }
 
 // POST /api/comfy-upload-video — the browser sends the source video as the RAW
@@ -12216,4 +12366,6 @@ module.exports = { proxyComfyModels, generateComfyImage, uploadComfyVideo, uploa
   // policy live here so the two modules cannot drift apart.
   hasLocalTool, videoParamsOf, videoSizeOf, videoCodecOf, audioCodecOf, probeVideo,
   // The video editor's AI pre-pass uploads its trimmed segments the same way /imagine does.
-  uploadVideo };
+  uploadVideo,
+  // Breeze TTS 2 speech engine, driven by server/tts.js.
+  breezeSpeech, findBreezeEndpoint };

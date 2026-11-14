@@ -3069,6 +3069,7 @@ loadComfyModels()
       .catch((e) => console.warn("[bg-jobs] worker restore failed:", e))
       .finally(() => {
         refreshBgWorkers();   // ping each worker → online + per-endpoint model list
+        populateVoiceList();  // now that the workers are known: Breeze voices live on one of them
         connectServerQueue(); // Option B: SSE — must be live before restore so reconnects resolve from the snapshot
         restoreBgJobsOnLoad().catch((e) => console.warn("[bg-jobs] restore failed:", e));
       });

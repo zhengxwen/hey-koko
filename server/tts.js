@@ -51,16 +51,19 @@ function sayToWav({ voice, text, rate, signal } = {}) {
   });
 }
 
-// Synthesize one chunk on a neural engine (kokoro / qwen3) to a wav file.
+// Synthesize one chunk on a neural engine (kokoro / qwen3 / breeze) to a wav file.
 // Exported for the reader (server/speech.js) to play per-sentence. Caller deletes.
-async function synthToWav({ engine, voice, text, speed }) {
-  return engineToWav(engine, voice, cleanSpeechText(text), speed);
+// `comfyUrl` (breeze only) = the preferred ComfyUI box; see breezeEndpoint.
+async function synthToWav({ engine, voice, text, speed, comfyUrl }) {
+  return engineToWav(engine, voice, cleanSpeechText(text), speed, undefined, comfyUrl);
 }
 
-// One daemon request → wav path, with `speed` honoured on every engine. Kokoro takes it
-// natively; Qwen3-TTS has no rate control at all (its generate call takes none), so a
-// qwen3 clip is time-stretched afterwards — see stretchWav.
-async function engineToWav(engine, voice, text, speed, timeoutMs) {
+// One engine request → wav path, with `speed` honoured on every engine. Kokoro takes it
+// natively; Qwen3-TTS and Breeze have no rate control at all, so their clips are
+// time-stretched afterwards — see stretchWav. Breeze runs on a ComfyUI box rather than
+// in a local daemon.
+async function engineToWav(engine, voice, text, speed, timeoutMs, comfyUrl) {
+  if (engine === "breeze") return stretchWav(await breezeToWav(voice, text, timeoutMs, comfyUrl), speed);
   const reply = await requestEngine(engine, enginePayload(engine, voice, text, speed), timeoutMs);
   return engine === "qwen3" ? stretchWav(reply.wav_path, speed) : reply.wav_path;
 }
@@ -145,12 +148,70 @@ function qwen3Personas() {
 }
 
 // Preset + persona voices, re-read each call so an edited tts-voices.json shows up
-// without a restart.
+// without a restart. Every persona exists on both designing engines: `qwen3:<id>` and
+// `breeze:<id>` share the description but are designed separately, so they are two
+// different (consistent) voices.
 function voiceCatalog() {
-  const personas = Object.entries(qwen3Personas()).map(([id, p]) => ({
+  const all = Object.entries(qwen3Personas());
+  const personas = all.map(([id, p]) => ({
     value: `qwen3:${id}`, engine: "qwen3", label: p.label || `${id} (Qwen3 designed)`, gender: p.gender || "",
   }));
-  return [...VOICE_CATALOG, ...personas];
+  const breeze = all.map(([id, p]) => ({
+    value: `breeze:${id}`, engine: "breeze", gender: p.gender || "",
+    label: p.label ? (/\(Qwen3 designed\)/.test(p.label) ? p.label.replace("(Qwen3 designed)", "(Breeze designed)") : `${p.label} · Breeze`)
+                   : `${id} (Breeze designed)`,
+  }));
+  return [...VOICE_CATALOG, ...personas, ...breeze];
+}
+
+// A persona's description, language and reference sentence, or a thrown error that
+// lists the known ids. Shared by both designing engines.
+function personaOf(voice, engine) {
+  const all = qwen3Personas();
+  const p = all[voice];
+  if (!p) throw new Error(`Unknown ${engine} voice "${voice}". Known: ${Object.keys(all).join(", ")} (add more in ${QWEN3_VOICES_FILE})`);
+  const language = p.language || "Auto";
+  const refText = p.refText || QWEN3_REF_TEXT[language] || QWEN3_REF_TEXT.English;
+  const hash = crypto.createHash("sha256").update(`${p.description}\n${language}\n${refText}`).digest("hex").slice(0, 10);
+  return { p, language, refText, hash };
+}
+
+// ── Breeze TTS 2 (runs on ComfyUI, see breezeSpeech in comfy.js) ─────────────────
+// Which box: the caller's preference, else the last box /api/tts-voices found the pack
+// on (the browser hands that call its worker list), else the configured default — the
+// first of those that actually has the pack.
+let breezeLastUrl = null;
+async function breezeEndpoint(preferred) {
+  const { findBreezeEndpoint } = require("./comfy");   // lazy: comfy.js requires this file
+  const url = await findBreezeEndpoint([preferred, breezeLastUrl, config.comfyUrl]);
+  if (url) breezeLastUrl = url;
+  return url;
+}
+
+// Persona line → wav path. The persona's reference clip is designed on first use and
+// kept under <DATA_DIR>/tts-voices/ (breeze_<id>-<hash>.flac — same hash as Qwen3, so
+// editing a description re-designs both). ComfyUI hands back FLAC; ffmpeg turns it into
+// wav, which every caller (stretch, photo speaks, the reader) expects.
+async function breezeToWav(voice, text, timeoutMs, comfyUrl) {
+  const { p, refText, hash } = personaOf(voice, "Breeze");
+  const url = await breezeEndpoint(comfyUrl);
+  if (!url) throw new Error("Breeze TTS needs a ComfyUI with the ComfyUI-Breeze-TTS-2 node pack; none of the known endpoints has it");
+  const { breezeSpeech } = require("./comfy");
+  const flac = await breezeSpeech({ comfyUrl: url, text, instruct: p.description, refText,
+    refPath: path.join(QWEN3_REF_DIR, `breeze_${voice}-${hash}.flac`), timeoutMs: timeoutMs || 900000 });
+  const base = path.join(os.tmpdir(), `hk_breeze_${process.pid}_${nextId++}`);
+  fs.writeFileSync(`${base}.flac`, flac);
+  const ff = findTool("ffmpeg");
+  if (!ff) return `${base}.flac`;
+  return new Promise((resolve) => {
+    const proc = spawn(ff, ["-v", "error", "-i", `${base}.flac`, "-y", `${base}.wav`]);
+    const done = (ok) => {
+      if (ok) { fs.unlink(`${base}.flac`, () => {}); resolve(`${base}.wav`); }
+      else resolve(`${base}.flac`);
+    };
+    proc.on("error", () => done(false));
+    proc.on("close", (code) => done(code === 0));
+  });
 }
 
 // The daemon request for one line. qwen3 carries the persona and where its designed
@@ -158,12 +219,7 @@ function voiceCatalog() {
 function enginePayload(engine, voice, text, speed) {
   const payload = { engine, voice, text, speed: speed || 1 };
   if (engine === "qwen3") {
-    const all = qwen3Personas();
-    const p = all[voice];
-    if (!p) throw new Error(`Unknown Qwen3 voice "${voice}". Known: ${Object.keys(all).join(", ")} (add more in ${QWEN3_VOICES_FILE})`);
-    const language = p.language || "Auto";
-    const refText = p.refText || QWEN3_REF_TEXT[language] || QWEN3_REF_TEXT.English;
-    const hash = crypto.createHash("sha256").update(`${p.description}\n${language}\n${refText}`).digest("hex").slice(0, 10);
+    const { p, language, refText, hash } = personaOf(voice, "Qwen3");
     payload.design = { instruct: p.description, language, ref_text: refText, ref_wav: path.join(QWEN3_REF_DIR, `${voice}-${hash}.wav`) };
   }
   return payload;
@@ -297,9 +353,16 @@ async function requestEngine(engine, payload, timeoutMs) {
   return daemons[i].request(payload, timeoutMs || (engine === "qwen3" ? 900000 : 180000));
 }
 
-// GET /api/tts-voices → preset voices for engines that are actually available.
-async function listTtsVoices(res) {
+// GET /api/tts-voices[?comfy=url,url…] → preset voices for engines that are actually
+// available. `comfy` = the browser's ComfyUI workers: Breeze voices are listed when one
+// of them (or the configured default) has the Breeze node pack.
+async function listTtsVoices(req, res) {
+  let comfy = [];
+  try { comfy = (new URL(req.url, "http://x").searchParams.get("comfy") || "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 16); } catch { /* none */ }
   const engines = await ensureDaemons();
+  const { findBreezeEndpoint } = require("./comfy");
+  const breezeUrl = await findBreezeEndpoint([...comfy, breezeLastUrl, config.comfyUrl]).catch(() => null);
+  if (breezeUrl) { breezeLastUrl = breezeUrl; engines.add("breeze"); }
   const voices = voiceCatalog().filter((v) => engines.has(v.engine));
   sendJson(res, 200, {
     voices,
@@ -329,6 +392,11 @@ async function synthesize(req, res) {
 
     if (engine === "say") {
       srcPath = await sayToWav({ voice, text, rate });
+    } else if (engine === "breeze") {
+      // At least 10 minutes: a cold box downloads / loads the model and designs the
+      // persona before the first line, well past the browser's usual 180 s.
+      srcPath = await engineToWav(engine, voice, text, rate,
+        Math.max(600000, (Number(body.timeout) || 0) * 1000), body.comfyUrl);
     } else {
       const engines = await ensureDaemons();
       if (!engines.has(engine)) {
