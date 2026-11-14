@@ -2201,9 +2201,11 @@ async function proxyComfyModels(req, res) {
     // that budget competes with the DiT, so picking the encoder is a decision the user
     // makes independently of the ⚙ precision tier — mixing (bf16 DiT + nvfp4 encoder) is
     // a legitimate configuration, not a fallback. Sorted best-tier-first so the list reads
-    // in the same order the "auto" rule would choose.
+    // in the same order the "auto" rule would choose — for the official weights: within a
+    // tier the official build ahead of the heretic one (h3TextEncoderFor).
     const h3TextEncoders = clips.filter((n) => H3_CLIP_RE.test(n))
-      .sort((a, b) => PREC_AUTO_ORDER.indexOf(precisionOf(a)) - PREC_AUTO_ORDER.indexOf(precisionOf(b)));
+      .sort((a, b) => (PREC_AUTO_ORDER.indexOf(precisionOf(a)) - PREC_AUTO_ORDER.indexOf(precisionOf(b)))
+        || (H3_HERETIC_RE.test(a) - H3_HERETIC_RE.test(b)));
     // LTX is the only family with a user-pickable LoRA slot (⚙ "LTX LoRA"), so the
     // list is filtered to LTX-family files by the same name test the checkpoints use.
     // Other builders mount their LoRAs automatically and take no input here.
@@ -3554,7 +3556,7 @@ async function h3ImageCompanions(wantPe, opts = {}) {
     comfyEnum("CLIPLoader", "clip_name"),
     comfyEnum("VAELoader", "vae_name"),
   ]);
-  const clip = h3TextEncoderFor(clips, opts);
+  const clip = h3TextEncoderFor(clips, opts, "minimax-h3-image");
   const vae = vaes.find((n) => H3IMG_VAE_RE.test(n));
   // The template's own build first (w4a8 GPTQ); bestTier would rank it last.
   const peFiles = clips.filter((n) => H3IMG_PE_RE.test(n) && !H3IMG_PE_EXCLUDE_RE.test(n));
@@ -4819,7 +4821,7 @@ async function videoCompanions(videoType, model, opts = {}) {
     // "auto" goes through bestTier so a downloaded bf16 doesn't win just by sorting first
     // (plain enum order put "bf16" ahead of "int8_convrot", silently swapping a 27 GB
     // encoder for a 51.5 GB one the moment the file landed).
-    const clip = h3TextEncoderFor(clips, opts) || find(clips, /minimax/i);
+    const clip = h3TextEncoderFor(clips, opts, model) || find(clips, /minimax/i);
     // The Ref-Delta Fused Turbo card names the int8 video VAE explicitly. Left to the
     // generic match it would get the fp16 one instead — not because fp16 is wrong, but
     // because "f" sorts before "i" and first-match decides. Falls back to the generic
@@ -5711,16 +5713,34 @@ const H3_MAX_REF_IMAGES = 9;
 // The H3 text encoders on disk. Shared by videoCompanions (which loads one) and
 // proxyComfyModels (which offers the list to ⚙) so the two cannot drift apart.
 const H3_CLIP_RE = /qwen3vl.*minimax|minimax.*qwen3vl/i;
+// The abliterated ("heretic") community rebuild of the H3 encoder — same architecture and
+// tiers, refusals removed. Auto never gives it to the official weights, and gives it FIRST
+// to the uncensored community grafts, which were built to be driven without the refusals
+// (user decision, 2026-11-13). Add a graft to H3_UNCENSORED_RE to move it to that side.
+const H3_HERETIC_RE = /heretic/i;
+const H3_UNCENSORED_RE = /10eros/i;
 // Which H3 text encoder a run loads — shared by the video model and MiniMax-H3-Image, which
 // read prompts through the same Qwen3-VL-32B, so the one ⚙ pick serves both. The named ⚙
-// choice wins, then a build matching the ⚙ precision tier, then bestTier (never plain enum
-// order, which would put a 51.5 GB bf16 ahead of the 27 GB int8 the moment it lands).
-function h3TextEncoderFor(clips, opts = {}) {
+// choice wins outright (the heretic build stays pickable for any model). Otherwise the
+// flavour comes first — official encoder for the official weights and MiniMax-H3-Image,
+// heretic for an uncensored graft, the other flavour only when the right one is not
+// installed — and within it a build matching the ⚙ precision tier, then bestTier (never
+// plain enum order, which would put a 51.5 GB bf16 ahead of the 27 GB int8 the moment it
+// lands, and which used to hand the official weights the heretic build on a box where the
+// two share a tier, because "heretic" sorts ahead of "minimax").
+function h3TextEncoderFor(clips, opts = {}, model = "") {
   const group = clips.filter((x) => H3_CLIP_RE.test(x));
   const want = String(opts.h3TextEncoder || "").trim();
-  return (want && group.find((x) => x === want))
-    || (opts.precision && opts.precision !== "auto" && group.find((x) => precisionOf(x) === opts.precision))
-    || bestTier(group);
+  if (want && group.includes(want)) return want;
+  const heretic = H3_UNCENSORED_RE.test(model || "");
+  const preferred = group.filter((x) => H3_HERETIC_RE.test(x) === heretic);
+  const other = group.filter((x) => H3_HERETIC_RE.test(x) !== heretic);
+  for (const pool of [preferred, other]) {
+    if (!pool.length) continue;
+    return (opts.precision && opts.precision !== "auto" && pool.find((x) => precisionOf(x) === opts.precision))
+      || bestTier(pool);
+  }
+  return null;
 }
 
 // H3 LoRAs on disk. lightx2v's Turbo distillations are the only ones that exist today,

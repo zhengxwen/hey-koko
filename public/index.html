@@ -1084,7 +1084,7 @@
             <span id="comfyParamH3ChainAudioXfadeLabel" title="MiniMax H3, several /imagine lines joined into one video only. Crossfades the AUDIO over 30 ms at every join, using the overlap the next segment re-renders, so the sound never shifts against the picture. Off = the trimmed audio tracks are butted end to end. The picture is joined the same way either way.">Audio crossfade at joins (H3 chain)</span>
           </label>
           <label>
-            <span id="comfyParamH3ClipLabel" title="MiniMax H3 only. Which build of the Qwen3-VL-32B text encoder reads your prompt. The three tiers are 15.7 GB (nvfp4_awq), 27.1 GB (int8_convrot) and 51.5 GB (bf16) — on a box where that budget competes with the 21-40 GB diffusion model, this is a real choice, and it is independent of the model precision above (bf16 model + nvfp4 encoder is a legitimate mix). Auto prefers a quantised build over the unquantised one.">H3 text encoder</span>
+            <span id="comfyParamH3ClipLabel" title="MiniMax H3 and MiniMax H3 Image only. Which build of the Qwen3-VL-32B text encoder reads your prompt. The three tiers are 15.7 GB (nvfp4_awq), 27.1 GB (int8_convrot) and 51.5 GB (bf16) — on a box where that budget competes with the 21-40 GB diffusion model, this is a real choice, and it is independent of the model precision above (bf16 model + nvfp4 encoder is a legitimate mix). Auto prefers a quantised build over the unquantised one, and the official encoder for MiniMax's own weights and H3 Image; for the uncensored 10Eros grafts it prefers the heretic (refusals-removed) build. Any build can still be picked here by hand.">H3 text encoder</span>
             <select id="comfyParamH3Clip"></select>
           </label>
           <label>
