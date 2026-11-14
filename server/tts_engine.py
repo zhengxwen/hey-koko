@@ -139,6 +139,7 @@ def _qwen_model(kind):
 
 
 def qwen3_synth(text, voice, speed, req=None):
+    # `speed` is unused: Qwen3-TTS has no rate control. tts.js time-stretches the clip.
     design = (req or {}).get("design") or {}
     ref_wav, ref_text, instruct = design.get("ref_wav"), design.get("ref_text"), design.get("instruct")
     if not (ref_wav and ref_text and instruct):

@@ -449,6 +449,10 @@ const ID_MAX_SIZE = [
   // Not minimax-h3-image: a separate image model whose envelope (4-20 MP per the official
   // ComfyUI templates) is nothing like the video model's.
   [/^minimax-h3(?!-image)/, "1376x768"],
+  // MiniMax-H3-Image's model card: "It generates images of about 16 megapixels at every
+  // aspect ratio, from 4096x4096 (1:1) to 6272x2688 (21:9)" and "generally gives the best
+  // results at around 16 MP" (working range about 4-20 MP).
+  [/^minimax-h3-image/, "4096x4096"],
   // The graft changes no tensor shape — verified by diffing all 532 shared tensors against
   // the stock checkpoint (0 mismatches) — so its native envelope is H3's.
   [/^10eros-max-h3/, "1376x768"],

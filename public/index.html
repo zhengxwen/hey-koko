@@ -1217,6 +1217,10 @@
             <input id="comfyParamFlux3Upsample" type="checkbox" checked />
             <span id="comfyParamFlux3UpsampleLabel">Prompt upsampler (FLUX 3)</span>
           </label>
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="MiniMax H3 Image only: before rendering, a Qwen3.5-9B language model rewrites your request into the detailed English description of the whole picture that MiniMax-H3-Image expects, using MiniMax's own expander prompts (any language in, English out; quoted text you want in the picture stays as written). With nothing attached it also picks the aspect ratio when you have not set a size; with pictures attached it looks at them and writes the edit around what is in them. It thinks before answering: on a DGX Spark that adds about a minute to text→image and up to two minutes to an edit. The description it wrote is shown under the result. Turn it off to send your own detailed description exactly as typed.">
+            <input id="comfyParamH3ImagePe" type="checkbox" checked />
+            <span id="comfyParamH3ImagePeLabel">Prompt expander (H3 Image)</span>
+          </label>
           <button id="comfyBoxBtn" type="button" class="secondary" title="FLUX 3 Klein only: drag boxes where things should go and say what each one is (over the first attached picture for an edit, or a blank canvas). Same as the --box flag.">🔲 <span id="comfyBoxLabel">Draw layout boxes</span></button>
           <!-- 3D camera picker (Qwen 2511 Multiple-Angles). The LoRA knows exactly 96
                poses, so this is a PICKER over a discrete grid rather than a free orbit:
@@ -1281,6 +1285,10 @@
           <label class="checkboxLabel isMultiline comfyParamCheck" title="LongCat-Avatar only, ON by default. On long clips the face slowly drifts away from the photo (typically heavier-looking eye makeup, redder lips, thinner brows), because each 3.2-second window is painted on from the end of the previous one. This lets every frame see the photo; the official recipe instead keeps a few frames in every window from looking at it, so the model does not copy the photo's pose and repeat the same motion. Measured on a 1-minute clip, same seed: with it on, the drift stops building up (lip colour stays far closer to the photo through the end, eye makeup and brows clearly closer at 32 s and 49 s; some eye makeup still shows by the end). The price: about 30% less movement in the second half of the minute, and a few brief moments (0.1-0.4 s) where the face settles back into the photo's own pose. Turn it off for the official behaviour and livelier motion on long clips. No cost in speed or VRAM.">
             <input id="comfyParamLongcatRefAll" type="checkbox" checked />
             <span id="comfyParamLongcatRefAllLabel">Stronger identity hold (LongCat)</span>
+          </label>
+          <label title="Talking-photo models (InfiniteTalk, LTX-2.3, LongCat-Avatar), when the text is read by the local TTS: how fast it speaks. Empty = 1.0, the voice's own pace; 0.9 = 10% slower, 1.1 = 10% faster (0.5–2). The video follows the speech, so slower speech also means a longer clip and a longer render. Pitch stays the same. Has no effect when you attach an audio file — that is used as recorded.">
+            <span id="comfyParamTtsSpeedLabel">Speech speed (talking photo)</span>
+            <input id="comfyParamTtsSpeed" type="number" min="0.5" max="2" step="0.05" placeholder="1.0" />
           </label>
           <label title="All video models: the codec the saved mp4 is encoded with (VideoHelperSuite, straight from frames — no re-encode). H.264 (libx264) is the default and plays in every browser and device. H.265/HEVC (libx265) is smaller for the same look on detailed / higher-resolution footage, but needs HEVC support to play: it works in Safari, and in Chrome/Edge on systems with a hardware HEVC decoder (common on recent machines) — but NOT in Firefox or where there's no decoder. This app checks YOUR current browser and asks before using H.265 if it can't play it — so it isn't Mac-only. Either way the audio track is kept, and the file is downloadable from the bubble even if it can't preview here.">
             <span id="comfyParamVideoCodecLabel">Video codec</span>

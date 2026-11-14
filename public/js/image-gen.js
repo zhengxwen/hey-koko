@@ -178,6 +178,8 @@ function comfyOverrides() {
   // FLUX 3 Klein's upsampler is ON unless unticked — only the opt-out travels, so a
   // request without the key (the CLI, an old saved setting) gets BFL's default.
   if (dom.comfyParamFlux3Upsample && !dom.comfyParamFlux3Upsample.checked) ov.flux3Upsample = false;
+  // MiniMax H3 Image's expander: same opt-out-only rule.
+  if (dom.comfyParamH3ImagePe && !dom.comfyParamH3ImagePe.checked) ov.h3ImagePe = false;
   // Qwen 3D Camera: the dial's three KEYS travel as-is — the server turns them into
   // the `<sks> ...` phrase the LoRA was trained on, so only one side knows that wording.
   ov.camAzimuth = state.camAzimuth || "front";
@@ -188,6 +190,8 @@ function comfyOverrides() {
   if (dom.comfyParamUpscaleTarget?.value) ov.upscaleTarget = Number(dom.comfyParamUpscaleTarget.value); // long side, px (empty = 2x capped)
   if (dom.comfyParamTorchCompile?.checked) ov.torchCompile = true; // Wan Animate: TorchCompileModel
   if (dom.comfyParamLongcatRefAll && !dom.comfyParamLongcatRefAll.checked) ov.longcatRefAll = false; // LongCat-Avatar: on by default (ref mask 0); off = official mask 3
+  const ttsSpeed = num(dom.comfyParamTtsSpeed?.value);
+  if (ttsSpeed > 0 && ttsSpeed !== 1) ov.ttsSpeed = ttsSpeed;      // talking photo: TTS pace (server clamps 0.5–2)
   if (dom.comfyParamVideoCodec?.value) ov.videoCodec = dom.comfyParamVideoCodec.value; // video: h264 (default) | h265, via VHS_VideoCombine
   const videoCrf = num(dom.comfyParamVideoCrf?.value);
   if (videoCrf !== undefined) ov.videoCrf = videoCrf; // CRF for the selected codec (empty = codec default)
@@ -2430,6 +2434,8 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   // typed prompt, so this is shown), or `false` when ⚙ had the upsampler off.
   const expandedPrompts = [];
   let flux3UpsamplerOff = false;
+  // MiniMax H3 Image's expander: "on" | "off" | "failed" from the server (last one wins).
+  let h3ImagePeState = null;
   let flux3BoxesUsed = 0;   // how many 🔲 layout boxes the run carried (obj_1…obj_N)
   // Seed actually used (random unless --seed was pinned) → surfaced on the done line
   // so a single result can be reproduced. Only meaningful for a single output.
@@ -2553,6 +2559,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 if (data.panoLoraSkipped) panoLoraSkippedBase = data.panoLoraSkipped.base;
                 if (data.expandedPrompt && !expandedPrompts.includes(data.expandedPrompt)) expandedPrompts.push(data.expandedPrompt);
                 if (data.flux3Upsampler === false) flux3UpsamplerOff = true;
+                if (data.h3ImagePe) h3ImagePeState = data.h3ImagePe;
                 if (data.flux3Boxes) flux3BoxesUsed = data.flux3Boxes;
                 if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
                 generatedImages.push(...storedSlots(imgs, data.mediaIds));
@@ -2644,12 +2651,15 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       if (flux3BoxesUsed) doneLine += `\n${t("msg_flux3Boxes", { n: flux3BoxesUsed }, plang)}`;
       // FLUX 3's upsampler caption — folded, since it runs 100–350 words. It is greedy, so
       // a batch of one prompt normally yields one caption; distinct ones are all listed.
+      // MiniMax H3 Image's expander caption goes in the same fold, under its own title.
       if (expandedPrompts.length) {
         const quoted = expandedPrompts.map((p) => p.split("\n").map((l) => `> ${l}`).join("\n")).join("\n\n");
-        doneLine += `\n\n<details>\n<summary>${t("msg_flux3Upsampled", {}, plang)}</summary>\n\n${quoted}\n\n</details>`;
+        doneLine += `\n\n<details>\n<summary>${t(h3ImagePeState ? "msg_h3ImagePe" : "msg_flux3Upsampled", {}, plang)}</summary>\n\n${quoted}\n\n</details>`;
       } else if (flux3UpsamplerOff) {
         doneLine += `\n${t("msg_flux3UpsamplerOff", {}, plang)}`;
       }
+      if (h3ImagePeState === "off") doneLine += `\n${t("msg_h3ImagePeOff", {}, plang)}`;
+      else if (h3ImagePeState === "failed") doneLine += `\n${t("msg_h3ImagePeFailed", {}, plang)}`;
     }
 
     const replyMsg = {

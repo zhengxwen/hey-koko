@@ -701,6 +701,38 @@ const FLUX3_BASE_RE = /flux.?3.*klein.*base/i;
 const FLUX3_CLIP_RE = /qwen3vl[-_]?4b[-_]?(bf16|int8[-_]convrot)/i;
 const FLUX3_PUP_RE = /qwen3\.?5.*flux3.*upsampler/i;
 
+// MiniMax-H3-Image (2026-11). A text→image + editing DiT from the H3 family: it shares
+// the Qwen3-VL-32B text encoder (CLIPLoader type "minimax") with the video model, but has
+// its own VAE and its own conditioning node (MiniMaxH3ImageConditioning, ComfyUI 0.45).
+// One checkpoint per tier (bf16 / int8_convrot / w4a8). Distilled to SIX steps with no
+// guidance: the checkpoint carries one output head per step (PDD) and ComfyUI's model
+// sampling lays the "simple" schedule onto exactly that grid, so the official server
+// rejects any other step count or guidance scale — this builder pins both.
+// The VAE test is the DiT test plus "vae"; the DiT list excludes it explicitly.
+const H3IMG_RE = /minimax.?h3.?image/i;
+const H3IMG_VAE_RE = /minimax.?h3.?image.*vae/i;
+// The prompt expander. Comfy-Org's templates run a generic Qwen3.5-9B (w4a8 GPTQ) through
+// TextGenerateV2 with MiniMax's released PE prompts; MiniMax's own PE is a Qwen3.8-27B
+// fine-tune that has no ComfyUI build. FLUX 3's upsampler is ALSO a Qwen3.5-9B file but a
+// fine-tune for a different model, so it is excluded by name.
+const H3IMG_PE_RE = /qwen3\.?5[-_]?9b/i;
+const H3IMG_PE_EXCLUDE_RE = /flux|upsampler/i;
+const H3IMG_STEPS = 6;
+// The node's canvas grid (CANVAS_MULTIPLE in nodes_minimax_h3.py).
+const H3IMG_GRID = 32;
+// The model card: "The effective working range of MiniMax-H3-Image is about 4 MP to 20 MP".
+// The official server never samples below 2048² (`min_generation_area`): a smaller size is
+// generated at the same aspect on a 4 MP canvas and LANCZOS-resized back. Same rule here.
+const H3IMG_MIN_AREA = 2048 * 2048;
+// What a run renders when no size was asked for: the official templates' 4 MP default
+// (the node's own default is 2048²). `--size max` reaches the card's 16 MP sweet spot.
+const H3IMG_DEFAULT_AREA = 2048 * 2048;
+// The node accepts up to 100 references; ten is where every other multi-reference model
+// here stops, and each one costs a VAE encode plus vision tokens for the expander.
+const H3IMG_MAX_REFS = 10;
+// The official API accepts aspect ratios up to 3:1 either way.
+const H3IMG_MAX_ASPECT = 3;
+
 // The Qwen2.5-VL-7B encoder that the original Qwen-Image family (base, edit, 2509/2511/
 // 2512, and every control route) was trained against. The fallback stays inside the 2.5
 // family on purpose: qwen3vl_8b — boogu's encoder, and the one Qwen-Image-2.1 ships —
@@ -1847,7 +1879,7 @@ function capsFor(name, group, type, entry) {
   if (name === BERNINI_IMG_EDIT || name === BERNINI_IMG_SUBJECT) return ["edit"];
   // HiDream-O1 and Qwen-Image-2.1 are both "one checkpoint, two jobs": listed with the
   // txt2img models, and editing whatever is attached instead of ignoring it.
-  if (group === "image") return (/hidream.?o1/i.test(name) || QWEN21_RE.test(name) || FLUX3_RE.test(name)) ? ["image", "edit"] : ["image"];
+  if (group === "image") return (/hidream.?o1/i.test(name) || QWEN21_RE.test(name) || FLUX3_RE.test(name) || H3IMG_RE.test(name)) ? ["image", "edit"] : ["image"];
   if (group === "edit") return ["edit"];
   // video: a source-video model is v2v; bernini also accepts a plain image (i2v).
   if (name === LTX_UNION) return ["v2v", "audio"]; // depth-driven; LTX decodes a soundtrack
@@ -1893,6 +1925,7 @@ function imageRank(n) {
   if (n === BERNINI_T2I) return 9; // after the dedicated txt2img models
   if (n === PANO_T2I) return 10; // last: a recipe, not a checkpoint
   if (FLUX3_RE.test(n)) return 1.5; // tested before the generic /flux/ (Flux.1) line, which matches it too
+  if (H3IMG_RE.test(n)) return 1.6;
   if (/flux/i.test(n)) return 1;
   if (/pony/i.test(n)) return 2;
   if (/hidream.?i1/i.test(n)) return 3;
@@ -2109,8 +2142,11 @@ function isModelReady(name, group, type) {
     // also settles the autogrow question: a wrong slot key reaches execute() as a stray
     // kwarg and raises TypeError, so a run that COMPLETES is proof the references were
     // handed to the node — they cannot be silently dropped.
-    // MiniMax-H3-Image is a different model and has never been run here — see H3_MODEL_RE.
+    // MiniMax-H3-Image is a different model — see H3_MODEL_RE — with its own line below.
     /minimax.?h3(?!.?image)/,
+    // MiniMax-H3-Image — bf16 on the Spark (2026-11-13): text→image with and without the
+    // expander, single- and multi-picture edits, the sub-4 MP downscale path.
+    /minimax.?h3.?image/,
   ];
   return READY.some((re) => re.test(b));
 }
@@ -2507,6 +2543,16 @@ async function proxyComfyModels(req, res) {
       && vaes.some((n) => /flux2.?vae/i.test(n))
       && (await comfyEnum("CLIPLoader", "type")).includes("flux3"))
       ? flux3Files : [];
+    // MiniMax-H3-Image — text→image, and an edit when pictures are attached. Offered only
+    // when its own VAE and the shared H3 text encoder are on disk AND the box runs a
+    // ComfyUI with the conditioning node (0.45): on an older box the checkpoint loads but
+    // nothing can condition it. The prompt expander is not part of the gate — ⚙ can turn
+    // it off, and a run that wants it and lacks it says so by name.
+    const h3ImageFiles = all.filter((n) => H3IMG_RE.test(n) && !H3IMG_VAE_RE.test(n));
+    const h3Image = (h3ImageFiles.length && clips.some((n) => H3_CLIP_RE.test(n))
+      && vaes.some((n) => H3IMG_VAE_RE.test(n))
+      && await comfyHasNodes(["MiniMaxH3ImageConditioning"]))
+      ? h3ImageFiles : [];
     // Krea-2 style reference: the same weights as the txt2img entry, so it is offered only
     // when BOTH the checkpoint and the ostris style-reference LoRA are installed — that
     // LoRA is what the route IS (without it this would be a plain generation that ignores
@@ -2607,7 +2653,7 @@ async function proxyComfyModels(req, res) {
     // REAL file — a saved choice must keep resolving, and generateComfyImage re-applies
     // the ⚙ preference to whatever name it receives — so the fix is to hide the token in
     // the frontend's OPTION TEXT, not to invent a fake value here.
-    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage, ...qwen21, ...krea2, ...flux3], (n) => n, null);
+    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage, ...qwen21, ...krea2, ...flux3, ...h3Image], (n) => n, null);
     // The image entries that stand for a COLLAPSED group, so the frontend can drop the
     // precision token from their option text. It can't work this out for itself — it
     // only ever sees the surviving representative, never the siblings it stands for.
@@ -2927,6 +2973,12 @@ function familyPreset(model) {
   // FluxGuidance recipe. `guidance` stays null: FLUX 3 has no guidance embedding.
   if (FLUX3_BASE_RE.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 4, guidance: null, steps: 50, sd3Latent: false };
+  }
+  // MiniMax-H3-Image: the official templates' KSampler (euler / simple, 6 steps, cfg 1).
+  // The step count and cfg are part of the distillation — the dispatch pins them whatever
+  // ⚙ says (see H3IMG_STEPS).
+  if (H3IMG_RE.test(model)) {
+    return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: null, steps: H3IMG_STEPS, sd3Latent: false };
   }
   if (FLUX3_RE.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: null, steps: 16, sd3Latent: false };
@@ -3488,6 +3540,232 @@ function buildFlux3Klein({ model, prompt, negative, width, height, seed, cfg, co
   } };
   wf["10"] = { class_type: "VAEDecode", inputs: { samples: ["9", 0], vae: ["3", 0] } };
   wf["11"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: ["10", 0] } };
+  return wf;
+}
+
+// ── MiniMax-H3-Image ─────────────────────────────────────────────────────────────
+// Companions: the shared H3 text encoder (same ⚙ pick as the video model), the image
+// model's own VAE, and — unless ⚙ turns it off — the prompt expander plus MiniMax's
+// released PE prompts. The prompts are MiniMax's text (MiniMax-H3-Image-PE, under the
+// MiniMax-H3-Image licence), so like FLUX 3's they are pinned in
+// server/model-data-manifest.json and fetched on first use rather than committed.
+async function h3ImageCompanions(wantPe, opts = {}) {
+  const [clips, vaes] = await Promise.all([
+    comfyEnum("CLIPLoader", "clip_name"),
+    comfyEnum("VAELoader", "vae_name"),
+  ]);
+  const clip = h3TextEncoderFor(clips, opts);
+  const vae = vaes.find((n) => H3IMG_VAE_RE.test(n));
+  // The template's own build first (w4a8 GPTQ); bestTier would rank it last.
+  const peFiles = clips.filter((n) => H3IMG_PE_RE.test(n) && !H3IMG_PE_EXCLUDE_RE.test(n));
+  const pe = wantPe ? (peFiles.find((n) => precisionOf(n) === "w4a8") || bestTier(peFiles)) : null;
+  const missing = [];
+  if (!clip) missing.push("qwen3vl_32b_minimax_h3_int8_convrot.safetensors (or _nvfp4_awq) → text_encoders/");
+  if (!vae) missing.push("minimax_h3_image_vae_fp16.safetensors → vae/");
+  if (wantPe && !pe) missing.push("qwen3.5_9b_w4a8_gptq.safetensors → text_encoders/ (or turn off \"Prompt expander\" in ⚙ to send your prompt as typed)");
+  if (missing.length) throw new Error("Missing files required by MiniMax H3 Image:\n- " + missing.join("\n- "));
+  if (wantPe && !(await comfyHasNodes(["TextGenerateV2", "PreviewAny"]))) {
+    throw new Error("MiniMax H3 Image's prompt expander needs ComfyUI's TextGenerateV2 node, which this ComfyUI does not have. Update ComfyUI, or turn off \"Prompt expander\" in ⚙ to send your prompt as typed.");
+  }
+  let pePrompts = null;
+  if (pe) {
+    try {
+      const read = async (rel) => (await modelDataFile("h3image-pe", rel)).toString("utf8");
+      pePrompts = {
+        system: (await read("prompt/t2i/system_prompt.txt")).replace(/\n+$/, ""),
+        t2i: await read("prompt/t2i/task_prompt.txt"),
+        edit: await read("prompt/edit/task_prompt.txt"),
+        params: JSON.parse(await read("prompt/t2i/request_params.json")),
+      };
+    } catch (err) {
+      throw new Error(`MiniMax H3 Image's prompt expander needs MiniMax's PE prompts (about 55 KB), which are downloaded once from Hugging Face — that failed: ${err.message}. Connect this machine to the internet once (or run "node scripts/fetch-model-data.js"), or turn off "Prompt expander" in ⚙ to send your prompt as typed.`);
+    }
+  }
+  return { clip, vae, pe, pePrompts };
+}
+
+const h3Gcd = (a, b) => (b ? h3Gcd(b, a % b) : a);
+// "W:H" in lowest terms — what the edit PE wants for each picture ("the caller has already
+// reduced the image's original display width and height to their exact lowest integer
+// ratio"). null when the size is unknown.
+function h3ImageRatio(dims) {
+  if (!dims || !(dims.width > 0) || !(dims.height > 0)) return null;
+  const g = h3Gcd(Math.round(dims.width), Math.round(dims.height)) || 1;
+  return `${Math.round(dims.width) / g}:${Math.round(dims.height) / g}`;
+}
+// A "W:H" string → [w, h], or null when it is not one, or is wider than the model takes.
+function h3ImageParseRatio(s) {
+  const m = String(s || "").trim().match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
+  if (!m) return null;
+  const w = Number(m[1]), h = Number(m[2]);
+  if (!(w > 0) || !(h > 0) || Math.max(w / h, h / w) > H3IMG_MAX_ASPECT) return null;
+  return [w, h];
+}
+// A canvas of about `area` pixels at aspect w:h on the node's 32-px grid — the same
+// arithmetic as MiniMax's own size_for() in examples/context_ir.py.
+function h3ImageCanvas(aw, ah, area) {
+  const side = (a, b) => Math.max(H3IMG_GRID, Math.round(Math.sqrt(area * a / b) / H3IMG_GRID) * H3IMG_GRID);
+  return { width: side(aw, ah), height: side(ah, aw) };
+}
+
+// The expander's answer → { caption, ratio }. The answer is meant to be one JSON object
+// ({"expanded_caption": …, "aspect_ratio": …}; the edit prompt names the ratio
+// "target_aspect_ratio"), but an LLM's JSON is not guaranteed: the prompt itself spends a
+// paragraph begging for escaped quotes. A strict parse of the first complete object is
+// tried first; then the caption is cut out between its key and the end of the object, so
+// one stray quote does not throw away a 300-word description. null = nothing usable — the
+// caller then sends the prompt as typed and says so (ComfyUI's own JsonExtractString
+// returns "" there, which would render an image from an empty prompt).
+function h3ImageReadPe(text) {
+  const s = String(text || "");
+  const ratioOf = (o) => (o && typeof o === "object" ? (o.aspect_ratio || o.target_aspect_ratio) : null);
+  for (let i = s.indexOf("{"); i !== -1; i = s.indexOf("{", i + 1)) {
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let j = i; j < s.length && end < 0; j++) {
+      const c = s[j];
+      if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === "\"") inStr = false; continue; }
+      if (c === "\"") inStr = true;
+      else if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) end = j;
+    }
+    if (end < 0) continue;
+    try {
+      const o = JSON.parse(s.slice(i, end + 1));
+      if (o && typeof o.expanded_caption === "string" && o.expanded_caption.trim()) {
+        return { caption: o.expanded_caption.trim(), ratio: ratioOf(o) || null };
+      }
+    } catch { /* not this one — try the next "{" */ }
+  }
+  const k = s.search(/"expanded_caption"\s*:\s*"/);
+  if (k < 0) return null;
+  const from = s.indexOf("\"", s.indexOf(":", k) + 1) + 1;
+  const tail = s.slice(from);
+  // Up to the ratio key when it follows the caption, else up to the LAST `"}` — the
+  // caption is the one field that may hold stray quotes and braces.
+  let stop = tail.search(/"\s*,\s*"(?:target_)?aspect_ratio"/);
+  if (stop < 0) { const ends = [...tail.matchAll(/"\s*\}/g)]; stop = ends.length ? ends[ends.length - 1].index : -1; }
+  const raw = stop >= 0 ? tail.slice(0, stop) : null;
+  if (!raw || !raw.trim()) return null;
+  let caption;
+  try { caption = JSON.parse(`"${raw.replace(/(^|[^\\])"/g, "$1\\\"")}"`); } catch { caption = raw.replace(/\\"/g, "\"").replace(/\\n/g, "\n"); }
+  const r = s.match(/"(?:target_)?aspect_ratio"\s*:\s*"([^"]*)"/);
+  return caption.trim() ? { caption: caption.trim(), ratio: r ? r[1] : null } : null;
+}
+
+// The prompt-expander pass, run as its OWN ComfyUI prompt ahead of the render. The
+// official templates wire it in-graph, but then the expander's other output — the aspect
+// ratio it picks for the picture (MiniMax: "When your aspect-ratio selection is auto, use
+// the aspect_ratio returned by the model") — has nowhere to go, since a graph cannot size
+// its canvas from a string. Running it first also lets a malformed answer fall back to
+// the typed prompt instead of an empty one.
+//
+// Text→image follows MiniMax's scripts/expand_prompt.py exactly: system prompt +
+// task_prompt.format(prompt), the released sampling parameters, thinking on. An edit
+// follows the PE README's message assembly — task prompt, picture count, each picture's
+// label and source ratio, then the instruction (as a JSON string) and the ratio selection.
+// TextGenerateV2 takes the pictures as one ordered set and cannot interleave them with
+// text, so the per-picture lines are listed together; the labels still say which is which.
+// `max_length` is the template's 8192, not the request's 4096: the budget includes the
+// thinking, which ran to ~17k characters on a one-line prompt.
+function buildH3ImagePe({ comp, prompt, refNames, refDims, ratioSel, seed }) {
+  const P = comp.pePrompts;
+  const sp = P.params || {};
+  const edit = refNames.length > 0;
+  const wf = { "1": { class_type: "CLIPLoader", inputs: { clip_name: comp.pe, type: "minimax", device: "default" } } };
+  let text;
+  if (edit) {
+    const n = refNames.length;
+    const parts = [P.edit, `Reference Image Count:\n${n} input image(s), labeled <Picture 1> through <Picture ${n}>.`];
+    refNames.forEach((_, i) => {
+      const r = h3ImageRatio(refDims[i]);
+      parts.push(`Reference Media:\n- <Picture ${i + 1}> [${r ? `aspect_ratio ${r}` : "aspect_ratio unavailable"}]`);
+    });
+    text = parts.join("\n\n")
+      + "\n\nUser Editing Instruction (JSON string):\n" + JSON.stringify(String(prompt || ""))
+      + `\n\nUser Aspect Ratio Selection:\n${ratioSel || "adaptive"}`
+      + "\n\nApply the instructions above to the supplied inputs and reference images. Output only the required two-field JSON object.";
+  } else {
+    // Python str.format with one positional field: "{}" → the prompt, "{{" / "}}" → braces.
+    text = P.t2i.replace(/\{\{|\}\}|\{\}/g, (m) => (m === "{{" ? "{" : m === "}}" ? "}" : String(prompt || "")));
+  }
+  const gen = { class_type: "TextGenerateV2", inputs: {
+    clip: ["1", 0], prompt: text, max_length: 8192,
+    sampling_mode: "on",
+    "sampling_mode.temperature": sp.temperature ?? 1, "sampling_mode.top_k": sp.top_k ?? 20,
+    "sampling_mode.top_p": sp.top_p ?? 0.95, "sampling_mode.min_p": sp.min_p ?? 0,
+    "sampling_mode.repetition_penalty": sp.repetition_penalty ?? 1,
+    "sampling_mode.presence_penalty": sp.presence_penalty ?? 0, "sampling_mode.seed": seed,
+    thinking: true, use_default_template: true, mtp: "auto",
+    // The released edit assembly is a single user message with no system turn.
+    ...(edit ? {} : { system_prompt: P.system }),
+  } };
+  // What the expander SEES of each picture: at most 1 MP (the expander only reads them; a
+  // phone photo at full size would be ~12k vision tokens). Never enlarged.
+  refNames.forEach((name, i) => {
+    wf[String(10 + i)] = { class_type: "LoadImage", inputs: { image: name } };
+    let src = [String(10 + i), 0];
+    const d = refDims[i];
+    if (!d || d.width * d.height > 1024 * 1024) {
+      wf[String(30 + i)] = { class_type: "ImageScaleToTotalPixels", inputs: { image: src, upscale_method: "lanczos", megapixels: 1, resolution_steps: 32 } };
+      src = [String(30 + i), 0];
+    }
+    gen.inputs[`images.image${i + 1}`] = src;
+  });
+  wf["2"] = gen;
+  wf["3"] = { class_type: "PreviewAny", inputs: { source: ["2", 0] } };
+  return wf;
+}
+
+// Queue a helper graph and wait for it — the pre-pass above. Same deadline and abort
+// signal as the render it serves, and the same client id, so a Stop reaches it.
+async function runComfyAux(workflow, clientId, signal, deadline) {
+  const r = await fetch(`${currentComfyUrl()}/prompt`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: workflow, client_id: clientId }), signal,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.prompt_id || (j.node_errors && Object.keys(j.node_errors).length)) {
+    throw new Error(`ComfyUI refused the prompt-expander graph: ${JSON.stringify(j.node_errors || j.error || j).slice(0, 600)}`);
+  }
+  return waitForOutputs(j.prompt_id, signal, deadline);
+}
+
+// MiniMax-H3-Image — one checkpoint, both jobs: nothing attached = text to image; attached
+// pictures = an edit, the n-th being <Picture n> in the prompt (image_1 is the picture to
+// edit). The official templates' graph: MiniMaxH3ImageConditioning makes the positive
+// conditioning AND the empty latent, ConditioningZeroOut stands in for a negative the
+// model does not have, and a 6-step / cfg-1 KSampler runs on the PDD grid. The node sizes
+// every reference itself (a ≤1024-px-short-edge copy for the encoder, a 1024–2048 one for
+// the VAE), so uploads go in untouched. `out` differs from `gen` only when the asked size
+// is under the 4 MP floor: the render is then made at 4 MP and LANCZOS-resized down, as
+// the official server's min_generation_area does.
+function buildH3Image({ model, caption, comp, imageNames, gen, out, seed }) {
+  const wf = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: comp.clip, type: "minimax", device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: comp.vae } },
+  };
+  const cond = { class_type: "MiniMaxH3ImageConditioning", inputs: {
+    clip: ["2", 0], vae: ["3", 0], prompt: caption, width: gen.width, height: gen.height,
+  } };
+  // Autogrow slots travel as "<group>.<slot>" (see the H3 video builder's reference slots).
+  (imageNames || []).forEach((name, i) => {
+    wf[String(30 + i)] = { class_type: "LoadImage", inputs: { image: name } };
+    cond.inputs[`images.image_${i + 1}`] = [String(30 + i), 0];
+  });
+  wf["5"] = cond;
+  wf["6"] = { class_type: "ConditioningZeroOut", inputs: { conditioning: ["5", 0] } };
+  wf["7"] = { class_type: "KSampler", inputs: {
+    seed, steps: H3IMG_STEPS, cfg: 1, sampler_name: "euler", scheduler: "simple", denoise: 1,
+    model: ["1", 0], positive: ["5", 0], negative: ["6", 0], latent_image: ["5", 1],
+  } };
+  wf["8"] = { class_type: "VAEDecode", inputs: { samples: ["7", 0], vae: ["3", 0] } };
+  let img = ["8", 0];
+  if (out.width !== gen.width || out.height !== gen.height) {
+    wf["9"] = { class_type: "ImageScale", inputs: { image: img, upscale_method: "lanczos", width: out.width, height: out.height, crop: "disabled" } };
+    img = ["9", 0];
+  }
+  wf["11"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: img } };
   return wf;
 }
 
@@ -4541,12 +4819,7 @@ async function videoCompanions(videoType, model, opts = {}) {
     // "auto" goes through bestTier so a downloaded bf16 doesn't win just by sorting first
     // (plain enum order put "bf16" ahead of "int8_convrot", silently swapping a 27 GB
     // encoder for a 51.5 GB one the moment the file landed).
-    const clipGroup = clips.filter((x) => H3_CLIP_RE.test(x));
-    const wantClip = String(opts.h3TextEncoder || "").trim();
-    const clip = (wantClip && clipGroup.find((x) => x === wantClip))
-      || (opts.precision && opts.precision !== "auto" && clipGroup.find((x) => precisionOf(x) === opts.precision))
-      || bestTier(clipGroup)
-      || find(clips, /minimax/i);
+    const clip = h3TextEncoderFor(clips, opts) || find(clips, /minimax/i);
     // The Ref-Delta Fused Turbo card names the int8 video VAE explicitly. Left to the
     // generic match it would get the fp16 one instead — not because fp16 is wrong, but
     // because "f" sorts before "i" and first-match decides. Falls back to the generic
@@ -5438,6 +5711,17 @@ const H3_MAX_REF_IMAGES = 9;
 // The H3 text encoders on disk. Shared by videoCompanions (which loads one) and
 // proxyComfyModels (which offers the list to ⚙) so the two cannot drift apart.
 const H3_CLIP_RE = /qwen3vl.*minimax|minimax.*qwen3vl/i;
+// Which H3 text encoder a run loads — shared by the video model and MiniMax-H3-Image, which
+// read prompts through the same Qwen3-VL-32B, so the one ⚙ pick serves both. The named ⚙
+// choice wins, then a build matching the ⚙ precision tier, then bestTier (never plain enum
+// order, which would put a 51.5 GB bf16 ahead of the 27 GB int8 the moment it lands).
+function h3TextEncoderFor(clips, opts = {}) {
+  const group = clips.filter((x) => H3_CLIP_RE.test(x));
+  const want = String(opts.h3TextEncoder || "").trim();
+  return (want && group.find((x) => x === want))
+    || (opts.precision && opts.precision !== "auto" && group.find((x) => precisionOf(x) === opts.precision))
+    || bestTier(group);
+}
 
 // H3 LoRAs on disk. lightx2v's Turbo distillations are the only ones that exist today,
 // and every one of them is TASK-SPECIFIC: a fl2v LoRA on the ref2va weight (or the
@@ -8729,8 +9013,9 @@ async function probeAudioDuration(buf) {
 // (accepts "kokoro:zf_xiaoxiao" or a bare id), else auto-picked by script (CJK → Mandarin
 // female, otherwise US female). Returns { audioName, duration } — duration in seconds, 0
 // when unknown; `needDuration` makes an attachment the client didn't measure get probed
-// (ffprobe) — or { error } when the TTS fails.
-async function resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text, voice, needDuration = false, signal }) {
+// (ffprobe) — or { error } when the TTS fails. `speed` (⚙ speech speed, 0.5–2, 1 = as
+// the voice speaks) applies to the TTS only; an attached file is used as recorded.
+async function resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text, voice, speed = 1, needDuration = false, signal }) {
   let duration = Number(sourceAudioDuration) || 0;
   if (sourceAudioName || sourceAudio) {
     let buf = null;
@@ -8751,7 +9036,7 @@ async function resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMim
     || (/[぀-ヿ一-鿿]/.test(text) ? "zf_xiaoxiao" : "af_heart");
   let wavPath;
   try {
-    wavPath = await synthToWav({ engine, voice: vId, text, speed: 1 });
+    wavPath = await synthToWav({ engine, voice: vId, text, speed: Math.min(2, Math.max(0.5, Number(speed) || 1)) });
   } catch (e) {
     return { error: `Local TTS failed (${String((e && e.message) || e)}). Attach an audio file instead, or check the TTS setup used by /voice.` };
   }
@@ -9432,7 +9717,10 @@ async function generateComfyImage(req, res) {
     // this model supports is a ~17-minute render — well past the image cap.
     // FLUX 3 Klein runs a 9B LLM (its prompt upsampler) before the render and, cold,
     // loads three large files in a row — the 120 s image default is a bare render's budget.
-    const imageFloorSec = FLUX3_RE.test(model) ? 300 : 60;
+    // MiniMax-H3-Image runs its expander (a 9B LLM that thinks first — 80 s cold on a DGX
+    // Spark) as a separate pass, then loads a 37 GB DiT plus the 27 GB H3 encoder, and a
+    // 16 MP render is over a minute on its own: the whole image cap, not a slice of it.
+    const imageFloorSec = H3IMG_RE.test(model) ? 600 : FLUX3_RE.test(model) ? 300 : 60;
     const timeoutMs = (videoType || meshType || audioType)
       ? (reqTimeout === 0 ? 0 : Math.max(60, reqTimeout || 1800) * 1000)
       : Math.min(600, Math.max(imageFloorSec, reqTimeout || 120)) * 1000;
@@ -9470,7 +9758,10 @@ async function generateComfyImage(req, res) {
       // wrote can be read back off /history — the image model never saw what the user
       // typed, and that rewrite has to be visible (same reason as krea2LoraInfo.trigger).
       let flux3Info = null;
-      let solAttnUsed = null;     // Sol-Attn mode actually applied ("bf16"/"int8_qk"/"int8_qk_pv")
+      // MiniMax-H3-Image: { pe: "on" | "off" | "failed", caption, ratio, gen, out } — what
+      // the expander wrote (the done-line shows it) and the canvas that came out of it.
+      let h3ImageInfo = null;
+      let solAttnUsed = null;    // Sol-Attn mode actually applied ("bf16"/"int8_qk"/"int8_qk_pv")
       let solChunkUsed;           // MLP chunking actually applied
       let solAttnSkipped = false; // asked for, but ComfyUI-sol-attn is not on this worker
       let h3Sla = false;          // this weight's recipe calls for SLA block-sparse attention
@@ -9992,7 +10283,7 @@ async function generateComfyImage(req, res) {
         const iFps = speak ? (opts.fps || 25) : (Number(sourceVideoFps) || opts.fps || 25);
         const maxFrames = opts.length ? Math.max(5, Math.round(opts.length)) : (speak ? 500 : 1000);
         // Attached audio, or (speak + text) the local TTS reading speechText.
-        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, signal: controller.signal });
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, signal: controller.signal });
         if (track.error) { sendJson(res, 502, { error: track.error }); return; }
         const { audioName, duration: audioDur } = track;
         let videoName = null, imageName = null;
@@ -10036,7 +10327,7 @@ async function generateComfyImage(req, res) {
         const aspect = (aspW > 0 && aspH > 0) ? aspW / aspH : 832 / 480;
         const budget = (opts.width && opts.height) ? opts.width * opts.height : 832 * 480;
         const lw = snapDim(Math.sqrt(budget * aspect), 32), lh = snapDim(Math.sqrt(budget / aspect), 32);
-        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, needDuration: true, signal: controller.signal });
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, needDuration: true, signal: controller.signal });
         if (track.error) { sendJson(res, 502, { error: track.error }); return; }
         if (!(track.duration > 0)) { sendJson(res, 502, { error: "LongCat-Avatar could not measure the speech length (it plans its windows from it). Is ffprobe installed? Otherwise convert the audio to WAV or MP3 and attach it again." }); return; }
         // Output length = speech length; ⚙ length lowers it (quick tests render the start).
@@ -10086,7 +10377,7 @@ async function generateComfyImage(req, res) {
         const aspect = (aspW > 0 && aspH > 0) ? aspW / aspH : 1280 / 704;
         const budget = (opts.width && opts.height) ? opts.width * opts.height : 1280 * 704;
         const xw = snapDim(Math.sqrt(budget * aspect), 64), xh = snapDim(Math.sqrt(budget / aspect), 64);
-        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, needDuration: true, signal: controller.signal });
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, needDuration: true, signal: controller.signal });
         if (track.error) { sendJson(res, 502, { error: track.error }); return; }
         if (!(track.duration > 0)) { sendJson(res, 502, { error: "LTX-2.3 talking photo could not measure the speech length (it sizes the clip from it). Is ffprobe installed? Otherwise convert the audio to WAV or MP3 and attach it again." }); return; }
         // ⚙ length (frames) shortens the clip — the speech is trimmed to match.
@@ -11205,6 +11496,70 @@ async function generateComfyImage(req, res) {
           // being SET is the signal, not the numbers themselves.
           pinSize: !!(opts.width && opts.height),
         });
+      } else if (H3IMG_RE.test(model)) {
+        // MiniMax-H3-Image: text→image, or an edit of the attached pictures (<Picture 1>…).
+        // Like FLUX 3 it reads pictures as references, never as a start latent, and has no
+        // mask input — a painted 🖌 region is ignored. No negative prompt either (the
+        // official server rejects one); the graph's negative is the zeroed positive.
+        const wantPe = opts.h3ImagePe !== false;
+        const comp = await h3ImageCompanions(wantPe, opts);
+        let imageNames = [], refDims = [];
+        if (isImg2Img) {
+          const refs = images.slice(0, H3IMG_MAX_REFS);
+          // Distinct filenames per reference — uploadImage's default name + overwrite
+          // would collapse them all down to the last image.
+          for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `${comfyTag()}_h3iref${ri}.png`));
+          refDims = refs.map((b64) => imageDims(b64));
+          if (images.length > refs.length) imagesUsed = refs.length;
+        }
+        // The size asked for (⚙ or --size), and the shape it implies. An edit keeps the
+        // first picture's shape at the asked pixel budget — the rule every edit model here
+        // follows — so only the AREA of an asked size carries over to it.
+        const asked = (opts.width && opts.height) ? { width: Number(opts.width), height: Number(opts.height) } : null;
+        const srcShape = refDims[0] && refDims[0].width && refDims[0].height ? [refDims[0].width, refDims[0].height] : null;
+        // true = the output takes the picture's shape and only the asked AREA.
+        const keepSrcShape = !!(asked && isImg2Img && srcShape);
+        const askedShape = asked ? (keepSrcShape ? srcShape : [asked.width, asked.height]) : null;
+        let caption = String(prompt || "").trim();
+        let peState = comp.pe ? "on" : "off";
+        let peRatio = null;
+        if (comp.pe) {
+          // An edit tells the expander which canvas it is writing for: the asked shape, or
+          // "adaptive" to let it choose (and the render then follows its choice).
+          const ratioSel = isImg2Img
+            ? (askedShape ? h3ImageRatio({ width: askedShape[0], height: askedShape[1] }) : "adaptive")
+            : null;
+          const peOut = await runComfyAux(buildH3ImagePe({ comp, prompt: caption, refNames: imageNames, refDims, ratioSel, seed }),
+            clientId, controller.signal, deadline);
+          const peText = peOut && peOut["3"] && Array.isArray(peOut["3"].text) ? peOut["3"].text.join("") : "";
+          const read = h3ImageReadPe(peText);
+          if (read) { caption = read.caption; peRatio = h3ImageParseRatio(read.ratio); }
+          else {
+            peState = "failed";
+            console.warn(`[comfy-gen] MiniMax H3 Image: the prompt expander's answer had no readable caption (${peText.length} chars) — rendering the prompt as typed`);
+          }
+        }
+        if (!caption) { sendJson(res, 400, { error: "MiniMax H3 Image needs a prompt — for an edit, say what to change in <Picture 1>." }); return; }
+        let gen, out;
+        if (asked) {
+          // Text→image returns exactly the asked size; an edit returns the asked area at
+          // the picture's shape, on the grid.
+          out = keepSrcShape
+            ? h3ImageCanvas(srcShape[0], srcShape[1], asked.width * asked.height)
+            : { width: Math.round(asked.width), height: Math.round(asked.height) };
+          const outArea = out.width * out.height;
+          gen = outArea < H3IMG_MIN_AREA
+            ? h3ImageCanvas(out.width, out.height, H3IMG_MIN_AREA)
+            : { width: Math.max(H3IMG_GRID, Math.round(out.width / H3IMG_GRID) * H3IMG_GRID), height: Math.max(H3IMG_GRID, Math.round(out.height / H3IMG_GRID) * H3IMG_GRID) };
+        } else {
+          // No size asked: the expander's ratio when it gave one, else the picture's own
+          // shape for an edit, else square — at the 4 MP default.
+          const shape = peRatio || srcShape || [1, 1];
+          gen = out = h3ImageCanvas(shape[0], shape[1], H3IMG_DEFAULT_AREA);
+        }
+        workflow = buildH3Image({ model, caption, comp, imageNames, gen, out, seed });
+        h3ImageInfo = { pe: peState, peModel: comp.pe, caption: peState === "on" ? caption : null,
+          ratio: peRatio ? peRatio.join(":") : null, gen, out };
       } else if (FLUX3_RE.test(model)) {
         // FLUX 3 Klein: text→image, or an edit against up to 10 references when images are
         // attached. Tested before the generic mask / img2img branches below: this model
@@ -11637,15 +11992,24 @@ async function generateComfyImage(req, res) {
           : editType ? `edit:${editType}${hasMask ? "+mask" : ""}` : hasMask ? `inpaint` : isImg2Img ? `img2img(denoise=${denoise})` : `txt2img ${width}x${height}`;
         const c = panoCfg || cfg;
         // FLUX 3's upsampler caption, off the PreviewAny that holds it (ui.text).
+        // MiniMax-H3-Image's comes from its pre-pass, already read.
         const expandedPrompt = (flux3Info && flux3Info.previewNode && outputs[flux3Info.previewNode]
           && Array.isArray(outputs[flux3Info.previewNode].text))
-          ? outputs[flux3Info.previewNode].text.join("").trim() || undefined : undefined;
-        console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${flux3Info ? `${isImg2Img ? "edit:flux3" : "txt2img"} ${flux3Info.width}x${flux3Info.height}${flux3Info.boxes ? ` +${flux3Info.boxes} boxes` : ""}` : mode}${flux3Info ? `, upsampler=${flux3Info.upsampler ? `${flux3Info.upsampler}${expandedPrompt ? ` (${expandedPrompt.length} chars)` : " (no caption read back)"}` : "off"}` : ""}, sampler=${c.sampler}/${c.scheduler}, cfg=${flux3Info ? flux3Info.cfg : c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${c.steps}, images=${outImages.length}`);
+          ? outputs[flux3Info.previewNode].text.join("").trim() || undefined
+          : (h3ImageInfo && h3ImageInfo.caption) || undefined;
+        const h3Mode = h3ImageInfo
+          ? `${isImg2Img ? "edit:h3image" : "txt2img"} ${h3ImageInfo.out.width}x${h3ImageInfo.out.height}${h3ImageInfo.gen.width !== h3ImageInfo.out.width || h3ImageInfo.gen.height !== h3ImageInfo.out.height ? ` (rendered ${h3ImageInfo.gen.width}x${h3ImageInfo.gen.height})` : ""}, expander=${h3ImageInfo.pe === "on" ? `${h3ImageInfo.peModel} (${expandedPrompt ? expandedPrompt.length : 0} chars${h3ImageInfo.ratio ? `, ratio ${h3ImageInfo.ratio}` : ""})` : h3ImageInfo.pe}`
+          : null;
+        console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${h3Mode || (flux3Info ? `${isImg2Img ? "edit:flux3" : "txt2img"} ${flux3Info.width}x${flux3Info.height}${flux3Info.boxes ? ` +${flux3Info.boxes} boxes` : ""}` : mode)}${flux3Info ? `, upsampler=${flux3Info.upsampler ? `${flux3Info.upsampler}${expandedPrompt ? ` (${expandedPrompt.length} chars)` : " (no caption read back)"}` : "off"}` : ""}, sampler=${h3ImageInfo ? "euler/simple" : `${c.sampler}/${c.scheduler}`}, cfg=${h3ImageInfo ? 1 : flux3Info ? flux3Info.cfg : c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${h3ImageInfo ? H3IMG_STEPS : c.steps}, images=${outImages.length}`);
         const mediaIds = toGallery("image", outImages, null, { ...galleryMeta, expandedPrompt,
-          width: panoDims?.w || flux3Info?.width || width, height: panoDims?.h || flux3Info?.height || height });
+          width: panoDims?.w || flux3Info?.width || h3ImageInfo?.out.width || width, height: panoDims?.h || flux3Info?.height || h3ImageInfo?.out.height || height });
         sendJson(res, 200, { images: outImages, mediaIds, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined, krea2Lora: krea2LoraInfo || undefined, imagesUsed: imagesUsed || undefined,
           expandedPrompt, flux3Upsampler: flux3Info ? (flux3Info.upsampler || false) : undefined,
-          flux3Boxes: flux3Info && flux3Info.boxes ? flux3Info.boxes : undefined });
+          flux3Boxes: flux3Info && flux3Info.boxes ? flux3Info.boxes : undefined,
+          // "on" (expandedPrompt is its caption) | "off" (⚙) | "failed" (unreadable answer —
+          // the prompt went in as typed), plus the canvas it rendered.
+          h3ImagePe: h3ImageInfo ? h3ImageInfo.pe : undefined,
+          width: h3ImageInfo ? h3ImageInfo.out.width : undefined, height: h3ImageInfo ? h3ImageInfo.out.height : undefined });
       }
     } finally {
       clearTimeout(timeout);

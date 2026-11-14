@@ -54,8 +54,35 @@ function sayToWav({ voice, text, rate, signal } = {}) {
 // Synthesize one chunk on a neural engine (kokoro / qwen3) to a wav file.
 // Exported for the reader (server/speech.js) to play per-sentence. Caller deletes.
 async function synthToWav({ engine, voice, text, speed }) {
-  const reply = await requestEngine(engine, enginePayload(engine, voice, cleanSpeechText(text), speed));
-  return reply.wav_path;
+  return engineToWav(engine, voice, cleanSpeechText(text), speed);
+}
+
+// One daemon request → wav path, with `speed` honoured on every engine. Kokoro takes it
+// natively; Qwen3-TTS has no rate control at all (its generate call takes none), so a
+// qwen3 clip is time-stretched afterwards — see stretchWav.
+async function engineToWav(engine, voice, text, speed, timeoutMs) {
+  const reply = await requestEngine(engine, enginePayload(engine, voice, text, speed), timeoutMs);
+  return engine === "qwen3" ? stretchWav(reply.wav_path, speed) : reply.wav_path;
+}
+
+// Time-stretch a wav by `speed` (0.9 = 10% slower) with ffmpeg atempo — WSOLA, so pitch
+// and timbre stay put; a designed Mandarin anchor at 0.9 still sounded like itself
+// (1-minute LongCat test). atempo takes 0.5–2 per stage, hence the clamp. Resolves the
+// new path and deletes the input; on no ffmpeg / failure, keeps the original clip at
+// normal speed rather than failing the line.
+function stretchWav(inPath, speed) {
+  const s = Math.min(2, Math.max(0.5, Number(speed) || 1));
+  const ff = findTool("ffmpeg");
+  if (Math.abs(s - 1) < 0.005 || !ff) return Promise.resolve(inPath);
+  return new Promise((resolve) => {
+    const out = inPath.replace(/\.wav$/i, "") + `_x${s}.wav`;
+    const proc = spawn(ff, ["-v", "error", "-i", inPath, "-filter:a", `atempo=${s}`, "-y", out]);
+    proc.on("error", () => resolve(inPath));
+    proc.on("close", (code) => {
+      if (code === 0) { fs.unlink(inPath, () => {}); resolve(out); }
+      else { fs.unlink(out, () => {}); resolve(inPath); }
+    });
+  });
 }
 
 // Fixed preset voices (no cloning). value = "<engine>:<voiceId>"; the engine
@@ -308,9 +335,8 @@ async function synthesize(req, res) {
         sendJson(res, 503, { error: `TTS engine "${engine}" is not available. See README for setup.` });
         return;
       }
-      const reply = await requestEngine(engine, enginePayload(engine, voice, text, rate),
+      srcPath = await engineToWav(engine, voice, text, rate,
         Number(body.timeout) > 0 ? Math.max(30000, Number(body.timeout) * 1000) : undefined);
-      srcPath = reply.wav_path;
     }
 
     // Prefer AAC (≈5× smaller than wav/aiff — matters because the clip is
