@@ -22,9 +22,24 @@ export function setDeps({ setGenerating, renderChat }) {
   _renderChat = renderChat;
 }
 
-// Parse "/voice [--use|-u <id>] [--speed|-s <n>] <text>". --use/-u takes an
-// engine-prefixed id (e.g. kokoro:zm_yunxi); omitted → the
-// default from settings. Returns { text, voice, rate } or { error }.
+// `--desc <description>` / `-d`: a one-off designed voice. Free text, so unquoted it runs
+// to the end of the line — written last, after the text to read — or it is quoted
+// ("…" “…” 「…」) and may sit among the leading flags. Returns { rest, desc }.
+function peelDesc(line) {
+  const m = line.match(/(^|\s)(--desc|-d)\s+/);
+  if (!m) return { rest: line, desc: "" };
+  const head = line.slice(0, m.index);
+  const after = line.slice(m.index + m[0].length);
+  const q = after.match(/^(["“「])([\s\S]*?)(["”」])/);
+  if (q) return { rest: (head + " " + after.slice(q[0].length)).trim(), desc: q[2].trim() };
+  return { rest: head.trim(), desc: after.trim() };
+}
+
+// Parse "/voice [--use|-u <id>] [--speed|-s <n>] [--lang zh|en] [--gender f|m] <text>
+// [--desc <description>]". --use/-u takes an engine-prefixed id (e.g. kokoro:zm_yunxi);
+// omitted → the default from settings. With --desc the voice is designed on the spot
+// from the description instead (qwen3 / breeze only; --use may then be just the engine).
+// Returns { text, voice, rate, design } or { error }.
 export function parseVoiceCommand(input) {
   const match = input.match(/^\/voice\s+([\s\S]+)$/);
   if (!match) return null;
@@ -35,11 +50,14 @@ export function parseVoiceCommand(input) {
   let rest = match[1].trim();
   // rate stays null when no --speed is given → generateSpeech falls back to the
   // Speed slider (so the slider drives /voice too, matching the reader).
-  const result = { text: "", voice: "", rate: null };
+  const result = { text: "", voice: "", rate: null, design: null };
+  const peeled = peelDesc(rest);
+  rest = peeled.rest;
+  let lang = "", gender = "";
 
   while (/^-/.test(rest)) {
-    // --use/-u <engine:voice> and --speed/-s <0.5~2>; flag must be its own token.
-    const flag = rest.match(/^(--use|-u|--speed|-s)(?=\s|$)(?:\s+(\S+))?/);
+    // --use/-u <engine:voice>, --speed/-s <0.5~2>, --lang, --gender; flag must be its own token.
+    const flag = rest.match(/^(--use|-u|--speed|-s|--lang|--gender)(?=\s|$)(?:\s+(\S+))?/);
     if (!flag) {
       const unknown = rest.match(/^(--?[\w-]+)/);
       return { error: t("voc_unknownArg", { arg: unknown ? unknown[1] : rest }) };
@@ -48,6 +66,9 @@ export function parseVoiceCommand(input) {
     if (name === "--use" || name === "-u") {
       if (!val) return { error: t("voc_useNeedsArg") };
       result.voice = val;
+    } else if (name === "--lang" || name === "--gender") {
+      if (!val) return { error: t("voc_flagNeedsArg", { flag: name }) };
+      if (name === "--lang") lang = val; else gender = val;
     } else {
       if (!val) return { error: t("voc_speedNeedsArg") };
       const n = Number(val);
@@ -60,7 +81,16 @@ export function parseVoiceCommand(input) {
   }
 
   result.text = rest.trim();
-  if (!result.text) return { error: t("voc_missingTextAfterArgs") };
+  if (!result.text) return { error: t(peeled.desc ? "voc_descAteText" : "voc_missingTextAfterArgs") };
+  if ((lang || gender) && !peeled.desc) return { error: t("voc_designFlagsNeedDesc") };
+  if (peeled.desc) {
+    // Only the designing engines take a description: --use breeze / qwen3 (or any of their
+    // ids), else the selected voice's engine when it is one of them.
+    const eng = (result.voice || dom.voiceSelect?.value || "").split(":")[0];
+    if (eng !== "qwen3" && eng !== "breeze") return { error: t("voc_descNeedsEngine") };
+    result.voice = eng;
+    result.design = { description: peeled.desc, language: lang, gender };
+  }
   return result;
 }
 
@@ -87,6 +117,7 @@ export async function generateSpeech(parsed, tabId = state.activeTabId, insertIn
 
   try {
     const ttsBody = { text: speakText, voice, rate, timeout: 180 };
+    if (parsed.design) ttsBody.design = parsed.design;
     // Option B: a background /voice job runs on the SERVER queue (survives reload);
     // ttsFetch returns a Response-like {ok,json} so the handling below is unchanged.
     const resp = sink.server

@@ -9035,7 +9035,14 @@ async function probeAudioDuration(buf) {
 // when unknown; `needDuration` makes an attachment the client didn't measure get probed
 // (ffprobe) — or { error } when the TTS fails. `speed` (⚙ speech speed, 0.5–2, 1 = as
 // the voice speaks) applies to the TTS only; an attached file is used as recorded.
-async function resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text, voice, speed = 1, needDuration = false, signal }) {
+// `design` (⚙/--voice-desc: ttsDesign + optional ttsLang / ttsGender) voices the text in a
+// one-off described persona on qwen3 / breeze instead of a saved one (tts.js adHocPersona).
+// The ⚙ / --voice-desc one-off persona of a photo-speaks request, or null.
+function ttsDesignOf(opts) {
+  const description = String((opts && opts.ttsDesign) || "").trim();
+  return description ? { description, language: opts.ttsLang, gender: opts.ttsGender } : null;
+}
+async function resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text, voice, speed = 1, design, needDuration = false, signal }) {
   let duration = Number(sourceAudioDuration) || 0;
   if (sourceAudioName || sourceAudio) {
     let buf = null;
@@ -9051,12 +9058,18 @@ async function resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMim
     return { audioName, duration };
   }
   const vPref = String(voice || "").trim();
-  const engine = vPref.includes(":") ? vPref.split(":")[0] : "kokoro";
-  const vId = (vPref.includes(":") ? vPref.split(":")[1] : vPref)
+  const desc = design && String(design.description || "").trim() ? design : null;
+  // With a description, "--voice breeze" (bare engine) is enough; the id is ignored.
+  const bareDesign = desc && /^(qwen3|breeze)$/.test(vPref);
+  if (desc && !bareDesign && !/^(qwen3|breeze):/.test(vPref)) {
+    return { error: "A voice description (--voice-desc) needs a designing engine: add --voice breeze or --voice qwen3." };
+  }
+  const engine = bareDesign ? vPref : vPref.includes(":") ? vPref.split(":")[0] : "kokoro";
+  const vId = bareDesign ? "custom" : (vPref.includes(":") ? vPref.split(":")[1] : vPref)
     || (/[぀-ヿ一-鿿]/.test(text) ? "zf_xiaoxiao" : "af_heart");
   let wavPath;
   try {
-    wavPath = await synthToWav({ engine, voice: vId, text, speed: Math.min(2, Math.max(0.5, Number(speed) || 1)), comfyUrl: currentComfyUrl() });
+    wavPath = await synthToWav({ engine, voice: vId, text, speed: Math.min(2, Math.max(0.5, Number(speed) || 1)), comfyUrl: currentComfyUrl(), design: desc });
   } catch (e) {
     return { error: `Local TTS failed (${String((e && e.message) || e)}). Attach an audio file instead, or check the TTS setup used by /voice.` };
   }
@@ -10453,7 +10466,7 @@ async function generateComfyImage(req, res) {
         const iFps = speak ? (opts.fps || 25) : (Number(sourceVideoFps) || opts.fps || 25);
         const maxFrames = opts.length ? Math.max(5, Math.round(opts.length)) : (speak ? 500 : 1000);
         // Attached audio, or (speak + text) the local TTS reading speechText.
-        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, signal: controller.signal });
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, design: ttsDesignOf(opts), signal: controller.signal });
         if (track.error) { sendJson(res, 502, { error: track.error }); return; }
         const { audioName, duration: audioDur } = track;
         let videoName = null, imageName = null;
@@ -10498,7 +10511,7 @@ async function generateComfyImage(req, res) {
         const aspect = (aspW > 0 && aspH > 0) ? aspW / aspH : 832 / 480;
         const budget = (opts.width && opts.height) ? opts.width * opts.height : 832 * 480;
         const lw = snapDim(Math.sqrt(budget * aspect), 32), lh = snapDim(Math.sqrt(budget / aspect), 32);
-        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, needDuration: true, signal: controller.signal });
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, design: ttsDesignOf(opts), needDuration: true, signal: controller.signal });
         if (track.error) { sendJson(res, 502, { error: track.error }); return; }
         if (!(track.duration > 0)) { sendJson(res, 502, { error: "LongCat-Avatar could not measure the speech length (it plans its windows from it). Is ffprobe installed? Otherwise convert the audio to WAV or MP3 and attach it again." }); return; }
         // Output length = speech length; ⚙ length lowers it (quick tests render the start).
@@ -10555,7 +10568,7 @@ async function generateComfyImage(req, res) {
         const aspect = (aspW > 0 && aspH > 0) ? aspW / aspH : 1280 / 704;
         const budget = (opts.width && opts.height) ? opts.width * opts.height : 1280 * 704;
         const xw = snapDim(Math.sqrt(budget * aspect), 64), xh = snapDim(Math.sqrt(budget / aspect), 64);
-        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, needDuration: true, signal: controller.signal });
+        const track = await resolveSpeechTrack({ sourceAudio, sourceAudioName, sourceAudioMime, sourceAudioDuration, text: speechText, voice: opts.ttsVoice, speed: opts.ttsSpeed, design: ttsDesignOf(opts), needDuration: true, signal: controller.signal });
         if (track.error) { sendJson(res, 502, { error: track.error }); return; }
         if (!(track.duration > 0)) { sendJson(res, 502, { error: "LTX-2.3 talking photo could not measure the speech length (it sizes the clip from it). Is ffprobe installed? Otherwise convert the audio to WAV or MP3 and attach it again." }); return; }
         // ⚙ length (frames) shortens the clip — the speech is trimmed to match.

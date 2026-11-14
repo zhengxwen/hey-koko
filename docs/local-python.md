@@ -136,6 +136,27 @@ afterwards with ffmpeg, the same way as for Qwen3-TTS.
 The first line on a cold box takes about a minute while the model loads and the persona
 is designed.
 
+## One-off designed voices (no `tts-voices.json` edit)
+
+Both designing engines also take a description right in the command. In `/voice`, put
+`--desc` **after** the text (it runs to the end of the line), or quote it to place it
+among the other flags:
+
+```
+/voice -u breeze Welcome to tonight's documentary. --desc A male documentary narrator in his sixties, with a low, husky voice, speaking slowly
+/voice -u qwen3 --gender male -d "A gravelly old sea captain, hearty and theatrical" Ahoy there, friends.
+```
+
+`-u` can be just the engine (`breeze` / `qwen3`). Without `-u`, the engine of the voice
+selected in Settings is used, if it is a Breeze or Qwen3 voice. `--lang zh|en` sets the
+language; by default it follows the text being read. `--gender female|male` is added to
+the description. For "photo speaks" in `/imagine`, use `--voice breeze --voice-desc <description>`.
+`--voice-desc` runs to the next flag, like `--pos`. Language and gender go through
+`--opt ttsLang=en` / `--opt ttsGender=male`.
+
+The designed clip is cached by a hash of the description, so the same description gives
+the same voice the next time, and only the first use pays for the design step.
+
 ## News feed extraction — `trafilatura`
 
 The 📰 **news feed subscriptions** feature (poll company/official blogs and backfill

@@ -310,6 +310,22 @@ function parseTrackFlag(value, acc) {
   return out;
 }
 
+// `--voice-desc <description>` — a one-off designed TTS voice for "photo speaks" (with
+// --voice qwen3 / breeze). Free text that runs to the next ` --flag`, like --pos/--neg,
+// so it is peeled before the flag loop. Twin of scripts/imagine.js — keep them identical.
+function peelVoiceDesc(line) {
+  const out = { rest: line, desc: "" };
+  for (;;) {
+    const m = out.rest.match(/(^|\s)--voice-desc\s+/i);
+    if (!m) break;
+    const after = out.rest.slice(m.index + m[0].length);
+    const stop = after.search(/\s--[a-z]/i);
+    out.desc = (stop < 0 ? after : after.slice(0, stop)).trim();
+    out.rest = (out.rest.slice(0, m.index) + (stop < 0 ? "" : after.slice(stop))).trim();
+  }
+  return out;
+}
+
 function peelTextFlags(line) {
   const out = { rest: line, pos: "", neg: "" };
   for (;;) {
@@ -489,6 +505,9 @@ function parseImagineCommand(input) {
   if (boxed.error) return { error: t("img_boxInvalid", { why: boxed.error }) };
   rest = boxed.rest;
   if (boxed.boxes) result.options.boxes = boxed.boxes;
+  const vdesc = peelVoiceDesc(rest);
+  rest = vdesc.rest;
+  if (vdesc.desc) result.options.ttsDesign = vdesc.desc;
 
   // Long flags plus the two short ones. A short flag has to be listed HERE as well as
   // handled below — the loop is what decides whether the token is a flag at all, so a
@@ -616,8 +635,9 @@ function parseImagineCommand(input) {
       rawOpts[key] = val;
       rest = rest.replace(/^--opt\s+\S+\s*/, "").trim();
     } else if (/^--voice\s/.test(rest)) {
-      // TTS voice for "photo speaks" (InfiniteTalk / LongCat-Avatar): a Kokoro voice id, e.g.
-      // zf_xiaoxiao / zm_yunxi / af_heart. Validated server-side; other models ignore it.
+      // TTS voice for "photo speaks" (InfiniteTalk / LongCat-Avatar): a voice id, e.g.
+      // zf_xiaoxiao / qwen3:anchor_f / breeze:host_en_m — or just "breeze" / "qwen3" with
+      // --voice-desc. Validated server-side; other models ignore it.
       const voiceFlag = rest.match(/^--voice\s+(\S+)/);
       if (!voiceFlag) return { error: t("img_voiceNeedsArg") };
       result.options.ttsVoice = voiceFlag[1];
