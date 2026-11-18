@@ -220,6 +220,8 @@ function comfyOverrides() {
   if (h3LoraStrength !== undefined) ov.h3LoraStrength = h3LoraStrength;
   // Latent-upscale second pass: "" = off, otherwise the factor.
   if (dom.comfyParamH3Upscale?.value) ov.h3Upscale = dom.comfyParamH3Upscale.value;
+  // Motion control: "" = off, otherwise the control type the driving clip is turned into.
+  if (dom.comfyParamH3Control?.value) ov.h3Control = dom.comfyParamH3Control.value;
   if (dom.comfyParamSolAttn?.value) ov.solAttn = dom.comfyParamSolAttn.value;     // "" = off
   const solTau = num(dom.comfyParamSolTau?.value);
   if (solTau !== undefined) ov.solTau = solTau;                                   // empty = the node's 1.3
@@ -1735,6 +1737,14 @@ export async function generateVideo(parsed, model, tabId = state.activeTabId, in
     else if (lastData.h3UpscaleSkipped) {
       doneLine += `\n${t(lastData.h3UpscaleSkipped === "chain" ? "msg_h3UpscaleNoChain"
         : lastData.h3UpscaleSkipped === "weight" ? "msg_h3UpscaleNoWeight" : "msg_h3UpscaleNoNode", {}, plang)}`;
+    }
+    if (lastData.h3Control) {
+      doneLine += `\n${t(lastData.h3Control === "depth" ? "msg_h3ControlDepth" : "msg_h3ControlCanny", {}, plang)}`
+        + (lastData.h3ControlFps ? ` · ${t("msg_h3ControlRetimed", { fps: lastData.h3ControlFps }, plang)}` : "");
+    } else if (lastData.h3ControlSkipped) {
+      doneLine += `\n${t(lastData.h3ControlSkipped === "chain" ? "msg_h3ControlNoChain"
+        : lastData.h3ControlSkipped === "patch" ? "msg_h3ControlNoPatch"
+        : lastData.h3ControlSkipped === "depth" ? "msg_h3ControlNoDepth" : "msg_h3ControlNoNode", {}, plang)}`;
     }
     if (lastData.easyCacheSkipped) doneLine += `\n${t("msg_easyCacheSkippedRef", {}, plang)}`;
     else if (lastData.solAttn) {

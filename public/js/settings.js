@@ -110,6 +110,7 @@ export function saveCurrentSettings() {
         h3Lora: dom.comfyParamH3Lora?.value || "",
         h3LoraStrength: dom.comfyParamH3LoraStrength?.value || "",
         h3Upscale: dom.comfyParamH3Upscale?.value || "",
+        h3Control: dom.comfyParamH3Control?.value || "",
         solAttn: dom.comfyParamSolAttn?.value || "",
         solTau: dom.comfyParamSolTau?.value || "",
         // Defaults ON (bit-exact + faster + lower peak), so store the raw state —
@@ -399,6 +400,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = !!cp.easyCache;
     if (dom.comfyParamH3LoraStrength) dom.comfyParamH3LoraStrength.value = cp.h3LoraStrength || "";
     if (dom.comfyParamH3Upscale) dom.comfyParamH3Upscale.value = cp.h3Upscale || "";
+    if (dom.comfyParamH3Control) dom.comfyParamH3Control.value = cp.h3Control || "";
     if (dom.comfyParamSolAttn) dom.comfyParamSolAttn.value = cp.solAttn || "";
     if (dom.comfyParamSolTau) dom.comfyParamSolTau.value = cp.solTau || "";
     if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = cp.solChunkFF !== false;

@@ -5765,6 +5765,24 @@ const H3_UPSCALER_RE = /minimax.*h3.*latent.*upscal/i;
 const H3_UPSCALE_SIGMAS = "0.9035, 0.6316, 0.3158, 0.0000";
 // Pixel-space alignment the upscaler node wants ("32 is strictly recommended").
 const H3_UPSCALE_ALIGN = 32;
+// ⚙ Motion control (H3). The Fun ControlNet Union branch is published as a MODEL PATCH
+// rather than a controlnet (upstream #15975), and that is precisely why it is usable
+// here: references ride the CONDITIONING, this rides the MODEL, so the two compose with
+// no interaction — identity from the reference images, structure and motion from the
+// driving clip. The official template (video_minimax_h3_fun_controlnet_union) mounts it
+// on the ref2va weight exactly this way.
+//
+// Matched by name, and only a PRUNED conversion will load: every H3 weight we run uses
+// the curve-basis adaln table ([1025,8]), while alibaba-pai's raw checkpoint carries the
+// full [96768,2688] projection. Comfy-Org publishes the pruned ones; both the v1 and the
+// 2.0 union files carry depth and canny, so either serves this knob (2.0 only adds
+// control types it does not offer).
+const H3_FUNCN_RE = /minimax.?h3.*fun.?control/i;
+// 24 fps is a contract, not a preference: MiniMaxH3FunControlPatch picks its control
+// frames by OUTPUT frame number (arange(n).clamp(max=len-1)) and never resamples in
+// time, so a 30 fps clip fed in raw plays back 20% slow AND runs out early (the patch
+// then holds its last frame). The clip is re-encoded once, server-side, before upload.
+const H3_CONTROL_FPS = 24;
 // What a Turbo LoRA implies about the sampling schedule. It is NOT free-standing: the
 // distillation, the step count and the sigma shift are one recipe, and getting any of
 // the three wrong produces a valid-looking render that is simply wrong — the same failure
@@ -5818,7 +5836,7 @@ function h3LoraInfo(name) {
 // weight files verified end-to-end, Aug 2026). "It validated" still proves nothing.
 function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFrameName,
   refImageNames, refVideoName, refAudioName, refImageSize, easyCache, solAttn, solTau, solChunkFF,
-  h3Lora, h3LoraStrength, shiftVideo, shiftAudio, h3Sla, h3Chain, h3Upscale }) {
+  h3Lora, h3LoraStrength, shiftVideo, shiftAudio, h3Sla, h3Chain, h3Upscale, h3Control }) {
   const isRef = h3ReadsRefs(model);
   const refs = (Array.isArray(refImageNames) ? refImageNames : []).filter(Boolean).slice(0, H3_MAX_REF_IMAGES);
   const wf = {
@@ -5861,8 +5879,16 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
       // them by the numeric suffix (ref_video_audios["ref_video_audio_" + n]), not by order.
       wf["rlv"] = { class_type: "LoadVideo", inputs: { file: refVideoName } };
       wf["rgvc"] = { class_type: "GetVideoComponents", inputs: { video: ["rlv", 0] } };
-      h3["ref_videos.ref_video_0"] = ["rgvc", 0];
-      h3["ref_video_audios.ref_video_audio_0"] = ["rgvc", 1];
+      // ⚙ motion control claims the clip for itself: the same frames go to the Fun
+      // ControlNet patch below instead of into the reference slots. Both at once would
+      // be the same clip paid for twice — reference tokens ride every sampling step —
+      // and it would ask the model to imitate a performance it is already being driven
+      // through frame by frame. The clip's SOUNDTRACK is dropped with it; an audio
+      // reference is still available by attaching an audio file (ref_audios).
+      if (!h3Control) {
+        h3["ref_videos.ref_video_0"] = ["rgvc", 0];
+        h3["ref_video_audios.ref_video_audio_0"] = ["rgvc", 1];
+      }
     }
     if (refAudioName) {
       wf["rla"] = { class_type: "LoadAudio", inputs: { audio: refAudioName } };
@@ -5949,6 +5975,39 @@ function buildMiniMaxH3({ model, prompt, comp, v, seed, firstFrameName, lastFram
       model: [head, 0], lora_name: h3Lora,
       strength_model: h3LoraStrength > 0 ? h3LoraStrength : 1.0 } };
     head = "lora";
+  }
+  if (h3Control) {
+    // Fun ControlNet Union, in the official template's position: straight after the
+    // LoRA, and feeding BOTH the scheduler and the guider. It is a block patch over the
+    // DiT, so it belongs with the schedule group above `sig` — not with the
+    // sampling-only patches below it.
+    //
+    // The control frames are pixel-space IMAGEs (a depth sequence or an edge sequence);
+    // the patch VAE-encodes them itself and fits them to the output canvas, which is why
+    // there is no ImageScale here and no size to agree on.
+    if (h3Control.kind === "depth") {
+      // MoGe (monocular geometry) renders the depth pass. Same three nodes the LTX
+      // union-control line uses, same settings — the depth map is the input the control
+      // branch was trained on, and what produced it does not matter to it.
+      wf["cmg"] = { class_type: "LoadMoGeModel", inputs: { model_name: h3Control.mogeModel } };
+      wf["cmgi"] = { class_type: "MoGeInference", inputs: {
+        moge_model: ["cmg", 0], image: ["rgvc", 0], resolution_level: 9,
+        fov_x_degrees: 0.0, batch_size: 4, force_projection: true, apply_mask: true,
+        refine_steps: 3 } };
+      wf["cctl"] = { class_type: "MoGeRender", inputs: { moge_geometry: ["cmgi", 0], output: "depth" } };
+    } else {
+      // Core Canny, at the node's own thresholds.
+      wf["cctl"] = { class_type: "Canny", inputs: {
+        image: ["rgvc", 0], low_threshold: 0.4, high_threshold: 0.8 } };
+    }
+    wf["cpat"] = { class_type: "ModelPatchLoader", inputs: { name: h3Control.patch } };
+    // strength 1.0 over the whole schedule is the published recipe ("keep guidance_scale
+    // at 1.0; raise strength above 1 only if the output drifts from the control"), and
+    // H3 has no CFG at all here, so there is nothing else to tune.
+    wf["cfcn"] = { class_type: "MiniMaxH3FunControlNetApply", inputs: {
+      model: [head, 0], model_patch: ["cpat", 0], vae: ["vae", 0],
+      strength: 1.0, start_percent: 0.0, end_percent: 1.0, control_video: ["cctl", 0] } };
+    head = "cfcn";
   }
   if (h3Sla) {
     // After the LoRA loaders and before the shift — the pack's own rule is "SLA must be
@@ -6283,7 +6342,7 @@ function buildLtxUnionControl({ prompt, negative, comp, imageName, videoName, du
     "vslice": { class_type: "Video Slice", inputs: { video: ["lv", 0], start_time: 0.0, duration: durationSec, strict_duration: false } },
     "gvc":    { class_type: "GetVideoComponents", inputs: { video: ["vslice", 0] } },
     "mogeload": { class_type: "LoadMoGeModel", inputs: { model_name: comp.mogeModel } },
-    "mogeinf": { class_type: "MoGeInference", inputs: { moge_model: ["mogeload", 0], image: ["gvc", 0], resolution_level: 9, fov_x_degrees: 0.0, batch_size: 4, force_projection: true, apply_mask: true } },
+    "mogeinf": { class_type: "MoGeInference", inputs: { moge_model: ["mogeload", 0], image: ["gvc", 0], resolution_level: 9, fov_x_degrees: 0.0, batch_size: 4, force_projection: true, apply_mask: true, refine_steps: 3 } },
     "depth":  { class_type: "MoGeRender", inputs: { moge_geometry: ["mogeinf", 0], output: "depth" } },
     "gis":    { class_type: "GetImageSize", inputs: { image: ["depth", 0] } },
     "pos":    { class_type: "CLIPTextEncode", inputs: { clip: ["te", 0], text: prompt || "" } },
@@ -6706,7 +6765,7 @@ function buildLtx25Union({ prompt, negative, comp, imageName, videoName, duratio
     "vsl": { class_type: "Video Slice", inputs: { video: ["lv", 0], start_time: 0.0, duration: durationSec, strict_duration: false } },
     "gvc": { class_type: "GetVideoComponents", inputs: { video: ["vsl", 0] } },
     "mogeload": { class_type: "LoadMoGeModel", inputs: { model_name: comp.mogeModel } },
-    "mogeinf": { class_type: "MoGeInference", inputs: { moge_model: ["mogeload", 0], image: ["gvc", 0], resolution_level: 9, fov_x_degrees: 0.0, batch_size: 4, force_projection: true, apply_mask: true } },
+    "mogeinf": { class_type: "MoGeInference", inputs: { moge_model: ["mogeload", 0], image: ["gvc", 0], resolution_level: 9, fov_x_degrees: 0.0, batch_size: 4, force_projection: true, apply_mask: true, refine_steps: 3 } },
     "depth": { class_type: "MoGeRender", inputs: { moge_geometry: ["mogeinf", 0], output: "depth" } },
     // The guide must sit exactly on the stage-1 canvas: the official workflow snaps the
     // depth frames to /(32·downscale) before reading their size back. Dims are computed
@@ -9952,6 +10011,9 @@ async function generateComfyImage(req, res) {
       let h3SlaSkipped = false;   // recipe wanted it, the SLA node pack is not on this worker
       let h3UpscaleUsed;          // ⚙ latent-upscale second pass: the factor it ran at
       let h3UpscaleSkipped = "";  // asked for, but "node" / "weight" / "chain" says no
+      let h3ControlUsed;          // ⚙ motion control: "depth" / "canny" as it ran
+      let h3ControlSkipped = "";  // asked for, but "node" / "patch" / "depth" / "chain" says no
+      let h3ControlFps = 0;       // the driving clip's ORIGINAL fps, when it had to be re-timed
       let easyCacheSkipped = false; // ⚙ asked for it, the weight's card forbids it with references
       let h3ChainAudio = false;     // chain segment ≥ 2: hand the untrimmed sound back too
       let h3LoraUsed = null;      // ⚙ H3 LoRA actually mounted
@@ -10870,6 +10932,12 @@ async function generateComfyImage(req, res) {
         // the "don't do X" instructions belong in the prompt itself, which is also where
         // the soundtrack is described (dialogue, SFX, music are part of the same prompt).
         const isRef = h3ReadsRefs(model);
+        // ⚙ Motion control (H3) — read before anything touches the attachments, because it
+        // changes what the attached clip IS: a control video instead of a reference, which
+        // decides both how the clip is uploaded (re-timed to 24 fps) and how long the
+        // output is. Only the reference weights can take a clip at all, so the knob is
+        // inert on fl2va; a stale value from the CLI is ignored rather than refused.
+        const wantCtl = isRef ? String(opts.h3Control || "").trim() : "";
         // ref2va needs SOMETHING to reference, but the node's own minimum for each of the
         // four groups is 0 — images, a clip and an audio file are interchangeable ways of
         // giving it one. So the gate is "at least one reference of any kind", not "at
@@ -10899,6 +10967,18 @@ async function generateComfyImage(req, res) {
         if (Array.isArray(images) && images.length && !opts.width && !opts.height) {
           const dims = imageDims(images[0]);
           if (dims && dims.width && dims.height) vOpts.aspect = dims.width / dims.height;
+        }
+        // With motion control the output IS that performance, so its length follows the
+        // driving clip unless a length was pinned. Getting this wrong is silent: the patch
+        // trims a longer control video to its first frames and holds the last frame of a
+        // shorter one, so a 10 s clip would quietly become a 5 s one, and a 3 s clip would
+        // end with 2 s of freeze. Frames are counted at 24 fps because that is what the
+        // clip will have been re-encoded to; resolveVideoConfig snaps to the 17k+5 grid and
+        // clamps into the trained 124-362 window.
+        if (wantCtl && !opts.length) {
+          const cFps = Number(sourceVideoFps) || 0, cFrames = Number(sourceVideoFrames) || 0;
+          const cDur = cFps > 0 && cFrames > 0 ? cFrames / cFps : 0;
+          if (cDur > 0) vOpts.length = Math.round(cDur * H3_CONTROL_FPS);
         }
         const v = resolveVideoConfig("minimax-h3", vOpts, model, false);
         let firstFrameName = null, lastFrameName = null, refImageNames = null;
@@ -10948,7 +11028,23 @@ async function generateComfyImage(req, res) {
         // all that can arrive here — the builder writes them at index 0.
         let refVideoName = null, refAudioName = null;
         if (isRef) {
-          if (sourceVideoName || sourceVideo) refVideoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
+          // A control video has to arrive at 24 fps (see H3_CONTROL_FPS). Done here, where
+          // the bytes still exist: a clip already sitting on the box (sourceVideoName) can
+          // only be used as it is. resampleVideo re-encodes audio to AAC as well, so the
+          // sanitising pass inside uploadVideo has nothing left to do for it.
+          if (wantCtl && sourceVideo && !sourceVideoName) {
+            const raw = typeof sourceVideo === "string" && sourceVideo.startsWith("data:") ? sourceVideo.split(",")[1] : sourceVideo;
+            const cbuf = Buffer.from(raw, "base64");
+            const cProbe = await probeVideo(cbuf);
+            if (cProbe.fps && Math.abs(cProbe.fps - H3_CONTROL_FPS) > 0.05) {
+              const retimed = await resampleVideo(cbuf, H3_CONTROL_FPS, false);
+              if (retimed) {
+                refVideoName = await uploadVideoBuffer(retimed, "video/mp4", controller.signal);
+                h3ControlFps = Math.round(cProbe.fps * 100) / 100;
+              }
+            }
+          }
+          if (!refVideoName && (sourceVideoName || sourceVideo)) refVideoName = sourceVideoName || await uploadVideo(sourceVideo, controller.signal, sourceVideoMime);
           if (sourceAudioName || sourceAudio) refAudioName = sourceAudioName || await uploadAudio(sourceAudio, controller.signal, sourceAudioMime);
         }
         // Both live in a custom node pack (ComfyUI-sol-attn) that this box may not have —
@@ -11000,6 +11096,42 @@ async function generateComfyImage(req, res) {
           }
         }
         h3UpscaleUsed = h3Upscale ? h3UpScale : undefined;
+
+        // ⚙ Motion control. Gated on four separate things, because each one fails
+        // differently: the apply node (ComfyUI >= 0.35), a pruned Fun ControlNet patch in
+        // model_patches/, and — for depth — the MoGe nodes plus a MoGe weight. Canny is
+        // core. A missing piece is reported and the run continues uncontrolled rather than
+        // erroring, the same policy as the latent upscaler; what IS refused is asking for
+        // motion control with nothing to be driven by, since that would silently render an
+        // ordinary clip.
+        let h3Control = null;
+        if (wantCtl) {
+          if (!refVideoName) {
+            sendJson(res, 400, { error: "Motion control needs a driving video — attach the clip whose motion you want copied, or set Motion control back to Off. (Reference images still define who is in the shot.)" });
+            return;
+          }
+          if (chainSeg) h3ControlSkipped = "chain";
+          else if (!(await comfyHasNodes(["MiniMaxH3FunControlNetApply", "ModelPatchLoader"]))) h3ControlSkipped = "node";
+          else {
+            const fcnPatches = (await comfyEnum("ModelPatchLoader", "name").catch(() => []))
+              .filter((n) => H3_FUNCN_RE.test(n));
+            // Quantised first — int8_convrot is what the official template loads. Among
+            // several it is the enum's own order that decides, which puts the 2.0 union
+            // ahead of v1: newer, and a superset of v1's control types. (ComfyUI's
+            // converted patch carries its own config, so the v1-vs-2.0 config mismatch
+            // that bites VideoX-Fun users cannot happen here.)
+            const fcnPick = fcnPatches.find((n) => /int8/i.test(n)) || fcnPatches[0];
+            if (!fcnPick) h3ControlSkipped = "patch";
+            else if (wantCtl === "depth") {
+              const mogeW = (await comfyEnum("LoadMoGeModel", "model_name").catch(() => [])).find((n) => /moge/i.test(n));
+              if (!mogeW || !(await comfyHasNodes(["MoGeInference", "MoGeRender"]))) h3ControlSkipped = "depth";
+              else h3Control = { kind: "depth", patch: fcnPick, mogeModel: mogeW };
+            } else if (!(await comfyHasNodes(["Canny"]))) h3ControlSkipped = "node";
+            else h3Control = { kind: "canny", patch: fcnPick };
+          }
+        }
+        h3ControlUsed = h3Control ? h3Control.kind : undefined;
+        if (!h3Control) h3ControlFps = 0;   // nothing was driven, so the re-time is not news
 
         // ⚙ H3 LoRA. The Turbo distillations are task-bound, and picking the wrong one is
         // NOT an error anyone would notice: ComfyUI loads it, sampling runs, and 16
@@ -11081,7 +11213,7 @@ async function generateComfyImage(req, res) {
           shiftVideo: h3ShiftVideo, shiftAudio: h3ShiftAudio, h3Sla,
           // `trim` = the frames the guide pinned, which this segment drops from its head.
           h3Chain: chainSeg ? { ...chainSeg, trim: chainLater ? h3Anchor : 0 } : null,
-          h3Upscale });
+          h3Upscale, h3Control });
         // With the second pass the file is bigger than the generation size, so the
         // done-line has to report where it landed, not where it started.
         const uAlign = (n) => Math.round(n * (h3Upscale ? h3Upscale.scale : 1) / H3_UPSCALE_ALIGN) * H3_UPSCALE_ALIGN;
@@ -12172,7 +12304,7 @@ async function generateComfyImage(req, res) {
           return;
         }
         const mediaIds = toGallery("video", outVideos, videoMime, { ...galleryMeta, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length });
-        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Sla: h3SlaUsed, h3SlaSkipped: h3SlaSkipped || undefined, h3Upscale: h3UpscaleUsed, h3UpscaleSkipped: h3UpscaleSkipped || undefined, easyCacheSkipped: easyCacheSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed, h3ChainAudio: (h3ChainAudio && outAudios[0]) || undefined });
+        sendJson(res, 200, { videos: outVideos, mediaIds, videoMime, model, seed, precisionNote, precisionUsed, width: videoDims?.width, height: videoDims?.height, fps: videoDims?.fps, length: videoDims?.length, segments: videoDims?.segments, truncatedFrom: videoDims?.truncatedFrom, truncatedNoChain: videoDims?.truncatedNoChain, interpolated: videoDims?.interpolated, interpMethod: videoDims?.interpMethod, interpWarning, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, sharpen: upscaleInfo?.sharpen || undefined, ltxLora: ltxLoraUsed || undefined, phantomTurbo: phantomTurboUsed || undefined, videoCodec: videoCodecUsed || undefined, videoCodecNote: videoCodecNote || undefined, scailStreamNote: scailStreamNote || undefined, solAttn: solAttnUsed || undefined, solChunkFF: solChunkUsed, solAttnSkipped: solAttnSkipped || undefined, h3Sla: h3SlaUsed, h3SlaSkipped: h3SlaSkipped || undefined, h3Upscale: h3UpscaleUsed, h3UpscaleSkipped: h3UpscaleSkipped || undefined, h3Control: h3ControlUsed, h3ControlSkipped: h3ControlSkipped || undefined, h3ControlFps: h3ControlFps || undefined, easyCacheSkipped: easyCacheSkipped || undefined, h3Lora: h3LoraUsed || undefined, h3Recipe: h3RecipeUsed || undefined, h3Keyframes: h3KeyframesUsed || undefined, imagesUsed, h3ChainAudio: (h3ChainAudio && outAudios[0]) || undefined });
       } else {
         // The panorama recipe is neither txt2img nor the generic img2img: with a photo
         // it outpaints around it at its own denoise, and either way it forces its own

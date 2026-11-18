@@ -2107,6 +2107,9 @@ export function updateComfyParamVisibility() {
   // keeps it on under SLA too.
   const h3Sla = h3 && h3RefDeltaTurbo(m);
   setVis(dom.comfyParamH3Upscale, h3);
+  // Motion control needs a clip to be driven by, and only the reference weights take one
+  // — the same gate as reference sizing and keyframes.
+  setVis(dom.comfyParamH3Control, h3 && H3_REF_RE.test(m));
   setVis(dom.comfyParamSolAttn, h3 && !h3Sla);
   setVis(dom.comfyParamSolTau, h3 && !h3Sla && !!dom.comfyParamSolAttn?.value); // tau is meaningless with Sol off
   setVis(dom.comfyParamSolChunkFF, h3, ".comfyParamCheck");

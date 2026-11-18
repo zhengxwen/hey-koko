@@ -1059,6 +1059,14 @@
             <input id="comfyParamSolTau" type="number" min="0" max="4" step="0.05" placeholder="Auto (1.3)">
           </label>
           <label>
+            <span id="comfyParamH3ControlLabel" title="MiniMax H3 reference weights only. Drives the generation with an attached clip's structure, frame by frame, so the output copies that performance: Depth follows bodies, poses and camera; Edges follows outlines. Who is in the shot still comes from your reference images and the prompt — this is the Fun ControlNet Union branch, which rides the model while references ride the conditioning, so the two work together. The clip is re-encoded to 24 fps first, because control frames are taken by frame number and never resampled in time; a clip longer than the video is cut and a shorter one holds its last frame, so the length follows the clip unless you pin one. With this on the clip is no longer used as a reference and its soundtrack is not referenced either — attach an audio file for that. Needs the Fun ControlNet patch in model_patches/ on the box that runs the job, and for Depth a MoGe weight; without them the setting is dropped and the result says so. Not applied to chained multi-line /imagine.">Motion control (H3)</span>
+            <select id="comfyParamH3Control">
+              <option value="">Off</option>
+              <option value="depth">Depth</option>
+              <option value="canny">Edges</option>
+            </select>
+          </label>
+          <label>
             <span id="comfyParamH3UpscaleLabel" title="MiniMax H3 only. Renders at the size you picked, then runs the model's learned latent upscaler and a short second sampling pass, so the file comes out that many times larger on each side — the only route to 2K, since H3's weights are trained at about 1 megapixel and simply asking for a bigger canvas is slower without being sharper. The upscaler works on the 24-channel latent directly, so the 5B VAE is never round-tripped and the soundtrack is carried across untouched. 2x is what it was mostly trained on. Costs real time: the second pass sees four times the video tokens at 2x. 10Eros weights ask for this pass by name — their card says it is what removes the latent flicker of a single-pass render. Needs the Comfyui_Minimax_h3_latent_Upscaler node pack and its weight on the box that runs the job; without either the setting is dropped and the result says so. Not applied to chained multi-line /imagine.">Latent upscale (H3)</span>
             <select id="comfyParamH3Upscale">
               <option value="">Off</option>
