@@ -187,8 +187,9 @@ async function fetchWeb(query) {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query }),
   });
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
   if (data.error === "captcha") throw new Error(t("tool_searchRateLimited"));
+  if (data.error || !res.ok) throw new Error(t("search_failed", { error: data.detail || data.error || res.status }));
   const results = data.results || [];
   if (!results.length) throw new Error(t("tool_noResults"));
   const body = results.slice(0, 8).map((r, i) => `${i + 1}. **${r.title}**\n${r.snippet}\n(${r.url})`).join("\n\n");

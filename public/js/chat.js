@@ -2913,7 +2913,11 @@ async function handleSearchCommand(raw, tab, tabId, fullContent, insertIndex = -
     const data = await res.json();
 
     if (data.error === "captcha") { showSendError(t("search_captcha")); finish(`⚠️ ${t("search_captcha")}`); return; }
-    if (!res.ok || !data.results || data.results.length === 0) { finish(`⚠️ ${t("search_noResults")}`); return; }
+    if (data.error || !res.ok) {
+      const m = t("search_failed", { error: data.detail || data.error || res.status });
+      showSendError(m); finish(`⚠️ ${m}`); return;
+    }
+    if (!data.results || data.results.length === 0) { finish(`⚠️ ${t("search_noResults")}`); return; }
 
     if (pending) pending.remove();
     const lines = [`🔎 **${t("search_resultsFor", { query })}**`, ""];
