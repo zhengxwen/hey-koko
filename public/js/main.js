@@ -517,6 +517,7 @@ if (dom.numCtxSelect) {
   }
   // The timeout changes nothing about what gets sent, so no meter refresh.
   dom.llmTimeout?.addEventListener("change", saveCurrentSettings);
+  dom.searchEngineSelect?.addEventListener("change", saveCurrentSettings);
 }
 // ⚙ next to the Basic tab's one-line personality summary — same modal pattern again.
 {

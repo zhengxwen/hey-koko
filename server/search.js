@@ -159,21 +159,83 @@ async function searchDdgHtml(query, limit, df) {
   return { results };
 }
 
+// --- Exa: the hosted MCP endpoint (keyless free tier, rate-limited) ---
+// The same endpoint opencode's built-in websearch tool calls. A stateless JSON-RPC
+// tools/call works without an MCP initialize handshake; the reply is one SSE
+// "message" event (or plain JSON). Results come back as one text blob of
+// "Title:/URL:/Published:/Author:/Highlights:" records separated by "---".
+
+const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
+const DF_WORDS = { d: "the past 24 hours", w: "the past week", m: "the past month", y: "the past year" };
+
+function parseExaText(text, limit) {
+  const results = [];
+  for (const chunk of String(text).split(/^Title: /m).slice(1)) {
+    const url = (chunk.match(/^URL: (\S+)/m) || [])[1];
+    if (!url || !/^https?:\/\//.test(url)) continue;
+    let title = chunk.split("\n")[0].trim();
+    if (!title || title === "N/A") { try { title = new URL(url).hostname; } catch { title = url; } }
+    const pub = (chunk.match(/^Published: (\S+)/m) || [])[1];
+    const published = pub && pub !== "N/A" ? pub.slice(0, 10) : "";
+    const hl = chunk.split(/^Highlights:\s*$/m)[1] || "";
+    const highlights = hl.replace(/\n-{3,}\s*$/, "").replace(/^#+\s*/gm, "").replace(/\s+/g, " ").trim();
+    results.push({ title, url, snippet: highlights.slice(0, 300), highlights: highlights.slice(0, 1500), ...(published ? { published } : {}) });
+    if (results.length >= limit) break;
+  }
+  return results;
+}
+
+async function searchExa(query, limit, df) {
+  const args = { query, numResults: limit };
+  // No date filter in this tool; state the window as the ranking objective instead.
+  if (df) args.objective = `Prefer pages published within ${DF_WORDS[df]}; exclude older pages.`;
+  const res = await fetch(EXA_MCP_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "web_search_exa", arguments: args } }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const raw = await res.text();
+  if (res.status === 429) return { blocked: true };
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const lines = raw.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim());
+  let msg;
+  try { msg = JSON.parse(lines.length ? lines[lines.length - 1] : raw); } catch { throw new Error("unreadable reply"); }
+  const errText = msg.error ? String(msg.error.message || msg.error.code)
+    : msg.result && msg.result.isError ? (msg.result.content || []).map((c) => c.text || "").join(" ") : "";
+  if (errText) {
+    if (/rate.?limit|too many|quota|credits?/i.test(errText)) return { blocked: true };
+    throw new Error(errText.slice(0, 200));
+  }
+  const text = ((msg.result && msg.result.content) || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+  return { results: parseExaText(text, limit) };
+}
+
 // Bing's HTML page was tried as a keyless fallback and rejected (2026-11): to a non-JS
 // client it ranks on only the first word or two of the query ("what's new in python
 // 3.14" -> WhatsApp), so it hands the model confidently wrong sources.
-const ENGINES = [
-  { name: "duckduckgo", run: searchDdg },
-  { name: "duckduckgo-html", run: searchDdgHtml },
-];
+const EXA = { name: "exa", run: searchExa };
+const DDG = { name: "duckduckgo", run: searchDdg };
+const DDG_HTML = { name: "duckduckgo-html", run: searchDdgHtml };
+
+// mode "ddg" (the default — also for callers that send nothing) never contacts Exa:
+// its privacy policy says it logs the IP and trains on query text, so it is an opt-in
+// (LLM ⚙ → Web search service → Auto). In "auto": Exa first (most reliable, best
+// relevance); with a time filter, DuckDuckGo first — it has a real date filter, while
+// Exa only gets the window as a ranking hint.
+function enginesFor(df, mode) {
+  if (mode !== "auto") return [DDG, DDG_HTML];
+  return df ? [DDG, DDG_HTML, EXA] : [EXA, DDG, DDG_HTML];
+}
 
 // Walk the engines in order until one returns results. Engines in their block cooldown
 // are skipped — unless every engine is cooling down, then all are tried anyway.
 // Returns { results, engine } or { results: [], error, detail? }.
-async function runSearch(query, limit, df) {
+async function runSearch(query, limit, df, mode = "ddg") {
   const now = Date.now();
-  let order = ENGINES.filter((e) => (blockedUntil.get(e.name) || 0) <= now);
-  if (!order.length) order = ENGINES;
+  const engines = enginesFor(df, mode);
+  let order = engines.filter((e) => (blockedUntil.get(e.name) || 0) <= now);
+  if (!order.length) order = engines;
   let blocked = 0, timedOut = 0, answeredEmpty = 0;
   const errors = [];
   for (const e of order) {
@@ -222,7 +284,7 @@ async function fetchPageText(url, maxChars) {
 async function deepRead(results, count) {
   const targets = results.slice(0, Math.min(count, 3));
   await Promise.allSettled(targets.map(async (r) => {
-    r.content = await fetchPageText(r.url, 3500);
+    r.content = (await fetchPageText(r.url, 3500)) || r.highlights || "";
   }));
 }
 
@@ -235,7 +297,7 @@ async function searchWeb(req, res) {
   const df = ["d", "w", "m", "y"].includes(body.timelimit) ? body.timelimit : "";
 
   try {
-    const out = await runSearch(query, LIMIT, df);
+    const out = await runSearch(query, LIMIT, df, body.engine === "auto" ? "auto" : "ddg");
     if (out.error) { sendJson(res, 200, out); return; }
 
     // Deep read: fetch the top pages' text so the model can answer from real content

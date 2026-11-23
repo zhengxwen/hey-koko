@@ -40,7 +40,7 @@ Three pillars. Chat and the knowledge library run on any machine with Ollama —
 - **Multi-tab chats** — run several independent conversations side by side, each with its own context.
 - **File understanding** — drag in PDF, DOCX, PPTX, EML, images, or plain text; they're parsed and fed to the model. PDFs can use a selectable local engine — [MinerU](docs/optional-tools.md#mineru) — falling back to fast built-in text extraction.
 - **Vision analysis** — `/analyze` an attached image or video (sampled into frames) with a local vision model.
-- **Web & YouTube** — `/url` fetches and summarizes a web page, or transcribes and tidies up a YouTube video; `/search` queries DuckDuckGo, optionally reading the top results in depth.
+- **Web & YouTube** — `/url` fetches and summarizes a web page, or transcribes and tidies up a YouTube video; `/search` queries DuckDuckGo (or, opt-in, Exa first for more reliable results), optionally reading the top results in depth.
 - **Agentic tools** — an optional tool-use loop (date/time, calculator, web search, knowledge-library search, recall memory, set reminders, remember facts).
 - **Makes and edits Office files** — `/doc new pptx` turns a summary you already have into a real deck: one slide per point, laid out by the template, bullets in the body placeholder, the detail in the speaker notes. Point `/doc` at an existing `.docx` / `.pptx` / `.xlsx` instead and it shows you the document's structure and edits it from plain instructions — rewrite that title, drop slide 4, add a summary table, leave a comment, set a header. Every change is a block you approve with ▶, applied to a copy you download. No Word, no PowerPoint, no LibreOffice required — see [officecli](docs/optional-tools.md#officecli).
 
@@ -159,7 +159,7 @@ Type `/` in the chat box to open the command palette. The main commands:
 | `/memory <fact>` | Remember a fact about you long-term. |
 | `/note <text>` | Record a note (no AI reply). |
 | `/remind <when> <text>` | Set a reminder, e.g. `/remind 30m drink water`. |
-| `/search <query>` | DuckDuckGo search. `--deep[=N]`/`--read` to read pages, `--n N` result count, `--day`/`--week`/`--month`/`--year` recency. |
+| `/search <query>` | Web search — DuckDuckGo by default; LLM ⚙ → *Web search service* → Auto adds Exa (more reliable, but Exa logs the IP and trains on queries). `--deep[=N]`/`--read` to read pages, `--n N` result count, `--day`/`--week`/`--month`/`--year` recency. |
 | `/tool @<tool> [prompt]` | Run one tool explicitly, then answer from its result — see [docs/tool.md](docs/tool.md). Tools: `@chrome`, `@clip`, `@word`, `@excel`, `@ppt`, `@outlook`, `@web`, `@library`, `@memory`. |
 | `/url [prompt] <link>` | Parse & summarize a web page, or transcribe & tidy up a YouTube video. |
 | `/voice <text>` | Text-to-speech → downloadable audio file. `--use`/`-u engine:voice` (e.g. `kokoro:zm_yunxi`), `--speed`/`-s 0.5–2`. |

@@ -170,6 +170,7 @@ export function saveCurrentSettings() {
       llmMaxImages: dom.llmMaxImages?.value || "",
       llmMaxMessages: dom.llmMaxMessages?.value || "",
       llmTimeout: dom.llmTimeout?.value || "",
+      searchEngine: dom.searchEngineSelect?.value === "auto" ? "auto" : "ddg",
       pdfEngine: dom.pdfEngineSelect?.value || "mineru",
       embedModel: dom.embedModelSelect?.value || "qwen3-embedding:8b",
       libraryDistill: dom.libraryDistillToggle?.checked ?? true,
@@ -504,6 +505,8 @@ export function loadSavedSettings() {
   if (dom.llmMaxMessages) dom.llmMaxMessages.value = savedSettings.llmMaxMessages ?? "";
   // Empty means the built-in 120s, not "no limit" like the two caps above.
   if (dom.llmTimeout) dom.llmTimeout.value = savedSettings.llmTimeout ?? "";
+  // Web search defaults to DuckDuckGo only — Exa is an explicit opt-in (privacy).
+  if (dom.searchEngineSelect) dom.searchEngineSelect.value = savedSettings.searchEngine === "auto" ? "auto" : "ddg";
   if (savedSettings.pdfEngine && dom.pdfEngineSelect) dom.pdfEngineSelect.value = savedSettings.pdfEngine;
   // Embedding model selection is applied by loadEmbedModels (after options load).
   // Library distill card defaults to ON; respect an explicit saved off-choice.

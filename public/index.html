@@ -1628,6 +1628,18 @@
             <span id="llmTimeoutLabel" title="How long to wait with NOTHING arriving from the chat model before giving up. A reply that is still streaming is never cut off, however long it takes. Covers replies, translation, page summaries and library distillation. Empty = 240 seconds. Media renders have their own timeouts (Models tab).">Reply timeout (seconds)</span>
             <input id="llmTimeout" type="number" min="10" max="3600" step="10" placeholder="240" title="How long to wait with NOTHING arriving from the chat model before giving up. A reply that is still streaming is never cut off, however long it takes. Covers replies, translation, page summaries and library distillation. Empty = 240 seconds. Media renders have their own timeouts (Models tab)." />
           </label>
+          <!-- Which service answers /search, the web_search tool and @web. DuckDuckGo-only is
+               the default on privacy grounds: Exa's policy says it trains on query text and
+               logs the IP. Auto (Exa first) is the reliable opt-in — DuckDuckGo walls
+               automated clients on and off. Read per request (server/search.js enginesFor). -->
+          <label id="searchEngineRow" title="DuckDuckGo says it keeps no IP address or search history, but it often rate-limits automated searches, so web searches can fail. Auto tries Exa first (fast, accurate, works without an API key) and falls back to DuckDuckGo — but Exa's privacy policy says it logs your IP address and uses search queries to train its models. Only the search query and your IP address are sent; never the chat itself. When the AI searches on its own, it writes the query from the conversation, so the query can carry details from your chat.">
+            <span id="searchEngineLabel">Web search service</span>
+            <select id="searchEngineSelect">
+              <option value="ddg" selected>DuckDuckGo only (privacy first)</option>
+              <option value="auto">Auto (Exa first, more reliable)</option>
+            </select>
+          </label>
+          <p class="hint" id="searchEngineHint">Auto sends search queries and your IP address to Exa, which uses queries to train its models.</p>
 
           <hr class="settingsDivider" />
           <!-- Ollama can also GENERATE images (flux / sdxl / z-image pulled as Ollama

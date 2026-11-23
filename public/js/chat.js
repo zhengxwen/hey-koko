@@ -34,7 +34,7 @@ import { t, getPrompt, getPromptLanguage } from './i18n.js';
 import { getNumCtx, getLlmTimeout, recordContextUsage, renderContextMeter } from './context-meter.js';
 import { addMemory, getMemoryPromptBlock } from './memory.js';
 import { parseRemind, addReminder, describeReminder, markActivity } from './proactive.js';
-import { activeToolSchemas, executeTool, getToolLabel, toolsActive, toolsSystemHint } from './tools.js';
+import { activeToolSchemas, executeTool, getToolLabel, searchEngineChoice, toolsActive, toolsSystemHint } from './tools.js';
 import { applyHighlights, captureAnchor, highlightsInSelection, registerHighlightHost, resolveHighlightHost } from './highlight.js';
 
 // ⚙ "Thinking effort" (More options). "" = leave it alone, which is what every model
@@ -2848,7 +2848,7 @@ function parseSearchOptions(raw) {
   return { query: q.replace(/\s+/g, " ").trim(), deep, deepCount, count, timelimit };
 }
 
-// Web search via DuckDuckGo: fetch results, show them as a sources bubble, then
+// Web search (DuckDuckGo, or Exa first when opted in — server/search.js): fetch results, show them as a sources bubble, then
 // let the model answer the query using those results (and, with --deep, the
 // fetched page contents) as context.
 async function handleSearchCommand(raw, tab, tabId, fullContent, insertIndex = -1, contextEndIndex = -1) {
@@ -2903,16 +2903,20 @@ async function handleSearchCommand(raw, tab, tabId, fullContent, insertIndex = -
     state.currentAbortController = null;
   };
 
+  const engine = searchEngineChoice();
   try {
     const res = await fetch("/api/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: abortController.signal,
-      body: JSON.stringify({ query, deep, deepCount, count, timelimit, language: getPromptLanguage() }),
+      body: JSON.stringify({ query, deep, deepCount, count, timelimit, engine, language: getPromptLanguage() }),
     });
     const data = await res.json();
 
-    if (data.error === "captcha") { showSendError(t("search_captcha")); finish(`⚠️ ${t("search_captcha")}`); return; }
+    if (data.error === "captcha") {
+      const m = t(engine === "ddg" ? "search_captchaDdg" : "search_captcha");
+      showSendError(m); finish(`⚠️ ${m}`); return;
+    }
     if (data.error || !res.ok) {
       const m = t("search_failed", { error: data.detail || data.error || res.status });
       showSendError(m); finish(`⚠️ ${m}`); return;
@@ -3668,7 +3672,7 @@ export async function sendMessage(content, image, tabId = state.activeTabId, fil
     return;
   }
 
-  // Handle /search command — web search via DuckDuckGo
+  // Handle /search command — web search (server/search.js, service per LLM ⚙)
   if (content && /^\/search(\s|$)/.test(content)) {
     const raw = content.replace(/^\/search\s*/, "").trim();
     await handleSearchCommand(raw, tab, tabId, content);

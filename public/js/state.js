@@ -242,6 +242,7 @@ export const dom = {
   llmMaxImages: document.querySelector("#llmMaxImages"),
   llmMaxMessages: document.querySelector("#llmMaxMessages"),
   llmTimeout: document.querySelector("#llmTimeout"),
+  searchEngineSelect: document.querySelector("#searchEngineSelect"),
   comfyOverriddenWarn: document.querySelector("#comfyOverriddenWarn"),
   personaBtn: document.querySelector("#personaBtn"),
   personaModal: document.querySelector("#personaModal"),
