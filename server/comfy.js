@@ -714,9 +714,12 @@ const H3IMG_VAE_RE = /minimax.?h3.?image.*vae/i;
 // The prompt expander. Comfy-Org's templates run a generic Qwen3.5-9B (w4a8 GPTQ) through
 // TextGenerateV2 with MiniMax's released PE prompts; MiniMax's own PE is a Qwen3.8-27B
 // fine-tune that has no ComfyUI build. FLUX 3's upsampler is ALSO a Qwen3.5-9B file but a
-// fine-tune for a different model, so it is excluded by name.
+// fine-tune for a different model, so it is excluded by name. So is Qwen-Image-2.1's PE
+// ("qwen3.5_9b_qwen_image_2.1_pe_{t2i,i2i}"): another fine-tune, and one published under
+// the Qwen RESEARCH license (no commercial use). The SenseNova U1.6 templates download
+// it; once it is on disk, only the w4a8-first pick below would keep it out, by luck.
 const H3IMG_PE_RE = /qwen3\.?5[-_]?9b/i;
-const H3IMG_PE_EXCLUDE_RE = /flux|upsampler/i;
+const H3IMG_PE_EXCLUDE_RE = /flux|upsampler|qwen.?image/i;
 const H3IMG_STEPS = 6;
 // The node's canvas grid (CANVAS_MULTIPLE in nodes_minimax_h3.py).
 const H3IMG_GRID = 32;
@@ -732,6 +735,37 @@ const H3IMG_DEFAULT_AREA = 2048 * 2048;
 const H3IMG_MAX_REFS = 10;
 // The official API accepts aspect ratios up to 3:1 either way.
 const H3IMG_MAX_ASPECT = 3;
+
+// SenseNova U1.6 (SenseTime, 2026-11, Apache-2.0). A unified understanding + generation
+// model ("8B MoT": an understanding and a generation expert, ~18B parameters in all) that
+// ComfyUI runs natively from 0.46 (comfy_extras/nodes_sensenova.py). One checkpoint holds
+// the model, its text side and a pass-through "VAE": like HiDream-O1 it samples in PIXEL
+// space, and it borrows that model's canvas and reference nodes (EmptyHiDreamO1LatentImage,
+// HiDreamO1ReferenceImages). Both jobs in one weight: nothing attached = text to image,
+// attached pictures = an edit. Recipe from Comfy-Org's two templates
+// (image_sensenova_u16_{t2i,image_edit}): euler / simple, 50 steps at cfg 4, or 8 steps at
+// cfg 1 with the official 8-step LoRA ("Turbo"). Its U1.6 feature is SELF-CORRECTION: the
+// model looks at what it drew, writes a critique against the prompt and redraws — a core
+// Start/End Loop around SenseNovaConditioning (see buildSenseNova).
+const SENSENOVA_RE = /sense.?nova/i;
+// The step-distill LoRAs: Comfy-Org's "sensenova_u1.6_8b_mot_8step_lora_bf16" and
+// SenseTime's own "SenseNova-U1.6-8B-MoT-LoRA-{4,8}step-v1.0-ComfyUI". The Python-format
+// builds (same names without "-ComfyUI") are a different key layout and are left out.
+const SENSENOVA_LORA_RE = /sense.?nova.*lora/i;
+// The node's canvas grid (EmptyHiDreamO1LatentImage step = the model's patch size).
+const SENSENOVA_GRID = 32;
+// Pixel budgets, SenseTime's own (sensenova_u1/utils/resolutions.py): 1 to 16 "m" of
+// 1024² each, 4 m the default; the edit script normalizes the output to 2048² at the first
+// picture's shape. A smaller asked size renders at the 1 m floor and is resized down.
+const SENSENOVA_DEFAULT_AREA = 2048 * 2048;
+const SENSENOVA_MIN_AREA = 1024 * 1024;
+const SENSENOVA_MAX_SIDE = 4096;   // EmptyHiDreamO1LatentImage's max
+const SENSENOVA_MAX_ASPECT = 3;    // resolutions.py: "a ratio from 1:3 to 3:1"
+// The reference node takes 100; ten is where every multi-reference model here stops.
+const SENSENOVA_MAX_REFS = 10;
+// The templates' loop length: generate, then up to four review-and-redraw rounds. The
+// model ends the loop itself as soon as its critique finds nothing to fix.
+const SENSENOVA_SC_PASSES = 5;
 
 // The Qwen2.5-VL-7B encoder that the original Qwen-Image family (base, edit, 2509/2511/
 // 2512, and every control route) was trained against. The fallback stays inside the 2.5
@@ -1879,7 +1913,7 @@ function capsFor(name, group, type, entry) {
   if (name === BERNINI_IMG_EDIT || name === BERNINI_IMG_SUBJECT) return ["edit"];
   // HiDream-O1 and Qwen-Image-2.1 are both "one checkpoint, two jobs": listed with the
   // txt2img models, and editing whatever is attached instead of ignoring it.
-  if (group === "image") return (/hidream.?o1/i.test(name) || QWEN21_RE.test(name) || FLUX3_RE.test(name) || H3IMG_RE.test(name)) ? ["image", "edit"] : ["image"];
+  if (group === "image") return (/hidream.?o1/i.test(name) || QWEN21_RE.test(name) || FLUX3_RE.test(name) || H3IMG_RE.test(name) || SENSENOVA_RE.test(name)) ? ["image", "edit"] : ["image"];
   if (group === "edit") return ["edit"];
   // video: a source-video model is v2v; bernini also accepts a plain image (i2v).
   if (name === LTX_UNION) return ["v2v", "audio"]; // depth-driven; LTX decodes a soundtrack
@@ -1926,6 +1960,7 @@ function imageRank(n) {
   if (n === PANO_T2I) return 10; // last: a recipe, not a checkpoint
   if (FLUX3_RE.test(n)) return 1.5; // tested before the generic /flux/ (Flux.1) line, which matches it too
   if (H3IMG_RE.test(n)) return 1.6;
+  if (SENSENOVA_RE.test(n)) return 1.7;
   if (/flux/i.test(n)) return 1;
   if (/pony/i.test(n)) return 2;
   if (/hidream.?i1/i.test(n)) return 3;
@@ -2147,6 +2182,12 @@ function isModelReady(name, group, type) {
     // MiniMax-H3-Image — bf16 on the Spark (2026-11-13): text→image with and without the
     // expander, single- and multi-picture edits, the sub-4 MP downscale path.
     /minimax.?h3.?image/,
+    // SenseNova U1.6 — bf16 on the Spark (ComfyUI 0.46.3) and int8_convrot on the 5090
+    // (0.46.0), 2026-11-24: Turbo and Quality text→image, edits in both recipes, the
+    // expander, the sub-1 MP downscale, and self-correction actually revising (SenseTime's
+    // own "LOVE" sample: critique → second picture with only the garbled lines rewritten).
+    // Same seed, expander off: int8 and bf16 come out near-identical.
+    /sense.?nova/,
   ];
   return READY.some((re) => re.test(b));
 }
@@ -2233,7 +2274,8 @@ async function proxyComfyModels(req, res) {
     // krea2's LoRAs are image LoRAs, so the exclusion above lets them through — but they
     // were trained on Krea-2's own 12B DiT and match almost no keys on the Flux checkpoint
     // the panorama recipe generates with. They'd be ten entries that quietly do nothing.
-    const panoLoras = allLoras.filter((n) => !VIDEO_LORA_RE.test(n) && !KREA2_RE.test(n));
+    // SenseNova's step-distill LoRA is SenseNova's own: on Flux it would match nothing.
+    const panoLoras = allLoras.filter((n) => !VIDEO_LORA_RE.test(n) && !KREA2_RE.test(n) && !SENSENOVA_LORA_RE.test(n));
     // Krea-2's own style LoRA slot: the nine official style LoRAs. The style-REFERENCE
     // LoRA is excluded — it is mounted by the style-reference graph, which also wires the
     // reference images it exists to read; offered here it would load without them.
@@ -2500,7 +2542,7 @@ async function proxyComfyModels(req, res) {
     // Checkpoints that are COMPANIONS to another model rather than something to
     // txt2img list: plain checkpoints (excluding edit/video/HiDream/companions) +
     // HiDream-I1 (a diffusion model loaded specially with QuadrupleCLIPLoader).
-    const plainCkpts = ckpts.filter((n) => !editTypeOf(n) && !videoTypeOf(n) && !meshTypeOf(n) && !/hidream/i.test(n) && !isCompanionModel(n));
+    const plainCkpts = ckpts.filter((n) => !editTypeOf(n) && !videoTypeOf(n) && !meshTypeOf(n) && !/hidream/i.test(n) && !SENSENOVA_RE.test(n) && !isCompanionModel(n));
     const hidreamImage = all.filter((n) => /hidream.?i1/i.test(n));
     // HiDream-O1 (pixel-space UiT): a CheckpointLoaderSimple model that does BOTH
     // txt2img and reference editing — surfaced in the main image list (attach an
@@ -2555,6 +2597,13 @@ async function proxyComfyModels(req, res) {
       && vaes.some((n) => H3IMG_VAE_RE.test(n))
       && await comfyHasNodes(["MiniMaxH3ImageConditioning"]))
       ? h3ImageFiles : [];
+    // SenseNova U1.6 — text→image, and an edit when pictures are attached. The checkpoint
+    // carries everything, so the gate is only the node pack's presence (ComfyUI 0.46): on
+    // an older box the checkpoint is a file nothing can condition. The Turbo LoRA and the
+    // expander are ⚙ options, and a run that wants a missing one names the file.
+    const sensenovaFiles = ckpts.filter((n) => SENSENOVA_RE.test(n));
+    const sensenova = (sensenovaFiles.length && await comfyHasNodes(["SenseNovaConditioning", "SenseNovaInterleaveDecode"]))
+      ? sensenovaFiles : [];
     // Krea-2 style reference: the same weights as the txt2img entry, so it is offered only
     // when BOTH the checkpoint and the ostris style-reference LoRA are installed — that
     // LoRA is what the route IS (without it this would be a plain generation that ignores
@@ -2655,7 +2704,7 @@ async function proxyComfyModels(req, res) {
     // REAL file — a saved choice must keep resolving, and generateComfyImage re-applies
     // the ⚙ preference to whatever name it receives — so the fix is to hide the token in
     // the frontend's OPTION TEXT, not to invent a fake value here.
-    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage, ...qwen21, ...krea2, ...flux3, ...h3Image], (n) => n, null);
+    const imageOut = dedupePrecision([...plainCkpts, ...hidreamImage, ...hidreamO1, ...zimage, ...boogu, ...qwenImage, ...qwen21, ...krea2, ...flux3, ...h3Image, ...sensenova], (n) => n, null);
     // The image entries that stand for a COLLAPSED group, so the frontend can drop the
     // precision token from their option text. It can't work this out for itself — it
     // only ever sees the surviving representative, never the siblings it stands for.
@@ -2981,6 +3030,12 @@ function familyPreset(model) {
   // ⚙ says (see H3IMG_STEPS).
   if (H3IMG_RE.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: null, steps: H3IMG_STEPS, sd3Latent: false };
+  }
+  // SenseNova U1.6 without the Turbo LoRA: both official templates' "Quality" setting,
+  // which is also SenseTime's own inference default (cfg_scale 4.0, num_steps 50). Turbo
+  // (8 steps, cfg 1) is pinned by the dispatch — it belongs to the LoRA, not to ⚙.
+  if (SENSENOVA_RE.test(model)) {
+    return { sampler: "euler", scheduler: "simple", cfg: 4, guidance: null, steps: 50, sd3Latent: false };
   }
   if (FLUX3_RE.test(model)) {
     return { sampler: "euler", scheduler: "simple", cfg: 1, guidance: null, steps: 16, sd3Latent: false };
@@ -3768,6 +3823,229 @@ function buildH3Image({ model, caption, comp, imageNames, gen, out, seed }) {
     img = ["9", 0];
   }
   wf["11"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: img } };
+  return wf;
+}
+
+// ── SenseNova U1.6 ───────────────────────────────────────────────────────────────
+// Companions — all optional, each behind a ⚙ switch: the step-distill LoRA (Turbo) and the
+// prompt expander. The checkpoint itself carries the model, its text side and the VAE.
+//
+// The expander is NOT the one the official templates load. Theirs is Qwen-Image-2.1's PE
+// fine-tune ("qwen3.5_9b_qwen_image_2.1_pe_*"), which is published under the Qwen Research
+// license — no commercial use — and would put that restriction on an otherwise Apache-2.0
+// chain. This runs the generic Qwen3.5-9B that MiniMax H3 Image's expander already uses,
+// with the templates' own system prompts (Comfy-Org, MIT), pinned in
+// server/model-data-manifest.json and fetched on first use like every third-party text.
+function sensenovaVersion(name) {
+  const m = String(name || "").match(/u1[._-]?(\d)(?!\d)/i);
+  return m ? m[1] : null;
+}
+// SenseTime's Python-format LoRA ("…-LoRA-8step-v1.0.safetensors") has a different key
+// layout from the "-ComfyUI" build of the same adapter; loaded here it would match nothing.
+const sensenovaPythonLora = (n) => /lora[-_]?\d+[-_]?step[-_]?v\d/i.test(n) && !/comfy/i.test(n);
+function sensenovaLoraSteps(n) {
+  const m = String(n || "").match(/(\d+)[-_]?steps?/i);
+  return m ? Number(m[1]) : null;
+}
+// The system prompt inside one of the pinned template files: the PrimitiveStringMultiline
+// whose title starts "Text (System Prompt" (node 53 in both).
+function sensenovaTemplatePrompt(buf) {
+  const wf = JSON.parse(buf.toString("utf8"));
+  const node = (wf.nodes || []).find((n) => n && n.type === "PrimitiveStringMultiline" && /system prompt/i.test(n.title || ""));
+  const text = node && Array.isArray(node.widgets_values) ? node.widgets_values[0] : null;
+  if (typeof text !== "string" || !text.trim()) throw new Error("no system prompt node in the template");
+  return text;
+}
+async function sensenovaCompanions(model, { turbo, pe }) {
+  const [loras, clips] = await Promise.all([
+    turbo ? comfyEnum("LoraLoaderModelOnly", "lora_name").catch(() => []) : [],
+    pe ? comfyEnum("CLIPLoader", "clip_name") : [],
+  ]);
+  let lora = null, loraSteps = null;
+  if (turbo) {
+    // The model's own version only: a U1.5 adapter on U1.6 loads and quietly mis-steers.
+    const ver = sensenovaVersion(model);
+    const cands = loras.filter((n) => SENSENOVA_LORA_RE.test(n) && !sensenovaPythonLora(n)
+      && (!ver || !sensenovaVersion(n) || sensenovaVersion(n) === ver) && sensenovaLoraSteps(n));
+    // The templates' 8-step adapter first, then SenseTime's 4-step one.
+    lora = cands.find((n) => sensenovaLoraSteps(n) === 8) || cands[0] || null;
+    loraSteps = lora ? sensenovaLoraSteps(lora) : null;
+  }
+  const peFiles = clips.filter((n) => H3IMG_PE_RE.test(n) && !H3IMG_PE_EXCLUDE_RE.test(n));
+  const peModel = pe ? (peFiles.find((n) => precisionOf(n) === "w4a8") || bestTier(peFiles)) : null;
+  const missing = [];
+  if (turbo && !lora) missing.push("sensenova_u1.6_8b_mot_8step_lora_bf16.safetensors → loras/ (from Comfy-Org/SenseNova-U1; or turn off \"Turbo\" in ⚙ for the 50-step recipe)");
+  if (pe && !peModel) missing.push("qwen3.5_9b_w4a8_gptq.safetensors → text_encoders/ (or turn off \"Prompt expander\" in ⚙ to send your prompt as typed)");
+  if (missing.length) throw new Error("Missing files required by SenseNova U1.6:\n- " + missing.join("\n- "));
+  if (pe && !(await comfyHasNodes(["TextGenerateV2", "PreviewAny"]))) {
+    throw new Error("SenseNova U1.6's prompt expander needs ComfyUI's TextGenerateV2 node, which this ComfyUI does not have. Update ComfyUI, or turn off \"Prompt expander\" in ⚙ to send your prompt as typed.");
+  }
+  let peSystem = null;
+  if (peModel) {
+    try {
+      peSystem = {
+        t2i: sensenovaTemplatePrompt(await modelDataFile("sensenova-pe", "image_sensenova_u16_t2i.json")),
+        edit: sensenovaTemplatePrompt(await modelDataFile("sensenova-pe", "image_sensenova_u16_image_edit.json")),
+      };
+    } catch (err) {
+      throw new Error(`SenseNova U1.6's prompt expander needs the system prompts from Comfy-Org's two SenseNova templates (about 185 KB), which are downloaded once from GitHub — that failed: ${err.message}. Connect this machine to the internet once (or run "node scripts/fetch-model-data.js"), or turn off "Prompt expander" in ⚙ to send your prompt as typed.`);
+    }
+  }
+  return { lora, loraSteps, pe: peModel, peSystem };
+}
+
+// A canvas of about `area` pixels at aspect aw:ah on the 32-px grid, at most 4096 a side
+// (the shape kept, the area given up, when a side would pass it).
+function sensenovaCanvas(aw, ah, area) {
+  let a = area;
+  const r = aw / ah;
+  if (Math.sqrt(a * r) > SENSENOVA_MAX_SIDE) a = SENSENOVA_MAX_SIDE * SENSENOVA_MAX_SIDE / r;
+  if (Math.sqrt(a / r) > SENSENOVA_MAX_SIDE) a = SENSENOVA_MAX_SIDE * SENSENOVA_MAX_SIDE * r;
+  const side = (v) => Math.max(SENSENOVA_GRID, Math.min(SENSENOVA_MAX_SIDE, Math.round(v / SENSENOVA_GRID) * SENSENOVA_GRID));
+  return { width: side(Math.sqrt(a * r)), height: side(Math.sqrt(a / r)) };
+}
+// "W:H" for a canvas — the nearest common ratio when within 3 % (2368×1760 is "4:3", not
+// "74:55"), else the exact one in lowest terms.
+const SENSENOVA_RATIOS = [[1, 1], [4, 3], [3, 2], [16, 9], [21, 9], [2, 1], [3, 1], [5, 4]];
+function sensenovaRatioLabel(w, h) {
+  const r = w / h;
+  for (const [a, b] of SENSENOVA_RATIOS) {
+    for (const [x, y] of a === b ? [[a, b]] : [[a, b], [b, a]]) if (Math.abs(r / (x / y) - 1) < 0.03) return `${x}:${y}`;
+  }
+  const g = (a, b) => (b ? g(b, a % b) : a);
+  const d = g(w, h) || 1;
+  return `${w / d}:${h / d}`;
+}
+// What each reference is resized to, SenseTime's editing script's "auto" budget: up to two
+// pictures at the full 4 MP, beyond that 8 MP shared out, never under 512². The FIRST one
+// is drawn at exactly the output canvas, as the template's resize chain does.
+function sensenovaRefSizes(dims, gen) {
+  const n = dims.length;
+  const budget = n <= 2 ? SENSENOVA_DEFAULT_AREA : Math.max(512 * 512, Math.floor(2 * SENSENOVA_DEFAULT_AREA / n));
+  return dims.map((d, i) => (i === 0 ? { width: gen.width, height: gen.height }
+    : (d && d.width && d.height) ? sensenovaCanvas(d.width, d.height, budget) : { width: 1024, height: 1024 }));
+}
+
+// SenseNova U1.6 — one checkpoint, both jobs. The two official templates, flattened:
+//
+//   text → image : CLIPTextEncode ×2 → KSampler on EmptyHiDreamO1LatentImage → VAEDecode
+//   edit         : the same encodes → HiDreamO1ReferenceImages (the pictures, in order) →
+//                  SenseNovaConditioning(task "image") → KSampler → VAEDecode
+//
+// SELF-CORRECTION (`selfCorrect`) replaces the single pass with the templates' loop: core
+// Start Loop ("simple", 5 rounds) carrying [positive, negative, latent]; each round runs
+// SenseNovaConditioning(task "self-correction") on the carried conditioning — the model
+// writes text until it either asks for an image (image_requested) or says it is done —
+// then a KSampler ONLY when an image was requested (the lazy switch leaves it unrun
+// otherwise), and hands the new latent to the next round, which appends that picture to
+// the history and writes its critique of it. Once the model ends the conversation every
+// later round is a no-op. SenseNovaInterleaveDecode then returns EVERY picture the model
+// drew, in order — the first pass and each revision — which is what SaveImage gets.
+// The loop's body is found by ComfyUI itself (execution.py, from the node schema's loop
+// boundaries), so this API-format graph needs no extra metadata.
+//
+// The expander (`comp.pe`) runs in-graph before both encodes, as in the templates; for an
+// edit it looks at the pictures (≤ 1 MP copies — it only reads them). Its answer reaches
+// the done-line through PreviewAny "54".
+function buildSenseNova({ model, prompt, negative, comp, imageNames, refSizes, gen, out, seed, steps, cfgScale, selfCorrect }) {
+  const edit = (imageNames || []).length > 0;
+  const wf = { "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: model } } };
+  let modelRef = ["1", 0];
+  if (comp.lora) {
+    wf["2"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["1", 0], lora_name: comp.lora, strength_model: 1 } };
+    modelRef = ["2", 0];
+  }
+  const refs = [];
+  (imageNames || []).forEach((name, i) => {
+    wf[String(30 + i)] = { class_type: "LoadImage", inputs: { image: name } };
+    const sz = refSizes[i];
+    wf[String(40 + i)] = { class_type: "ImageScale", inputs: { image: [String(30 + i), 0], upscale_method: "lanczos", width: sz.width, height: sz.height, crop: "disabled" } };
+    refs.push([String(40 + i), 0]);
+  });
+  let text = String(prompt || "");
+  if (comp.pe) {
+    // The canvas is fixed before the expander runs, and the templates never tell it which
+    // shape that is — left to guess, it wrote a "landscape" layout for a square canvas
+    // (a banner floating in empty space). SenseTime's own expanded prompts state the
+    // ratio ("图像的整体宽高比设定为9:16"), so the shape is handed over in the request.
+    const shape = gen.width === gen.height ? "square" : gen.width > gen.height ? "landscape" : "portrait";
+    const peRequest = `${text}\n\nAspect ratio of the image: ${sensenovaRatioLabel(gen.width, gen.height)} (${shape}).`;
+    wf["50"] = { class_type: "CLIPLoader", inputs: { clip_name: comp.pe, type: "stable_diffusion", device: "default" } };
+    // The templates' TextGenerateV2 settings: sampling on (temperature 1, top-k 20,
+    // top-p 0.95, presence penalty 1.5), thinking on, 4096 tokens (8192 for an edit).
+    const tg = { class_type: "TextGenerateV2", inputs: {
+      clip: ["50", 0], prompt: peRequest, max_length: edit ? 8192 : 4096,
+      sampling_mode: "on",
+      "sampling_mode.temperature": 1, "sampling_mode.top_k": 20, "sampling_mode.top_p": 0.95,
+      "sampling_mode.min_p": 0, "sampling_mode.repetition_penalty": 1, "sampling_mode.presence_penalty": 1.5,
+      "sampling_mode.seed": seed,
+      thinking: true, use_default_template: true, mtp: "auto",
+      system_prompt: edit ? comp.peSystem.edit : comp.peSystem.t2i,
+    } };
+    refs.forEach((src, i) => {
+      wf[String(60 + i)] = { class_type: "ImageScaleToTotalPixels", inputs: { image: src, upscale_method: "lanczos", megapixels: 1, resolution_steps: 32 } };
+      tg.inputs[`images.image${i + 1}`] = [String(60 + i), 0];
+    });
+    wf["52"] = tg;
+    wf["54"] = { class_type: "PreviewAny", inputs: { source: ["52", 0] } };
+    text = ["54", 0];
+  }
+  wf["4"] = { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text } };
+  wf["5"] = { class_type: "CLIPTextEncode", inputs: { clip: ["1", 1], text: String(negative || "") } };
+  wf["6"] = { class_type: "EmptyHiDreamO1LatentImage", inputs: { width: gen.width, height: gen.height, batch_size: 1 } };
+  // Autogrow reference slots travel as "<group>.<slot>" (see buildHiDreamO1).
+  if (edit || selfCorrect) {
+    const ri = { positive: ["4", 0], negative: ["5", 0] };
+    refs.forEach((src, i) => { ri[`images.image_${i + 1}`] = src; });
+    wf["29"] = { class_type: "HiDreamO1ReferenceImages", inputs: ri };
+  }
+  const sampler = (positive, negativeRef, seedIn) => ({ class_type: "KSampler", inputs: {
+    model: modelRef, seed: seedIn, steps, cfg: cfgScale, sampler_name: "euler", scheduler: "simple", denoise: 1,
+    positive, negative: negativeRef, latent_image: ["6", 0],
+  } });
+  let img;
+  if (!selfCorrect) {
+    let pos = ["4", 0], neg = ["5", 0];
+    if (edit) {
+      wf["85"] = { class_type: "SenseNovaConditioning", inputs: { clip: ["1", 1], conditioning: ["29", 0], negative: ["29", 1], task: "image", max_tokens: 1024 } };
+      pos = ["85", 0]; neg = ["85", 2];
+    }
+    wf["67"] = sampler(pos, neg, seed);
+    wf["69"] = { class_type: "VAEDecode", inputs: { samples: ["67", 0], vae: ["1", 2] } };
+    img = ["69", 0];
+  } else {
+    wf["44"] = { class_type: "CreateList", inputs: { "inputs.input0": ["29", 0], "inputs.input1": ["29", 1] } };
+    wf["9"] = { class_type: "StartLoop", inputs: { mode: "simple", "mode.num_iterations": SENSENOVA_SC_PASSES, cache_iterations: false, initial_iteration_value: ["44", 0] } };
+    wf["10"] = { class_type: "GetItemFromList", inputs: { list: ["9", 4], index: 0 } };
+    wf["11"] = { class_type: "GetItemFromList", inputs: { list: ["9", 4], index: 1 } };
+    wf["12"] = { class_type: "GetItemFromList", inputs: { list: ["9", 4], index: 2 } };
+    // Round 1 has no previous picture: the carried list is still [positive, negative].
+    wf["48"] = { class_type: "ComfySwitchNode", inputs: { switch: ["9", 1], on_false: ["12", 0] } };
+    wf["14"] = { class_type: "SenseNovaConditioning", inputs: {
+      clip: ["1", 1], conditioning: ["10", 0], negative: ["11", 0],
+      task: "self-correction", "task.samples": ["48", 0], max_tokens: 1024,
+    } };
+    // A different noise seed each round, as in the templates (seed + round index).
+    wf["7"] = { class_type: "PrimitiveInt", inputs: { value: seed } };
+    wf["15"] = { class_type: "ComfyMathExpression", inputs: { expression: "a + b", "values.a": ["9", 0], "values.b": ["7", 0] } };
+    wf["16"] = sampler(["14", 0], ["14", 2], ["15", 1]);
+    wf["45"] = { class_type: "ComfySwitchNode", inputs: { switch: ["14", 3], on_true: ["16", 0] } };
+    wf["46"] = { class_type: "CreateList", inputs: { "inputs.input0": ["14", 0], "inputs.input1": ["14", 2], "inputs.input2": ["45", 0] } };
+    // Forces each round's text to run even when no image follows it.
+    wf["19"] = { class_type: "PreviewAny", inputs: { source: ["14", 1] } };
+    wf["20"] = { class_type: "EndLoop", inputs: { accumulate: false, output_value: ["46", 0], next_iteration_value: ["46", 0], "terminations.termination0": ["19", 0] } };
+    wf["21"] = { class_type: "GetItemFromList", inputs: { list: ["20", 0], index: 0 } };
+    wf["22"] = { class_type: "GetItemFromList", inputs: { list: ["20", 0], index: 2 } };
+    wf["23"] = { class_type: "SenseNovaInterleaveDecode", inputs: { clip: ["1", 1], conditioning: ["21", 0], samples: ["22", 0] } };
+    // The model's own words across the rounds (its critiques), for the done-line.
+    wf["25"] = { class_type: "PreviewAny", inputs: { source: ["23", 0] } };
+    img = ["23", 1];
+  }
+  if (out.width !== gen.width || out.height !== gen.height) {
+    wf["70"] = { class_type: "ImageScale", inputs: { image: img, upscale_method: "lanczos", width: out.width, height: out.height, crop: "disabled" } };
+    img = ["70", 0];
+  }
+  wf["24"] = { class_type: "SaveImage", inputs: { filename_prefix: comfyTag(), images: img } };
   return wf;
 }
 
@@ -9962,7 +10240,9 @@ async function generateComfyImage(req, res) {
     // MiniMax-H3-Image runs its expander (a 9B LLM that thinks first — 80 s cold on a DGX
     // Spark) as a separate pass, then loads a 37 GB DiT plus the 27 GB H3 encoder, and a
     // 16 MP render is over a minute on its own: the whole image cap, not a slice of it.
-    const imageFloorSec = H3IMG_RE.test(model) ? 600 : FLUX3_RE.test(model) ? 300 : 60;
+    // SenseNova U1.6 at its 4 MP default: 50 guided steps of an 8B pixel-space expert, plus
+    // the optional expander and up to five generate-and-review rounds.
+    const imageFloorSec = (H3IMG_RE.test(model) || SENSENOVA_RE.test(model)) ? 600 : FLUX3_RE.test(model) ? 300 : 60;
     const timeoutMs = (videoType || meshType || audioType)
       ? (reqTimeout === 0 ? 0 : Math.max(60, reqTimeout || 1800) * 1000)
       : Math.min(600, Math.max(imageFloorSec, reqTimeout || 120)) * 1000;
@@ -10003,6 +10283,10 @@ async function generateComfyImage(req, res) {
       // MiniMax-H3-Image: { pe: "on" | "off" | "failed", caption, ratio, gen, out } — what
       // the expander wrote (the done-line shows it) and the canvas that came out of it.
       let h3ImageInfo = null;
+      // SenseNova U1.6: { lora, steps, cfg, selfCorrect, pe, gen, out } — the recipe that
+      // ran, for the done-line; the expander's answer is read off PreviewAny "54" and the
+      // model's own critiques (self-correction) off "25".
+      let sensenovaInfo = null;
       let solAttnUsed = null;    // Sol-Attn mode actually applied ("bf16"/"int8_qk"/"int8_qk_pv")
       let solChunkUsed;           // MLP chunking actually applied
       let solAttnSkipped = false; // asked for, but ComfyUI-sol-attn is not on this worker
@@ -11819,6 +12103,56 @@ async function generateComfyImage(req, res) {
           // being SET is the signal, not the numbers themselves.
           pinSize: !!(opts.width && opts.height),
         });
+      } else if (SENSENOVA_RE.test(model)) {
+        // SenseNova U1.6: text→image, or an edit of the attached pictures (in order; the
+        // first is the one being edited and sets the output's shape). Like FLUX 3 and
+        // H3 Image it reads pictures as references, never as a start latent, and has no
+        // mask input — a painted 🖌 region is ignored.
+        // ⚙ switches, each sent only when it differs from its default (see comfyOverrides).
+        const turbo = opts.sensenovaTurbo !== false;
+        const selfCorrect = opts.sensenovaSelfCorrect === true;
+        const comp = await sensenovaCompanions(model, { turbo, pe: opts.sensenovaPe !== false });
+        let imageNames = [], refDims = [];
+        if (isImg2Img) {
+          const refs = images.slice(0, SENSENOVA_MAX_REFS);
+          // Distinct filenames per reference — uploadImage's default name + overwrite
+          // would collapse them all down to the last image.
+          for (let ri = 0; ri < refs.length; ri++) imageNames.push(await uploadImage(refs[ri], controller.signal, `${comfyTag()}_snref${ri}.png`));
+          refDims = refs.map((b64) => imageDims(b64));
+          if (images.length > refs.length) imagesUsed = refs.length;
+        }
+        // Size. Text→image: the asked size, else 4 MP square. An edit: the first picture's
+        // shape at the asked AREA, else at 4 MP — SenseTime's edit script. Under the 1 MP
+        // floor the render is made at 1 MP and resized down. `width`/`height` always carry
+        // a value (the 1024² default), so the ⚙ field being SET is the signal.
+        const asked = (opts.width && opts.height) ? { width: Number(opts.width), height: Number(opts.height) } : null;
+        const src = refDims[0] && refDims[0].width && refDims[0].height ? refDims[0] : null;
+        let gen, out;
+        if (isImg2Img && src) {
+          const area = asked ? asked.width * asked.height : SENSENOVA_DEFAULT_AREA;
+          gen = sensenovaCanvas(src.width, src.height, Math.max(area, SENSENOVA_MIN_AREA));
+          out = area < SENSENOVA_MIN_AREA ? sensenovaCanvas(src.width, src.height, area) : gen;
+        } else if (asked) {
+          out = { width: Math.round(asked.width), height: Math.round(asked.height) };
+          gen = sensenovaCanvas(out.width, out.height, Math.max(out.width * out.height, SENSENOVA_MIN_AREA));
+          // Already on the grid and inside the node's range: render exactly that.
+          if (out.width * out.height >= SENSENOVA_MIN_AREA && out.width % SENSENOVA_GRID === 0 && out.height % SENSENOVA_GRID === 0
+            && out.width <= SENSENOVA_MAX_SIDE && out.height <= SENSENOVA_MAX_SIDE) gen = out;
+        } else {
+          gen = out = sensenovaCanvas(1, 1, SENSENOVA_DEFAULT_AREA);
+        }
+        if (Math.max(gen.width / gen.height, gen.height / gen.width) > SENSENOVA_MAX_ASPECT + 0.01) {
+          sendJson(res, 400, { error: `SenseNova U1.6 takes aspect ratios from 1:3 to 3:1 (asked ${gen.width}×${gen.height}).` });
+          return;
+        }
+        if (!String(prompt || "").trim()) { sendJson(res, 400, { error: "SenseNova U1.6 needs a prompt — for an edit, say what to change in the picture." }); return; }
+        // Turbo is the LoRA's own recipe (8 steps at cfg 1, or 4 for the 4-step adapter);
+        // without it, ⚙ steps / cfg apply over the official 50 / 4.
+        const steps = comp.lora ? comp.loraSteps : cfg.steps;
+        const cfgScale = comp.lora ? 1 : cfg.cfg;
+        workflow = buildSenseNova({ model, prompt, negative: negative_prompt || "", comp, imageNames,
+          refSizes: sensenovaRefSizes(refDims, gen), gen, out, seed, steps, cfgScale, selfCorrect });
+        sensenovaInfo = { lora: comp.lora, steps, cfg: cfgScale, selfCorrect, pe: comp.pe, gen, out };
       } else if (H3IMG_RE.test(model)) {
         // MiniMax-H3-Image: text→image, or an edit of the attached pictures (<Picture 1>…).
         // Like FLUX 3 it reads pictures as references, never as a start latent, and has no
@@ -12319,20 +12653,40 @@ async function generateComfyImage(req, res) {
         const expandedPrompt = (flux3Info && flux3Info.previewNode && outputs[flux3Info.previewNode]
           && Array.isArray(outputs[flux3Info.previewNode].text))
           ? outputs[flux3Info.previewNode].text.join("").trim() || undefined
-          : (h3ImageInfo && h3ImageInfo.caption) || undefined;
+          : (h3ImageInfo && h3ImageInfo.caption)
+            || (sensenovaInfo && sensenovaInfo.pe && outputs["54"] && Array.isArray(outputs["54"].text) ? outputs["54"].text.join("").trim() : "")
+            || undefined;
+        // SenseNova self-correction: every picture the model drew comes back, first pass
+        // first — `passes` is how many — and its critiques, the text it wrote between them.
+        // The decoded history marks each picture with "<image>"; a round that found nothing
+        // to fix writes no text at all, so "<image>" alone means no critique.
+        const snCritique = sensenovaInfo && sensenovaInfo.selfCorrect && outputs["25"] && Array.isArray(outputs["25"].text)
+          ? outputs["25"].text.join("").split("<image>").map((x) => x.trim()).filter(Boolean).join("\n\n") || undefined : undefined;
+        const snMode = sensenovaInfo
+          ? `${isImg2Img ? "edit:sensenova" : "txt2img"} ${sensenovaInfo.out.width}x${sensenovaInfo.out.height}${sensenovaInfo.gen.width !== sensenovaInfo.out.width || sensenovaInfo.gen.height !== sensenovaInfo.out.height ? ` (rendered ${sensenovaInfo.gen.width}x${sensenovaInfo.gen.height})` : ""}, ${sensenovaInfo.lora ? `turbo=${sensenovaInfo.lora}` : "quality"}, self-correction=${sensenovaInfo.selfCorrect ? `on (${outImages.length} picture(s))` : "off"}, expander=${sensenovaInfo.pe ? `${sensenovaInfo.pe} (${expandedPrompt ? expandedPrompt.length : 0} chars)` : "off"}`
+          : null;
         const h3Mode = h3ImageInfo
           ? `${isImg2Img ? "edit:h3image" : "txt2img"} ${h3ImageInfo.out.width}x${h3ImageInfo.out.height}${h3ImageInfo.gen.width !== h3ImageInfo.out.width || h3ImageInfo.gen.height !== h3ImageInfo.out.height ? ` (rendered ${h3ImageInfo.gen.width}x${h3ImageInfo.gen.height})` : ""}, expander=${h3ImageInfo.pe === "on" ? `${h3ImageInfo.peModel} (${expandedPrompt ? expandedPrompt.length : 0} chars${h3ImageInfo.ratio ? `, ratio ${h3ImageInfo.ratio}` : ""})` : h3ImageInfo.pe}`
           : null;
-        console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${h3Mode || (flux3Info ? `${isImg2Img ? "edit:flux3" : "txt2img"} ${flux3Info.width}x${flux3Info.height}${flux3Info.boxes ? ` +${flux3Info.boxes} boxes` : ""}` : mode)}${flux3Info ? `, upsampler=${flux3Info.upsampler ? `${flux3Info.upsampler}${expandedPrompt ? ` (${expandedPrompt.length} chars)` : " (no caption read back)"}` : "off"}` : ""}, sampler=${h3ImageInfo ? "euler/simple" : `${c.sampler}/${c.scheduler}`}, cfg=${h3ImageInfo ? 1 : flux3Info ? flux3Info.cfg : c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${h3ImageInfo ? H3IMG_STEPS : c.steps}, images=${outImages.length}`);
+        console.log(`${ts} [comfy-gen] model=${model}${panoCfg ? `(${panoBase})` : ""}, mode=${h3Mode || snMode || (flux3Info ? `${isImg2Img ? "edit:flux3" : "txt2img"} ${flux3Info.width}x${flux3Info.height}${flux3Info.boxes ? ` +${flux3Info.boxes} boxes` : ""}` : mode)}${flux3Info ? `, upsampler=${flux3Info.upsampler ? `${flux3Info.upsampler}${expandedPrompt ? ` (${expandedPrompt.length} chars)` : " (no caption read back)"}` : "off"}` : ""}, sampler=${h3ImageInfo || sensenovaInfo ? "euler/simple" : `${c.sampler}/${c.scheduler}`}, cfg=${h3ImageInfo ? 1 : sensenovaInfo ? sensenovaInfo.cfg : flux3Info ? flux3Info.cfg : c.cfg}${c.guidance != null ? `, guidance=${c.guidance}` : ""}, steps=${h3ImageInfo ? H3IMG_STEPS : sensenovaInfo ? sensenovaInfo.steps : c.steps}, images=${outImages.length}`);
         const mediaIds = toGallery("image", outImages, null, { ...galleryMeta, expandedPrompt,
-          width: panoDims?.w || flux3Info?.width || h3ImageInfo?.out.width || width, height: panoDims?.h || flux3Info?.height || h3ImageInfo?.out.height || height });
+          width: panoDims?.w || flux3Info?.width || h3ImageInfo?.out.width || sensenovaInfo?.out.width || width, height: panoDims?.h || flux3Info?.height || h3ImageInfo?.out.height || sensenovaInfo?.out.height || height });
         sendJson(res, 200, { images: outImages, mediaIds, model, seed, precisionNote, precisionUsed, upscaleModel: upscaleInfo?.model || undefined, upscaleScale: upscaleInfo?.scale || undefined, upscaleResizeOnly: upscaleInfo?.resizeOnly || undefined, upscaleDenoise: upscaleInfo?.denoise || undefined, restoreModel: upscaleInfo?.restoreModel || undefined, panoLora: panoLoraUsed || undefined, panoLoraSkipped: panoLoraSkipped || undefined, krea2Lora: krea2LoraInfo || undefined, imagesUsed: imagesUsed || undefined,
           expandedPrompt, flux3Upsampler: flux3Info ? (flux3Info.upsampler || false) : undefined,
           flux3Boxes: flux3Info && flux3Info.boxes ? flux3Info.boxes : undefined,
           // "on" (expandedPrompt is its caption) | "off" (⚙) | "failed" (unreadable answer —
           // the prompt went in as typed), plus the canvas it rendered.
           h3ImagePe: h3ImageInfo ? h3ImageInfo.pe : undefined,
-          width: h3ImageInfo ? h3ImageInfo.out.width : undefined, height: h3ImageInfo ? h3ImageInfo.out.height : undefined });
+          // SenseNova U1.6: the recipe that ran (turbo = the LoRA's step count, or false
+          // for the 50-step one), whether the expander ran (expandedPrompt is its answer),
+          // and with self-correction how many pictures it drew and what it said about them.
+          sensenova: sensenovaInfo ? {
+            turbo: sensenovaInfo.lora ? sensenovaInfo.steps : false, steps: sensenovaInfo.steps, cfg: sensenovaInfo.cfg,
+            pe: !!sensenovaInfo.pe, selfCorrect: sensenovaInfo.selfCorrect,
+            passes: sensenovaInfo.selfCorrect ? outImages.length : undefined, critique: snCritique,
+          } : undefined,
+          width: (h3ImageInfo || sensenovaInfo) ? (h3ImageInfo || sensenovaInfo).out.width : undefined,
+          height: (h3ImageInfo || sensenovaInfo) ? (h3ImageInfo || sensenovaInfo).out.height : undefined });
       }
     } finally {
       clearTimeout(timeout);

@@ -37,5 +37,22 @@
         "bytes": 38489
       }
     }
+  },
+  "sensenova-pe": {
+    "about": "SenseNova U1.6 prompt expander: the system prompts of Comfy-Org's two official SenseNova U1.6 templates (text to image; image editing and reference-guided), read out of the template JSON (the PrimitiveStringMultiline node titled \"Text (System Prompt ...)\"). Read by sensenovaCompanions in server/comfy.js.",
+    "source": "https://github.com/Comfy-Org/workflow_templates",
+    "license": "MIT (Comfy-Org/workflow_templates)",
+    "files": {
+      "image_sensenova_u16_t2i.json": {
+        "url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/cf1048587a3a416d924dc2851701f1fde96978ca/templates/image_sensenova_u16_t2i.json",
+        "sha256": "0c8f8e5dea94ef25923d0065b741cac199eb9c10810ff615bef232e3e5693d23",
+        "bytes": 100064
+      },
+      "image_sensenova_u16_image_edit.json": {
+        "url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/80f49b093400b47907efdcbf7f9e081471da20cb/templates/image_sensenova_u16_image_edit.json",
+        "sha256": "f2193d0c0bd113efbfdc6aba3d24ce7721e1e64ada33fb0e249abc52b5b921de",
+        "bytes": 84751
+      }
+    }
   }
 }

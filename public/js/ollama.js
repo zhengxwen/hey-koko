@@ -1078,6 +1078,8 @@ export function resolveModelToken(token) {
 const H3_RE = /minimax.?h3(?!.?image)|10eros.*h3/i;
 // MiniMax-H3-Image — mirrors H3IMG_RE in server/comfy.js. Display-side only.
 const H3IMG_RE = /minimax.?h3.?image/i;
+// SenseNova U1.6 — mirrors SENSENOVA_RE in server/comfy.js. Display-side only.
+const SENSENOVA_RE = /sense.?nova/i;
 // Twin of h3ReadsRefs in server/comfy.js. A 10Eros "hybrid" build fuses ref2va and fl2va
 // into one file, so its name carries neither task word — matching only /ref2va/ here hides
 // every reference control for exactly the weight that has the most of them. "ref-delta" is
@@ -1340,6 +1342,7 @@ function comfyModelHint(name) {
   if (/qwen.?image.?2[._-]?1(?![0-9])/.test(n)) return t("oll_hint_qwen21");
   if (/qwen.?image/.test(n)) return t("oll_hint_qwenImage");
   if (H3IMG_RE.test(n)) return t("oll_hint_h3image");
+  if (SENSENOVA_RE.test(n)) return t("oll_hint_sensenova");
   // FLUX 3 before the generic /flux/ line (Flux.1), which matches it too.
   if (/flux.?3.*klein.*base/.test(n)) return t("oll_hint_flux3base");
   if (/flux.?3.*klein/.test(n)) return t("oll_hint_flux3");
@@ -1399,6 +1402,7 @@ function imageFamilyOf(name) {
   if (/qwen/.test(n)) return "qwenimage";
   if (/flux.?3.*klein/.test(n)) return "flux3";   // before /flux/, which is Flux.1's row
   if (H3IMG_RE.test(n)) return "h3image";
+  if (SENSENOVA_RE.test(n)) return "sensenova";
   if (/flux/.test(n)) return "flux";
   if (/pony/.test(n)) return "pony";
   return null;
@@ -1737,6 +1741,7 @@ function comfyModelComponents(name) {
   // FLUX 3 — ahead of the generic checkpoint line at the bottom, whose /flux/ test would
   // describe it as a Flux.1 checkpoint with FluxGuidance.
   if (H3IMG_RE.test(n)) return "MiniMax H3 Image · UNETLoader · CLIP qwen3vl_32b(minimax) · VAE minimax_h3_image · prompt expander (TextGenerateV2, qwen3.5-9b, MiniMax's PE prompts; separate pass that also picks the aspect ratio) · MiniMaxH3ImageConditioning (pictures = <Picture 1>…) · KSampler 6-step euler/simple, cfg 1 (distilled) · 4 MP default, 16 MP native";
+  if (SENSENOVA_RE.test(n)) return "SenseNova U1.6 · CheckpointLoaderSimple (model + text + pixel VAE in one file) · optional 8-step LoRA (Turbo: 8 steps, cfg 1; else 50 steps, cfg 4) · prompt expander (TextGenerateV2, generic qwen3.5-9b, the Comfy-Org templates' system prompts) · HiDreamO1ReferenceImages + SenseNovaConditioning for edits · optional self-correction loop (StartLoop ×5 → SenseNovaConditioning → KSampler → SenseNovaInterleaveDecode) · EmptyHiDreamO1LatentImage, 4 MP default · KSampler euler/simple";
   if (/flux.?3.*klein.*base/.test(n)) return "FLUX 3 Klein Base · UNETLoader · CLIP qwen3vl_4b(flux3) · VAE flux2 · prompt upsampler (TextGenerate, qwen3.5-9b) · ReferenceMultiLatent (up to 10 references) · ModelSamplingFlux (alpha 16) · KSampler 50-step euler/simple, cfg 4";
   if (/flux.?3.*klein/.test(n)) return "FLUX 3 Klein · UNETLoader · CLIP qwen3vl_4b(flux3) · VAE flux2 · prompt upsampler (TextGenerate, qwen3.5-9b) · ReferenceMultiLatent (up to 10 references) · ModelSamplingFlux (alpha 16) · KSampler 16-step euler/simple, cfg 1 (distilled)";
   if (/boogu/.test(n)) return "boogu · UNETLoader · CLIP qwen3vl(boogu) · VAE flux1 · ModelSamplingAuraFlow · KSampler";
@@ -2175,6 +2180,13 @@ export function updateComfyParamVisibility() {
   // FLUX 3 Klein's upsampler switch — both checkpoints (distilled and base) run it.
   setVis(dom.comfyParamFlux3Upsample, /flux.?3.*klein/i.test(m), ".comfyParamCheck");
   setVis(dom.comfyParamH3ImagePe, H3IMG_RE.test(m), ".comfyParamCheck");
+  // SenseNova U1.6: Turbo (the 8-step LoRA), self-correction and the expander. With Turbo
+  // the LoRA's own 8 steps / cfg 1 run (the server pins them), so steps, cfg and the
+  // negative prompt — which cfg 1 never reads — only show with it off. The sampler and
+  // scheduler are the templates' euler / simple either way.
+  const sensenova = SENSENOVA_RE.test(m);
+  const snTurbo = sensenova && !!dom.comfyParamSensenovaTurbo?.checked;
+  for (const el of [dom.comfyParamSensenovaTurbo, dom.comfyParamSensenovaSelfCorrect, dom.comfyParamSensenovaPe]) setVis(el, sensenova, ".comfyParamCheck");
   // MiniMax H3 Image is distilled to 6 steps with no guidance and no negative prompt (the
   // official server rejects all three, and the server pins them): nothing in the sampler
   // block reaches its graph.
@@ -2184,7 +2196,7 @@ export function updateComfyParamVisibility() {
   setVis(dom.comfyCamPicker, m === "qwen-angles");
   setVis(dom.comfyParamCamStrength, m === "qwen-angles");
   // Image-edit / txt2img only.
-  setVis(dom.comfyParamImageCfg, diffusion && !video && !mesh && !music && !h3img);
+  setVis(dom.comfyParamImageCfg, diffusion && !video && !mesh && !music && !h3img && !sensenova);
   // Quantisation preference — diffusion models only (the upscale pipelines load an
   // upscale model, which has no precision variants; the mesh chains ship one file each).
   setVis(dom.comfyParamPrecision, diffusion && !mesh);
@@ -2199,21 +2211,22 @@ export function updateComfyParamVisibility() {
   // model then (same guard as cfg / fps above).
   const negTunable = !video || !state.comfyNegativeTunable?.size || state.comfyNegativeTunable.has(m);
   // Music 3 has no negative branch either — its negative IS the zeroed positive.
-  setVis(dom.comfyParamNegative, diffusion && !mesh && !music && negTunable && !h3img);
+  setVis(dom.comfyParamNegative, diffusion && !mesh && !music && negTunable && !h3img && !snTurbo);
   // Guidance + img2img denoise are IMAGE-only: no video builder accepts either
   // (resolveVideoConfig doesn't even carry them).
   // FLUX 3 Klein reads neither: it has no guidance embedding (the field is Flux.1's
   // FluxGuidance — "Flux only" on the label invites the wrong reading), and it takes
   // pictures as references, never as a VAE-encoded start latent to denoise.
   const flux3m = /flux.?3.*klein/i.test(m);
-  for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video && !mesh && !music && !flux3m && !h3img);
+  for (const el of [dom.comfyParamGuidance, dom.comfyParamDenoise]) setVis(el, diffusion && !video && !mesh && !music && !flux3m && !h3img && !sensenova);
   // Sampler / scheduler / steps / cfg: honoured by every image model, but only by the
   // preset-driven video models. SCAIL-2 / Wan Animate / bernini hardcode a schedule
   // bound to their distill LoRA and ignore these — so hide rather than lie. Of the
   // mesh chains only Hunyuan3D runs a real KSampler.
   const samplerTunable = !video || !!(state.comfySamplerTunable && state.comfySamplerTunable.has(m));
   const shows = ((diffusion && samplerTunable && !mesh) || meshSampler) && !h3img;
-  for (const el of [dom.comfyParamSampler, dom.comfyParamScheduler, dom.comfyParamSteps]) setVis(el, shows);
+  for (const el of [dom.comfyParamSampler, dom.comfyParamScheduler]) setVis(el, shows && !sensenova);
+  setVis(dom.comfyParamSteps, shows && !snTurbo);
   // cfg additionally requires the model to actually have a guidance scale (see above).
   // Empty set = a server too old to send the flag; don't hide cfg for every video model
   // then (that happens whenever the page is hard-refreshed before the server restarts).
@@ -2221,7 +2234,7 @@ export function updateComfyParamVisibility() {
   // FLUX 3 Klein's DISTILLED checkpoint is a flow map: no guidance at all (the server pins
   // cfg 1 whatever this says). Its base checkpoint guides at cfg 4 and keeps the field.
   const flux3Distilled = /flux.?3.*klein/i.test(m) && !/flux.?3.*klein.*base/i.test(m);
-  setVis(dom.comfyParamCfg, shows && cfgTunable && !flux3Distilled);
+  setVis(dom.comfyParamCfg, shows && cfgTunable && !flux3Distilled && !snTurbo);
 }
 
 export async function loadEmbedModels() {
@@ -2510,6 +2523,10 @@ function initComfyParamsModal() {
   dom.comfyParamMogeSubject?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamFlux3Upsample?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamH3ImagePe?.addEventListener("change", () => saveCurrentSettings());
+  // Turbo also decides which sampler fields apply, so it re-runs the visibility pass.
+  dom.comfyParamSensenovaTurbo?.addEventListener("change", () => { updateComfyParamVisibility(); saveCurrentSettings(); });
+  dom.comfyParamSensenovaSelfCorrect?.addEventListener("change", () => saveCurrentSettings());
+  dom.comfyParamSensenovaPe?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamPanoRefine?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamPanoModel?.addEventListener("change", () => saveCurrentSettings());
   dom.comfyParamPanoProj?.addEventListener("change", () => saveCurrentSettings());
@@ -2576,6 +2593,9 @@ function initComfyParamsModal() {
     if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = true; // bit-exact, defaults ON
     if (dom.comfyParamFlux3Upsample) dom.comfyParamFlux3Upsample.checked = true; // BFL: always run it
     if (dom.comfyParamH3ImagePe) dom.comfyParamH3ImagePe.checked = true;           // both official templates run it
+    if (dom.comfyParamSensenovaTurbo) dom.comfyParamSensenovaTurbo.checked = true;
+    if (dom.comfyParamSensenovaSelfCorrect) dom.comfyParamSensenovaSelfCorrect.checked = false;
+    if (dom.comfyParamSensenovaPe) dom.comfyParamSensenovaPe.checked = true;       // both official templates run it
     if (dom.comfyParamH3ChainMode) dom.comfyParamH3ChainMode.value = "";
     if (dom.comfyParamH3ChainAudioXfade) dom.comfyParamH3ChainAudioXfade.checked = true; // defaults ON
     if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = false;

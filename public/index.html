@@ -1229,6 +1229,18 @@
             <input id="comfyParamH3ImagePe" type="checkbox" checked />
             <span id="comfyParamH3ImagePeLabel">Prompt expander (H3 Image)</span>
           </label>
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="SenseNova U1.6 only, ON by default: mounts SenseTime&#x27;s official 8-step LoRA and renders in 8 steps at cfg 1 instead of the full 50 steps at cfg 4 — several times faster. The official templates advise keeping it on while you iterate and turning it off for the finest detail and text. With it on, steps, cfg and the negative prompt do not apply (cfg 1 reads no negative). Needs sensenova_u1.6_8b_mot_8step_lora_bf16.safetensors in loras/.">
+            <input id="comfyParamSensenovaTurbo" type="checkbox" checked />
+            <span id="comfyParamSensenovaTurboLabel">Turbo: 8-step LoRA (SenseNova)</span>
+          </label>
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="SenseNova U1.6 only, off by default: after the first picture the model looks at it, compares it with your prompt, writes a critique (garbled or misspelled text, wrong numbering, a missing element…) and draws it again — up to five rounds, and it stops by itself as soon as it finds nothing to fix. Trained on infographics: it pays off on posters, charts and other text-heavy layouts, and costs a whole extra render per round, so leave it off for photos and portraits. Every picture it drew comes back, first draft first, with its critique under the result.">
+            <input id="comfyParamSensenovaSelfCorrect" type="checkbox" />
+            <span id="comfyParamSensenovaSelfCorrectLabel">Self-correction (SenseNova)</span>
+          </label>
+          <label class="checkboxLabel isMultiline comfyParamCheck" title="SenseNova U1.6 only: before rendering, a Qwen3.5-9B language model rewrites your request into the full visual description the model wants, using the system prompts of Comfy-Org&#x27;s official SenseNova templates — it keeps your language, and writes out every word that should appear in the picture. With pictures attached it looks at them and writes the edit around what is in them. It thinks before answering, which adds time before the render. The description it wrote is shown under the result. Turn it off to send your own detailed description exactly as typed (SenseNova reads long, precise prompts best).">
+            <input id="comfyParamSensenovaPe" type="checkbox" checked />
+            <span id="comfyParamSensenovaPeLabel">Prompt expander (SenseNova)</span>
+          </label>
           <button id="comfyBoxBtn" type="button" class="secondary" title="FLUX 3 Klein only: drag boxes where things should go and say what each one is (over the first attached picture for an edit, or a blank canvas). Same as the --box flag.">🔲 <span id="comfyBoxLabel">Draw layout boxes</span></button>
           <!-- 3D camera picker (Qwen 2511 Multiple-Angles). The LoRA knows exactly 96
                poses, so this is a PICKER over a discrete grid rather than a free orbit:

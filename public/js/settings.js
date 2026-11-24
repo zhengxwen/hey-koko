@@ -63,6 +63,9 @@ export function saveCurrentSettings() {
         // Defaults ON, so an absent key must read back as true (see the restore side).
         flux3Upsample: dom.comfyParamFlux3Upsample ? dom.comfyParamFlux3Upsample.checked : true,
         h3ImagePe: dom.comfyParamH3ImagePe ? dom.comfyParamH3ImagePe.checked : true,
+        sensenovaTurbo: dom.comfyParamSensenovaTurbo ? dom.comfyParamSensenovaTurbo.checked : true,
+        sensenovaSelfCorrect: dom.comfyParamSensenovaSelfCorrect ? dom.comfyParamSensenovaSelfCorrect.checked : false,
+        sensenovaPe: dom.comfyParamSensenovaPe ? dom.comfyParamSensenovaPe.checked : true,
         camStrength: dom.comfyParamCamStrength?.value || "",
         // The dial lives in state, not in an input, so persist it from there.
         camAzimuth: state.camAzimuth || "front",
@@ -357,6 +360,9 @@ export function loadSavedSettings() {
     if (dom.comfyParamQwen21CacheDtype) dom.comfyParamQwen21CacheDtype.value = cp.qwen21CacheDtype || "";
     if (dom.comfyParamFlux3Upsample) dom.comfyParamFlux3Upsample.checked = cp.flux3Upsample !== false;
     if (dom.comfyParamH3ImagePe) dom.comfyParamH3ImagePe.checked = cp.h3ImagePe !== false;
+    if (dom.comfyParamSensenovaTurbo) dom.comfyParamSensenovaTurbo.checked = cp.sensenovaTurbo !== false;
+    if (dom.comfyParamSensenovaSelfCorrect) dom.comfyParamSensenovaSelfCorrect.checked = cp.sensenovaSelfCorrect === true;
+    if (dom.comfyParamSensenovaPe) dom.comfyParamSensenovaPe.checked = cp.sensenovaPe !== false;
     if (dom.comfyParamCamStrength) dom.comfyParamCamStrength.value = cp.camStrength || "";
     state.camAzimuth = cp.camAzimuth || "front";
     state.camElevation = cp.camElevation || "eye";

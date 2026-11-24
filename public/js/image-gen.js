@@ -180,6 +180,11 @@ function comfyOverrides() {
   if (dom.comfyParamFlux3Upsample && !dom.comfyParamFlux3Upsample.checked) ov.flux3Upsample = false;
   // MiniMax H3 Image's expander: same opt-out-only rule.
   if (dom.comfyParamH3ImagePe && !dom.comfyParamH3ImagePe.checked) ov.h3ImagePe = false;
+  // SenseNova U1.6: only what differs from the server's defaults travels (Turbo on,
+  // self-correction off, expander on), so the CLI and old saved settings get the defaults.
+  if (dom.comfyParamSensenovaTurbo && !dom.comfyParamSensenovaTurbo.checked) ov.sensenovaTurbo = false;
+  if (dom.comfyParamSensenovaSelfCorrect?.checked) ov.sensenovaSelfCorrect = true;
+  if (dom.comfyParamSensenovaPe && !dom.comfyParamSensenovaPe.checked) ov.sensenovaPe = false;
   // Qwen 3D Camera: the dial's three KEYS travel as-is — the server turns them into
   // the `<sks> ...` phrase the LoRA was trained on, so only one side knows that wording.
   ov.camAzimuth = state.camAzimuth || "front";
@@ -2472,6 +2477,9 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
   let flux3UpsamplerOff = false;
   // MiniMax H3 Image's expander: "on" | "off" | "failed" from the server (last one wins).
   let h3ImagePeState = null;
+  // SenseNova U1.6: the server's `sensenova` record of the last run (recipe, expander,
+  // self-correction rounds and the model's critique).
+  let sensenovaUsed = null;
   let flux3BoxesUsed = 0;   // how many 🔲 layout boxes the run carried (obj_1…obj_N)
   // Seed actually used (random unless --seed was pinned) → surfaced on the done line
   // so a single result can be reproduced. Only meaningful for a single output.
@@ -2596,6 +2604,7 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
                 if (data.expandedPrompt && !expandedPrompts.includes(data.expandedPrompt)) expandedPrompts.push(data.expandedPrompt);
                 if (data.flux3Upsampler === false) flux3UpsamplerOff = true;
                 if (data.h3ImagePe) h3ImagePeState = data.h3ImagePe;
+                if (data.sensenova) sensenovaUsed = data.sensenova;
                 if (data.flux3Boxes) flux3BoxesUsed = data.flux3Boxes;
                 if (totalCount === 1 && imgs.length && typeof data.seed === "number") usedSeed = data.seed;
                 generatedImages.push(...storedSlots(imgs, data.mediaIds));
@@ -2690,12 +2699,28 @@ export async function generateImage(parsedInput, tabId = state.activeTabId, inse
       // MiniMax H3 Image's expander caption goes in the same fold, under its own title.
       if (expandedPrompts.length) {
         const quoted = expandedPrompts.map((p) => p.split("\n").map((l) => `> ${l}`).join("\n")).join("\n\n");
-        doneLine += `\n\n<details>\n<summary>${t(h3ImagePeState ? "msg_h3ImagePe" : "msg_flux3Upsampled", {}, plang)}</summary>\n\n${quoted}\n\n</details>`;
+        doneLine += `\n\n<details>\n<summary>${t(h3ImagePeState ? "msg_h3ImagePe" : sensenovaUsed ? "msg_sensenovaPe" : "msg_flux3Upsampled", {}, plang)}</summary>\n\n${quoted}\n\n</details>`;
       } else if (flux3UpsamplerOff) {
         doneLine += `\n${t("msg_flux3UpsamplerOff", {}, plang)}`;
       }
       if (h3ImagePeState === "off") doneLine += `\n${t("msg_h3ImagePeOff", {}, plang)}`;
       else if (h3ImagePeState === "failed") doneLine += `\n${t("msg_h3ImagePeFailed", {}, plang)}`;
+      if (sensenovaUsed) {
+        const sn = sensenovaUsed;
+        doneLine += `\n${sn.turbo
+          ? t("msg_sensenovaTurbo", { steps: sn.steps }, plang)
+          : t("msg_sensenovaQuality", { steps: sn.steps, cfg: sn.cfg }, plang)}`;
+        if (!sn.pe) doneLine += `\n${t("msg_sensenovaPeOff", {}, plang)}`;
+        // Self-correction: how many pictures came back (first draft first), and the
+        // model's own critiques, folded — they are what explains a second picture.
+        if (sn.selfCorrect) {
+          doneLine += `\n${t(sn.passes > 1 ? "msg_sensenovaRevised" : "msg_sensenovaNoFix", { n: sn.passes || 1 }, plang)}`;
+          if (sn.critique) {
+            const quoted = sn.critique.split("\n").map((l) => `> ${l}`).join("\n");
+            doneLine += `\n\n<details>\n<summary>${t("msg_sensenovaCritique", {}, plang)}</summary>\n\n${quoted}\n\n</details>`;
+          }
+        }
+      }
     }
 
     const replyMsg = {

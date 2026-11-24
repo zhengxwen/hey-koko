@@ -227,6 +227,9 @@ const FILE_ID_RULES = [
   [/pony/, "pony-v6-xl"],
   [/hidream.?i1/, "hidream-i1"],
   [/hidream.?o1/, "hidream-o1"],
+  // SenseNova U1.6 — SenseTime's unified model. The version is part of the id: U1.5 is a
+  // different set of weights (the same nodes run it), and its LoRAs do not fit U1.6.
+  [/sense.?nova.?u1.?6/, "sensenova-u1.6"],
   [/hidream.?e1/, "hidream-e1.1"],
   [/z.?image.?turbo/, "zimage-turbo"],
   // Krea-2 ships two open checkpoints of the same 12B DiT: `raw` (the pretrained
@@ -400,6 +403,7 @@ const ID_LABELS = {
   "pony-v6-xl": "Pony Diffusion V6 XL",
   "hidream-i1": "HiDream-I1",
   "hidream-o1": "HiDream-O1",
+  "sensenova-u1.6": "SenseNova U1.6",
   "hidream-e1.1": "HiDream-E1.1",
   "zimage-turbo": "Z-Image Turbo",
   "krea2-turbo": "Krea-2 Turbo",
@@ -466,6 +470,9 @@ const ID_MAX_SIZE = [
   // (MATCH_MAX_PIXELS = 4 * 1024 * 1024, "native 4K" in their launch post) and the
   // workflows they ship default to 4.0 MP — the square of that is 2048².
   [/^flux3-klein/, "2048x2048"],
+  // SenseNova U1.6: SenseTime's pixel budgets run 1m to 16m (1024² each, 4m the default —
+  // sensenova_u1/utils/resolutions.py), and the canvas node stops at 4096 a side.
+  [/^sensenova/, "4096x4096"],
 ];
 
 function maxSizeForId(id) {
