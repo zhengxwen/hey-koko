@@ -62,6 +62,10 @@ export function saveCurrentSettings() {
         qwen21CacheDtype: dom.comfyParamQwen21CacheDtype?.value || "",
         // Defaults ON, so an absent key must read back as true (see the restore side).
         flux3Upsample: dom.comfyParamFlux3Upsample ? dom.comfyParamFlux3Upsample.checked : true,
+        h3ImagePe: dom.comfyParamH3ImagePe ? dom.comfyParamH3ImagePe.checked : true,
+        sensenovaTurbo: dom.comfyParamSensenovaTurbo ? dom.comfyParamSensenovaTurbo.checked : true,
+        sensenovaSelfCorrect: dom.comfyParamSensenovaSelfCorrect ? dom.comfyParamSensenovaSelfCorrect.checked : false,
+        sensenovaPe: dom.comfyParamSensenovaPe ? dom.comfyParamSensenovaPe.checked : true,
         camStrength: dom.comfyParamCamStrength?.value || "",
         // The dial lives in state, not in an input, so persist it from there.
         camAzimuth: state.camAzimuth || "front",
@@ -74,6 +78,9 @@ export function saveCurrentSettings() {
         upscaleDenoise: dom.comfyParamUpscaleDenoise?.value || "",
         upscaleModel: dom.comfyParamUpscaleModel?.value || "",
         torchCompile: dom.comfyParamTorchCompile?.checked || false,
+        longcatIdentityHold: dom.comfyParamLongcatRefAll ? dom.comfyParamLongcatRefAll.checked : true,
+        ttsSpeed: dom.comfyParamTtsSpeed?.value || "",
+        longcatAudioScale: dom.comfyParamLongcatAudioScale?.value || "",
         lyrics: dom.comfyParamLyrics?.value || "",
         musicSeconds: dom.comfyParamMusicSeconds?.value || "",
         musicCfg: dom.comfyParamMusicCfg?.value || "",
@@ -106,6 +113,7 @@ export function saveCurrentSettings() {
         h3Lora: dom.comfyParamH3Lora?.value || "",
         h3LoraStrength: dom.comfyParamH3LoraStrength?.value || "",
         h3Upscale: dom.comfyParamH3Upscale?.value || "",
+        h3Control: dom.comfyParamH3Control?.value || "",
         solAttn: dom.comfyParamSolAttn?.value || "",
         solTau: dom.comfyParamSolTau?.value || "",
         // Defaults ON (bit-exact + faster + lower peak), so store the raw state —
@@ -165,6 +173,7 @@ export function saveCurrentSettings() {
       llmMaxImages: dom.llmMaxImages?.value || "",
       llmMaxMessages: dom.llmMaxMessages?.value || "",
       llmTimeout: dom.llmTimeout?.value || "",
+      searchEngine: dom.searchEngineSelect?.value === "auto" ? "auto" : "ddg",
       pdfEngine: dom.pdfEngineSelect?.value || "mineru",
       embedModel: dom.embedModelSelect?.value || "qwen3-embedding:8b",
       libraryDistill: dom.libraryDistillToggle?.checked ?? true,
@@ -350,6 +359,10 @@ export function loadSavedSettings() {
     if (dom.comfyParamQwen21Cache) dom.comfyParamQwen21Cache.value = cp.qwen21Cache || "";
     if (dom.comfyParamQwen21CacheDtype) dom.comfyParamQwen21CacheDtype.value = cp.qwen21CacheDtype || "";
     if (dom.comfyParamFlux3Upsample) dom.comfyParamFlux3Upsample.checked = cp.flux3Upsample !== false;
+    if (dom.comfyParamH3ImagePe) dom.comfyParamH3ImagePe.checked = cp.h3ImagePe !== false;
+    if (dom.comfyParamSensenovaTurbo) dom.comfyParamSensenovaTurbo.checked = cp.sensenovaTurbo !== false;
+    if (dom.comfyParamSensenovaSelfCorrect) dom.comfyParamSensenovaSelfCorrect.checked = cp.sensenovaSelfCorrect === true;
+    if (dom.comfyParamSensenovaPe) dom.comfyParamSensenovaPe.checked = cp.sensenovaPe !== false;
     if (dom.comfyParamCamStrength) dom.comfyParamCamStrength.value = cp.camStrength || "";
     state.camAzimuth = cp.camAzimuth || "front";
     state.camElevation = cp.camElevation || "eye";
@@ -357,6 +370,11 @@ export function loadSavedSettings() {
     // Best-effort — applyComfyModels re-applies this once the option list has loaded.
     if (dom.comfyParamUpscaleModel && cp.upscaleModel) dom.comfyParamUpscaleModel.value = cp.upscaleModel;
     if (dom.comfyParamTorchCompile) dom.comfyParamTorchCompile.checked = !!cp.torchCompile;
+    // Default ON. Stored under a new key: the opt-in build saved `longcatRefAll: false` on
+    // every settings save, which would otherwise pin it off.
+    if (dom.comfyParamLongcatRefAll) dom.comfyParamLongcatRefAll.checked = cp.longcatIdentityHold !== false;
+    if (dom.comfyParamTtsSpeed) dom.comfyParamTtsSpeed.value = cp.ttsSpeed || "";
+    if (dom.comfyParamLongcatAudioScale) dom.comfyParamLongcatAudioScale.value = cp.longcatAudioScale || "";
     if (dom.comfyParamLyrics) dom.comfyParamLyrics.value = cp.lyrics || "";
     if (dom.comfyParamMusicSeconds) dom.comfyParamMusicSeconds.value = cp.musicSeconds || "";
     if (dom.comfyParamMusicCfg) dom.comfyParamMusicCfg.value = cp.musicCfg || "";
@@ -389,6 +407,7 @@ export function loadSavedSettings() {
     if (dom.comfyParamEasyCache) dom.comfyParamEasyCache.checked = !!cp.easyCache;
     if (dom.comfyParamH3LoraStrength) dom.comfyParamH3LoraStrength.value = cp.h3LoraStrength || "";
     if (dom.comfyParamH3Upscale) dom.comfyParamH3Upscale.value = cp.h3Upscale || "";
+    if (dom.comfyParamH3Control) dom.comfyParamH3Control.value = cp.h3Control || "";
     if (dom.comfyParamSolAttn) dom.comfyParamSolAttn.value = cp.solAttn || "";
     if (dom.comfyParamSolTau) dom.comfyParamSolTau.value = cp.solTau || "";
     if (dom.comfyParamSolChunkFF) dom.comfyParamSolChunkFF.checked = cp.solChunkFF !== false;
@@ -492,6 +511,8 @@ export function loadSavedSettings() {
   if (dom.llmMaxMessages) dom.llmMaxMessages.value = savedSettings.llmMaxMessages ?? "";
   // Empty means the built-in 120s, not "no limit" like the two caps above.
   if (dom.llmTimeout) dom.llmTimeout.value = savedSettings.llmTimeout ?? "";
+  // Web search defaults to DuckDuckGo only — Exa is an explicit opt-in (privacy).
+  if (dom.searchEngineSelect) dom.searchEngineSelect.value = savedSettings.searchEngine === "auto" ? "auto" : "ddg";
   if (savedSettings.pdfEngine && dom.pdfEngineSelect) dom.pdfEngineSelect.value = savedSettings.pdfEngine;
   // Embedding model selection is applied by loadEmbedModels (after options load).
   // Library distill card defaults to ON; respect an explicit saved off-choice.

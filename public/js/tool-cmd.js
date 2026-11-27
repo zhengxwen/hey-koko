@@ -15,6 +15,7 @@ import { saveChat } from './settings.js';
 import { makePreview, fileIntoGallery, sniffImageMime, galleryUrl, galleryThumbUrl,
          cacheGalleryThumb } from './utils.js';
 import { t, getPrompt } from './i18n.js';
+import { searchEngineChoice } from './tools.js';
 
 // Dependencies injected from main.js to avoid circular imports (url-fetch.js pattern).
 let _setGenerating = null;
@@ -183,15 +184,17 @@ async function fetchOffice(alias, sel) {
 }
 
 async function fetchWeb(query) {
+  const engine = searchEngineChoice();
   const res = await fetch("/api/search", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, engine }),
   });
-  const data = await res.json();
-  if (data.error === "captcha") throw new Error(t("tool_searchRateLimited"));
+  const data = await res.json().catch(() => ({}));
+  if (data.error === "captcha") throw new Error(t(engine === "ddg" ? "search_captchaDdg" : "tool_searchRateLimited"));
+  if (data.error || !res.ok) throw new Error(t("search_failed", { error: data.detail || data.error || res.status }));
   const results = data.results || [];
   if (!results.length) throw new Error(t("tool_noResults"));
-  const body = results.slice(0, 8).map((r, i) => `${i + 1}. **${r.title}**\n${r.snippet}\n(${r.url})`).join("\n\n");
+  const body = results.slice(0, 8).map((r, i) => `${i + 1}. **${r.title}**${r.published ? ` · ${r.published}` : ""}\n${r.snippet}\n(${r.url})`).join("\n\n");
   return { header: `🔎 **${t("tool_webHeader", { query })}**`, body };
 }
 

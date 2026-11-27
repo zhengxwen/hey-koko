@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Xiuwen Zheng
 
-// Local text-to-speech for the /voice command. Drives a persistent Python
-// daemon (server/tts_engine.py) that wraps the Kokoro engine —
+// Local text-to-speech for the /voice command. Drives persistent Python
+// daemons (server/tts_engine.py) wrapping the Kokoro and Qwen3-TTS engines —
 // persistent so the (slow-to-load) models stay warm between requests. The
 // daemon writes each clip to a temp wav; we base64 it for the browser, which
 // renders an <audio> + download button (mirrors the image/video generation flow).
@@ -10,22 +10,17 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 const config = require("./config");
-const { sendJson, readBody, cleanSpeechText, findCommand } = require("./utils");
+const { sendJson, readBody, cleanSpeechText } = require("./utils");
+const { findTool } = require("./find-tool");
 const gallery = require("./gallery");   // /voice clips are filed like any other artifact
 
-// Resolve ffmpeg once (used to transcode the engine's wav → AAC). null if absent.
-let ffmpegPath; // undefined = not probed yet, null = absent, string = path
-function findFfmpeg() {
-  if (ffmpegPath !== undefined) return Promise.resolve(ffmpegPath);
-  return findCommand("ffmpeg").then((p) => (ffmpegPath = p));
-}
-
-// Transcode an audio file (wav/aiff) to AAC (ADTS .aac). Resolves the output
+// Transcode an audio file (wav) to AAC (ADTS .aac). Resolves the output
 // path, or null if ffmpeg is unavailable / fails (caller falls back to source).
 function transcodeToAac(inPath) {
-  return new Promise(async (resolve) => {
-    const ff = await findFfmpeg();
+  return new Promise((resolve) => {
+    const ff = findTool("ffmpeg");
     if (!ff) { resolve(null); return; }
     const aacPath = inPath.replace(/\.[^.]+$/, "") + ".aac";
     const proc = spawn(ff, ["-i", inPath, "-c:a", "aac", "-b:a", "128k", "-f", "adts", "-y", aacPath]);
@@ -34,30 +29,67 @@ function transcodeToAac(inPath) {
   });
 }
 
-// Synthesize via macOS `say` to a temp AIFF file (used by /voice when a "say:"
-// voice is selected). Resolves the aiff path (caller deletes it).
-function sayToAiff(voice, text, rate) {
+// Synthesize via macOS `say` to a temp WAV. Shared by /voice (synthesize below) and the
+// reader (server/speech.js). WAV, not say's default AIFF: browsers can't play AIFF, and
+// that is exactly what /voice would hand them when ffmpeg is missing. LEI16@22050 is
+// lossless here — every installed voice, Premium included, renders at 22050 Hz mono.
+// `signal` aborts synthesis (the reader passes one tied to the client disconnecting).
+// Resolves the wav path (caller deletes it).
+function sayToWav({ voice, text, rate, signal } = {}) {
   return new Promise((resolve, reject) => {
-    const out = path.join(os.tmpdir(), `hk_say_${process.pid}_${nextId++}.aiff`);
-    const args = [];
+    const out = path.join(os.tmpdir(), `hk_say_${process.pid}_${nextId++}.wav`);
+    const args = ["--data-format=LEI16@22050", "-o", out];
     if (voice) args.push("-v", voice);
     if (rate) args.push("-r", String(Math.round(Number(rate) * 175)));
-    args.push("-o", out);
-    const proc = spawn("say", args);
-    proc.on("error", reject);
+    const proc = spawn("say", args, signal ? { signal } : undefined);
+    const fail = (e) => { fs.unlink(out, () => {}); reject(e); };
+    proc.on("error", fail);
+    proc.stdin.on("error", () => { /* say died before reading — reported via close/error */ });
     proc.stdin.write(text);
     proc.stdin.end();
-    proc.on("close", (code) => (code === 0 ? resolve(out) : reject(new Error(`say exited ${code}`))));
+    proc.on("close", (code) => (code === 0 ? resolve(out) : fail(new Error(`say exited ${code}`))));
   });
 }
 
-// Synthesize one chunk on a neural engine (kokoro) to a wav file.
+// Synthesize one chunk on a neural engine (kokoro / qwen3 / breeze) to a wav file.
 // Exported for the reader (server/speech.js) to play per-sentence. Caller deletes.
-async function synthToWav({ engine, voice, text, speed }) {
-  const engines = await ensureDaemon();
-  if (!engines.has(engine)) throw new Error(`TTS engine "${engine}" unavailable`);
-  const reply = await request({ engine, voice, text: cleanSpeechText(text), speed: speed || 1 }, 180000);
-  return reply.wav_path;
+// `comfyUrl` (breeze only) = the preferred ComfyUI box; see breezeEndpoint.
+// `design` (qwen3 / breeze only) = a one-off persona instead of a saved one; see adHocPersona.
+async function synthToWav({ engine, voice, text, speed, comfyUrl, design }) {
+  return engineToWav(engine, voice, cleanSpeechText(text), speed, undefined, comfyUrl, design);
+}
+
+// One engine request → wav path, with `speed` honoured on every engine. Kokoro takes it
+// natively; Qwen3-TTS and Breeze have no rate control at all, so their clips are
+// time-stretched afterwards — see stretchWav. Breeze runs on a ComfyUI box rather than
+// in a local daemon.
+async function engineToWav(engine, voice, text, speed, timeoutMs, comfyUrl, design) {
+  if (design && !DESIGN_ENGINES.has(engine)) {
+    throw new Error(`A voice description needs a designing engine (qwen3 or breeze), not "${engine}"`);
+  }
+  if (engine === "breeze") return stretchWav(await breezeToWav(voice, text, timeoutMs, comfyUrl, design), speed);
+  const reply = await requestEngine(engine, enginePayload(engine, voice, text, speed, design), timeoutMs);
+  return engine === "qwen3" ? stretchWav(reply.wav_path, speed) : reply.wav_path;
+}
+
+// Time-stretch a wav by `speed` (0.9 = 10% slower) with ffmpeg atempo — WSOLA, so pitch
+// and timbre stay put; a designed Mandarin anchor at 0.9 still sounded like itself
+// (1-minute LongCat test). atempo takes 0.5–2 per stage, hence the clamp. Resolves the
+// new path and deletes the input; on no ffmpeg / failure, keeps the original clip at
+// normal speed rather than failing the line.
+function stretchWav(inPath, speed) {
+  const s = Math.min(2, Math.max(0.5, Number(speed) || 1));
+  const ff = findTool("ffmpeg");
+  if (Math.abs(s - 1) < 0.005 || !ff) return Promise.resolve(inPath);
+  return new Promise((resolve) => {
+    const out = inPath.replace(/\.wav$/i, "") + `_x${s}.wav`;
+    const proc = spawn(ff, ["-v", "error", "-i", inPath, "-filter:a", `atempo=${s}`, "-y", out]);
+    proc.on("error", () => resolve(inPath));
+    proc.on("close", (code) => {
+      if (code === 0) { fs.unlink(inPath, () => {}); resolve(out); }
+      else { fs.unlink(out, () => {}); resolve(inPath); }
+    });
+  });
 }
 
 // Fixed preset voices (no cloning). value = "<engine>:<voiceId>"; the engine
@@ -82,113 +114,288 @@ const VOICE_CATALOG = [
   { value: "kokoro:bm_george", engine: "kokoro", label: "George · UK Male (Kokoro)", gender: "male" },
 ];
 
-let daemon = null;           // the spawned python process, or null
-let starting = null;         // Promise resolving to the set of available engines
-let availableEngines = new Set();
-let nextId = 1;
-const pending = new Map();    // id → { resolve, reject, timer }
-let stdoutBuf = "";
+// ── Qwen3-TTS designed voices ──────────────────────────────────────────────
+// A "voice" here is a PERSONA described in words — nobody's real voice, which is the
+// point for AI-generated presenters. The daemon designs it once (VoiceDesign speaks
+// QWEN3_REF_TEXT in that voice) and clones that reference for every line, so a persona
+// sounds the same across clips. Built-ins below; <DATA_DIR>/tts-voices.json adds or
+// overrides by id:
+//   { "my_host": { "label": "My host · Female", "language": "Chinese", "gender": "female",
+//                  "description": "A calm female host in her thirties, …" } }
+// The reference clip is named after a hash of description + language + sentence, so
+// editing a description re-designs the voice instead of reusing the old clip.
+const QWEN3_PERSONAS = {
+  anchor_f: { label: "Anchor · Female, Mandarin (Qwen3 designed)", language: "Chinese", gender: "female",
+    description: "一位二十八岁左右的女性新闻主播，普通话标准，声音温和清晰、有亲和力，语速平稳，吐字干净。" },
+  anchor_m: { label: "Anchor · Male, Mandarin (Qwen3 designed)", language: "Chinese", gender: "male",
+    description: "一位三十五岁左右的男性主持人，普通话标准，声音沉稳、略带磁性，语速适中，吐字清晰。" },
+  host_en_f: { label: "Host · US Female (Qwen3 designed)", language: "English", gender: "female",
+    description: "A warm, clear female presenter in her late twenties with a neutral American accent, friendly and confident, speaking at a steady pace." },
+  host_en_m: { label: "Host · US Male (Qwen3 designed)", language: "English", gender: "male",
+    description: "A calm, articulate male narrator in his thirties with a neutral American accent and a warm, low voice, speaking at a measured pace." },
+};
+const QWEN3_REF_TEXT = {
+  Chinese: "大家好，欢迎收看今天的节目。接下来，我会用几分钟的时间，把今天最值得关注的几件事情，跟大家仔细讲一讲。",
+  English: "Hello everyone, and welcome. Over the next few minutes, I'll walk you through the stories that matter most today, one at a time.",
+};
+const QWEN3_VOICES_FILE = path.join(config.DATA_DIR, "tts-voices.json");
+const QWEN3_REF_DIR = path.join(config.DATA_DIR, "tts-voices");
 
-function killDaemon() {
-  if (daemon) { try { daemon.kill(); } catch { /* already dead */ } }
-  daemon = null;
-  starting = null;
-  availableEngines = new Set();
-  for (const { reject, timer } of pending.values()) {
-    clearTimeout(timer);
-    reject(new Error("tts daemon stopped"));
+function qwen3Personas() {
+  let user = {};
+  try { user = JSON.parse(fs.readFileSync(QWEN3_VOICES_FILE, "utf-8")) || {}; } catch { /* none / unreadable → built-ins only */ }
+  const out = { ...QWEN3_PERSONAS };
+  for (const [id, p] of Object.entries(user)) {
+    if (/^[\w-]+$/.test(id) && p && typeof p.description === "string" && p.description.trim()) out[id] = p;
   }
-  pending.clear();
+  return out;
 }
 
-function handleLine(line) {
-  line = line.trim();
-  if (!line) return;
-  let msg;
-  try { msg = JSON.parse(line); } catch { return; }
-  if (msg.ready) { availableEngines = new Set(msg.engines || []); return; }
-  const id = msg.id;
-  if (id == null || !pending.has(id)) return;
-  const { resolve, reject, timer } = pending.get(id);
-  clearTimeout(timer);
-  pending.delete(id);
-  if (msg.ok) resolve(msg);
-  else reject(new Error(msg.error || "tts failed"));
+// Preset + persona voices, re-read each call so an edited tts-voices.json shows up
+// without a restart. Every persona exists on both designing engines: `qwen3:<id>` and
+// `breeze:<id>` share the description but are designed separately, so they are two
+// different (consistent) voices.
+function voiceCatalog() {
+  const all = Object.entries(qwen3Personas());
+  const personas = all.map(([id, p]) => ({
+    value: `qwen3:${id}`, engine: "qwen3", label: p.label || `${id} (Qwen3 designed)`, gender: p.gender || "",
+  }));
+  const breeze = all.map(([id, p]) => ({
+    value: `breeze:${id}`, engine: "breeze", gender: p.gender || "",
+    label: p.label ? (/\(Qwen3 designed\)/.test(p.label) ? p.label.replace("(Qwen3 designed)", "(Breeze designed)") : `${p.label} · Breeze`)
+                   : `${id} (Breeze designed)`,
+  }));
+  return [...VOICE_CATALOG, ...personas, ...breeze];
 }
 
-// Spawn (once) the python daemon and wait for its {ready} line listing the
-// engines that imported successfully. Resolves to that Set.
-function ensureDaemon() {
-  if (starting) return starting;
-  starting = new Promise((resolve) => {
-    const script = path.join(__dirname, "tts_engine.py");
-    let proc;
-    try {
-      proc = spawn(config.ttsPython, [script], {
-        env: { ...process.env, PYTHONUNBUFFERED: "1" },
-      });
-    } catch (e) {
-      console.warn(`[tts] failed to spawn ${config.ttsPython}: ${e.message}`);
-      resolve(new Set());
-      return;
+const DESIGN_ENGINES = new Set(["qwen3", "breeze"]);
+const CJK = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/;
+const DESIGN_LANGS = { zh: "Chinese", chinese: "Chinese", "中文": "Chinese", en: "English", english: "English", "英文": "English" };
+
+// A one-off persona from the request instead of tts-voices.json:
+//   { description, language?: "zh"|"en"|"Chinese"|"English", gender?: "female"|"male"|"f"|"m" }
+// Language defaults to the script of the text being read (CJK → Chinese), since the
+// reference sentence and every cloned line are spoken in it. A gender, when given, is
+// prepended to the description in the description's own language. The designed clip is
+// cached by hash like any persona, so the same description sounds the same next time.
+function adHocPersona(design, text) {
+  const raw = String((design && design.description) || "").trim();
+  if (!raw) throw new Error("The voice description is empty");
+  if (raw.length > 500) throw new Error("The voice description is too long (500 characters at most)");
+  const langKey = String(design.language || "").trim().toLowerCase();
+  const language = DESIGN_LANGS[langKey] || (langKey ? null : (CJK.test(text || "") ? "Chinese" : "English"));
+  if (!language) throw new Error(`Unknown voice language "${design.language}" (use zh or en)`);
+  const g = String(design.gender || "").trim().toLowerCase();
+  const gender = /^(f|female|woman|女)/.test(g) ? "female" : /^(m|male|man|男)/.test(g) ? "male" : "";
+  if (g && !gender) throw new Error(`Unknown voice gender "${design.gender}" (use female or male)`);
+  const zh = CJK.test(raw);
+  const prefix = !gender ? "" : zh ? (gender === "female" ? "女声，" : "男声，") : (gender === "female" ? "Female voice. " : "Male voice. ");
+  return { description: prefix + raw, language, gender };
+}
+
+// A persona's description, language and reference sentence, or a thrown error that
+// lists the known ids. Shared by both designing engines. With `design`, the persona is
+// the one-off one it describes (see adHocPersona) and `voice` is ignored.
+function personaOf(voice, engine, design, text) {
+  const all = design ? null : qwen3Personas();
+  const p = design ? adHocPersona(design, text) : all[voice];
+  if (!p) throw new Error(`Unknown ${engine} voice "${voice}". Known: ${Object.keys(all).join(", ")} (add more in ${QWEN3_VOICES_FILE})`);
+  const language = p.language || "Auto";
+  const refText = p.refText || QWEN3_REF_TEXT[language] || QWEN3_REF_TEXT.English;
+  const hash = crypto.createHash("sha256").update(`${p.description}\n${language}\n${refText}`).digest("hex").slice(0, 10);
+  return { p, language, refText, hash };
+}
+
+// ── Breeze TTS 2 (runs on ComfyUI, see breezeSpeech in comfy.js) ─────────────────
+// Which box: the caller's preference, else the last box /api/tts-voices found the pack
+// on (the browser hands that call its worker list), else the configured default — the
+// first of those that actually has the pack.
+let breezeLastUrl = null;
+async function breezeEndpoint(preferred) {
+  const { findBreezeEndpoint } = require("./comfy");   // lazy: comfy.js requires this file
+  const url = await findBreezeEndpoint([preferred, breezeLastUrl, config.comfyUrl]);
+  if (url) breezeLastUrl = url;
+  return url;
+}
+
+// Persona line → wav path. The persona's reference clip is designed on first use and
+// kept under <DATA_DIR>/tts-voices/ (breeze_<id>-<hash>.flac — same hash as Qwen3, so
+// editing a description re-designs both). ComfyUI hands back FLAC; ffmpeg turns it into
+// wav, which every caller (stretch, photo speaks, the reader) expects.
+async function breezeToWav(voice, text, timeoutMs, comfyUrl, design) {
+  const { p, refText, hash } = personaOf(voice, "Breeze", design, text);
+  if (design) voice = "custom";
+  const url = await breezeEndpoint(comfyUrl);
+  if (!url) throw new Error("Breeze TTS needs a ComfyUI with the ComfyUI-Breeze-TTS-2 node pack; none of the known endpoints has it");
+  const { breezeSpeech } = require("./comfy");
+  const flac = await breezeSpeech({ comfyUrl: url, text, instruct: p.description, refText,
+    refPath: path.join(QWEN3_REF_DIR, `breeze_${voice}-${hash}.flac`), timeoutMs: timeoutMs || 900000 });
+  const base = path.join(os.tmpdir(), `hk_breeze_${process.pid}_${nextId++}`);
+  fs.writeFileSync(`${base}.flac`, flac);
+  const ff = findTool("ffmpeg");
+  if (!ff) return `${base}.flac`;
+  return new Promise((resolve) => {
+    const proc = spawn(ff, ["-v", "error", "-i", `${base}.flac`, "-y", `${base}.wav`]);
+    const done = (ok) => {
+      if (ok) { fs.unlink(`${base}.flac`, () => {}); resolve(`${base}.wav`); }
+      else resolve(`${base}.flac`);
+    };
+    proc.on("error", () => done(false));
+    proc.on("close", (code) => done(code === 0));
+  });
+}
+
+// The daemon request for one line. qwen3 carries the persona and where its designed
+// reference clip lives (or is to be written).
+function enginePayload(engine, voice, text, speed, design) {
+  const payload = { engine, voice, text, speed: speed || 1 };
+  if (engine === "qwen3") {
+    const { p, language, refText, hash } = personaOf(voice, "Qwen3", design, text);
+    if (design) voice = "custom";
+    payload.design = { instruct: p.description, language, ref_text: refText, ref_wav: path.join(QWEN3_REF_DIR, `${voice}-${hash}.wav`) };
+  }
+  return payload;
+}
+
+// ── Daemons ────────────────────────────────────────────────────────────────
+// One copy of tts_engine.py per Python interpreter: the shared heykoko venv (Kokoro)
+// and, when installed, the dedicated Qwen3-TTS venv (config.qwenTtsPython — it cannot
+// share the first, see config.js). Each copy reports the engines that import in ITS
+// interpreter; a request goes to whichever daemon has that engine. Persistent, so the
+// slow-to-load models stay warm between requests.
+let nextId = 1;
+function makeDaemon(python, extraEnv = {}) {
+  let proc = null;
+  let starting = null;      // Promise<Set> of the engines this daemon reported
+  let engines = new Set();
+  const pending = new Map(); // id → { resolve, reject, timer }
+  let stdoutBuf = "";
+
+  function kill() {
+    if (proc) { try { proc.kill(); } catch { /* already dead */ } }
+    proc = null;
+    starting = null;
+    engines = new Set();
+    for (const { reject, timer } of pending.values()) {
+      clearTimeout(timer);
+      reject(new Error("tts daemon stopped"));
     }
-    daemon = proc;
-    let settled = false;
-    const ready = () => { if (!settled) { settled = true; resolve(availableEngines); } };
+    pending.clear();
+  }
 
-    proc.stdout.setEncoding("utf-8");
-    proc.stdout.on("data", (chunk) => {
-      stdoutBuf += chunk;
-      let nl;
-      while ((nl = stdoutBuf.indexOf("\n")) >= 0) {
-        const line = stdoutBuf.slice(0, nl);
-        stdoutBuf = stdoutBuf.slice(nl + 1);
-        handleLine(line);
-        if (line.includes('"ready"')) ready();
+  function handleLine(line) {
+    line = line.trim();
+    if (!line) return;
+    let msg;
+    try { msg = JSON.parse(line); } catch { return; }
+    if (msg.ready) { engines = new Set(msg.engines || []); return; }
+    const id = msg.id;
+    if (id == null || !pending.has(id)) return;
+    const { resolve, reject, timer } = pending.get(id);
+    clearTimeout(timer);
+    pending.delete(id);
+    if (msg.ok) resolve(msg);
+    else reject(new Error(msg.error || "tts failed"));
+  }
+
+  // Spawn (once) and wait for the {ready} line listing the engines that imported.
+  function ensure() {
+    if (starting) return starting;
+    starting = new Promise((resolve) => {
+      const script = path.join(__dirname, "tts_engine.py");
+      let p;
+      try {
+        p = spawn(python, [script], { env: { ...process.env, PYTHONUNBUFFERED: "1", ...extraEnv } });
+      } catch (e) {
+        console.warn(`[tts] failed to spawn ${python}: ${e.message}`);
+        resolve(new Set());
+        return;
       }
+      proc = p;
+      let settled = false;
+      const ready = () => { if (!settled) { settled = true; resolve(engines); } };
+      p.stdout.setEncoding("utf-8");
+      p.stdout.on("data", (chunk) => {
+        stdoutBuf += chunk;
+        let nl;
+        while ((nl = stdoutBuf.indexOf("\n")) >= 0) {
+          const line = stdoutBuf.slice(0, nl);
+          stdoutBuf = stdoutBuf.slice(nl + 1);
+          handleLine(line);
+          if (line.includes('"ready"')) ready();
+        }
+      });
+      p.stderr.on("data", (d) => {
+        const s = d.toString().trim();
+        if (s) console.log(`[tts_engine] ${s}`);
+      });
+      p.on("error", (e) => {
+        console.warn(`[tts] daemon error (${python}): ${e.message}`);
+        kill();
+        ready();
+      });
+      p.on("close", (code) => {
+        console.log(`[tts] daemon exited (code ${code}, ${python})`);
+        const wasStarting = !settled;
+        kill();
+        if (wasStarting) ready();
+      });
+      // Don't hang forever if an import wedges — give it generous headroom.
+      setTimeout(ready, 60000);
     });
-    proc.stderr.on("data", (d) => {
-      const s = d.toString().trim();
-      if (s) console.log(`[tts_engine] ${s}`);
+    return starting;
+  }
+
+  function request(payload, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      if (!proc || !proc.stdin.writable) {
+        reject(new Error("tts daemon not running"));
+        return;
+      }
+      const id = nextId++;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error("tts request timed out"));
+      }, timeoutMs);
+      pending.set(id, { resolve, reject, timer });
+      proc.stdin.write(JSON.stringify({ id, ...payload }) + "\n");
     });
-    proc.on("error", (e) => {
-      console.warn(`[tts] daemon error: ${e.message}`);
-      killDaemon();
-      ready();
-    });
-    proc.on("close", (code) => {
-      console.log(`[tts] daemon exited (code ${code})`);
-      const wasStarting = !settled;
-      killDaemon();
-      if (wasStarting) ready();
-    });
-    // Don't hang forever if the model import wedges — give it generous headroom.
-    setTimeout(ready, 60000);
-  });
-  return starting;
+  }
+
+  return { ensure, request };
 }
 
-// Send one synthesis request to the daemon and await its reply.
-function request(payload, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    if (!daemon || !daemon.stdin.writable) {
-      reject(new Error("tts daemon not running"));
-      return;
-    }
-    const id = nextId++;
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error("tts request timed out"));
-    }, timeoutMs);
-    pending.set(id, { resolve, reject, timer });
-    daemon.stdin.write(JSON.stringify({ id, ...payload }) + "\n");
-  });
+const daemons = [makeDaemon(config.ttsPython)];
+if (config.qwenTtsPython && config.qwenTtsPython !== config.ttsPython) {
+  daemons.push(makeDaemon(config.qwenTtsPython, { QWEN3_TTS_DIR: config.qwenTtsModels }));
 }
 
-// GET /api/tts-voices → preset voices for engines that are actually available.
-async function listTtsVoices(res) {
-  const engines = await ensureDaemon();
-  const voices = VOICE_CATALOG.filter((v) => engines.has(v.engine));
+// Start every daemon; resolves to the union of their engines.
+async function ensureDaemons() {
+  const sets = await Promise.all(daemons.map((d) => d.ensure()));
+  return new Set(sets.flatMap((s) => [...s]));
+}
+
+// Route a request to the daemon that has `engine`. qwen3 gets a long timeout: its first
+// line loads two 1.7B models (and designs the persona) before it speaks.
+async function requestEngine(engine, payload, timeoutMs) {
+  const sets = await Promise.all(daemons.map((d) => d.ensure()));
+  const i = sets.findIndex((s) => s.has(engine));
+  if (i < 0) throw new Error(`TTS engine "${engine}" unavailable`);
+  return daemons[i].request(payload, timeoutMs || (engine === "qwen3" ? 900000 : 180000));
+}
+
+// GET /api/tts-voices[?comfy=url,url…] → preset voices for engines that are actually
+// available. `comfy` = the browser's ComfyUI workers: Breeze voices are listed when one
+// of them (or the configured default) has the Breeze node pack.
+async function listTtsVoices(req, res) {
+  let comfy = [];
+  try { comfy = (new URL(req.url, "http://x").searchParams.get("comfy") || "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 16); } catch { /* none */ }
+  const engines = await ensureDaemons();
+  const { findBreezeEndpoint } = require("./comfy");
+  const breezeUrl = await findBreezeEndpoint([...comfy, breezeLastUrl, config.comfyUrl]).catch(() => null);
+  if (breezeUrl) { breezeLastUrl = breezeUrl; engines.add("breeze"); }
+  const voices = voiceCatalog().filter((v) => engines.has(v.engine));
   sendJson(res, 200, {
     voices,
     available: voices.length > 0,
@@ -196,8 +403,10 @@ async function listTtsVoices(res) {
   });
 }
 
-// POST /api/tts { text, voice, rate } → { audio: base64, mime }. Output is AAC
-// (ffmpeg) regardless of engine; falls back to the raw wav/aiff if ffmpeg is
+// POST /api/tts { text, voice, rate, design? } → { audio: base64, mime }. `design` =
+// { description, language?, gender? } voices the text in a one-off persona (voice is
+// then "qwen3" / "breeze", or any id on those engines — see adHocPersona). Output is AAC
+// (ffmpeg) regardless of engine; falls back to the raw wav if ffmpeg is
 // missing. Routes by the voice's engine prefix: "say:" → macOS say, otherwise
 // the neural daemon (kokoro).
 async function synthesize(req, res) {
@@ -209,40 +418,48 @@ async function synthesize(req, res) {
     const rate = Number(body.rate) || 1;
     if (!text) { sendJson(res, 400, { error: "text is required" }); return; }
 
-    const known = VOICE_CATALOG.find((v) => v.value === voiceVal);
+    const design = body.design && typeof body.design === "object" ? body.design : null;
+    const known = voiceCatalog().find((v) => v.value === voiceVal);
     const sep = voiceVal.indexOf(":");
-    const engine = known ? known.engine : (sep > 0 ? voiceVal.slice(0, sep) : "say");
-    const voice = known ? voiceVal.slice(voiceVal.indexOf(":") + 1)
+    // With a one-off description the voice may be just the engine ("breeze").
+    const bareEngine = design && DESIGN_ENGINES.has(voiceVal) ? voiceVal : "";
+    const engine = known ? known.engine : bareEngine || (sep > 0 ? voiceVal.slice(0, sep) : "say");
+    const voice = bareEngine ? "custom" : known ? voiceVal.slice(voiceVal.indexOf(":") + 1)
                         : (sep > 0 ? voiceVal.slice(sep + 1) : voiceVal);
+    if (design && !DESIGN_ENGINES.has(engine)) {
+      sendJson(res, 400, { error: `A voice description needs a designing engine: qwen3 or breeze, not "${engine}"` });
+      return;
+    }
 
-    let fallbackMime = "audio/wav";
     if (engine === "say") {
-      srcPath = await sayToAiff(voice, text, rate);
-      fallbackMime = "audio/aiff";
+      srcPath = await sayToWav({ voice, text, rate });
+    } else if (engine === "breeze") {
+      // At least 10 minutes: a cold box downloads / loads the model and designs the
+      // persona before the first line, well past the browser's usual 180 s.
+      srcPath = await engineToWav(engine, voice, text, rate,
+        Math.max(600000, (Number(body.timeout) || 0) * 1000), body.comfyUrl, design);
     } else {
-      const engines = await ensureDaemon();
+      const engines = await ensureDaemons();
       if (!engines.has(engine)) {
         sendJson(res, 503, { error: `TTS engine "${engine}" is not available. See README for setup.` });
         return;
       }
-      const reply = await request(
-        { engine, voice, text, speed: rate },
-        Math.max(30000, Number(body.timeout) * 1000 || 0) || 180000
-      );
-      srcPath = reply.wav_path;
+      srcPath = await engineToWav(engine, voice, text, rate,
+        Number(body.timeout) > 0 ? Math.max(30000, Number(body.timeout) * 1000) : undefined, undefined, design);
     }
 
     // Prefer AAC (≈5× smaller than wav/aiff — matters because the clip is
     // base64'd into the persisted chat). Fall back to the source if ffmpeg fails.
     aacPath = await transcodeToAac(srcPath);
     const b64 = fs.readFileSync(aacPath || srcPath).toString("base64");
-    const mime = aacPath ? "audio/aac" : fallbackMime;
+    const mime = aacPath ? "audio/aac" : "audio/wav";
     // File it in the gallery like an image or a clip: it is a generated artifact, and
     // keeping it out of the chat store is the whole point. Best-effort as everywhere.
     let mediaIds;
     try {
       mediaIds = gallery.recordMany([{ kind: "audio", b64, mime, meta: {
         model: `${engine}:${voice}`, prompt: text,
+        ...(design ? { voiceDesign: String(design.description || "").slice(0, 500) } : {}),
         conversationId: body.conversationId, msgId: body.msgId,
       } }]);
     } catch (err) { console.error(`[gallery] tts tee failed: ${err.message}`); }
@@ -255,4 +472,4 @@ async function synthesize(req, res) {
   }
 }
 
-module.exports = { listTtsVoices, synthesize, synthToWav };
+module.exports = { listTtsVoices, synthesize, synthToWav, sayToWav };

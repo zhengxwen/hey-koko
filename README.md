@@ -23,7 +23,7 @@ Three pillars. Chat and the knowledge library run on any machine with Ollama —
 - **One prompt in, media out** — `/imagine` drives [ComfyUI](docs/comfyui.md) through 30+ curated local models with verified defaults: text-to-image, instruction editing, multi-image composition, text/image-to-video, pose transfer, lip-sync, video editing, 360° panoramas. No workflow wrangling — pick a model, type a prompt.
 - **A deployment list that actually works** — [docs/comfyui-setup.md](docs/comfyui-setup.md) pins the exact node packs and model files for every supported workflow.
 - **No ComfyUI?** `/imagine` still generates images with local Ollama image models.
-- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file ([Kokoro](docs/local-python.md), or macOS system voices). Optional auto-speak reads replies aloud.
+- **Local text-to-speech** — `/voice` synthesizes a downloadable audio file ([Kokoro](docs/local-python.md), [Qwen3-TTS designed voices](docs/local-python.md#optional--qwen3-tts-designed-voices-qwen3), [Breeze TTS 2 on ComfyUI](docs/local-python.md#optional--breeze-tts-2-designed-voices-breeze), or macOS system voices). Optional auto-speak reads replies aloud.
 - **Background task queue** — generation and other long jobs run detached with progress bars and live previews, so you can keep chatting; see [Background Jobs](#background-jobs).
 
 ### 📚 Know — the knowledge library
@@ -40,7 +40,7 @@ Three pillars. Chat and the knowledge library run on any machine with Ollama —
 - **Multi-tab chats** — run several independent conversations side by side, each with its own context.
 - **File understanding** — drag in PDF, DOCX, PPTX, EML, images, or plain text; they're parsed and fed to the model. PDFs can use a selectable local engine — [MinerU](docs/optional-tools.md#mineru) — falling back to fast built-in text extraction.
 - **Vision analysis** — `/analyze` an attached image or video (sampled into frames) with a local vision model.
-- **Web & YouTube** — `/url` fetches and summarizes a web page, or transcribes and tidies up a YouTube video; `/search` queries DuckDuckGo, optionally reading the top results in depth.
+- **Web & YouTube** — `/url` fetches and summarizes a web page, or transcribes and tidies up a YouTube video; `/search` queries DuckDuckGo (or, opt-in, Exa first for more reliable results), optionally reading the top results in depth.
 - **Agentic tools** — an optional tool-use loop (date/time, calculator, web search, knowledge-library search, recall memory, set reminders, remember facts).
 - **Makes and edits Office files** — `/doc new pptx` turns a summary you already have into a real deck: one slide per point, laid out by the template, bullets in the body placeholder, the detail in the speaker notes. Point `/doc` at an existing `.docx` / `.pptx` / `.xlsx` instead and it shows you the document's structure and edits it from plain instructions — rewrite that title, drop slide 4, add a summary table, leave a comment, set a header. Every change is a block you approve with ▶, applied to a copy you download. No Word, no PowerPoint, no LibreOffice required — see [officecli](docs/optional-tools.md#officecli).
 
@@ -143,9 +143,6 @@ On first PDF parse, MinerU downloads ~2 GB of models. If behind a corporate prox
 
 The server **auto-detects** both venvs at startup — no env vars needed. Just run `node server.js`.
 
-> **Note:** Unlimited-OCR requires an NVIDIA GPU and is not available on Apple Silicon. See [optional-tools.md](docs/optional-tools.md#unlimited-ocr) for Linux/CUDA setup.
-
-
 ## Commands
 
 Type `/` in the chat box to open the command palette. The main commands:
@@ -162,7 +159,7 @@ Type `/` in the chat box to open the command palette. The main commands:
 | `/memory <fact>` | Remember a fact about you long-term. |
 | `/note <text>` | Record a note (no AI reply). |
 | `/remind <when> <text>` | Set a reminder, e.g. `/remind 30m drink water`. |
-| `/search <query>` | DuckDuckGo search. `--deep[=N]`/`--read` to read pages, `--n N` result count, `--day`/`--week`/`--month`/`--year` recency. |
+| `/search <query>` | Web search — DuckDuckGo by default; LLM ⚙ → *Web search service* → Auto adds Exa (more reliable, but Exa logs the IP and trains on queries). `--deep[=N]`/`--read` to read pages, `--n N` result count, `--day`/`--week`/`--month`/`--year` recency. |
 | `/tool @<tool> [prompt]` | Run one tool explicitly, then answer from its result — see [docs/tool.md](docs/tool.md). Tools: `@chrome`, `@clip`, `@word`, `@excel`, `@ppt`, `@outlook`, `@web`, `@library`, `@memory`. |
 | `/url [prompt] <link>` | Parse & summarize a web page, or transcribe & tidy up a YouTube video. |
 | `/voice <text>` | Text-to-speech → downloadable audio file. `--use`/`-u engine:voice` (e.g. `kokoro:zm_yunxi`), `--speed`/`-s 0.5–2`. |
@@ -221,7 +218,6 @@ Heavier setups (dedicated GPU / large installs) for specific needs:
 |------------|--------|-------------|
 | Advanced image & video generation | ComfyUI | [docs/comfyui.md](docs/comfyui.md) |
 | ComfyUI deployment list (node packs + model files) | ComfyUI | [docs/comfyui-setup.md](docs/comfyui-setup.md) |
-| Local GPU PDF OCR (scans) | Unlimited-OCR | [optional-tools.md → Unlimited-OCR](docs/optional-tools.md#unlimited-ocr) |
 | Whole-slide page images for decks | LibreOffice | [optional-tools.md → LibreOffice](docs/optional-tools.md#libreoffice) |
 | Word/Excel/PowerPoint **writing**, Word page images, deck images without LibreOffice | officecli | [optional-tools.md → officecli](docs/optional-tools.md#officecli) |
 

@@ -76,6 +76,7 @@ function loadMentionSkills() {
 // Does this canonical model id have a guide? Same prefix rule as server skillForModel.
 function skillNameForModelId(id) {
   for (const s of _skills) {
+    if ((s.excludeModels || []).includes(id)) continue;
     for (const p of s.models || []) {
       if (id === p || id.startsWith(p + "-") || id.startsWith(p + ":")) return s.name;
     }

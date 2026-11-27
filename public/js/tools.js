@@ -33,7 +33,7 @@ export const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "web_search",
-      description: "Search the web (DuckDuckGo) for current or time-sensitive information: news, weather, prices, latest versions, recent events.",
+      description: "Search the web for current or time-sensitive information: news, weather, prices, latest versions, recent events.",
       parameters: {
         type: "object",
         properties: { query: { type: "string", description: "the search query" } },
@@ -146,17 +146,32 @@ function calculate(expr) {
   } catch { return "Error: invalid expression."; }
 }
 
+// Which service /api/search may use (LLM ⚙ → Web search service): "ddg" = DuckDuckGo
+// only (the default — privacy), "auto" = Exa first, DuckDuckGo fallback. Shared by
+// every /api/search caller (this tool, /search, @web).
+export function searchEngineChoice() {
+  return dom.searchEngineSelect?.value === "auto" ? "auto" : "ddg";
+}
+
 async function webSearch(query) {
   try {
+    const engine = searchEngineChoice();
     const res = await fetch("/api/search", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, engine }),
     });
-    const data = await res.json();
-    if (data.error === "captcha") return "Web search is rate-limited right now; try again later.";
+    const data = await res.json().catch(() => ({}));
+    // Say plainly that the SEARCH failed — "No results" would read as "nothing exists".
+    if (data.error === "captcha") {
+      const fix = engine === "ddg" ? " They can switch \"Web search service\" to Auto in the LLM ⚙ settings for a more reliable search." : "";
+      return `Web search is unavailable right now (the search engines are rate-limiting this machine). Tell the user, and if you answer from memory, say it may be out of date.${fix}`;
+    }
+    if (data.error || !res.ok) return `Web search failed: ${data.detail || data.error || res.status}`;
     const results = data.results || [];
     if (!results.length) return "No results found.";
-    return results.slice(0, 5).map((r, i) => `${i + 1}. ${r.title}\n${r.snippet}\n(${r.url})`).join("\n\n");
+    // Exa results carry longer highlights + a publish date; the loop caps a tool result at 4000 chars.
+    return results.slice(0, 5).map((r, i) =>
+      `${i + 1}. ${r.title}${r.published ? ` (published ${r.published})` : ""}\n${(r.highlights || r.snippet || "").slice(0, 650)}\n(${r.url})`).join("\n\n");
   } catch (e) { return "Search failed: " + e.message; }
 }
 

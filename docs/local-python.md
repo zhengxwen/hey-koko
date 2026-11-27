@@ -11,7 +11,7 @@ or inline with `--use`/`-u`:
 
 | Engine | Strength | Preset voices |
 |--------|----------|---------------|
-| **Kokoro** | light & fast | Chinese `kokoro:zf_xiaoxiao` (女) / `kokoro:zm_yunxi` (男); English `kokoro:af_heart` (US ♀) / `kokoro:bm_george` (UK ♂) … |
+| **Kokoro** | light & fast | Chinese `kokoro:zf_xiaoxiao` (♀) / `kokoro:zm_yunxi` (♂); English `kokoro:af_heart` (US ♀) / `kokoro:bm_george` (UK ♂) … |
 
 These need PyTorch wheels installed into a **dedicated venv (Python 3.10–3.11)**
 — the newest Python may not have matching wheels yet, and keeping these ML deps in
@@ -76,6 +76,87 @@ $vpy = "$env:USERPROFILE\venv\heykoko\Scripts\python.exe"
 winget install eSpeak-NG.eSpeak-NG
 ```
 
+## Optional — Qwen3-TTS designed voices (`qwen3:`)
+
+[Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) (Apache-2.0) speaks in a voice
+**described in words** rather than picked from a list — useful for AI-generated
+presenters, where the voice should belong to nobody real. hey-koko designs each
+persona once (Qwen3-TTS VoiceDesign speaks a fixed reference sentence in it), keeps
+that clip in `~/.hey-koko/tts-voices/`, and voices every later line by cloning it
+with Qwen3-TTS Base — so the same persona sounds the same across clips.
+
+It needs its **own venv**: `qwen-tts` pins `transformers` 4.57, which must not
+replace the shared venv's newer one.
+
+```bash
+uv venv --python 3.11 ~/venv/qwen3tts
+uv pip install --python ~/venv/qwen3tts/bin/python qwen-tts
+```
+
+The two 1.7B models (VoiceDesign + Base, ~9 GB) download into the Hugging Face cache
+on first use — or put them in `~/models/qwen3-tts/Qwen3-TTS-12Hz-1.7B-{VoiceDesign,Base}/`
+(`QWEN3_TTS_DIR` overrides the folder) and they are used from there. Runs on CUDA,
+Apple MPS, or (slowly) CPU.
+
+Built-in personas: `qwen3:anchor_f` / `qwen3:anchor_m` (Mandarin news anchor ♀/♂),
+`qwen3:host_en_f` / `qwen3:host_en_m` (US English presenter ♀/♂). Add your own in
+`~/.hey-koko/tts-voices.json`:
+
+```json
+{ "my_host": { "label": "My host · Female", "language": "Chinese", "gender": "female",
+               "description": "A female host around thirty with a bright, energetic voice, speaking slightly fast." } }
+```
+
+Editing a description re-designs that voice on its next use. The personas work
+everywhere a voice is chosen: `/voice -u qwen3:anchor_f …`, the Settings dropdown,
+and `--voice qwen3:anchor_f` on the "photo speaks" video models.
+
+## Optional — Breeze TTS 2 designed voices (`breeze:`)
+
+[Breeze TTS 2](https://huggingface.co/BreezeBlue/Breeze-TTS-2) (3B, Mandarin + English)
+designs voices from a description too, but it runs on a **ComfyUI box** rather than in a
+local venv. Install the [ComfyUI-Breeze-TTS-2](https://github.com/Saganaki22/ComfyUI-Breeze-TTS-2)
+node pack there (ComfyUI Manager or `git clone` into `custom_nodes/`) and restart
+ComfyUI. The weights (~6 GB in bf16) download into `models/breezetts2/` the first time
+they are used.
+
+> **Licence:** the pack's code is Apache-2.0, but the model weights **and the audio they
+> generate** fall under the BreezeBlue Research & Non-Commercial License. Do not use
+> Breeze voices in anything commercial.
+
+When any of your ComfyUI endpoints (the current one or a background worker) has the
+pack, the Settings dropdown shows a **Breeze TTS 2** group. It uses the same personas
+as Qwen3-TTS (`breeze:anchor_f`, `breeze:host_en_m`, … plus your `tts-voices.json`
+entries). Each persona is designed once on the ComfyUI box from its description and
+kept as `~/.hey-koko/tts-voices/breeze_<id>-<hash>.flac`. Every later line is cloned
+from that clip, so the voice stays the same. Text longer than about a minute is split at
+sentence ends and joined back into one clip. The speech-speed setting is applied
+afterwards with ffmpeg, the same way as for Qwen3-TTS.
+
+The first line on a cold box takes about a minute while the model loads and the persona
+is designed.
+
+## One-off designed voices (no `tts-voices.json` edit)
+
+Both designing engines also take a description right in the command. In `/voice`, put
+`--desc` **after** the text (it runs to the end of the line), or quote it to place it
+among the other flags:
+
+```
+/voice -u breeze Welcome to tonight's documentary. --desc A male documentary narrator in his sixties, with a low, husky voice, speaking slowly
+/voice -u qwen3 --gender male -d "A gravelly old sea captain, hearty and theatrical" Ahoy there, friends.
+```
+
+`-u` can be just the engine (`breeze` / `qwen3`). Without `-u`, the engine of the voice
+selected in Settings is used, if it is a Breeze or Qwen3 voice. `--lang zh|en` sets the
+language; by default it follows the text being read. `--gender female|male` is added to
+the description. For "photo speaks" in `/imagine`, use `--voice breeze --voice-desc <description>`.
+`--voice-desc` runs to the next flag, like `--pos`. Language and gender go through
+`--opt ttsLang=en` / `--opt ttsGender=male`.
+
+The designed clip is cached by a hash of the description, so the same description gives
+the same voice the next time, and only the first use pays for the design step.
+
 ## News feed extraction — `trafilatura`
 
 The 📰 **news feed subscriptions** feature (poll company/official blogs and backfill
@@ -121,9 +202,9 @@ encoding uses
 
 The engine is hidden from the voice dropdown if it fails to import. (On macOS the
 built-in `say` voices are always available too; on Windows only the Kokoro voices
-are offered.) Usage: `/voice 你好世界`,
-`/voice --use kokoro:zm_yunxi --speed 1.1 早上好` (`-u`/`-s` short forms).
+are offered.) Usage: `/voice Hello world`,
+`/voice --use kokoro:bm_george --speed 1.1 Good morning` (`-u`/`-s` short forms).
 
 Examples:
-- `/voice 今天天气不错` → uses the default voice from settings
-- `/voice -u kokoro:zm_yunxi 大家好` → specific Kokoro male voice
+- `/voice Nice weather today` → uses the default voice from settings
+- `/voice -u kokoro:bm_george Hello everyone` → specific Kokoro male voice

@@ -4,8 +4,9 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execFile, execFileSync, spawn } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const { sendJson } = require("./utils");
+const { checkTool } = require("./find-tool");
 const config = require("./config");
 const { parsePptx } = require("./pptx");
 const mailImages = require("./mail-images");   // shared email-image policy (with @outlook)
@@ -13,84 +14,35 @@ const mailImages = require("./mail-images");   // shared email-image policy (wit
 // Detect tool availability (async, non-blocking)
 let hasPandoc = false;
 let hasMinerU = false;
-let hasUnlimitedOcr = false;
 let detectDone = false;
 let pandocPath = "pandoc";
 let mineruPath = "mineru";
-// Baidu Unlimited-OCR: a local GPU PDF→markdown engine, spawned like MinerU via a
-// thin Python wrapper we ship. Available when its venv python (config.ocrPython) and
-// the wrapper both exist — a cheap file check, no slow torch import at startup.
-const unlimitedOcrScript = path.join(__dirname, "unlimited_ocr.py");
-
-// Find executable in PATH or common locations
-function findExecutable(name) {
-  const commonPaths = [
-    `/opt/homebrew/bin/${name}`,
-    `/usr/local/bin/${name}`,
-    `/usr/bin/${name}`,
-    `/bin/${name}`,
-  ];
-
-  for (const fullPath of commonPaths) {
-    try {
-      fs.accessSync(fullPath, fs.constants.X_OK);
-      return fullPath;
-    } catch {}
-  }
-
-  // Try the platform's command locator: `where` on Windows, `which` elsewhere.
-  try {
-    const finder = process.platform === "win32" ? "where" : "which";
-    const result = execFileSync(finder, [name], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const first = result.trim().split(/\r?\n/)[0].trim();
-    if (first) return first;
-  } catch {}
-
-  return name; // fallback to just the name (resolved via PATH at spawn time)
-}
 
 (async function detectTools() {
-  try {
-    pandocPath = findExecutable("pandoc");
-    execFileSync(pandocPath, ["--version"], { stdio: "ignore", timeout: 5000 });
-    hasPandoc = true;
+  // Both are run once (--version) rather than just located: a mineru launcher whose venv
+  // is gone exists on PATH but cannot run. MinerU is a Python app, hence the long timeout.
+  // pandoc answers in milliseconds; don't make it wait for MinerU's Python startup.
+  const mineruProbe = checkTool("mineru", { candidates: config.mineruCandidates });
+  const pandoc = await checkTool("pandoc", { timeoutMs: 5000 });
+  if (pandoc) {
+    pandocPath = pandoc; hasPandoc = true;
     console.log(`[parse-file] pandoc detected at ${pandocPath}`);
-  } catch (err) {
-    console.log(`[parse-file] pandoc not found (${err.message}), DOCX will use client-side fallback`);
+  } else {
+    console.log("[parse-file] pandoc not found (or failed to run), DOCX will use client-side fallback");
   }
-
-  // Check mineru asynchronously to avoid blocking server startup
-  try {
-    mineruPath = findExecutable("mineru");
-    await new Promise((resolve, reject) => {
-      const proc = spawn(mineruPath, ["--version"], { stdio: "ignore" });
-      const timer = setTimeout(() => { proc.kill(); reject(new Error("timeout")); }, 15000);
-      proc.on("close", (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`exit code ${code}`)); });
-      proc.on("error", (err) => { clearTimeout(timer); reject(err || new Error("spawn failed")); });
-    });
-    hasMinerU = true;
+  const mineru = await mineruProbe;
+  if (mineru) {
+    mineruPath = mineru; hasMinerU = true;
     console.log(`[parse-file] MinerU detected at ${mineruPath}`);
-  } catch (err) {
-    console.log(`[parse-file] MinerU not found (${err && err.message ? err.message : err}), PDF will use client-side fallback`);
+  } else {
+    console.log("[parse-file] MinerU not found (or failed to run), PDF will use client-side fallback");
   }
-
-  try {
-    if (config.ocrPython && fs.existsSync(config.ocrPython) && fs.existsSync(unlimitedOcrScript)) {
-      hasUnlimitedOcr = true;
-      console.log(`[parse-file] Unlimited-OCR available (python ${config.ocrPython})`);
-    } else {
-      console.log(`[parse-file] Unlimited-OCR not configured (set UNLIMITED_OCR_PYTHON or install ~/venv/unlimited-ocr)`);
-    }
-  } catch { /* leave hasUnlimitedOcr false */ }
 
   detectDone = true;
 })();
 
 function getCapabilities(res) {
-  sendJson(res, 200, { pandoc: hasPandoc, mineru: hasMinerU, unlimitedOcr: hasUnlimitedOcr, ready: detectDone });
+  sendJson(res, 200, { pandoc: hasPandoc, mineru: hasMinerU, ready: detectDone });
 }
 
 // Parse multipart form data (simple single-file parser)
@@ -161,16 +113,9 @@ async function parseFile(req, res) {
     } else if (ext === ".pdf") {
       // The kill timer follows the caller's ⚙ timeout (x-parse-timeout-s, seconds),
       // floored at 5 min — the chat slider bottoms out at 60s, which would kill any
-      // real PDF; long/OCR-heavy papers (and Unlimited-OCR's ~2 min model load) need
-      // the headroom.
+      // real PDF; long/OCR-heavy papers need the headroom.
       const timeoutMs = Math.max(parseInt(req.headers["x-parse-timeout-s"], 10) || 0, 300) * 1000;
-      // Engine chosen client-side (x-pdf-engine); default MinerU preserves prior behavior.
-      const engine = String(req.headers["x-pdf-engine"] || "mineru").toLowerCase();
-      if (engine === "unlimited") {
-        await parseUnlimitedOcr(inputPath, tmpDir, res, timeoutMs);
-      } else {
-        await parsePdf(inputPath, tmpDir, res, timeoutMs, slides);
-      }
+      await parsePdf(inputPath, tmpDir, res, timeoutMs, slides);
     }
   } catch (error) {
     sendJson(res, 500, { error: error.message });
@@ -259,10 +204,9 @@ function parseDocx(inputPath, tmpDir, res) {
   });
 }
 
-// PDF → Markdown via a local, GPU-backed model spawned as a subprocess. MinerU and
-// Unlimited-OCR both fit this shape (spawn a tool, stream progress, read a result.md +
-// images/ from an output dir), so they share this core; only the command and label
-// differ. Streams ndjson progress and a final {text, images, tool}.
+// PDF → Markdown via MinerU, spawned as a subprocess: stream its progress, then read the
+// .md + images/ it left in the output dir. Streams ndjson progress and a final
+// {text, images, tool}.
 function runPdfTool({ cmd, args, tool, label, outputDir, res, timeoutMs, slides = false }) {
   return new Promise((resolve) => {
     // Use spawn for streaming progress
@@ -374,7 +318,7 @@ function collectMarkdownOutput(mdFile) {
   const seenHashes = new Map();
   let imageCounter = 0;
 
-  // Images live in an "images" subfolder next to the .md (MinerU and Unlimited-OCR both).
+  // Images live in an "images" subfolder next to the .md.
   const imagesDir = path.join(path.dirname(mdFile), "images");
   if (fs.existsSync(imagesDir)) {
     // First pass: find all image filenames referenced in the markdown (in order of appearance)
@@ -526,24 +470,6 @@ function findFileEndingWith(dir, suffix) {
     else if (entry.name.endsWith(suffix)) return full;
   }
   return null;
-}
-
-// Baidu Unlimited-OCR via the shipped Python wrapper (server/unlimited_ocr.py), which
-// rasterizes the PDF and runs the local model, writing result.md + images/ into outputDir.
-function parseUnlimitedOcr(inputPath, tmpDir, res, timeoutMs = 300000) {
-  return new Promise((resolve) => {
-    if (!hasUnlimitedOcr) {
-      sendJson(res, 501, { error: "unlimited_ocr_unavailable", fallback: true });
-      resolve();
-      return;
-    }
-    const outputDir = path.join(tmpDir, "output");
-    fs.mkdirSync(outputDir, { recursive: true });
-    runPdfTool({
-      cmd: config.ocrPython, args: [unlimitedOcrScript, "-p", inputPath, "-o", outputDir],
-      tool: "unlimited-ocr", label: "Unlimited-OCR", outputDir, res, timeoutMs,
-    }).then(resolve);
-  });
 }
 
 // Recursively collect image files from a directory

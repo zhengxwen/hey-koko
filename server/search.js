@@ -10,25 +10,38 @@ const BROWSER_HEADERS = {
   "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
 };
 
-// Strip tags + decode the handful of entities DDG emits, collapse whitespace.
+// Strip tags + decode named/numeric entities, collapse whitespace.
 function inlineText(html) {
   return String(html)
     .replace(/<[^>]+>/g, "")
-    .replace(/&amp;/g, "&")
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => safeCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => safeCodePoint(parseInt(d, 10)))
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
-    .replace(/&#x27;|&#39;/g, "'")
     .replace(/&quot;/g, '"')
-    .replace(/&nbsp;/g, " ")
+    .replace(/&apos;/g, "'")
+    .replace(/&(?:nbsp|ensp|emsp|thinsp);/g, " ")
+    .replace(/&amp;/g, "&")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function safeCodePoint(n) {
+  try { return String.fromCodePoint(n); } catch { return ""; }
 }
 
 function isCaptcha(html) {
   return /bots use DuckDuckGo|complete the following challenge|anomaly[- ]?modal/i.test(html);
 }
 
-// --- Method 1: vqd token -> links.duckduckgo.com/d.js (returns JSON results) ---
+// Each engine returns { results } on success (possibly empty = engine answered but
+// found nothing) or { blocked: true } when it served a bot wall / rate limit instead.
+// A blocked engine is skipped for BLOCK_COOLDOWN_MS so we stop hammering it (which only
+// prolongs the block) and go straight to the next one.
+const BLOCK_COOLDOWN_MS = 10 * 60 * 1000;
+const blockedUntil = new Map();   // engine name -> timestamp
+
+// --- DuckDuckGo: vqd token -> links.duckduckgo.com/d.js (returns JSON results) ---
 
 async function getVqd(query) {
   const res = await fetch(`https://duckduckgo.com/?q=${encodeURIComponent(query)}&ia=web`, {
@@ -77,17 +90,33 @@ async function searchViaDjs(query, vqd, limit, df) {
   });
   const txt = await res.text();
   const arr = extractLoadArray(txt);
-  if (!arr) return null;
+  // 202 / an obfuscated JS challenge instead of the results payload = bot wall.
+  if (!arr) return (res.status === 202 || res.status === 429 || /\bjsa\s*=/.test(txt)) ? { blocked: true } : { results: [] };
   const results = [];
   for (const item of arr) {
     if (!item || !item.u || !item.t) continue; // skip pagination / ad / empty entries
     results.push({ title: inlineText(item.t), url: item.u, snippet: inlineText(item.a || "").slice(0, 300) });
     if (results.length >= limit) break;
   }
-  return results;
+  return { results };
 }
 
-// --- Method 2 (fallback): scrape html.duckduckgo.com ---
+async function searchDdg(query, limit, df) {
+  // Retry once on a plain empty answer (DDG occasionally drops one); never on a block.
+  let gotVqd = false;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 600));
+    const vqd = await getVqd(query);
+    if (!vqd) continue;
+    gotVqd = true;
+    const r = await searchViaDjs(query, vqd, limit, df);
+    if (r.blocked || r.results.length) return r;
+  }
+  if (!gotVqd) throw new Error("no vqd token on the results page");
+  return { results: [] };
+}
+
+// --- DuckDuckGo html endpoint (fallback; usually walled whenever d.js is) ---
 
 function realUrl(href) {
   const m = href.match(/[?&]uddg=([^&]+)/);
@@ -116,7 +145,7 @@ function parseHtmlResults(html, limit) {
   return results;
 }
 
-async function searchViaHtml(query, limit, df) {
+async function searchDdgHtml(query, limit, df) {
   const res = await fetch("https://html.duckduckgo.com/html/", {
     method: "POST",
     headers: { ...BROWSER_HEADERS, "Content-Type": "application/x-www-form-urlencoded" },
@@ -126,7 +155,110 @@ async function searchViaHtml(query, limit, df) {
   });
   const html = await res.text();
   const results = parseHtmlResults(html, limit);
-  return { results, captcha: results.length === 0 && isCaptcha(html) };
+  if (!results.length && (isCaptcha(html) || res.status === 202)) return { blocked: true };
+  return { results };
+}
+
+// --- Exa: the hosted MCP endpoint (keyless free tier, rate-limited) ---
+// The same endpoint opencode's built-in websearch tool calls. A stateless JSON-RPC
+// tools/call works without an MCP initialize handshake; the reply is one SSE
+// "message" event (or plain JSON). Results come back as one text blob of
+// "Title:/URL:/Published:/Author:/Highlights:" records separated by "---".
+
+const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
+const DF_WORDS = { d: "the past 24 hours", w: "the past week", m: "the past month", y: "the past year" };
+
+function parseExaText(text, limit) {
+  const results = [];
+  for (const chunk of String(text).split(/^Title: /m).slice(1)) {
+    const url = (chunk.match(/^URL: (\S+)/m) || [])[1];
+    if (!url || !/^https?:\/\//.test(url)) continue;
+    let title = chunk.split("\n")[0].trim();
+    if (!title || title === "N/A") { try { title = new URL(url).hostname; } catch { title = url; } }
+    const pub = (chunk.match(/^Published: (\S+)/m) || [])[1];
+    const published = pub && pub !== "N/A" ? pub.slice(0, 10) : "";
+    const hl = chunk.split(/^Highlights:\s*$/m)[1] || "";
+    const highlights = hl.replace(/\n-{3,}\s*$/, "").replace(/^#+\s*/gm, "").replace(/\s+/g, " ").trim();
+    results.push({ title, url, snippet: highlights.slice(0, 300), highlights: highlights.slice(0, 1500), ...(published ? { published } : {}) });
+    if (results.length >= limit) break;
+  }
+  return results;
+}
+
+async function searchExa(query, limit, df) {
+  const args = { query, numResults: limit };
+  // No date filter in this tool; state the window as the ranking objective instead.
+  if (df) args.objective = `Prefer pages published within ${DF_WORDS[df]}; exclude older pages.`;
+  const res = await fetch(EXA_MCP_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "web_search_exa", arguments: args } }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const raw = await res.text();
+  if (res.status === 429) return { blocked: true };
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const lines = raw.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim());
+  let msg;
+  try { msg = JSON.parse(lines.length ? lines[lines.length - 1] : raw); } catch { throw new Error("unreadable reply"); }
+  const errText = msg.error ? String(msg.error.message || msg.error.code)
+    : msg.result && msg.result.isError ? (msg.result.content || []).map((c) => c.text || "").join(" ") : "";
+  if (errText) {
+    if (/rate.?limit|too many|quota|credits?/i.test(errText)) return { blocked: true };
+    throw new Error(errText.slice(0, 200));
+  }
+  const text = ((msg.result && msg.result.content) || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+  return { results: parseExaText(text, limit) };
+}
+
+// Bing's HTML page was tried as a keyless fallback and rejected (2026-11): to a non-JS
+// client it ranks on only the first word or two of the query ("what's new in python
+// 3.14" -> WhatsApp), so it hands the model confidently wrong sources.
+const EXA = { name: "exa", run: searchExa };
+const DDG = { name: "duckduckgo", run: searchDdg };
+const DDG_HTML = { name: "duckduckgo-html", run: searchDdgHtml };
+
+// mode "ddg" (the default — also for callers that send nothing) never contacts Exa:
+// its privacy policy says it logs the IP and trains on query text, so it is an opt-in
+// (LLM ⚙ → Web search service → Auto). In "auto": Exa first (most reliable, best
+// relevance); with a time filter, DuckDuckGo first — it has a real date filter, while
+// Exa only gets the window as a ranking hint.
+function enginesFor(df, mode) {
+  if (mode !== "auto") return [DDG, DDG_HTML];
+  return df ? [DDG, DDG_HTML, EXA] : [EXA, DDG, DDG_HTML];
+}
+
+// Walk the engines in order until one returns results. Engines in their block cooldown
+// are skipped — unless every engine is cooling down, then all are tried anyway.
+// Returns { results, engine } or { results: [], error, detail? }.
+async function runSearch(query, limit, df, mode = "ddg") {
+  const now = Date.now();
+  const engines = enginesFor(df, mode);
+  let order = engines.filter((e) => (blockedUntil.get(e.name) || 0) <= now);
+  if (!order.length) order = engines;
+  let blocked = 0, timedOut = 0, answeredEmpty = 0;
+  const errors = [];
+  for (const e of order) {
+    try {
+      const r = await e.run(query, limit, df);
+      if (r.blocked) {
+        blocked++;
+        blockedUntil.set(e.name, Date.now() + BLOCK_COOLDOWN_MS);
+        console.warn(`[search] ${e.name} is rate-limiting/challenging us; skipping it for ${BLOCK_COOLDOWN_MS / 60000} min`);
+        continue;
+      }
+      blockedUntil.delete(e.name);
+      if (r.results.length) return { results: r.results, engine: e.name };
+      answeredEmpty++;
+    } catch (err) {
+      if (err.name === "AbortError" || err.name === "TimeoutError") timedOut++;
+      errors.push(`${e.name}: ${err.message}`);
+    }
+  }
+  if (answeredEmpty) return { results: [] };   // an engine really answered "nothing found"
+  if (blocked) return { results: [], error: "captcha" };
+  if (timedOut === order.length) return { results: [], error: "Search timed out" };
+  return { results: [], error: "Search failed", detail: errors.join("; ") };
 }
 
 // --- Deep read: fetch a result page and extract its condensed main text ---
@@ -152,7 +284,7 @@ async function fetchPageText(url, maxChars) {
 async function deepRead(results, count) {
   const targets = results.slice(0, Math.min(count, 3));
   await Promise.allSettled(targets.map(async (r) => {
-    r.content = await fetchPageText(r.url, 3500);
+    r.content = (await fetchPageText(r.url, 3500)) || r.highlights || "";
   }));
 }
 
@@ -165,36 +297,18 @@ async function searchWeb(req, res) {
   const df = ["d", "w", "m", "y"].includes(body.timelimit) ? body.timelimit : "";
 
   try {
-    // Method 1: vqd + d.js JSON (retry once — DDG occasionally throttles a request)
-    let results = [];
-    for (let attempt = 0; attempt < 2 && !results.length; attempt++) {
-      try {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 600));
-        const vqd = await getVqd(query);
-        if (vqd) {
-          const r = await searchViaDjs(query, vqd, LIMIT, df);
-          if (r && r.length) results = r;
-        }
-      } catch { /* fall through to html */ }
-    }
-
-    // Method 2: html scrape fallback
-    if (!results.length) {
-      const html = await searchViaHtml(query, LIMIT, df);
-      if (html.results.length) results = html.results;
-      else if (html.captcha) { sendJson(res, 200, { results: [], error: "captcha" }); return; }
-    }
+    const out = await runSearch(query, LIMIT, df, body.engine === "auto" ? "auto" : "ddg");
+    if (out.error) { sendJson(res, 200, out); return; }
 
     // Deep read: fetch the top pages' text so the model can answer from real content
-    if (body.deep && results.length) {
-      await deepRead(results, parseInt(body.deepCount, 10) || 3);
+    if (body.deep && out.results.length) {
+      await deepRead(out.results, parseInt(body.deepCount, 10) || 3);
     }
 
-    sendJson(res, 200, { query, results });
+    sendJson(res, 200, { query, ...out });
   } catch (error) {
-    if (error.name === "AbortError" || error.name === "TimeoutError") sendJson(res, 200, { results: [], error: "Search timed out" });
-    else sendJson(res, 500, { error: "Search failed", detail: error.message });
+    sendJson(res, 500, { error: "Search failed", detail: error.message });
   }
 }
 
-module.exports = { searchWeb };
+module.exports = { searchWeb, runSearch };

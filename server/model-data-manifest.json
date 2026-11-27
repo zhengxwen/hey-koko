@@ -10,5 +10,49 @@
         "bytes": 12602
       }
     }
+  },
+  "h3image-pe": {
+    "about": "MiniMax-H3-Image prompt expander: MiniMax's released PE prompts — the text-to-image system prompt, task prompt and sampling parameters, and the image-editing task prompt. Read by h3ImageCompanions / buildH3ImagePe in server/comfy.js.",
+    "source": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image-PE",
+    "license": "MiniMax-H3-Image Community License (Copyright MiniMax)",
+    "files": {
+      "prompt/t2i/system_prompt.txt": {
+        "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image-PE/resolve/35603d4b63949afa12cb098227fffefedf081afa/prompt/t2i/system_prompt.txt",
+        "sha256": "818ab3f652ec36b3b489b55c29f072f87e14af703cd11a4f3bff75f423d0beac",
+        "bytes": 327
+      },
+      "prompt/t2i/task_prompt.txt": {
+        "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image-PE/resolve/35603d4b63949afa12cb098227fffefedf081afa/prompt/t2i/task_prompt.txt",
+        "sha256": "890213ad61e143bbd5b7906a802430296e82ca5c61ba16df717dcef5477bbcf4",
+        "bytes": 15821
+      },
+      "prompt/t2i/request_params.json": {
+        "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image-PE/resolve/35603d4b63949afa12cb098227fffefedf081afa/prompt/t2i/request_params.json",
+        "sha256": "dfc608bf0c02dd6ce7463be636aa8b148aef200513fa4c46e653ee2e5affbe3e",
+        "bytes": 1034
+      },
+      "prompt/edit/task_prompt.txt": {
+        "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image-PE/resolve/35603d4b63949afa12cb098227fffefedf081afa/prompt/edit/task_prompt.txt",
+        "sha256": "c5695dbfc07a9e65555cef67d92467c613371cc2039b96f057022246a30a57b2",
+        "bytes": 38489
+      }
+    }
+  },
+  "sensenova-pe": {
+    "about": "SenseNova U1.6 prompt expander: the system prompts of Comfy-Org's two official SenseNova U1.6 templates (text to image; image editing and reference-guided), read out of the template JSON (the PrimitiveStringMultiline node titled \"Text (System Prompt ...)\"). Read by sensenovaCompanions in server/comfy.js.",
+    "source": "https://github.com/Comfy-Org/workflow_templates",
+    "license": "MIT (Comfy-Org/workflow_templates)",
+    "files": {
+      "image_sensenova_u16_t2i.json": {
+        "url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/cf1048587a3a416d924dc2851701f1fde96978ca/templates/image_sensenova_u16_t2i.json",
+        "sha256": "0c8f8e5dea94ef25923d0065b741cac199eb9c10810ff615bef232e3e5693d23",
+        "bytes": 100064
+      },
+      "image_sensenova_u16_image_edit.json": {
+        "url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/80f49b093400b47907efdcbf7f9e081471da20cb/templates/image_sensenova_u16_image_edit.json",
+        "sha256": "f2193d0c0bd113efbfdc6aba3d24ce7721e1e64ada33fb0e249abc52b5b921de",
+        "bytes": 84751
+      }
+    }
   }
 }

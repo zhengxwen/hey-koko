@@ -45,6 +45,9 @@ function listSkills() {
       name,
       installed: isInstalled(name),
       models: (MANIFEST[name] && MANIFEST[name].models) || [],
+      // Sent so the browser's prefix match (mentions.js skillNameForModelId) carves out
+      // the same variants skillForModel does.
+      excludeModels: (MANIFEST[name] && MANIFEST[name].excludeModels) || [],
       // The concrete canonical ids (model-names.js vocabulary), so completion and
       // resolution work with ComfyUI unreachable — writing a prompt is exactly the
       // activity that happens BEFORE the render box needs to be up.

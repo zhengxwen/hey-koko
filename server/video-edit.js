@@ -615,7 +615,7 @@ async function handleGrabFrame(req, res) {
     return;
   }
   const ctrl = new AbortController();
-  req.on("close", () => ctrl.abort());
+  res.on("close", () => { if (!res.writableFinished) ctrl.abort(); });   // not req: readBody already closed it
   try {
     sendJson(res, 200, await grabFrame(body, ctrl.signal));
   } catch (e) {
@@ -640,7 +640,7 @@ async function handleVideoEdit(req, res) {
 
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
   const ctrl = new AbortController();
-  req.on("close", () => ctrl.abort());
+  res.on("close", () => { if (!res.writableFinished) ctrl.abort(); });   // not req: readBody already closed it
   const send = (obj) => { try { res.write(JSON.stringify(obj) + "\n"); } catch { /* client gone */ } };
   try {
     // ffmpeg ticks several times a second; the drawer shows whole percents. Emit only

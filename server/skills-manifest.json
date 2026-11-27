@@ -155,6 +155,9 @@
       "minimax-h3",
       "10eros-max-h3"
     ],
+    "excludeModels": [
+      "minimax-h3-image"
+    ],
     "kind": "video",
     "ids": [
       "minimax-h3-t2v",

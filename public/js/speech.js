@@ -694,6 +694,15 @@ export async function speakMessage(content, button) {
   stopSpeech(); // natural finish: restores the un-segmented DOM + button label
 }
 
+// "?comfy=a,b" — the enabled ComfyUI workers plus the current endpoint, bare host:port.
+function comfyQuery() {
+  const urls = (state.bgWorkers || []).filter((w) => w.enabled).map((w) => w.url);
+  const cur = (dom.comfyUrlDisplay?.textContent || "").replace(/\s*\(.*\)\s*$/, "").trim();
+  if (cur) urls.push(cur);
+  const list = [...new Set(urls.filter(Boolean))];
+  return list.length ? `?comfy=${encodeURIComponent(list.join(","))}` : "";
+}
+
 // One unified voice selector drives BOTH reading ("read aloud" button) and /voice
 // generation. Values are engine-prefixed: "say:<name>" (macOS system voice) or
 // "kokoro:" (local neural, also downloadable). The chosen engine determines
@@ -701,10 +710,15 @@ export async function speakMessage(content, button) {
 export function populateVoiceList() {
   Promise.all([
     fetch("/api/voices").then(r => r.json()).catch(() => ({ voices: [] })),
-    fetch("/api/tts-voices").then(r => r.json()).catch(() => ({ voices: [] })),
+    // The ComfyUI workers ride along so the server can list Breeze TTS voices when one
+    // of them has the node pack.
+    fetch(`/api/tts-voices${comfyQuery()}`).then(r => r.json()).catch(() => ({ voices: [] })),
   ]).then(([sysData, ttsData]) => {
     const prevValue = dom.voiceSelect.value; // preserve current pick on re-populate
-    dom.voiceSelect.length = 0; // rebuild all options (no "auto" entry)
+    // Rebuild from scratch (no "auto" entry). replaceChildren, not `length = 0`: the
+    // latter drops only the <option>s and leaves every empty <optgroup> behind, so a
+    // second populate (it runs again once the ComfyUI workers are known) doubled them.
+    dom.voiceSelect.replaceChildren();
 
     const sysVoices = (sysData.voices || []).filter(v => /^zh/i.test(v.lang));
     if (sysVoices.length) {
@@ -725,7 +739,7 @@ export function populateVoiceList() {
     for (const v of ttsVoices) (byEngine[v.engine] = byEngine[v.engine] || []).push(v);
     for (const engine of Object.keys(byEngine)) {
       const grp = document.createElement("optgroup");
-      grp.label = engine === "kokoro" ? t("voice_group_kokoro") : engine;
+      grp.label = ["kokoro", "qwen3", "breeze"].includes(engine) ? t(`voice_group_${engine}`) : engine;
       for (const v of byEngine[engine]) {
         const opt = document.createElement("option");
         opt.value = v.value;

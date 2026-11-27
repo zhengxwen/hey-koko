@@ -3,21 +3,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { execFile } = require("child_process");
 const config = require("./config");
-
-// Locate an executable on PATH, cross-platform: `where` on Windows, `which`
-// elsewhere. Resolves to the first match (absolute path) or null if not found.
-// Both commands may print several lines; we keep the first.
-function findCommand(cmd) {
-  return new Promise((resolve) => {
-    const finder = process.platform === "win32" ? "where" : "which";
-    execFile(finder, [cmd], (err, stdout) => {
-      if (err || !stdout.trim()) resolve(null);
-      else resolve(stdout.trim().split(/\r?\n/)[0].trim());
-    });
-  });
-}
 
 function sendJson(res, statusCode, body) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
@@ -117,4 +103,4 @@ async function describeFetchError(error, url, what) {
   return `Cannot reach ${what} at ${url}: ${why}.${where}`;
 }
 
-module.exports = { sendJson, serveStatic, readBody, cleanSpeechText, findCommand, describeFetchError };
+module.exports = { sendJson, serveStatic, readBody, cleanSpeechText, describeFetchError };

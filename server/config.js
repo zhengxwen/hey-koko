@@ -5,6 +5,7 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const { execFileSync } = require("child_process");
+const { findTool } = require("./find-tool");
 
 // Windows: the shell / Explorer / IDE that launched us may hold a STALE PATH
 // snapshot — tools installed AFTER that parent process started (yt-dlp, whisper-cli,
@@ -47,40 +48,37 @@ function resolveVenvPython(envVar) {
   return win ? "python" : "python3";
 }
 
-// Baidu Unlimited-OCR runs in its OWN venv (Python 3.12 / torch cu130 / CUDA 13 —
-// incompatible with the 3.11 heykoko/tts venv, so never shared). UNLIMITED_OCR_PYTHON
-// overrides; else auto-detect ~/venv/unlimited-ocr. Returns "" when absent so the PDF
-// OCR engine reports unavailable (option hidden) rather than falling back to a python
-// that can't import torch.
-function resolveOcrPython() {
-  if (process.env.UNLIMITED_OCR_PYTHON) return process.env.UNLIMITED_OCR_PYTHON;
+// Like resolveVenvPython, but for an OPTIONAL dedicated venv: the env var, else
+// ~/venv/<name> if it exists, else null (no system-python fallback — the feature is off).
+function resolveOptionalVenvPython(envVar, name) {
+  if (process.env[envVar]) return process.env[envVar];
   const win = process.platform === "win32";
-  const sub = win ? ["Scripts", "python.exe"] : ["bin", "python"];
-  const guess = path.join(os.homedir(), "venv", "unlimited-ocr", ...sub);
+  const guess = path.join(os.homedir(), "venv", name, ...(win ? ["Scripts", "python.exe"] : ["bin", "python"]));
   try { if (fs.existsSync(guess)) return guess; } catch { /* ignore */ }
-  return "";
+  return null;
 }
+
+// Where `mineru` lives when it is not on PATH: pip's per-user script dir and the
+// dedicated venv the docs install it into. Shared by PDF parsing (parse-file.js) and the
+// slide renderer's python lookup below, so the two can never disagree about MinerU.
+const MINERU_CANDIDATES = [
+  path.join(os.homedir(), "local", "bin", "mineru"),
+  path.join(os.homedir(), "venv", "mineru", "bin", "mineru"),
+];
 
 // Python for slide page-rendering (P3 visual layer): needs pypdfium2 + Pillow, which
 // MinerU's own venv already ships (it renders PDFs to raster). SLIDES_PYTHON overrides;
-// else derive from the `mineru` launcher's shebang (its venv python); else the OCR venv;
-// else "" (PDF page-render unavailable → slides keep text + crop figures only).
+// else derive from the `mineru` launcher's shebang (its venv python); else "" (PDF
+// page-render unavailable → slides keep text + crop figures only).
 function resolveSlidesPython() {
   if (process.env.SLIDES_PYTHON) return process.env.SLIDES_PYTHON;
   // The `mineru` console-script's first line is `#!/path/to/venv/bin/python3`.
-  for (const dir of ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), "local", "bin"), path.join(os.homedir(), "venv", "mineru", "bin")]) {
-    try {
-      const exe = path.join(dir, "mineru");
-      if (!fs.existsSync(exe)) continue;
-      const first = fs.readFileSync(exe, "utf8").split(/\r?\n/)[0] || "";
-      if (first.startsWith("#!")) { const py = first.slice(2).trim().split(/\s+/)[0]; if (py && fs.existsSync(py)) return py; }
-    } catch { /* keep looking */ }
-  }
   try {
-    const which = execFileSync(process.platform === "win32" ? "where" : "which", ["mineru"], { encoding: "utf8" }).trim().split(/\r?\n/)[0];
-    if (which) { const first = fs.readFileSync(which, "utf8").split(/\r?\n/)[0] || ""; if (first.startsWith("#!")) { const py = first.slice(2).trim().split(/\s+/)[0]; if (py && fs.existsSync(py)) return py; } }
-  } catch { /* ignore */ }
-  return process.env.UNLIMITED_OCR_PYTHON ? resolveOcrPython() : "";
+    const exe = findTool("mineru", { candidates: MINERU_CANDIDATES });
+    const first = exe ? fs.readFileSync(exe, "utf8").split(/\r?\n/)[0] || "" : "";
+    if (first.startsWith("#!")) { const py = first.slice(2).trim().split(/\s+/)[0]; if (py && fs.existsSync(py)) return py; }
+  } catch { /* unreadable launcher — fall through */ }
+  return "";
 }
 
 // App data home: everything the server persists (chat archives, knowledge library,
@@ -113,6 +111,13 @@ const config = {
   // path; the system python may be too new for those ML wheels. Engines that fail
   // to import are reported unavailable rather than breaking the daemon.
   ttsPython: resolveVenvPython("TTS_PYTHON"),
+  // Qwen3-TTS gets its OWN venv (~/venv/qwen3tts, `uv pip install qwen-tts`): the package
+  // pins transformers 4.57, which would downgrade the shared heykoko venv above. null =
+  // not installed → the qwen3 engine is simply absent. QWEN_TTS_PYTHON overrides.
+  qwenTtsPython: resolveOptionalVenvPython("QWEN_TTS_PYTHON", "qwen3tts"),
+  // Pre-downloaded Qwen3-TTS weights: <dir>/Qwen3-TTS-12Hz-1.7B-{VoiceDesign,Base}/. Used
+  // when present, else the engine pulls the HF repos into the HF cache itself.
+  qwenTtsModels: process.env.QWEN3_TTS_DIR || path.join(os.homedir(), "models", "qwen3-tts"),
   umapPython: resolveVenvPython("UMAP_PYTHON"),
   // News-feed article extraction (server/extract-article.py) runs `trafilatura` — a
   // site-agnostic main-content + metadata extractor that drops nav/related/boilerplate
@@ -121,13 +126,12 @@ const config = {
   // is probed at runtime (import trafilatura) — when absent, news import reports the
   // feature unavailable rather than falling back to the weaker built-in HTML heuristics.
   newsPython: resolveVenvPython("TRAFILATURA_PYTHON"),
-  // Local PDF OCR engine (baidu/Unlimited-OCR) interpreter; "" when not installed.
-  ocrPython: resolveOcrPython(),
   // MinerU backend passed as `-b`. Default "pipeline" (ONNX/torch, dependency-light,
   // works without vLLM). MinerU's own default (hybrid-engine/VLM) needs vLLM, which
   // JIT-compiles CUDA and requires python3-dev headers + a supported GPU — set
   // MINERU_BACKEND=hybrid-engine (etc.) to opt into it. "" → let MinerU pick.
   mineruBackend: process.env.MINERU_BACKEND || "pipeline",
+  mineruCandidates: MINERU_CANDIDATES,
   // P3 slides visual layer — render each slide page to a whole-page JPEG (q80) stored on
   // the page block, so /ask can feed a vision model the actual page (charts/layout), not
   // just the terse text. Always attempted for slide imports; it's best-effort, so it just
@@ -206,6 +210,7 @@ const config = {
     ".mjs": "application/javascript; charset=utf-8",
     ".woff2": "font/woff2",
     ".json": "application/json; charset=utf-8",
+    ".webmanifest": "application/manifest+json; charset=utf-8",
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",

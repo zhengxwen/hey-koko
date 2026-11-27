@@ -137,6 +137,22 @@ function parseTrackFlag(value, acc) {
   return out;
 }
 
+// `--voice-desc <description>` — a one-off designed TTS voice for "photo speaks" (with
+// --voice qwen3 / breeze). Free text that runs to the next ` --flag`, like --pos/--neg,
+// so it is peeled before the flag loop. Twin of public/js/image-gen.js — keep them identical.
+function peelVoiceDesc(line) {
+  const out = { rest: line, desc: "" };
+  for (;;) {
+    const m = out.rest.match(/(^|\s)--voice-desc\s+/i);
+    if (!m) break;
+    const after = out.rest.slice(m.index + m[0].length);
+    const stop = after.search(/\s--[a-z]/i);
+    out.desc = (stop < 0 ? after : after.slice(0, stop)).trim();
+    out.rest = (out.rest.slice(0, m.index) + (stop < 0 ? "" : after.slice(stop))).trim();
+  }
+  return out;
+}
+
 function peelTextFlags(line) {
   const out = { rest: line, pos: "", neg: "" };
   for (;;) {
@@ -223,6 +239,9 @@ function parseImagineLine(line) {
   if (boxed.error) throw new Error(`--box: ${boxed.error}`);
   rest = boxed.rest;
   if (boxed.boxes) task.options.boxes = boxed.boxes;
+  const vdesc = peelVoiceDesc(rest);
+  rest = vdesc.rest;
+  if (vdesc.desc) task.options.ttsDesign = vdesc.desc;
   if (peeled.pos) task.positive = peeled.pos;
   if (peeled.neg) task.negative = peeled.neg;
 
@@ -990,7 +1009,9 @@ function printHelpTopic(topic, cat, files, out) {
       return 0;
     }
     case "voice": {
-      out("--voice <id>      TTS voice for \"photo speaks\" / read-aloud\n\n");
+      out("--voice <id>      TTS voice for \"photo speaks\" / read-aloud\n");
+      out("--voice-desc <text>  one-off designed voice instead (with --voice qwen3 or breeze;\n");
+      out("                  free text up to the next flag; --opt ttsLang=zh|en, ttsGender=female|male)\n\n");
       const vs = cat.voices || [];
       if (!vs.length) { out("  (this server reported no voices)\n"); return 0; }
       for (const v of vs) out(`  ${(v.id || v.name || v)}${v.label ? `  ${v.label}` : ""}\n`);
@@ -1159,6 +1180,10 @@ async function runTask(task, cli, ctx) {
       // the same thing. There is no ⚙ out here to override — localStorage is the
       // browser's — so the flag simply IS the add-on.
       prompt: task.positive ? (prompt ? `${prompt}, ${task.positive}` : task.positive) : prompt,
+      // "Photo speaks" models: the bare prompt is what the TTS reads and --pos is the
+      // scene — sent apart, as the browser does, or the add-on would be read aloud.
+      speechText: model.spec.speaks ? (prompt || undefined) : undefined,
+      scenePrompt: model.spec.speaks ? (task.positive || undefined) : undefined,
       negative_prompt: task.negative || "",
       options: perOptions,
       images: images.length ? images : undefined,
